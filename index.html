@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hollow Blades Manager</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+</head>
+<body>
+    <!-- HEADER -->
+    <header>
+        <div class="header-top">
+            <h1>Hollow <span>Blades</span></h1>
+            <button class="burger-btn" id="nav-toggle" aria-label="Toggle navigation">≡</button>
+        </div>
+        <nav id="main-nav" class="collapsible">
+            <a href="#" data-tab="dashboard" class="active">Dashboard</a>
+            <a href="#" data-tab="characters">Characters</a>
+            <a href="#" data-tab="teams">Teams</a>
+            <a href="#" data-tab="tournaments">Tournaments</a>
+            <a href="#" data-tab="curriculum">Curriculum</a>
+            <a href="#" data-tab="missions">Missions</a>
+            <a href="#" data-tab="social">Social</a>
+        </nav>
+        <div class="header-actions collapsible" id="header-actions">
+            <button id="export-json-btn" class="small">Export JSON</button>
+            <button id="import-json-btn" class="small">Import JSON</button>
+            <button id="export-csv-btn" class="small">Export CSV</button>
+            <button id="import-csv-btn" class="small">Import CSV</button>
+            <button id="template-csv-btn" class="small">Template CSV</button>
+            <input type="file" id="json-file-input" accept=".json" style="display:none" />
+            <input type="file" id="csv-file-input" accept=".csv" style="display:none" />
+        </div>
+    </header>
+
+    <!-- MAIN CONTENT -->
+    <main>
+        <!-- Tab: Dashboard -->
+        <div id="tab-dashboard" class="tab-content active">
+            <div class="page-header">
+                <h2>Dashboard</h2>
+                <span class="text-dim">Year: <span id="header-current-year" style="cursor:pointer;">2024</span></span>
+            </div>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h3>Characters</h3>
+                    <p class="stat-number" id="char-count">0</p>
+                    <span class="stat-link" data-tab="characters">Manage →</span>
+                </div>
+                <div class="stat-card">
+                    <h3>Teams</h3>
+                    <p class="stat-number" id="team-count">0</p>
+                    <span class="stat-link" data-tab="teams">Manage →</span>
+                </div>
+                <div class="stat-card">
+                    <h3>Tournaments</h3>
+                    <p class="stat-number" id="tournament-count">0</p>
+                    <span class="stat-link" data-tab="tournaments">Manage →</span>
+                </div>
+                <div class="stat-card">
+                    <h3>Students</h3>
+                    <p class="stat-number" id="student-count">0</p>
+                    <span class="stat-link" data-tab="curriculum">Manage →</span>
+                </div>
+                <div class="stat-card">
+                    <h3>Disciplines</h3>
+                    <p class="stat-number" id="discipline-count">0</p>
+                    <span class="stat-link" data-tab="curriculum">Manage →</span>
+                </div>
+                <div class="stat-card">
+                    <h3>Missions</h3>
+                    <p class="stat-number" id="mission-count">0</p>
+                    <span class="stat-link" data-tab="missions">Manage →</span>
+                </div>
+                <div class="stat-card">
+                    <h3>Social</h3>
+                    <p class="stat-number" id="social-count">0</p>
+                    <span class="stat-link" data-tab="social">View Network →</span>
+                </div>
+            </div>
+            <div class="dashboard-grid">
+                <div class="dashboard-section">
+                    <h3>Quick Actions</h3>
+                    <div class="quick-actions">
+                        <span class="quick-link" data-tab="characters">Add Character</span>
+                        <span class="quick-link" data-tab="teams">Add Team</span>
+                        <span class="quick-link" data-tab="missions">Add Mission</span>
+                        <span class="quick-link" data-tab="social">Add Relationship</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab: Characters -->
+        <div id="tab-characters" class="tab-content">
+            <div class="page-header">
+                <h2>Character Management</h2>
+                <button id="add-character-btn" class="primary">+ Add Character</button>
+            </div>
+            <div class="filter-section">
+                <label for="char-status-filter">Status:</label>
+                <select id="char-status-filter">
+                    <option value="all">All</option>
+                    <option value="trainee">Trainee</option>
+                    <option value="rookie">Rookie</option>
+                    <option value="junior">Junior</option>
+                    <option value="senior">Senior</option>
+                    <option value="instructor">Instructor</option>
+                    <option value="support">Support</option>
+                    <option value="civilian">Civilian</option>
+                    <option value="deceased">Deceased</option>
+                    <option value="eliminated">Eliminated</option>
+                </select>
+                <label for="char-name-filter">Name:</label>
+                <input type="text" id="char-name-filter" placeholder="Search..." />
+                <label class="filter-check">
+                    <input type="checkbox" id="hide-deceased" /> Hide Deceased
+                </label>
+                <label class="filter-check">
+                    <input type="checkbox" id="hide-eliminated" /> Hide Eliminated
+                </label>
+                <button id="clear-char-filter" class="small secondary">Clear</button>
+            </div>
+            <div id="character-form" class="form-container hidden">
+                <h3 id="form-title">Add Character</h3>
+                <form id="char-form">
+                    <div class="form-grid">
+                        <!-- Name Section -->
+                        <div class="form-group full-width section-divider">
+                            <label class="section-label">Name</label>
+                        </div>
+                        <div class="form-group">
+                            <label>First Name *</label>
+                            <input type="text" id="char-firstname" required />
+                        </div>
+                        <div class="form-group">
+                            <label>Middle Name</label>
+                            <input type="text" id="char-middlename" />
+                        </div>
+                        <div class="form-group">
+                            <label>Last Name *</label>
+                            <input type="text" id="char-lastname" required />
+                        </div>
+                        <div class="form-group">
+                            <label>Nickname</label>
+                            <input type="text" id="char-nickname" placeholder="e.g., Ben" />
+                        </div>
+                        <div class="form-group">
+                            <label>Alias</label>
+                            <input type="text" id="char-alias" placeholder="e.g., The Shadow" />
+                        </div>
+                        <div class="form-group full-width">
+                            <label>Previous Names (comma separated)</label>
+                            <input type="text" id="char-previous-names" placeholder="e.g., John Smith, Jonathan Doe" />
+                        </div>
+                        <div class="form-group full-width">
+                            <label>Display Name Format</label>
+                            <select id="char-name-format">
+                                <option value="firstlast">First + Last</option>
+                                <option value="lastfirst">Last, First</option>
+                                <option value="nicklast">Nickname + Last</option>
+                                <option value="firstnick">First "Nickname"</option>
+                                <option value="alias">Alias</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Year of Birth</label>
+                            <input type="number" id="char-birthyear" />
+                        </div>
+                        <div class="form-group">
+                            <label>Gender</label>
+                            <input type="text" id="char-gender" placeholder="Male/Female/Other" />
+                        </div>
+                        <div class="form-group">
+                            <label>Eye Color</label>
+                            <input type="text" id="char-eyes" placeholder="Blue, Green, Brown..." />
+                        </div>
+                        <div class="form-group">
+                            <label>Hair Color</label>
+                            <input type="text" id="char-hair" placeholder="Blonde, Black, Red..." />
+                        </div>
+                        <div class="form-group">
+                            <label>Skin Color/Tone</label>
+                            <input type="text" id="char-skin" placeholder="Fair, Olive, Dark..." />
+                        </div>
+                        <div class="form-group">
+                            <label>Height</label>
+                            <input type="text" id="char-height" placeholder='e.g., 5'"10"' />
+                        </div>
+                        <div class="form-group">
+                            <label>Weight</label>
+                            <input type="text" id="char-weight" placeholder="e.g., 75kg" />
+                        </div>
+                        <div class="form-group">
+                            <label>Build</label>
+                            <input type="text" id="char-build" placeholder="Slim, Athletic..." />
+                        </div>
+                        <div class="form-group full-width">
+                            <label>Appearance Notes</label>
+                            <textarea id="char-appearance-notes" rows="2" placeholder="Scars, tattoos..."></textarea>
+                        </div>
+                        <!-- Career Status -->
+                        <div class="form-group full-width section-divider">
+                            <label class="section-label">Career Status History</label>
+                            <div id="career-status-container">
+                                <div class="career-status-entry">
+                                    <select class="career-status-select">
+                                        <option value="">Select status...</option>
+                                        <option value="civilian">Civilian</option>
+                                        <option value="trainee">Trainee</option>
+                                        <option value="rookie">Rookie</option>
+                                        <option value="junior">Junior</option>
+                                        <option value="senior">Senior</option>
+                                        <option value="instructor">Instructor</option>
+                                        <option value="support">Support</option>
+                                    </select>
+                                    <input type="number" class="career-start-year" placeholder="Start Year" />
+                                    <input type="number" class="career-end-year" placeholder="End Year" />
+                                    <button type="button" class="small danger remove-status">✕</button>
+                                </div>
+                            </div>
+                            <button type="button" id="add-status-btn" class="small">+ Add Status</button>
+                            <div id="specialty-field" style="display:none;margin-top:8px;">
+                                <label>Specialty/Discipline</label>
+                                <input type="text" id="char-specialty" />
+                            </div>
+                        </div>
+                        <!-- Personality -->
+                        <div class="form-group full-width section-divider">
+                            <label class="section-label">Personality</label>
+                            <div class="personality-grid">
+                                <div class="form-group">
+                                    <label>Traits</label>
+                                    <input type="text" id="char-traits" placeholder="Brave, Honest, Curious..." />
+                                </div>
+                                <div class="form-group">
+                                    <label>Ideals</label>
+                                    <input type="text" id="char-ideals" placeholder="Justice, Freedom, Truth..." />
+                                </div>
+                                <div class="form-group">
+                                    <label>Bonds</label>
+                                    <input type="text" id="char-bonds" placeholder="Family, Guild, Mentor..." />
+                                </div>
+                                <div class="form-group">
+                                    <label>Flaws</label>
+                                    <input type="text" id="char-flaws" placeholder="Fear, Pride, Greed..." />
+                                </div>
+                                <div class="form-group">
+                                    <label>Alignment</label>
+                                    <input type="text" id="char-alignment" placeholder="Lawful Good, Chaotic Neutral..." />
+                                </div>
+                                <div class="form-group">
+                                    <label>Likes</label>
+                                    <input type="text" id="char-likes" placeholder="Music, Books, Combat..." />
+                                </div>
+                                <div class="form-group">
+                                    <label>Dislikes</label>
+                                    <input type="text" id="char-dislikes" placeholder="Lies, Injustice, Spiders..." />
+                                </div>
+                                <div class="form-group">
+                                    <label>Habits</label>
+                                    <input type="text" id="char-habits" placeholder="Smoking, Pacing, Humming..." />
+                                </div>
+                                <div class="form-group">
+                                    <label>Fears</label>
+                                    <input type="text" id="char-fears" placeholder="Heights, Loss, Darkness..." />
+                                </div>
+                                <div class="form-group">
+                                    <label>Goals</label>
+                                    <input type="text" id="char-goals" placeholder="Seeking power, Revenge, Peace..." />
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Stats -->
+                        <div class="form-group full-width section-divider">
+                            <label class="section-label">Stats</label>
+                            <div class="stat-input-group">
+                                <div class="form-group"><label>STR</label><input type="number" id="char-str" min="1" max="30" value="10" /></div>
+                                <div class="form-group"><label>DEX</label><input type="number" id="char-dex" min="1" max="30" value="10" /></div>
+                                <div class="form-group"><label>CON</label><input type="number" id="char-con" min="1" max="30" value="10" /></div>
+                                <div class="form-group"><label>INT</label><input type="number" id="char-int" min="1" max="30" value="10" /></div>
+                                <div class="form-group"><label>WIS</label><input type="number" id="char-wis" min="1" max="30" value="10" /></div>
+                                <div class="form-group"><label>CHA</label><input type="number" id="char-cha" min="1" max="30" value="10" /></div>
+                            </div>
+                            <div class="stat-actions">
+                                <label class="stat-label">Class:</label>
+                                <span id="suggested-class" class="suggested-class empty">—</span>
+                                <select id="manual-class-select">
+                                    <option value="">Auto-suggest</option>
+                                </select>
+                                <button type="button" id="random-stats-btn" class="small secondary">Random</button>
+                                <button type="button" id="recalculate-class-btn" class="small secondary">Recalc</button>
+                            </div>
+                        </div>
+                        <!-- Magic -->
+                        <div class="form-group full-width section-divider">
+                            <label class="section-label">Magic</label>
+                            <div class="magic-grid">
+                                <div class="magic-category-label elemental">Elemental <button type="button" id="random-elemental-btn" class="small secondary">Random</button></div>
+                                <div class="magic-item"><label>Earth</label><input type="number" id="magic-earth" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Water</label><input type="number" id="magic-water" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Fire</label><input type="number" id="magic-fire" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Air</label><input type="number" id="magic-air" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Metal</label><input type="number" id="magic-metal" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Wood</label><input type="number" id="magic-wood" min="0" max="10" value="0" /></div>
+                                <div class="magic-category-label body">Body <button type="button" id="random-body-btn" class="small secondary">Random</button></div>
+                                <div class="magic-item"><label>Blood</label><input type="number" id="magic-blood" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Bone</label><input type="number" id="magic-bone" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Mind</label><input type="number" id="magic-mind" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Morphic</label><input type="number" id="magic-morphic" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Life</label><input type="number" id="magic-life" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Death</label><input type="number" id="magic-death" min="0" max="10" value="0" /></div>
+                                <div class="magic-category-label aether">Aether <button type="button" id="random-aether-btn" class="small secondary">Random</button></div>
+                                <div class="magic-item"><label>Space</label><input type="number" id="magic-space" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Time</label><input type="number" id="magic-time" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Dimension</label><input type="number" id="magic-dimension" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Void</label><input type="number" id="magic-void" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Reality</label><input type="number" id="magic-reality" min="0" max="10" value="0" /></div>
+                                <div class="magic-item"><label>Transference</label><input type="number" id="magic-transference" min="0" max="10" value="0" /></div>
+                            </div>
+                            <div class="magic-actions">
+                                <label class="stat-label">Magic Class:</label>
+                                <span id="suggested-magic-class" class="suggested-class empty">—</span>
+                                <select id="manual-magic-class-select">
+                                    <option value="">Auto-suggest</option>
+                                </select>
+                                <button type="button" id="recalculate-magic-class-btn" class="small secondary">Recalc</button>
+                            </div>
+                            <div class="magic-power-display">
+                                Magic Power: <span id="magic-power-display-text">◯◯◯◯◯ (0/180)</span>
+                            </div>
+                        </div>
+                        <!-- Special Moves -->
+                        <div class="form-group full-width section-divider">
+                            <label class="section-label">Special Moves</label>
+                            <div class="moves-grid">
+                                <div class="moves-column">
+                                    <label class="move-label physical">Physical</label>
+                                    <div id="physical-moves-list" class="moves-list">
+                                        <p class="empty-state">No physical moves</p>
+                                    </div>
+                                    <div class="move-input-group">
+                                        <input type="text" id="physical-move-name" placeholder="Move name" />
+                                        <input type="text" id="physical-move-desc" placeholder="Description" />
+                                        <button type="button" id="add-physical-move-btn" class="small primary">+ Add</button>
+                                    </div>
+                                </div>
+                                <div class="moves-column">
+                                    <label class="move-label magical">Magical</label>
+                                    <div id="magical-moves-list" class="moves-list">
+                                        <p class="empty-state">No magical moves</p>
+                                    </div>
+                                    <div class="move-input-group">
+                                        <input type="text" id="magical-move-name" placeholder="Move name" />
+                                        <input type="text" id="magical-move-desc" placeholder="Description" />
+                                        <button type="button" id="add-magical-move-btn" class="small primary">+ Add</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Deceased -->
+                        <div class="form-group full-width section-divider">
+                            <div class="deceased-toggle">
+                                <input type="checkbox" id="char-deceased" />
+                                <label for="char-deceased" class="deceased-label">Mark as Deceased</label>
+                            </div>
+                            <div id="death-fields" class="death-fields">
+                                <div class="form-group"><label>Year of Death</label><input type="number" id="char-death-year" placeholder="e.g., 2023" /></div>
+                                <div class="form-group"><label>Death Age</label><input type="number" id="char-death-age" min="0" max="150" placeholder="e.g., 45" /></div>
+                                <div class="form-group full-width"><label>Cause of Death</label><input type="text" id="char-death-cause" /></div>
+                            </div>
+                        </div>
+                        <!-- Eliminations -->
+                        <div class="form-group full-width section-divider">
+                            <label class="section-label warning-label">Standalone Elimination</label>
+                            <input type="hidden" id="standalone-char-id" />
+                            <div class="elimination-controls">
+                                <label>Week:</label>
+                                <input type="number" id="standalone-elim-week" min="1" max="52" value="1" />
+                                <label>Reason:</label>
+                                <input type="text" id="standalone-elim-reason" placeholder="e.g., Dropped out" />
+                                <button type="button" id="add-standalone-elim-btn" class="small warning-btn">Apply</button>
+                            </div>
+                            <div class="elimination-list">
+                                <label>Existing:</label>
+                                <div id="standalone-eliminations-container">
+                                    <p class="empty-state">None</p>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Tournament Eliminations -->
+                        <div class="form-group full-width section-divider">
+                            <label class="section-label info-label">Tournament Eliminations</label>
+                            <div id="tournament-eliminations-view">
+                                <p class="empty-state">None</p>
+                            </div>
+                        </div>
+                        <div class="form-group full-width">
+                            <label>Notes</label>
+                            <textarea id="char-notes" rows="3" placeholder="Background, motivations..."></textarea>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" id="cancel-char-btn" class="secondary">Cancel</button>
+                        <button type="submit" id="save-char-btn" class="primary">Save Character</button>
+                    </div>
+                </form>
+            </div>
+            <div id="character-list">
+                <div class="list-header char-header">
+                    <span>Name</span>
+                    <span>Age</span>
+                    <span>Status</span>
+                    <span>Class</span>
+                    <span>Magic</span>
+                    <span>Power</span>
+                    <span>Actions</span>
+                </div>
+                <div id="characters-container">
+                    <p class="empty-state">No characters created yet.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab: Teams -->
+        <div id="tab-teams" class="tab-content">
+            <!-- Rendered by team-manager.js -->
+        </div>
+
+        <!-- Tab: Tournaments -->
+        <div id="tab-tournaments" class="tab-content">
+            <!-- Rendered by tournaments-ui.js -->
+        </div>
+
+        <!-- Tab: Curriculum -->
+        <div id="tab-curriculum" class="tab-content">
+            <!-- Rendered by curriculum-main.js -->
+        </div>
+
+        <!-- Tab: Missions -->
+        <div id="tab-missions" class="tab-content">
+            <!-- Rendered by missions.js -->
+        </div>
+
+        <!-- Tab: Social -->
+        <div id="tab-social" class="tab-content">
+            <!-- Rendered by social.js -->
+        </div>
+    </main>
+
+    <!-- SHARED MODAL CONTAINER -->
+    <div id="modal-container" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">Modal</h3>
+                <button class="close-modal" id="modal-close">&times;</button>
+            </div>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- CHARACTER DETAIL MODAL -->
+    <div id="character-detail-modal" class="modal hidden">
+        <div class="modal-content wide">
+            <div class="modal-header">
+                <h3 id="detail-character-name">Character</h3>
+                <button class="close-modal" id="close-character-detail">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="detail-tabs">
+                    <button class="detail-tab-btn active" data-tab="name">Name</button>
+                    <button class="detail-tab-btn" data-tab="physical">Physical</button>
+                    <button class="detail-tab-btn" data-tab="personality">Personality</button>
+                    <button class="detail-tab-btn" data-tab="career">Career</button>
+                    <button class="detail-tab-btn" data-tab="academic">Academic</button>
+                    <button class="detail-tab-btn" data-tab="stats">Stats</button>
+                    <button class="detail-tab-btn" data-tab="social">Social</button>
+                    <button class="detail-tab-btn" data-tab="notes">Notes</button>
+                </div>
+                <div id="detail-tab-content">
+                    <div id="detail-name" class="detail-tab-panel active"></div>
+                    <div id="detail-physical" class="detail-tab-panel" style="display:none;"></div>
+                    <div id="detail-personality" class="detail-tab-panel" style="display:none;"></div>
+                    <div id="detail-career" class="detail-tab-panel" style="display:none;"></div>
+                    <div id="detail-academic" class="detail-tab-panel" style="display:none;"></div>
+                    <div id="detail-stats" class="detail-tab-panel" style="display:none;"></div>
+                    <div id="detail-social" class="detail-tab-panel" style="display:none;"></div>
+                    <div id="detail-notes" class="detail-tab-panel" style="display:none;"></div>
+                </div>
+                <div class="form-actions">
+                    <button id="edit-character-from-detail" class="primary">Edit Character</button>
+                    <button id="close-character-detail-btn" class="secondary">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SCRIPTS -->
+    <!-- Core -->
+    <script src="js/core/state.js"></script>
+    <script src="js/core/database.js"></script>
+    <script src="js/core/utils.js"></script>
+    <script src="js/core/loader.js"></script>
+    <script src="js/core/tab-manager.js"></script>
+
+    <!-- Export -->
+    <script src="js/export.js"></script>
+
+    <!-- Modules -->
+    <script src="js/modules/dashboard.js"></script>
+    <script src="js/modules/characters/character-stats.js"></script>
+    <script src="js/modules/characters/character-detail.js"></script>
+    <script src="js/modules/characters/characters.js"></script>
+    <script src="js/modules/teams/team-manager.js"></script>
+    <script src="js/modules/tournaments/tournaments-core.js"></script>
+    <script src="js/modules/tournaments/tournaments-ui.js"></script>
+    <script src="js/modules/curriculum/curriculum-main.js"></script>
+    <script src="js/modules/curriculum/disciplines.js"></script>
+    <script src="js/modules/curriculum/groups.js"></script>
+    <script src="js/modules/curriculum/class-view.js"></script>
+    <script src="js/modules/curriculum/instructor-calendar.js"></script>
+    <script src="js/modules/curriculum/schedule.js"></script>
+    <script src="js/modules/curriculum/grades.js"></script>
+    <script src="js/modules/curriculum/ranking.js"></script>
+    <script src="js/modules/missions.js"></script>
+    <script src="js/modules/social.js"></script>
+
+    <!-- App Bootstrapper -->
+    <script src="js/app.js"></script>
+</body>
+</html>
