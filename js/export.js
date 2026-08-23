@@ -51,13 +51,18 @@
 
     function exportCSV() {
         var data = window.data || {};
+        if (!data.characters && !data.teams && !data.tournaments) {
+            alert('No data to export.');
+            return;
+        }
+
         var lines = [];
 
-        // Characters
+        // CHARACTERS
         lines.push('# CHARACTERS');
         lines.push('FirstName,MiddleName,LastName,BirthYear,Gender,AssociatedNames,EyeColor,HairColor,SkinColor,Height,Build,AppearanceNotes,Notes,Deceased,DeathYear,DeathCause,DeathAge,Specialty,CareerStatus,EliminatedWeeks');
 
-        data.characters.forEach(function(c) {
+        (data.characters || []).forEach(function(c) {
             var careerStr = '';
             if (c.careerStatus) {
                 careerStr = c.careerStatus.map(function(s) {
@@ -89,10 +94,10 @@
             ].join(','));
         });
 
-        // Teams
+        // TEAMS
         lines.push('\n# TEAMS');
         lines.push('TeamName,TeamType,StartPeriod,EndPeriod,CurrentRank,Status,NameHistory,TemporaryMission');
-        data.teams.forEach(function(t) {
+        (data.teams || []).forEach(function(t) {
             var nameHistoryStr = '';
             if (t.nameHistory) {
                 nameHistoryStr = t.nameHistory.map(function(n) {
@@ -111,14 +116,14 @@
             ].join(','));
         });
 
-        // Team Members
+        // TEAM MEMBERS
         lines.push('\n# TEAM MEMBERS');
         lines.push('TeamName,CharacterName,Role,JoinPeriod,LeavePeriod,Status');
-        data.teams.forEach(function(t) {
+        (data.teams || []).forEach(function(t) {
             if (t.members) {
                 t.members.forEach(function(m) {
-                    var char = window.getCharacterById(m.characterId);
-                    var name = char ? window.getDisplayName(char) : 'Unknown';
+                    var char = window.getCharacterById ? window.getCharacterById(m.characterId) : null;
+                    var name = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
                     var status = 'active';
                     if (char && char.deceased) status = 'deceased';
                     else if (char && char.eliminatedWeeks && char.eliminatedWeeks.length > 0) status = 'eliminated';
@@ -135,10 +140,10 @@
             }
         });
 
-        // Team Rankings
+        // TEAM RANKINGS
         lines.push('\n# TEAM RANKINGS');
         lines.push('TeamName,Period,Rank');
-        data.teams.forEach(function(t) {
+        (data.teams || []).forEach(function(t) {
             if (t.rankingHistory) {
                 t.rankingHistory.forEach(function(r) {
                     lines.push([
@@ -150,16 +155,16 @@
             }
         });
 
-        // Tournaments
+        // TOURNAMENTS
         lines.push('\n# TOURNAMENTS');
         lines.push('TournamentName,StartWeek,EndWeek,AcademicYear,Status,Winner');
-        data.tournaments.forEach(function(t) {
+        (data.tournaments || []).forEach(function(t) {
             var winnerName = '';
             if (t.winner) {
-                var winnerTeam = window.getTeamById(t.winner);
+                var winnerTeam = window.getTeamById ? window.getTeamById(t.winner) : null;
                 if (winnerTeam) winnerName = winnerTeam.name;
-                var winnerChar = window.getCharacterById(t.winner);
-                if (winnerChar) winnerName = window.getDisplayName(winnerChar);
+                var winnerChar = window.getCharacterById ? window.getCharacterById(t.winner) : null;
+                if (winnerChar) winnerName = window.getDisplayName ? window.getDisplayName(winnerChar) : 'Unknown';
             }
             lines.push([
                 csvField(t.name),
@@ -171,13 +176,13 @@
             ].join(','));
         });
 
-        // Tournament Teams
+        // TOURNAMENT TEAMS
         lines.push('\n# TOURNAMENT TEAMS');
         lines.push('TournamentName,TeamName');
-        data.tournaments.forEach(function(t) {
+        (data.tournaments || []).forEach(function(t) {
             if (t.teams) {
                 t.teams.forEach(function(entry) {
-                    var team = window.getTeamById(entry.teamId);
+                    var team = window.getTeamById ? window.getTeamById(entry.teamId) : null;
                     lines.push([
                         csvField(t.name),
                         csvField(team ? team.name : '')
@@ -186,14 +191,14 @@
             }
         });
 
-        // Tournament Matches
+        // TOURNAMENT MATCHES
         lines.push('\n# TOURNAMENT MATCHES');
         lines.push('TournamentName,Team1,Team2,Winner');
-        data.tournaments.forEach(function(t) {
+        (data.tournaments || []).forEach(function(t) {
             if (t.matches) {
                 t.matches.forEach(function(m) {
-                    var team1 = window.getTeamById(m.team1Id);
-                    var team2 = window.getTeamById(m.team2Id);
+                    var team1 = window.getTeamById ? window.getTeamById(m.team1Id) : null;
+                    var team2 = window.getTeamById ? window.getTeamById(m.team2Id) : null;
                     var winner = m.winner ? window.getTeamById(m.winner) : null;
                     lines.push([
                         csvField(t.name),
@@ -205,14 +210,14 @@
             }
         });
 
-        // Tournament Eliminations
+        // TOURNAMENT ELIMINATIONS
         lines.push('\n# TOURNAMENT ELIMINATIONS');
         lines.push('TournamentName,CharacterName,TeamName,Week');
-        data.tournaments.forEach(function(t) {
+        (data.tournaments || []).forEach(function(t) {
             if (t.eliminations) {
                 t.eliminations.forEach(function(e) {
-                    var char = window.getCharacterById(e.characterId);
-                    var charName = char ? window.getDisplayName(char) : 'Unknown';
+                    var char = window.getCharacterById ? window.getCharacterById(e.characterId) : null;
+                    var charName = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
                     var team = e.teamId ? window.getTeamById(e.teamId) : null;
                     lines.push([
                         csvField(t.name),
@@ -224,34 +229,32 @@
             }
         });
 
-        // Missions
+        // MISSIONS
         lines.push('\n# MISSIONS');
         lines.push('Title,Status,Priority,Difficulty,Team,Location,Duration,Pay,Progress,Objectives');
-        if (data.missions) {
-            data.missions.forEach(function(m) {
-                var teamName = m.assignedTeamId ? window.getTeamName(m.assignedTeamId) : '';
-                var objectivesStr = '';
-                if (m.objectives) {
-                    objectivesStr = m.objectives.map(function(o) {
-                        return o.text + (o.done ? '\u2713' : '');
-                    }).join(';');
-                }
-                lines.push([
-                    csvField(m.title || ''),
-                    csvField(m.status || 'active'),
-                    csvField(m.priority || 'medium'),
-                    csvField(m.difficulty || 'medium'),
-                    csvField(teamName),
-                    csvField(m.location || ''),
-                    csvField(m.duration || ''),
-                    csvField(m.pay || ''),
-                    m.progress || '0',
-                    csvField(objectivesStr)
-                ].join(','));
-            });
-        }
+        (data.missions || []).forEach(function(m) {
+            var teamName = m.assignedTeamId ? (window.getTeamName ? window.getTeamName(m.assignedTeamId) : '') : '';
+            var objectivesStr = '';
+            if (m.objectives) {
+                objectivesStr = m.objectives.map(function(o) {
+                    return o.text + (o.done ? '\u2713' : '');
+                }).join(';');
+            }
+            lines.push([
+                csvField(m.title || ''),
+                csvField(m.status || 'active'),
+                csvField(m.priority || 'medium'),
+                csvField(m.difficulty || 'medium'),
+                csvField(teamName),
+                csvField(m.location || ''),
+                csvField(m.duration || ''),
+                csvField(m.pay || ''),
+                m.progress || '0',
+                csvField(objectivesStr)
+            ].join(','));
+        });
 
-        // Curriculum - Disciplines
+        // DISCIPLINES
         lines.push('\n# DISCIPLINES');
         lines.push('DisciplineName,Type,Instructors,StartWeek,EndWeek,WeeklyHours,MaxStudents,Weight');
         if (data.curriculum && data.curriculum.disciplines) {
@@ -259,8 +262,8 @@
                 var instructors = '';
                 if (d.instructorIds) {
                     instructors = d.instructorIds.map(function(id) {
-                        var inst = window.getCharacterById(id);
-                        return inst ? window.getDisplayName(inst) : '';
+                        var inst = window.getCharacterById ? window.getCharacterById(id) : null;
+                        return inst ? (window.getDisplayName ? window.getDisplayName(inst) : 'Unknown') : '';
                     }).filter(function(n) { return n; }).join(';');
                 }
                 lines.push([
@@ -344,8 +347,6 @@
                 };
                 var charMap = {};
                 var teamMap = {};
-                var missionMap = {};
-                var tournMap = {};
 
                 for (var i = 0; i < lines.length; i++) {
                     var line = lines[i].trim();
@@ -452,8 +453,8 @@
                         if (team) {
                             var charKey = charName.toLowerCase();
                             var char = Object.values(charMap).find(function(c) {
-                                var fullName = window.getFullName(c).toLowerCase();
-                                return fullName === charKey;
+                                var fullName = (c.firstName + ' ' + (c.lastName || '')).toLowerCase();
+                                return fullName === charKey || (c.firstName + '|' + (c.lastName || '')).toLowerCase() === charKey;
                             });
                             if (char) {
                                 team.members.push({
@@ -498,7 +499,6 @@
                             if (winnerTeam) tourn.winner = winnerTeam.id;
                         }
                         newData.tournaments.push(tourn);
-                        tournMap[tourn.name.toLowerCase()] = tourn;
                     } else if (section === 'tournament_teams' && values.length >= 2) {
                         var tournName = values[0];
                         var teamName = values[1];
@@ -528,7 +528,7 @@
                         if (tourn) {
                             var charName = values[1];
                             var char = Object.values(charMap).find(function(c) {
-                                return window.getDisplayName(c) === charName;
+                                return (c.firstName + ' ' + (c.lastName || '')).trim() === charName;
                             });
                             if (char) {
                                 var teamName = values[2];
@@ -586,7 +586,7 @@
                             var instructorNames = values[2].split(';');
                             instructorNames.forEach(function(name) {
                                 var inst = Object.values(charMap).find(function(c) {
-                                    return window.getDisplayName(c) === name;
+                                    return (c.firstName + ' ' + (c.lastName || '')).trim() === name;
                                 });
                                 if (inst) instructorIds.push(inst.id);
                             });
@@ -708,6 +708,10 @@
 
     function exportJSON() {
         var data = window.data || {};
+        if (!data.characters && !data.teams && !data.tournaments) {
+            alert('No data to export.');
+            return;
+        }
         var jsonData = JSON.stringify(data, null, 2);
         var blob = new Blob([jsonData], { type: 'application/json' });
         var url = URL.createObjectURL(blob);
@@ -802,17 +806,34 @@
         reader.readAsText(file);
     }
 
+    // ============================================================
+    // INIT - Connect all buttons
+    // ============================================================
     function initImportExport() {
-        document.querySelectorAll('#export-json-btn').forEach(function(btn) {
-            btn.addEventListener('click', exportJSON);
+        // JSON Export
+        var exportJsonBtns = document.querySelectorAll('#export-json-btn');
+        exportJsonBtns.forEach(function(btn) {
+            // Remove existing listeners by cloning
+            var newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', exportJSON);
         });
-        document.querySelectorAll('#import-json-btn').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                document.getElementById('json-file-input').click();
+
+        // JSON Import
+        var importJsonBtns = document.querySelectorAll('#import-json-btn');
+        importJsonBtns.forEach(function(btn) {
+            var newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', function() {
+                var input = document.getElementById('json-file-input');
+                if (input) input.click();
             });
         });
-        document.querySelectorAll('#json-file-input').forEach(function(input) {
-            input.addEventListener('change', function(e) {
+        var jsonInputs = document.querySelectorAll('#json-file-input');
+        jsonInputs.forEach(function(input) {
+            var newInput = input.cloneNode(true);
+            input.parentNode.replaceChild(newInput, input);
+            newInput.addEventListener('change', function(e) {
                 if (this.files.length > 0) {
                     importJSON(this.files[0]);
                     this.value = '';
@@ -820,16 +841,29 @@
             });
         });
 
-        document.querySelectorAll('#export-csv-btn').forEach(function(btn) {
-            btn.addEventListener('click', exportCSV);
+        // CSV Export
+        var exportCsvBtns = document.querySelectorAll('#export-csv-btn');
+        exportCsvBtns.forEach(function(btn) {
+            var newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', exportCSV);
         });
-        document.querySelectorAll('#import-csv-btn').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                document.getElementById('csv-file-input').click();
+
+        // CSV Import
+        var importCsvBtns = document.querySelectorAll('#import-csv-btn');
+        importCsvBtns.forEach(function(btn) {
+            var newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', function() {
+                var input = document.getElementById('csv-file-input');
+                if (input) input.click();
             });
         });
-        document.querySelectorAll('#csv-file-input').forEach(function(input) {
-            input.addEventListener('change', function(e) {
+        var csvInputs = document.querySelectorAll('#csv-file-input');
+        csvInputs.forEach(function(input) {
+            var newInput = input.cloneNode(true);
+            input.parentNode.replaceChild(newInput, input);
+            newInput.addEventListener('change', function(e) {
                 if (this.files.length > 0) {
                     importCSV(this.files[0]);
                     this.value = '';
@@ -837,9 +871,23 @@
             });
         });
 
-        document.querySelectorAll('#template-csv-btn').forEach(function(btn) {
-            btn.addEventListener('click', exportTemplateCSV);
+        // Template CSV
+        var templateBtns = document.querySelectorAll('#template-csv-btn');
+        templateBtns.forEach(function(btn) {
+            var newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', exportTemplateCSV);
         });
+    }
+
+    // Auto-initialize when data is ready
+    document.addEventListener('dataLoaded', function() {
+        initImportExport();
+    });
+
+    // Also try to initialize immediately if data is already loaded
+    if (window.data) {
+        setTimeout(initImportExport, 200);
     }
 
     window.initImportExport = initImportExport;
