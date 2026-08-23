@@ -86,10 +86,13 @@
             }
         });
 
-        // Handle burger menu toggle
+        // ============================================================
+        // BURGER MENU - Fixed
+        // ============================================================
         var navToggle = document.getElementById('nav-toggle');
         if (navToggle) {
-            navToggle.addEventListener('click', function() {
+            navToggle.addEventListener('click', function(e) {
+                e.stopPropagation();
                 var nav = document.getElementById('main-nav');
                 var actions = document.getElementById('header-actions');
                 if (nav) nav.classList.toggle('open');
@@ -97,6 +100,20 @@
                 this.classList.toggle('open');
             });
         }
+
+        // Close burger menu when clicking outside
+        document.addEventListener('click', function(e) {
+            var nav = document.getElementById('main-nav');
+            var actions = document.getElementById('header-actions');
+            var toggle = document.getElementById('nav-toggle');
+            if (nav && nav.classList.contains('open')) {
+                if (!nav.contains(e.target) && !actions.contains(e.target) && !toggle.contains(e.target)) {
+                    nav.classList.remove('open');
+                    actions.classList.remove('open');
+                    if (toggle) toggle.classList.remove('open');
+                }
+            }
+        });
 
         // Close mobile nav on window resize
         window.addEventListener('resize', function() {
@@ -119,6 +136,17 @@
                 }
             }, 300);
         }
+
+        // ============================================================
+        // IMPORT/EXPORT - Ensure buttons work after page load
+        // ============================================================
+        // These will be re-initialized by export.js when data loads,
+        // but we also need to handle the case where export.js loads first
+        setTimeout(function() {
+            if (typeof window.initImportExport === 'function') {
+                window.initImportExport();
+            }
+        }, 100);
 
         console.log('Hollow Blades Manager initialized');
     }
