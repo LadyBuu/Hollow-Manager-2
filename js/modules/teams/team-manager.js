@@ -12,7 +12,7 @@
         expandedTeamId: null,
         currentTeamId: null,
         filters: {
-            academic: { filterWeek: 1, filterStatus: 'active' },
+            academic: { filterWeek: 1, filterStatus: 'active', filterClass: 'all' },
             professional: { filterYear: '', filterStatus: 'active' },
             temporary: { filterYear: '', filterStatus: 'active' },
             civilian: { filterStatus: 'active' }
@@ -29,7 +29,7 @@
             console.error('Teams container not found');
             return;
         }
-        
+
         // Check if data exists
         if (!window.data) {
             console.warn('No data available, waiting for dataReady event');
@@ -40,6 +40,10 @@
         // Ensure teams array exists
         if (!window.data.teams) {
             window.data.teams = [];
+        }
+        // Ensure classes array exists
+        if (!window.data.classes) {
+            window.data.classes = [];
         }
 
         container.innerHTML = getTeamManagerHTML();
@@ -119,6 +123,19 @@
                                         <option value="inactive">Inactive</option>
                                         <option value="deprecated">Deprecated</option>
                                     </select>
+                                </div>
+                                <!-- Academic-specific fields -->
+                                <div id="academic-team-fields" style="display:none;grid-column:1/-1;">
+                                    <div class="form-group">
+                                        <label>Class</label>
+                                        <select id="team-class" style="width:100%;padding:8px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
+                                            <option value="">Unassigned</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Team Number (optional)</label>
+                                        <input type="text" id="team-number" placeholder="e.g., A, B, 1, 2...">
+                                    </div>
                                 </div>
                                 <div class="form-group full-width" id="temporary-mission-field" style="display:none;">
                                     <label>Associated Mission</label>
@@ -256,12 +273,27 @@
     function buildFilterHTML(tab, tabFilter) {
         if (tab === 'academic') {
             var weekValue = tabFilter.filterWeek || 1;
+            var classFilterValue = tabFilter.filterClass || 'all';
+            
+            // Build class options
+            var classOptions = '';
+            var classes = window.getClasses();
+            classes.forEach(function(cls) {
+                var selected = (classFilterValue === cls.id) ? 'selected' : '';
+                classOptions += '<option value="' + cls.id + '" ' + selected + '>' + cls.name + '</option>';
+            });
+            
             return `
                 <div class="filter-section">
                     <label for="team-filter-week">Week:</label>
                     <input type="number" id="team-filter-week" value="${weekValue}" min="1" max="52" style="width:80px;">
                     <button id="apply-filter-btn" class="small primary">Apply</button>
                     <span style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Shows teams active during this 2-week block</span>
+                    <label style="margin-left:12px;">Class:</label>
+                    <select id="team-class-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
+                        <option value="all">All Classes</option>
+                        ${classOptions}
+                    </select>
                     <label style="margin-left:12px;display:flex;align-items:center;gap:4px;font-size:0.75rem;color:var(--text-dim);cursor:pointer;">
                         <input type="checkbox" id="academic-show-inactive" ${tabFilter.filterStatus === 'inactive' ? 'checked' : ''} style="width:auto;accent-color:var(--accent);cursor:pointer;"> Show Inactive
                     </label>
@@ -340,6 +372,15 @@
                 if (isNaN(start)) return true;
                 return start <= block.end && (isNaN(end) || end >= block.start);
             });
+            
+            // Class filter
+            var classFilter = tabFilter ? tabFilter.filterClass : 'all';
+            if (classFilter !== 'all') {
+                teams = teams.filter(function(team) {
+                    return String(team.classId) === String(classFilter);
+                });
+            }
+            
             if (filter === 'active') {
                 teams = teams.filter(function(t) { return t.status === 'active'; });
             } else if (filter === 'inactive') {
@@ -437,8 +478,17 @@
                 team.type === 'professional' ? '💼 Professional' :
                 team.type === 'temporary' ? '📋 Temporary' : '👤 Civilian';
 
+            // Class display for academic teams
+            var classDisplay = '';
+            if (team.type === 'academic' && team.classId) {
+                var className = window.getClassDisplayName(team.classId);
+                if (className && className !== 'Unassigned') {
+                    classDisplay = ' <span style="font-size:0.6rem;color:var(--accent);">[' + className + ']</span>';
+                }
+            }
+
             html += '<div class="list-item team-item' + inactiveClass + '" data-id="' + team.id + '" style="grid-template-columns:1.2fr 0.8fr 0.6fr 0.6fr 1fr;' + inactiveStyle + '">';
-            html += '<span><strong>' + team.name + '</strong> <span style="font-size:0.6rem;color:var(--text-dim);">' + typeLabel + '</span>' + missionDisplay +
+            html += '<span><strong>' + team.name + '</strong>' + classDisplay + ' <span style="font-size:0.6rem;color:var(--text-dim);">' + typeLabel + '</span>' + missionDisplay +
                 (isInactive ? ' <span style="color:var(--text-dim);font-size:0.6rem;">(Inactive)</span>' : '') + '</span>';
             html += '<span style="font-size:0.75rem;">' + periodDisplay + '</span>';
             html += '<span style="font-size:0.75rem;">' + rankDisplay + '</span>';
@@ -622,8 +672,10 @@
             newBtn.addEventListener('click', function() {
                 if (tab === 'academic') {
                     var week = parseInt(document.getElementById('team-filter-week').value);
+                    var classFilter = document.getElementById('team-class-filter') ? document.getElementById('team-class-filter').value : 'all';
                     if (!isNaN(week) && week > 0 && week <= 52) {
                         teamState.filters.academic.filterWeek = week;
+                        teamState.filters.academic.filterClass = classFilter;
                         renderTeamTab(tab);
                     } else {
                         alert('Please enter a valid week (1-52).');
@@ -646,6 +698,17 @@
                 if (e.key === 'Enter') {
                     var btn = document.getElementById('apply-filter-btn');
                     if (btn) btn.click();
+                }
+            });
+        }
+
+        var classFilter = document.getElementById('team-class-filter');
+        if (classFilter) {
+            classFilter.addEventListener('change', function() {
+                // Auto-apply when class filter changes
+                if (tab === 'academic') {
+                    teamState.filters.academic.filterClass = this.value;
+                    renderTeamTab(tab);
                 }
             });
         }
@@ -722,6 +785,7 @@
 
         modal.classList.remove('hidden');
         populateMissionSelector();
+        populateClassSelector();
         updatePeriodLabels();
 
         if (editId) {
@@ -741,6 +805,13 @@
                 if (team.temporaryMission) {
                     document.getElementById('team-mission').value = team.temporaryMission;
                 }
+                // Academic fields
+                if (team.type === 'academic') {
+                    if (team.classId) {
+                        document.getElementById('team-class').value = team.classId;
+                    }
+                    document.getElementById('team-number').value = team.teamNumber || '';
+                }
                 form.dataset.editId = editId;
                 form.dataset.tab = tab || 'academic';
 
@@ -754,6 +825,7 @@
                     addNameHistoryEntry(container);
                 }
                 setTimeout(updatePeriodLabels, 50);
+                toggleAcademicFields(team.type);
                 toggleMissionField(team.type);
             }
         } else {
@@ -767,8 +839,25 @@
             container.innerHTML = '';
             addNameHistoryEntry(container);
             setTimeout(updatePeriodLabels, 50);
+            toggleAcademicFields(tab || 'academic');
             toggleMissionField(tab || 'academic');
         }
+    }
+
+    function populateClassSelector() {
+        var select = document.getElementById('team-class');
+        if (!select) return;
+
+        var classes = window.getClasses();
+        var currentValue = select.value;
+        select.innerHTML = '<option value="">Unassigned</option>';
+        classes.forEach(function(cls) {
+            var option = document.createElement('option');
+            option.value = cls.id;
+            option.textContent = cls.name;
+            select.appendChild(option);
+        });
+        if (currentValue) select.value = currentValue;
     }
 
     function populateMissionSelector() {
@@ -793,6 +882,13 @@
         });
     }
 
+    function toggleAcademicFields(type) {
+        var fields = document.getElementById('academic-team-fields');
+        if (fields) {
+            fields.style.display = (type === 'academic') ? 'block' : 'none';
+        }
+    }
+
     function toggleMissionField(type) {
         var field = document.getElementById('temporary-mission-field');
         if (field) {
@@ -810,6 +906,7 @@
         var startInput = document.getElementById('team-start');
         var endInput = document.getElementById('team-end');
 
+        toggleAcademicFields(type);
         toggleMissionField(type);
 
         if (type === 'academic') {
@@ -872,6 +969,15 @@
             temporaryMission: document.getElementById('team-mission').value || null
         };
 
+        // Academic fields
+        if (teamData.type === 'academic') {
+            teamData.classId = document.getElementById('team-class').value || null;
+            teamData.teamNumber = document.getElementById('team-number').value.trim() || '';
+        } else {
+            teamData.classId = null;
+            teamData.teamNumber = '';
+        }
+
         if (!teamData.name) { alert('Team name is required.'); return; }
         if (!teamData.type) { alert('Team type is required.'); return; }
 
@@ -901,6 +1007,8 @@
                 members: [],
                 rankingHistory: [],
                 temporaryMission: teamData.temporaryMission,
+                classId: teamData.classId,
+                teamNumber: teamData.teamNumber,
                 createdAt: new Date().toISOString()
             };
             data.teams.push(newTeam);
@@ -1841,12 +1949,14 @@
         }
     }
 
-    // Register with TabManager
+    // ============================================================
+    // REGISTER WITH TABMANAGER
+    // ============================================================
+
     if (typeof window.TabManager !== 'undefined') {
         window.TabManager.register('teams', renderTeamManager);
     }
 
-    // Handle data ready
     document.addEventListener('dataReady', function() {
         var container = document.getElementById('tab-teams');
         if (container && container.style.display !== 'none') {
@@ -1854,7 +1964,6 @@
         }
     });
 
-    // Handle tab change
     document.addEventListener('tabChanged', function(e) {
         if (e.detail && e.detail.tab === 'teams') {
             var container = document.getElementById('tab-teams');
@@ -1864,7 +1973,6 @@
         }
     });
 
-    // If data already loaded, render
     if (window.data) {
         setTimeout(function() {
             var container = document.getElementById('tab-teams');
@@ -1873,6 +1981,10 @@
             }
         }, 100);
     }
+
+    // ============================================================
+    // EXPOSE FUNCTIONS
+    // ============================================================
 
     window.renderTeamManager = renderTeamManager;
     window.teamState = teamState;
