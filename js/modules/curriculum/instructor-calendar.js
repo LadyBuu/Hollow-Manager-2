@@ -21,6 +21,42 @@
         }
         if (!container) return;
 
+        // Check if data exists
+        if (!window.data) {
+            console.warn('No data available for instructor calendar, waiting for dataReady event');
+            container.innerHTML = '<p class="empty-state">Loading instructor calendar data...</p>';
+            return;
+        }
+
+        // Ensure curriculum structure exists
+        if (!window.data.curriculum) {
+            window.data.curriculum = {
+                disciplines: [],
+                schedules: {},
+                restDays: {},
+                examDays: {},
+                grades: {},
+                rankings: {},
+                currentWeek: 1,
+                classInstructors: {},
+                classLabels: {},
+                classGroupLabels: {},
+                classDurations: {},
+                instructorClasses: {},
+                instructorTemplates: {},
+                instructorBlocks: {},
+                instructorGroups: {},
+                disciplineGroups: {},
+                autoGroups: {}
+            };
+        }
+        if (!window.data.curriculum.instructorTemplates) {
+            window.data.curriculum.instructorTemplates = {};
+        }
+        if (!window.data.curriculum.instructorBlocks) {
+            window.data.curriculum.instructorBlocks = {};
+        }
+
         container.innerHTML = getInstructorCalendarHTML();
 
         populateInstructorSelector();
@@ -33,10 +69,10 @@
     function getInstructorCalendarHTML() {
         return `
             <div class="page-header">
-                <h2>\u25F7 Instructor Calendar</h2>
+                <h2>◊ Instructor Calendar</h2>
                 <div class="header-actions">
                     <button id="add-instructor-class-btn" class="primary small">+ Add Class</button>
-                    <button id="add-instructor-block-btn" class="secondary small">\u25A3 Block Time</button>
+                    <button id="add-instructor-block-btn" class="secondary small">■ Block Time</button>
                 </div>
             </div>
             <div class="calendar-controls">
@@ -47,9 +83,9 @@
                     </select>
                 </div>
                 <div class="week-nav">
-                    <button id="prev-instructor-week" class="small">\u2190 Prev</button>
+                    <button id="prev-instructor-week" class="small">← Prev</button>
                     <span id="instructor-week-display" style="font-weight:600;min-width:80px;text-align:center;">Week 1</span>
-                    <button id="next-instructor-week" class="small">Next \u2192</button>
+                    <button id="next-instructor-week" class="small">Next →</button>
                     <button id="goto-instructor-week" class="small primary">Go to Week</button>
                 </div>
                 <div class="group-filter">
@@ -92,7 +128,7 @@
                 </div>
             </div>
             <div style="margin-top:8px;font-size:0.7rem;color:var(--text-dim);text-align:center;">
-                Click a slot to add class \u2022 Click a class to manage students \u2022 Right-click to remove
+                Click a slot to add class • Click a class to manage students • Right-click to remove
             </div>
             <div id="instructor-groups-container" style="margin-top:16px;"></div>
         `;
@@ -173,7 +209,7 @@
 
         var html = '<div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;">';
         html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">';
-        html += '<h4 style="color:var(--accent);font-size:0.9rem;">\u25A3 Groups - ' + instructorName + '</h4>';
+        html += '<h4 style="color:var(--accent);font-size:0.9rem;">■ Groups - ' + instructorName + '</h4>';
         html += '<span style="font-size:0.7rem;color:var(--text-dim);">Groups are managed in the Groups tab</span>';
         html += '</div>';
 
@@ -190,7 +226,7 @@
                 html += '<div class="group-card" style="background:var(--bg);border:1px solid var(--border-soft);border-radius:var(--radius);padding:8px 12px;flex:1;min-width:150px;max-width:300px;">';
                 html += '<div class="group-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="window.toggleGroup(\'' + key + '\')">';
                 html += '<span class="group-name" style="font-weight:600;color:var(--accent);">' + group.disciplineName + ' - G' + group.groupLabel + '</span>';
-                html += '<span class="group-meta" style="font-size:0.7rem;color:var(--text-dim);">' + studentCount + ' students ' + (isExpanded ? '\u25BC' : '\u25B6') + '</span>';
+                html += '<span class="group-meta" style="font-size:0.7rem;color:var(--text-dim);">' + studentCount + ' students ' + (isExpanded ? '▾' : '▸') + '</span>';
                 html += '</div>';
 
                 if (isExpanded) {
@@ -515,7 +551,7 @@
 
                     var labelEl = document.createElement('span');
                     labelEl.className = 'slot-label';
-                    labelEl.textContent = '\u25A3 ' + blockLabel + blockGroup;
+                    labelEl.textContent = '■ ' + blockLabel + blockGroup;
                     slot.appendChild(labelEl);
 
                     if (activeFilter !== 'all' && isBlocked.groupLabel !== filterGroupLabel) {
@@ -664,7 +700,7 @@
                                     (isAssigned ? 'checked' : '') +
                                     (hasConflict && !isAssigned ? ' disabled' : '') + '> ' +
                                     name +
-                                    (isAssigned ? ' <span style="color:var(--accent);font-size:0.7rem;">\u2713 assigned</span>' : '') +
+                                    (isAssigned ? ' <span style="color:var(--accent);font-size:0.7rem;">✓ assigned</span>' : '') +
                                     conflictText +
                                 '</label>';
                             }).join('')}
@@ -673,7 +709,7 @@
                     </div>
 
                     <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
-                        <button type="button" id="remove-class-all" class="danger">\u2715 Remove Class</button>
+                        <button type="button" id="remove-class-all" class="danger">✕ Remove Class</button>
                         <button type="button" id="close-detail" class="secondary">Close</button>
                     </div>
                 </div>
@@ -726,7 +762,7 @@
                 });
 
                 if (conflicts.length > 0) {
-                    if (!confirm('\u26A0 The following students have conflicts at this time:\n\n' +
+                    if (!confirm('⚠ The following students have conflicts at this time:\n\n' +
                         conflicts.join('\n') +
                         '\n\nAdd anyway? This will overwrite their existing classes.')) {
                         return;
@@ -832,7 +868,7 @@
             });
 
             if (groupWarnings.length > 0) {
-                if (!confirm('\u26A0 The following students are currently assigned to a different group:\n\n' +
+                if (!confirm('⚠ The following students are currently assigned to a different group:\n\n' +
                     groupWarnings.join('\n') +
                     '\n\nAssigning them here will move them to Group ' + (groupLabel || 'None') +
                     '. This will remove them from their previous group.\n\nContinue?')) {
@@ -1151,7 +1187,7 @@
         modal.innerHTML = `
             <div class="modal-content" style="max-width:500px;">
                 <div class="modal-header">
-                    <h3>\u25A3 Block Time - ${instructorName}</h3>
+                    <h3>■ Block Time - ${instructorName}</h3>
                     <button class="close-modal">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -1345,9 +1381,9 @@
                     }
                     var msg = 'Time blocked successfully!';
                     if (autoAssignedCount > 0) {
-                        msg += '\n\n\u2713 ' + autoAssignedCount + ' student(s) from Group ' + groupLabel + ' were automatically assigned to this block.';
+                        msg += '\n\n✓ ' + autoAssignedCount + ' student(s) from Group ' + groupLabel + ' were automatically assigned to this block.';
                     } else if (groupLabel) {
-                        msg += '\n\n\u26A0 No students found in Group ' + groupLabel + ' for this discipline.';
+                        msg += '\n\n⚠ No students found in Group ' + groupLabel + ' for this discipline.';
                     }
                     alert(msg);
                 }).catch(function(err) {
@@ -1384,7 +1420,7 @@
         modal.innerHTML = `
             <div class="modal-content" style="max-width:400px;">
                 <div class="modal-header">
-                    <h3>\u25A3 ${blockData.label || 'Blocked Time'} ${groupDisplay}</h3>
+                    <h3>■ ${blockData.label || 'Blocked Time'} ${groupDisplay}</h3>
                     <button class="close-modal">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -1393,7 +1429,7 @@
                     <div class="detail-row"><span class="label">Label:</span> <span>${blockData.label || 'Blocked Time'}</span></div>
                     <div class="detail-row"><span class="label">Group:</span> <span>${blockData.groupLabel || 'None'}</span></div>
                     <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">
-                        <button type="button" id="remove-block" class="danger small">\u2715 Remove Block</button>
+                        <button type="button" id="remove-block" class="danger small">✕ Remove Block</button>
                         <button type="button" id="close-block" class="secondary small">Close</button>
                     </div>
                 </div>
@@ -1517,7 +1553,42 @@
         }
     }
 
-    window.toggleGroup = toggleGroup;
+    // ============================================================
+    // REGISTER WITH CURRICULUM MAIN
+    // ============================================================
+
+    if (typeof window.curriculumState !== 'undefined') {
+        window.curriculumState.instructorCalendar = state;
+    }
+
+    document.addEventListener('dataReady', function() {
+        var container = document.getElementById('instructor-calendar-content');
+        if (container && container.style.display !== 'none') {
+            renderInstructorCalendar(container);
+        }
+    });
+
+    document.addEventListener('tabChanged', function(e) {
+        if (e.detail && e.detail.tab === 'instructor-calendar') {
+            var container = document.getElementById('instructor-calendar-content');
+            if (container) {
+                renderInstructorCalendar(container);
+            }
+        }
+    });
+
+    if (window.data) {
+        setTimeout(function() {
+            var container = document.getElementById('instructor-calendar-content');
+            if (container && container.style.display !== 'none') {
+                renderInstructorCalendar(container);
+            }
+        }, 100);
+    }
+
+    // ============================================================
+    // EXPOSE FUNCTIONS
+    // ============================================================
 
     window.renderInstructorCalendar = renderInstructorCalendar;
     window.renderInstructorCalendarData = renderInstructorCalendarData;
@@ -1532,6 +1603,9 @@
     window.showBlockManagementModal = showBlockManagementModal;
     window.removeBlockedTime = removeBlockedTime;
     window.removeInstructorClass = removeInstructorClass;
+    window.toggleGroup = toggleGroup;
     window.instructorCalendarState = state;
+
+    console.log('instructor-calendar.js loaded');
 
 })();
