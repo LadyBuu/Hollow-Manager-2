@@ -23,6 +23,37 @@
         }
         if (!container) return;
 
+        // Check if data exists
+        if (!window.data) {
+            console.warn('No data available for social, waiting for dataReady event');
+            container.innerHTML = '<p class="empty-state">Loading social data...</p>';
+            return;
+        }
+
+        // Ensure social structure exists
+        if (!window.data.social) {
+            window.data.social = {
+                relationships: [],
+                relationshipTypes: [
+                    { id: 'familiar', label: 'Familiar', color: '#8cbb3a' },
+                    { id: 'professional', label: 'Professional', color: '#c9a24b' },
+                    { id: 'romantic', label: 'Romantic', color: '#c1453c' },
+                    { id: 'friendship', label: 'Friendship', color: '#4a9bc7' },
+                    { id: 'mentor', label: 'Mentor/Mentee', color: '#9b59b6' },
+                    { id: 'rivalry', label: 'Rivalry', color: '#e67e22' },
+                    { id: 'alliance', label: 'Alliance', color: '#27ae60' },
+                    { id: 'other', label: 'Other', color: '#7f8c8d' }
+                ],
+                nextId: 1
+            };
+        }
+        if (!window.data.social.relationships) {
+            window.data.social.relationships = [];
+        }
+        if (!window.data.social.nextId) {
+            window.data.social.nextId = 1;
+        }
+
         container.innerHTML = getSocialHTML();
 
         populateSocialSelectors();
@@ -36,8 +67,8 @@
                 <h2>Social Network</h2>
                 <div style="display:flex;gap:8px;flex-wrap:wrap;">
                     <button id="add-relationship-btn" class="primary">+ Add Relationship</button>
-                    <button id="view-graph-btn" class="secondary">\u25CA View Network</button>
-                    <button id="view-list-btn" class="secondary">\u2630 View List</button>
+                    <button id="view-graph-btn" class="secondary">◊ View Network</button>
+                    <button id="view-list-btn" class="secondary">☰ View List</button>
                 </div>
             </div>
             <div id="social-content">
@@ -51,7 +82,7 @@
                         <select id="social-type-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
                             <option value="all">All Types</option>
                         </select>
-                        <button id="clear-social-filters" class="small secondary">Clear</button>
+                        <button id="clear-social-filters" class="small secondary">✕ Clear</button>
                         <span style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Relationships: <span id="relationship-count">0</span></span>
                     </div>
                     <div id="relationships-container">
@@ -63,7 +94,7 @@
                         <span style="font-size:0.75rem;color:var(--text-dim);">Zoom: <span id="zoom-display">100%</span></span>
                         <button id="zoom-in-btn" class="small secondary">+</button>
                         <button id="zoom-out-btn" class="small secondary">-</button>
-                        <button id="reset-zoom-btn" class="small secondary">\u27F2</button>
+                        <button id="reset-zoom-btn" class="small secondary">⟲</button>
                         <span style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Click a node to view character details</span>
                     </div>
                     <div id="graph-container" style="width:100%;height:600px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;position:relative;cursor:grab;">
@@ -286,6 +317,7 @@
         if (!data.social.relationships) data.social.relationships = [];
         if (!data.social.nextId) data.social.nextId = 1;
 
+        // Check for existing relationship
         var existing = data.social.relationships.find(function(r) {
             return (String(r.character1) === String(charId1) && String(r.character2) === String(charId2)) ||
                    (String(r.character1) === String(charId2) && String(r.character2) === String(charId1));
@@ -310,10 +342,12 @@
         data.social.relationships.push(relationship);
 
         if (typeof window.logActivity === 'function') {
-            var char1 = window.getCharacterName(charId1);
-            var char2 = window.getCharacterName(charId2);
+            var char1 = window.getCharacterById(charId1);
+            var char2 = window.getCharacterById(charId2);
+            var name1 = char1 ? window.getDisplayName(char1) : 'Unknown';
+            var name2 = char2 ? window.getDisplayName(char2) : 'Unknown';
             var typeLabel = getRelationshipTypeLabel(typeId);
-            window.logActivity('Created ' + typeLabel + ' relationship between ' + char1 + ' and ' + char2);
+            window.logActivity('Created ' + typeLabel + ' relationship between ' + name1 + ' and ' + name2);
         }
 
         if (typeof window.saveData === 'function') {
@@ -331,9 +365,11 @@
         Object.assign(rel, updates);
 
         if (typeof window.logActivity === 'function') {
-            var char1 = window.getCharacterName(rel.character1);
-            var char2 = window.getCharacterName(rel.character2);
-            window.logActivity('Updated relationship between ' + char1 + ' and ' + char2);
+            var char1 = window.getCharacterById(rel.character1);
+            var char2 = window.getCharacterById(rel.character2);
+            var name1 = char1 ? window.getDisplayName(char1) : 'Unknown';
+            var name2 = char2 ? window.getDisplayName(char2) : 'Unknown';
+            window.logActivity('Updated relationship between ' + name1 + ' and ' + name2);
         }
 
         if (typeof window.saveData === 'function') {
@@ -351,9 +387,11 @@
         data.social.relationships = data.social.relationships.filter(function(r) { return String(r.id) !== String(id); });
 
         if (typeof window.logActivity === 'function') {
-            var char1 = window.getCharacterName(rel.character1);
-            var char2 = window.getCharacterName(rel.character2);
-            window.logActivity('Deleted relationship between ' + char1 + ' and ' + char2);
+            var char1 = window.getCharacterById(rel.character1);
+            var char2 = window.getCharacterById(rel.character2);
+            var name1 = char1 ? window.getDisplayName(char1) : 'Unknown';
+            var name2 = char2 ? window.getDisplayName(char2) : 'Unknown';
+            window.logActivity('Deleted relationship between ' + name1 + ' and ' + name2);
         }
 
         if (typeof window.saveData === 'function') {
@@ -429,7 +467,7 @@
             html += '<span><strong>' + name1 + '</strong></span>';
             html += '<span><strong>' + name2 + '</strong></span>';
             html += '<span style="color:' + typeColor + ';font-size:0.75rem;font-weight:600;">' + typeLabel + clarificationDisplay + '</span>';
-            html += '<span style="font-size:0.75rem;color:var(--text-dim);">' + period + (rel.notes ? ' \uD83D\uDCDD' : '') + '</span>';
+            html += '<span style="font-size:0.75rem;color:var(--text-dim);">' + period + (rel.notes ? ' 📝' : '') + '</span>';
             html += '<span class="actions">' +
                 '<button class="small edit-relationship" data-id="' + rel.id + '">Edit</button>' +
                 '<button class="small danger delete-relationship" data-id="' + rel.id + '">Delete</button>' +
@@ -452,7 +490,7 @@
         });
     }
 
-    function showRelationshipForm(editId) {
+    function showRelationshipForm(editId, characterId) {
         var modal = document.getElementById('relationship-form-modal');
         var title = document.getElementById('relationship-form-title');
         var form = document.getElementById('relationship-form-inner');
@@ -481,6 +519,14 @@
             form.reset();
             document.getElementById('rel-type').value = 'other';
             delete form.dataset.editId;
+            
+            // If characterId is provided, preselect it
+            if (characterId) {
+                var char1Select = document.getElementById('rel-char1');
+                if (char1Select) {
+                    char1Select.value = characterId;
+                }
+            }
         }
     }
 
@@ -526,6 +572,9 @@
                 if (document.getElementById('social-graph-view').style.display !== 'none') {
                     renderGraph();
                 }
+                if (typeof window.updateDashboardStats === 'function') {
+                    window.updateDashboardStats();
+                }
             }
         } else {
             var result = createRelationship(char1, char2, typeId, startYear, endYear, clarification, notes);
@@ -534,6 +583,9 @@
                 renderRelationships();
                 if (document.getElementById('social-graph-view').style.display !== 'none') {
                     renderGraph();
+                }
+                if (typeof window.updateDashboardStats === 'function') {
+                    window.updateDashboardStats();
                 }
             } else {
                 alert(result.message);
@@ -551,6 +603,9 @@
             renderRelationships();
             if (document.getElementById('social-graph-view').style.display !== 'none') {
                 renderGraph();
+            }
+            if (typeof window.updateDashboardStats === 'function') {
+                window.updateDashboardStats();
             }
         }
     }
@@ -793,7 +848,7 @@
                     period = 'From ' + rel.startYear;
                 }
                 var clarification = rel.clarification ? ' (' + rel.clarification + ')' : '';
-                var notes = rel.notes ? ' \uD83D\uDCDD' : '';
+                var notes = rel.notes ? ' 📝' : '';
 
                 html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + typeColor + ';">';
                 html += '<span style="font-size:0.8rem;"><strong>' + charName + '</strong> <span style="color:' + typeColor + ';font-size:0.7rem;">' + typeLabel + clarification + '</span></span>';
@@ -950,15 +1005,27 @@
         });
     }
 
-    // Register with TabManager
+    // ============================================================
+    // REGISTER WITH TABMANAGER
+    // ============================================================
+
     if (typeof window.TabManager !== 'undefined') {
         window.TabManager.register('social', renderSocialView);
     }
 
-    document.addEventListener('dataLoaded', function() {
+    document.addEventListener('dataReady', function() {
         var container = document.getElementById('tab-social');
         if (container && container.style.display !== 'none') {
             renderSocialView(container);
+        }
+    });
+
+    document.addEventListener('tabChanged', function(e) {
+        if (e.detail && e.detail.tab === 'social') {
+            var container = document.getElementById('tab-social');
+            if (container) {
+                renderSocialView(container);
+            }
         }
     });
 
@@ -970,6 +1037,10 @@
             }
         }, 100);
     }
+
+    // ============================================================
+    // EXPOSE FUNCTIONS
+    // ============================================================
 
     window.renderSocialView = renderSocialView;
     window.populateSocialSelectors = populateSocialSelectors;
@@ -994,5 +1065,7 @@
     window.deleteRelationshipHandler = deleteRelationshipHandler;
     window.initSocialEvents = initSocialEvents;
     window.socialState = state;
+
+    console.log('social.js loaded');
 
 })();
