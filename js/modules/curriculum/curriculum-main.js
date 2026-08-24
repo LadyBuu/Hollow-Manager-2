@@ -27,10 +27,44 @@
             return;
         }
 
+        // Check if data exists
+        if (!window.data) {
+            console.warn('No data available for curriculum, waiting for dataReady event');
+            container.innerHTML = '<p class="empty-state">Loading curriculum data...</p>';
+            return;
+        }
+
+        // Ensure curriculum structure exists
+        if (!window.data.curriculum) {
+            window.data.curriculum = {
+                disciplines: [],
+                schedules: {},
+                restDays: {},
+                examDays: {},
+                grades: {},
+                rankings: {},
+                currentWeek: 1,
+                classInstructors: {},
+                classLabels: {},
+                classGroupLabels: {},
+                classDurations: {},
+                instructorClasses: {},
+                instructorTemplates: {},
+                instructorBlocks: {},
+                instructorGroups: {},
+                disciplineGroups: {},
+                autoGroups: {}
+            };
+        }
+
         container.innerHTML = getCurriculumHTML();
-        renderAllSections();
-        initCurriculumTabs();
-        initCurriculumEvents();
+        
+        // Use setTimeout to ensure DOM is rendered before initializing tabs
+        setTimeout(function() {
+            initCurriculumTabs();
+            renderAllSections();
+            initCurriculumEvents();
+        }, 50);
     }
 
     function getCurriculumHTML() {
@@ -73,6 +107,8 @@
     }
 
     function renderAllSections() {
+        console.log('renderAllSections called');
+        
         // Disciplines
         var disciplinesContent = document.getElementById('disciplines-content');
         if (disciplinesContent) {
@@ -147,6 +183,8 @@
     }
 
     function initCurriculumTabs() {
+        console.log('initCurriculumTabs called');
+        
         var tabs = document.querySelectorAll('.tab-btn');
         var panels = {
             disciplines: document.getElementById('tab-disciplines'),
@@ -179,81 +217,97 @@
             panels.disciplines.classList.add('active');
         }
 
-        // Add click handlers with cloneNode to prevent duplicate listeners
+        // Add click handlers - use event delegation to avoid clone issues
         tabs.forEach(function(tab) {
+            // Remove existing listeners by cloning
             var newTab = tab.cloneNode(true);
             tab.parentNode.replaceChild(newTab, tab);
+            
             newTab.addEventListener('click', function(e) {
                 e.preventDefault();
-
-                tabs.forEach(function(t) { t.classList.remove('active'); });
-                this.classList.add('active');
-
+                e.stopPropagation();
+                
                 var tabName = this.dataset.tab;
-
+                console.log('Curriculum tab clicked:', tabName);
+                
+                // Update tab buttons
+                document.querySelectorAll('.tab-btn').forEach(function(t) {
+                    t.classList.remove('active');
+                });
+                this.classList.add('active');
+                
+                // Update panels
                 for (var key in panels) {
                     if (panels[key]) {
                         panels[key].style.display = 'none';
                         panels[key].classList.remove('active');
                     }
                 }
-
+                
                 if (panels[tabName]) {
                     panels[tabName].style.display = 'block';
                     panels[tabName].classList.add('active');
                 }
-
+                
+                // Refresh tab content
                 refreshTabContent(tabName);
             });
         });
     }
 
     function refreshTabContent(tabName) {
-        if (tabName === 'disciplines') {
-            var content = document.getElementById('disciplines-content');
-            if (content && typeof window.renderDisciplinesView === 'function') {
-                window.renderDisciplinesView(content);
+        console.log('refreshTabContent called for:', tabName);
+        
+        // Use setTimeout to ensure panel is visible
+        setTimeout(function() {
+            if (tabName === 'disciplines') {
+                var content = document.getElementById('disciplines-content');
+                if (content && typeof window.renderDisciplinesView === 'function') {
+                    window.renderDisciplinesView(content);
+                }
+            } else if (tabName === 'groups') {
+                var content = document.getElementById('groups-content');
+                if (content && typeof window.renderAutoGroupsView === 'function') {
+                    window.renderAutoGroupsView(content);
+                }
+            } else if (tabName === 'class-view') {
+                var content = document.getElementById('class-view-content');
+                if (content && typeof window.renderClassView === 'function') {
+                    window.renderClassView(content);
+                }
+            } else if (tabName === 'instructor-calendar') {
+                var content = document.getElementById('instructor-calendar-content');
+                if (content && typeof window.renderInstructorCalendar === 'function') {
+                    window.renderInstructorCalendar(content);
+                } else {
+                    content.innerHTML = '<p class="empty-state">Instructor Calendar module loading...</p>';
+                }
+            } else if (tabName === 'schedule') {
+                var content = document.getElementById('schedule-content');
+                if (content && typeof window.renderStudentScheduleView === 'function') {
+                    window.renderStudentScheduleView(content);
+                } else if (content && typeof window.renderScheduleView === 'function') {
+                    window.renderScheduleView(content);
+                } else {
+                    content.innerHTML = '<p class="empty-state">Schedule module loading...</p>';
+                }
+            } else if (tabName === 'grades') {
+                var content = document.getElementById('grades-content');
+                if (content && typeof window.renderGradesView === 'function') {
+                    window.renderGradesView(content);
+                }
+            } else if (tabName === 'ranking') {
+                var content = document.getElementById('ranking-content');
+                if (content && typeof window.renderRankingView === 'function') {
+                    window.renderRankingView(content);
+                }
             }
-        } else if (tabName === 'groups') {
-            var content = document.getElementById('groups-content');
-            if (content && typeof window.renderAutoGroupsView === 'function') {
-                window.renderAutoGroupsView(content);
-            }
-        } else if (tabName === 'class-view') {
-            var content = document.getElementById('class-view-content');
-            if (content && typeof window.renderClassView === 'function') {
-                window.renderClassView(content);
-            }
-        } else if (tabName === 'instructor-calendar') {
-            var content = document.getElementById('instructor-calendar-content');
-            if (content && typeof window.renderInstructorCalendar === 'function') {
-                window.renderInstructorCalendar(content);
-            } else {
-                content.innerHTML = '<p class="empty-state">Instructor Calendar module loading...</p>';
-            }
-        } else if (tabName === 'schedule') {
-            var content = document.getElementById('schedule-content');
-            if (content && typeof window.renderStudentScheduleView === 'function') {
-                window.renderStudentScheduleView(content);
-            } else if (content && typeof window.renderScheduleView === 'function') {
-                window.renderScheduleView(content);
-            } else {
-                content.innerHTML = '<p class="empty-state">Schedule module loading...</p>';
-            }
-        } else if (tabName === 'grades') {
-            var content = document.getElementById('grades-content');
-            if (content && typeof window.renderGradesView === 'function') {
-                window.renderGradesView(content);
-            }
-        } else if (tabName === 'ranking') {
-            var content = document.getElementById('ranking-content');
-            if (content && typeof window.renderRankingView === 'function') {
-                window.renderRankingView(content);
-            }
-        }
+        }, 50);
     }
 
     function initCurriculumEvents() {
+        console.log('initCurriculumEvents called');
+        
         // Each sub-module has its own init function
         if (typeof window.initDisciplineEvents === 'function') {
             window.initDisciplineEvents();
@@ -340,17 +394,26 @@
         window.TabManager.register('curriculum', renderCurriculum);
     }
 
-    document.addEventListener('dataLoaded', function() {
+    document.addEventListener('dataReady', function() {
         var container = document.getElementById('tab-curriculum');
-        if (container) {
+        if (container && container.style.display !== 'none') {
             renderCurriculum(container);
+        }
+    });
+
+    document.addEventListener('tabChanged', function(e) {
+        if (e.detail && e.detail.tab === 'curriculum') {
+            var container = document.getElementById('tab-curriculum');
+            if (container) {
+                renderCurriculum(container);
+            }
         }
     });
 
     if (window.data) {
         setTimeout(function() {
             var container = document.getElementById('tab-curriculum');
-            if (container) {
+            if (container && container.style.display !== 'none') {
                 renderCurriculum(container);
             }
         }, 100);
