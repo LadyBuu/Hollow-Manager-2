@@ -8,6 +8,18 @@
     'use strict';
 
     function renderDashboard(container) {
+        if (!container) {
+            container = document.getElementById('tab-dashboard');
+        }
+        if (!container) return;
+
+        // Check if data exists
+        if (!window.data) {
+            console.warn('No data available for dashboard, waiting for dataReady event');
+            container.innerHTML = '<p class="empty-state">Loading dashboard data...</p>';
+            return;
+        }
+
         // Check if container has content already (from index.html)
         // If not, build it
         if (!container.querySelector('.stats-grid')) {
@@ -170,8 +182,16 @@
                 link.addEventListener('click', function(e) {
                     e.preventDefault();
                     var tab = this.dataset.tab;
-                    if (tab && typeof window.TabManager !== 'undefined') {
-                        window.TabManager.switchTo(tab);
+                    if (tab) {
+                        if (typeof window.TabManager !== 'undefined' && window.TabManager.switchTo) {
+                            window.TabManager.switchTo(tab);
+                        } else {
+                            // Fallback: try to find and click the nav link
+                            var navLink = document.querySelector('#main-nav a[data-tab="' + tab + '"]');
+                            if (navLink) {
+                                navLink.click();
+                            }
+                        }
                     }
                 });
             }
@@ -183,32 +203,67 @@
                 link.addEventListener('click', function(e) {
                     e.preventDefault();
                     var tab = this.dataset.tab;
-                    if (tab && typeof window.TabManager !== 'undefined') {
-                        window.TabManager.switchTo(tab);
+                    if (tab) {
+                        if (typeof window.TabManager !== 'undefined' && window.TabManager.switchTo) {
+                            window.TabManager.switchTo(tab);
+                        } else {
+                            // Fallback: try to find and click the nav link
+                            var navLink = document.querySelector('#main-nav a[data-tab="' + tab + '"]');
+                            if (navLink) {
+                                navLink.click();
+                            }
+                        }
                     }
                 });
             }
         });
     }
 
-    // Register with TabManager
+    // ============================================================
+    // REGISTER WITH TABMANAGER
+    // ============================================================
+
     if (typeof window.TabManager !== 'undefined') {
         window.TabManager.register('dashboard', renderDashboard);
     }
 
     // Handle data loading
-    document.addEventListener('dataLoaded', function() {
+    document.addEventListener('dataReady', function() {
         updateDashboardStats();
+        var container = document.getElementById('tab-dashboard');
+        if (container && container.style.display !== 'none') {
+            renderDashboard(container);
+        }
+    });
+
+    document.addEventListener('tabChanged', function(e) {
+        if (e.detail && e.detail.tab === 'dashboard') {
+            var container = document.getElementById('tab-dashboard');
+            if (container) {
+                renderDashboard(container);
+            }
+        }
     });
 
     // If data already loaded, update stats
     if (window.data) {
-        setTimeout(updateDashboardStats, 100);
+        setTimeout(function() {
+            updateDashboardStats();
+            var container = document.getElementById('tab-dashboard');
+            if (container && container.style.display !== 'none') {
+                renderDashboard(container);
+            }
+        }, 100);
     }
 
-    // Export for direct use
+    // ============================================================
+    // EXPOSE FUNCTIONS
+    // ============================================================
+
     window.renderDashboard = renderDashboard;
     window.updateDashboardStats = updateDashboardStats;
     window.showYearModal = showYearModal;
+
+    console.log('dashboard.js loaded');
 
 })();
