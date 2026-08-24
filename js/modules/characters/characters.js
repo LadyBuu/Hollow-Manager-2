@@ -32,6 +32,10 @@
         if (!window.data.characters) {
             window.data.characters = [];
         }
+        // Ensure classes array exists
+        if (!window.data.classes) {
+            window.data.classes = [];
+        }
 
         container.innerHTML = getCharactersHTML();
         renderCharacterList();
@@ -71,6 +75,9 @@
                             <option value="civilian">Civilian</option>
                             <option value="deceased">Deceased</option>
                             <option value="eliminated">Eliminated</option>
+                        </select>
+                        <select id="char-class-filter" style="padding:3px 6px;font-size:0.7rem;width:120px;">
+                            <option value="all">All Classes</option>
                         </select>
                         <button id="clear-char-filter" class="small secondary" style="padding:2px 6px;">✕</button>
                     </div>
@@ -144,6 +151,15 @@
                                         <div class="form-group"><label>Death Age</label><input type="number" id="char-death-age" min="0" max="150" placeholder="e.g., 45" /></div>
                                         <div class="form-group full-width"><label>Cause of Death</label><input type="text" id="char-death-cause" /></div>
                                     </div>
+                                </div>
+                                <!-- CLASSES -->
+                                <div class="form-group full-width section-divider">
+                                    <label>Classes</label>
+                                    <div id="class-tag-container" style="display:flex;flex-wrap:wrap;gap:4px;padding:4px;background:var(--panel-alt);border:1px solid var(--border);border-radius:6px;min-height:36px;">
+                                        <span style="color:var(--text-dim);font-size:0.7rem;padding:4px;">No classes assigned</span>
+                                    </div>
+                                    <input type="text" id="class-tag-input" placeholder="Type class name and press Enter..." style="width:100%;padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;margin-top:4px;font-size:0.7rem;">
+                                    <span style="font-size:0.6rem;color:var(--text-dim);">Press Enter to add a class. Click ✕ on a tag to remove it.</span>
                                 </div>
                             </div>
                         </div>
@@ -255,8 +271,7 @@
                             </div>
                         </div>
 
-                        // ... (rest of stats tab continues below)
-                        // TAB: Stats
+                        <!-- TAB: Stats -->
                         <div id="char-tab-stats" class="char-tab-panel" style="display:none;">
                             <div class="stat-input-group">
                                 <div class="form-group"><label>STR</label><input type="number" id="char-str" min="1" max="30" value="10" /></div>
@@ -313,7 +328,7 @@
                                 <button type="button" id="recalculate-magic-class-btn" class="small secondary">Recalc</button>
                             </div>
                             <div class="magic-power-display">
-                                Magic Power: <span id="magic-power-display-text">◯◯◯◯◯ (0/180)</span>
+                                Magic Power: <span id="magic-power-display-text">○○○○○ (0/180)</span>
                             </div>
                             <div class="moves-grid" style="margin-top:12px;">
                                 <div class="moves-column">
@@ -376,6 +391,22 @@
 
         var statusFilter = document.getElementById('char-status-filter') ? document.getElementById('char-status-filter').value : 'all';
         var nameFilter = document.getElementById('char-name-filter') ? document.getElementById('char-name-filter').value.toLowerCase() : '';
+        var classFilter = document.getElementById('char-class-filter') ? document.getElementById('char-class-filter').value : 'all';
+
+        // Populate class filter
+        var classFilterSelect = document.getElementById('char-class-filter');
+        if (classFilterSelect) {
+            var classes = window.getClasses();
+            var currentValue = classFilterSelect.value;
+            classFilterSelect.innerHTML = '<option value="all">All Classes</option>';
+            classes.forEach(function(cls) {
+                var option = document.createElement('option');
+                option.value = cls.id;
+                option.textContent = cls.name;
+                classFilterSelect.appendChild(option);
+            });
+            if (currentValue) classFilterSelect.value = currentValue;
+        }
 
         // Sort characters alphabetically by display name
         var filteredChars = data.characters
@@ -400,6 +431,11 @@
                         }
                     }
                 }
+                if (classFilter !== 'all') {
+                    if (!char.classIds || !char.classIds.some(function(cid) { return String(cid) === String(classFilter); })) {
+                        return false;
+                    }
+                }
                 return true;
             })
             .sort(function(a, b) {
@@ -422,7 +458,6 @@
             var isActive = (char.id === currentEditId);
             var activeClass = isActive ? ' active' : '';
             
-            // Get status indicator
             var statusIndicator = '';
             var statusColor = 'var(--text-dim)';
             var statusLower = status.toLowerCase();
@@ -443,8 +478,19 @@
                 statusColor = 'var(--text-dim)';
             }
 
+            // Get class names
+            var classNames = [];
+            if (char.classIds && char.classIds.length > 0) {
+                var classes = window.getClasses();
+                char.classIds.forEach(function(cid) {
+                    var cls = classes.find(function(c) { return String(c.id) === String(cid); });
+                    if (cls) classNames.push(cls.name);
+                });
+            }
+            var classDisplay = classNames.length > 0 ? ' [' + classNames.join(', ') + ']' : '';
+
             html += '<div class="char-list-item' + activeClass + '" data-id="' + char.id + '">';
-            html += '<span class="char-name">' + displayName + deadMarker + '</span>';
+            html += '<span class="char-name">' + displayName + deadMarker + classDisplay + '</span>';
             html += '<span class="char-status" style="font-size:0.6rem;color:' + statusColor + ';">' + statusIndicator + ' ' + status + '</span>';
             html += '</div>';
         });
@@ -476,6 +522,34 @@
         if (toggle) {
             toggle.classList.toggle('open', characterListOpen);
         }
+    }
+
+    // ============================================================
+    // CLASS TAG FUNCTIONS
+    // ============================================================
+
+    function addClassTag(classId, className) {
+        var container = document.getElementById('class-tag-container');
+        if (!container) return;
+        
+        var emptyMsg = container.querySelector('span[style*="text-dim"]');
+        if (emptyMsg) emptyMsg.remove();
+        
+        var tag = document.createElement('span');
+        tag.style.cssText = 'background:var(--accent-soft);padding:2px 8px;border-radius:10px;font-size:0.7rem;border:1px solid var(--accent);display:inline-flex;align-items:center;gap:4px;';
+        tag.dataset.classId = classId;
+        tag.innerHTML = className + ' <button class="remove-class-tag" data-id="' + classId + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;">✕</button>';
+        container.appendChild(tag);
+        
+        tag.querySelector('.remove-class-tag').addEventListener('click', function() {
+            var id = this.dataset.id;
+            var container = document.getElementById('class-tag-container');
+            var tag = container.querySelector('[data-class-id="' + id + '"]');
+            if (tag) tag.remove();
+            if (container.children.length === 0) {
+                container.innerHTML = '<span style="color:var(--text-dim);font-size:0.7rem;padding:4px;">No classes assigned</span>';
+            }
+        });
     }
 
     // ============================================================
@@ -576,6 +650,23 @@
         document.getElementById('char-death-cause').value = char.deathCause || '';
         document.getElementById('char-death-age').value = char.deathAge || '';
 
+        // Populate class tags
+        var classContainer = document.getElementById('class-tag-container');
+        if (classContainer) {
+            classContainer.innerHTML = '';
+            var classIds = char.classIds || [];
+            if (classIds.length === 0) {
+                classContainer.innerHTML = '<span style="color:var(--text-dim);font-size:0.7rem;padding:4px;">No classes assigned</span>';
+            } else {
+                classIds.forEach(function(cid) {
+                    var cls = window.getClass(cid);
+                    if (cls) {
+                        addClassTag(cls.id, cls.name);
+                    }
+                });
+            }
+        }
+
         var p = char.personality || {};
         document.getElementById('char-traits').value = p.traits || '';
         document.getElementById('char-ideals').value = p.ideals || '';
@@ -645,6 +736,12 @@
         document.getElementById('char-deceased').checked = false;
         document.getElementById('death-fields').style.display = 'none';
 
+        // Reset class tags
+        var classContainer = document.getElementById('class-tag-container');
+        if (classContainer) {
+            classContainer.innerHTML = '<span style="color:var(--text-dim);font-size:0.7rem;padding:4px;">No classes assigned</span>';
+        }
+
         document.getElementById('academic-view').innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Save character to view academic data</p>';
         document.getElementById('professional-view').innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Save character to view professional data</p>';
         document.getElementById('social-view').innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Save character to view social connections</p>';
@@ -683,8 +780,9 @@
                 var member = team.members.find(function(m) { return String(m.characterId) === String(char.id); });
                 var period = member ? (member.joinPeriod || '?') : '?';
                 if (member && member.leavePeriod) period += ' → ' + member.leavePeriod;
+                var classDisplay = team.classId ? ' [' + window.getClassDisplayName(team.classId) + ']' : '';
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + team.name + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(Wk ' + period + ')</span>';
+                html += '<strong>' + team.name + '</strong>' + classDisplay + ' <span style="color:var(--text-dim);font-size:0.7rem;">(Wk ' + period + ')</span>';
                 if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + member.role + ']</span>';
                 html += '</div>';
             });
@@ -736,7 +834,6 @@
             return t.members && t.members.some(function(m) { return String(m.characterId) === String(char.id); });
         }) : [];
 
-        // Sort by join period chronologically
         profTeams.sort(function(a, b) {
             var aMember = a.members.find(function(m) { return String(m.characterId) === String(char.id); });
             var bMember = b.members.find(function(m) { return String(m.characterId) === String(char.id); });
@@ -1097,6 +1194,12 @@
         var deathCause = document.getElementById('char-death-cause').value.trim();
         var deathAge = document.getElementById('char-death-age').value.trim();
 
+        // Get class IDs from tags
+        var classIds = [];
+        document.querySelectorAll('#class-tag-container [data-class-id]').forEach(function(tag) {
+            classIds.push(tag.dataset.classId);
+        });
+
         var careerStatus = [];
         document.querySelectorAll('.career-status-entry').forEach(function(entry) {
             var select = entry.querySelector('.career-status-select');
@@ -1170,6 +1273,7 @@
             deathAge: deathAge,
             careerStatus: careerStatus,
             specialty: document.getElementById('char-specialty').value.trim(),
+            classIds: classIds,
             personality: {
                 traits: document.getElementById('char-traits').value.trim(),
                 ideals: document.getElementById('char-ideals').value.trim(),
@@ -1256,6 +1360,7 @@
                 deathAge: charData.deathAge,
                 careerStatus: charData.careerStatus,
                 specialty: charData.specialty,
+                classIds: charData.classIds,
                 personality: charData.personality,
                 stats: charData.stats,
                 magic: charData.magic,
@@ -1373,11 +1478,16 @@
         if (statusFilter) {
             statusFilter.addEventListener('change', renderCharacterList);
         }
+        var classFilter = document.getElementById('char-class-filter');
+        if (classFilter) {
+            classFilter.addEventListener('change', renderCharacterList);
+        }
         var clearFilter = document.getElementById('clear-char-filter');
         if (clearFilter) {
             clearFilter.addEventListener('click', function() {
                 document.getElementById('char-name-filter').value = '';
                 document.getElementById('char-status-filter').value = 'all';
+                document.getElementById('char-class-filter').value = 'all';
                 renderCharacterList();
             });
         }
@@ -1407,6 +1517,41 @@
                 var deathFields = document.getElementById('death-fields');
                 if (deathFields) {
                     deathFields.style.display = this.checked ? 'block' : 'none';
+                }
+            });
+        }
+
+        // Class tag input
+        var classInput = document.getElementById('class-tag-input');
+        if (classInput) {
+            classInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    var name = this.value.trim();
+                    if (!name) return;
+                    
+                    // Check if class exists
+                    var cls = window.getClassByName(name);
+                    if (!cls) {
+                        var result = window.createClass(name);
+                        if (result.success) {
+                            cls = result.class;
+                        } else {
+                            alert(result.message);
+                            return;
+                        }
+                    }
+                    
+                    // Check if already added
+                    var container = document.getElementById('class-tag-container');
+                    var existing = container.querySelector('[data-class-id="' + cls.id + '"]');
+                    if (existing) {
+                        alert('This class is already assigned.');
+                        return;
+                    }
+                    
+                    addClassTag(cls.id, cls.name);
+                    this.value = '';
                 }
             });
         }
