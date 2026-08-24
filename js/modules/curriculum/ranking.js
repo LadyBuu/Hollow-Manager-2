@@ -17,6 +17,39 @@
         }
         if (!container) return;
 
+        // Check if data exists
+        if (!window.data) {
+            console.warn('No data available for ranking, waiting for dataReady event');
+            container.innerHTML = '<p class="empty-state">Loading ranking data...</p>';
+            return;
+        }
+
+        // Ensure curriculum structure exists
+        if (!window.data.curriculum) {
+            window.data.curriculum = {
+                disciplines: [],
+                schedules: {},
+                restDays: {},
+                examDays: {},
+                grades: {},
+                rankings: {},
+                currentWeek: 1,
+                classInstructors: {},
+                classLabels: {},
+                classGroupLabels: {},
+                classDurations: {},
+                instructorClasses: {},
+                instructorTemplates: {},
+                instructorBlocks: {},
+                instructorGroups: {},
+                disciplineGroups: {},
+                autoGroups: {}
+            };
+        }
+        if (!window.data.curriculum.rankings) {
+            window.data.curriculum.rankings = {};
+        }
+
         container.innerHTML = getRankingHTML();
 
         initRankingEvents();
@@ -30,9 +63,9 @@
             </div>
             <div class="ranking-controls">
                 <div class="week-nav">
-                    <button id="prev-rank-week" class="small">\u2190 Prev</button>
+                    <button id="prev-rank-week" class="small">← Prev</button>
                     <span id="rank-week-display" style="font-weight:600;min-width:80px;text-align:center;">Week 1</span>
-                    <button id="next-rank-week" class="small">Next \u2192</button>
+                    <button id="next-rank-week" class="small">Next →</button>
                 </div>
                 <button id="auto-rank-btn" class="small primary">Auto-Rank</button>
                 <button id="save-rankings-btn" class="small primary">Save Rankings</button>
@@ -56,9 +89,12 @@
             return;
         }
 
+        var data = window.data || {};
+        if (!data.curriculum) data.curriculum = {};
+        if (!data.curriculum.rankings) data.curriculum.rankings = {};
+
         var rankings = [];
         students.forEach(function(student) {
-            var data = window.data || {};
             var grades = data.curriculum && data.curriculum.grades && data.curriculum.grades[student.id] && data.curriculum.grades[student.id][state.currentWeek] ?
                 data.curriculum.grades[student.id][state.currentWeek] : {};
 
@@ -98,12 +134,10 @@
             return a.firstName.localeCompare(b.firstName);
         });
 
-        var data = window.data || {};
-        if (!data.curriculum) data.curriculum = {};
-        if (!data.curriculum.rankings) data.curriculum.rankings = {};
         var existingRankings = data.curriculum.rankings[state.currentWeek] || [];
 
-        if (existingRankings.length === 0) {
+        // Auto-create rankings if none exist for this week
+        if (existingRankings.length === 0 && rankings.length > 0) {
             rankings.forEach(function(r, index) {
                 existingRankings.push({
                     studentId: r.studentId,
@@ -129,8 +163,8 @@
         html += '<th>Rank</th>';
         html += '<th>Student</th>';
         html += '<th>Average</th>';
-        html += '<th>\u25A3 Mandatory</th>';
-        html += '<th>\u25A2 Optional</th>';
+        html += '<th>■ Mandatory</th>';
+        html += '<th>□ Optional</th>';
         html += '<th>Change</th>';
         html += '</tr></thead><tbody>';
 
@@ -145,10 +179,10 @@
             if (prevRank !== null && prevRank !== undefined) {
                 var diff = prevRank - rank;
                 if (diff > 0) {
-                    change = '\u2191' + diff;
+                    change = '↑' + diff;
                     changeClass = 'up';
                 } else if (diff < 0) {
-                    change = '\u2193' + Math.abs(diff);
+                    change = '↓' + Math.abs(diff);
                     changeClass = 'down';
                 } else {
                     change = '—';
@@ -194,6 +228,7 @@
                     var oldRank = existing.rank;
                     existing.rank = newRank;
 
+                    // Recalculate ranks to avoid gaps
                     existingRankings.forEach(function(e) {
                         if (String(e.studentId) === String(studentId)) return;
                         if (oldRank < newRank && e.rank > oldRank && e.rank <= newRank) {
@@ -203,6 +238,7 @@
                         }
                     });
 
+                    // Re-sort and reassign ranks to ensure no gaps
                     var usedRanks = existingRankings.map(function(e) { return e.rank; });
                     var current = 1;
                     var sorted = existingRankings.slice().sort(function(a, b) { return a.rank - b.rank; });
@@ -228,6 +264,11 @@
 
     function autoRank() {
         var students = window.getStudents();
+        if (students.length === 0) {
+            alert('No students to rank.');
+            return;
+        }
+
         var rankings = [];
 
         students.forEach(function(student) {
@@ -278,11 +319,19 @@
         data.curriculum.rankings[state.currentWeek] = newRankings;
 
         if (typeof window.saveData === 'function') {
-            window.saveData().catch(function(err) { /* ignore */ });
-        }
-        renderRanking();
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Auto-ranked students for week ' + state.currentWeek);
+            window.saveData().then(function() {
+                if (typeof window.logActivity === 'function') {
+                    window.logActivity('Auto-ranked students for week ' + state.currentWeek);
+                }
+                renderRanking();
+                alert('Auto-ranking completed!');
+            }).catch(function(err) {
+                console.error('Failed to save rankings:', err);
+                alert('Failed to save auto-ranking. Please try again.');
+            });
+        } else {
+            renderRanking();
+            alert('Auto-ranking completed!');
         }
     }
 
@@ -317,6 +366,9 @@
             saveBtn.addEventListener('click', function() {
                 if (typeof window.saveData === 'function') {
                     window.saveData().then(function() {
+                        if (typeof window.logActivity === 'function') {
+                            window.logActivity('Saved rankings for week ' + state.currentWeek);
+                        }
                         alert('Rankings saved successfully!');
                     }).catch(function(err) {
                         alert('Failed to save rankings: ' + err.message);
@@ -328,15 +380,49 @@
         }
     }
 
-    // Register with curriculum main if available
+    // ============================================================
+    // REGISTER WITH CURRICULUM MAIN
+    // ============================================================
+
     if (typeof window.curriculumState !== 'undefined') {
         window.curriculumState.ranking = state;
     }
+
+    document.addEventListener('dataReady', function() {
+        var container = document.getElementById('ranking-content');
+        if (container && container.style.display !== 'none') {
+            renderRankingView(container);
+        }
+    });
+
+    document.addEventListener('tabChanged', function(e) {
+        if (e.detail && e.detail.tab === 'ranking') {
+            var container = document.getElementById('ranking-content');
+            if (container) {
+                renderRankingView(container);
+            }
+        }
+    });
+
+    if (window.data) {
+        setTimeout(function() {
+            var container = document.getElementById('ranking-content');
+            if (container && container.style.display !== 'none') {
+                renderRankingView(container);
+            }
+        }, 100);
+    }
+
+    // ============================================================
+    // EXPOSE FUNCTIONS
+    // ============================================================
 
     window.renderRankingView = renderRankingView;
     window.renderRanking = renderRanking;
     window.autoRank = autoRank;
     window.initRankingEvents = initRankingEvents;
     window.rankingState = state;
+
+    console.log('ranking.js loaded');
 
 })();
