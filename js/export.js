@@ -58,7 +58,6 @@
 
         var lines = [];
 
-        // CHARACTERS
         lines.push('# CHARACTERS');
         lines.push('FirstName,MiddleName,LastName,BirthYear,Gender,AssociatedNames,EyeColor,HairColor,SkinColor,Height,Build,AppearanceNotes,Notes,Deceased,DeathYear,DeathCause,DeathAge,Specialty,CareerStatus,EliminatedWeeks');
 
@@ -94,7 +93,6 @@
             ].join(','));
         });
 
-        // TEAMS
         lines.push('\n# TEAMS');
         lines.push('TeamName,TeamType,StartPeriod,EndPeriod,CurrentRank,Status,NameHistory,TemporaryMission');
         (data.teams || []).forEach(function(t) {
@@ -116,7 +114,6 @@
             ].join(','));
         });
 
-        // TEAM MEMBERS
         lines.push('\n# TEAM MEMBERS');
         lines.push('TeamName,CharacterName,Role,JoinPeriod,LeavePeriod,Status');
         (data.teams || []).forEach(function(t) {
@@ -140,7 +137,6 @@
             }
         });
 
-        // TEAM RANKINGS
         lines.push('\n# TEAM RANKINGS');
         lines.push('TeamName,Period,Rank');
         (data.teams || []).forEach(function(t) {
@@ -155,7 +151,6 @@
             }
         });
 
-        // TOURNAMENTS
         lines.push('\n# TOURNAMENTS');
         lines.push('TournamentName,StartWeek,EndWeek,AcademicYear,Status,Winner');
         (data.tournaments || []).forEach(function(t) {
@@ -176,7 +171,6 @@
             ].join(','));
         });
 
-        // TOURNAMENT TEAMS
         lines.push('\n# TOURNAMENT TEAMS');
         lines.push('TournamentName,TeamName');
         (data.tournaments || []).forEach(function(t) {
@@ -191,7 +185,6 @@
             }
         });
 
-        // TOURNAMENT MATCHES
         lines.push('\n# TOURNAMENT MATCHES');
         lines.push('TournamentName,Team1,Team2,Winner');
         (data.tournaments || []).forEach(function(t) {
@@ -210,7 +203,6 @@
             }
         });
 
-        // TOURNAMENT ELIMINATIONS
         lines.push('\n# TOURNAMENT ELIMINATIONS');
         lines.push('TournamentName,CharacterName,TeamName,Week');
         (data.tournaments || []).forEach(function(t) {
@@ -229,7 +221,6 @@
             }
         });
 
-        // MISSIONS
         lines.push('\n# MISSIONS');
         lines.push('Title,Status,Priority,Difficulty,Team,Location,Duration,Pay,Progress,Objectives');
         (data.missions || []).forEach(function(m) {
@@ -254,7 +245,6 @@
             ].join(','));
         });
 
-        // DISCIPLINES
         lines.push('\n# DISCIPLINES');
         lines.push('DisciplineName,Type,Instructors,StartWeek,EndWeek,WeeklyHours,MaxStudents,Weight');
         if (data.curriculum && data.curriculum.disciplines) {
@@ -733,52 +723,32 @@
             try {
                 var imported = JSON.parse(e.target.result);
 
-                // Validate
                 if (!imported || typeof imported !== 'object') {
-                    alert('Invalid data format. The JSON file does not contain valid data.');
+                    alert('Invalid data format.');
                     return;
                 }
 
-                // Ensure all top-level properties exist
-                if (!imported.characters) {
-                    imported.characters = [];
-                }
-                if (!imported.teams) {
-                    imported.teams = [];
-                }
-                if (!imported.tournaments) {
-                    imported.tournaments = [];
-                }
-                if (!imported.missions) {
-                    imported.missions = [];
-                }
-                if (!imported.currentYear) {
-                    imported.currentYear = new Date().getFullYear();
-                }
-                if (!imported.currentWeek) {
-                    imported.currentWeek = 1;
-                }
+                if (!imported.characters) imported.characters = [];
+                if (!imported.teams) imported.teams = [];
+                if (!imported.tournaments) imported.tournaments = [];
+                if (!imported.missions) imported.missions = [];
+                if (!imported.currentYear) imported.currentYear = new Date().getFullYear();
+                if (!imported.currentWeek) imported.currentWeek = 1;
 
-                // Fix curriculum disciplines - convert instructorId to instructorIds
+                // Fix disciplines
                 if (imported.curriculum && imported.curriculum.disciplines) {
                     imported.curriculum.disciplines.forEach(function(d) {
                         if (d.instructorId && !d.instructorIds) {
                             d.instructorIds = [d.instructorId];
                             delete d.instructorId;
                         }
-                        if (!d.instructorIds) {
-                            d.instructorIds = [];
-                        }
-                        if (!d.type) {
-                            d.type = 'mandatory';
-                        }
-                        if (!d.gradingSystem) {
-                            d.gradingSystem = [];
-                        }
+                        if (!d.instructorIds) d.instructorIds = [];
+                        if (!d.type) d.type = 'mandatory';
+                        if (!d.gradingSystem) d.gradingSystem = [];
                     });
                 }
 
-                // Fix tournament eliminations - characterId -> participantId
+                // Fix tournament eliminations
                 if (imported.tournaments) {
                     imported.tournaments.forEach(function(t) {
                         if (t.eliminations) {
@@ -801,9 +771,7 @@
                 // Ensure all characters have required fields
                 if (imported.characters) {
                     imported.characters.forEach(function(c) {
-                        if (!c.stats) {
-                            c.stats = { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
-                        }
+                        if (!c.stats) c.stats = { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
                         if (!c.magic) {
                             c.magic = {};
                             ['earth','water','fire','air','metal','wood',
@@ -875,10 +843,9 @@
                 }
                 if (!imported.social.relationships) imported.social.relationships = [];
 
-                // Check if there's any actual data
                 if (imported.characters.length === 0 && imported.teams.length === 0 && 
                     imported.tournaments.length === 0 && imported.missions.length === 0) {
-                    alert('The JSON file contains no data. Nothing to import.');
+                    alert('The JSON file contains no data.');
                     return;
                 }
 
@@ -891,7 +858,6 @@
                         if (typeof window.logActivity === 'function') {
                             window.logActivity('Imported data from JSON');
                         }
-                        // Force reload
                         if (typeof window.renderAll === 'function') {
                             window.renderAll();
                         }
@@ -909,7 +875,7 @@
                     alert('Data imported but save failed.');
                 }
             } catch (err) {
-                alert('Failed to import JSON: ' + err.message + '\n\nPlease check that the file is valid JSON.');
+                alert('Failed to import JSON: ' + err.message);
             }
         };
         reader.readAsText(file);
@@ -919,9 +885,10 @@
     // INIT - Connect all buttons
     // ============================================================
     function initImportExport() {
+        console.log('Initializing import/export...');
+        
         // JSON Export
-        var exportJsonBtns = document.querySelectorAll('#export-json-btn');
-        exportJsonBtns.forEach(function(btn) {
+        document.querySelectorAll('#export-json-btn').forEach(function(btn) {
             var newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
             newBtn.addEventListener('click', function(e) {
@@ -931,8 +898,7 @@
         });
 
         // JSON Import
-        var importJsonBtns = document.querySelectorAll('#import-json-btn');
-        importJsonBtns.forEach(function(btn) {
+        document.querySelectorAll('#import-json-btn').forEach(function(btn) {
             var newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
             newBtn.addEventListener('click', function(e) {
@@ -941,8 +907,7 @@
                 if (input) input.click();
             });
         });
-        var jsonInputs = document.querySelectorAll('#json-file-input');
-        jsonInputs.forEach(function(input) {
+        document.querySelectorAll('#json-file-input').forEach(function(input) {
             var newInput = input.cloneNode(true);
             input.parentNode.replaceChild(newInput, input);
             newInput.addEventListener('change', function(e) {
@@ -954,8 +919,7 @@
         });
 
         // CSV Export
-        var exportCsvBtns = document.querySelectorAll('#export-csv-btn');
-        exportCsvBtns.forEach(function(btn) {
+        document.querySelectorAll('#export-csv-btn').forEach(function(btn) {
             var newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
             newBtn.addEventListener('click', function(e) {
@@ -965,8 +929,7 @@
         });
 
         // CSV Import
-        var importCsvBtns = document.querySelectorAll('#import-csv-btn');
-        importCsvBtns.forEach(function(btn) {
+        document.querySelectorAll('#import-csv-btn').forEach(function(btn) {
             var newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
             newBtn.addEventListener('click', function(e) {
@@ -975,8 +938,7 @@
                 if (input) input.click();
             });
         });
-        var csvInputs = document.querySelectorAll('#csv-file-input');
-        csvInputs.forEach(function(input) {
+        document.querySelectorAll('#csv-file-input').forEach(function(input) {
             var newInput = input.cloneNode(true);
             input.parentNode.replaceChild(newInput, input);
             newInput.addEventListener('change', function(e) {
@@ -988,8 +950,7 @@
         });
 
         // Template CSV
-        var templateBtns = document.querySelectorAll('#template-csv-btn');
-        templateBtns.forEach(function(btn) {
+        document.querySelectorAll('#template-csv-btn').forEach(function(btn) {
             var newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
             newBtn.addEventListener('click', function(e) {
@@ -997,46 +958,20 @@
                 exportTemplateCSV();
             });
         });
-
-        console.log('Import/Export initialized');
     }
 
-    // Auto-initialize when DOM is ready
+    // Auto-initialize
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        setTimeout(initImportExport, 100);
+        setTimeout(initImportExport, 200);
     } else {
         document.addEventListener('DOMContentLoaded', function() {
-            setTimeout(initImportExport, 100);
+            setTimeout(initImportExport, 200);
         });
     }
 
     document.addEventListener('dataLoaded', function() {
-        setTimeout(initImportExport, 200);
+        setTimeout(initImportExport, 300);
     });
-
-    // Also check periodically for buttons (for dynamic content)
-    var checkInterval = setInterval(function() {
-        var btns = document.querySelectorAll('#export-json-btn, #import-json-btn, #export-csv-btn, #import-csv-btn, #template-csv-btn');
-        var hasListeners = false;
-        btns.forEach(function(btn) {
-            // Check if button has our listener (by checking if it has a click handler)
-            var listeners = getEventListeners ? getEventListeners(btn) : null;
-            // Simple approach: if it doesn't have a class we add, re-init
-        });
-        // Only re-init if needed - we'll just use a flag
-        if (btns.length > 0 && !window._exportInitialized) {
-            window._exportInitialized = true;
-            initImportExport();
-        }
-        if (btns.length === 0) {
-            // No buttons yet, keep checking
-        }
-    }, 500);
-
-    // Stop checking after 10 seconds
-    setTimeout(function() {
-        clearInterval(checkInterval);
-    }, 10000);
 
     window.initImportExport = initImportExport;
     window.exportCSV = exportCSV;
