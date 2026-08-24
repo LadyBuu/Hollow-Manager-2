@@ -1,68 +1,30 @@
 /**
- * js/core/tab-manager.js - Tab Navigation System
- * Handles tab switching and module registration
- * Path: js/core/tab-manager.js
+ * js/app.js - Application Bootstrapper
+ * Fixed: Burger menu, import/export buttons, performance
+ * Path: js/app.js
  */
 
-var TabManager = {
-    currentTab: 'dashboard',
-    tabs: {},
-    tabContentElements: {},
-    navLinks: [],
-    isInitialized: false,
+(function() {
+    'use strict';
 
-    init: function() {
-        if (this.isInitialized) return;
-        this.isInitialized = true;
+    var isInitialized = false;
 
-        var self = this;
+    function initApp() {
+        if (isInitialized) return;
+        isInitialized = true;
 
-        // Find all tab content elements
-        document.querySelectorAll('.tab-content').forEach(function(el) {
-            var id = el.id;
-            if (id && id.startsWith('tab-')) {
-                var tabName = id.replace('tab-', '');
-                self.tabContentElements[tabName] = el;
-            }
-        });
-
-        // Find all nav links
-        document.querySelectorAll('#main-nav a[data-tab]').forEach(function(link) {
-            self.navLinks.push(link);
-            link.addEventListener('click', function(e) {
-                e.preventDefault();
-                var tab = this.dataset.tab;
-                if (tab) {
-                    self.switchTo(tab);
-                }
-            });
-        });
-
-        // Handle quick links on dashboard
-        document.querySelectorAll('.quick-link[data-tab]').forEach(function(link) {
-            link.addEventListener('click', function(e) {
-                e.preventDefault();
-                var tab = this.dataset.tab;
-                if (tab) {
-                    self.switchTo(tab);
-                }
-            });
-        });
-
-        document.querySelectorAll('.stat-link[data-tab]').forEach(function(link) {
-            link.addEventListener('click', function(e) {
-                e.preventDefault();
-                var tab = this.dataset.tab;
-                if (tab) {
-                    self.switchTo(tab);
-                }
-            });
-        });
-
-        // Burger menu toggle
+        // ============================================================
+        // BURGER MENU - Fixed
+        // ============================================================
         var navToggle = document.getElementById('nav-toggle');
         if (navToggle) {
-            navToggle.addEventListener('click', function() {
+            // Remove any existing listeners
+            var newToggle = navToggle.cloneNode(true);
+            navToggle.parentNode.replaceChild(newToggle, navToggle);
+            navToggle = newToggle;
+
+            navToggle.addEventListener('click', function(e) {
+                e.stopPropagation();
                 var nav = document.getElementById('main-nav');
                 var actions = document.getElementById('header-actions');
                 if (nav) nav.classList.toggle('open');
@@ -71,7 +33,21 @@ var TabManager = {
             });
         }
 
-        // Handle window resize for responsive nav
+        // Close burger menu when clicking outside
+        document.addEventListener('click', function(e) {
+            var nav = document.getElementById('main-nav');
+            var actions = document.getElementById('header-actions');
+            var toggle = document.getElementById('nav-toggle');
+            if (nav && nav.classList.contains('open')) {
+                if (!nav.contains(e.target) && !actions.contains(e.target) && !toggle.contains(e.target)) {
+                    nav.classList.remove('open');
+                    actions.classList.remove('open');
+                    if (toggle) toggle.classList.remove('open');
+                }
+            }
+        });
+
+        // Close mobile nav on window resize
         window.addEventListener('resize', function() {
             if (window.innerWidth >= 768) {
                 var nav = document.getElementById('main-nav');
@@ -83,103 +59,189 @@ var TabManager = {
             }
         });
 
-        // Set initial tab from URL hash or default
-        var hash = window.location.hash.replace('#', '');
-        var initialTab = hash || 'dashboard';
-        if (this.tabs[initialTab]) {
-            this.switchTo(initialTab);
-        } else {
-            this.switchTo('dashboard');
+        // ============================================================
+        // IMPORT/EXPORT BUTTONS - Always visible, properly initialized
+        // ============================================================
+        function setupImportExport() {
+            // Export JSON
+            var exportJsonBtns = document.querySelectorAll('#export-json-btn');
+            exportJsonBtns.forEach(function(btn) {
+                var newBtn = btn.cloneNode(true);
+                btn.parentNode.replaceChild(newBtn, btn);
+                newBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    if (typeof window.exportJSON === 'function') {
+                        window.exportJSON();
+                    } else {
+                        alert('Export function not loaded yet. Please try again.');
+                    }
+                });
+            });
+
+            // Import JSON
+            var importJsonBtns = document.querySelectorAll('#import-json-btn');
+            importJsonBtns.forEach(function(btn) {
+                var newBtn = btn.cloneNode(true);
+                btn.parentNode.replaceChild(newBtn, btn);
+                newBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    var input = document.getElementById('json-file-input');
+                    if (input) input.click();
+                });
+            });
+
+            var jsonInputs = document.querySelectorAll('#json-file-input');
+            jsonInputs.forEach(function(input) {
+                var newInput = input.cloneNode(true);
+                input.parentNode.replaceChild(newInput, input);
+                newInput.addEventListener('change', function(e) {
+                    if (this.files.length > 0) {
+                        if (typeof window.importJSON === 'function') {
+                            window.importJSON(this.files[0]);
+                        }
+                        this.value = '';
+                    }
+                });
+            });
+
+            // Export CSV
+            var exportCsvBtns = document.querySelectorAll('#export-csv-btn');
+            exportCsvBtns.forEach(function(btn) {
+                var newBtn = btn.cloneNode(true);
+                btn.parentNode.replaceChild(newBtn, btn);
+                newBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    if (typeof window.exportCSV === 'function') {
+                        window.exportCSV();
+                    } else {
+                        alert('Export function not loaded yet. Please try again.');
+                    }
+                });
+            });
+
+            // Import CSV
+            var importCsvBtns = document.querySelectorAll('#import-csv-btn');
+            importCsvBtns.forEach(function(btn) {
+                var newBtn = btn.cloneNode(true);
+                btn.parentNode.replaceChild(newBtn, btn);
+                newBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    var input = document.getElementById('csv-file-input');
+                    if (input) input.click();
+                });
+            });
+
+            var csvInputs = document.querySelectorAll('#csv-file-input');
+            csvInputs.forEach(function(input) {
+                var newInput = input.cloneNode(true);
+                input.parentNode.replaceChild(newInput, input);
+                newInput.addEventListener('change', function(e) {
+                    if (this.files.length > 0) {
+                        if (typeof window.importCSV === 'function') {
+                            window.importCSV(this.files[0]);
+                        }
+                        this.value = '';
+                    }
+                });
+            });
+
+            // Template CSV
+            var templateBtns = document.querySelectorAll('#template-csv-btn');
+            templateBtns.forEach(function(btn) {
+                var newBtn = btn.cloneNode(true);
+                btn.parentNode.replaceChild(newBtn, btn);
+                newBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    if (typeof window.exportTemplateCSV === 'function') {
+                        window.exportTemplateCSV();
+                    }
+                });
+            });
         }
-    },
 
-    register: function(tabName, renderFn) {
-        this.tabs[tabName] = renderFn;
-    },
-
-    switchTo: function(tabName) {
-        if (!this.tabs[tabName]) {
-            return;
-        }
-
-        this.currentTab = tabName;
-
-        // Update nav links
-        this.navLinks.forEach(function(link) {
-            link.classList.toggle('active', link.dataset.tab === tabName);
+        // Run setup immediately and after data loads
+        setTimeout(setupImportExport, 100);
+        document.addEventListener('dataLoaded', function() {
+            setTimeout(setupImportExport, 200);
         });
 
-        // Update tab content visibility
-        for (var key in this.tabContentElements) {
-            var el = this.tabContentElements[key];
-            if (key === tabName) {
-                el.style.display = 'block';
-                el.classList.add('active');
-            } else {
-                el.style.display = 'none';
-                el.classList.remove('active');
+        // ============================================================
+        // QUICK LINKS
+        // ============================================================
+        document.addEventListener('click', function(e) {
+            var target = e.target;
+            if (target.classList && target.classList.contains('quick-link') && target.dataset.tab) {
+                e.preventDefault();
+                var tab = target.dataset.tab;
+                if (typeof window.TabManager !== 'undefined') {
+                    window.TabManager.switchTo(tab);
+                }
             }
+            if (target.classList && target.classList.contains('stat-link') && target.dataset.tab) {
+                e.preventDefault();
+                var tab = target.dataset.tab;
+                if (typeof window.TabManager !== 'undefined') {
+                    window.TabManager.switchTo(tab);
+                }
+            }
+        });
+
+        // ============================================================
+        // MODALS
+        // ============================================================
+        document.addEventListener('click', function(e) {
+            if (e.target.classList && e.target.classList.contains('close-modal')) {
+                var modal = e.target.closest('.modal');
+                if (modal) {
+                    modal.classList.add('hidden');
+                }
+            }
+        });
+
+        document.addEventListener('click', function(e) {
+            if (e.target.classList && e.target.classList.contains('modal')) {
+                e.target.classList.add('hidden');
+            }
+        });
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                var modals = document.querySelectorAll('.modal:not(.hidden)');
+                modals.forEach(function(modal) {
+                    modal.classList.add('hidden');
+                });
+            }
+        });
+
+        // ============================================================
+        // HASH ROUTING
+        // ============================================================
+        var hash = window.location.hash.replace('#', '');
+        if (hash && typeof window.TabManager !== 'undefined') {
+            setTimeout(function() {
+                if (window.TabManager.tabs[hash]) {
+                    window.TabManager.switchTo(hash);
+                }
+            }, 300);
         }
 
-        // Close mobile nav
-        var nav = document.getElementById('main-nav');
-        var actions = document.getElementById('header-actions');
-        var toggle = document.getElementById('nav-toggle');
-        if (nav) nav.classList.remove('open');
-        if (actions) actions.classList.remove('open');
-        if (toggle) toggle.classList.remove('open');
-
-        // Update URL hash
-        if (window.history && window.history.pushState) {
-            window.history.pushState(null, '', '#' + tabName);
-        }
-
-        // Render the tab content
-        var container = this.tabContentElements[tabName];
-        if (container) {
-            this.tabs[tabName](container);
-        }
-
-        // Dispatch event
-        var event = new CustomEvent('tabChanged', { detail: { tab: tabName } });
-        document.dispatchEvent(event);
-    },
-
-    getCurrentTab: function() {
-        return this.currentTab;
-    },
-
-    isTabActive: function(tabName) {
-        return this.currentTab === tabName;
-    },
-
-    getTabContainer: function(tabName) {
-        return this.tabContentElements[tabName] || null;
+        console.log('Hollow Blades Manager initialized');
     }
-};
 
-// Register dashboard by default (will be overridden by dashboard module)
-TabManager.register('dashboard', function(container) {
-    if (typeof window.renderDashboard === 'function') {
-        window.renderDashboard(container);
+    // Initialize when DOM is ready
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        setTimeout(initApp, 10);
     } else {
-        container.innerHTML = '<p class="empty-state">Dashboard loading...</p>';
+        document.addEventListener('DOMContentLoaded', initApp);
     }
-});
 
-// Make globally available
-window.TabManager = TabManager;
-
-// Auto-init after DOM ready
-document.addEventListener('DOMContentLoaded', function() {
-    TabManager.init();
-});
-
-// Also init if DOM already loaded
-if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    setTimeout(function() {
-        if (!TabManager.isInitialized) {
-            TabManager.init();
+    document.addEventListener('dataLoaded', function() {
+        if (!isInitialized) {
+            initApp();
         }
-    }, 50);
-}
+    });
+
+    window.APP_VERSION = '1.0.0';
+    window.APP_NAME = 'Hollow Blades Manager';
+
+})();
