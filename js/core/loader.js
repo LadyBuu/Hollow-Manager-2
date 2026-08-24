@@ -1,6 +1,5 @@
 /**
  * js/core/loader.js - Data Loading System
- * Handles data initialization and loading events
  * Path: js/core/loader.js
  */
 
@@ -16,42 +15,31 @@ var DataLoader = {
 
         var self = this;
 
-        document.addEventListener('DOMContentLoaded', function() {
-            self.loadData();
+        // Listen for data loaded event from database.js
+        document.addEventListener('dataLoaded', function(e) {
+            self.data = e.detail.data || window.data;
+            self.isReady = true;
+            self.dispatchReady();
         });
 
-        // Also handle cases where DOM already loaded
-        if (document.readyState === 'complete' || document.readyState === 'interactive') {
-            self.loadData();
-        }
-    },
-
-    loadData: function() {
-        var self = this;
-
-        if (typeof window.loadData === 'function') {
-            window.loadData()
-                .then(function(result) {
-                    self.data = result || window.data;
-                    self.isReady = true;
-                    self.dispatchReady();
-                })
-                .catch(function(err) {
-                    self.data = window.getEmptyData ? window.getEmptyData() : {};
-                    window.data = self.data;
-                    self.isReady = true;
-                    self.dispatchReady();
-                });
-        } else if (window.data) {
+        // If data is already available, dispatch immediately
+        if (window.data) {
             self.data = window.data;
             self.isReady = true;
-            self.dispatchReady();
-        } else {
-            self.data = window.getEmptyData ? window.getEmptyData() : {};
-            window.data = self.data;
-            self.isReady = true;
-            self.dispatchReady();
+            setTimeout(function() {
+                self.dispatchReady();
+            }, 10);
         }
+
+        // Also check periodically
+        var checkInterval = setInterval(function() {
+            if (window.data && !self.isReady) {
+                self.data = window.data;
+                self.isReady = true;
+                self.dispatchReady();
+                clearInterval(checkInterval);
+            }
+        }, 100);
     },
 
     dispatchReady: function() {
@@ -63,7 +51,7 @@ var DataLoader = {
             try {
                 cb(this.data);
             } catch (e) {
-                // ignore errors in callbacks
+                // ignore
             }
         }
     },
@@ -81,21 +69,13 @@ var DataLoader = {
     }
 };
 
-// Convenience function
 function whenDataReady(callback) {
     DataLoader.whenReady(callback);
 }
 
-// Make globally available
 window.DataLoader = DataLoader;
 window.whenDataReady = whenDataReady;
 
-// Auto-init
 DataLoader.init();
 
-// Expose data as window.data when loaded
-document.addEventListener('dataLoaded', function(e) {
-    if (e.detail && e.detail.data) {
-        window.data = e.detail.data;
-    }
-});
+console.log('loader.js loaded');
