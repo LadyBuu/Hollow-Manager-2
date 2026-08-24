@@ -13,7 +13,7 @@
     <header>
         <div class="header-top">
             <h1>Hollow <span>Blades</span></h1>
-            <button class="burger-btn" id="nav-toggle" aria-label="Toggle navigation">≡</button>
+            <button class="burger-btn" id="nav-toggle" aria-label="Toggle navigation">☰</button>
         </div>
         <nav id="main-nav">
             <a href="#" data-tab="dashboard" class="active">Dashboard</a>
@@ -203,5 +203,65 @@
 
     <!-- App Bootstrapper -->
     <script src="js/app.js"></script>
+
+    <!-- Burger Menu Fix - Additional safety -->
+    <script>
+    (function() {
+        'use strict';
+        
+        // Ensure burger menu works even if app.js fails
+        function ensureBurgerMenu() {
+            var toggle = document.getElementById('nav-toggle');
+            var nav = document.getElementById('main-nav');
+            
+            if (!toggle || !nav) return;
+            
+            // Check if toggle already has event listener
+            if (toggle._burgerInitialized) return;
+            toggle._burgerInitialized = true;
+            
+            toggle.addEventListener('click', function(e) {
+                e.stopPropagation();
+                nav.classList.toggle('open');
+                this.classList.toggle('open');
+                this.textContent = this.classList.contains('open') ? '✕' : '☰';
+            });
+            
+            // Close when clicking outside
+            document.addEventListener('click', function(e) {
+                if (nav.classList.contains('open')) {
+                    if (!nav.contains(e.target) && !toggle.contains(e.target)) {
+                        nav.classList.remove('open');
+                        toggle.classList.remove('open');
+                        toggle.textContent = '☰';
+                    }
+                }
+            });
+            
+            // Close on link click
+            nav.querySelectorAll('a').forEach(function(link) {
+                link.addEventListener('click', function() {
+                    nav.classList.remove('open');
+                    toggle.classList.remove('open');
+                    toggle.textContent = '☰';
+                });
+            });
+        }
+        
+        // Run on DOM ready
+        if (document.readyState === 'complete' || document.readyState === 'interactive') {
+            setTimeout(ensureBurgerMenu, 50);
+        } else {
+            document.addEventListener('DOMContentLoaded', function() {
+                setTimeout(ensureBurgerMenu, 50);
+            });
+        }
+        
+        // Also run after data loads
+        document.addEventListener('dataReady', function() {
+            setTimeout(ensureBurgerMenu, 100);
+        });
+    })();
+    </script>
 </body>
 </html>
