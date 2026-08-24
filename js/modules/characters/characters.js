@@ -478,22 +478,31 @@
     function initCharacterEvents() {
         var addBtn = document.getElementById('add-character-btn');
         if (addBtn) {
-            addBtn.addEventListener('click', function() { showCharacterForm(); });
+            // Remove existing listeners by cloning
+            var newAddBtn = addBtn.cloneNode(true);
+            addBtn.parentNode.replaceChild(newAddBtn, addBtn);
+            newAddBtn.addEventListener('click', function() { showCharacterForm(); });
         }
 
         var cancelBtn = document.getElementById('cancel-char-btn');
         if (cancelBtn) {
-            cancelBtn.addEventListener('click', hideCharacterForm);
+            var newCancelBtn = cancelBtn.cloneNode(true);
+            cancelBtn.parentNode.replaceChild(newCancelBtn, cancelBtn);
+            newCancelBtn.addEventListener('click', hideCharacterForm);
         }
 
         var form = document.getElementById('char-form');
         if (form) {
-            form.addEventListener('submit', saveCharacter);
+            var newForm = form.cloneNode(true);
+            form.parentNode.replaceChild(newForm, form);
+            newForm.addEventListener('submit', saveCharacter);
         }
 
         var addStatusBtn = document.getElementById('add-status-btn');
         if (addStatusBtn) {
-            addStatusBtn.addEventListener('click', function() {
+            var newStatusBtn = addStatusBtn.cloneNode(true);
+            addStatusBtn.parentNode.replaceChild(newStatusBtn, addStatusBtn);
+            newStatusBtn.addEventListener('click', function() {
                 var container = document.getElementById('career-status-container');
                 addCareerStatusEntry(container);
             });
@@ -501,14 +510,18 @@
 
         var addStandaloneElimBtn = document.getElementById('add-standalone-elim-btn');
         if (addStandaloneElimBtn) {
-            addStandaloneElimBtn.addEventListener('click', function() {
+            var newElimBtn = addStandaloneElimBtn.cloneNode(true);
+            addStandaloneElimBtn.parentNode.replaceChild(newElimBtn, addStandaloneElimBtn);
+            newElimBtn.addEventListener('click', function() {
                 addStandaloneElimination();
             });
         }
 
         var deceasedCheck = document.getElementById('char-deceased');
         if (deceasedCheck) {
-            deceasedCheck.addEventListener('change', function() {
+            var newDeceasedCheck = deceasedCheck.cloneNode(true);
+            deceasedCheck.parentNode.replaceChild(newDeceasedCheck, deceasedCheck);
+            newDeceasedCheck.addEventListener('change', function() {
                 var deathFields = document.getElementById('death-fields');
                 if (deathFields) {
                     deathFields.style.display = this.checked ? 'block' : 'none';
@@ -538,7 +551,9 @@
 
         var clearFilter = document.getElementById('clear-char-filter');
         if (clearFilter) {
-            clearFilter.addEventListener('click', function() {
+            var newClearFilter = clearFilter.cloneNode(true);
+            clearFilter.parentNode.replaceChild(newClearFilter, clearFilter);
+            newClearFilter.addEventListener('click', function() {
                 var statusFilter = document.getElementById('char-status-filter');
                 var nameFilter = document.getElementById('char-name-filter');
                 var hideDeceased = document.getElementById('hide-deceased');
@@ -1545,7 +1560,7 @@
     // Handle data loading
     document.addEventListener('dataLoaded', function() {
         var container = document.getElementById('tab-characters');
-        if (container && container.style.display !== 'none') {
+        if (container) {
             renderCharacters(container);
         }
     });
@@ -1554,7 +1569,7 @@
     if (window.data) {
         setTimeout(function() {
             var container = document.getElementById('tab-characters');
-            if (container && container.style.display !== 'none') {
+            if (container) {
                 renderCharacters(container);
             }
         }, 100);
@@ -1579,5 +1594,7 @@
     window.updateClassSuggestion = updateClassSuggestion;
     window.updateMagicClassSuggestion = updateMagicClassSuggestion;
     window.updateMagicPowerDisplay = updateMagicPowerDisplay;
+
+    console.log('characters.js loaded');
 
 })();
