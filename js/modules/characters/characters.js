@@ -16,10 +16,28 @@
     // ============================================================
 
     function renderCharacters(container) {
+        if (!container) {
+            container = document.getElementById('tab-characters');
+        }
+        if (!container) return;
+
+        // Check if data exists
+        if (!window.data) {
+            console.warn('No data available, waiting for dataReady event');
+            container.innerHTML = '<p class="empty-state">Loading data...</p>';
+            return;
+        }
+
+        // Ensure characters array exists
+        if (!window.data.characters) {
+            window.data.characters = [];
+        }
+
         container.innerHTML = getCharactersHTML();
         renderCharacterList();
         initCharacterEvents();
-        if (window.data && window.data.characters && window.data.characters.length > 0) {
+        
+        if (window.data.characters && window.data.characters.length > 0) {
             var firstChar = window.data.characters[0];
             if (firstChar) {
                 showCharacterForm(firstChar.id);
@@ -116,6 +134,17 @@
                                     <label>Year of Birth</label>
                                     <input type="number" id="char-birthyear" />
                                 </div>
+                                <div class="form-group full-width section-divider">
+                                    <div class="deceased-toggle">
+                                        <input type="checkbox" id="char-deceased" />
+                                        <label for="char-deceased" class="deceased-label">Mark as Deceased</label>
+                                    </div>
+                                    <div id="death-fields" class="death-fields">
+                                        <div class="form-group"><label>Year of Death</label><input type="number" id="char-death-year" placeholder="e.g., 2023" /></div>
+                                        <div class="form-group"><label>Death Age</label><input type="number" id="char-death-age" min="0" max="150" placeholder="e.g., 45" /></div>
+                                        <div class="form-group full-width"><label>Cause of Death</label><input type="text" id="char-death-cause" /></div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
@@ -154,18 +183,6 @@
                                     <label>Appearance Notes</label>
                                     <textarea id="char-appearance-notes" rows="2" placeholder="Scars, tattoos..."></textarea>
                                 </div>
-                                <!-- Deceased moved here -->
-                                <div class="form-group full-width section-divider">
-                                    <div class="deceased-toggle">
-                                        <input type="checkbox" id="char-deceased" />
-                                        <label for="char-deceased" class="deceased-label">Mark as Deceased</label>
-                                    </div>
-                                    <div id="death-fields" class="death-fields">
-                                        <div class="form-group"><label>Year of Death</label><input type="number" id="char-death-year" placeholder="e.g., 2023" /></div>
-                                        <div class="form-group"><label>Death Age</label><input type="number" id="char-death-age" min="0" max="150" placeholder="e.g., 45" /></div>
-                                        <div class="form-group full-width"><label>Cause of Death</label><input type="text" id="char-death-cause" /></div>
-                                    </div>
-                                </div>
                             </div>
                         </div>
 
@@ -190,6 +207,25 @@
                                 <p class="empty-state" style="padding:8px;font-size:0.8rem;">Loading academic data...</p>
                             </div>
                             <div class="form-group full-width section-divider">
+                                <label>Tournament Eliminations</label>
+                                <div id="tournament-eliminations-view"><p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p></div>
+                            </div>
+                            <div class="form-group full-width section-divider">
+                                <label class="section-label warning-label">Standalone Elimination</label>
+                                <div class="elimination-controls">
+                                    <label>Week:</label>
+                                    <input type="number" id="standalone-elim-week" min="1" max="52" value="1" />
+                                    <label>Reason:</label>
+                                    <input type="text" id="standalone-elim-reason" placeholder="e.g., Dropped out" />
+                                    <button type="button" id="add-standalone-elim-btn" class="small warning-btn">Apply</button>
+                                </div>
+                                <div id="standalone-eliminations-container"><p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p></div>
+                            </div>
+                        </div>
+
+                        <!-- TAB: Professional -->
+                        <div id="char-tab-professional" class="char-tab-panel" style="display:none;">
+                            <div class="form-group full-width">
                                 <label>Career Status History</label>
                                 <div id="career-status-container">
                                     <div class="career-status-entry">
@@ -214,31 +250,13 @@
                                 <label>Specialty/Discipline</label>
                                 <input type="text" id="char-specialty" />
                             </div>
-                            <div class="form-group full-width section-divider">
-                                <label class="section-label info-label">Tournament Eliminations</label>
-                                <div id="tournament-eliminations-view"><p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p></div>
-                            </div>
-                            <div class="form-group full-width section-divider">
-                                <label class="section-label warning-label">Standalone Elimination</label>
-                                <div class="elimination-controls">
-                                    <label>Week:</label>
-                                    <input type="number" id="standalone-elim-week" min="1" max="52" value="1" />
-                                    <label>Reason:</label>
-                                    <input type="text" id="standalone-elim-reason" placeholder="e.g., Dropped out" />
-                                    <button type="button" id="add-standalone-elim-btn" class="small warning-btn">Apply</button>
-                                </div>
-                                <div id="standalone-eliminations-container"><p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p></div>
-                            </div>
-                        </div>
-
-                        <!-- TAB: Professional -->
-                        <div id="char-tab-professional" class="char-tab-panel" style="display:none;">
                             <div id="professional-view" style="padding:4px 0;">
                                 <p class="empty-state" style="padding:8px;font-size:0.8rem;">Loading professional data...</p>
                             </div>
                         </div>
 
-                        <!-- TAB: Stats -->
+                        // ... (rest of stats tab continues below)
+                        // TAB: Stats
                         <div id="char-tab-stats" class="char-tab-panel" style="display:none;">
                             <div class="stat-input-group">
                                 <div class="form-group"><label>STR</label><input type="number" id="char-str" min="1" max="30" value="10" /></div>
@@ -256,6 +274,12 @@
                                 </select>
                                 <button type="button" id="random-stats-btn" class="small secondary">Random</button>
                                 <button type="button" id="recalculate-class-btn" class="small secondary">Recalc</button>
+                            </div>
+                            <div style="margin-top:8px;font-size:0.7rem;color:var(--text-dim);">
+                                <p>Classes represent character archetypes based on their stat distribution.</p>
+                                <p>• <strong style="color:var(--accent);">Primary stats</strong> define the core of the class</p>
+                                <p>• <strong style="color:var(--warning);">Secondary stats</strong> support the class</p>
+                                <p>• Classes are auto-suggested but can be manually overridden</p>
                             </div>
                             <div class="magic-grid" style="margin-top:12px;">
                                 <div class="magic-category-label elemental">Elemental <button type="button" id="random-elemental-btn" class="small secondary">Random</button></div>
@@ -353,29 +377,36 @@
         var statusFilter = document.getElementById('char-status-filter') ? document.getElementById('char-status-filter').value : 'all';
         var nameFilter = document.getElementById('char-name-filter') ? document.getElementById('char-name-filter').value.toLowerCase() : '';
 
-        var filteredChars = data.characters.filter(function(char) {
-            if (nameFilter) {
-                var displayName = window.getDisplayName(char).toLowerCase();
-                var fullName = window.getFullName(char).toLowerCase();
-                if (displayName.indexOf(nameFilter) === -1 && fullName.indexOf(nameFilter) === -1) {
-                    return false;
-                }
-            }
-            if (statusFilter !== 'all') {
-                if (statusFilter === 'deceased') {
-                    if (!char.deceased) return false;
-                } else if (statusFilter === 'eliminated') {
-                    var hasElimination = char.eliminations && char.eliminations.length > 0;
-                    if (!hasElimination) return false;
-                } else {
-                    var status = window.getCurrentStatus(char).toLowerCase();
-                    if (status !== statusFilter && !status.startsWith(statusFilter + ' ')) {
+        // Sort characters alphabetically by display name
+        var filteredChars = data.characters
+            .filter(function(char) {
+                if (nameFilter) {
+                    var displayName = window.getDisplayName(char).toLowerCase();
+                    var fullName = window.getFullName(char).toLowerCase();
+                    if (displayName.indexOf(nameFilter) === -1 && fullName.indexOf(nameFilter) === -1) {
                         return false;
                     }
                 }
-            }
-            return true;
-        });
+                if (statusFilter !== 'all') {
+                    if (statusFilter === 'deceased') {
+                        if (!char.deceased) return false;
+                    } else if (statusFilter === 'eliminated') {
+                        var hasElimination = char.eliminations && char.eliminations.length > 0;
+                        if (!hasElimination) return false;
+                    } else {
+                        var status = window.getCurrentStatus(char).toLowerCase();
+                        if (status !== statusFilter && !status.startsWith(statusFilter + ' ')) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            })
+            .sort(function(a, b) {
+                var nameA = window.getDisplayName(a).toLowerCase();
+                var nameB = window.getDisplayName(b).toLowerCase();
+                return nameA.localeCompare(nameB);
+            });
 
         if (filteredChars.length === 0) {
             container.innerHTML = '<p class="empty-state" style="padding:10px;font-size:0.8rem;">No matches</p>';
@@ -390,10 +421,31 @@
             var deadMarker = isDead ? ' ✝' : '';
             var isActive = (char.id === currentEditId);
             var activeClass = isActive ? ' active' : '';
+            
+            // Get status indicator
+            var statusIndicator = '';
+            var statusColor = 'var(--text-dim)';
+            var statusLower = status.toLowerCase();
+            if (statusLower === 'trainee' || statusLower === 'rookie') {
+                statusIndicator = '▸';
+                statusColor = 'var(--accent)';
+            } else if (statusLower === 'junior' || statusLower === 'senior') {
+                statusIndicator = '◆';
+                statusColor = 'var(--warning)';
+            } else if (statusLower === 'instructor') {
+                statusIndicator = '◇';
+                statusColor = 'var(--info)';
+            } else if (statusLower === 'support') {
+                statusIndicator = '◈';
+                statusColor = 'var(--info)';
+            } else if (statusLower === 'civilian') {
+                statusIndicator = '○';
+                statusColor = 'var(--text-dim)';
+            }
 
             html += '<div class="char-list-item' + activeClass + '" data-id="' + char.id + '">';
             html += '<span class="char-name">' + displayName + deadMarker + '</span>';
-            html += '<span class="char-status" style="font-size:0.6rem;color:var(--text-dim);">' + status + '</span>';
+            html += '<span class="char-status" style="font-size:0.6rem;color:' + statusColor + ';">' + statusIndicator + ' ' + status + '</span>';
             html += '</div>';
         });
         container.innerHTML = html;
@@ -617,6 +669,15 @@
             return t.members && t.members.some(function(m) { return String(m.characterId) === String(char.id); });
         }) : [];
 
+        // Sort by join period chronologically
+        acadTeams.sort(function(a, b) {
+            var aMember = a.members.find(function(m) { return String(m.characterId) === String(char.id); });
+            var bMember = b.members.find(function(m) { return String(m.characterId) === String(char.id); });
+            var aJoin = parseInt(aMember ? aMember.joinPeriod : 0) || 0;
+            var bJoin = parseInt(bMember ? bMember.joinPeriod : 0) || 0;
+            return aJoin - bJoin;
+        });
+
         if (acadTeams.length > 0) {
             acadTeams.forEach(function(team) {
                 var member = team.members.find(function(m) { return String(m.characterId) === String(char.id); });
@@ -675,6 +736,15 @@
             return t.members && t.members.some(function(m) { return String(m.characterId) === String(char.id); });
         }) : [];
 
+        // Sort by join period chronologically
+        profTeams.sort(function(a, b) {
+            var aMember = a.members.find(function(m) { return String(m.characterId) === String(char.id); });
+            var bMember = b.members.find(function(m) { return String(m.characterId) === String(char.id); });
+            var aJoin = parseInt(aMember ? aMember.joinPeriod : 0) || 0;
+            var bJoin = parseInt(bMember ? bMember.joinPeriod : 0) || 0;
+            return aJoin - bJoin;
+        });
+
         if (profTeams.length > 0) {
             profTeams.forEach(function(team) {
                 var member = team.members.find(function(m) { return String(m.characterId) === String(char.id); });
@@ -696,6 +766,14 @@
             return t.members && t.members.some(function(m) { return String(m.characterId) === String(char.id); });
         }) : [];
 
+        tempTeams.sort(function(a, b) {
+            var aMember = a.members.find(function(m) { return String(m.characterId) === String(char.id); });
+            var bMember = b.members.find(function(m) { return String(m.characterId) === String(char.id); });
+            var aJoin = parseInt(aMember ? aMember.joinPeriod : 0) || 0;
+            var bJoin = parseInt(bMember ? bMember.joinPeriod : 0) || 0;
+            return aJoin - bJoin;
+        });
+
         if (tempTeams.length > 0) {
             tempTeams.forEach(function(team) {
                 var member = team.members.find(function(m) { return String(m.characterId) === String(char.id); });
@@ -716,6 +794,14 @@
             if (t.status === 'deleted') return false;
             return t.members && t.members.some(function(m) { return String(m.characterId) === String(char.id); });
         }) : [];
+
+        civTeams.sort(function(a, b) {
+            var aMember = a.members.find(function(m) { return String(m.characterId) === String(char.id); });
+            var bMember = b.members.find(function(m) { return String(m.characterId) === String(char.id); });
+            var aJoin = parseInt(aMember ? aMember.joinPeriod : 0) || 0;
+            var bJoin = parseInt(bMember ? bMember.joinPeriod : 0) || 0;
+            return aJoin - bJoin;
+        });
 
         if (civTeams.length > 0) {
             civTeams.forEach(function(team) {
@@ -829,13 +915,6 @@
             <button type="button" class="small danger remove-status">✕</button>
         `;
         container.appendChild(entry);
-        var select = entry.querySelector('.career-status-select');
-        var specialtyField = document.getElementById('specialty-field');
-        if (specialtyField) {
-            select.onchange = function() {
-                specialtyField.style.display = (this.value === 'instructor' || this.value === 'support') ? 'block' : 'none';
-            };
-        }
         entry.querySelector('.remove-status').onclick = function() {
             if (container.children.length > 1) {
                 entry.remove();
@@ -1347,6 +1426,8 @@
                 }
                 if (typeof window.showRelationshipForm === 'function') {
                     window.showRelationshipForm(null, currentEditId);
+                } else {
+                    alert('Relationship functionality is not available. Please use the Social tab.');
                 }
             });
         }
@@ -1462,7 +1543,7 @@
                 display.style.background = 'var(--accent-soft)';
                 display.style.borderColor = 'var(--accent)';
             } else {
-                display.textContent = '\u2014';
+                display.textContent = '—';
                 display.style.color = 'var(--text-dim)';
                 display.style.background = 'transparent';
                 display.style.borderColor = 'var(--border)';
@@ -1617,7 +1698,7 @@
                 display.style.background = 'var(--info-soft)';
                 display.style.borderColor = 'var(--info)';
             } else {
-                display.textContent = '\u2014';
+                display.textContent = '—';
                 display.style.color = 'var(--text-dim)';
                 display.style.background = 'transparent';
                 display.style.borderColor = 'var(--border)';
@@ -1642,8 +1723,8 @@
         var level = Math.floor(percentage / 20);
         if (level > 4) level = 4;
         if (level < 0) level = 0;
-        var filled = '\u25CF';
-        var empty = '\u25CB';
+        var filled = '●';
+        var empty = '○';
         var display = '';
         for (var i = 0; i < 5; i++) {
             display += (i <= level) ? filled : empty;
@@ -1805,17 +1886,26 @@
         window.TabManager.register('characters', renderCharacters);
     }
 
-    document.addEventListener('dataLoaded', function() {
+    document.addEventListener('dataReady', function() {
         var container = document.getElementById('tab-characters');
-        if (container) {
+        if (container && container.style.display !== 'none') {
             renderCharacters(container);
+        }
+    });
+
+    document.addEventListener('tabChanged', function(e) {
+        if (e.detail && e.detail.tab === 'characters') {
+            var container = document.getElementById('tab-characters');
+            if (container) {
+                renderCharacters(container);
+            }
         }
     });
 
     if (window.data) {
         setTimeout(function() {
             var container = document.getElementById('tab-characters');
-            if (container) {
+            if (container && container.style.display !== 'none') {
                 renderCharacters(container);
             }
         }, 100);
