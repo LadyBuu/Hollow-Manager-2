@@ -1,282 +1,210 @@
 /**
- * js/core/tab-manager.js - Tab Navigation System
- * Path: js/core/tab-manager.js
+ * js/app.js - Application Bootstrapper
+ * Initializes all modules and handles burger menu
+ * Path: js/app.js
  */
 
-var TabManager = {
-    currentTab: 'dashboard',
-    tabs: {},
-    tabContentElements: {},
-    navLinks: [],
-    isInitialized: false,
-    switchTimeout: null,
-    isRendering: false,
+(function() {
+    'use strict';
 
-    init: function() {
-        if (this.isInitialized) return;
-        this.isInitialized = true;
+    // ============================================================
+    // BURGER MENU CONTROLS
+    // ============================================================
 
-        console.log('TabManager initializing...');
-
-        var self = this;
-
-        // Find all tab content elements
-        document.querySelectorAll('.tab-content').forEach(function(el) {
-            var id = el.id;
-            if (id && id.startsWith('tab-')) {
-                var tabName = id.replace('tab-', '');
-                self.tabContentElements[tabName] = el;
-                console.log('Found tab container:', tabName);
-            }
-        });
-
-        // Find all nav links and attach events
-        document.querySelectorAll('#main-nav a[data-tab]').forEach(function(link) {
-            self.navLinks.push(link);
-            var newLink = link.cloneNode(true);
-            link.parentNode.replaceChild(newLink, link);
-            newLink.addEventListener('click', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-                var tab = this.dataset.tab;
-                console.log('Nav click:', tab);
-                if (tab) {
-                    self.switchTo(tab);
-                }
-            });
-        });
-
-        // Quick links on dashboard
-        document.querySelectorAll('.quick-link[data-tab]').forEach(function(link) {
-            var newLink = link.cloneNode(true);
-            link.parentNode.replaceChild(newLink, link);
-            newLink.addEventListener('click', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-                var tab = this.dataset.tab;
-                console.log('Quick link click:', tab);
-                if (tab) {
-                    self.switchTo(tab);
-                }
-            });
-        });
-
-        document.querySelectorAll('.stat-link[data-tab]').forEach(function(link) {
-            var newLink = link.cloneNode(true);
-            link.parentNode.replaceChild(newLink, link);
-            newLink.addEventListener('click', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-                var tab = this.dataset.tab;
-                console.log('Stat link click:', tab);
-                if (tab) {
-                    self.switchTo(tab);
-                }
-            });
-        });
-
-        // Set initial tab from URL hash or default
-        var hash = window.location.hash.replace('#', '');
-        var initialTab = hash || 'dashboard';
-        console.log('Initial tab:', initialTab);
+    function initBurgerMenu() {
+        console.log('Initializing burger menu...');
         
-        // Wait a moment for all modules to register
-        setTimeout(function() {
-            if (self.tabs[initialTab]) {
-                self.switchTo(initialTab);
-            } else {
-                self.switchTo('dashboard');
-            }
-        }, 100);
-    },
-
-    register: function(tabName, renderFn) {
-        this.tabs[tabName] = renderFn;
-        console.log('Registered tab:', tabName);
-    },
-
-    switchTo: function(tabName) {
-        console.log('Switching to tab:', tabName);
-        
-        if (!this.tabs[tabName]) {
-            console.warn('Tab not registered:', tabName);
-            return;
-        }
-
-        // Clear any pending switch
-        if (this.switchTimeout) {
-            clearTimeout(this.switchTimeout);
-            this.switchTimeout = null;
-        }
-
-        var self = this;
-        this.switchTimeout = setTimeout(function() {
-            self._doSwitch(tabName);
-            self.switchTimeout = null;
-        }, 50);
-    },
-
-    _doSwitch: function(tabName) {
-        console.log('Doing switch to:', tabName);
-        
-        var self = this;
-
-        if (this.isRendering) {
-            setTimeout(function() {
-                self._doSwitch(tabName);
-            }, 100);
-            return;
-        }
-
-        this.isRendering = true;
-        this.currentTab = tabName;
-
-        // Update nav links
-        this.navLinks.forEach(function(link) {
-            link.classList.toggle('active', link.dataset.tab === tabName);
-        });
-
-        // Update tab content visibility
-        for (var key in this.tabContentElements) {
-            var el = this.tabContentElements[key];
-            if (key === tabName) {
-                el.style.display = 'block';
-                el.classList.add('active');
-            } else {
-                el.style.display = 'none';
-                el.classList.remove('active');
-            }
-        }
-
-        // Close mobile nav
+        var toggle = document.getElementById('nav-toggle');
         var nav = document.getElementById('main-nav');
         var actions = document.getElementById('header-actions');
-        var toggle = document.getElementById('nav-toggle');
-        if (nav) nav.classList.remove('open');
-        if (actions) actions.classList.remove('open');
-        if (toggle) toggle.classList.remove('open');
-
-        // Update URL hash
-        if (window.history && window.history.pushState) {
-            window.history.pushState(null, '', '#' + tabName);
+        
+        if (!toggle || !nav) {
+            console.warn('Burger menu elements not found');
+            return;
         }
-
-        // Render the tab content
-        var container = this.tabContentElements[tabName];
-        if (container && this.tabs[tabName]) {
-            try {
-                this.tabs[tabName](container);
-            } catch (e) {
-                console.error('Error rendering tab ' + tabName + ':', e);
-                container.innerHTML = '<p class="empty-state">Error loading tab content.</p>';
+        
+        // Remove any existing listeners by cloning
+        var newToggle = toggle.cloneNode(true);
+        toggle.parentNode.replaceChild(newToggle, toggle);
+        toggle = newToggle;
+        
+        toggle.addEventListener('click', function(e) {
+            e.stopPropagation();
+            
+            // Toggle nav
+            nav.classList.toggle('open');
+            
+            // Toggle burger icon
+            this.classList.toggle('open');
+            this.textContent = this.classList.contains('open') ? '✕' : '☰';
+            
+            // Optionally toggle actions
+            if (actions) {
+                actions.classList.toggle('open');
             }
-        }
-        this.isRendering = false;
-
-        // Dispatch event
-        var event = new CustomEvent('tabChanged', { detail: { tab: tabName } });
-        document.dispatchEvent(event);
-    },
-
-    getCurrentTab: function() {
-        return this.currentTab;
-    },
-
-    isTabActive: function(tabName) {
-        return this.currentTab === tabName;
-    },
-
-    getTabContainer: function(tabName) {
-        return this.tabContentElements[tabName] || null;
-    },
-
-    forceRefresh: function(tabName) {
-        tabName = tabName || this.currentTab;
-        if (this.tabs[tabName]) {
-            var container = this.tabContentElements[tabName];
-            if (container) {
-                this.tabs[tabName](container);
+            
+            console.log('Burger menu toggled:', nav.classList.contains('open') ? 'open' : 'closed');
+        });
+        
+        // Close menu when clicking outside
+        document.addEventListener('click', function(e) {
+            if (nav.classList.contains('open')) {
+                if (!nav.contains(e.target) && !toggle.contains(e.target)) {
+                    nav.classList.remove('open');
+                    toggle.classList.remove('open');
+                    toggle.textContent = '☰';
+                    if (actions) {
+                        actions.classList.remove('open');
+                    }
+                }
             }
+        });
+        
+        // Close menu when a nav link is clicked
+        nav.querySelectorAll('a').forEach(function(link) {
+            var newLink = link.cloneNode(true);
+            link.parentNode.replaceChild(newLink, link);
+            newLink.addEventListener('click', function() {
+                nav.classList.remove('open');
+                toggle.classList.remove('open');
+                toggle.textContent = '☰';
+                if (actions) {
+                    actions.classList.remove('open');
+                }
+            });
+        });
+        
+        console.log('Burger menu initialized');
+    }
+
+    // ============================================================
+    // RENDER ALL FUNCTION
+    // ============================================================
+
+    function renderAll() {
+        console.log('renderAll called - refreshing all tabs');
+        
+        // Get current tab from TabManager
+        var currentTab = 'dashboard';
+        if (typeof window.TabManager !== 'undefined' && window.TabManager.getCurrentTab) {
+            currentTab = window.TabManager.getCurrentTab();
+        }
+        
+        // Refresh current tab
+        if (typeof window.TabManager !== 'undefined' && window.TabManager.forceRefresh) {
+            window.TabManager.forceRefresh(currentTab);
+        }
+        
+        // Update dashboard stats
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
         }
     }
-};
 
-// Register dashboard by default
-TabManager.register('dashboard', function(container) {
-    console.log('Rendering dashboard...');
-    if (typeof window.renderDashboard === 'function') {
-        window.renderDashboard(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Dashboard loading...</p>';
-    }
-});
+    // ============================================================
+    // LOG ACTIVITY WRAPPER
+    // ============================================================
 
-// Register placeholders for other tabs
-TabManager.register('characters', function(container) {
-    console.log('Rendering characters...');
-    if (typeof window.renderCharacters === 'function') {
-        window.renderCharacters(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Characters module loading...</p>';
-    }
-});
-
-TabManager.register('teams', function(container) {
-    console.log('Rendering teams...');
-    if (typeof window.renderTeamManager === 'function') {
-        window.renderTeamManager(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Teams module loading...</p>';
-    }
-});
-
-TabManager.register('tournaments', function(container) {
-    console.log('Rendering tournaments...');
-    if (typeof window.renderTournaments === 'function') {
-        window.renderTournaments(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Tournaments module loading...</p>';
-    }
-});
-
-TabManager.register('curriculum', function(container) {
-    console.log('Rendering curriculum...');
-    if (typeof window.renderCurriculum === 'function') {
-        window.renderCurriculum(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Curriculum module loading...</p>';
-    }
-});
-
-TabManager.register('missions', function(container) {
-    console.log('Rendering missions...');
-    if (typeof window.renderMissionsView === 'function') {
-        window.renderMissionsView(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Missions module loading...</p>';
-    }
-});
-
-TabManager.register('social', function(container) {
-    console.log('Rendering social...');
-    if (typeof window.renderSocialView === 'function') {
-        window.renderSocialView(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Social module loading...</p>';
-    }
-});
-
-window.TabManager = TabManager;
-
-// Auto-init
-if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    setTimeout(function() {
-        if (!TabManager.isInitialized) {
-            TabManager.init();
+    function logActivity(message, type) {
+        type = type || 'info';
+        if (typeof window.logActivity === 'function') {
+            window.logActivity(message, type);
+        } else {
+            console.log('[' + type + ']', message);
         }
-    }, 50);
-} else {
-    document.addEventListener('DOMContentLoaded', function() {
-        TabManager.init();
+    }
+
+    // ============================================================
+    // APP INITIALIZATION
+    // ============================================================
+
+    function initApp() {
+        console.log('App initializing...');
+        
+        // Initialize burger menu
+        setTimeout(initBurgerMenu, 100);
+        
+        // Listen for data ready
+        document.addEventListener('dataReady', function(e) {
+            console.log('App: dataReady event received');
+            
+            // Update dashboard stats
+            if (typeof window.updateDashboardStats === 'function') {
+                window.updateDashboardStats();
+            }
+            
+            // Re-initialize burger menu (in case DOM changed)
+            setTimeout(initBurgerMenu, 200);
+        });
+        
+        // Listen for tab changes
+        document.addEventListener('tabChanged', function(e) {
+            console.log('App: tabChanged event received:', e.detail ? e.detail.tab : 'unknown');
+            
+            // Close burger menu on tab change
+            var nav = document.getElementById('main-nav');
+            var toggle = document.getElementById('nav-toggle');
+            var actions = document.getElementById('header-actions');
+            
+            if (nav) nav.classList.remove('open');
+            if (toggle) {
+                toggle.classList.remove('open');
+                toggle.textContent = '☰';
+            }
+            if (actions) actions.classList.remove('open');
+        });
+        
+        // Handle window resize for responsive adjustments
+        var resizeTimeout;
+        window.addEventListener('resize', function() {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(function() {
+                // Close burger menu on desktop
+                if (window.innerWidth >= 768) {
+                    var nav = document.getElementById('main-nav');
+                    var toggle = document.getElementById('nav-toggle');
+                    if (nav) nav.classList.remove('open');
+                    if (toggle) {
+                        toggle.classList.remove('open');
+                        toggle.textContent = '☰';
+                    }
+                }
+            }, 250);
+        });
+        
+        console.log('App initialized');
+    }
+
+    // ============================================================
+    // EXPOSE FUNCTIONS
+    // ============================================================
+
+    window.renderAll = renderAll;
+    window.logActivity = logActivity;
+    window.initBurgerMenu = initBurgerMenu;
+    window.initApp = initApp;
+
+    // ============================================================
+    // AUTO-INIT
+    // ============================================================
+
+    // Initialize when DOM is ready
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        setTimeout(initApp, 50);
+    } else {
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(initApp, 50);
+        });
+    }
+
+    // Also initialize after data loads (in case DOM was already ready)
+    document.addEventListener('dataReady', function() {
+        // Ensure burger menu is initialized
+        if (typeof window.initBurgerMenu === 'function') {
+            setTimeout(window.initBurgerMenu, 100);
+        }
     });
-}
+
+    console.log('app.js loaded');
+
+})();
