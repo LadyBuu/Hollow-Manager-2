@@ -10,18 +10,31 @@ var STORE_NAME = 'appData';
 
 var db = null;
 var data = null;
+var dbOpenPromise = null;
 
 function openDatabase() {
-    return new Promise(function(resolve, reject) {
+    // If already open, return the existing db
+    if (db) {
+        return Promise.resolve(db);
+    }
+
+    // If already opening, return the existing promise
+    if (dbOpenPromise) {
+        return dbOpenPromise;
+    }
+
+    dbOpenPromise = new Promise(function(resolve, reject) {
         var request = indexedDB.open(DB_NAME, DB_VERSION);
         
         request.onerror = function() { 
             console.error('IndexedDB open error:', request.error);
+            dbOpenPromise = null;
             reject(request.error); 
         };
         
         request.onsuccess = function() {
             db = request.result;
+            dbOpenPromise = null;
             console.log('IndexedDB opened successfully');
             resolve(db);
         };
@@ -34,6 +47,8 @@ function openDatabase() {
             }
         };
     });
+
+    return dbOpenPromise;
 }
 
 function getDefaultMagicProficiencies() {
@@ -116,17 +131,17 @@ function getEmptyData() {
 }
 
 function loadData() {
-    return new Promise(function(resolve, reject) {
+    return new Promise(function(resolve) {
         // If db is already open, use it
         if (db) {
-            doLoadData(resolve, reject);
+            doLoadData(resolve);
             return;
         }
         
         // Otherwise open the database first
         openDatabase()
             .then(function() {
-                doLoadData(resolve, reject);
+                doLoadData(resolve);
             })
             .catch(function(err) {
                 console.error('Failed to open database:', err);
@@ -138,7 +153,7 @@ function loadData() {
     });
 }
 
-function doLoadData(resolve, reject) {
+function doLoadData(resolve) {
     try {
         var transaction = db.transaction([STORE_NAME], 'readonly');
         var store = transaction.objectStore(STORE_NAME);
@@ -180,12 +195,13 @@ function doLoadData(resolve, reject) {
 }
 
 function saveData() {
-    return new Promise(function(resolve, reject) {
+    return new Promise(function(resolve) {
         // If db is not open, open it first
         if (!db) {
             openDatabase()
                 .then(function() {
-                    saveData().then(resolve).catch(reject);
+                    // Recursive call after db is open
+                    saveData().then(resolve);
                 })
                 .catch(function(err) {
                     console.error('Failed to open database for save:', err);
@@ -222,7 +238,6 @@ function saveData() {
             };
             request.onerror = function() {
                 console.error('IndexedDB save error:', request.error);
-                // Data is still in memory, so resolve anyway
                 resolve();
             };
             transaction.onerror = function(event) {
