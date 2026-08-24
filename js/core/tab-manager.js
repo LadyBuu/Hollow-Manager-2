@@ -13,6 +13,7 @@ var TabManager = {
     switchTimeout: null,
     isRendering: false,
     _pendingInit: false,
+    _initializedTabs: false,
 
     init: function() {
         if (this.isInitialized) return;
@@ -89,6 +90,7 @@ var TabManager = {
             } else {
                 self.switchTo('dashboard');
             }
+            self._initializedTabs = true;
         }, 100);
     },
 
@@ -114,6 +116,21 @@ var TabManager = {
     register: function(tabName, renderFn) {
         this.tabs[tabName] = renderFn;
         console.log('Registered tab:', tabName);
+        
+        // If this tab is already active and we're initialized, render it
+        if (this.isInitialized && this.currentTab === tabName) {
+            var container = this.tabContentElements[tabName];
+            if (container) {
+                setTimeout(function() {
+                    try {
+                        renderFn(container);
+                    } catch (e) {
+                        console.error('Error rendering tab ' + tabName + ':', e);
+                        container.innerHTML = '<p class="empty-state">Error loading tab content.</p>';
+                    }
+                }, 50);
+            }
+        }
     },
 
     switchTo: function(tabName) {
@@ -142,6 +159,7 @@ var TabManager = {
 
         var self = this;
 
+        // Prevent recursive rendering
         if (this.isRendering) {
             setTimeout(function() {
                 self._doSwitch(tabName);
@@ -160,6 +178,7 @@ var TabManager = {
         // Update tab content visibility
         for (var key in this.tabContentElements) {
             var el = this.tabContentElements[key];
+            if (!el) continue;
             if (key === tabName) {
                 el.style.display = 'block';
                 el.classList.add('active');
@@ -186,12 +205,17 @@ var TabManager = {
         var container = this.tabContentElements[tabName];
         if (container && this.tabs[tabName]) {
             try {
+                // Clear container before rendering to avoid duplication
+                // But preserve any static content if needed
                 this.tabs[tabName](container);
             } catch (e) {
                 console.error('Error rendering tab ' + tabName + ':', e);
                 container.innerHTML = '<p class="empty-state">Error loading tab content.</p>';
             }
+        } else {
+            console.warn('Container or render function missing for tab:', tabName);
         }
+        
         this.isRendering = false;
 
         // Dispatch event
@@ -216,9 +240,25 @@ var TabManager = {
         if (this.tabs[tabName]) {
             var container = this.tabContentElements[tabName];
             if (container) {
-                this.tabs[tabName](container);
+                try {
+                    this.tabs[tabName](container);
+                    return true;
+                } catch (e) {
+                    console.error('Error refreshing tab ' + tabName + ':', e);
+                    return false;
+                }
             }
         }
+        return false;
+    },
+
+    // Safe re-render with debounce
+    refreshCurrent: function() {
+        var self = this;
+        clearTimeout(this._refreshTimeout);
+        this._refreshTimeout = setTimeout(function() {
+            self.forceRefresh(self.currentTab);
+        }, 100);
     }
 };
 
@@ -303,19 +343,36 @@ TabManager.register('social', function(container) {
 window.TabManager = TabManager;
 
 // Auto-init after a short delay to let modules register
-setTimeout(function() {
+var initAttempts = 0;
+var maxInitAttempts = 10;
+
+function tryInitTabManager() {
+    initAttempts++;
+    if (initAttempts > maxInitAttempts) {
+        console.warn('TabManager init attempts exceeded max, forcing init');
+        if (!TabManager.isInitialized) {
+            TabManager.init();
+        }
+        return;
+    }
+    
     if (!TabManager.isInitialized) {
         TabManager.initWhenReady();
+        // If still not initialized after short delay, try again
+        setTimeout(tryInitTabManager, 200);
     }
-}, 300);
+}
+
+// Start the init process
+setTimeout(tryInitTabManager, 100);
 
 // Also try again after data loads
-document.addEventListener('dataLoaded', function() {
+document.addEventListener('dataReady', function() {
     setTimeout(function() {
         if (!TabManager.isInitialized) {
             TabManager.initWhenReady();
         }
-    }, 200);
+    }, 100);
 });
 
 // If DOM is already loaded, init
@@ -334,5 +391,13 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
         }, 100);
     });
 }
+
+// Handle tab switching from hash changes
+window.addEventListener('hashchange', function() {
+    var hash = window.location.hash.replace('#', '');
+    if (hash && TabManager.tabs[hash] && TabManager.isInitialized) {
+        TabManager.switchTo(hash);
+    }
+});
 
 console.log('tab-manager.js loaded');
