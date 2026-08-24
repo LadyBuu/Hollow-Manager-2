@@ -12,36 +12,31 @@
     // ============================================================
 
     var STAT_DEFINITIONS = {
-        'str': { label: 'Strength', icon: '\uD83D\uDCAA', abbr: 'STR' },
-        'dex': { label: 'Dexterity', icon: '\uD83C\uDFAF', abbr: 'DEX' },
-        'con': { label: 'Constitution', icon: '\uD83D\uDCAA', abbr: 'CON' },
-        'int': { label: 'Intelligence', icon: '\uD83E\uDDE0', abbr: 'INT' },
-        'wis': { label: 'Wisdom', icon: '\uD83E\uDDD8', abbr: 'WIS' },
-        'cha': { label: 'Charisma', icon: '\uD83D\uDCAC', abbr: 'CHA' }
+        'str': { label: 'Strength', icon: '💪', abbr: 'STR' },
+        'dex': { label: 'Dexterity', icon: '🎯', abbr: 'DEX' },
+        'con': { label: 'Constitution', icon: '🛡️', abbr: 'CON' },
+        'int': { label: 'Intelligence', icon: '🧠', abbr: 'INT' },
+        'wis': { label: 'Wisdom', icon: '🧘', abbr: 'WIS' },
+        'cha': { label: 'Charisma', icon: '💬', abbr: 'CHA' }
     };
 
+    // Updated class definitions - more generic, removed culturally specific names
     var CLASS_DEFINITIONS = [
-        { id: 'barbarian', label: 'Barbarian', icon: '\uD83D\uDE08', primaryStats: ['str', 'con'], secondaryStats: ['dex'], statWeights: { str: 0.4, con: 0.3, dex: 0.2, wis: 0.1 }, minStats: { str: 13, con: 12 } },
-        { id: 'bard', label: 'Bard', icon: '\uD83C\uDFB8', primaryStats: ['cha', 'dex'], secondaryStats: ['int', 'wis'], statWeights: { cha: 0.35, dex: 0.25, int: 0.2, wis: 0.15, con: 0.05 }, minStats: { cha: 13, dex: 12 } },
-        { id: 'cleric', label: 'Cleric', icon: '\u2728', primaryStats: ['wis', 'con'], secondaryStats: ['str', 'cha'], statWeights: { wis: 0.35, con: 0.25, str: 0.2, cha: 0.15, dex: 0.05 }, minStats: { wis: 13, con: 12 } },
-        { id: 'druid', label: 'Druid', icon: '\uD83C\uDF31', primaryStats: ['wis', 'con'], secondaryStats: ['int', 'dex'], statWeights: { wis: 0.35, con: 0.25, int: 0.2, dex: 0.15, str: 0.05 }, minStats: { wis: 13, con: 12 } },
-        { id: 'fighter', label: 'Fighter', icon: '\uD83D\uDDE1\uFE0F', primaryStats: ['str', 'con'], secondaryStats: ['dex'], statWeights: { str: 0.35, con: 0.3, dex: 0.25, wis: 0.1 }, minStats: { str: 13, con: 12 } },
-        { id: 'monk', label: 'Monk', icon: '\uD83E\uDDD8', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.35, wis: 0.3, con: 0.2, str: 0.15 }, minStats: { dex: 13, wis: 13 } },
-        { id: 'paladin', label: 'Paladin', icon: '\uD83D\uDEE1\uFE0F', primaryStats: ['str', 'cha'], secondaryStats: ['con', 'wis'], statWeights: { str: 0.3, cha: 0.3, con: 0.2, wis: 0.15, dex: 0.05 }, minStats: { str: 13, cha: 13 } },
-        { id: 'ranger', label: 'Ranger', icon: '\uD83C\uDFF7\uFE0F', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.35, wis: 0.25, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 12 } },
-        { id: 'rogue', label: 'Rogue', icon: '\uD83D\uDD77\uFE0F', primaryStats: ['dex', 'int'], secondaryStats: ['cha', 'wis'], statWeights: { dex: 0.35, int: 0.25, cha: 0.2, wis: 0.15, str: 0.05 }, minStats: { dex: 13, int: 12 } },
-        { id: 'sorcerer', label: 'Sorcerer', icon: '\uD83D\uDD25', primaryStats: ['cha', 'con'], secondaryStats: ['dex', 'int'], statWeights: { cha: 0.4, con: 0.2, dex: 0.2, int: 0.15, wis: 0.05 }, minStats: { cha: 13, con: 12 } },
-        { id: 'warlock', label: 'Warlock', icon: '\uD83D\uDD6F\uFE0F', primaryStats: ['cha', 'con'], secondaryStats: ['dex', 'int'], statWeights: { cha: 0.35, con: 0.25, dex: 0.2, int: 0.15, wis: 0.05 }, minStats: { cha: 13, con: 12 } },
-        { id: 'wizard', label: 'Wizard', icon: '\uD83E\uDDE0', primaryStats: ['int', 'con'], secondaryStats: ['dex', 'wis'], statWeights: { int: 0.4, con: 0.2, dex: 0.2, wis: 0.15, cha: 0.05 }, minStats: { int: 13, con: 12 } },
-        { id: 'artificer', label: 'Artificer', icon: '\uD83D\uDD27', primaryStats: ['int', 'con'], secondaryStats: ['dex', 'wis'], statWeights: { int: 0.35, con: 0.25, dex: 0.2, wis: 0.15, cha: 0.05 }, minStats: { int: 13, con: 12 } },
-        { id: 'blood_hunter', label: 'Blood Hunter', icon: '\uD83D\uDD2A', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.3, wis: 0.3, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 13 } },
-        { id: 'gunslinger', label: 'Gunslinger', icon: '\uD83D\uDD2B', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'int'], statWeights: { dex: 0.35, wis: 0.25, con: 0.2, int: 0.15, str: 0.05 }, minStats: { dex: 13, wis: 12 } },
-        { id: 'inquisitive', label: 'Inquisitive', icon: '\uD83D\uDD0D', primaryStats: ['int', 'wis'], secondaryStats: ['dex', 'cha'], statWeights: { int: 0.3, wis: 0.3, dex: 0.2, cha: 0.15, con: 0.05 }, minStats: { int: 13, wis: 13 } },
-        { id: 'mystic', label: 'Mystic', icon: '\uD83E\uDDF8', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'cha'], statWeights: { int: 0.3, wis: 0.3, con: 0.2, cha: 0.15, dex: 0.05 }, minStats: { int: 13, wis: 13 } },
-        { id: 'samurai', label: 'Samurai', icon: '\uD83D\uDDE1\uFE0F', primaryStats: ['str', 'wis'], secondaryStats: ['dex', 'con'], statWeights: { str: 0.3, wis: 0.25, dex: 0.2, con: 0.2, cha: 0.05 }, minStats: { str: 13, wis: 12 } },
-        { id: 'shadow_weaver', label: 'Shadow Weaver', icon: '\uD83C\uDF03', primaryStats: ['int', 'dex'], secondaryStats: ['cha', 'con'], statWeights: { int: 0.3, dex: 0.25, cha: 0.2, con: 0.15, wis: 0.1 }, minStats: { int: 13, dex: 13 } },
-        { id: 'warden', label: 'Warden', icon: '\uD83C\uDF33', primaryStats: ['str', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { str: 0.3, wis: 0.25, con: 0.2, dex: 0.2, cha: 0.05 }, minStats: { str: 13, wis: 12 } },
-        { id: 'witch_hunter', label: 'Witch Hunter', icon: '\uD83D\uDD6F\uFE0F', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'int'], statWeights: { dex: 0.3, wis: 0.25, con: 0.2, int: 0.15, str: 0.1 }, minStats: { dex: 13, wis: 12 } }
+        { id: 'warrior', label: 'Warrior', icon: '⚔️', primaryStats: ['str', 'con'], secondaryStats: ['dex'], statWeights: { str: 0.4, con: 0.3, dex: 0.2, wis: 0.1 }, minStats: { str: 13, con: 12 }, description: 'Masters of combat and physical prowess' },
+        { id: 'skirmisher', label: 'Skirmisher', icon: '🏹', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.35, wis: 0.25, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 12 }, description: 'Agile fighters who excel at ranged combat' },
+        { id: 'protector', label: 'Protector', icon: '🛡️', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'cha'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, cha: 0.15, dex: 0.05 }, minStats: { str: 13, con: 12 }, description: 'Defenders who shield others from harm' },
+        { id: 'sage', label: 'Sage', icon: '📚', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 }, description: 'Scholars and keepers of ancient knowledge' },
+        { id: 'mystic', label: 'Mystic', icon: '🔮', primaryStats: ['wis', 'cha'], secondaryStats: ['con', 'int'], statWeights: { wis: 0.35, cha: 0.25, con: 0.2, int: 0.15, dex: 0.05 }, minStats: { wis: 13, cha: 12 }, description: 'Channelers of spiritual and arcane forces' },
+        { id: 'stalker', label: 'Stalker', icon: '🗡️', primaryStats: ['dex', 'int'], secondaryStats: ['cha', 'wis'], statWeights: { dex: 0.35, int: 0.25, cha: 0.2, wis: 0.15, str: 0.05 }, minStats: { dex: 13, int: 12 }, description: 'Masters of stealth and subterfuge' },
+        { id: 'spellblade', label: 'Spellblade', icon: '⚡', primaryStats: ['str', 'int'], secondaryStats: ['dex', 'con'], statWeights: { str: 0.3, int: 0.3, dex: 0.2, con: 0.15, wis: 0.05 }, minStats: { str: 13, int: 12 }, description: 'Warriors who weave magic into combat' },
+        { id: 'channeler', label: 'Channeler', icon: '🌀', primaryStats: ['cha', 'con'], secondaryStats: ['dex', 'int'], statWeights: { cha: 0.35, con: 0.25, dex: 0.2, int: 0.15, wis: 0.05 }, minStats: { cha: 13, con: 12 }, description: 'Mages who channel raw magical energy' },
+        { id: 'warden', label: 'Warden', icon: '🌿', primaryStats: ['str', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { str: 0.3, wis: 0.25, con: 0.2, dex: 0.2, cha: 0.05 }, minStats: { str: 13, wis: 12 }, description: 'Guardians of nature and natural order' },
+        { id: 'adept', label: 'Adept', icon: '🧘', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.3, wis: 0.3, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 13 }, description: 'Masters of mind-body discipline' },
+        { id: 'artificer', label: 'Artificer', icon: '🔧', primaryStats: ['int', 'dex'], secondaryStats: ['con', 'wis'], statWeights: { int: 0.35, dex: 0.25, con: 0.2, wis: 0.15, cha: 0.05 }, minStats: { int: 13, dex: 12 }, description: 'Inventors and creators of wondrous devices' },
+        { id: 'occultist', label: 'Occultist', icon: '🌙', primaryStats: ['int', 'cha'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.3, cha: 0.3, con: 0.2, dex: 0.15, wis: 0.05 }, minStats: { int: 13, cha: 13 }, description: 'Seekers of forbidden and hidden knowledge' },
+        { id: 'blade_dancer', label: 'Blade Dancer', icon: '🗡️', primaryStats: ['dex', 'cha'], secondaryStats: ['str', 'con'], statWeights: { dex: 0.35, cha: 0.25, str: 0.2, con: 0.15, wis: 0.05 }, minStats: { dex: 13, cha: 12 }, description: 'Graceful warriors who move like the wind' },
+        { id: 'elementalist', label: 'Elementalist', icon: '🌪️', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 }, description: 'Masters of the primal elements' },
+        { id: 'sentinel', label: 'Sentinel', icon: '🏰', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'dex'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, dex: 0.15, cha: 0.05 }, minStats: { str: 13, con: 12 }, description: 'Unyielding guardians and protectors' }
     ];
 
     // ============================================================
@@ -49,30 +44,30 @@
     // ============================================================
 
     var MAGIC_TYPES = {
-        earth: { id: 'earth', label: 'Earth Magic', icon: '\u26F6\uFE0F', category: 'elemental', color: '#8B7355' },
-        water: { id: 'water', label: 'Water Magic', icon: '\uD83D\uDCA7', category: 'elemental', color: '#4A9BC7' },
-        fire: { id: 'fire', label: 'Fire Magic', icon: '\uD83D\uDD25', category: 'elemental', color: '#E67E22' },
-        air: { id: 'air', label: 'Air Magic', icon: '\uD83C\uDF2A\uFE0F', category: 'elemental', color: '#A8D5E2' },
-        metal: { id: 'metal', label: 'Metal Magic', icon: '\u2692\uFE0F', category: 'elemental', color: '#95A5A6' },
-        wood: { id: 'wood', label: 'Wood Magic', icon: '\uD83C\uDF33', category: 'elemental', color: '#27AE60' },
-        blood: { id: 'blood', label: 'Blood Magic', icon: '\uD83E\uDE78', category: 'body', color: '#C0392B' },
-        bone: { id: 'bone', label: 'Bone Magic', icon: '\uD83E\uDDB4', category: 'body', color: '#F5F5DC' },
-        mind: { id: 'mind', label: 'Mind Magic', icon: '\uD83E\uDDE0', category: 'body', color: '#8E44AD' },
-        morphic: { id: 'morphic', label: 'Morphic Magic', icon: '\uD83E\uDDF8', category: 'body', color: '#1ABC9C' },
-        life: { id: 'life', label: 'Life Magic', icon: '\u2728', category: 'body', color: '#2ECC71' },
-        death: { id: 'death', label: 'Death Magic', icon: '\u2620\uFE0F', category: 'body', color: '#2C3E50' },
-        space: { id: 'space', label: 'Space Magic', icon: '\uD83C\uDF0C', category: 'aether', color: '#3498DB' },
-        time: { id: 'time', label: 'Time Magic', icon: '\u23F3', category: 'aether', color: '#F39C12' },
-        dimension: { id: 'dimension', label: 'Dimension Magic', icon: '\uD83C\uDF10', category: 'aether', color: '#9B59B6' },
-        void: { id: 'void', label: 'Void Magic', icon: '\u25CF', category: 'aether', color: '#1A1A2E' },
-        reality: { id: 'reality', label: 'Reality Magic', icon: '\uD83C\uDF0D', category: 'aether', color: '#F1C40F' },
-        transference: { id: 'transference', label: 'Transference Magic', icon: '\uD83D\uDD77\uFE0F', category: 'aether', color: '#E74C3C' }
+        earth: { id: 'earth', label: 'Earth Magic', icon: '⛰️', category: 'elemental', color: '#8B7355' },
+        water: { id: 'water', label: 'Water Magic', icon: '🌊', category: 'elemental', color: '#4A9BC7' },
+        fire: { id: 'fire', label: 'Fire Magic', icon: '🔥', category: 'elemental', color: '#E67E22' },
+        air: { id: 'air', label: 'Air Magic', icon: '🌬️', category: 'elemental', color: '#A8D5E2' },
+        metal: { id: 'metal', label: 'Metal Magic', icon: '⚙️', category: 'elemental', color: '#95A5A6' },
+        wood: { id: 'wood', label: 'Wood Magic', icon: '🌳', category: 'elemental', color: '#27AE60' },
+        blood: { id: 'blood', label: 'Blood Magic', icon: '🩸', category: 'body', color: '#C0392B' },
+        bone: { id: 'bone', label: 'Bone Magic', icon: '🦴', category: 'body', color: '#F5F5DC' },
+        mind: { id: 'mind', label: 'Mind Magic', icon: '🧠', category: 'body', color: '#8E44AD' },
+        morphic: { id: 'morphic', label: 'Morphic Magic', icon: '🌀', category: 'body', color: '#1ABC9C' },
+        life: { id: 'life', label: 'Life Magic', icon: '✨', category: 'body', color: '#2ECC71' },
+        death: { id: 'death', label: 'Death Magic', icon: '💀', category: 'body', color: '#2C3E50' },
+        space: { id: 'space', label: 'Space Magic', icon: '🌌', category: 'aether', color: '#3498DB' },
+        time: { id: 'time', label: 'Time Magic', icon: '⏳', category: 'aether', color: '#F39C12' },
+        dimension: { id: 'dimension', label: 'Dimension Magic', icon: '🌐', category: 'aether', color: '#9B59B6' },
+        void: { id: 'void', label: 'Void Magic', icon: '⚫', category: 'aether', color: '#1A1A2E' },
+        reality: { id: 'reality', label: 'Reality Magic', icon: '🌀', category: 'aether', color: '#F1C40F' },
+        transference: { id: 'transference', label: 'Transference Magic', icon: '🔄', category: 'aether', color: '#E74C3C' }
     };
 
     var MAGIC_CATEGORIES = {
-        elemental: { label: 'Elemental Magic', icon: '\u26A1', color: '#8cbb3a' },
-        body: { label: 'Body Magic', icon: '\uD83D\uDCAA', color: '#c1453c' },
-        aether: { label: 'Aether Magic', icon: '\u2728', color: '#4a9bc7' }
+        elemental: { label: 'Elemental Magic', icon: '⚡', color: '#8cbb3a' },
+        body: { label: 'Body Magic', icon: '💪', color: '#c1453c' },
+        aether: { label: 'Aether Magic', icon: '✨', color: '#4a9bc7' }
     };
 
     // ============================================================
@@ -231,8 +226,8 @@
         if (level > 4) level = 4;
         if (level < 0) level = 0;
 
-        var filled = '\u25CF';
-        var empty = '\u25CB';
+        var filled = '●';
+        var empty = '○';
 
         var display = '';
         for (var i = 0; i < 5; i++) {
@@ -245,7 +240,7 @@
     function getPowerLevelFromDisplay(display) {
         var count = 0;
         for (var i = 0; i < display.length; i++) {
-            if (display[i] === '\u25CF') count++;
+            if (display[i] === '●') count++;
         }
         return count || 1;
     }
@@ -259,6 +254,11 @@
             'var(--danger)'
         ];
         return colors[Math.min(level - 1, 4)] || 'var(--text-dim)';
+    }
+
+    function getClassDescription(classId) {
+        var cls = CLASS_DEFINITIONS.find(function(c) { return c.id === classId; });
+        return cls ? cls.description : '';
     }
 
     // ============================================================
@@ -316,8 +316,8 @@
         if (level > 4) level = 4;
         if (level < 0) level = 0;
 
-        var filled = '\u25CF';
-        var empty = '\u25CB';
+        var filled = '●';
+        var empty = '○';
 
         var display = '';
         for (var i = 0; i < 5; i++) {
@@ -453,6 +453,7 @@
     window.getPowerLevelDisplay = getPowerLevelDisplay;
     window.getPowerLevelFromDisplay = getPowerLevelFromDisplay;
     window.getPowerLevelColor = getPowerLevelColor;
+    window.getClassDescription = getClassDescription;
 
     window.getDefaultMagicProficiencies = getDefaultMagicProficiencies;
     window.getCharacterMagic = getCharacterMagic;
@@ -461,5 +462,7 @@
     window.suggestMagicClass = suggestMagicClass;
     window.getMagicLevelLabel = getMagicLevelLabel;
     window.getMagicLevelColor = getMagicLevelColor;
+
+    console.log('character-stats.js loaded');
 
 })();
