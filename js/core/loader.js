@@ -8,8 +8,9 @@ var DataLoader = {
     isInitialized: false,
     pendingCallbacks: [],
     data: null,
-    _dispatched: false, // Prevent multiple dispatches
-    _isDispatching: false, // Prevent re-entrancy
+    _dispatched: false,
+    _isDispatching: false,
+    _initDone: false,
 
     init: function() {
         if (this.isInitialized) return;
@@ -17,44 +18,50 @@ var DataLoader = {
 
         var self = this;
 
-        // Listen for data loaded event from database.js
-        document.addEventListener('dataLoaded', function(e) {
-            // Prevent re-entrancy - if we're already dispatching, don't trigger again
+        // Listen for data ready event from database.js
+        document.addEventListener('dataReady', function(e) {
+            // Prevent re-entrancy
             if (self._isDispatching) return;
             
             self.data = e.detail.data || window.data;
             self.isReady = true;
-            self._dispatchReady();
+            
+            // Use requestAnimationFrame or setTimeout to avoid stack issues
+            if (typeof requestAnimationFrame !== 'undefined') {
+                requestAnimationFrame(function() {
+                    self._dispatchReady();
+                });
+            } else {
+                setTimeout(function() {
+                    self._dispatchReady();
+                }, 10);
+            }
         });
 
-        // If data is already available, dispatch immediately
+        // If data is already available, dispatch immediately but async
         if (window.data) {
             self.data = window.data;
             self.isReady = true;
-            // Use setTimeout to avoid synchronous recursion
             setTimeout(function() {
                 self._dispatchReady();
             }, 10);
         }
 
-        // Also check periodically (but stop once ready)
+        // Check periodically but with limits
+        var checkCount = 0;
+        var maxChecks = 20;
         var checkInterval = setInterval(function() {
+            checkCount++;
             if (window.data && !self.isReady) {
                 self.data = window.data;
                 self.isReady = true;
                 self._dispatchReady();
                 clearInterval(checkInterval);
             }
-            // If we're already ready, clear the interval
-            if (self.isReady) {
+            if (self.isReady || checkCount >= maxChecks) {
                 clearInterval(checkInterval);
             }
         }, 100);
-
-        // Safety: clear interval after 5 seconds if still running
-        setTimeout(function() {
-            clearInterval(checkInterval);
-        }, 5000);
     },
 
     _dispatchReady: function() {
@@ -78,8 +85,12 @@ var DataLoader = {
         }, this);
 
         // Dispatch a single event to notify that data is ready
-        // Use a different event name to avoid recursion
-        var event = new CustomEvent('dataReady', { detail: { data: this.data } });
+        // Use a different event name and only dispatch once
+        var event = new CustomEvent('dataLoaded', { 
+            detail: { data: this.data },
+            bubbles: false,
+            cancelable: false
+        });
         document.dispatchEvent(event);
 
         this._isDispatching = false;
@@ -117,15 +128,6 @@ setTimeout(function() {
     if (!DataLoader.isInitialized) {
         DataLoader.init();
     }
-}, 50);
+}, 100);
 
 console.log('loader.js loaded');
-
-// Also listen for dataReady events from database.js
-document.addEventListener('dataReady', function(e) {
-    // Just update data if not already set
-    if (!DataLoader.data && e.detail && e.detail.data) {
-        DataLoader.data = e.detail.data;
-        DataLoader.isReady = true;
-    }
-});
