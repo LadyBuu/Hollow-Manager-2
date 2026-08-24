@@ -30,6 +30,18 @@
             return;
         }
         
+        // Check if data exists
+        if (!window.data) {
+            console.warn('No data available, waiting for dataReady event');
+            container.innerHTML = '<p class="empty-state">Loading data...</p>';
+            return;
+        }
+
+        // Ensure teams array exists
+        if (!window.data.teams) {
+            window.data.teams = [];
+        }
+
         container.innerHTML = getTeamManagerHTML();
         renderTeamTab(teamState.currentTab);
         initTeamManagerEvents();
@@ -144,13 +156,13 @@
                         <button class="close-modal">&times;</button>
                     </div>
                     <div class="modal-body">
-                        <div class="member-form">
-                            <select id="member-character" style="min-width:200px;">
+                        <div class="member-form" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center;">
+                            <select id="member-character" style="flex:1;min-width:150px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
                                 <option value="">Select character...</option>
                             </select>
-                            <input type="text" id="member-role" placeholder="Role" style="min-width:120px;">
-                            <input type="text" id="member-join" placeholder="Join Week/Year" style="min-width:100px;">
-                            <input type="text" id="member-leave" placeholder="Leave Week/Year" style="min-width:100px;">
+                            <input type="text" id="member-role" placeholder="Role" style="flex:1;min-width:80px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
+                            <input type="text" id="member-join" placeholder="Join Week/Year" style="flex:1;min-width:80px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
+                            <input type="text" id="member-leave" placeholder="Leave Week/Year" style="flex:1;min-width:80px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
                             <button id="add-member-btn" class="primary small">Add Member</button>
                         </div>
                         <div id="members-list">
@@ -202,9 +214,9 @@
                         <button class="close-modal">&times;</button>
                     </div>
                     <div class="modal-body">
-                        <div class="ranking-form">
-                            <input type="text" id="ranking-week" placeholder="Week Block (1, 3, 5...) or Year" min="1">
-                            <input type="number" id="ranking-rank" placeholder="Rank" min="1">
+                        <div class="ranking-form" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center;">
+                            <input type="text" id="ranking-week" placeholder="Week Block (1, 3, 5...) or Year" style="flex:1;min-width:100px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
+                            <input type="number" id="ranking-rank" placeholder="Rank" min="1" style="flex:1;min-width:80px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
                             <button id="add-ranking-btn" class="primary small">Add Ranking</button>
                         </div>
                         <div id="ranking-list">
@@ -234,8 +246,11 @@
 
         container.innerHTML = filterHtml + listHeader + '<div id="teams-container-' + tab + '">' + teamsHtml + '</div>';
 
-        attachFilterEvents(tab);
-        attachTeamActionEvents(tab);
+        // Attach events after DOM update
+        setTimeout(function() {
+            attachFilterEvents(tab);
+            attachTeamActionEvents(tab);
+        }, 50);
     }
 
     function buildFilterHTML(tab, tabFilter) {
@@ -299,7 +314,12 @@
 
     function getFilteredTeams(type, filter, tabFilter) {
         var data = window.data || {};
-        var teams = data.teams ? data.teams.filter(function(t) { return t.status !== 'deleted'; }) : [];
+        if (!data.teams) {
+            data.teams = [];
+            return [];
+        }
+
+        var teams = data.teams.filter(function(t) { return t.status !== 'deleted'; });
 
         if (type === 'academic') {
             teams = teams.filter(function(t) { return t.type === 'academic'; });
@@ -413,9 +433,9 @@
                 }
             }
 
-            var typeLabel = team.type === 'academic' ? '\uD83D\uDCDA Academic' :
-                team.type === 'professional' ? '\uD83D\uDCBC Professional' :
-                team.type === 'temporary' ? '\uD83D\uDCCB Temporary' : '\uD83D\uDC64 Civilian';
+            var typeLabel = team.type === 'academic' ? '📚 Academic' :
+                team.type === 'professional' ? '💼 Professional' :
+                team.type === 'temporary' ? '📋 Temporary' : '👤 Civilian';
 
             html += '<div class="list-item team-item' + inactiveClass + '" data-id="' + team.id + '" style="grid-template-columns:1.2fr 0.8fr 0.6fr 0.6fr 1fr;' + inactiveStyle + '">';
             html += '<span><strong>' + team.name + '</strong> <span style="font-size:0.6rem;color:var(--text-dim);">' + typeLabel + '</span>' + missionDisplay +
@@ -424,7 +444,7 @@
             html += '<span style="font-size:0.75rem;">' + rankDisplay + '</span>';
             html += '<span style="font-size:0.75rem;">' + memberCount + '</span>';
             html += '<span class="actions">' +
-                '<button class="small toggle-members" data-id="' + team.id + '">' + (isExpanded ? '\u25BC' : '\u25B6') + '</button>' +
+                '<button class="small toggle-members" data-id="' + team.id + '">' + (isExpanded ? '▾' : '▸') + '</button>' +
                 '<button class="small manage-members" data-id="' + team.id + '">Members</button>' +
                 '<button class="small manage-rankings" data-id="' + team.id + '">Rankings</button>' +
                 '<button class="small edit-team" data-id="' + team.id + '">Edit</button>' +
@@ -447,7 +467,7 @@
 
                         html += '<div class="member-entry" style="border-left:3px solid ' + statusInfo.color + ';padding-left:8px;">' +
                             '<span>' + name + deadMarker + ' <span class="role">(' + (member.role || 'Member') + ')</span></span>' +
-                            '<span style="color:var(--text-dim);font-size:0.75rem;">Age: ' + age + ' | Joined: ' + (member.joinPeriod || '?') + (member.leavePeriod ? ' \u2192 ' + member.leavePeriod : '') + ' | <span style="color:' + statusInfo.color + ';">' + statusInfo.label + '</span></span>' +
+                            '<span style="color:var(--text-dim);font-size:0.75rem;">Age: ' + age + ' | Joined: ' + (member.joinPeriod || '?') + (member.leavePeriod ? ' → ' + member.leavePeriod : '') + ' | <span style="color:' + statusInfo.color + ';">' + statusInfo.label + '</span></span>' +
                             '</div>';
                     });
                 } else {
@@ -707,6 +727,9 @@
         if (editId) {
             title.textContent = 'Edit Team';
             var data = window.data || {};
+            if (!data.teams) {
+                data.teams = [];
+            }
             var team = data.teams.find(function(t) { return String(t.id) === String(editId); });
             if (team) {
                 document.getElementById('team-name').value = team.name || '';
@@ -778,7 +801,10 @@
     }
 
     function updatePeriodLabels() {
-        var type = document.getElementById('team-type').value;
+        var typeSelect = document.getElementById('team-type');
+        if (!typeSelect) return;
+        
+        var type = typeSelect.value;
         var startLabel = document.getElementById('team-start-label');
         var endLabel = document.getElementById('team-end-label');
         var startInput = document.getElementById('team-start');
@@ -850,6 +876,8 @@
         if (!teamData.type) { alert('Team type is required.'); return; }
 
         var data = window.data || {};
+        if (!data.teams) data.teams = [];
+
         if (editId) {
             var index = data.teams.findIndex(function(t) { return String(t.id) === String(editId); });
             if (index !== -1) {
@@ -887,10 +915,15 @@
         }
         closeTeamForm();
         renderTeamTab(tab);
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
+        }
     }
 
     function deleteTeam(id, tab) {
         var data = window.data || {};
+        if (!data.teams) return;
+        
         var team = data.teams.find(function(t) { return String(t.id) === String(id); });
         if (!team) return;
         if (!confirm('Delete "' + team.name + '" permanently?')) return;
@@ -903,6 +936,9 @@
             window.saveData().catch(function(err) { /* ignore */ });
         }
         renderTeamTab(tab || 'academic');
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
+        }
     }
 
     function closeTeamForm() {
@@ -912,6 +948,9 @@
     function openMemberModal(teamId, tab) {
         var modal = document.getElementById('member-modal');
         var data = window.data || {};
+        if (!data.teams) {
+            data.teams = [];
+        }
         var team = data.teams.find(function(t) { return String(t.id) === String(teamId); });
         if (!team) return;
 
@@ -958,7 +997,7 @@
             if (inTeam) {
                 var status = team.type === 'academic' ? getMemberStatusAtWeek({ characterId: charId, joinPeriod: '', leavePeriod: '' }, currentPeriod) : getMemberStatusAtPeriod({ characterId: charId, joinPeriod: '', leavePeriod: '' }, currentPeriod, team.type);
                 var statusInfo = getMemberStatusInfo(status);
-                inTeamChars.push({ char: char, status: 'in_team', label: '\u2713 Already in team', statusInfo: statusInfo });
+                inTeamChars.push({ char: char, status: 'in_team', label: '✓ Already in team', statusInfo: statusInfo });
                 return;
             }
 
@@ -981,7 +1020,7 @@
             }
 
             if (isDeceased) {
-                deceasedChars.push({ char: char, status: 'deceased', label: '\u271D Deceased' });
+                deceasedChars.push({ char: char, status: 'deceased', label: '✝ Deceased' });
                 return;
             }
 
@@ -997,18 +1036,18 @@
             }
 
             if (isEliminated) {
-                eliminatedChars.push({ char: char, status: 'eliminated', label: '\u26A0 Eliminated' });
+                eliminatedChars.push({ char: char, status: 'eliminated', label: '⚠ Eliminated' });
                 return;
             }
 
             if (isFormer) {
-                formerChars.push({ char: char, status: 'former', label: '\u21A9 Former Member' });
+                formerChars.push({ char: char, status: 'former', label: '↩ Former Member' });
                 return;
             }
 
             var availability = getCharacterAvailability(charId, currentPeriod, teamId);
             if (!availability.available) {
-                inOtherTeamChars.push({ char: char, status: 'in_other_team', label: '\u2298 ' + availability.reason });
+                inOtherTeamChars.push({ char: char, status: 'in_other_team', label: '⊗ ' + availability.reason });
                 return;
             }
 
@@ -1029,12 +1068,12 @@
         deceasedChars.sort(sortByName);
 
         var groupOrder = [
-            { items: inTeamChars, label: '\u2014 Already in Team \u2014' },
-            { items: availableChars, label: '\u2014 Available \u2014' },
-            { items: inOtherTeamChars, label: '\u2014 In Other Teams \u2014' },
-            { items: formerChars, label: '\u2014 Former Members \u2014' },
-            { items: eliminatedChars, label: '\u2014 Eliminated \u2014' },
-            { items: deceasedChars, label: '\u2014 Deceased \u2014' }
+            { items: inTeamChars, label: '— Already in Team —' },
+            { items: availableChars, label: '— Available —' },
+            { items: inOtherTeamChars, label: '— In Other Teams —' },
+            { items: formerChars, label: '— Former Members —' },
+            { items: eliminatedChars, label: '— Eliminated —' },
+            { items: deceasedChars, label: '— Deceased —' }
         ];
 
         var hasItems = false;
@@ -1163,33 +1202,35 @@
             }
         }
 
-        var targetTeam = data.teams.find(function(t) { return String(t.id) === String(teamId); });
+        var targetTeam = data.teams ? data.teams.find(function(t) { return String(t.id) === String(teamId); }) : null;
         var targetTeamType = targetTeam ? targetTeam.type : null;
 
-        for (var i = 0; i < data.teams.length; i++) {
-            var team = data.teams[i];
-            if (team.status === 'deleted' || team.status === 'inactive') continue;
-            if (String(team.id) === String(teamId)) continue;
+        if (data.teams) {
+            for (var i = 0; i < data.teams.length; i++) {
+                var team = data.teams[i];
+                if (team.status === 'deleted' || team.status === 'inactive') continue;
+                if (String(team.id) === String(teamId)) continue;
 
-            if (targetTeamType === 'professional' || targetTeamType === 'temporary' || targetTeamType === 'civilian') {
-                if (team.type === 'academic') {
-                    if (isAcademicPeriodComplete(char, weekNum)) {
-                        continue;
+                if (targetTeamType === 'professional' || targetTeamType === 'temporary' || targetTeamType === 'civilian') {
+                    if (team.type === 'academic') {
+                        if (isAcademicPeriodComplete(char, weekNum)) {
+                            continue;
+                        }
                     }
                 }
-            }
 
-            if (team.members) {
-                for (var j = 0; j < team.members.length; j++) {
-                    var member = team.members[j];
-                    if (String(member.characterId) === String(charId)) {
-                        var join = parseInt(member.joinPeriod);
-                        var leave = parseInt(member.leavePeriod);
-                        if (!isNaN(join) && join <= weekNum && (isNaN(leave) || leave >= weekNum)) {
-                            var typeLabel = team.type === 'academic' ? 'Academic' :
-                                team.type === 'professional' ? 'Professional' :
-                                team.type === 'temporary' ? 'Temporary' : 'Civilian';
-                            return { available: false, reason: 'Currently in ' + typeLabel + ' team: ' + team.name };
+                if (team.members) {
+                    for (var j = 0; j < team.members.length; j++) {
+                        var member = team.members[j];
+                        if (String(member.characterId) === String(charId)) {
+                            var join = parseInt(member.joinPeriod);
+                            var leave = parseInt(member.leavePeriod);
+                            if (!isNaN(join) && join <= weekNum && (isNaN(leave) || leave >= weekNum)) {
+                                var typeLabel = team.type === 'academic' ? 'Academic' :
+                                    team.type === 'professional' ? 'Professional' :
+                                    team.type === 'temporary' ? 'Temporary' : 'Civilian';
+                                return { available: false, reason: 'Currently in ' + typeLabel + ' team: ' + team.name };
+                            }
                         }
                     }
                 }
@@ -1228,6 +1269,8 @@
 
     function renderMembers(team) {
         var container = document.getElementById('members-list');
+        if (!container) return;
+        
         if (!team.members || team.members.length === 0) {
             container.innerHTML = '<p class="empty-state">No members in this team</p>';
             return;
@@ -1278,40 +1321,40 @@
             var statusInfo = getMemberStatusInfo(status);
             var periodDisplay = periodLabel + (member.joinPeriod || '?');
             if (member.leavePeriod) {
-                periodDisplay += ' \u2192 ' + periodLabel + member.leavePeriod;
+                periodDisplay += ' → ' + periodLabel + member.leavePeriod;
             }
 
             var statusIcon = '';
             var statusSuffix = '';
             if (status === 'deceased') {
-                statusIcon = '\u271D ';
+                statusIcon = '✝ ';
                 statusSuffix = ' (Deceased)';
             } else if (status === 'eliminated') {
-                statusIcon = '\u26A0 ';
+                statusIcon = '⚠ ';
                 statusSuffix = ' (Eliminated)';
             } else if (status === 'left') {
-                statusIcon = '\u21A9 ';
+                statusIcon = '↩ ';
                 statusSuffix = ' (Former)';
             } else if (status === 'future') {
-                statusIcon = '\u23F3 ';
+                statusIcon = '⏳ ';
                 statusSuffix = ' (Future)';
             } else if (status === 'active') {
-                statusIcon = '\u2713 ';
+                statusIcon = '✓ ';
             }
 
             html += '<div class="member-entry" style="border-left:3px solid ' + statusInfo.color + ';padding-left:8px;' +
                 (status === 'deceased' ? 'opacity:0.6;' : '') +
                 (status === 'left' ? 'opacity:0.7;' : '') + '" data-member-index="' + index + '">' +
-                '<div class="member-info">' +
+                '<div class="member-info" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px;width:100%;">' +
                 '<span><strong>' + name + '</strong></span>' +
-                '<span class="role">' + (member.role || 'Member') + '</span>' +
-                '<span class="years">' + periodDisplay + '</span>' +
-                '<span class="years">Age: ' + age + '</span>' +
+                '<span class="role" style="color:var(--accent);font-size:0.75rem;">' + (member.role || 'Member') + '</span>' +
+                '<span class="years" style="color:var(--text-dim);font-size:0.7rem;">' + periodDisplay + '</span>' +
+                '<span class="years" style="color:var(--text-dim);font-size:0.7rem;">Age: ' + age + '</span>' +
                 '<span style="color:' + statusInfo.color + ';font-size:0.7rem;font-weight:600;">' + statusIcon + statusInfo.label + statusSuffix + '</span>' +
-                '</div>' +
-                '<div class="member-actions">' +
+                '<div class="member-actions" style="display:flex;gap:4px;">' +
                 '<button class="small edit-member" data-index="' + index + '">Edit</button>' +
                 '<button class="small danger remove-member" data-char="' + member.characterId + '">Remove</button>' +
+                '</div>' +
                 '</div>' +
                 '</div>';
         });
@@ -1360,6 +1403,7 @@
         if (!charId) { alert('Please select a character.'); return; }
 
         var data = window.data || {};
+        if (!data.teams) data.teams = [];
         var team = data.teams.find(function(t) { return String(t.id) === String(teamId); });
         if (!team) return;
 
@@ -1401,6 +1445,7 @@
         var tab = modal.dataset.tab || 'academic';
 
         var data = window.data || {};
+        if (!data.teams) data.teams = [];
         var team = data.teams.find(function(t) { return String(t.id) === String(teamId); });
         if (!team) return;
 
@@ -1418,6 +1463,7 @@
 
     function openEditMemberModal(teamId, index) {
         var data = window.data || {};
+        if (!data.teams) data.teams = [];
         var team = data.teams.find(function(t) { return String(t.id) === String(teamId); });
         if (!team || !team.members || !team.members[index]) {
             alert('Member not found.');
@@ -1446,6 +1492,7 @@
         var tab = parentModal ? parentModal.dataset.tab || 'academic' : 'academic';
 
         var data = window.data || {};
+        if (!data.teams) data.teams = [];
         var team = data.teams.find(function(t) { return String(t.id) === String(teamId); });
         if (!team || !team.members || !team.members[index]) return;
 
@@ -1479,6 +1526,7 @@
     function openRankingModal(teamId, tab) {
         var modal = document.getElementById('ranking-modal');
         var data = window.data || {};
+        if (!data.teams) data.teams = [];
         var team = data.teams.find(function(t) { return String(t.id) === String(teamId); });
         if (!team) return;
 
@@ -1496,6 +1544,8 @@
 
     function renderRankings(team) {
         var container = document.getElementById('ranking-list');
+        if (!container) return;
+        
         if (!team.rankingHistory || team.rankingHistory.length === 0) {
             container.innerHTML = '<p class="empty-state">No ranking history</p>';
             return;
@@ -1516,7 +1566,7 @@
             } else {
                 blockDisplay = ' (' + entry.period + ')';
             }
-            html += '<div class="ranking-entry">' +
+            html += '<div class="ranking-entry" style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border-soft);">' +
                 '<span><strong>#' + entry.rank + '</strong> - ' + periodLabel + blockDisplay + '</span>' +
                 '<button class="small danger remove-ranking" data-index="' + index + '">Remove</button>' +
                 '</div>';
@@ -1539,6 +1589,7 @@
         var period = document.getElementById('ranking-week').value;
         var rank = document.getElementById('ranking-rank').value;
         var data = window.data || {};
+        if (!data.teams) data.teams = [];
         var team = data.teams.find(function(t) { return String(t.id) === String(teamId); });
         if (!team) return;
 
@@ -1608,6 +1659,7 @@
         var tab = modal.dataset.tab || 'academic';
 
         var data = window.data || {};
+        if (!data.teams) data.teams = [];
         var team = data.teams.find(function(t) { return String(t.id) === String(teamId); });
         if (!team || !team.rankingHistory) return;
 
@@ -1640,6 +1692,7 @@
     }
 
     function initTeamManagerEvents() {
+        // Tab switching
         document.querySelectorAll('.tab-btn').forEach(function(btn) {
             var newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
@@ -1666,6 +1719,7 @@
             });
         });
 
+        // Add team button
         var addBtn = document.getElementById('add-team-btn');
         if (addBtn) {
             var newBtn = addBtn.cloneNode(true);
@@ -1675,6 +1729,7 @@
             });
         }
 
+        // Close form
         var closeFormBtn = document.getElementById('close-team-form');
         if (closeFormBtn) {
             var newBtn = closeFormBtn.cloneNode(true);
@@ -1694,6 +1749,7 @@
             });
         }
 
+        // Save form
         var form = document.getElementById('team-form-inner');
         if (form) {
             var newForm = form.cloneNode(true);
@@ -1701,11 +1757,13 @@
             newForm.addEventListener('submit', saveTeam);
         }
 
+        // Type select change
         var typeSelect = document.getElementById('team-type');
         if (typeSelect) {
             typeSelect.addEventListener('change', updatePeriodLabels);
         }
 
+        // Add name history
         var addNameBtn = document.getElementById('add-name-history-btn');
         if (addNameBtn) {
             var newBtn = addNameBtn.cloneNode(true);
@@ -1716,6 +1774,7 @@
             });
         }
 
+        // Member modal
         var memberClose = document.querySelector('#member-modal .close-modal');
         if (memberClose) {
             var newBtn = memberClose.cloneNode(true);
@@ -1735,6 +1794,7 @@
             newBtn.addEventListener('click', addMember);
         }
 
+        // Edit member
         var editClose = document.querySelector('#edit-member-modal .close-modal');
         if (editClose) {
             var newBtn = editClose.cloneNode(true);
@@ -1760,6 +1820,7 @@
             newForm.addEventListener('submit', saveEditMember);
         }
 
+        // Ranking modal
         var rankClose = document.querySelector('#ranking-modal .close-modal');
         if (rankClose) {
             var newBtn = rankClose.cloneNode(true);
@@ -1785,17 +1846,29 @@
         window.TabManager.register('teams', renderTeamManager);
     }
 
-    document.addEventListener('dataLoaded', function() {
+    // Handle data ready
+    document.addEventListener('dataReady', function() {
         var container = document.getElementById('tab-teams');
-        if (container) {
+        if (container && container.style.display !== 'none') {
             renderTeamManager(container);
         }
     });
 
+    // Handle tab change
+    document.addEventListener('tabChanged', function(e) {
+        if (e.detail && e.detail.tab === 'teams') {
+            var container = document.getElementById('tab-teams');
+            if (container) {
+                renderTeamManager(container);
+            }
+        }
+    });
+
+    // If data already loaded, render
     if (window.data) {
         setTimeout(function() {
             var container = document.getElementById('tab-teams');
-            if (container) {
+            if (container && container.style.display !== 'none') {
                 renderTeamManager(container);
             }
         }, 100);
