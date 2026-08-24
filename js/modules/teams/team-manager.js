@@ -20,6 +20,16 @@
     };
 
     function renderTeamManager(container) {
+        console.log('renderTeamManager called with container:', container);
+        
+        if (!container) {
+            container = document.getElementById('tab-teams');
+        }
+        if (!container) {
+            console.error('Teams container not found');
+            return;
+        }
+        
         container.innerHTML = getTeamManagerHTML();
         renderTeamTab(teamState.currentTab);
         initTeamManagerEvents();
@@ -208,7 +218,10 @@
 
     function renderTeamTab(tab) {
         var container = document.getElementById(tab + '-content');
-        if (!container) return;
+        if (!container) {
+            console.warn('Container not found for tab:', tab);
+            return;
+        }
 
         var filter = teamState.filters[tab] ? teamState.filters[tab].filterStatus || 'active' : 'active';
         var tabFilter = teamState.filters[tab] || {};
@@ -584,7 +597,9 @@
 
         var applyBtn = document.getElementById('apply-filter-btn');
         if (applyBtn) {
-            applyBtn.addEventListener('click', function() {
+            var newBtn = applyBtn.cloneNode(true);
+            applyBtn.parentNode.replaceChild(newBtn, applyBtn);
+            newBtn.addEventListener('click', function() {
                 if (tab === 'academic') {
                     var week = parseInt(document.getElementById('team-filter-week').value);
                     if (!isNaN(week) && week > 0 && week <= 52) {
@@ -609,7 +624,8 @@
         if (input) {
             input.addEventListener('keypress', function(e) {
                 if (e.key === 'Enter') {
-                    applyBtn.click();
+                    var btn = document.getElementById('apply-filter-btn');
+                    if (btn) btn.click();
                 }
             });
         }
@@ -628,7 +644,9 @@
         if (!container) return;
 
         container.querySelectorAll('.toggle-members').forEach(function(btn) {
-            btn.addEventListener('click', function(e) {
+            var newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
                 var id = this.dataset.id;
                 if (teamState.expandedTeamId === id) {
@@ -641,28 +659,36 @@
         });
 
         container.querySelectorAll('.manage-members').forEach(function(btn) {
-            btn.addEventListener('click', function(e) {
+            var newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
                 openMemberModal(this.dataset.id, tab);
             });
         });
 
         container.querySelectorAll('.manage-rankings').forEach(function(btn) {
-            btn.addEventListener('click', function(e) {
+            var newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
                 openRankingModal(this.dataset.id, tab);
             });
         });
 
         container.querySelectorAll('.edit-team').forEach(function(btn) {
-            btn.addEventListener('click', function(e) {
+            var newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
                 showTeamForm(this.dataset.id, tab);
             });
         });
 
         container.querySelectorAll('.delete-team').forEach(function(btn) {
-            btn.addEventListener('click', function(e) {
+            var newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
                 deleteTeam(this.dataset.id, tab);
             });
@@ -1615,7 +1641,9 @@
 
     function initTeamManagerEvents() {
         document.querySelectorAll('.tab-btn').forEach(function(btn) {
-            btn.addEventListener('click', function() {
+            var newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', function() {
                 var tab = this.dataset.tab;
                 teamState.currentTab = tab;
 
@@ -1640,18 +1668,24 @@
 
         var addBtn = document.getElementById('add-team-btn');
         if (addBtn) {
-            addBtn.addEventListener('click', function() {
+            var newBtn = addBtn.cloneNode(true);
+            addBtn.parentNode.replaceChild(newBtn, addBtn);
+            newBtn.addEventListener('click', function() {
                 showTeamForm(null, teamState.currentTab || 'academic');
             });
         }
 
         var closeFormBtn = document.getElementById('close-team-form');
         if (closeFormBtn) {
-            closeFormBtn.addEventListener('click', closeTeamForm);
+            var newBtn = closeFormBtn.cloneNode(true);
+            closeFormBtn.parentNode.replaceChild(newBtn, closeFormBtn);
+            newBtn.addEventListener('click', closeTeamForm);
         }
         var cancelFormBtn = document.getElementById('cancel-team-form');
         if (cancelFormBtn) {
-            cancelFormBtn.addEventListener('click', closeTeamForm);
+            var newBtn = cancelFormBtn.cloneNode(true);
+            cancelFormBtn.parentNode.replaceChild(newBtn, cancelFormBtn);
+            newBtn.addEventListener('click', closeTeamForm);
         }
         var formModal = document.getElementById('team-form-modal');
         if (formModal) {
@@ -1662,7 +1696,9 @@
 
         var form = document.getElementById('team-form-inner');
         if (form) {
-            form.addEventListener('submit', saveTeam);
+            var newForm = form.cloneNode(true);
+            form.parentNode.replaceChild(newForm, form);
+            newForm.addEventListener('submit', saveTeam);
         }
 
         var typeSelect = document.getElementById('team-type');
@@ -1672,7 +1708,9 @@
 
         var addNameBtn = document.getElementById('add-name-history-btn');
         if (addNameBtn) {
-            addNameBtn.addEventListener('click', function() {
+            var newBtn = addNameBtn.cloneNode(true);
+            addNameBtn.parentNode.replaceChild(newBtn, addNameBtn);
+            newBtn.addEventListener('click', function() {
                 var container = document.getElementById('name-history-container');
                 addNameHistoryEntry(container);
             });
@@ -1680,7 +1718,9 @@
 
         var memberClose = document.querySelector('#member-modal .close-modal');
         if (memberClose) {
-            memberClose.addEventListener('click', closeMemberModal);
+            var newBtn = memberClose.cloneNode(true);
+            memberClose.parentNode.replaceChild(newBtn, memberClose);
+            newBtn.addEventListener('click', closeMemberModal);
         }
         var memberBg = document.getElementById('member-modal');
         if (memberBg) {
@@ -1690,12 +1730,16 @@
         }
         var addMemberBtn = document.getElementById('add-member-btn');
         if (addMemberBtn) {
-            addMemberBtn.addEventListener('click', addMember);
+            var newBtn = addMemberBtn.cloneNode(true);
+            addMemberBtn.parentNode.replaceChild(newBtn, addMemberBtn);
+            newBtn.addEventListener('click', addMember);
         }
 
         var editClose = document.querySelector('#edit-member-modal .close-modal');
         if (editClose) {
-            editClose.addEventListener('click', closeEditMemberModal);
+            var newBtn = editClose.cloneNode(true);
+            editClose.parentNode.replaceChild(newBtn, editClose);
+            newBtn.addEventListener('click', closeEditMemberModal);
         }
         var editBg = document.getElementById('edit-member-modal');
         if (editBg) {
@@ -1705,16 +1749,22 @@
         }
         var cancelEdit = document.getElementById('cancel-edit-member');
         if (cancelEdit) {
-            cancelEdit.addEventListener('click', closeEditMemberModal);
+            var newBtn = cancelEdit.cloneNode(true);
+            cancelEdit.parentNode.replaceChild(newBtn, cancelEdit);
+            newBtn.addEventListener('click', closeEditMemberModal);
         }
         var editForm = document.getElementById('edit-member-form');
         if (editForm) {
-            editForm.addEventListener('submit', saveEditMember);
+            var newForm = editForm.cloneNode(true);
+            editForm.parentNode.replaceChild(newForm, editForm);
+            newForm.addEventListener('submit', saveEditMember);
         }
 
         var rankClose = document.querySelector('#ranking-modal .close-modal');
         if (rankClose) {
-            rankClose.addEventListener('click', closeRankingModal);
+            var newBtn = rankClose.cloneNode(true);
+            rankClose.parentNode.replaceChild(newBtn, rankClose);
+            newBtn.addEventListener('click', closeRankingModal);
         }
         var rankBg = document.getElementById('ranking-modal');
         if (rankBg) {
@@ -1724,7 +1774,9 @@
         }
         var addRankBtn = document.getElementById('add-ranking-btn');
         if (addRankBtn) {
-            addRankBtn.addEventListener('click', addRanking);
+            var newBtn = addRankBtn.cloneNode(true);
+            addRankBtn.parentNode.replaceChild(newBtn, addRankBtn);
+            newBtn.addEventListener('click', addRanking);
         }
     }
 
@@ -1735,7 +1787,7 @@
 
     document.addEventListener('dataLoaded', function() {
         var container = document.getElementById('tab-teams');
-        if (container && container.style.display !== 'none') {
+        if (container) {
             renderTeamManager(container);
         }
     });
@@ -1743,7 +1795,7 @@
     if (window.data) {
         setTimeout(function() {
             var container = document.getElementById('tab-teams');
-            if (container && container.style.display !== 'none') {
+            if (container) {
                 renderTeamManager(container);
             }
         }, 100);
@@ -1751,5 +1803,7 @@
 
     window.renderTeamManager = renderTeamManager;
     window.teamState = teamState;
+
+    console.log('team-manager.js loaded');
 
 })();
