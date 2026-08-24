@@ -15,6 +15,23 @@
     };
 
     function renderTournaments(container) {
+        if (!container) {
+            container = document.getElementById('tab-tournaments');
+        }
+        if (!container) return;
+
+        // Check if data exists
+        if (!window.data) {
+            console.warn('No data available for tournaments, waiting for dataReady event');
+            container.innerHTML = '<p class="empty-state">Loading tournament data...</p>';
+            return;
+        }
+
+        // Ensure tournaments array exists
+        if (!window.data.tournaments) {
+            window.data.tournaments = [];
+        }
+
         container.innerHTML = getTournamentsHTML();
         renderTournamentList();
         initTournamentEvents();
@@ -172,7 +189,7 @@
             if (tourn.winner) {
                 var winnerName = window.getParticipantName(tourn.winner);
                 if (winnerName) {
-                    winnerDisplay = ' \u2605 ' + winnerName;
+                    winnerDisplay = ' ★ ' + winnerName;
                 }
             }
 
@@ -316,11 +333,11 @@
             var name = window.getParticipantName(p.id);
             var isEliminated = tourn.eliminations && tourn.eliminations.some(function(e) { return String(e.participantId) === String(p.id); });
             var color = isEliminated ? 'var(--danger)' : 'var(--border)';
-            var status = isEliminated ? ' \u274C' : '';
+            var status = isEliminated ? ' ✘' : '';
 
             html += '<span style="background:var(--panel-alt);padding:2px 8px;border-radius:10px;font-size:0.75rem;border:1px solid ' + color + ';">';
             html += name + status;
-            html += ' <button class="remove-participant small" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;" data-id="' + p.id + '">\u2715</button>';
+            html += ' <button class="remove-participant small" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;" data-id="' + p.id + '">✕</button>';
             html += '</span>';
         });
         container.innerHTML = html;
@@ -357,12 +374,12 @@
             html += '<div><strong style="color:var(--accent);">Round ' + roundLabel + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + matchCount + ' matches)</span>';
             html += ' <span style="font-size:0.65rem;padding:1px 8px;border-radius:8px;background:' +
                 (isCompleted ? 'var(--info-soft);color:var(--info);' : 'var(--bg);color:var(--text-dim);') + '">' +
-                (isCompleted ? '\u2713 Complete' : (matchCount > 0 ? 'In progress' : 'Empty')) + '</span>';
+                (isCompleted ? '✓ Complete' : (matchCount > 0 ? 'In progress' : 'Empty')) + '</span>';
             html += '</div>';
             html += '<div style="display:flex;gap:4px;">';
-            html += '<button class="small secondary view-round-status-btn" data-round="' + roundIndex + '">\uD83D\uDCCA Status</button>';
-            html += '<button class="small secondary edit-round-btn" data-round="' + roundIndex + '">\u2699 Edit</button>';
-            html += '<button class="small danger delete-round-btn" data-round="' + roundIndex + '">\u2715 Delete</button>';
+            html += '<button class="small secondary view-round-status-btn" data-round="' + roundIndex + '">◊ Status</button>';
+            html += '<button class="small secondary edit-round-btn" data-round="' + roundIndex + '">⚙ Edit</button>';
+            html += '<button class="small danger delete-round-btn" data-round="' + roundIndex + '">✕ Delete</button>';
             html += '</div>';
             html += '</div>';
 
@@ -384,19 +401,19 @@
                             if (isGroupExam) {
                                 var result = match.results && match.results[id];
                                 if (result === 'pass') {
-                                    name += ' \u2713 Pass';
+                                    name += ' ✓ Pass';
                                 } else if (result === 'fail') {
-                                    name += ' \u2717 Fail';
+                                    name += ' ✗ Fail';
                                 } else {
-                                    name += ' \u23F3 Pending';
+                                    name += ' ⏳ Pending';
                                 }
                             } else {
                                 var isWinner = match.winner && String(match.winner) === String(id);
                                 var isLoser = match.loser && String(match.loser) === String(id);
                                 var isAdvancing = match.status === 'completed' && !isWinner && !isLoser && match.participants.length > 2;
-                                if (isWinner) name += ' \u2605';
-                                else if (isLoser) name += ' \u274C';
-                                else if (isAdvancing) name += ' \u2B06';
+                                if (isWinner) name += ' ★';
+                                else if (isLoser) name += ' ✘';
+                                else if (isAdvancing) name += ' ↑';
                             }
                             participantNames.push(name);
                         });
@@ -529,42 +546,42 @@
             html += '<div style="display:flex;flex-wrap:wrap;gap:4px;">';
 
             if (winnerIds.length > 0) {
-                html += '<span style="background:var(--accent-soft);padding:1px 6px;border-radius:8px;font-size:0.65rem;border:1px solid var(--accent);">\uD83C\uDFC6 Winners: ';
+                html += '<span style="background:var(--accent-soft);padding:1px 6px;border-radius:8px;font-size:0.65rem;border:1px solid var(--accent);">🏆 Winners: ';
                 var names = winnerIds.map(function(id) { return window.getParticipantName(id); });
                 html += names.join(', ');
                 html += '</span>';
             }
 
             if (advancingIds.length > 0) {
-                html += '<span style="background:var(--warning-soft);padding:1px 6px;border-radius:8px;font-size:0.65rem;border:1px solid var(--warning);">\u2B06 Advancing: ';
+                html += '<span style="background:var(--warning-soft);padding:1px 6px;border-radius:8px;font-size:0.65rem;border:1px solid var(--warning);">↑ Advancing: ';
                 var names = advancingIds.map(function(id) { return window.getParticipantName(id); });
                 html += names.join(', ');
                 html += '</span>';
             }
 
             if (passedIds.length > 0) {
-                html += '<span style="background:var(--accent-soft);padding:1px 6px;border-radius:8px;font-size:0.65rem;border:1px solid var(--accent);">\u2713 Passed: ';
+                html += '<span style="background:var(--accent-soft);padding:1px 6px;border-radius:8px;font-size:0.65rem;border:1px solid var(--accent);">✓ Passed: ';
                 var names = passedIds.map(function(id) { return window.getParticipantName(id); });
                 html += names.join(', ');
                 html += '</span>';
             }
 
             if (failedIds.length > 0) {
-                html += '<span style="background:var(--danger-soft);padding:1px 6px;border-radius:8px;font-size:0.65rem;border:1px solid var(--danger);">\u2717 Failed: ';
+                html += '<span style="background:var(--danger-soft);padding:1px 6px;border-radius:8px;font-size:0.65rem;border:1px solid var(--danger);">✗ Failed: ';
                 var names = failedIds.map(function(id) { return window.getParticipantName(id); });
                 html += names.join(', ');
                 html += '</span>';
             }
 
             if (loserIds.length > 0) {
-                html += '<span style="background:var(--danger-soft);padding:1px 6px;border-radius:8px;font-size:0.65rem;border:1px solid var(--danger);">\u274C Eliminated: ';
+                html += '<span style="background:var(--danger-soft);padding:1px 6px;border-radius:8px;font-size:0.65rem;border:1px solid var(--danger);">✘ Eliminated: ';
                 var names = loserIds.map(function(id) { return window.getParticipantName(id); });
                 html += names.join(', ');
                 html += '</span>';
             }
 
             if (pendingIds.length > 0) {
-                html += '<span style="background:var(--bg);padding:1px 6px;border-radius:8px;font-size:0.65rem;border:1px solid var(--border);">\u23F3 Pending: ';
+                html += '<span style="background:var(--bg);padding:1px 6px;border-radius:8px;font-size:0.65rem;border:1px solid var(--border);">⏳ Pending: ';
                 var names = pendingIds.map(function(id) { return window.getParticipantName(id); });
                 html += names.join(', ');
                 html += '</span>';
@@ -644,27 +661,27 @@
 
             if (status === 'winner') {
                 color = 'var(--accent)';
-                icon = '\uD83C\uDFC6 ';
+                icon = '🏆 ';
                 bg = 'var(--accent-soft)';
             } else if (status === 'advancing') {
                 color = 'var(--warning)';
-                icon = '\u2B06 ';
+                icon = '↑ ';
                 bg = 'var(--warning-soft)';
             } else if (status === 'eliminated') {
                 color = 'var(--danger)';
-                icon = '\u274C ';
+                icon = '✘ ';
                 bg = 'var(--danger-soft)';
             } else if (status === 'passed') {
                 color = 'var(--accent)';
-                icon = '\u2713 ';
+                icon = '✓ ';
                 bg = 'var(--accent-soft)';
             } else if (status === 'failed') {
                 color = 'var(--danger)';
-                icon = '\u2717 ';
+                icon = '✗ ';
                 bg = 'var(--danger-soft)';
             } else if (status === 'pending') {
                 color = 'var(--text-dim)';
-                icon = '\u23F3 ';
+                icon = '⏳ ';
                 bg = 'var(--bg)';
             }
 
@@ -694,16 +711,16 @@
                     var name = window.getParticipantName(id);
                     if (isGroupExam) {
                         var result = match.results && match.results[id];
-                        if (result === 'pass') name = '\u2713 ' + name;
-                        else if (result === 'fail') name = '\u2717 ' + name;
-                        else name = '\u23F3 ' + name;
+                        if (result === 'pass') name = '✓ ' + name;
+                        else if (result === 'fail') name = '✗ ' + name;
+                        else name = '⏳ ' + name;
                     } else {
                         var isWinner = match.winner && String(match.winner) === String(id);
                         var isLoser = match.loser && String(match.loser) === String(id);
                         var isAdvancing = match.advancing && match.advancing.some(function(aid) { return String(aid) === String(id); });
-                        if (isWinner) name = '\uD83C\uDFC6 ' + name;
-                        else if (isLoser) name = '\u274C ' + name;
-                        else if (isAdvancing) name = '\u2B06 ' + name;
+                        if (isWinner) name = '🏆 ' + name;
+                        else if (isLoser) name = '✘ ' + name;
+                        else if (isAdvancing) name = '↑ ' + name;
                     }
                     participantNames.push(name);
                 });
@@ -765,7 +782,7 @@
                         </p>
                     </div>
                     <div style="margin-top:12px;display:flex;gap:4px;flex-wrap:wrap;">
-                        <button id="regenerate-matches-btn" class="primary small">\u267B Regenerate Matches</button>
+                        <button id="regenerate-matches-btn" class="primary small">↻ Regenerate Matches</button>
                     </div>
                     <div class="form-actions" style="margin-top:16px;">
                         <button type="button" id="cancel-edit-round" class="secondary">Close</button>
@@ -1104,7 +1121,7 @@
                 var option = document.createElement('option');
                 option.value = c.id;
                 var teamDisplay = c.team ? ' (' + c.team + ')' : '';
-                option.textContent = c.name + teamDisplay + ' \u2713 available';
+                option.textContent = c.name + teamDisplay + ' ✓ available';
                 option.style.color = 'var(--accent)';
                 select.appendChild(option);
             });
@@ -1112,7 +1129,7 @@
             if (eliminatedInThisTournament.length > 0) {
                 var separator = document.createElement('option');
                 separator.disabled = true;
-                separator.textContent = '\u2500\u2500 Already eliminated in this tournament \u2500\u2500';
+                separator.textContent = '──────────────── Already eliminated in this tournament ────────────────';
                 separator.style.color = 'var(--text-dim)';
                 select.appendChild(separator);
 
@@ -1120,7 +1137,7 @@
                     var option = document.createElement('option');
                     option.value = c.id;
                     var teamDisplay = c.team ? ' (' + c.team + ')' : '';
-                    option.textContent = c.name + teamDisplay + ' \u274C eliminated';
+                    option.textContent = c.name + teamDisplay + ' ✘ eliminated';
                     option.style.color = 'var(--danger)';
                     option.disabled = true;
                     select.appendChild(option);
@@ -1130,7 +1147,7 @@
             if (eliminatedBefore.length > 0) {
                 var separator = document.createElement('option');
                 separator.disabled = true;
-                separator.textContent = '\u2500\u2500 Eliminated in previous tournaments \u2500\u2500';
+                separator.textContent = '──────────────── Eliminated in previous tournaments ────────────────';
                 separator.style.color = 'var(--text-dim)';
                 select.appendChild(separator);
 
@@ -1138,7 +1155,7 @@
                     var option = document.createElement('option');
                     option.value = c.id;
                     var teamDisplay = c.team ? ' (' + c.team + ')' : '';
-                    var reason = c.isDeceased ? ' \u271D deceased' : ' \u26A0 eliminated before week ' + currentWeek;
+                    var reason = c.isDeceased ? ' ✝ deceased' : ' ⚠ eliminated before week ' + currentWeek;
                     option.textContent = c.name + teamDisplay + reason;
                     option.style.color = 'var(--text-dim)';
                     option.style.textDecoration = 'line-through';
@@ -1178,12 +1195,12 @@
             var isBeforeStart = !isNaN(elimWeek) && elimWeek < currentWeek;
 
             html += '<span style="background:' + (isBeforeStart ? 'var(--bg)' : 'var(--danger-soft)') + ';padding:2px 8px;border-radius:10px;font-size:0.75rem;border:1px solid ' + (isBeforeStart ? 'var(--border)' : 'var(--danger)') + ';' + (isBeforeStart ? 'opacity:0.5;' : '') + '">';
-            html += name + (teamName ? ' (' + teamName + ')' : '') + ' \u274C';
+            html += name + (teamName ? ' (' + teamName + ')' : '') + ' ✘';
             if (isBeforeStart) {
                 html += ' <span style="font-size:0.6rem;color:var(--text-dim);">(before tournament)</span>';
             }
             if (!isBeforeStart) {
-                html += ' <button class="uneliminate-btn small" style="background:none;border:none;color:var(--text);cursor:pointer;font-size:0.6rem;padding:0 2px;" data-id="' + elim.participantId + '">\u21BB</button>';
+                html += ' <button class="uneliminate-btn small" style="background:none;border:none;color:var(--text);cursor:pointer;font-size:0.6rem;padding:0 2px;" data-id="' + elim.participantId + '">↻</button>';
             }
             html += '</span>';
         });
@@ -1200,7 +1217,7 @@
         var container = document.getElementById('winner-display');
         if (tourn.winner) {
             var name = window.getParticipantName(tourn.winner);
-            container.innerHTML = '\u2605 ' + name;
+            container.innerHTML = '🏆 ' + name;
             container.style.color = 'var(--accent)';
             container.style.fontWeight = '600';
             container.style.fontSize = '1.1rem';
@@ -1279,13 +1296,13 @@
                 var html = '<div style="display:flex;flex-wrap:wrap;gap:4px;width:100%;">';
                 selectedIds.forEach(function(id) {
                     var name = window.getParticipantName(id);
-                    html += '<span style="background:var(--accent-soft);padding:2px 10px;border-radius:10px;font-size:0.75rem;border:1px solid var(--accent);display:inline-flex;align-items:center;gap:4px;">' + name + ' <button class="remove-selected small" data-id="' + id + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">\u2715</button></span>';
+                    html += '<span style="background:var(--accent-soft);padding:2px 10px;border-radius:10px;font-size:0.75rem;border:1px solid var(--accent);display:inline-flex;align-items:center;gap:4px;">' + name + ' <button class="remove-selected small" data-id="' + id + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button></span>';
                 });
                 var remaining = matchSize - selectedIds.length;
                 if (remaining > 0) {
                     html += '<span style="color:var(--text-dim);font-size:0.65rem;padding:4px;">Add ' + remaining + ' more</span>';
                 } else {
-                    html += '<span style="color:var(--accent);font-size:0.65rem;padding:4px;">\u2713 Ready!</span>';
+                    html += '<span style="color:var(--accent);font-size:0.65rem;padding:4px;">✓ Ready!</span>';
                 }
                 html += '</div>';
                 selectedContainer.innerHTML = html;
@@ -1296,7 +1313,7 @@
                 if (selectedIds.indexOf(id) !== -1) {
                     btn.style.background = 'var(--accent-soft)';
                     btn.style.borderColor = 'var(--accent)';
-                    btn.textContent = window.getParticipantName(id) + ' \u2713';
+                    btn.textContent = window.getParticipantName(id) + ' ✓';
                 } else {
                     btn.style.background = 'var(--panel-alt)';
                     btn.style.borderColor = 'var(--border-soft)';
@@ -1425,9 +1442,9 @@
                 if (isPassed) style += 'border-color:var(--accent);background:var(--accent-soft);';
                 else if (isFailed) style += 'border-color:var(--danger);background:var(--danger-soft);';
                 html += '<span style="' + style + '">' + name +
-                    (isPassed ? ' \u2713 Pass' : '') +
-                    (isFailed ? ' \u2717 Fail' : '') +
-                    (isPending ? ' \u23F3 Pending' : '') +
+                    (isPassed ? ' ✓ Pass' : '') +
+                    (isFailed ? ' ✗ Fail' : '') +
+                    (isPending ? ' ⏳ Pending' : '') +
                 '</span>';
             });
             html += '</div>';
@@ -1445,8 +1462,8 @@
                 html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:var(--bg);border-radius:4px;border:1px solid var(--border-soft);">';
                 html += '<span style="font-size:0.8rem;font-weight:500;">' + name + '</span>';
                 html += '<div style="display:flex;gap:4px;">';
-                html += '<button class="small ' + (isPassed ? 'primary' : 'secondary') + ' set-exam-result" data-participant="' + id + '" data-result="pass">\u2713 Pass</button>';
-                html += '<button class="small ' + (isFailed ? 'danger' : 'secondary') + ' set-exam-result" data-participant="' + id + '" data-result="fail">\u2717 Fail</button>';
+                html += '<button class="small ' + (isPassed ? 'primary' : 'secondary') + ' set-exam-result" data-participant="' + id + '" data-result="pass">✓ Pass</button>';
+                html += '<button class="small ' + (isFailed ? 'danger' : 'secondary') + ' set-exam-result" data-participant="' + id + '" data-result="fail">✗ Fail</button>';
                 if (isPassed || isFailed) {
                     html += '<button class="small secondary set-exam-result" data-participant="' + id + '" data-result="clear">Clear</button>';
                 }
@@ -1470,7 +1487,7 @@
             html += '<div style="margin-bottom:12px;padding:8px;background:var(--bg);border-radius:4px;border:1px solid var(--border-soft);">';
             html += '<span style="font-size:0.75rem;color:var(--text-dim);">Progress: <strong>' + evaluated + '/' + total + '</strong> evaluated</span>';
             if (allEvaluated) {
-                html += ' <span style="color:var(--accent);font-weight:600;">\u2713 All evaluated!</span>';
+                html += ' <span style="color:var(--accent);font-weight:600;">✓ All evaluated!</span>';
             }
             html += '</div>';
 
@@ -1574,9 +1591,9 @@
                 else if (isLoser) style += 'border-color:var(--danger);background:var(--danger-soft);';
                 else if (isAdvancing) style += 'border-color:var(--warning);background:var(--warning-soft);';
                 html += '<span style="' + style + '">' + name +
-                    (isWinner ? ' \u2605 Winner' : '') +
-                    (isLoser ? ' \u274C Loser' : '') +
-                    (isAdvancing ? ' \u2B06 Advances' : '') +
+                    (isWinner ? ' ★ Winner' : '') +
+                    (isLoser ? ' ✘ Loser' : '') +
+                    (isAdvancing ? ' ↑ Advances' : '') +
                 '</span>';
             });
             html += '</div>';
@@ -2248,15 +2265,27 @@
         }
     }
 
-    // Register with TabManager
+    // ============================================================
+    // REGISTER WITH TABMANAGER
+    // ============================================================
+
     if (typeof window.TabManager !== 'undefined') {
         window.TabManager.register('tournaments', renderTournaments);
     }
 
-    document.addEventListener('dataLoaded', function() {
+    document.addEventListener('dataReady', function() {
         var container = document.getElementById('tab-tournaments');
         if (container && container.style.display !== 'none') {
             renderTournaments(container);
+        }
+    });
+
+    document.addEventListener('tabChanged', function(e) {
+        if (e.detail && e.detail.tab === 'tournaments') {
+            var container = document.getElementById('tab-tournaments');
+            if (container) {
+                renderTournaments(container);
+            }
         }
     });
 
@@ -2269,7 +2298,13 @@
         }, 100);
     }
 
+    // ============================================================
+    // EXPOSE FUNCTIONS
+    // ============================================================
+
     window.renderTournaments = renderTournaments;
     window.tournamentState = tournamentState;
+
+    console.log('tournaments-ui.js loaded');
 
 })();
