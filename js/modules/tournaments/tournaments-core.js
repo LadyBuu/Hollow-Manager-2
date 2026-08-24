@@ -69,6 +69,11 @@
             createdAt: new Date().toISOString()
         };
         data.tournaments.push(newTourn);
+        
+        if (typeof window.saveData === 'function') {
+            window.saveData().catch(function(err) { /* ignore */ });
+        }
+        
         return newTourn;
     }
 
@@ -91,6 +96,10 @@
         if (!tourn.eliminations || !Array.isArray(tourn.eliminations)) tourn.eliminations = existingEliminations;
         if (!tourn.winner) tourn.winner = existingWinner;
         if (!tourn.winners || !Array.isArray(tourn.winners)) tourn.winners = existingWinners;
+
+        if (typeof window.saveData === 'function') {
+            window.saveData().catch(function(err) { /* ignore */ });
+        }
 
         return tourn;
     }
@@ -205,6 +214,10 @@
                 fromMatch: true
             });
         }
+
+        if (typeof window.saveData === 'function') {
+            window.saveData().catch(function(err) { /* ignore */ });
+        }
     }
 
     function unmarkCharacterEliminated(charId, tournament) {
@@ -228,6 +241,10 @@
             char.eliminations = char.eliminations.filter(function(e) {
                 return !(String(e.tournamentId) === String(tournamentId) && !e.standalone);
             });
+        }
+
+        if (typeof window.saveData === 'function') {
+            window.saveData().catch(function(err) { /* ignore */ });
         }
     }
 
@@ -281,6 +298,10 @@
             }
         } else if (tourn.rounds.length > 0 && tourn.status === 'draft') {
             tourn.status = 'active';
+        }
+
+        if (typeof window.saveData === 'function') {
+            window.saveData().catch(function(err) { /* ignore */ });
         }
     }
 
@@ -342,7 +363,25 @@
         return 'unknown';
     }
 
-    // Expose functions globally
+    // ============================================================
+    // REGISTER WITH TABMANAGER
+    // ============================================================
+
+    document.addEventListener('dataReady', function() {
+        // Ensure tournaments data exists
+        if (window.data && !window.data.tournaments) {
+            window.data.tournaments = [];
+        }
+    });
+
+    if (window.data && !window.data.tournaments) {
+        window.data.tournaments = [];
+    }
+
+    // ============================================================
+    // EXPOSE FUNCTIONS
+    // ============================================================
+
     window.getTournament = getTournament;
     window.getTournaments = getTournaments;
     window.createTournament = createTournament;
@@ -359,5 +398,7 @@
     window.checkRoundStatuses = checkRoundStatuses;
     window.getRoundParticipants = getRoundParticipants;
     window.getParticipantRoundStatus = getParticipantRoundStatus;
+
+    console.log('tournaments-core.js loaded');
 
 })();
