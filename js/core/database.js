@@ -11,6 +11,7 @@ var STORE_NAME = 'appData';
 var db = null;
 var data = null;
 var dbOpenPromise = null;
+var isOpening = false;
 
 function openDatabase() {
     // If already open, return the existing db
@@ -23,29 +24,42 @@ function openDatabase() {
         return dbOpenPromise;
     }
 
+    console.log('Opening IndexedDB...');
+    isOpening = true;
+
     dbOpenPromise = new Promise(function(resolve, reject) {
-        var request = indexedDB.open(DB_NAME, DB_VERSION);
-        
-        request.onerror = function() { 
-            console.error('IndexedDB open error:', request.error);
+        try {
+            var request = indexedDB.open(DB_NAME, DB_VERSION);
+            
+            request.onerror = function(event) {
+                console.error('IndexedDB open error:', event.target.error);
+                dbOpenPromise = null;
+                isOpening = false;
+                // Resolve with null instead of rejecting so app can continue
+                resolve(null);
+            };
+            
+            request.onsuccess = function(event) {
+                db = event.target.result;
+                dbOpenPromise = null;
+                isOpening = false;
+                console.log('IndexedDB opened successfully');
+                resolve(db);
+            };
+            
+            request.onupgradeneeded = function(event) {
+                var database = event.target.result;
+                if (!database.objectStoreNames.contains(STORE_NAME)) {
+                    database.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                    console.log('IndexedDB store created');
+                }
+            };
+        } catch (err) {
+            console.error('IndexedDB open exception:', err);
             dbOpenPromise = null;
-            reject(request.error); 
-        };
-        
-        request.onsuccess = function() {
-            db = request.result;
-            dbOpenPromise = null;
-            console.log('IndexedDB opened successfully');
-            resolve(db);
-        };
-        
-        request.onupgradeneeded = function(event) {
-            var database = event.target.result;
-            if (!database.objectStoreNames.contains(STORE_NAME)) {
-                database.createObjectStore(STORE_NAME, { keyPath: 'id' });
-                console.log('IndexedDB store created');
-            }
-        };
+            isOpening = false;
+            resolve(null);
+        }
     });
 
     return dbOpenPromise;
@@ -132,20 +146,27 @@ function getEmptyData() {
 
 function loadData() {
     return new Promise(function(resolve) {
-        // If db is already open, use it
-        if (db) {
+        // If db is already open and valid, use it
+        if (db && typeof db.transaction === 'function') {
             doLoadData(resolve);
             return;
         }
         
         // Otherwise open the database first
         openDatabase()
-            .then(function() {
-                doLoadData(resolve);
+            .then(function(result) {
+                if (result && typeof result.transaction === 'function') {
+                    db = result;
+                    doLoadData(resolve);
+                } else {
+                    console.warn('Database not available, using empty data');
+                    data = getEmptyData();
+                    window.data = data;
+                    resolve(data);
+                }
             })
             .catch(function(err) {
                 console.error('Failed to open database:', err);
-                // Use empty data as fallback
                 data = getEmptyData();
                 window.data = data;
                 resolve(data);
@@ -154,6 +175,15 @@ function loadData() {
 }
 
 function doLoadData(resolve) {
+    // Double-check db is valid
+    if (!db || typeof db.transaction !== 'function') {
+        console.warn('Database not available in doLoadData, using empty data');
+        data = getEmptyData();
+        window.data = data;
+        resolve(data);
+        return;
+    }
+
     try {
         var transaction = db.transaction([STORE_NAME], 'readonly');
         var store = transaction.objectStore(STORE_NAME);
@@ -174,8 +204,8 @@ function doLoadData(resolve) {
                 resolve(data);
             }
         };
-        request.onerror = function() {
-            console.error('IndexedDB load error:', request.error);
+        request.onerror = function(event) {
+            console.error('IndexedDB load error:', event.target.error);
             data = getEmptyData();
             window.data = data;
             resolve(data);
@@ -196,12 +226,18 @@ function doLoadData(resolve) {
 
 function saveData() {
     return new Promise(function(resolve) {
-        // If db is not open, open it first
-        if (!db) {
+        // If db is not open or invalid, open it first
+        if (!db || typeof db.transaction !== 'function') {
             openDatabase()
-                .then(function() {
-                    // Recursive call after db is open
-                    saveData().then(resolve);
+                .then(function(result) {
+                    if (result && typeof result.transaction === 'function') {
+                        db = result;
+                        // Recursive call after db is open
+                        saveData().then(resolve);
+                    } else {
+                        console.warn('Database not available for save, data kept in memory');
+                        resolve();
+                    }
                 })
                 .catch(function(err) {
                     console.error('Failed to open database for save:', err);
@@ -236,8 +272,8 @@ function saveData() {
                 console.log('Data saved to IndexedDB');
                 resolve();
             };
-            request.onerror = function() {
-                console.error('IndexedDB save error:', request.error);
+            request.onerror = function(event) {
+                console.error('IndexedDB save error:', event.target.error);
                 resolve();
             };
             transaction.onerror = function(event) {
