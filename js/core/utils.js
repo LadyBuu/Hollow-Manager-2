@@ -528,7 +528,270 @@ function setClassDuration(studentId, week, day, hour, duration) {
     }
 }
 
-// Expose all utilities globally
+// ============================================================
+// CLASS FUNCTIONS
+// ============================================================
+
+function getClasses() {
+    var data = window.data || {};
+    if (!data.classes) {
+        data.classes = [];
+        return [];
+    }
+    return data.classes.slice().sort(function(a, b) {
+        return a.name.localeCompare(b.name);
+    });
+}
+
+function getClass(id) {
+    if (!id) return null;
+    var data = window.data || {};
+    if (!data.classes) return null;
+    return data.classes.find(function(c) { return String(c.id) === String(id); }) || null;
+}
+
+function getClassByName(name) {
+    if (!name) return null;
+    var data = window.data || {};
+    if (!data.classes) return null;
+    return data.classes.find(function(c) { return c.name.toLowerCase() === name.toLowerCase(); }) || null;
+}
+
+function createClass(name) {
+    if (!name || !name.trim()) {
+        return { success: false, message: 'Class name is required.' };
+    }
+    
+    var data = window.data || {};
+    if (!data.classes) data.classes = [];
+    
+    var existing = data.classes.find(function(c) { return c.name.toLowerCase() === name.trim().toLowerCase(); });
+    if (existing) {
+        return { success: false, message: 'A class with this name already exists.' };
+    }
+    
+    var newClass = {
+        id: generateId('class'),
+        name: name.trim(),
+        createdAt: new Date().toISOString()
+    };
+    
+    data.classes.push(newClass);
+    window.data = data;
+    
+    if (typeof window.saveData === 'function') {
+        window.saveData().catch(function(err) { /* ignore */ });
+    }
+    
+    return { success: true, class: newClass };
+}
+
+function deleteClass(id) {
+    if (!id) return { success: false, message: 'Class ID is required.' };
+    
+    var data = window.data || {};
+    if (!data.classes) return { success: false, message: 'No classes found.' };
+    
+    var cls = data.classes.find(function(c) { return String(c.id) === String(id); });
+    if (!cls) {
+        return { success: false, message: 'Class not found.' };
+    }
+    
+    var charactersInClass = data.characters ? data.characters.filter(function(c) {
+        return c.classIds && c.classIds.some(function(cid) { return String(cid) === String(id); });
+    }) : [];
+    
+    var teamsInClass = data.teams ? data.teams.filter(function(t) {
+        return t.type === 'academic' && String(t.classId) === String(id);
+    }) : [];
+    
+    if (charactersInClass.length > 0 || teamsInClass.length > 0) {
+        var msg = 'This class has:\n';
+        if (charactersInClass.length > 0) {
+            msg += '• ' + charactersInClass.length + ' character(s)\n';
+        }
+        if (teamsInClass.length > 0) {
+            msg += '• ' + teamsInClass.length + ' academic team(s)\n';
+        }
+        msg += '\nDeleting this class will unassign it from all characters and teams. Continue?';
+        
+        if (!confirm(msg)) {
+            return { success: false, message: 'Deletion cancelled.' };
+        }
+        
+        charactersInClass.forEach(function(char) {
+            char.classIds = char.classIds.filter(function(cid) { return String(cid) !== String(id); });
+        });
+        
+        teamsInClass.forEach(function(team) {
+            team.classId = null;
+        });
+    }
+    
+    data.classes = data.classes.filter(function(c) { return String(c.id) !== String(id); });
+    window.data = data;
+    
+    if (typeof window.saveData === 'function') {
+        window.saveData().catch(function(err) { /* ignore */ });
+    }
+    
+    if (typeof window.logActivity === 'function') {
+        window.logActivity('Deleted class: ' + cls.name);
+    }
+    
+    return { success: true, message: 'Class deleted successfully.' };
+}
+
+function getCharactersByClass(classId) {
+    if (!classId) return [];
+    var data = window.data || {};
+    if (!data.characters) return [];
+    return data.characters.filter(function(c) {
+        return c.classIds && c.classIds.some(function(cid) { return String(cid) === String(classId); });
+    });
+}
+
+function getTeamsByClass(classId) {
+    if (!classId) return [];
+    var data = window.data || {};
+    if (!data.teams) return [];
+    return data.teams.filter(function(t) {
+        return t.type === 'academic' && String(t.classId) === String(classId);
+    });
+}
+
+function getAvailableStudentsForClass(classId, week) {
+    if (!classId) return [];
+    var weekNum = parseInt(week) || 1;
+    var data = window.data || {};
+    
+    var classChars = getCharactersByClass(classId);
+    
+    var available = classChars.filter(function(char) {
+        if (char.deceased) return false;
+        
+        var inTeam = false;
+        if (data.teams) {
+            for (var i = 0; i < data.teams.length; i++) {
+                var team = data.teams[i];
+                if (team.type !== 'academic') continue;
+                if (team.status === 'deleted') continue;
+                if (String(team.classId) !== String(classId)) continue;
+                
+                if (team.members) {
+                    for (var j = 0; j < team.members.length; j++) {
+                        var member = team.members[j];
+                        if (String(member.characterId) === String(char.id)) {
+                            var join = parseInt(member.joinPeriod);
+                            var leave = parseInt(member.leavePeriod);
+                            if (!isNaN(join) && join <= weekNum && (isNaN(leave) || leave >= weekNum)) {
+                                inTeam = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (inTeam) break;
+            }
+        }
+        
+        return !inTeam;
+    });
+    
+    return available;
+}
+
+function getClassOptions() {
+    var classes = getClasses();
+    var options = [];
+    classes.forEach(function(c) {
+        var count = getCharactersByClass(c.id).length;
+        options.push({
+            id: c.id,
+            name: c.name,
+            count: count
+        });
+    });
+    return options;
+}
+
+function getClassDisplayName(classId) {
+    var cls = getClass(classId);
+    return cls ? cls.name : 'Unassigned';
+}
+
+function getCharacterClasses(char) {
+    if (!char || !char.classIds) return [];
+    var classes = getClasses();
+    return classes.filter(function(c) {
+        return char.classIds.some(function(cid) { return String(cid) === String(c.id); });
+    });
+}
+
+function getCharacterClassNames(char) {
+    var classes = getCharacterClasses(char);
+    return classes.map(function(c) { return c.name; });
+}
+
+function addCharacterToClass(charId, classId) {
+    if (!charId || !classId) return { success: false, message: 'Character and class are required.' };
+    
+    var data = window.data || {};
+    var char = data.characters.find(function(c) { return String(c.id) === String(charId); });
+    if (!char) {
+        return { success: false, message: 'Character not found.' };
+    }
+    
+    var cls = getClass(classId);
+    if (!cls) {
+        return { success: false, message: 'Class not found.' };
+    }
+    
+    if (!char.classIds) char.classIds = [];
+    
+    if (char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+        return { success: false, message: 'Character is already in this class.' };
+    }
+    
+    char.classIds.push(classId);
+    window.data = data;
+    
+    if (typeof window.saveData === 'function') {
+        window.saveData().catch(function(err) { /* ignore */ });
+    }
+    
+    return { success: true, message: 'Character added to class.' };
+}
+
+function removeCharacterFromClass(charId, classId) {
+    if (!charId || !classId) return { success: false, message: 'Character and class are required.' };
+    
+    var data = window.data || {};
+    var char = data.characters.find(function(c) { return String(c.id) === String(charId); });
+    if (!char) {
+        return { success: false, message: 'Character not found.' };
+    }
+    
+    if (!char.classIds) char.classIds = [];
+    
+    if (!char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+        return { success: false, message: 'Character is not in this class.' };
+    }
+    
+    char.classIds = char.classIds.filter(function(cid) { return String(cid) !== String(classId); });
+    window.data = data;
+    
+    if (typeof window.saveData === 'function') {
+        window.saveData().catch(function(err) { /* ignore */ });
+    }
+    
+    return { success: true, message: 'Character removed from class.' };
+}
+
+// ============================================================
+// EXPOSE ALL FUNCTIONS
+// ============================================================
+
 window.generateId = generateId;
 window.getWeekBlock = getWeekBlock;
 window.getRankingBlock = getRankingBlock;
@@ -571,3 +834,21 @@ window.getClassGroupLabel = getClassGroupLabel;
 window.setClassGroupLabel = setClassGroupLabel;
 window.getClassDuration = getClassDuration;
 window.setClassDuration = setClassDuration;
+
+// Class functions
+window.getClasses = getClasses;
+window.getClass = getClass;
+window.getClassByName = getClassByName;
+window.createClass = createClass;
+window.deleteClass = deleteClass;
+window.getCharactersByClass = getCharactersByClass;
+window.getTeamsByClass = getTeamsByClass;
+window.getAvailableStudentsForClass = getAvailableStudentsForClass;
+window.getClassOptions = getClassOptions;
+window.getClassDisplayName = getClassDisplayName;
+window.getCharacterClasses = getCharacterClasses;
+window.getCharacterClassNames = getCharacterClassNames;
+window.addCharacterToClass = addCharacterToClass;
+window.removeCharacterFromClass = removeCharacterFromClass;
+
+console.log('utils.js loaded');
