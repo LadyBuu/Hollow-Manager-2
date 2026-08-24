@@ -732,18 +732,110 @@
         reader.onload = function(e) {
             try {
                 var imported = JSON.parse(e.target.result);
-                if (!imported.characters || !imported.teams || !imported.tournaments) {
-                    alert('Invalid data format. Missing required fields.');
+
+                // Validate
+                if (!imported || typeof imported !== 'object') {
+                    alert('Invalid data format. The JSON file does not contain valid data.');
                     return;
                 }
-                if (!confirm('This will replace all current data. Continue?')) return;
 
-                window.data = imported;
-                if (!window.data.currentYear) window.data.currentYear = new Date().getFullYear();
-                if (!window.data.currentWeek) window.data.currentWeek = 1;
-                if (!window.data.missions) window.data.missions = [];
-                if (!window.data.curriculum) {
-                    window.data.curriculum = {
+                // Ensure all top-level properties exist
+                if (!imported.characters) {
+                    imported.characters = [];
+                }
+                if (!imported.teams) {
+                    imported.teams = [];
+                }
+                if (!imported.tournaments) {
+                    imported.tournaments = [];
+                }
+                if (!imported.missions) {
+                    imported.missions = [];
+                }
+                if (!imported.currentYear) {
+                    imported.currentYear = new Date().getFullYear();
+                }
+                if (!imported.currentWeek) {
+                    imported.currentWeek = 1;
+                }
+
+                // Fix curriculum disciplines - convert instructorId to instructorIds
+                if (imported.curriculum && imported.curriculum.disciplines) {
+                    imported.curriculum.disciplines.forEach(function(d) {
+                        if (d.instructorId && !d.instructorIds) {
+                            d.instructorIds = [d.instructorId];
+                            delete d.instructorId;
+                        }
+                        if (!d.instructorIds) {
+                            d.instructorIds = [];
+                        }
+                        if (!d.type) {
+                            d.type = 'mandatory';
+                        }
+                        if (!d.gradingSystem) {
+                            d.gradingSystem = [];
+                        }
+                    });
+                }
+
+                // Fix tournament eliminations - characterId -> participantId
+                if (imported.tournaments) {
+                    imported.tournaments.forEach(function(t) {
+                        if (t.eliminations) {
+                            t.eliminations.forEach(function(e) {
+                                if (e.characterId && !e.participantId) {
+                                    e.participantId = e.characterId;
+                                    e.participantType = 'character';
+                                    delete e.characterId;
+                                }
+                                if (e.teamId && !e.participantId) {
+                                    e.participantId = e.teamId;
+                                    e.participantType = 'team';
+                                    delete e.teamId;
+                                }
+                            });
+                        }
+                    });
+                }
+
+                // Ensure all characters have required fields
+                if (imported.characters) {
+                    imported.characters.forEach(function(c) {
+                        if (!c.stats) {
+                            c.stats = { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
+                        }
+                        if (!c.magic) {
+                            c.magic = {};
+                            ['earth','water','fire','air','metal','wood',
+                             'blood','bone','mind','morphic','life','death',
+                             'space','time','dimension','void','reality','transference'].forEach(function(k) {
+                                c.magic[k] = 0;
+                            });
+                        }
+                        if (!c.eliminations) c.eliminations = [];
+                        if (!c.eliminatedWeeks) c.eliminatedWeeks = [];
+                        if (!c.careerStatus) c.careerStatus = [];
+                        if (!c.personality) c.personality = {};
+                        if (!c.specialMoves) c.specialMoves = { physical: [], magical: [] };
+                        if (!c.previousNames) c.previousNames = [];
+                        if (!c.nameFormat) c.nameFormat = 'firstlast';
+                    });
+                }
+
+                // Ensure teams have required fields
+                if (imported.teams) {
+                    imported.teams.forEach(function(t) {
+                        if (!t.members) t.members = [];
+                        if (!t.rankingHistory) t.rankingHistory = [];
+                        if (!t.nameHistory) t.nameHistory = [];
+                        if (!t.status) t.status = 'active';
+                        if (!t.type) t.type = 'academic';
+                    });
+                }
+
+                // Ensure curriculum exists
+                if (!imported.curriculum) {
+                    imported.curriculum = {
                         disciplines: [],
                         schedules: {},
                         restDays: {},
@@ -763,8 +855,10 @@
                         autoGroups: {}
                     };
                 }
-                if (!window.data.social) {
-                    window.data.social = {
+
+                // Ensure social exists
+                if (!imported.social) {
+                    imported.social = {
                         relationships: [],
                         relationshipTypes: [
                             { id: 'familiar', label: 'Familiar', color: '#8cbb3a' },
@@ -779,20 +873,35 @@
                         nextId: 1
                     };
                 }
+                if (!imported.social.relationships) imported.social.relationships = [];
 
-                if (typeof window.migrateData === 'function') {
-                    window.migrateData();
+                // Check if there's any actual data
+                if (imported.characters.length === 0 && imported.teams.length === 0 && 
+                    imported.tournaments.length === 0 && imported.missions.length === 0) {
+                    alert('The JSON file contains no data. Nothing to import.');
+                    return;
                 }
+
+                if (!confirm('This will replace all current data. Continue?')) return;
+
+                window.data = imported;
 
                 if (typeof window.saveData === 'function') {
                     window.saveData().then(function() {
                         if (typeof window.logActivity === 'function') {
                             window.logActivity('Imported data from JSON');
                         }
+                        // Force reload
                         if (typeof window.renderAll === 'function') {
                             window.renderAll();
                         }
-                        alert('Data imported successfully!');
+                        if (typeof window.updateDashboardStats === 'function') {
+                            window.updateDashboardStats();
+                        }
+                        alert('Data imported successfully!\n' +
+                            'Characters: ' + imported.characters.length + '\n' +
+                            'Teams: ' + imported.teams.length + '\n' +
+                            'Tournaments: ' + imported.tournaments.length);
                     }).catch(function(err) {
                         alert('Failed to save data: ' + err.message);
                     });
@@ -800,7 +909,7 @@
                     alert('Data imported but save failed.');
                 }
             } catch (err) {
-                alert('Failed to import JSON: ' + err.message);
+                alert('Failed to import JSON: ' + err.message + '\n\nPlease check that the file is valid JSON.');
             }
         };
         reader.readAsText(file);
@@ -813,10 +922,12 @@
         // JSON Export
         var exportJsonBtns = document.querySelectorAll('#export-json-btn');
         exportJsonBtns.forEach(function(btn) {
-            // Remove existing listeners by cloning
             var newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
-            newBtn.addEventListener('click', exportJSON);
+            newBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                exportJSON();
+            });
         });
 
         // JSON Import
@@ -824,7 +935,8 @@
         importJsonBtns.forEach(function(btn) {
             var newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
-            newBtn.addEventListener('click', function() {
+            newBtn.addEventListener('click', function(e) {
+                e.preventDefault();
                 var input = document.getElementById('json-file-input');
                 if (input) input.click();
             });
@@ -846,7 +958,10 @@
         exportCsvBtns.forEach(function(btn) {
             var newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
-            newBtn.addEventListener('click', exportCSV);
+            newBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                exportCSV();
+            });
         });
 
         // CSV Import
@@ -854,7 +969,8 @@
         importCsvBtns.forEach(function(btn) {
             var newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
-            newBtn.addEventListener('click', function() {
+            newBtn.addEventListener('click', function(e) {
+                e.preventDefault();
                 var input = document.getElementById('csv-file-input');
                 if (input) input.click();
             });
@@ -876,19 +992,51 @@
         templateBtns.forEach(function(btn) {
             var newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
-            newBtn.addEventListener('click', exportTemplateCSV);
+            newBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                exportTemplateCSV();
+            });
+        });
+
+        console.log('Import/Export initialized');
+    }
+
+    // Auto-initialize when DOM is ready
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        setTimeout(initImportExport, 100);
+    } else {
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(initImportExport, 100);
         });
     }
 
-    // Auto-initialize when data is ready
     document.addEventListener('dataLoaded', function() {
-        initImportExport();
+        setTimeout(initImportExport, 200);
     });
 
-    // Also try to initialize immediately if data is already loaded
-    if (window.data) {
-        setTimeout(initImportExport, 200);
-    }
+    // Also check periodically for buttons (for dynamic content)
+    var checkInterval = setInterval(function() {
+        var btns = document.querySelectorAll('#export-json-btn, #import-json-btn, #export-csv-btn, #import-csv-btn, #template-csv-btn');
+        var hasListeners = false;
+        btns.forEach(function(btn) {
+            // Check if button has our listener (by checking if it has a click handler)
+            var listeners = getEventListeners ? getEventListeners(btn) : null;
+            // Simple approach: if it doesn't have a class we add, re-init
+        });
+        // Only re-init if needed - we'll just use a flag
+        if (btns.length > 0 && !window._exportInitialized) {
+            window._exportInitialized = true;
+            initImportExport();
+        }
+        if (btns.length === 0) {
+            // No buttons yet, keep checking
+        }
+    }, 500);
+
+    // Stop checking after 10 seconds
+    setTimeout(function() {
+        clearInterval(checkInterval);
+    }, 10000);
 
     window.initImportExport = initImportExport;
     window.exportCSV = exportCSV;
