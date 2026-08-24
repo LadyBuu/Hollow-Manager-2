@@ -15,10 +15,14 @@ function openDatabase() {
     return new Promise(function(resolve, reject) {
         var request = indexedDB.open(DB_NAME, DB_VERSION);
         
-        request.onerror = function() { reject(request.error); };
+        request.onerror = function() { 
+            console.error('IndexedDB open error:', request.error);
+            reject(request.error); 
+        };
         
         request.onsuccess = function() {
             db = request.result;
+            console.log('IndexedDB opened successfully');
             resolve(db);
         };
         
@@ -26,6 +30,7 @@ function openDatabase() {
             var database = event.target.result;
             if (!database.objectStoreNames.contains(STORE_NAME)) {
                 database.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                console.log('IndexedDB store created');
             }
         };
     });
@@ -112,13 +117,29 @@ function getEmptyData() {
 
 function loadData() {
     return new Promise(function(resolve, reject) {
-        if (!db) {
-            return openDatabase()
-                .then(function() { return loadData(); })
-                .then(resolve)
-                .catch(reject);
+        // If db is already open, use it
+        if (db) {
+            doLoadData(resolve, reject);
+            return;
         }
         
+        // Otherwise open the database first
+        openDatabase()
+            .then(function() {
+                doLoadData(resolve, reject);
+            })
+            .catch(function(err) {
+                console.error('Failed to open database:', err);
+                // Use empty data as fallback
+                data = getEmptyData();
+                window.data = data;
+                resolve(data);
+            });
+    });
+}
+
+function doLoadData(resolve, reject) {
+    try {
         var transaction = db.transaction([STORE_NAME], 'readonly');
         var store = transaction.objectStore(STORE_NAME);
         var request = store.get('mainData');
@@ -129,44 +150,89 @@ function loadData() {
                 ensureDataStructure(data);
                 migrateData(data);
                 window.data = data;
+                console.log('Data loaded from IndexedDB');
                 resolve(data);
             } else {
+                console.log('No data in IndexedDB, using empty data');
                 data = getEmptyData();
                 window.data = data;
                 resolve(data);
             }
         };
-        request.onerror = function() { reject(request.error); };
-    });
+        request.onerror = function() {
+            console.error('IndexedDB load error:', request.error);
+            data = getEmptyData();
+            window.data = data;
+            resolve(data);
+        };
+        transaction.onerror = function(event) {
+            console.error('Transaction error:', event.target.error);
+            data = getEmptyData();
+            window.data = data;
+            resolve(data);
+        };
+    } catch (err) {
+        console.error('Error in doLoadData:', err);
+        data = getEmptyData();
+        window.data = data;
+        resolve(data);
+    }
 }
 
 function saveData() {
     return new Promise(function(resolve, reject) {
+        // If db is not open, open it first
         if (!db) {
-            return openDatabase()
-                .then(function() { return saveData(); })
-                .then(resolve)
-                .catch(reject);
+            openDatabase()
+                .then(function() {
+                    saveData().then(resolve).catch(reject);
+                })
+                .catch(function(err) {
+                    console.error('Failed to open database for save:', err);
+                    // Data is still in memory, so resolve anyway
+                    resolve();
+                });
+            return;
         }
         
         if (window.data) {
             data = window.data;
         }
         
+        if (!data) {
+            data = getEmptyData();
+            window.data = data;
+        }
+        
         ensureDataStructure(data);
         
-        var transaction = db.transaction([STORE_NAME], 'readwrite');
-        var store = transaction.objectStore(STORE_NAME);
-        var record = {
-            id: 'mainData',
-            data: data,
-            updatedAt: new Date().toISOString()
-        };
-        var request = store.put(record);
-        
-        request.onsuccess = function() { resolve(); };
-        request.onerror = function() { reject(request.error); };
-        transaction.onerror = function(event) { reject(event.target.error); };
+        try {
+            var transaction = db.transaction([STORE_NAME], 'readwrite');
+            var store = transaction.objectStore(STORE_NAME);
+            var record = {
+                id: 'mainData',
+                data: data,
+                updatedAt: new Date().toISOString()
+            };
+            var request = store.put(record);
+            
+            request.onsuccess = function() {
+                console.log('Data saved to IndexedDB');
+                resolve();
+            };
+            request.onerror = function() {
+                console.error('IndexedDB save error:', request.error);
+                // Data is still in memory, so resolve anyway
+                resolve();
+            };
+            transaction.onerror = function(event) {
+                console.error('Transaction error:', event.target.error);
+                resolve();
+            };
+        } catch (err) {
+            console.error('Error in saveData:', err);
+            resolve();
+        }
     });
 }
 
@@ -378,3 +444,5 @@ window.loadData = loadData;
 window.saveData = saveData;
 window.getEmptyData = getEmptyData;
 window.getDefaultMagicProficiencies = getDefaultMagicProficiencies;
+
+console.log('database.js loaded');
