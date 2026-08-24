@@ -13,7 +13,8 @@
         selectedGradeStudentId: null,
         classView: { currentWeek: 1, filterDiscipline: 'all' },
         instructorCalendar: { currentWeek: 1, selectedInstructorId: null, expandedGroups: {} },
-        studentSchedule: { currentWeek: 1, selectedStudentId: null }
+        studentSchedule: { currentWeek: 1, selectedStudentId: null },
+        classes: { selectedClassId: null, viewMode: 'roster', distributionWeek: 1, maxTeamSize: 4 }
     };
 
     var _initialized = false;
@@ -58,6 +59,10 @@
                 autoGroups: {}
             };
         }
+        // Ensure classes array exists
+        if (!window.data.classes) {
+            window.data.classes = [];
+        }
 
         container.innerHTML = getCurriculumHTML();
         
@@ -81,6 +86,7 @@
                     <button class="tab-btn" data-tab="schedule">Schedule</button>
                     <button class="tab-btn" data-tab="grades">Grades</button>
                     <button class="tab-btn" data-tab="ranking">Ranking</button>
+                    <button class="tab-btn" data-tab="classes">Classes</button>
                 </div>
                 <div class="tab-content">
                     <div id="tab-disciplines" class="tab-panel active">
@@ -104,6 +110,9 @@
                     <div id="tab-ranking" class="tab-panel">
                         <div id="ranking-content"></div>
                     </div>
+                    <div id="tab-classes" class="tab-panel">
+                        <div id="classes-content"></div>
+                    </div>
                 </div>
             </div>
         `;
@@ -120,7 +129,8 @@
             instructorCalendar: typeof window.renderInstructorCalendar === 'function',
             schedule: typeof window.renderStudentScheduleView === 'function' || typeof window.renderScheduleView === 'function',
             grades: typeof window.renderGradesView === 'function',
-            ranking: typeof window.renderRankingView === 'function'
+            ranking: typeof window.renderRankingView === 'function',
+            classes: typeof window.renderClassesView === 'function'
         };
         
         console.log('Sub-modules loaded status:', modulesLoaded);
@@ -235,6 +245,21 @@
                 }, 500);
             }
         }
+
+        // Classes
+        var classesContent = document.getElementById('classes-content');
+        if (classesContent) {
+            if (modulesLoaded.classes) {
+                window.renderClassesView(classesContent);
+            } else {
+                classesContent.innerHTML = '<p class="empty-state">Classes module loading... Please refresh the page.</p>';
+                setTimeout(function() {
+                    if (typeof window.renderClassesView === 'function') {
+                        window.renderClassesView(classesContent);
+                    }
+                }, 500);
+            }
+        }
     }
 
     function initCurriculumTabs() {
@@ -248,7 +273,8 @@
             'instructor-calendar': document.getElementById('tab-instructor-calendar'),
             schedule: document.getElementById('tab-schedule'),
             grades: document.getElementById('tab-grades'),
-            ranking: document.getElementById('tab-ranking')
+            ranking: document.getElementById('tab-ranking'),
+            classes: document.getElementById('tab-classes')
         };
 
         // Hide all panels first
@@ -385,6 +411,15 @@
                             content.innerHTML = '<p class="empty-state">Ranking module not loaded. Please refresh the page.</p>';
                         }
                     }
+                } else if (tabName === 'classes') {
+                    var content = document.getElementById('classes-content');
+                    if (content) {
+                        if (typeof window.renderClassesView === 'function') {
+                            window.renderClassesView(content);
+                        } else {
+                            content.innerHTML = '<p class="empty-state">Classes module not loaded. Please refresh the page.</p>';
+                        }
+                    }
                 }
             } catch (e) {
                 console.error('Error refreshing tab content:', e);
@@ -416,6 +451,9 @@
         }
         if (typeof window.initRankingEvents === 'function') {
             window.initRankingEvents();
+        }
+        if (typeof window.initClassEvents === 'function') {
+            window.initClassEvents();
         }
     }
 
