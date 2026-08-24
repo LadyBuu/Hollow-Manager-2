@@ -14,6 +14,9 @@ var TabManager = {
     isRendering: false,
     _pendingInit: false,
     _initializedTabs: false,
+    _refreshTimeout: null,
+    _initAttempts: 0,
+    _maxInitAttempts: 10,
 
     init: function() {
         if (this.isInitialized) return;
@@ -95,12 +98,16 @@ var TabManager = {
     },
 
     initWhenReady: function() {
+        console.log('TabManager.initWhenReady called');
+        
         if (this.isInitialized) return;
 
         // Check if we have at least the dashboard registered
         if (this.tabs.dashboard) {
+            console.log('Dashboard registered, initializing...');
             this.init();
         } else {
+            console.log('Dashboard not registered yet, waiting...');
             // Wait a bit and try again
             var self = this;
             if (!this._pendingInit) {
@@ -138,6 +145,10 @@ var TabManager = {
 
         if (!this.tabs[tabName]) {
             console.warn('Tab not registered:', tabName);
+            // Try to re-initialize if dashboard is missing
+            if (tabName === 'dashboard') {
+                this.initWhenReady();
+            }
             return;
         }
 
@@ -342,13 +353,16 @@ TabManager.register('social', function(container) {
 
 window.TabManager = TabManager;
 
-// Auto-init after a short delay to let modules register
-var initAttempts = 0;
-var maxInitAttempts = 10;
-
+// Define the tryInitTabManager function
 function tryInitTabManager() {
-    initAttempts++;
-    if (initAttempts > maxInitAttempts) {
+    if (typeof TabManager === 'undefined') {
+        console.warn('TabManager not defined, waiting...');
+        setTimeout(tryInitTabManager, 200);
+        return;
+    }
+    
+    TabManager._initAttempts = (TabManager._initAttempts || 0) + 1;
+    if (TabManager._initAttempts > (TabManager._maxInitAttempts || 10)) {
         console.warn('TabManager init attempts exceeded max, forcing init');
         if (!TabManager.isInitialized) {
             TabManager.init();
@@ -369,23 +383,23 @@ setTimeout(tryInitTabManager, 100);
 // Also try again after data loads
 document.addEventListener('dataReady', function() {
     setTimeout(function() {
-        if (!TabManager.isInitialized) {
+        if (typeof TabManager !== 'undefined' && !TabManager.isInitialized) {
             TabManager.initWhenReady();
         }
     }, 100);
 });
 
-// If DOM is already loaded, init
+// Also try again after DOM is ready
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
     setTimeout(function() {
-        if (!TabManager.isInitialized) {
+        if (typeof TabManager !== 'undefined' && !TabManager.isInitialized) {
             TabManager.initWhenReady();
         }
     }, 100);
 } else {
     document.addEventListener('DOMContentLoaded', function() {
         setTimeout(function() {
-            if (!TabManager.isInitialized) {
+            if (typeof TabManager !== 'undefined' && !TabManager.isInitialized) {
                 TabManager.initWhenReady();
             }
         }, 100);
@@ -394,6 +408,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
 
 // Handle tab switching from hash changes
 window.addEventListener('hashchange', function() {
+    if (typeof TabManager === 'undefined') return;
     var hash = window.location.hash.replace('#', '');
     if (hash && TabManager.tabs[hash] && TabManager.isInitialized) {
         TabManager.switchTo(hash);
