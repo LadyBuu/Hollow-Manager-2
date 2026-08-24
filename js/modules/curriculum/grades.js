@@ -18,6 +18,39 @@
         }
         if (!container) return;
 
+        // Check if data exists
+        if (!window.data) {
+            console.warn('No data available for grades, waiting for dataReady event');
+            container.innerHTML = '<p class="empty-state">Loading grades data...</p>';
+            return;
+        }
+
+        // Ensure curriculum structure exists
+        if (!window.data.curriculum) {
+            window.data.curriculum = {
+                disciplines: [],
+                schedules: {},
+                restDays: {},
+                examDays: {},
+                grades: {},
+                rankings: {},
+                currentWeek: 1,
+                classInstructors: {},
+                classLabels: {},
+                classGroupLabels: {},
+                classDurations: {},
+                instructorClasses: {},
+                instructorTemplates: {},
+                instructorBlocks: {},
+                instructorGroups: {},
+                disciplineGroups: {},
+                autoGroups: {}
+            };
+        }
+        if (!window.data.curriculum.grades) {
+            window.data.curriculum.grades = {};
+        }
+
         container.innerHTML = getGradesHTML();
 
         populateStudentSelector();
@@ -38,9 +71,9 @@
                     </select>
                 </div>
                 <div class="week-nav">
-                    <button id="prev-grade-week" class="small">\u2190 Prev</button>
+                    <button id="prev-grade-week" class="small">← Prev</button>
                     <span id="grade-week-display" style="font-weight:600;min-width:80px;text-align:center;">Week 1</span>
-                    <button id="next-grade-week" class="small">Next \u2192</button>
+                    <button id="next-grade-week" class="small">Next →</button>
                 </div>
             </div>
             <div id="grades-container">
@@ -70,7 +103,7 @@
             select.appendChild(option);
         });
 
-        if (currentValue) {
+        if (currentValue && select.querySelector('option[value="' + currentValue + '"]')) {
             select.value = currentValue;
         } else if (select.options.length > 1 && !state.selectedStudentId) {
             select.selectedIndex = 1;
@@ -158,7 +191,7 @@
                 totalWeight += d.weight;
             }
 
-            var typeLabel = d.type === 'mandatory' ? '\u25A3' : (d.type === 'optional' ? '\u25A2' : '—');
+            var typeLabel = d.type === 'mandatory' ? '■' : (d.type === 'optional' ? '□' : '—');
             var typeColor = d.type === 'mandatory' ? 'var(--accent)' : (d.type === 'optional' ? 'var(--warning)' : 'var(--text-dim)');
             var instructors = getInstructorNames(d);
             var instructorDisplay = instructors.length > 0 ? instructors[0] : '—';
@@ -227,7 +260,7 @@
         document.querySelectorAll('.grade-input').forEach(function(input) {
             var disciplineId = input.dataset.discipline;
             var value = parseFloat(input.value);
-            if (!isNaN(value)) {
+            if (!isNaN(value) && value >= 0 && value <= 100) {
                 grades[disciplineId] = value;
             }
         });
@@ -241,11 +274,17 @@
         data.curriculum.grades[state.selectedStudentId][state.currentWeek] = grades;
 
         if (typeof window.saveData === 'function') {
-            window.saveData().catch(function(err) { /* ignore */ });
-        }
-        renderGrades();
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Saved grades for student week ' + state.currentWeek);
+            window.saveData().then(function() {
+                if (typeof window.logActivity === 'function') {
+                    window.logActivity('Saved grades for student week ' + state.currentWeek);
+                }
+                renderGrades();
+            }).catch(function(err) {
+                console.error('Failed to save grades:', err);
+                alert('Failed to save grades. Please try again.');
+            });
+        } else {
+            renderGrades();
         }
     }
 
@@ -285,12 +324,12 @@
         var html = '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:16px;">' +
             '<div style="background:var(--bg);padding:12px;border-radius:6px;"><span style="color:var(--text-dim);">Average</span><br><span style="font-size:1.8rem;font-weight:700;color:var(--accent);">' + average.toFixed(1) + '</span></div>' +
             '<div style="background:var(--bg);padding:12px;border-radius:6px;"><span style="color:var(--text-dim);">Disciplines</span><br><span style="font-size:1.8rem;font-weight:700;color:var(--text);">' + count + '/' + disciplines.length + '</span></div>' +
-            '<div style="background:var(--bg);padding:12px;border-radius:6px;"><span style="color:var(--text-dim);">\u25A3 Mandatory</span><br><span style="font-size:1.8rem;font-weight:700;color:var(--accent);">' + mandatoryCount + '</span></div>' +
-            '<div style="background:var(--bg);padding:12px;border-radius:6px;"><span style="color:var(--text-dim);">\u25A2 Optional</span><br><span style="font-size:1.8rem;font-weight:700;color:var(--warning);">' + optionalCount + '</span></div>' +
+            '<div style="background:var(--bg);padding:12px;border-radius:6px;"><span style="color:var(--text-dim);">■ Mandatory</span><br><span style="font-size:1.8rem;font-weight:700;color:var(--accent);">' + mandatoryCount + '</span></div>' +
+            '<div style="background:var(--bg);padding:12px;border-radius:6px;"><span style="color:var(--text-dim);">□ Optional</span><br><span style="font-size:1.8rem;font-weight:700;color:var(--warning);">' + optionalCount + '</span></div>' +
         '</div>';
         html += '<div style="margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;">' +
             '<span style="color:var(--text-dim);">Status: </span>' +
-            '<span style="font-weight:700;' + (average >= 70 ? 'color:var(--accent);' : 'color:var(--danger);') + '">' + (average >= 70 ? '\u2713 Passing' : '\u26A0 Needs Work') + '</span>' +
+            '<span style="font-weight:700;' + (average >= 70 ? 'color:var(--accent);' : 'color:var(--danger);') + '">' + (average >= 70 ? '✓ Passing' : '⚠ Needs Work') + '</span>' +
         '</div>';
         summary.innerHTML = html;
     }
@@ -337,18 +376,50 @@
             });
         }
 
-        // Set initial student
-        if (studentSelect && studentSelect.options.length > 1) {
+        // Set initial student if available
+        if (studentSelect && studentSelect.options.length > 1 && !state.selectedStudentId) {
             studentSelect.selectedIndex = 1;
             state.selectedStudentId = studentSelect.value;
-            renderGrades();
+            setTimeout(renderGrades, 50);
         }
     }
 
-    // Register with curriculum main if available
+    // ============================================================
+    // REGISTER WITH CURRICULUM MAIN
+    // ============================================================
+
     if (typeof window.curriculumState !== 'undefined') {
         window.curriculumState.grade = state;
     }
+
+    document.addEventListener('dataReady', function() {
+        var container = document.getElementById('grades-content');
+        if (container && container.style.display !== 'none') {
+            renderGradesView(container);
+        }
+    });
+
+    document.addEventListener('tabChanged', function(e) {
+        if (e.detail && e.detail.tab === 'grades') {
+            var container = document.getElementById('grades-content');
+            if (container) {
+                renderGradesView(container);
+            }
+        }
+    });
+
+    if (window.data) {
+        setTimeout(function() {
+            var container = document.getElementById('grades-content');
+            if (container && container.style.display !== 'none') {
+                renderGradesView(container);
+            }
+        }, 100);
+    }
+
+    // ============================================================
+    // EXPOSE FUNCTIONS
+    // ============================================================
 
     window.renderGradesView = renderGradesView;
     window.renderGrades = renderGrades;
@@ -356,5 +427,7 @@
     window.getGradeLetter = getGradeLetter;
     window.initGradesEvents = initGradesEvents;
     window.gradeState = state;
+
+    console.log('grades.js loaded');
 
 })();
