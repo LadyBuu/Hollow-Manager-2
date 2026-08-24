@@ -12,6 +12,7 @@ var data = null;
 var dbOpenPromise = null;
 var isLoading = false;
 var isSaving = false;
+var _dataLoadedDispatched = false;
 
 function openDatabase() {
     if (db) {
@@ -499,17 +500,44 @@ function saveData() {
 
 function autoLoadData() {
     console.log('Auto-loading data from IndexedDB...');
+    
+    // Check if data is already loaded via window.data
+    if (window.data) {
+        console.log('Data already loaded, dispatching ready event');
+        _dispatchDataReady(window.data);
+        return;
+    }
+    
     loadData().then(function(result) {
         console.log('Data auto-loaded successfully');
-        var event = new CustomEvent('dataReady', { detail: { data: result } });
-        document.dispatchEvent(event);
+        _dispatchDataReady(result);
     }).catch(function(err) {
         console.error('Auto-load failed:', err);
-        var event = new CustomEvent('dataReady', { detail: { data: getEmptyData() } });
-        document.dispatchEvent(event);
+        _dispatchDataReady(getEmptyData());
     });
 }
 
+function _dispatchDataReady(data) {
+    // Prevent multiple dispatches
+    if (_dataLoadedDispatched) {
+        console.log('Data already dispatched, skipping');
+        return;
+    }
+    _dataLoadedDispatched = true;
+    
+    // Use setTimeout to avoid stack issues
+    setTimeout(function() {
+        var event = new CustomEvent('dataReady', { 
+            detail: { data: data },
+            bubbles: false,
+            cancelable: false
+        });
+        document.dispatchEvent(event);
+        console.log('dataReady event dispatched');
+    }, 10);
+}
+
+// Expose globals
 window.db = {
     openDatabase: openDatabase,
     loadData: loadData,
@@ -524,6 +552,7 @@ window.saveData = saveData;
 window.getEmptyData = getEmptyData;
 window.getDefaultMagicProficiencies = getDefaultMagicProficiencies;
 
-autoLoadData();
+// Auto-load immediately with a slight delay to let other scripts initialize
+setTimeout(autoLoadData, 50);
 
 console.log('database.js loaded - auto-loading data');
