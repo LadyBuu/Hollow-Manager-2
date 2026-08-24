@@ -8,66 +8,201 @@
     'use strict';
 
     // ============================================================
-    // STAT DEFINITIONS
+    // STAT DEFINITIONS - NO EMOJIS
     // ============================================================
 
     var STAT_DEFINITIONS = {
-        'str': { label: 'Strength', icon: '💪', abbr: 'STR' },
-        'dex': { label: 'Dexterity', icon: '🎯', abbr: 'DEX' },
-        'con': { label: 'Constitution', icon: '🛡️', abbr: 'CON' },
-        'int': { label: 'Intelligence', icon: '🧠', abbr: 'INT' },
-        'wis': { label: 'Wisdom', icon: '🧘', abbr: 'WIS' },
-        'cha': { label: 'Charisma', icon: '💬', abbr: 'CHA' }
+        'str': { label: 'Strength', icon: 'STR', abbr: 'STR' },
+        'dex': { label: 'Dexterity', icon: 'DEX', abbr: 'DEX' },
+        'con': { label: 'Constitution', icon: 'CON', abbr: 'CON' },
+        'int': { label: 'Intelligence', icon: 'INT', abbr: 'INT' },
+        'wis': { label: 'Wisdom', icon: 'WIS', abbr: 'WIS' },
+        'cha': { label: 'Charisma', icon: 'CHA', abbr: 'CHA' }
     };
 
-    // Updated class definitions - more generic, removed culturally specific names
+    // Updated class definitions - NO EMOJIS, generic names
     var CLASS_DEFINITIONS = [
-        { id: 'warrior', label: 'Warrior', icon: '⚔️', primaryStats: ['str', 'con'], secondaryStats: ['dex'], statWeights: { str: 0.4, con: 0.3, dex: 0.2, wis: 0.1 }, minStats: { str: 13, con: 12 }, description: 'Masters of combat and physical prowess' },
-        { id: 'skirmisher', label: 'Skirmisher', icon: '🏹', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.35, wis: 0.25, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 12 }, description: 'Agile fighters who excel at ranged combat' },
-        { id: 'protector', label: 'Protector', icon: '🛡️', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'cha'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, cha: 0.15, dex: 0.05 }, minStats: { str: 13, con: 12 }, description: 'Defenders who shield others from harm' },
-        { id: 'sage', label: 'Sage', icon: '📚', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 }, description: 'Scholars and keepers of ancient knowledge' },
-        { id: 'mystic', label: 'Mystic', icon: '🔮', primaryStats: ['wis', 'cha'], secondaryStats: ['con', 'int'], statWeights: { wis: 0.35, cha: 0.25, con: 0.2, int: 0.15, dex: 0.05 }, minStats: { wis: 13, cha: 12 }, description: 'Channelers of spiritual and arcane forces' },
-        { id: 'stalker', label: 'Stalker', icon: '🗡️', primaryStats: ['dex', 'int'], secondaryStats: ['cha', 'wis'], statWeights: { dex: 0.35, int: 0.25, cha: 0.2, wis: 0.15, str: 0.05 }, minStats: { dex: 13, int: 12 }, description: 'Masters of stealth and subterfuge' },
-        { id: 'spellblade', label: 'Spellblade', icon: '⚡', primaryStats: ['str', 'int'], secondaryStats: ['dex', 'con'], statWeights: { str: 0.3, int: 0.3, dex: 0.2, con: 0.15, wis: 0.05 }, minStats: { str: 13, int: 12 }, description: 'Warriors who weave magic into combat' },
-        { id: 'channeler', label: 'Channeler', icon: '🌀', primaryStats: ['cha', 'con'], secondaryStats: ['dex', 'int'], statWeights: { cha: 0.35, con: 0.25, dex: 0.2, int: 0.15, wis: 0.05 }, minStats: { cha: 13, con: 12 }, description: 'Mages who channel raw magical energy' },
-        { id: 'warden', label: 'Warden', icon: '🌿', primaryStats: ['str', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { str: 0.3, wis: 0.25, con: 0.2, dex: 0.2, cha: 0.05 }, minStats: { str: 13, wis: 12 }, description: 'Guardians of nature and natural order' },
-        { id: 'adept', label: 'Adept', icon: '🧘', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.3, wis: 0.3, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 13 }, description: 'Masters of mind-body discipline' },
-        { id: 'artificer', label: 'Artificer', icon: '🔧', primaryStats: ['int', 'dex'], secondaryStats: ['con', 'wis'], statWeights: { int: 0.35, dex: 0.25, con: 0.2, wis: 0.15, cha: 0.05 }, minStats: { int: 13, dex: 12 }, description: 'Inventors and creators of wondrous devices' },
-        { id: 'occultist', label: 'Occultist', icon: '🌙', primaryStats: ['int', 'cha'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.3, cha: 0.3, con: 0.2, dex: 0.15, wis: 0.05 }, minStats: { int: 13, cha: 13 }, description: 'Seekers of forbidden and hidden knowledge' },
-        { id: 'blade_dancer', label: 'Blade Dancer', icon: '🗡️', primaryStats: ['dex', 'cha'], secondaryStats: ['str', 'con'], statWeights: { dex: 0.35, cha: 0.25, str: 0.2, con: 0.15, wis: 0.05 }, minStats: { dex: 13, cha: 12 }, description: 'Graceful warriors who move like the wind' },
-        { id: 'elementalist', label: 'Elementalist', icon: '🌪️', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 }, description: 'Masters of the primal elements' },
-        { id: 'sentinel', label: 'Sentinel', icon: '🏰', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'dex'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, dex: 0.15, cha: 0.05 }, minStats: { str: 13, con: 12 }, description: 'Unyielding guardians and protectors' }
+        { 
+            id: 'warrior', 
+            label: 'Warrior', 
+            icon: '⚔', 
+            primaryStats: ['str', 'con'], 
+            secondaryStats: ['dex'], 
+            statWeights: { str: 0.4, con: 0.3, dex: 0.2, wis: 0.1 }, 
+            minStats: { str: 13, con: 12 }, 
+            description: 'Masters of combat who rely on strength and endurance to overpower their foes.' 
+        },
+        { 
+            id: 'skirmisher', 
+            label: 'Skirmisher', 
+            icon: '⚔', 
+            primaryStats: ['dex', 'wis'], 
+            secondaryStats: ['con', 'str'], 
+            statWeights: { dex: 0.35, wis: 0.25, con: 0.2, str: 0.15, int: 0.05 }, 
+            minStats: { dex: 13, wis: 12 }, 
+            description: 'Agile fighters who excel at ranged combat and hit-and-run tactics.' 
+        },
+        { 
+            id: 'protector', 
+            label: 'Protector', 
+            icon: '🛡', 
+            primaryStats: ['str', 'con'], 
+            secondaryStats: ['wis', 'cha'], 
+            statWeights: { str: 0.3, con: 0.3, wis: 0.2, cha: 0.15, dex: 0.05 }, 
+            minStats: { str: 13, con: 12 }, 
+            description: 'Defenders who shield others from harm and stand firm against any threat.' 
+        },
+        { 
+            id: 'sage', 
+            label: 'Sage', 
+            icon: '📚', 
+            primaryStats: ['int', 'wis'], 
+            secondaryStats: ['con', 'dex'], 
+            statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, 
+            minStats: { int: 13, wis: 12 }, 
+            description: 'Scholars and keepers of ancient knowledge who wield intellect as their weapon.' 
+        },
+        { 
+            id: 'mystic', 
+            label: 'Mystic', 
+            icon: '✦', 
+            primaryStats: ['wis', 'cha'], 
+            secondaryStats: ['con', 'int'], 
+            statWeights: { wis: 0.35, cha: 0.25, con: 0.2, int: 0.15, dex: 0.05 }, 
+            minStats: { wis: 13, cha: 12 }, 
+            description: 'Channelers of spiritual and arcane forces who draw power from within.' 
+        },
+        { 
+            id: 'stalker', 
+            label: 'Stalker', 
+            icon: '🗡', 
+            primaryStats: ['dex', 'int'], 
+            secondaryStats: ['cha', 'wis'], 
+            statWeights: { dex: 0.35, int: 0.25, cha: 0.2, wis: 0.15, str: 0.05 }, 
+            minStats: { dex: 13, int: 12 }, 
+            description: 'Masters of stealth and subterfuge who strike from the shadows.' 
+        },
+        { 
+            id: 'spellblade', 
+            label: 'Spellblade', 
+            icon: '⚡', 
+            primaryStats: ['str', 'int'], 
+            secondaryStats: ['dex', 'con'], 
+            statWeights: { str: 0.3, int: 0.3, dex: 0.2, con: 0.15, wis: 0.05 }, 
+            minStats: { str: 13, int: 12 }, 
+            description: 'Warriors who weave magic into combat, blending steel and sorcery.' 
+        },
+        { 
+            id: 'channeler', 
+            label: 'Channeler', 
+            icon: '✦', 
+            primaryStats: ['cha', 'con'], 
+            secondaryStats: ['dex', 'int'], 
+            statWeights: { cha: 0.35, con: 0.25, dex: 0.2, int: 0.15, wis: 0.05 }, 
+            minStats: { cha: 13, con: 12 }, 
+            description: 'Mages who channel raw magical energy through force of personality.' 
+        },
+        { 
+            id: 'warden', 
+            label: 'Warden', 
+            icon: '⚔', 
+            primaryStats: ['str', 'wis'], 
+            secondaryStats: ['con', 'dex'], 
+            statWeights: { str: 0.3, wis: 0.25, con: 0.2, dex: 0.2, cha: 0.05 }, 
+            minStats: { str: 13, wis: 12 }, 
+            description: 'Guardians of nature and natural order who protect the wild places.' 
+        },
+        { 
+            id: 'adept', 
+            label: 'Adept', 
+            icon: '✦', 
+            primaryStats: ['dex', 'wis'], 
+            secondaryStats: ['con', 'str'], 
+            statWeights: { dex: 0.3, wis: 0.3, con: 0.2, str: 0.15, int: 0.05 }, 
+            minStats: { dex: 13, wis: 13 }, 
+            description: 'Masters of mind-body discipline who achieve perfection through training.' 
+        },
+        { 
+            id: 'artificer', 
+            label: 'Artificer', 
+            icon: '⚙', 
+            primaryStats: ['int', 'dex'], 
+            secondaryStats: ['con', 'wis'], 
+            statWeights: { int: 0.35, dex: 0.25, con: 0.2, wis: 0.15, cha: 0.05 }, 
+            minStats: { int: 13, dex: 12 }, 
+            description: 'Inventors and creators of wondrous devices who blend magic with craft.' 
+        },
+        { 
+            id: 'occultist', 
+            label: 'Occultist', 
+            icon: '✦', 
+            primaryStats: ['int', 'cha'], 
+            secondaryStats: ['con', 'dex'], 
+            statWeights: { int: 0.3, cha: 0.3, con: 0.2, dex: 0.15, wis: 0.05 }, 
+            minStats: { int: 13, cha: 13 }, 
+            description: 'Seekers of forbidden and hidden knowledge who bargain with dark powers.' 
+        },
+        { 
+            id: 'blade_dancer', 
+            label: 'Blade Dancer', 
+            icon: '🗡', 
+            primaryStats: ['dex', 'cha'], 
+            secondaryStats: ['str', 'con'], 
+            statWeights: { dex: 0.35, cha: 0.25, str: 0.2, con: 0.15, wis: 0.05 }, 
+            minStats: { dex: 13, cha: 12 }, 
+            description: 'Graceful warriors who move like the wind, turning combat into art.' 
+        },
+        { 
+            id: 'elementalist', 
+            label: 'Elementalist', 
+            icon: '✦', 
+            primaryStats: ['int', 'wis'], 
+            secondaryStats: ['con', 'dex'], 
+            statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, 
+            minStats: { int: 13, wis: 12 }, 
+            description: 'Masters of the primal elements who command fire, water, earth, and air.' 
+        },
+        { 
+            id: 'sentinel', 
+            label: 'Sentinel', 
+            icon: '🛡', 
+            primaryStats: ['str', 'con'], 
+            secondaryStats: ['wis', 'dex'], 
+            statWeights: { str: 0.3, con: 0.3, wis: 0.2, dex: 0.15, cha: 0.05 }, 
+            minStats: { str: 13, con: 12 }, 
+            description: 'Unyielding guardians and protectors who never retreat from their duty.' 
+        }
     ];
 
     // ============================================================
-    // MAGIC DEFINITIONS
+    // MAGIC DEFINITIONS - NO EMOJIS
     // ============================================================
 
     var MAGIC_TYPES = {
-        earth: { id: 'earth', label: 'Earth Magic', icon: '⛰️', category: 'elemental', color: '#8B7355' },
-        water: { id: 'water', label: 'Water Magic', icon: '🌊', category: 'elemental', color: '#4A9BC7' },
-        fire: { id: 'fire', label: 'Fire Magic', icon: '🔥', category: 'elemental', color: '#E67E22' },
-        air: { id: 'air', label: 'Air Magic', icon: '🌬️', category: 'elemental', color: '#A8D5E2' },
-        metal: { id: 'metal', label: 'Metal Magic', icon: '⚙️', category: 'elemental', color: '#95A5A6' },
-        wood: { id: 'wood', label: 'Wood Magic', icon: '🌳', category: 'elemental', color: '#27AE60' },
-        blood: { id: 'blood', label: 'Blood Magic', icon: '🩸', category: 'body', color: '#C0392B' },
-        bone: { id: 'bone', label: 'Bone Magic', icon: '🦴', category: 'body', color: '#F5F5DC' },
-        mind: { id: 'mind', label: 'Mind Magic', icon: '🧠', category: 'body', color: '#8E44AD' },
-        morphic: { id: 'morphic', label: 'Morphic Magic', icon: '🌀', category: 'body', color: '#1ABC9C' },
-        life: { id: 'life', label: 'Life Magic', icon: '✨', category: 'body', color: '#2ECC71' },
-        death: { id: 'death', label: 'Death Magic', icon: '💀', category: 'body', color: '#2C3E50' },
-        space: { id: 'space', label: 'Space Magic', icon: '🌌', category: 'aether', color: '#3498DB' },
-        time: { id: 'time', label: 'Time Magic', icon: '⏳', category: 'aether', color: '#F39C12' },
-        dimension: { id: 'dimension', label: 'Dimension Magic', icon: '🌐', category: 'aether', color: '#9B59B6' },
-        void: { id: 'void', label: 'Void Magic', icon: '⚫', category: 'aether', color: '#1A1A2E' },
-        reality: { id: 'reality', label: 'Reality Magic', icon: '🌀', category: 'aether', color: '#F1C40F' },
-        transference: { id: 'transference', label: 'Transference Magic', icon: '🔄', category: 'aether', color: '#E74C3C' }
+        earth: { id: 'earth', label: 'Earth Magic', icon: '✦', category: 'elemental', color: '#8B7355' },
+        water: { id: 'water', label: 'Water Magic', icon: '✦', category: 'elemental', color: '#4A9BC7' },
+        fire: { id: 'fire', label: 'Fire Magic', icon: '✦', category: 'elemental', color: '#E67E22' },
+        air: { id: 'air', label: 'Air Magic', icon: '✦', category: 'elemental', color: '#A8D5E2' },
+        metal: { id: 'metal', label: 'Metal Magic', icon: '✦', category: 'elemental', color: '#95A5A6' },
+        wood: { id: 'wood', label: 'Wood Magic', icon: '✦', category: 'elemental', color: '#27AE60' },
+        blood: { id: 'blood', label: 'Blood Magic', icon: '✦', category: 'body', color: '#C0392B' },
+        bone: { id: 'bone', label: 'Bone Magic', icon: '✦', category: 'body', color: '#F5F5DC' },
+        mind: { id: 'mind', label: 'Mind Magic', icon: '✦', category: 'body', color: '#8E44AD' },
+        morphic: { id: 'morphic', label: 'Morphic Magic', icon: '✦', category: 'body', color: '#1ABC9C' },
+        life: { id: 'life', label: 'Life Magic', icon: '✦', category: 'body', color: '#2ECC71' },
+        death: { id: 'death', label: 'Death Magic', icon: '✦', category: 'body', color: '#2C3E50' },
+        space: { id: 'space', label: 'Space Magic', icon: '✦', category: 'aether', color: '#3498DB' },
+        time: { id: 'time', label: 'Time Magic', icon: '✦', category: 'aether', color: '#F39C12' },
+        dimension: { id: 'dimension', label: 'Dimension Magic', icon: '✦', category: 'aether', color: '#9B59B6' },
+        void: { id: 'void', label: 'Void Magic', icon: '✦', category: 'aether', color: '#1A1A2E' },
+        reality: { id: 'reality', label: 'Reality Magic', icon: '✦', category: 'aether', color: '#F1C40F' },
+        transference: { id: 'transference', label: 'Transference Magic', icon: '✦', category: 'aether', color: '#E74C3C' }
     };
 
     var MAGIC_CATEGORIES = {
-        elemental: { label: 'Elemental Magic', icon: '⚡', color: '#8cbb3a' },
-        body: { label: 'Body Magic', icon: '💪', color: '#c1453c' },
-        aether: { label: 'Aether Magic', icon: '✨', color: '#4a9bc7' }
+        elemental: { label: 'Elemental Magic', icon: '✦', color: '#8cbb3a' },
+        body: { label: 'Body Magic', icon: '✦', color: '#c1453c' },
+        aether: { label: 'Aether Magic', icon: '✦', color: '#4a9bc7' }
     };
 
     // ============================================================
@@ -259,6 +394,10 @@
     function getClassDescription(classId) {
         var cls = CLASS_DEFINITIONS.find(function(c) { return c.id === classId; });
         return cls ? cls.description : '';
+    }
+
+    function getClassById(classId) {
+        return CLASS_DEFINITIONS.find(function(c) { return c.id === classId; }) || null;
     }
 
     // ============================================================
@@ -454,6 +593,7 @@
     window.getPowerLevelFromDisplay = getPowerLevelFromDisplay;
     window.getPowerLevelColor = getPowerLevelColor;
     window.getClassDescription = getClassDescription;
+    window.getClassById = getClassById;
 
     window.getDefaultMagicProficiencies = getDefaultMagicProficiencies;
     window.getCharacterMagic = getCharacterMagic;
