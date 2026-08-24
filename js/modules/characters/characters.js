@@ -1,6 +1,7 @@
 /**
  * js/modules/characters/characters.js - Character Management
  * Redesigned: List as burger menu, main area shows edit form with tabs
+ * All emojis removed, monochrome Unicode icons only
  * Path: js/modules/characters/characters.js
  */
 
@@ -153,6 +154,7 @@
                                     <label>Appearance Notes</label>
                                     <textarea id="char-appearance-notes" rows="2" placeholder="Scars, tattoos..."></textarea>
                                 </div>
+                                <!-- Deceased moved here -->
                                 <div class="form-group full-width section-divider">
                                     <div class="deceased-toggle">
                                         <input type="checkbox" id="char-deceased" />
@@ -446,13 +448,11 @@
         var title = document.getElementById('form-title');
         var nameDisplay = document.getElementById('current-char-name');
 
-        // Reset all tabs to hidden
         document.querySelectorAll('.char-tab-panel').forEach(function(p) {
             p.style.display = 'none';
             p.classList.remove('active');
         });
 
-        // Show first tab
         var firstTab = document.querySelector('.char-tab-btn.active');
         if (!firstTab) {
             firstTab = document.querySelector('.char-tab-btn');
@@ -475,7 +475,6 @@
             title.textContent = 'Edit Character';
             if (nameDisplay) nameDisplay.textContent = window.getDisplayName(char);
 
-            // Populate all form fields
             populateFormFields(char);
             renderAcademicView(char);
             renderProfessionalView(char);
@@ -611,7 +610,6 @@
         var data = window.data || {};
         var html = '';
 
-        // Academic Teams
         html += '<h4 style="color:var(--accent);font-size:0.8rem;margin:8px 0 4px 0;">Academic Teams</h4>';
         var acadTeams = data.teams ? data.teams.filter(function(t) {
             if (t.type !== 'academic') return false;
@@ -633,7 +631,6 @@
             html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No academic teams</p>';
         }
 
-        // Grades
         html += '<h4 style="color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;">Grades</h4>';
         var curriculum = data.curriculum || {};
         var grades = curriculum.grades && curriculum.grades[char.id] ? curriculum.grades[char.id] : {};
@@ -671,7 +668,6 @@
         var data = window.data || {};
         var html = '';
 
-        // Professional Teams
         html += '<h4 style="color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;">Professional Teams</h4>';
         var profTeams = data.teams ? data.teams.filter(function(t) {
             if (t.type !== 'professional') return false;
@@ -693,7 +689,6 @@
             html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No professional teams</p>';
         }
 
-        // Temporary Teams
         html += '<h4 style="color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;">Temporary Teams</h4>';
         var tempTeams = data.teams ? data.teams.filter(function(t) {
             if (t.type !== 'temporary' && t.type !== 'internship') return false;
@@ -715,7 +710,6 @@
             html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No temporary teams</p>';
         }
 
-        // Civilian Teams
         html += '<h4 style="color:var(--text-dim);font-size:0.8rem;margin:8px 0 4px 0;">Civilian Teams</h4>';
         var civTeams = data.teams ? data.teams.filter(function(t) {
             if (t.type !== 'civilian') return false;
@@ -737,7 +731,6 @@
             html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No civilian teams</p>';
         }
 
-        // Missions
         html += '<h4 style="color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;">Missions</h4>';
         var missions = data.missions ? data.missions.filter(function(m) {
             return m.assignedTeamId && data.teams && data.teams.some(function(t) {
@@ -1235,7 +1228,6 @@
         if (typeof window.updateDashboardStats === 'function') {
             window.updateDashboardStats();
         }
-        // Show empty form
         showCharacterForm(null);
     }
 
@@ -1340,7 +1332,6 @@
             });
         }
 
-        // Stats events
         initStatsEvents();
         initMagicEvents();
         initSpecialMovesEvents();
@@ -1370,7 +1361,6 @@
             }
         });
 
-        // Populate class select
         populateClassSelect();
     }
 
@@ -1438,17 +1428,6 @@
                 updateClassSuggestion();
             });
         }
-
-        // Recalculate magic class when stats change
-        statInputs.forEach(function(id) {
-            var el = document.getElementById(id);
-            if (el) {
-                el.addEventListener('change', function() {
-                    updateMagicClassSuggestion();
-                    updateMagicPowerDisplay();
-                });
-            }
-        });
     }
 
     function populateClassSelect() {
@@ -1822,7 +1801,6 @@
     // REGISTER
     // ============================================================
 
-    // Register with TabManager
     if (typeof window.TabManager !== 'undefined') {
         window.TabManager.register('characters', renderCharacters);
     }
