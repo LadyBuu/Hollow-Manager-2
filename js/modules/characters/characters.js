@@ -10,30 +10,34 @@
     var currentEditId = null;
     var characterListOpen = false;
 
+    // ============================================================
+    // RENDER FUNCTIONS
+    // ============================================================
+
     function renderCharacters(container) {
         container.innerHTML = getCharactersHTML();
         renderCharacterList();
         initCharacterEvents();
         if (window.data && window.data.characters && window.data.characters.length > 0) {
-            // Auto-select first character if available
             var firstChar = window.data.characters[0];
             if (firstChar) {
                 showCharacterForm(firstChar.id);
             }
         }
+        updateClassSuggestion();
+        updateMagicClassSuggestion();
+        updateMagicPowerDisplay();
     }
 
     function getCharactersHTML() {
         return `
             <div class="character-manager">
-                <!-- Toggle Button for Character List -->
                 <div class="char-list-toggle">
                     <button id="toggle-char-list" class="primary small">☰ Characters</button>
                     <button id="add-character-btn" class="primary small">+ New</button>
                     <span id="current-char-name" style="font-weight:600;color:var(--accent);margin-left:8px;"></span>
                 </div>
 
-                <!-- Character List - Collapsible -->
                 <div id="char-list-panel" class="char-list-panel">
                     <div class="filter-section compact">
                         <input type="text" id="char-name-filter" placeholder="Search..." style="width:120px;padding:3px 6px;font-size:0.7rem;" />
@@ -56,11 +60,9 @@
                     </div>
                 </div>
 
-                <!-- Character Edit Form -->
                 <div id="character-form" class="form-container">
                     <h3 id="form-title">Select a character</h3>
                     <form id="char-form">
-                        <!-- TABS -->
                         <div class="char-tabs">
                             <button type="button" class="char-tab-btn active" data-tab="name">Name</button>
                             <button type="button" class="char-tab-btn" data-tab="physical">Physical</button>
@@ -151,7 +153,6 @@
                                     <label>Appearance Notes</label>
                                     <textarea id="char-appearance-notes" rows="2" placeholder="Scars, tattoos..."></textarea>
                                 </div>
-                                <!-- Deceased -->
                                 <div class="form-group full-width section-divider">
                                     <div class="deceased-toggle">
                                         <input type="checkbox" id="char-deceased" />
@@ -399,7 +400,6 @@
             el.addEventListener('click', function() {
                 var id = this.dataset.id;
                 showCharacterForm(id);
-                // Close list on mobile after selection
                 if (window.innerWidth < 768) {
                     toggleCharacterList(false);
                 }
@@ -424,145 +424,9 @@
         }
     }
 
-    function initCharacterEvents() {
-        // Toggle character list
-        var toggleBtn = document.getElementById('toggle-char-list');
-        if (toggleBtn) {
-            var newToggle = toggleBtn.cloneNode(true);
-            toggleBtn.parentNode.replaceChild(newToggle, toggleBtn);
-            newToggle.addEventListener('click', function(e) {
-                e.stopPropagation();
-                toggleCharacterList();
-            });
-        }
-
-        // Add character button
-        var addBtn = document.getElementById('add-character-btn');
-        if (addBtn) {
-            var newAddBtn = addBtn.cloneNode(true);
-            addBtn.parentNode.replaceChild(newAddBtn, addBtn);
-            newAddBtn.addEventListener('click', function() {
-                currentEditId = null;
-                showCharacterForm(null);
-                // Close list on mobile
-                if (window.innerWidth < 768) {
-                    toggleCharacterList(false);
-                }
-            });
-        }
-
-        // Form submit
-        var form = document.getElementById('char-form');
-        if (form) {
-            var newForm = form.cloneNode(true);
-            form.parentNode.replaceChild(newForm, form);
-            newForm.addEventListener('submit', saveCharacter);
-        }
-
-        // Delete button
-        var deleteBtn = document.getElementById('delete-char-btn');
-        if (deleteBtn) {
-            var newDeleteBtn = deleteBtn.cloneNode(true);
-            deleteBtn.parentNode.replaceChild(newDeleteBtn, deleteBtn);
-            newDeleteBtn.addEventListener('click', function() {
-                if (currentEditId && confirm('Delete this character permanently?')) {
-                    deleteCharacter(currentEditId);
-                }
-            });
-        }
-
-        // Tab switching
-        document.querySelectorAll('.char-tab-btn').forEach(function(btn) {
-            var newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            newBtn.addEventListener('click', function() {
-                var tab = this.dataset.tab;
-                switchCharTab(tab);
-            });
-        });
-
-        // Filter events
-        var nameFilter = document.getElementById('char-name-filter');
-        if (nameFilter) {
-            nameFilter.addEventListener('input', renderCharacterList);
-        }
-        var statusFilter = document.getElementById('char-status-filter');
-        if (statusFilter) {
-            statusFilter.addEventListener('change', renderCharacterList);
-        }
-        var clearFilter = document.getElementById('clear-char-filter');
-        if (clearFilter) {
-            clearFilter.addEventListener('click', function() {
-                document.getElementById('char-name-filter').value = '';
-                document.getElementById('char-status-filter').value = 'all';
-                renderCharacterList();
-            });
-        }
-
-        // Career status
-        var addStatusBtn = document.getElementById('add-status-btn');
-        if (addStatusBtn) {
-            var newStatusBtn = addStatusBtn.cloneNode(true);
-            addStatusBtn.parentNode.replaceChild(newStatusBtn, addStatusBtn);
-            newStatusBtn.addEventListener('click', function() {
-                var container = document.getElementById('career-status-container');
-                addCareerStatusEntry(container);
-            });
-        }
-
-        // Eliminations
-        var addElimBtn = document.getElementById('add-standalone-elim-btn');
-        if (addElimBtn) {
-            var newElimBtn = addElimBtn.cloneNode(true);
-            addElimBtn.parentNode.replaceChild(newElimBtn, addElimBtn);
-            newElimBtn.addEventListener('click', addStandaloneElimination);
-        }
-
-        // Deceased toggle
-        var deceasedCheck = document.getElementById('char-deceased');
-        if (deceasedCheck) {
-            var newCheck = deceasedCheck.cloneNode(true);
-            deceasedCheck.parentNode.replaceChild(newCheck, deceasedCheck);
-            newCheck.addEventListener('change', function() {
-                var deathFields = document.getElementById('death-fields');
-                if (deathFields) {
-                    deathFields.style.display = this.checked ? 'block' : 'none';
-                }
-            });
-        }
-
-        // Stats events
-        initStatsEvents();
-        initMagicEvents();
-        initSpecialMovesEvents();
-
-        // Social add connection
-        var socialBtn = document.getElementById('add-social-relation-btn');
-        if (socialBtn) {
-            var newSocialBtn = socialBtn.cloneNode(true);
-            socialBtn.parentNode.replaceChild(newSocialBtn, socialBtn);
-            newSocialBtn.addEventListener('click', function() {
-                if (!currentEditId) {
-                    alert('Please save the character first.');
-                    return;
-                }
-                if (typeof window.showRelationshipForm === 'function') {
-                    window.showRelationshipForm(null, currentEditId);
-                }
-            });
-        }
-
-        // Close list when clicking outside
-        document.addEventListener('click', function(e) {
-            var panel = document.getElementById('char-list-panel');
-            var toggle = document.getElementById('toggle-char-list');
-            if (panel && panel.classList.contains('open')) {
-                if (!panel.contains(e.target) && !toggle.contains(e.target)) {
-                    toggleCharacterList(false);
-                }
-            }
-        });
-    }
+    // ============================================================
+    // TAB FUNCTIONS
+    // ============================================================
 
     function switchCharTab(tab) {
         document.querySelectorAll('.char-tab-btn').forEach(function(btn) {
@@ -582,11 +446,12 @@
         var title = document.getElementById('form-title');
         var nameDisplay = document.getElementById('current-char-name');
 
-        // Clear all tabs first
+        // Reset all tabs to hidden
         document.querySelectorAll('.char-tab-panel').forEach(function(p) {
             p.style.display = 'none';
             p.classList.remove('active');
         });
+
         // Show first tab
         var firstTab = document.querySelector('.char-tab-btn.active');
         if (!firstTab) {
@@ -610,84 +475,8 @@
             title.textContent = 'Edit Character';
             if (nameDisplay) nameDisplay.textContent = window.getDisplayName(char);
 
-            // Populate form fields
-            document.getElementById('char-firstname').value = char.firstName || '';
-            document.getElementById('char-middlename').value = char.middleName || '';
-            document.getElementById('char-lastname').value = char.lastName || '';
-            document.getElementById('char-nickname').value = char.nickname || '';
-            document.getElementById('char-alias').value = char.alias || '';
-            document.getElementById('char-previous-names').value = (char.previousNames || []).join(', ');
-            document.getElementById('char-name-format').value = char.nameFormat || 'firstlast';
-            document.getElementById('char-birthyear').value = char.birthYear || '';
-            document.getElementById('char-gender').value = char.gender || '';
-            document.getElementById('char-eyes').value = char.eyes || '';
-            document.getElementById('char-hair').value = char.hair || '';
-            document.getElementById('char-skin').value = char.skin || '';
-            document.getElementById('char-height').value = char.height || '';
-            document.getElementById('char-weight').value = char.weight || '';
-            document.getElementById('char-build').value = char.build || '';
-            document.getElementById('char-appearance-notes').value = char.appearanceNotes || '';
-            document.getElementById('char-notes').value = char.notes || '';
-            document.getElementById('char-specialty').value = char.specialty || '';
-            document.getElementById('char-deceased').checked = char.deceased || false;
-            document.getElementById('char-death-year').value = char.deathYear || '';
-            document.getElementById('char-death-cause').value = char.deathCause || '';
-            document.getElementById('char-death-age').value = char.deathAge || '';
-
-            // Personality
-            var p = char.personality || {};
-            document.getElementById('char-traits').value = p.traits || '';
-            document.getElementById('char-ideals').value = p.ideals || '';
-            document.getElementById('char-flaws').value = p.flaws || '';
-            document.getElementById('char-alignment').value = p.alignment || '';
-            document.getElementById('char-likes').value = p.likes || '';
-            document.getElementById('char-dislikes').value = p.dislikes || '';
-            document.getElementById('char-habits').value = p.habits || '';
-            document.getElementById('char-fears').value = p.fears || '';
-            document.getElementById('char-goals').value = p.goals || '';
-
-            // Stats
-            var stats = window.getCharacterStats(char);
-            document.getElementById('char-str').value = stats.str || 10;
-            document.getElementById('char-dex').value = stats.dex || 10;
-            document.getElementById('char-con').value = stats.con || 10;
-            document.getElementById('char-int').value = stats.int || 10;
-            document.getElementById('char-wis').value = stats.wis || 10;
-            document.getElementById('char-cha').value = stats.cha || 10;
-            updateClassSuggestion();
-
-            // Magic
-            var magic = window.getCharacterMagic(char);
-            for (var key in magic) {
-                var input = document.getElementById('magic-' + key);
-                if (input) {
-                    input.value = magic[key] || 0;
-                }
-            }
-            updateMagicClassSuggestion();
-            updateMagicPowerDisplay();
-
-            // Special moves
-            var moves = window.getSpecialMoves(char);
-            renderSpecialMoves('physical-moves-list', moves.physical, 'physical');
-            renderSpecialMoves('magical-moves-list', moves.magical, 'magical');
-
-            // Career status
-            var container = document.getElementById('career-status-container');
-            container.innerHTML = '';
-            if (char.careerStatus && char.careerStatus.length > 0) {
-                char.careerStatus.forEach(function(status) {
-                    addCareerStatusEntry(container, status.status, status.startYear, status.endYear);
-                });
-            } else {
-                addCareerStatusEntry(container);
-            }
-
-            // Eliminations
-            renderStandaloneEliminations(char);
-            renderTournamentEliminations(char);
-
-            // Academic view
+            // Populate all form fields
+            populateFormFields(char);
             renderAcademicView(char);
             renderProfessionalView(char);
             renderSocialView(char);
@@ -695,11 +484,8 @@
             var formElement = document.getElementById('char-form');
             if (formElement) formElement.dataset.editId = editId;
 
-            // Update list
             renderCharacterList();
-
         } else {
-            // New character
             title.textContent = 'New Character';
             if (nameDisplay) nameDisplay.textContent = 'New Character';
             var formElement = document.getElementById('char-form');
@@ -707,36 +493,115 @@
                 formElement.reset();
                 delete formElement.dataset.editId;
             }
-            
-            // Reset form fields
-            document.getElementById('char-str').value = 10;
-            document.getElementById('char-dex').value = 10;
-            document.getElementById('char-con').value = 10;
-            document.getElementById('char-int').value = 10;
-            document.getElementById('char-wis').value = 10;
-            document.getElementById('char-cha').value = 10;
-            updateClassSuggestion();
-
-            var container = document.getElementById('career-status-container');
-            container.innerHTML = '';
-            addCareerStatusEntry(container);
-
-            document.getElementById('char-deceased').checked = false;
-            document.getElementById('death-fields').style.display = 'none';
-            document.getElementById('specialty-field').style.display = 'none';
-
-            document.getElementById('academic-view').innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Save character to view academic data</p>';
-            document.getElementById('professional-view').innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Save character to view professional data</p>';
-            document.getElementById('social-view').innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Save character to view social connections</p>';
-            document.getElementById('standalone-eliminations-container').innerHTML = '<p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p>';
-            document.getElementById('tournament-eliminations-view').innerHTML = '<p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p>';
-
+            resetFormFields();
             renderCharacterList();
         }
 
-        // Ensure form is visible
         form.style.display = 'block';
         form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function populateFormFields(char) {
+        document.getElementById('char-firstname').value = char.firstName || '';
+        document.getElementById('char-middlename').value = char.middleName || '';
+        document.getElementById('char-lastname').value = char.lastName || '';
+        document.getElementById('char-nickname').value = char.nickname || '';
+        document.getElementById('char-alias').value = char.alias || '';
+        document.getElementById('char-previous-names').value = (char.previousNames || []).join(', ');
+        document.getElementById('char-name-format').value = char.nameFormat || 'firstlast';
+        document.getElementById('char-birthyear').value = char.birthYear || '';
+        document.getElementById('char-gender').value = char.gender || '';
+        document.getElementById('char-eyes').value = char.eyes || '';
+        document.getElementById('char-hair').value = char.hair || '';
+        document.getElementById('char-skin').value = char.skin || '';
+        document.getElementById('char-height').value = char.height || '';
+        document.getElementById('char-weight').value = char.weight || '';
+        document.getElementById('char-build').value = char.build || '';
+        document.getElementById('char-appearance-notes').value = char.appearanceNotes || '';
+        document.getElementById('char-notes').value = char.notes || '';
+        document.getElementById('char-specialty').value = char.specialty || '';
+        document.getElementById('char-deceased').checked = char.deceased || false;
+        document.getElementById('char-death-year').value = char.deathYear || '';
+        document.getElementById('char-death-cause').value = char.deathCause || '';
+        document.getElementById('char-death-age').value = char.deathAge || '';
+
+        var p = char.personality || {};
+        document.getElementById('char-traits').value = p.traits || '';
+        document.getElementById('char-ideals').value = p.ideals || '';
+        document.getElementById('char-flaws').value = p.flaws || '';
+        document.getElementById('char-alignment').value = p.alignment || '';
+        document.getElementById('char-likes').value = p.likes || '';
+        document.getElementById('char-dislikes').value = p.dislikes || '';
+        document.getElementById('char-habits').value = p.habits || '';
+        document.getElementById('char-fears').value = p.fears || '';
+        document.getElementById('char-goals').value = p.goals || '';
+
+        var stats = window.getCharacterStats(char);
+        document.getElementById('char-str').value = stats.str || 10;
+        document.getElementById('char-dex').value = stats.dex || 10;
+        document.getElementById('char-con').value = stats.con || 10;
+        document.getElementById('char-int').value = stats.int || 10;
+        document.getElementById('char-wis').value = stats.wis || 10;
+        document.getElementById('char-cha').value = stats.cha || 10;
+        updateClassSuggestion();
+
+        var magic = window.getCharacterMagic(char);
+        for (var key in magic) {
+            var input = document.getElementById('magic-' + key);
+            if (input) {
+                input.value = magic[key] || 0;
+            }
+        }
+        updateMagicClassSuggestion();
+        updateMagicPowerDisplay();
+
+        var moves = window.getSpecialMoves(char);
+        renderSpecialMoves('physical-moves-list', moves.physical, 'physical');
+        renderSpecialMoves('magical-moves-list', moves.magical, 'magical');
+
+        var container = document.getElementById('career-status-container');
+        container.innerHTML = '';
+        if (char.careerStatus && char.careerStatus.length > 0) {
+            char.careerStatus.forEach(function(status) {
+                addCareerStatusEntry(container, status.status, status.startYear, status.endYear);
+            });
+        } else {
+            addCareerStatusEntry(container);
+        }
+
+        renderStandaloneEliminations(char);
+        renderTournamentEliminations(char);
+
+        var deathFields = document.getElementById('death-fields');
+        if (deathFields) {
+            deathFields.style.display = char.deceased ? 'block' : 'none';
+        }
+    }
+
+    function resetFormFields() {
+        document.getElementById('char-str').value = 10;
+        document.getElementById('char-dex').value = 10;
+        document.getElementById('char-con').value = 10;
+        document.getElementById('char-int').value = 10;
+        document.getElementById('char-wis').value = 10;
+        document.getElementById('char-cha').value = 10;
+        updateClassSuggestion();
+
+        var container = document.getElementById('career-status-container');
+        container.innerHTML = '';
+        addCareerStatusEntry(container);
+
+        document.getElementById('char-deceased').checked = false;
+        document.getElementById('death-fields').style.display = 'none';
+
+        document.getElementById('academic-view').innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Save character to view academic data</p>';
+        document.getElementById('professional-view').innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Save character to view professional data</p>';
+        document.getElementById('social-view').innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Save character to view social connections</p>';
+        document.getElementById('standalone-eliminations-container').innerHTML = '<p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p>';
+        document.getElementById('tournament-eliminations-view').innerHTML = '<p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p>';
+
+        document.getElementById('physical-moves-list').innerHTML = '<p class="empty-state">None</p>';
+        document.getElementById('magical-moves-list').innerHTML = '<p class="empty-state">None</p>';
     }
 
     function renderAcademicView(char) {
@@ -948,12 +813,1014 @@
         return type ? type.color : '#7f8c8d';
     }
 
-    // ... (keep existing helper functions: addCareerStatusEntry, renderStandaloneEliminations, 
-    // renderTournamentEliminations, addStandaloneElimination, removeStandaloneElimination,
-    // saveCharacter, deleteCharacter, initStatsEvents, initMagicEvents, initSpecialMovesEvents,
-    // updateClassSuggestion, updateMagicClassSuggestion, updateMagicPowerDisplay,
-    // renderSpecialMoves, addSpecialMove, removeSpecialMove, generateRandomMagicCategory,
-    // populateClassSelect)
+    // ============================================================
+    // CAREER STATUS FUNCTIONS
+    // ============================================================
+
+    function addCareerStatusEntry(container, status, startYear, endYear) {
+        var entry = document.createElement('div');
+        entry.className = 'career-status-entry';
+        entry.innerHTML = `
+            <select class="career-status-select">
+                <option value="">Select status...</option>
+                <option value="civilian" ${status === 'civilian' ? 'selected' : ''}>Civilian</option>
+                <option value="trainee" ${status === 'trainee' ? 'selected' : ''}>Trainee</option>
+                <option value="rookie" ${status === 'rookie' ? 'selected' : ''}>Rookie</option>
+                <option value="junior" ${status === 'junior' ? 'selected' : ''}>Junior</option>
+                <option value="senior" ${status === 'senior' ? 'selected' : ''}>Senior</option>
+                <option value="instructor" ${status === 'instructor' ? 'selected' : ''}>Instructor</option>
+                <option value="support" ${status === 'support' ? 'selected' : ''}>Support</option>
+            </select>
+            <input type="number" class="career-start-year" placeholder="Start Year" value="${startYear || ''}">
+            <input type="number" class="career-end-year" placeholder="End Year" value="${endYear || ''}">
+            <button type="button" class="small danger remove-status">✕</button>
+        `;
+        container.appendChild(entry);
+        var select = entry.querySelector('.career-status-select');
+        var specialtyField = document.getElementById('specialty-field');
+        if (specialtyField) {
+            select.onchange = function() {
+                specialtyField.style.display = (this.value === 'instructor' || this.value === 'support') ? 'block' : 'none';
+            };
+        }
+        entry.querySelector('.remove-status').onclick = function() {
+            if (container.children.length > 1) {
+                entry.remove();
+            } else {
+                alert('You need at least one status entry.');
+            }
+        };
+    }
+
+    function renderTournamentEliminations(char) {
+        var container = document.getElementById('tournament-eliminations-view');
+        if (!container) return;
+
+        var tournElims = [];
+        if (char.eliminations) {
+            tournElims = char.eliminations.filter(function(e) { return !e.standalone; });
+        }
+
+        if (tournElims.length === 0) {
+            container.innerHTML = '<p class="empty-state" style="padding:6px;font-size:0.75rem;">No tournament eliminations recorded.</p>';
+            return;
+        }
+
+        var html = '';
+        var data = window.data || {};
+        tournElims.forEach(function(elim) {
+            var tournName = 'Unknown Tournament';
+            if (elim.tournamentId && data.tournaments) {
+                var tourn = data.tournaments.find(function(t) { return String(t.id) === String(elim.tournamentId); });
+                if (tourn) tournName = tourn.name;
+            }
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--info-soft);border-radius:4px;margin-bottom:2px;border-left:3px solid var(--info);">';
+            html += '<span style="font-size:0.75rem;"><strong>' + tournName + '</strong> - Week ' + elim.week + (elim.reason ? ' (' + elim.reason + ')' : '') + '</span>';
+            html += '</div>';
+        });
+        container.innerHTML = html;
+    }
+
+    function renderStandaloneEliminations(char) {
+        var container = document.getElementById('standalone-eliminations-container');
+        if (!container) return;
+
+        var standaloneElims = [];
+        if (char.eliminations) {
+            standaloneElims = char.eliminations.filter(function(e) { return e.standalone; });
+        }
+
+        if (standaloneElims.length === 0) {
+            container.innerHTML = '<p class="empty-state" style="padding:6px;font-size:0.75rem;">No standalone eliminations recorded.</p>';
+            return;
+        }
+
+        var html = '';
+        standaloneElims.forEach(function(elim, index) {
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--warning-soft);border-radius:4px;margin-bottom:2px;border-left:3px solid var(--warning);">';
+            html += '<span style="font-size:0.75rem;">Week ' + elim.week + (elim.reason ? ' - ' + elim.reason : '') + ' <span style="color:var(--warning);font-size:0.6rem;">[Standalone]</span></span>';
+            html += '<button class="remove-standalone-elim small" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 4px;" data-index="' + index + '">✕</button>';
+            html += '</div>';
+        });
+        container.innerHTML = html;
+
+        container.querySelectorAll('.remove-standalone-elim').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                removeStandaloneElimination(char.id, parseInt(this.dataset.index));
+            });
+        });
+    }
+
+    function addStandaloneElimination() {
+        var charId = document.getElementById('standalone-char-id') ? document.getElementById('standalone-char-id').value : '';
+        if (!charId) {
+            var form = document.getElementById('char-form');
+            charId = form ? form.dataset.editId : null;
+        }
+        if (!charId) {
+            alert('Please select a character first.');
+            return;
+        }
+
+        var week = parseInt(document.getElementById('standalone-elim-week') ? document.getElementById('standalone-elim-week').value : 1) || 1;
+        var reason = document.getElementById('standalone-elim-reason') ? document.getElementById('standalone-elim-reason').value || 'Dropped out' : 'Dropped out';
+
+        var data = window.data || {};
+        var char = data.characters.find(function(c) { return String(c.id) === String(charId); });
+        if (!char) {
+            alert('Character not found.');
+            return;
+        }
+
+        var alreadyEliminated = false;
+        if (char.eliminatedWeeks) {
+            char.eliminatedWeeks.forEach(function(w) {
+                if (parseInt(w) <= week) {
+                    alreadyEliminated = true;
+                }
+            });
+        }
+
+        if (alreadyEliminated) {
+            alert('This character is already eliminated at or before week ' + week + '.');
+            return;
+        }
+
+        if (!char.eliminations) char.eliminations = [];
+        if (!char.eliminatedWeeks) char.eliminatedWeeks = [];
+
+        char.eliminations.push({
+            tournamentId: null,
+            week: week,
+            reason: reason,
+            standalone: true
+        });
+
+        char.eliminatedWeeks.push(week);
+        char.eliminatedWeeks.sort(function(a, b) { return a - b; });
+
+        if (typeof window.logActivity === 'function') {
+            window.logActivity('Eliminated ' + char.firstName + ' (standalone, Week ' + week + '): ' + reason);
+        }
+
+        if (typeof window.saveData === 'function') {
+            window.saveData().then(function() {
+                renderCharacterList();
+                showCharacterForm(charId);
+                alert('Character eliminated successfully!');
+            }).catch(function(err) {
+                alert('Failed to save elimination.');
+            });
+        } else {
+            renderCharacterList();
+            showCharacterForm(charId);
+            alert('Character eliminated successfully!');
+        }
+    }
+
+    function removeStandaloneElimination(charId, index) {
+        if (!confirm('Remove this standalone elimination?')) return;
+        var data = window.data || {};
+        var char = data.characters.find(function(c) { return String(c.id) === String(charId); });
+        if (!char || !char.eliminations) return;
+
+        var elim = char.eliminations[index];
+        if (!elim || !elim.standalone) return;
+
+        if (char.eliminatedWeeks) {
+            var weekIdx = char.eliminatedWeeks.indexOf(parseInt(elim.week));
+            if (weekIdx !== -1) {
+                char.eliminatedWeeks.splice(weekIdx, 1);
+            }
+        }
+
+        char.eliminations.splice(index, 1);
+
+        if (typeof window.saveData === 'function') {
+            window.saveData().then(function() {
+                renderCharacterList();
+                showCharacterForm(charId);
+                alert('Standalone elimination removed.');
+            }).catch(function(err) {
+                alert('Failed to remove elimination.');
+            });
+        } else {
+            renderCharacterList();
+            showCharacterForm(charId);
+            alert('Standalone elimination removed.');
+        }
+    }
+
+    // ============================================================
+    // SAVE / DELETE CHARACTERS
+    // ============================================================
+
+    function saveCharacter(e) {
+        e.preventDefault();
+        var form = e.target;
+        var editId = form.dataset.editId;
+        var data = window.data || {};
+        var isDeceased = document.getElementById('char-deceased').checked;
+        var deathYear = document.getElementById('char-death-year').value.trim();
+        var deathCause = document.getElementById('char-death-cause').value.trim();
+        var deathAge = document.getElementById('char-death-age').value.trim();
+
+        var careerStatus = [];
+        document.querySelectorAll('.career-status-entry').forEach(function(entry) {
+            var select = entry.querySelector('.career-status-select');
+            var startInput = entry.querySelector('.career-start-year');
+            var endInput = entry.querySelector('.career-end-year');
+            if (select && select.value) {
+                careerStatus.push({
+                    status: select.value,
+                    startYear: startInput ? startInput.value || '' : '',
+                    endYear: endInput ? endInput.value || '' : ''
+                });
+            }
+        });
+
+        var magic = {};
+        var magicTypes = ['earth', 'water', 'fire', 'air', 'metal', 'wood',
+            'blood', 'bone', 'mind', 'morphic', 'life', 'death',
+            'space', 'time', 'dimension', 'void', 'reality', 'transference'
+        ];
+        magicTypes.forEach(function(key) {
+            var input = document.getElementById('magic-' + key);
+            if (input) {
+                magic[key] = parseInt(input.value) || 0;
+            }
+        });
+
+        var physicalMoves = [];
+        var magicalMoves = [];
+        document.querySelectorAll('#physical-moves-list .special-move-entry').forEach(function(el) {
+            var nameEl = el.querySelector('.move-name');
+            var descEl = el.querySelector('.move-desc');
+            if (nameEl) {
+                physicalMoves.push({
+                    name: nameEl.textContent,
+                    description: descEl ? descEl.textContent : ''
+                });
+            }
+        });
+        document.querySelectorAll('#magical-moves-list .special-move-entry').forEach(function(el) {
+            var nameEl = el.querySelector('.move-name');
+            var descEl = el.querySelector('.move-desc');
+            if (nameEl) {
+                magicalMoves.push({
+                    name: nameEl.textContent,
+                    description: descEl ? descEl.textContent : ''
+                });
+            }
+        });
+
+        var charData = {
+            firstName: document.getElementById('char-firstname').value.trim(),
+            middleName: document.getElementById('char-middlename').value.trim(),
+            lastName: document.getElementById('char-lastname').value.trim(),
+            nickname: document.getElementById('char-nickname').value.trim(),
+            alias: document.getElementById('char-alias').value.trim(),
+            previousNames: document.getElementById('char-previous-names').value.split(',').map(function(n) { return n.trim(); }).filter(function(n) { return n; }),
+            nameFormat: document.getElementById('char-name-format').value || 'firstlast',
+            birthYear: document.getElementById('char-birthyear').value || '',
+            gender: document.getElementById('char-gender').value.trim(),
+            eyes: document.getElementById('char-eyes').value.trim(),
+            hair: document.getElementById('char-hair').value.trim(),
+            skin: document.getElementById('char-skin').value.trim(),
+            height: document.getElementById('char-height').value.trim(),
+            weight: document.getElementById('char-weight').value.trim(),
+            build: document.getElementById('char-build').value.trim(),
+            appearanceNotes: document.getElementById('char-appearance-notes').value.trim(),
+            notes: document.getElementById('char-notes').value.trim(),
+            deceased: isDeceased,
+            deathYear: deathYear,
+            deathCause: deathCause,
+            deathAge: deathAge,
+            careerStatus: careerStatus,
+            specialty: document.getElementById('char-specialty').value.trim(),
+            personality: {
+                traits: document.getElementById('char-traits').value.trim(),
+                ideals: document.getElementById('char-ideals').value.trim(),
+                flaws: document.getElementById('char-flaws').value.trim(),
+                alignment: document.getElementById('char-alignment').value.trim(),
+                likes: document.getElementById('char-likes').value.trim(),
+                dislikes: document.getElementById('char-dislikes').value.trim(),
+                habits: document.getElementById('char-habits').value.trim(),
+                fears: document.getElementById('char-fears').value.trim(),
+                goals: document.getElementById('char-goals').value.trim()
+            },
+            stats: {
+                str: parseInt(document.getElementById('char-str').value) || 10,
+                dex: parseInt(document.getElementById('char-dex').value) || 10,
+                con: parseInt(document.getElementById('char-con').value) || 10,
+                int: parseInt(document.getElementById('char-int').value) || 10,
+                wis: parseInt(document.getElementById('char-wis').value) || 10,
+                cha: parseInt(document.getElementById('char-cha').value) || 10
+            },
+            magic: magic,
+            specialMoves: {
+                physical: physicalMoves,
+                magical: magicalMoves
+            }
+        };
+
+        if (editId) {
+            var existing = data.characters.find(function(c) { return String(c.id) === String(editId); });
+            if (existing && existing.eliminations) {
+                charData.eliminations = existing.eliminations.slice();
+            }
+        }
+
+        if (!charData.firstName) {
+            alert('First name is required.');
+            return;
+        }
+        if (!charData.lastName) {
+            alert('Last name is required.');
+            return;
+        }
+        if (isDeceased && !deathYear && !deathAge) {
+            alert('Please enter either Death Year or Death Age for deceased characters.');
+            return;
+        }
+
+        if (editId) {
+            var index = data.characters.findIndex(function(c) { return String(c.id) === String(editId); });
+            if (index !== -1) {
+                var existing = data.characters[index];
+                if (!charData.eliminations) {
+                    charData.eliminations = existing.eliminations || [];
+                }
+                charData.id = existing.id;
+                charData.createdAt = existing.createdAt;
+                data.characters[index] = Object.assign({}, existing, charData);
+                if (typeof window.logActivity === 'function') {
+                    window.logActivity('Updated character: ' + charData.firstName);
+                }
+            }
+        } else {
+            var newChar = {
+                id: window.generateId('char'),
+                firstName: charData.firstName,
+                middleName: charData.middleName,
+                lastName: charData.lastName,
+                nickname: charData.nickname,
+                alias: charData.alias,
+                previousNames: charData.previousNames,
+                nameFormat: charData.nameFormat,
+                birthYear: charData.birthYear,
+                gender: charData.gender,
+                eyes: charData.eyes,
+                hair: charData.hair,
+                skin: charData.skin,
+                height: charData.height,
+                weight: charData.weight,
+                build: charData.build,
+                appearanceNotes: charData.appearanceNotes,
+                notes: charData.notes,
+                deceased: charData.deceased,
+                deathYear: charData.deathYear,
+                deathCause: charData.deathCause,
+                deathAge: charData.deathAge,
+                careerStatus: charData.careerStatus,
+                specialty: charData.specialty,
+                personality: charData.personality,
+                stats: charData.stats,
+                magic: charData.magic,
+                specialMoves: charData.specialMoves,
+                eliminations: [],
+                eliminatedWeeks: [],
+                createdAt: new Date().toISOString()
+            };
+            data.characters.push(newChar);
+            if (typeof window.logActivity === 'function') {
+                window.logActivity('Added character: ' + charData.firstName);
+            }
+            currentEditId = newChar.id;
+        }
+
+        window.data = data;
+        if (typeof window.saveData === 'function') {
+            window.saveData().catch(function(err) { /* ignore */ });
+        }
+        renderCharacterList();
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
+        }
+        showCharacterForm(currentEditId);
+        alert('Character saved successfully!');
+    }
+
+    function deleteCharacter(id) {
+        if (!confirm('Delete this character permanently?')) return;
+        var data = window.data || {};
+        var char = data.characters.find(function(c) { return String(c.id) === String(id); });
+        if (!char) return;
+
+        data.teams.forEach(function(team) {
+            if (team.members) {
+                team.members = team.members.filter(function(m) { return String(m.characterId) !== String(id); });
+            }
+        });
+
+        data.characters = data.characters.filter(function(c) { return String(c.id) !== String(id); });
+        if (typeof window.logActivity === 'function') {
+            window.logActivity('Deleted character: ' + char.firstName);
+        }
+        if (typeof window.saveData === 'function') {
+            window.saveData().catch(function(err) { /* ignore */ });
+        }
+        currentEditId = null;
+        renderCharacterList();
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
+        }
+        // Show empty form
+        showCharacterForm(null);
+    }
+
+    // ============================================================
+    // EVENT INITIALIZATION
+    // ============================================================
+
+    function initCharacterEvents() {
+        var toggleBtn = document.getElementById('toggle-char-list');
+        if (toggleBtn) {
+            var newToggle = toggleBtn.cloneNode(true);
+            toggleBtn.parentNode.replaceChild(newToggle, toggleBtn);
+            newToggle.addEventListener('click', function(e) {
+                e.stopPropagation();
+                toggleCharacterList();
+            });
+        }
+
+        var addBtn = document.getElementById('add-character-btn');
+        if (addBtn) {
+            var newAddBtn = addBtn.cloneNode(true);
+            addBtn.parentNode.replaceChild(newAddBtn, addBtn);
+            newAddBtn.addEventListener('click', function() {
+                currentEditId = null;
+                showCharacterForm(null);
+                if (window.innerWidth < 768) {
+                    toggleCharacterList(false);
+                }
+            });
+        }
+
+        var form = document.getElementById('char-form');
+        if (form) {
+            var newForm = form.cloneNode(true);
+            form.parentNode.replaceChild(newForm, form);
+            newForm.addEventListener('submit', saveCharacter);
+        }
+
+        var deleteBtn = document.getElementById('delete-char-btn');
+        if (deleteBtn) {
+            var newDeleteBtn = deleteBtn.cloneNode(true);
+            deleteBtn.parentNode.replaceChild(newDeleteBtn, deleteBtn);
+            newDeleteBtn.addEventListener('click', function() {
+                if (currentEditId && confirm('Delete this character permanently?')) {
+                    deleteCharacter(currentEditId);
+                }
+            });
+        }
+
+        document.querySelectorAll('.char-tab-btn').forEach(function(btn) {
+            var newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', function() {
+                var tab = this.dataset.tab;
+                switchCharTab(tab);
+            });
+        });
+
+        var nameFilter = document.getElementById('char-name-filter');
+        if (nameFilter) {
+            nameFilter.addEventListener('input', renderCharacterList);
+        }
+        var statusFilter = document.getElementById('char-status-filter');
+        if (statusFilter) {
+            statusFilter.addEventListener('change', renderCharacterList);
+        }
+        var clearFilter = document.getElementById('clear-char-filter');
+        if (clearFilter) {
+            clearFilter.addEventListener('click', function() {
+                document.getElementById('char-name-filter').value = '';
+                document.getElementById('char-status-filter').value = 'all';
+                renderCharacterList();
+            });
+        }
+
+        var addStatusBtn = document.getElementById('add-status-btn');
+        if (addStatusBtn) {
+            var newStatusBtn = addStatusBtn.cloneNode(true);
+            addStatusBtn.parentNode.replaceChild(newStatusBtn, addStatusBtn);
+            newStatusBtn.addEventListener('click', function() {
+                var container = document.getElementById('career-status-container');
+                addCareerStatusEntry(container);
+            });
+        }
+
+        var addElimBtn = document.getElementById('add-standalone-elim-btn');
+        if (addElimBtn) {
+            var newElimBtn = addElimBtn.cloneNode(true);
+            addElimBtn.parentNode.replaceChild(newElimBtn, addElimBtn);
+            newElimBtn.addEventListener('click', addStandaloneElimination);
+        }
+
+        var deceasedCheck = document.getElementById('char-deceased');
+        if (deceasedCheck) {
+            var newCheck = deceasedCheck.cloneNode(true);
+            deceasedCheck.parentNode.replaceChild(newCheck, deceasedCheck);
+            newCheck.addEventListener('change', function() {
+                var deathFields = document.getElementById('death-fields');
+                if (deathFields) {
+                    deathFields.style.display = this.checked ? 'block' : 'none';
+                }
+            });
+        }
+
+        // Stats events
+        initStatsEvents();
+        initMagicEvents();
+        initSpecialMovesEvents();
+
+        var socialBtn = document.getElementById('add-social-relation-btn');
+        if (socialBtn) {
+            var newSocialBtn = socialBtn.cloneNode(true);
+            socialBtn.parentNode.replaceChild(newSocialBtn, socialBtn);
+            newSocialBtn.addEventListener('click', function() {
+                if (!currentEditId) {
+                    alert('Please save the character first.');
+                    return;
+                }
+                if (typeof window.showRelationshipForm === 'function') {
+                    window.showRelationshipForm(null, currentEditId);
+                }
+            });
+        }
+
+        document.addEventListener('click', function(e) {
+            var panel = document.getElementById('char-list-panel');
+            var toggle = document.getElementById('toggle-char-list');
+            if (panel && panel.classList.contains('open')) {
+                if (!panel.contains(e.target) && !toggle.contains(e.target)) {
+                    toggleCharacterList(false);
+                }
+            }
+        });
+
+        // Populate class select
+        populateClassSelect();
+    }
+
+    // ============================================================
+    // STATS EVENTS
+    // ============================================================
+
+    function initStatsEvents() {
+        var statInputs = ['char-str', 'char-dex', 'char-con', 'char-int', 'char-wis', 'char-cha'];
+        statInputs.forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('input', function() {
+                    var val = parseInt(this.value);
+                    if (isNaN(val)) val = 10;
+                    if (val < 1) val = 1;
+                    if (val > 30) val = 30;
+                    this.value = val;
+                    updateClassSuggestion();
+                });
+            }
+        });
+
+        var classSelect = document.getElementById('manual-class-select');
+        if (classSelect) {
+            var classes = window.CLASS_DEFINITIONS || [];
+            classSelect.innerHTML = '<option value="">Auto-suggest</option>';
+            classes.forEach(function(cls) {
+                var option = document.createElement('option');
+                option.value = cls.id;
+                option.textContent = cls.icon + ' ' + cls.label;
+                classSelect.appendChild(option);
+            });
+            classSelect.addEventListener('change', function() {
+                var display = document.getElementById('suggested-class');
+                if (this.value) {
+                    var selected = classes.find(function(c) { return c.id === this.value; });
+                    if (selected) {
+                        display.textContent = selected.icon + ' ' + selected.label;
+                        display.style.color = 'var(--accent)';
+                        display.style.background = 'var(--accent-soft)';
+                        display.style.borderColor = 'var(--accent)';
+                    }
+                } else {
+                    updateClassSuggestion();
+                }
+            });
+        }
+
+        var recalcBtn = document.getElementById('recalculate-class-btn');
+        if (recalcBtn) {
+            recalcBtn.addEventListener('click', updateClassSuggestion);
+        }
+
+        var randomBtn = document.getElementById('random-stats-btn');
+        if (randomBtn) {
+            randomBtn.addEventListener('click', function() {
+                var stats = window.generateRandomStats();
+                document.getElementById('char-str').value = stats.str;
+                document.getElementById('char-dex').value = stats.dex;
+                document.getElementById('char-con').value = stats.con;
+                document.getElementById('char-int').value = stats.int;
+                document.getElementById('char-wis').value = stats.wis;
+                document.getElementById('char-cha').value = stats.cha;
+                updateClassSuggestion();
+            });
+        }
+
+        // Recalculate magic class when stats change
+        statInputs.forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('change', function() {
+                    updateMagicClassSuggestion();
+                    updateMagicPowerDisplay();
+                });
+            }
+        });
+    }
+
+    function populateClassSelect() {
+        var select = document.getElementById('manual-class-select');
+        if (!select) return;
+        var classes = window.CLASS_DEFINITIONS || [];
+        select.innerHTML = '<option value="">Auto-suggest</option>';
+        classes.forEach(function(cls) {
+            var option = document.createElement('option');
+            option.value = cls.id;
+            option.textContent = cls.icon + ' ' + cls.label;
+            select.appendChild(option);
+        });
+    }
+
+    function updateClassSuggestion() {
+        var str = parseInt(document.getElementById('char-str') ? document.getElementById('char-str').value : 10) || 10;
+        var dex = parseInt(document.getElementById('char-dex') ? document.getElementById('char-dex').value : 10) || 10;
+        var con = parseInt(document.getElementById('char-con') ? document.getElementById('char-con').value : 10) || 10;
+        var int = parseInt(document.getElementById('char-int') ? document.getElementById('char-int').value : 10) || 10;
+        var wis = parseInt(document.getElementById('char-wis') ? document.getElementById('char-wis').value : 10) || 10;
+        var cha = parseInt(document.getElementById('char-cha') ? document.getElementById('char-cha').value : 10) || 10;
+
+        var stats = { str: str, dex: dex, con: con, int: int, wis: wis, cha: cha };
+        var suggested = window.suggestClass(stats);
+        var display = document.getElementById('suggested-class');
+
+        if (display) {
+            if (suggested) {
+                display.textContent = suggested.icon + ' ' + suggested.label;
+                display.style.color = 'var(--accent)';
+                display.style.background = 'var(--accent-soft)';
+                display.style.borderColor = 'var(--accent)';
+            } else {
+                display.textContent = '\u2014';
+                display.style.color = 'var(--text-dim)';
+                display.style.background = 'transparent';
+                display.style.borderColor = 'var(--border)';
+            }
+        }
+    }
+
+    // ============================================================
+    // MAGIC EVENTS
+    // ============================================================
+
+    function initMagicEvents() {
+        var magicInputs = ['magic-earth', 'magic-water', 'magic-fire', 'magic-air', 'magic-metal', 'magic-wood',
+            'magic-blood', 'magic-bone', 'magic-mind', 'magic-morphic', 'magic-life', 'magic-death',
+            'magic-space', 'magic-time', 'magic-dimension', 'magic-void', 'magic-reality', 'magic-transference'
+        ];
+        magicInputs.forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('input', function() {
+                    var val = parseInt(this.value);
+                    if (isNaN(val)) val = 0;
+                    if (val < 0) val = 0;
+                    if (val > 10) val = 10;
+                    this.value = val;
+                    updateMagicClassSuggestion();
+                    updateMagicPowerDisplay();
+                });
+            }
+        });
+
+        var magicClassSelect = document.getElementById('manual-magic-class-select');
+        if (magicClassSelect) {
+            var magicOptions = [
+                { value: '', label: 'Auto-suggest' },
+                { value: 'elementalist', label: 'Elementalist' },
+                { value: 'body_mage', label: 'Body Mage' },
+                { value: 'aether_mage', label: 'Aether Mage' }
+            ];
+            var classMap = {
+                elemental: { earth: 'Geomancer', water: 'Hydromancer', fire: 'Pyromancer',
+                    air: 'Aeromancer', metal: 'Ferromancer', wood: 'Dendromancer' },
+                body: { blood: 'Hemomancer', bone: 'Osteomancer', mind: 'Psychomancer',
+                    morphic: 'Morphomancer', life: 'Vitalmancer', death: 'Necromancer' },
+                aether: { space: 'Spatiomancer', time: 'Chronomancer', dimension: 'Dimensionist',
+                    void: 'Voidmancer', reality: 'Reality Weaver', transference: 'Transference Mage' }
+            };
+            for (var cat in classMap) {
+                for (var type in classMap[cat]) {
+                    magicOptions.push({ value: type, label: classMap[cat][type] });
+                }
+            }
+            magicClassSelect.innerHTML = '';
+            magicOptions.forEach(function(opt) {
+                var option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.label;
+                magicClassSelect.appendChild(option);
+            });
+            magicClassSelect.addEventListener('change', function() {
+                var display = document.getElementById('suggested-magic-class');
+                if (this.value) {
+                    var selected = magicOptions.find(function(o) { return o.value === this.value; });
+                    if (selected) {
+                        display.textContent = selected.label;
+                        display.style.color = 'var(--info)';
+                        display.style.background = 'var(--info-soft)';
+                        display.style.borderColor = 'var(--info)';
+                    }
+                } else {
+                    updateMagicClassSuggestion();
+                }
+            });
+        }
+
+        var recalcMagicBtn = document.getElementById('recalculate-magic-class-btn');
+        if (recalcMagicBtn) {
+            recalcMagicBtn.addEventListener('click', function() {
+                updateMagicClassSuggestion();
+                updateMagicPowerDisplay();
+            });
+        }
+
+        var randomElementalBtn = document.getElementById('random-elemental-btn');
+        if (randomElementalBtn) {
+            randomElementalBtn.addEventListener('click', function() {
+                var magic = generateRandomMagicCategory('elemental');
+                var types = ['earth', 'water', 'fire', 'air', 'metal', 'wood'];
+                types.forEach(function(key) {
+                    var input = document.getElementById('magic-' + key);
+                    if (input && magic[key] !== undefined) {
+                        input.value = magic[key];
+                    }
+                });
+                updateMagicClassSuggestion();
+                updateMagicPowerDisplay();
+            });
+        }
+
+        var randomBodyBtn = document.getElementById('random-body-btn');
+        if (randomBodyBtn) {
+            randomBodyBtn.addEventListener('click', function() {
+                var magic = generateRandomMagicCategory('body');
+                var types = ['blood', 'bone', 'mind', 'morphic', 'life', 'death'];
+                types.forEach(function(key) {
+                    var input = document.getElementById('magic-' + key);
+                    if (input && magic[key] !== undefined) {
+                        input.value = magic[key];
+                    }
+                });
+                updateMagicClassSuggestion();
+                updateMagicPowerDisplay();
+            });
+        }
+
+        var randomAetherBtn = document.getElementById('random-aether-btn');
+        if (randomAetherBtn) {
+            randomAetherBtn.addEventListener('click', function() {
+                var magic = generateRandomMagicCategory('aether');
+                var types = ['space', 'time', 'dimension', 'void', 'reality', 'transference'];
+                types.forEach(function(key) {
+                    var input = document.getElementById('magic-' + key);
+                    if (input && magic[key] !== undefined) {
+                        input.value = magic[key];
+                    }
+                });
+                updateMagicClassSuggestion();
+                updateMagicPowerDisplay();
+            });
+        }
+    }
+
+    function updateMagicClassSuggestion() {
+        var magic = {};
+        var types = ['earth', 'water', 'fire', 'air', 'metal', 'wood',
+            'blood', 'bone', 'mind', 'morphic', 'life', 'death',
+            'space', 'time', 'dimension', 'void', 'reality', 'transference'
+        ];
+        types.forEach(function(key) {
+            var input = document.getElementById('magic-' + key);
+            magic[key] = input ? parseInt(input.value) || 0 : 0;
+        });
+
+        var tempChar = { magic: magic };
+        var suggested = window.suggestMagicClass(tempChar);
+        var display = document.getElementById('suggested-magic-class');
+
+        if (display) {
+            if (suggested) {
+                display.textContent = suggested.name;
+                display.style.color = 'var(--info)';
+                display.style.background = 'var(--info-soft)';
+                display.style.borderColor = 'var(--info)';
+            } else {
+                display.textContent = '\u2014';
+                display.style.color = 'var(--text-dim)';
+                display.style.background = 'transparent';
+                display.style.borderColor = 'var(--border)';
+            }
+        }
+    }
+
+    function updateMagicPowerDisplay() {
+        var types = ['earth', 'water', 'fire', 'air', 'metal', 'wood',
+            'blood', 'bone', 'mind', 'morphic', 'life', 'death',
+            'space', 'time', 'dimension', 'void', 'reality', 'transference'
+        ];
+        var total = 0;
+        types.forEach(function(key) {
+            var input = document.getElementById('magic-' + key);
+            var val = input ? parseInt(input.value) || 0 : 0;
+            total += val;
+        });
+
+        var maxPower = 180;
+        var percentage = Math.min(100, Math.round((total / maxPower) * 100));
+        var level = Math.floor(percentage / 20);
+        if (level > 4) level = 4;
+        if (level < 0) level = 0;
+        var filled = '\u25CF';
+        var empty = '\u25CB';
+        var display = '';
+        for (var i = 0; i < 5; i++) {
+            display += (i <= level) ? filled : empty;
+        }
+
+        var el = document.getElementById('magic-power-display-text');
+        if (el) {
+            el.textContent = display + ' (' + total + '/' + maxPower + ')';
+        }
+    }
+
+    function generateRandomMagicCategory(category) {
+        var types = {
+            elemental: ['earth', 'water', 'fire', 'air', 'metal', 'wood'],
+            body: ['blood', 'bone', 'mind', 'morphic', 'life', 'death'],
+            aether: ['space', 'time', 'dimension', 'void', 'reality', 'transference']
+        };
+
+        var magic = {};
+        var categoryTypes = types[category] || [];
+        categoryTypes.forEach(function(key) {
+            var roll = Math.random();
+            if (roll < 0.3) {
+                magic[key] = 0;
+            } else if (roll < 0.6) {
+                magic[key] = Math.floor(Math.random() * 4) + 1;
+            } else if (roll < 0.85) {
+                magic[key] = Math.floor(Math.random() * 4) + 5;
+            } else {
+                magic[key] = Math.floor(Math.random() * 3) + 8;
+            }
+        });
+        return magic;
+    }
+
+    // ============================================================
+    // SPECIAL MOVES FUNCTIONS
+    // ============================================================
+
+    function initSpecialMovesEvents() {
+        var addPhysicalBtn = document.getElementById('add-physical-move-btn');
+        if (addPhysicalBtn) {
+            addPhysicalBtn.addEventListener('click', function() {
+                var form = document.getElementById('char-form');
+                var editId = form ? form.dataset.editId : null;
+                if (!editId) {
+                    alert('Please save the character first.');
+                    return;
+                }
+                var char = window.getCharacterById(editId);
+                if (!char) return;
+                var name = document.getElementById('physical-move-name').value.trim();
+                var desc = document.getElementById('physical-move-desc').value.trim();
+                if (!name) { alert('Please enter a move name.'); return; }
+                addSpecialMove(char, 'physical', name, desc);
+                var moves = window.getSpecialMoves(char);
+                renderSpecialMoves('physical-moves-list', moves.physical, 'physical');
+                document.getElementById('physical-move-name').value = '';
+                document.getElementById('physical-move-desc').value = '';
+                if (typeof window.saveData === 'function') {
+                    window.saveData().catch(function(err) { /* ignore */ });
+                }
+            });
+        }
+
+        var addMagicalBtn = document.getElementById('add-magical-move-btn');
+        if (addMagicalBtn) {
+            addMagicalBtn.addEventListener('click', function() {
+                var form = document.getElementById('char-form');
+                var editId = form ? form.dataset.editId : null;
+                if (!editId) {
+                    alert('Please save the character first.');
+                    return;
+                }
+                var char = window.getCharacterById(editId);
+                if (!char) return;
+                var name = document.getElementById('magical-move-name').value.trim();
+                var desc = document.getElementById('magical-move-desc').value.trim();
+                if (!name) { alert('Please enter a move name.'); return; }
+                addSpecialMove(char, 'magical', name, desc);
+                var moves = window.getSpecialMoves(char);
+                renderSpecialMoves('magical-moves-list', moves.magical, 'magical');
+                document.getElementById('magical-move-name').value = '';
+                document.getElementById('magical-move-desc').value = '';
+                if (typeof window.saveData === 'function') {
+                    window.saveData().catch(function(err) { /* ignore */ });
+                }
+            });
+        }
+    }
+
+    function addSpecialMove(char, type, name, description) {
+        if (!char) return false;
+        var moves = window.getSpecialMoves(char);
+        if (!moves[type]) moves[type] = [];
+        moves[type].push({
+            id: window.generateId('move'),
+            name: name || 'Unnamed Move',
+            description: description || ''
+        });
+        return true;
+    }
+
+    function removeSpecialMove(char, type, index) {
+        if (!char) return false;
+        var moves = window.getSpecialMoves(char);
+        if (!moves[type] || !moves[type][index]) return false;
+        moves[type].splice(index, 1);
+        return true;
+    }
+
+    function renderSpecialMoves(containerId, moves, type) {
+        var container = document.getElementById(containerId);
+        if (!container) return;
+
+        if (!moves || moves.length === 0) {
+            container.innerHTML = '<p class="empty-state" style="padding:4px;font-size:0.7rem;">None</p>';
+            return;
+        }
+
+        var html = '';
+        var color = type === 'physical' ? 'var(--accent)' : 'var(--info)';
+        moves.forEach(function(move, index) {
+            html += '<div class="special-move-entry" style="border-left-color:' + color + ';">';
+            html += '<div><span class="move-name">' + move.name + '</span> <span class="move-desc">' + (move.description || '') + '</span></div>';
+            html += '<button class="remove-special-move small" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;" data-type="' + type + '" data-index="' + index + '">✕</button>';
+            html += '</div>';
+        });
+        container.innerHTML = html;
+
+        container.querySelectorAll('.remove-special-move').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var form = document.getElementById('char-form');
+                var editId = form ? form.dataset.editId : null;
+                if (!editId) {
+                    alert('Please save the character first.');
+                    return;
+                }
+                var char = window.getCharacterById(editId);
+                if (!char) return;
+                var type = this.dataset.type;
+                var index = parseInt(this.dataset.index);
+                removeSpecialMove(char, type, index);
+                var moves = window.getSpecialMoves(char);
+                renderSpecialMoves('physical-moves-list', moves.physical, 'physical');
+                renderSpecialMoves('magical-moves-list', moves.magical, 'magical');
+                if (typeof window.saveData === 'function') {
+                    window.saveData().catch(function(err) { /* ignore */ });
+                }
+            });
+        });
+    }
+
+    // ============================================================
+    // REGISTER
+    // ============================================================
 
     // Register with TabManager
     if (typeof window.TabManager !== 'undefined') {
