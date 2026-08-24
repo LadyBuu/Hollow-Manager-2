@@ -19,6 +19,42 @@
         }
         if (!container) return;
 
+        // Check if data exists
+        if (!window.data) {
+            console.warn('No data available for schedule, waiting for dataReady event');
+            container.innerHTML = '<p class="empty-state">Loading schedule data...</p>';
+            return;
+        }
+
+        // Ensure curriculum structure exists
+        if (!window.data.curriculum) {
+            window.data.curriculum = {
+                disciplines: [],
+                schedules: {},
+                restDays: {},
+                examDays: {},
+                grades: {},
+                rankings: {},
+                currentWeek: 1,
+                classInstructors: {},
+                classLabels: {},
+                classGroupLabels: {},
+                classDurations: {},
+                instructorClasses: {},
+                instructorTemplates: {},
+                instructorBlocks: {},
+                instructorGroups: {},
+                disciplineGroups: {},
+                autoGroups: {}
+            };
+        }
+        if (!window.data.curriculum.schedules) {
+            window.data.curriculum.schedules = {};
+        }
+        if (!window.data.curriculum.restDays) {
+            window.data.curriculum.restDays = {};
+        }
+
         container.innerHTML = getScheduleHTML();
 
         populateStudentSelector();
@@ -31,8 +67,8 @@
             <div class="page-header">
                 <h2>Student Schedule</h2>
                 <div class="header-actions">
-                    <button id="duplicate-schedule-btn" class="primary small">\u25A3 Duplicate to Week</button>
-                    <button id="clear-schedule-btn" class="danger small">\u2715 Clear Week</button>
+                    <button id="duplicate-schedule-btn" class="primary small">■ Duplicate to Week</button>
+                    <button id="clear-schedule-btn" class="danger small">✕ Clear Week</button>
                 </div>
             </div>
             <div class="calendar-controls">
@@ -43,9 +79,9 @@
                     </select>
                 </div>
                 <div class="week-nav">
-                    <button id="prev-schedule-week" class="small">\u2190 Prev</button>
+                    <button id="prev-schedule-week" class="small">← Prev</button>
                     <span id="schedule-week-display" style="font-weight:600;min-width:80px;text-align:center;">Week 1</span>
-                    <button id="next-schedule-week" class="small">Next \u2192</button>
+                    <button id="next-schedule-week" class="small">Next →</button>
                     <button id="goto-schedule-week" class="small primary">Go to Week</button>
                 </div>
             </div>
@@ -120,7 +156,7 @@
         var trainees = window.data && window.data.characters ? window.data.characters.filter(function(c) {
             if (c.deceased) return false;
             var status = window.getCurrentStatus(c).toLowerCase();
-            return status === 'trainee';
+            return status === 'trainee' || status === 'rookie';
         }) : [];
 
         trainees.sort(function(a, b) {
@@ -129,6 +165,7 @@
             return nameA.localeCompare(nameB);
         });
 
+        var currentValue = select.value;
         select.innerHTML = '<option value="">Select a trainee...</option>';
 
         if (trainees.length === 0) {
@@ -145,10 +182,11 @@
             select.appendChild(option);
         });
 
-        if (select.options.length > 1 && !state.selectedStudentId) {
+        if (currentValue && select.querySelector('option[value="' + currentValue + '"]')) {
+            select.value = currentValue;
+        } else if (select.options.length > 1 && !state.selectedStudentId) {
             select.selectedIndex = 1;
             state.selectedStudentId = select.value;
-            renderStudentSchedule();
         }
     }
 
@@ -267,7 +305,7 @@
                 restMsg.className = 'empty-state';
                 restMsg.style.padding = '20px';
                 restMsg.style.textAlign = 'center';
-                restMsg.textContent = '\uD83D\uDED1 Rest Day';
+                restMsg.textContent = '🛑 Rest Day';
                 slots.appendChild(restMsg);
                 if (schedule[day]) {
                     delete schedule[day];
@@ -672,6 +710,9 @@
                         window.logActivity('Added ' + (discipline ? discipline.name : '') + ' to schedule');
                     }
                     renderStudentSchedule();
+                    if (typeof window.renderAutoGroups === 'function') {
+                        window.renderAutoGroups();
+                    }
                     alert('Class added successfully!');
                 }).catch(function(err) {
                     renderStudentSchedule();
@@ -722,7 +763,7 @@
                     <div class="detail-row"><span class="label">Group:</span> <span><strong>${groupLabel || 'None'}</strong></span></div>
                     <div class="detail-row"><span class="label">Week:</span> <span>${week}</span></div>
                     <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
-                        <button type="button" id="remove-class-detail" class="danger small">\u2715 Remove from Schedule</button>
+                        <button type="button" id="remove-class-detail" class="danger small">✕ Remove from Schedule</button>
                         <button type="button" id="close-detail" class="secondary small">Close</button>
                     </div>
                 </div>
@@ -1144,12 +1185,43 @@
         }
     }
 
-    // Register with curriculum main if available
+    // ============================================================
+    // REGISTER WITH CURRICULUM MAIN
+    // ============================================================
+
     if (typeof window.curriculumState !== 'undefined') {
         window.curriculumState.studentSchedule = state;
     }
 
-    // Make functions globally available
+    document.addEventListener('dataReady', function() {
+        var container = document.getElementById('schedule-content');
+        if (container && container.style.display !== 'none') {
+            renderStudentScheduleView(container);
+        }
+    });
+
+    document.addEventListener('tabChanged', function(e) {
+        if (e.detail && e.detail.tab === 'schedule') {
+            var container = document.getElementById('schedule-content');
+            if (container) {
+                renderStudentScheduleView(container);
+            }
+        }
+    });
+
+    if (window.data) {
+        setTimeout(function() {
+            var container = document.getElementById('schedule-content');
+            if (container && container.style.display !== 'none') {
+                renderStudentScheduleView(container);
+            }
+        }, 100);
+    }
+
+    // ============================================================
+    // EXPOSE FUNCTIONS
+    // ============================================================
+
     window.renderStudentScheduleView = renderStudentScheduleView;
     window.renderStudentSchedule = renderStudentSchedule;
     window.initStudentScheduleEvents = initStudentScheduleEvents;
@@ -1164,5 +1236,7 @@
     window.clearSchedule = clearSchedule;
     window.saveRestDays = saveRestDays;
     window.studentScheduleState = state;
+
+    console.log('schedule.js loaded');
 
 })();
