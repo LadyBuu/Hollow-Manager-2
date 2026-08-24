@@ -8,6 +8,44 @@
     'use strict';
 
     function renderDisciplinesView(container) {
+        if (!container) {
+            container = document.getElementById('disciplines-content');
+        }
+        if (!container) return;
+
+        // Check if data exists
+        if (!window.data) {
+            console.warn('No data available for disciplines, waiting for dataReady event');
+            container.innerHTML = '<p class="empty-state">Loading disciplines data...</p>';
+            return;
+        }
+
+        // Ensure curriculum structure exists
+        if (!window.data.curriculum) {
+            window.data.curriculum = {
+                disciplines: [],
+                schedules: {},
+                restDays: {},
+                examDays: {},
+                grades: {},
+                rankings: {},
+                currentWeek: 1,
+                classInstructors: {},
+                classLabels: {},
+                classGroupLabels: {},
+                classDurations: {},
+                instructorClasses: {},
+                instructorTemplates: {},
+                instructorBlocks: {},
+                instructorGroups: {},
+                disciplineGroups: {},
+                autoGroups: {}
+            };
+        }
+        if (!window.data.curriculum.disciplines) {
+            window.data.curriculum.disciplines = [];
+        }
+
         container.innerHTML = getDisciplinesHTML();
         renderDisciplines();
         initDisciplineEvents();
@@ -43,8 +81,8 @@
                             <label>Discipline Type *</label>
                             <select id="discipline-type" required>
                                 <option value="">Select type...</option>
-                                <option value="mandatory">\u25A3 Mandatory / Common</option>
-                                <option value="optional">\u25A2 Optional / Choice</option>
+                                <option value="mandatory">■ Mandatory / Common</option>
+                                <option value="optional">□ Optional / Choice</option>
                             </select>
                         </div>
                         <div class="form-group full-width">
@@ -54,7 +92,7 @@
                                     <select class="instructor-select">
                                         <option value="">Select instructor...</option>
                                     </select>
-                                    <button type="button" class="small danger remove-instructor">\u2715</button>
+                                    <button type="button" class="small danger remove-instructor">✕</button>
                                 </div>
                             </div>
                             <button type="button" id="add-instructor-btn" class="small" style="margin-top:8px;">+ Add Instructor</button>
@@ -90,7 +128,7 @@
                                     <input type="text" class="grading-letter" placeholder="Letter" style="width:80px;">
                                     <input type="number" class="grading-min" placeholder="Min %" min="0" max="100" style="width:80px;">
                                     <input type="number" class="grading-max" placeholder="Max %" min="0" max="100" style="width:80px;">
-                                    <button type="button" class="small danger remove-grading">\u2715</button>
+                                    <button type="button" class="small danger remove-grading">✕</button>
                                 </div>
                             </div>
                             <button type="button" id="add-grading-btn" class="small" style="margin-top:8px;">+ Add Grade Level</button>
@@ -129,7 +167,7 @@
             var weekDisplay = d.startWeek ? 'Wk ' + d.startWeek : '?';
             if (d.endWeek) weekDisplay += ' - Wk ' + d.endWeek;
 
-            var typeLabel = d.type === 'mandatory' ? '\u25A3 Mandatory' : (d.type === 'optional' ? '\u25A2 Optional' : '—');
+            var typeLabel = d.type === 'mandatory' ? '■ Mandatory' : (d.type === 'optional' ? '□ Optional' : '—');
             var typeColor = d.type === 'mandatory' ? 'var(--accent)' : (d.type === 'optional' ? 'var(--warning)' : 'var(--text-dim)');
 
             html += '<div class="list-item" data-id="' + d.id + '">' +
@@ -268,7 +306,7 @@
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'small danger remove-instructor';
-        removeBtn.textContent = '\u2715';
+        removeBtn.textContent = '✕';
         removeBtn.style.cssText = 'padding:4px 8px;font-size:0.65rem;';
         removeBtn.onclick = function() {
             if (container.children.length > 1) {
@@ -291,7 +329,7 @@
             <input type="text" class="grading-letter" placeholder="Letter" value="${letter || ''}" style="width:80px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:0.78rem;">
             <input type="number" class="grading-min" placeholder="Min %" value="${min || ''}" style="width:80px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:0.78rem;" min="0" max="100">
             <input type="number" class="grading-max" placeholder="Max %" value="${max || ''}" style="width:80px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:0.78rem;" min="0" max="100">
-            <button type="button" class="small danger remove-grading" style="padding:4px 8px;font-size:0.65rem;">\u2715</button>
+            <button type="button" class="small danger remove-grading" style="padding:4px 8px;font-size:0.65rem;">✕</button>
         `;
         container.appendChild(entry);
         entry.querySelector('.remove-grading').onclick = function() {
@@ -379,10 +417,24 @@
 
         window.data = data;
         if (typeof window.saveData === 'function') {
-            window.saveData().catch(function(err) { /* ignore */ });
+            window.saveData().then(function() {
+                renderDisciplines();
+                hideDisciplineForm();
+                if (typeof window.renderAllSections === 'function') {
+                    window.renderAllSections();
+                }
+                if (typeof window.updateDashboardStats === 'function') {
+                    window.updateDashboardStats();
+                }
+            }).catch(function(err) {
+                console.error('Failed to save discipline:', err);
+                renderDisciplines();
+                hideDisciplineForm();
+            });
+        } else {
+            renderDisciplines();
+            hideDisciplineForm();
         }
-        renderDisciplines();
-        hideDisciplineForm();
     }
 
     function deleteDiscipline(id) {
@@ -412,9 +464,21 @@
             window.logActivity('Deleted discipline: ' + discipline.name);
         }
         if (typeof window.saveData === 'function') {
-            window.saveData().catch(function(err) { /* ignore */ });
+            window.saveData().then(function() {
+                renderDisciplines();
+                if (typeof window.renderAllSections === 'function') {
+                    window.renderAllSections();
+                }
+                if (typeof window.updateDashboardStats === 'function') {
+                    window.updateDashboardStats();
+                }
+            }).catch(function(err) {
+                console.error('Failed to delete discipline:', err);
+                renderDisciplines();
+            });
+        } else {
+            renderDisciplines();
         }
-        renderDisciplines();
     }
 
     function initDisciplineEvents() {
@@ -450,6 +514,43 @@
         }
     }
 
+    // ============================================================
+    // REGISTER WITH TABMANAGER
+    // ============================================================
+
+    if (typeof window.TabManager !== 'undefined') {
+        window.TabManager.register('disciplines', renderDisciplinesView);
+    }
+
+    document.addEventListener('dataReady', function() {
+        var container = document.getElementById('disciplines-content');
+        if (container && container.style.display !== 'none') {
+            renderDisciplinesView(container);
+        }
+    });
+
+    document.addEventListener('tabChanged', function(e) {
+        if (e.detail && e.detail.tab === 'disciplines') {
+            var container = document.getElementById('disciplines-content');
+            if (container) {
+                renderDisciplinesView(container);
+            }
+        }
+    });
+
+    if (window.data) {
+        setTimeout(function() {
+            var container = document.getElementById('disciplines-content');
+            if (container && container.style.display !== 'none') {
+                renderDisciplinesView(container);
+            }
+        }, 100);
+    }
+
+    // ============================================================
+    // EXPOSE FUNCTIONS
+    // ============================================================
+
     window.renderDisciplinesView = renderDisciplinesView;
     window.renderDisciplines = renderDisciplines;
     window.showDisciplineForm = showDisciplineForm;
@@ -459,5 +560,7 @@
     window.addGradingEntry = addGradingEntry;
     window.addInstructorEntry = addInstructorEntry;
     window.initDisciplineEvents = initDisciplineEvents;
+
+    console.log('disciplines.js loaded');
 
 })();
