@@ -13,6 +13,8 @@ var dbOpenPromise = null;
 var isLoading = false;
 var isSaving = false;
 var _dataLoadedDispatched = false;
+var saveQueue = [];
+var isSaveQueued = false;
 
 function openDatabase() {
     if (db) {
@@ -198,6 +200,8 @@ function ensureDataStructure(data) {
 }
 
 function migrateData(data) {
+    if (!data) return;
+    
     data.characters.forEach(function(char) {
         if (char.deceased === undefined) char.deceased = false;
         if (!char.careerStatus) char.careerStatus = [];
@@ -313,160 +317,66 @@ function migrateData(data) {
 }
 
 // ============================================================
-// CIRCULAR REFERENCE SAFE STRINGIFY
-// ============================================================
-
-function safeStringify(obj) {
-    var seen = [];
-    var MAX_DEPTH = 50;
-    var depth = 0;
-    
-    function replacer(key, value) {
-        depth++;
-        
-        if (depth > MAX_DEPTH) {
-            return '[MaxDepth]';
-        }
-        
-        if (typeof value === 'object' && value !== null) {
-            if (seen.indexOf(value) !== -1) {
-                return '[Circular]';
-            }
-            seen.push(value);
-        }
-        return value;
-    }
-    
-    try {
-        return JSON.stringify(obj, replacer);
-    } catch (e) {
-        console.error('safeStringify error:', e);
-        return '{}';
-    }
-}
-
-// ============================================================
-// SAFE DATA COPY FOR STORAGE
+// SIMPLE STRUCTURED CLONE - NO CUSTOM SERIALIZATION
 // ============================================================
 
 function createSafeCopy(data) {
-    // Use the safe stringify/parse method
+    // Use native structuredClone if available (modern browsers)
+    if (typeof structuredClone === 'function') {
+        try {
+            return structuredClone(data);
+        } catch (e) {
+            console.warn('structuredClone failed, falling back to JSON:', e);
+        }
+    }
+    
+    // Fallback to JSON for older browsers
     try {
-        var json = safeStringify(data);
-        return JSON.parse(json);
+        return JSON.parse(JSON.stringify(data));
     } catch (e) {
-        console.warn('Safe copy failed, using manual copy:', e);
-        return createManualSafeCopy(data);
+        console.error('JSON serialization failed, using manual copy:', e);
+        return createManualCopy(data);
     }
 }
 
-function createManualSafeCopy(data) {
+function createManualCopy(data) {
+    // Minimal manual copy - only essential data
     var copy = {};
     
-    // Only copy primitive values and simple arrays/objects
-    var safeKeys = [
-        'characters', 'teams', 'tournaments', 'missions', 
-        'activities', 'classes', 'currentYear', 'currentWeek'
-    ];
+    copy.currentYear = data.currentYear || new Date().getFullYear();
+    copy.currentWeek = data.currentWeek || 1;
+    copy.characters = data.characters ? data.characters.slice(0, 200) : [];
+    copy.teams = data.teams ? data.teams.slice(0, 100) : [];
+    copy.tournaments = data.tournaments ? data.tournaments.slice(0, 50) : [];
+    copy.missions = data.missions ? data.missions.slice(0, 100) : [];
+    copy.activities = data.activities ? data.activities.slice(0, 200) : [];
+    copy.classes = data.classes ? data.classes.slice(0, 100) : [];
     
-    safeKeys.forEach(function(key) {
-        if (data[key] !== undefined && data[key] !== null) {
-            if (Array.isArray(data[key])) {
-                copy[key] = data[key].map(function(item) {
-                    if (item && typeof item === 'object') {
-                        var clean = {};
-                        for (var prop in item) {
-                            var val = item[prop];
-                            if (typeof val !== 'function' && 
-                                typeof val !== 'undefined' &&
-                                !(typeof val === 'object' && val === item)) {
-                                if (typeof val === 'object' && val !== null) {
-                                    try {
-                                        clean[prop] = JSON.parse(JSON.stringify(val));
-                                    } catch (e) {
-                                        clean[prop] = null;
-                                    }
-                                } else {
-                                    clean[prop] = val;
-                                }
-                            }
-                        }
-                        return clean;
-                    }
-                    return item;
-                });
-            } else {
-                copy[key] = data[key];
-            }
-        } else {
-            copy[key] = Array.isArray(data[key]) ? [] : null;
-        }
-    });
+    copy.curriculum = {
+        disciplines: data.curriculum && data.curriculum.disciplines ? data.curriculum.disciplines.slice(0, 50) : [],
+        schedules: data.curriculum && data.curriculum.schedules ? {} : {},
+        restDays: data.curriculum && data.curriculum.restDays ? {} : {},
+        examDays: data.curriculum && data.curriculum.examDays ? {} : {},
+        grades: data.curriculum && data.curriculum.grades ? {} : {},
+        rankings: data.curriculum && data.curriculum.rankings ? {} : {},
+        currentWeek: data.curriculum ? data.curriculum.currentWeek || 1 : 1,
+        classInstructors: {},
+        classLabels: {},
+        classGroupLabels: {},
+        classDurations: {},
+        instructorClasses: {},
+        instructorTemplates: {},
+        instructorBlocks: {},
+        instructorGroups: {},
+        disciplineGroups: {},
+        autoGroups: {}
+    };
     
-    // Copy curriculum - only safe fields
-    if (data.curriculum) {
-        var curriculum = {};
-        var curriculumKeys = [
-            'disciplines', 'schedules', 'restDays', 'examDays', 
-            'grades', 'rankings', 'currentWeek', 'classInstructors',
-            'classLabels', 'classGroupLabels', 'classDurations',
-            'instructorClasses', 'instructorTemplates', 'instructorBlocks',
-            'instructorGroups', 'disciplineGroups', 'autoGroups'
-        ];
-        
-        curriculumKeys.forEach(function(key) {
-            if (data.curriculum[key] !== undefined) {
-                if (Array.isArray(data.curriculum[key])) {
-                    curriculum[key] = data.curriculum[key].slice(0, 500);
-                } else if (typeof data.curriculum[key] === 'object' && data.curriculum[key] !== null) {
-                    try {
-                        curriculum[key] = JSON.parse(JSON.stringify(data.curriculum[key]));
-                    } catch (e) {
-                        curriculum[key] = {};
-                    }
-                } else {
-                    curriculum[key] = data.curriculum[key];
-                }
-            } else {
-                curriculum[key] = Array.isArray(data.curriculum[key]) ? [] : {};
-            }
-        });
-        copy.curriculum = curriculum;
-    } else {
-        copy.curriculum = getEmptyData().curriculum;
-    }
-    
-    // Copy social - only safe fields
-    if (data.social) {
-        var social = {
-            relationships: [],
-            relationshipTypes: [],
-            nextId: data.social.nextId || 1
-        };
-        
-        if (data.social.relationships && Array.isArray(data.social.relationships)) {
-            social.relationships = data.social.relationships.slice(0, 500);
-        }
-        
-        if (data.social.relationshipTypes && Array.isArray(data.social.relationshipTypes)) {
-            social.relationshipTypes = data.social.relationshipTypes.slice(0, 20);
-        }
-        
-        copy.social = social;
-    } else {
-        copy.social = getEmptyData().social;
-    }
-    
-    // Copy statsConfig
-    if (data.statsConfig) {
-        try {
-            copy.statsConfig = JSON.parse(JSON.stringify(data.statsConfig));
-        } catch (e) {
-            copy.statsConfig = getEmptyData().statsConfig;
-        }
-    } else {
-        copy.statsConfig = getEmptyData().statsConfig;
-    }
+    copy.social = {
+        relationships: data.social && data.social.relationships ? data.social.relationships.slice(0, 200) : [],
+        relationshipTypes: data.social && data.social.relationshipTypes ? data.social.relationshipTypes.slice(0, 20) : [],
+        nextId: data.social ? data.social.nextId || 1 : 1
+    };
     
     return copy;
 }
@@ -573,87 +483,120 @@ function doLoadData(resolve) {
 }
 
 // ============================================================
-// SAVE DATA - FIXED
+// SAVE DATA - FIXED WITH DEBOUNCING
 // ============================================================
 
+var saveTimeout = null;
+var pendingSave = null;
+
 function saveData() {
+    // Return existing promise if already saving
     if (isSaving) {
-        return Promise.resolve();
+        if (pendingSave) {
+            return pendingSave;
+        }
+        // Create a new promise that resolves when save completes
+        pendingSave = new Promise(function(resolve) {
+            var checkInterval = setInterval(function() {
+                if (!isSaving) {
+                    clearInterval(checkInterval);
+                    saveData().then(resolve).catch(resolve);
+                }
+            }, 100);
+        });
+        return pendingSave;
+    }
+    
+    // Debounce saves to prevent multiple rapid calls
+    clearTimeout(saveTimeout);
+    
+    return new Promise(function(resolve) {
+        saveTimeout = setTimeout(function() {
+            doSave(resolve);
+        }, 50);
+    });
+}
+
+function doSave(resolve) {
+    if (isSaving) {
+        resolve();
+        return;
     }
     
     isSaving = true;
+    pendingSave = null;
     
-    return new Promise(function(resolve) {
-        // Ensure database is open
-        function doSave() {
-            if (!db || typeof db.transaction !== 'function') {
-                openDatabase()
-                    .then(function(result) {
-                        if (result && typeof result.transaction === 'function') {
-                            db = result;
-                            doSave();
-                        } else {
-                            isSaving = false;
-                            console.warn('Database not available, skipping save');
-                            resolve();
-                        }
-                    })
-                    .catch(function(err) {
+    // Ensure database is open
+    function executeSave() {
+        if (!db || typeof db.transaction !== 'function') {
+            openDatabase()
+                .then(function(result) {
+                    if (result && typeof result.transaction === 'function') {
+                        db = result;
+                        executeSave();
+                    } else {
                         isSaving = false;
-                        console.error('Failed to open database for save:', err);
+                        console.warn('Database not available, skipping save');
                         resolve();
-                    });
-                return;
-            }
-            
-            try {
-                if (window.data) {
-                    data = window.data;
-                }
-                
-                if (!data) {
-                    data = getEmptyData();
-                    window.data = data;
-                }
-                
-                ensureDataStructure(data);
-                
-                // Create a clean copy for storage
-                var safeData = createSafeCopy(data);
-                
-                var transaction = db.transaction([STORE_NAME], 'readwrite');
-                var store = transaction.objectStore(STORE_NAME);
-                var record = {
-                    id: 'mainData',
-                    data: safeData,
-                    updatedAt: new Date().toISOString()
-                };
-                var request = store.put(record);
-                
-                request.onsuccess = function() {
+                    }
+                })
+                .catch(function(err) {
                     isSaving = false;
-                    console.log('Data saved to IndexedDB');
+                    console.error('Failed to open database for save:', err);
                     resolve();
-                };
-                request.onerror = function(event) {
-                    isSaving = false;
-                    console.error('IndexedDB save error:', event.target.error);
-                    resolve();
-                };
-                transaction.onerror = function(event) {
-                    isSaving = false;
-                    console.error('Transaction error:', event.target.error);
-                    resolve();
-                };
-            } catch (err) {
-                isSaving = false;
-                console.error('Error in saveData:', err);
-                resolve();
-            }
+                });
+            return;
         }
         
-        doSave();
-    });
+        try {
+            var sourceData = window.data || data;
+            
+            if (!sourceData) {
+                sourceData = getEmptyData();
+                window.data = sourceData;
+                data = sourceData;
+            }
+            
+            ensureDataStructure(sourceData);
+            
+            // Create a clean copy - using structuredClone if available
+            var safeData = createSafeCopy(sourceData);
+            
+            var transaction = db.transaction([STORE_NAME], 'readwrite');
+            var store = transaction.objectStore(STORE_NAME);
+            var record = {
+                id: 'mainData',
+                data: safeData,
+                updatedAt: new Date().toISOString()
+            };
+            var request = store.put(record);
+            
+            request.onsuccess = function() {
+                isSaving = false;
+                console.log('Data saved to IndexedDB');
+                resolve();
+            };
+            
+            request.onerror = function(event) {
+                isSaving = false;
+                console.error('IndexedDB save error:', event.target.error);
+                resolve();
+            };
+            
+            transaction.onerror = function(event) {
+                isSaving = false;
+                console.error('Transaction error:', event.target.error);
+                resolve();
+            };
+            
+        } catch (err) {
+            isSaving = false;
+            console.error('Error in saveData:', err);
+            resolve();
+        }
+    }
+    
+    executeSave();
 }
 
 function autoLoadData() {
@@ -700,8 +643,7 @@ window.db = {
     getEmptyData: getEmptyData,
     getDefaultMagicProficiencies: getDefaultMagicProficiencies,
     autoLoadData: autoLoadData,
-    createSafeCopy: createSafeCopy,
-    safeStringify: safeStringify
+    createSafeCopy: createSafeCopy
 };
 
 window.loadData = loadData;
