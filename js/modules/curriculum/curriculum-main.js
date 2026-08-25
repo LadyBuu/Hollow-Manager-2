@@ -110,87 +110,8 @@
     }
 
     function renderAllSections() {
-        // Disciplines - use the existing module
-        var disciplinesContent = document.getElementById('disciplines-content');
-        if (disciplinesContent) {
-            if (typeof window.renderDisciplinesView === 'function') {
-                window.renderDisciplinesView(disciplinesContent);
-            } else {
-                disciplinesContent.innerHTML = '<p class="empty-state">Disciplines module loading...</p>';
-            }
-        }
-
-        // Auto-Groups
-        var groupsContent = document.getElementById('groups-content');
-        if (groupsContent) {
-            if (typeof window.renderAutoGroupsView === 'function') {
-                window.renderAutoGroupsView(groupsContent);
-            } else {
-                groupsContent.innerHTML = '<p class="empty-state">Auto-Groups module loading...</p>';
-            }
-        }
-
-        // Class View
-        var classViewContent = document.getElementById('class-view-content');
-        if (classViewContent) {
-            if (typeof window.renderClassView === 'function') {
-                window.renderClassView(classViewContent);
-            } else {
-                classViewContent.innerHTML = '<p class="empty-state">Class View module loading...</p>';
-            }
-        }
-
-        // Instructor Calendar
-        var instructorCalendarContent = document.getElementById('instructor-calendar-content');
-        if (instructorCalendarContent) {
-            if (typeof window.renderInstructorCalendar === 'function') {
-                window.renderInstructorCalendar(instructorCalendarContent);
-            } else {
-                instructorCalendarContent.innerHTML = '<p class="empty-state">Instructor Calendar module loading...</p>';
-            }
-        }
-
-        // Schedule
-        var scheduleContent = document.getElementById('schedule-content');
-        if (scheduleContent) {
-            if (typeof window.renderStudentScheduleView === 'function') {
-                window.renderStudentScheduleView(scheduleContent);
-            } else if (typeof window.renderScheduleView === 'function') {
-                window.renderScheduleView(scheduleContent);
-            } else {
-                scheduleContent.innerHTML = '<p class="empty-state">Schedule module loading...</p>';
-            }
-        }
-
-        // Grades
-        var gradesContent = document.getElementById('grades-content');
-        if (gradesContent) {
-            if (typeof window.renderGradesView === 'function') {
-                window.renderGradesView(gradesContent);
-            } else {
-                gradesContent.innerHTML = '<p class="empty-state">Grades module loading...</p>';
-            }
-        }
-
-        // Ranking
-        var rankingContent = document.getElementById('ranking-content');
-        if (rankingContent) {
-            if (typeof window.renderRankingView === 'function') {
-                window.renderRankingView(rankingContent);
-            } else {
-                rankingContent.innerHTML = '<p class="empty-state">Ranking module loading...</p>';
-            }
-        }
-
-        // Classes
-        var classesContent = document.getElementById('classes-content');
-        if (classesContent) {
-            if (typeof window.renderClassesView === 'function') {
-                window.renderClassesView(classesContent);
-            } else {
-                classesContent.innerHTML = '<p class="empty-state">Classes module loading...</p>';
-            }
-        }
+        var activeTabName = currentTab || 'disciplines';
+        refreshTabContent(activeTabName);
     }
 
     function initCurriculumTabs() {
@@ -208,6 +129,13 @@
             classes: document.getElementById('tab-classes')
         };
 
+        // Get the active tab - default to 'disciplines'
+        var activeTabName = 'disciplines';
+        var activeBtn = tabContainer.querySelector('.tab-btn.active');
+        if (activeBtn && activeBtn.dataset.tab) {
+            activeTabName = activeBtn.dataset.tab;
+        }
+
         // Hide all panels first
         for (var key in panels) {
             if (panels[key]) {
@@ -216,18 +144,29 @@
             }
         }
 
-        // Show active tab's panel
-        var activeTab = tabContainer.querySelector('.tab-btn.active');
-        if (activeTab) {
-            var activeTabName = activeTab.dataset.tab;
-            if (panels[activeTabName]) {
-                panels[activeTabName].style.display = 'block';
-                panels[activeTabName].classList.add('active');
-            }
+        // Show the active panel
+        if (panels[activeTabName]) {
+            panels[activeTabName].style.display = 'block';
+            panels[activeTabName].classList.add('active');
         } else if (panels.disciplines) {
             panels.disciplines.style.display = 'block';
             panels.disciplines.classList.add('active');
+            activeTabName = 'disciplines';
         }
+
+        // Make sure the correct tab button is active
+        tabContainer.querySelectorAll('.tab-btn').forEach(function(t) {
+            t.classList.remove('active');
+            if (t.dataset.tab === activeTabName) {
+                t.classList.add('active');
+            }
+        });
+
+        // Set currentTab
+        currentTab = activeTabName;
+
+        // Render the active tab content
+        refreshTabContent(activeTabName);
 
         // Tab switching - use event delegation
         tabContainer.addEventListener('click', function(e) {
@@ -238,6 +177,8 @@
             e.stopPropagation();
             
             var tabName = tab.dataset.tab;
+            if (!tabName) return;
+            
             currentTab = tabName;
             
             // Update tab buttons
@@ -259,13 +200,12 @@
                 panels[tabName].classList.add('active');
             }
             
-            // Refresh tab content - call the appropriate module
+            // Refresh tab content
             refreshTabContent(tabName);
         });
     }
 
     function refreshTabContent(tabName) {
-        // Use setTimeout to ensure panel is visible
         setTimeout(function() {
             try {
                 if (tabName === 'disciplines') {
@@ -314,13 +254,12 @@
                     }
                 }
             } catch (e) {
-                // Silently handle errors - the user will see an empty state
+                // Silently handle errors
             }
         }, 50);
     }
 
     function initCurriculumEvents() {
-        // Each sub-module has its own init function - call them if they exist
         if (typeof window.initDisciplineEvents === 'function') {
             window.initDisciplineEvents();
         }
