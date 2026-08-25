@@ -126,4 +126,3 @@ window.getTeamState = getTeamState;
 window.getTournamentState = getTournamentState;
 window.getSocialState = getSocialState;
 
-console.log('state.js loaded');
