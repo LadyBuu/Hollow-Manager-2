@@ -13,7 +13,6 @@ var dbOpenPromise = null;
 var isLoading = false;
 var isSaving = false;
 var _dataLoadedDispatched = false;
-var _dataLoaded = false;
 
 function openDatabase() {
     if (db) {
@@ -502,27 +501,22 @@ function saveData() {
 function autoLoadData() {
     console.log('Auto-loading data from IndexedDB...');
     
-    // Check if data is already loaded via window.data
-    if (window.data && !_dataLoaded) {
-        console.log('Data already loaded, dispatching ready event');
-        _dataLoaded = true;
+    if (window.data) {
+        console.log('Data already exists in window.data, skipping load');
         _dispatchDataReady(window.data);
         return;
     }
     
     loadData().then(function(result) {
         console.log('Data auto-loaded successfully');
-        _dataLoaded = true;
         _dispatchDataReady(result);
     }).catch(function(err) {
         console.error('Auto-load failed:', err);
-        _dataLoaded = true;
         _dispatchDataReady(getEmptyData());
     });
 }
 
 function _dispatchDataReady(data) {
-    // Prevent multiple dispatches
     if (_dataLoadedDispatched) {
         console.log('Data already dispatched, skipping');
         return;
