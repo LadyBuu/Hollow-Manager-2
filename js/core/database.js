@@ -330,6 +330,161 @@ function migrateData(data) {
     });
 }
 
+// ============================================================
+// NEW: Safe Data Copy for Storage - Fixes circular reference
+// ============================================================
+
+function createSafeCopy(data) {
+    // Try JSON serialization first
+    try {
+        return JSON.parse(JSON.stringify(data));
+    } catch (e) {
+        console.warn('JSON serialization failed, using manual safe copy');
+        return createManualSafeCopy(data);
+    }
+}
+
+function createManualSafeCopy(data) {
+    var copy = {};
+    
+    // Safe top-level keys
+    var safeKeys = [
+        'characters', 'teams', 'tournaments', 'missions', 
+        'activities', 'classes', 'currentYear', 'currentWeek'
+    ];
+    
+    safeKeys.forEach(function(key) {
+        if (data[key] !== undefined && data[key] !== null) {
+            try {
+                if (Array.isArray(data[key])) {
+                    copy[key] = data[key].map(function(item) {
+                        try {
+                            return JSON.parse(JSON.stringify(item));
+                        } catch (e) {
+                            // Return a minimal version
+                            var minimal = {};
+                            if (item && typeof item === 'object') {
+                                if (item.id) minimal.id = item.id;
+                                if (item.name) minimal.name = item.name;
+                                if (item.firstName) minimal.firstName = item.firstName;
+                                if (item.lastName) minimal.lastName = item.lastName;
+                            }
+                            return minimal;
+                        }
+                    });
+                } else {
+                    copy[key] = JSON.parse(JSON.stringify(data[key]));
+                }
+            } catch (e) {
+                copy[key] = Array.isArray(data[key]) ? [] : null;
+            }
+        } else {
+            copy[key] = Array.isArray(data[key]) ? [] : null;
+        }
+    });
+    
+    // Copy curriculum safely
+    if (data.curriculum) {
+        try {
+            copy.curriculum = JSON.parse(JSON.stringify(data.curriculum));
+        } catch (e) {
+            copy.curriculum = {
+                disciplines: [],
+                schedules: {},
+                restDays: {},
+                examDays: {},
+                grades: {},
+                rankings: {},
+                currentWeek: 1,
+                classInstructors: {},
+                classLabels: {},
+                classGroupLabels: {},
+                classDurations: {},
+                instructorClasses: {},
+                instructorTemplates: {},
+                instructorBlocks: {},
+                instructorGroups: {},
+                disciplineGroups: {},
+                autoGroups: {}
+            };
+        }
+    } else {
+        copy.curriculum = {
+            disciplines: [],
+            schedules: {},
+            restDays: {},
+            examDays: {},
+            grades: {},
+            rankings: {},
+            currentWeek: 1,
+            classInstructors: {},
+            classLabels: {},
+            classGroupLabels: {},
+            classDurations: {},
+            instructorClasses: {},
+            instructorTemplates: {},
+            instructorBlocks: {},
+            instructorGroups: {},
+            disciplineGroups: {},
+            autoGroups: {}
+        };
+    }
+    
+    // Copy social safely
+    if (data.social) {
+        try {
+            copy.social = JSON.parse(JSON.stringify(data.social));
+        } catch (e) {
+            copy.social = {
+                relationships: [],
+                relationshipTypes: [
+                    { id: 'familiar', label: 'Familiar', color: '#8cbb3a' },
+                    { id: 'professional', label: 'Professional', color: '#c9a24b' },
+                    { id: 'romantic', label: 'Romantic', color: '#c1453c' },
+                    { id: 'friendship', label: 'Friendship', color: '#4a9bc7' },
+                    { id: 'mentor', label: 'Mentor/Mentee', color: '#9b59b6' },
+                    { id: 'rivalry', label: 'Rivalry', color: '#e67e22' },
+                    { id: 'alliance', label: 'Alliance', color: '#27ae60' },
+                    { id: 'other', label: 'Other', color: '#7f8c8d' }
+                ],
+                nextId: 1
+            };
+        }
+    } else {
+        copy.social = {
+            relationships: [],
+            relationshipTypes: [
+                { id: 'familiar', label: 'Familiar', color: '#8cbb3a' },
+                { id: 'professional', label: 'Professional', color: '#c9a24b' },
+                { id: 'romantic', label: 'Romantic', color: '#c1453c' },
+                { id: 'friendship', label: 'Friendship', color: '#4a9bc7' },
+                { id: 'mentor', label: 'Mentor/Mentee', color: '#9b59b6' },
+                { id: 'rivalry', label: 'Rivalry', color: '#e67e22' },
+                { id: 'alliance', label: 'Alliance', color: '#27ae60' },
+                { id: 'other', label: 'Other', color: '#7f8c8d' }
+            ],
+            nextId: 1
+        };
+    }
+    
+    // Copy statsConfig safely
+    if (data.statsConfig) {
+        try {
+            copy.statsConfig = JSON.parse(JSON.stringify(data.statsConfig));
+        } catch (e) {
+            copy.statsConfig = getEmptyData().statsConfig;
+        }
+    } else {
+        copy.statsConfig = getEmptyData().statsConfig;
+    }
+    
+    return copy;
+}
+
+// ============================================================
+// END OF SAFE COPY FUNCTIONS
+// ============================================================
+
 function loadData() {
     if (isLoading) {
         return new Promise(function(resolve) {
@@ -465,12 +620,17 @@ function saveData() {
         
         ensureDataStructure(data);
         
+        // ============================================================
+        // FIX: Create a safe copy for storage
+        // ============================================================
+        var safeData = createSafeCopy(data);
+        
         try {
             var transaction = db.transaction([STORE_NAME], 'readwrite');
             var store = transaction.objectStore(STORE_NAME);
             var record = {
                 id: 'mainData',
-                data: data,
+                data: safeData, // Use safeData instead of data
                 updatedAt: new Date().toISOString()
             };
             var request = store.put(record);
@@ -542,7 +702,8 @@ window.db = {
     saveData: saveData,
     getEmptyData: getEmptyData,
     getDefaultMagicProficiencies: getDefaultMagicProficiencies,
-    autoLoadData: autoLoadData
+    autoLoadData: autoLoadData,
+    createSafeCopy: createSafeCopy
 };
 
 window.loadData = loadData;
