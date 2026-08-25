@@ -1,7 +1,5 @@
 /**
  * js/modules/characters/characters.js - Character Management
- * Redesigned: List as burger menu, main area shows edit form with tabs
- * All emojis removed, monochrome Unicode icons only
  * Path: js/modules/characters/characters.js
  */
 
@@ -10,10 +8,6 @@
 
     var currentEditId = null;
     var characterListOpen = false;
-
-    // ============================================================
-    // RENDER FUNCTIONS
-    // ============================================================
 
     function renderCharacters(container) {
         if (!container) {
@@ -213,10 +207,24 @@
                             </div>
                         </div>
 
-                        <!-- TAB: Academic -->
+                        <!-- TAB: Academic - UPDATED with Class Management -->
                         <div id="char-tab-academic" class="char-tab-panel" style="display:none;">
                             <div id="academic-view" style="padding:4px 0;">
                                 <p class="empty-state" style="padding:8px;font-size:0.8rem;">Loading academic data...</p>
+                            </div>
+                            <!-- Class Management Section -->
+                            <div class="form-group full-width section-divider">
+                                <label class="section-label">Class Management</label>
+                                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px;">
+                                    <select id="academic-class-select" style="flex:1;min-width:150px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
+                                        <option value="">Select a class...</option>
+                                    </select>
+                                    <button id="add-to-class-btn" class="primary small">Add to Class</button>
+                                    <button id="remove-from-class-btn" class="danger small">Remove from Class</button>
+                                </div>
+                                <div id="character-classes-display" style="margin-top:8px;padding:8px;background:var(--bg);border-radius:4px;border:1px solid var(--border-soft);">
+                                    <span style="color:var(--text-dim);font-size:0.7rem;">Current Classes: <span id="current-classes-list">None</span></span>
+                                </div>
                             </div>
                             <div class="form-group full-width section-divider">
                                 <label>Tournament Eliminations</label>
@@ -294,7 +302,6 @@
 
                             <!-- Magic Stats -->
                             <div class="magic-stats-grid" style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-top:12px;">
-                                <!-- Elemental Category -->
                                 <div class="form-group" style="grid-column:1/-1;margin:6px 0 2px 0;display:flex;align-items:center;gap:8px;">
                                     <label style="color:var(--accent);font-weight:600;font-size:0.7rem;">Elemental</label>
                                     <button type="button" id="random-elemental-btn" class="small secondary" style="font-size:0.5rem;padding:1px 6px;">Random</button>
@@ -306,7 +313,6 @@
                                 <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Metal</label><input type="number" id="magic-metal" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
                                 <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Wood</label><input type="number" id="magic-wood" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
                                 
-                                <!-- Body Category -->
                                 <div class="form-group" style="grid-column:1/-1;margin:6px 0 2px 0;display:flex;align-items:center;gap:8px;">
                                     <label style="color:var(--danger);font-weight:600;font-size:0.7rem;">Body</label>
                                     <button type="button" id="random-body-btn" class="small secondary" style="font-size:0.5rem;padding:1px 6px;">Random</button>
@@ -318,7 +324,6 @@
                                 <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Life</label><input type="number" id="magic-life" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
                                 <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Death</label><input type="number" id="magic-death" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
                                 
-                                <!-- Aether Category -->
                                 <div class="form-group" style="grid-column:1/-1;margin:6px 0 2px 0;display:flex;align-items:center;gap:8px;">
                                     <label style="color:var(--info);font-weight:600;font-size:0.7rem;">Aether</label>
                                     <button type="button" id="random-aether-btn" class="small secondary" style="font-size:0.5rem;padding:1px 6px;">Random</button>
@@ -405,7 +410,6 @@
         var nameFilter = document.getElementById('char-name-filter') ? document.getElementById('char-name-filter').value.toLowerCase() : '';
         var classFilter = document.getElementById('char-class-filter') ? document.getElementById('char-class-filter').value : 'all';
 
-        // Populate class filter
         var classFilterSelect = document.getElementById('char-class-filter');
         if (classFilterSelect) {
             var classes = window.getClasses();
@@ -420,7 +424,6 @@
             if (currentValue) classFilterSelect.value = currentValue;
         }
 
-        // Sort characters alphabetically by display name
         var filteredChars = data.characters
             .filter(function(char) {
                 if (nameFilter) {
@@ -490,7 +493,6 @@
                 statusColor = 'var(--text-dim)';
             }
 
-            // Get class names
             var classNames = [];
             if (char.classIds && char.classIds.length > 0) {
                 var classes = window.getClasses();
@@ -536,10 +538,6 @@
         }
     }
 
-    // ============================================================
-    // CLASS TAG FUNCTIONS
-    // ============================================================
-
     function addClassTag(classId, className) {
         var container = document.getElementById('class-tag-container');
         if (!container) return;
@@ -563,10 +561,6 @@
             }
         });
     }
-
-    // ============================================================
-    // TAB FUNCTIONS
-    // ============================================================
 
     function switchCharTab(tab) {
         document.querySelectorAll('.char-tab-btn').forEach(function(btn) {
@@ -662,7 +656,6 @@
         document.getElementById('char-death-cause').value = char.deathCause || '';
         document.getElementById('char-death-age').value = char.deathAge || '';
 
-        // Populate class tags
         var classContainer = document.getElementById('class-tag-container');
         if (classContainer) {
             classContainer.innerHTML = '';
@@ -730,6 +723,10 @@
         if (deathFields) {
             deathFields.style.display = char.deceased ? 'block' : 'none';
         }
+
+        // Populate academic class selector
+        populateAcademicClassSelector(char);
+        updateCurrentClassesDisplay(char);
     }
 
     function resetFormFields() {
@@ -748,7 +745,6 @@
         document.getElementById('char-deceased').checked = false;
         document.getElementById('death-fields').style.display = 'none';
 
-        // Reset class tags
         var classContainer = document.getElementById('class-tag-container');
         if (classContainer) {
             classContainer.innerHTML = '<span style="color:var(--text-dim);font-size:0.7rem;padding:4px;">No classes assigned</span>';
@@ -762,7 +758,145 @@
 
         document.getElementById('physical-moves-list').innerHTML = '<p class="empty-state">None</p>';
         document.getElementById('magical-moves-list').innerHTML = '<p class="empty-state">None</p>';
+        
+        // Reset academic class selector
+        var classSelect = document.getElementById('academic-class-select');
+        if (classSelect) {
+            classSelect.innerHTML = '<option value="">Select a class...</option>';
+        }
+        var classesDisplay = document.getElementById('current-classes-list');
+        if (classesDisplay) {
+            classesDisplay.textContent = 'None';
+        }
     }
+
+    // ============================================================
+    // ACADEMIC TAB - CLASS MANAGEMENT
+    // ============================================================
+
+    function populateAcademicClassSelector(char) {
+        var select = document.getElementById('academic-class-select');
+        if (!select) return;
+
+        var classes = window.getClasses() || [];
+        var currentValue = select.value;
+        select.innerHTML = '<option value="">Select a class...</option>';
+        
+        // Filter out classes the character is already in
+        var existingClassIds = (char && char.classIds) || [];
+        
+        classes.forEach(function(cls) {
+            var isAssigned = existingClassIds.some(function(cid) { return String(cid) === String(cls.id); });
+            if (!isAssigned) {
+                var option = document.createElement('option');
+                option.value = cls.id;
+                option.textContent = cls.name;
+                select.appendChild(option);
+            }
+        });
+        
+        if (currentValue) select.value = currentValue;
+    }
+
+    function updateCurrentClassesDisplay(char) {
+        var display = document.getElementById('current-classes-list');
+        if (!display) return;
+
+        var classIds = (char && char.classIds) || [];
+        if (classIds.length === 0) {
+            display.textContent = 'None';
+            return;
+        }
+
+        var classes = window.getClasses() || [];
+        var names = [];
+        classIds.forEach(function(cid) {
+            var cls = classes.find(function(c) { return String(c.id) === String(cid); });
+            if (cls) names.push(cls.name);
+        });
+        display.textContent = names.length > 0 ? names.join(', ') : 'None';
+    }
+
+    function addCharacterToClass() {
+        var select = document.getElementById('academic-class-select');
+        if (!select) return;
+        
+        var classId = select.value;
+        if (!classId) {
+            alert('Please select a class.');
+            return;
+        }
+
+        var charId = currentEditId;
+        if (!charId) {
+            alert('No character selected.');
+            return;
+        }
+
+        var result = window.addCharacterToClass(charId, classId);
+        if (result && result.success) {
+            // Refresh the form
+            var char = window.getCharacterById(charId);
+            if (char) {
+                populateFormFields(char);
+                // Re-populate the class selector to remove the newly added class
+                populateAcademicClassSelector(char);
+                updateCurrentClassesDisplay(char);
+                renderCharacterList();
+            }
+            alert('Character added to class successfully!');
+        } else {
+            alert(result ? result.message : 'Failed to add character to class.');
+        }
+    }
+
+    function removeCharacterFromClass() {
+        var charId = currentEditId;
+        if (!charId) {
+            alert('No character selected.');
+            return;
+        }
+
+        var char = window.getCharacterById(charId);
+        if (!char || !char.classIds || char.classIds.length === 0) {
+            alert('Character is not in any classes.');
+            return;
+        }
+
+        var classes = window.getClasses() || [];
+        var classNames = char.classIds.map(function(cid) {
+            var cls = classes.find(function(c) { return String(c.id) === String(cid); });
+            return cls ? cls.name : 'Unknown';
+        });
+
+        var classList = classNames.join('\n• ');
+        var choice = prompt('Enter the name of the class to remove:\n\nCurrent classes:\n• ' + classList, '');
+        if (!choice) return;
+
+        var cls = window.getClassByName(choice.trim());
+        if (!cls) {
+            alert('Class "' + choice + '" not found.');
+            return;
+        }
+
+        var result = window.removeCharacterFromClass(charId, cls.id);
+        if (result && result.success) {
+            var updatedChar = window.getCharacterById(charId);
+            if (updatedChar) {
+                populateFormFields(updatedChar);
+                populateAcademicClassSelector(updatedChar);
+                updateCurrentClassesDisplay(updatedChar);
+                renderCharacterList();
+            }
+            alert('Character removed from class successfully!');
+        } else {
+            alert(result ? result.message : 'Failed to remove character from class.');
+        }
+    }
+
+    // ============================================================
+    // ACADEMIC VIEW RENDER
+    // ============================================================
 
     function renderAcademicView(char) {
         var container = document.getElementById('academic-view');
@@ -1092,11 +1226,7 @@
     }
 
     function addStandaloneElimination() {
-        var charId = document.getElementById('standalone-char-id') ? document.getElementById('standalone-char-id').value : '';
-        if (!charId) {
-            var form = document.getElementById('char-form');
-            charId = form ? form.dataset.editId : null;
-        }
+        var charId = currentEditId;
         if (!charId) {
             alert('Please select a character first.');
             return;
@@ -1138,10 +1268,6 @@
 
         char.eliminatedWeeks.push(week);
         char.eliminatedWeeks.sort(function(a, b) { return a - b; });
-
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Eliminated ' + char.firstName + ' (standalone, Week ' + week + '): ' + reason);
-        }
 
         if (typeof window.saveData === 'function') {
             window.saveData().then(function() {
@@ -1205,7 +1331,6 @@
         var deathCause = document.getElementById('char-death-cause').value.trim();
         var deathAge = document.getElementById('char-death-age').value.trim();
 
-        // Get class IDs from tags
         var classIds = [];
         document.querySelectorAll('#class-tag-container [data-class-id]').forEach(function(tag) {
             classIds.push(tag.dataset.classId);
@@ -1341,9 +1466,6 @@
                 charData.id = existing.id;
                 charData.createdAt = existing.createdAt;
                 data.characters[index] = Object.assign({}, existing, charData);
-                if (typeof window.logActivity === 'function') {
-                    window.logActivity('Updated character: ' + charData.firstName);
-                }
             }
         } else {
             var newChar = {
@@ -1381,9 +1503,6 @@
                 createdAt: new Date().toISOString()
             };
             data.characters.push(newChar);
-            if (typeof window.logActivity === 'function') {
-                window.logActivity('Added character: ' + charData.firstName);
-            }
             currentEditId = newChar.id;
         }
 
@@ -1412,9 +1531,6 @@
         });
 
         data.characters = data.characters.filter(function(c) { return String(c.id) !== String(id); });
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Deleted character: ' + char.firstName);
-        }
         if (typeof window.saveData === 'function') {
             window.saveData().catch(function(err) { /* ignore */ });
         }
@@ -1541,7 +1657,6 @@
                     var name = this.value.trim();
                     if (!name) return;
                     
-                    // Check if class exists
                     var cls = window.getClassByName(name);
                     if (!cls) {
                         var result = window.createClass(name);
@@ -1553,7 +1668,6 @@
                         }
                     }
                     
-                    // Check if already added
                     var container = document.getElementById('class-tag-container');
                     var existing = container.querySelector('[data-class-id="' + cls.id + '"]');
                     if (existing) {
@@ -1565,6 +1679,17 @@
                     this.value = '';
                 }
             });
+        }
+
+        // Academic tab - Class management buttons
+        var addToClassBtn = document.getElementById('add-to-class-btn');
+        if (addToClassBtn) {
+            addToClassBtn.addEventListener('click', addCharacterToClass);
+        }
+
+        var removeFromClassBtn = document.getElementById('remove-from-class-btn');
+        if (removeFromClassBtn) {
+            removeFromClassBtn.addEventListener('click', removeCharacterFromClass);
         }
 
         initStatsEvents();
@@ -1679,11 +1804,9 @@
             return;
         }
         
-        // Get class definitions safely
         var classes = window.CLASS_DEFINITIONS || [];
         var currentValue = select.value || '';
         
-        // Clear and rebuild options
         select.innerHTML = '<option value="">Auto-suggest</option>';
         
         classes.forEach(function(cls) {
@@ -1695,7 +1818,6 @@
             }
         });
         
-        // Restore selected value if it exists and is valid
         if (currentValue) {
             var optionExists = false;
             for (var i = 0; i < select.options.length; i++) {
@@ -1720,7 +1842,6 @@
 
         var stats = { str: str, dex: dex, con: con, int: int, wis: wis, cha: cha };
         
-        // Check if suggestClass exists
         if (typeof window.suggestClass !== 'function') {
             return;
         }
