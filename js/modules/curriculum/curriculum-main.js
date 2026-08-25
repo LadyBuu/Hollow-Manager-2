@@ -18,26 +18,21 @@
     };
 
     var _initialized = false;
+    var currentTab = 'disciplines';
 
     function renderCurriculum(container) {
-        console.log('renderCurriculum called with container:', container);
-        
         if (!container) {
             container = document.getElementById('tab-curriculum');
         }
         if (!container) {
-            console.error('Curriculum container not found');
             return;
         }
 
-        // Check if data exists
         if (!window.data) {
-            console.warn('No data available for curriculum, waiting for dataReady event');
             container.innerHTML = '<p class="empty-state">Loading curriculum data...</p>';
             return;
         }
 
-        // Ensure curriculum structure exists
         if (!window.data.curriculum) {
             window.data.curriculum = {
                 disciplines: [],
@@ -59,456 +54,828 @@
                 autoGroups: {}
             };
         }
-        // Ensure classes array exists
         if (!window.data.classes) {
             window.data.classes = [];
         }
 
-        container.innerHTML = getCurriculumHTML();
-        
-        // Use setTimeout to ensure DOM is rendered before initializing tabs
-        setTimeout(function() {
-            initCurriculumTabs();
-            renderAllSections();
-            initCurriculumEvents();
-            _initialized = true;
-        }, 50);
+        renderDirect(container);
+        initCurriculumEvents(container);
     }
 
-    function getCurriculumHTML() {
-        return `
-            <div class="tab-container">
-                <div class="tab-nav">
-                    <button class="tab-btn active" data-tab="disciplines">Disciplines</button>
-                    <button class="tab-btn" data-tab="groups">Auto-Groups</button>
-                    <button class="tab-btn" data-tab="class-view">Class View</button>
-                    <button class="tab-btn" data-tab="instructor-calendar">Instructor Calendar</button>
-                    <button class="tab-btn" data-tab="schedule">Schedule</button>
-                    <button class="tab-btn" data-tab="grades">Grades</button>
-                    <button class="tab-btn" data-tab="ranking">Ranking</button>
-                    <button class="tab-btn" data-tab="classes">Classes</button>
-                </div>
-                <div class="tab-content">
-                    <div id="tab-disciplines" class="tab-panel active">
-                        <div id="disciplines-content"></div>
-                    </div>
-                    <div id="tab-groups" class="tab-panel">
-                        <div id="groups-content"></div>
-                    </div>
-                    <div id="tab-class-view" class="tab-panel">
-                        <div id="class-view-content"></div>
-                    </div>
-                    <div id="tab-instructor-calendar" class="tab-panel">
-                        <div id="instructor-calendar-content"></div>
-                    </div>
-                    <div id="tab-schedule" class="tab-panel">
-                        <div id="schedule-content"></div>
-                    </div>
-                    <div id="tab-grades" class="tab-panel">
-                        <div id="grades-content"></div>
-                    </div>
-                    <div id="tab-ranking" class="tab-panel">
-                        <div id="ranking-content"></div>
-                    </div>
-                    <div id="tab-classes" class="tab-panel">
-                        <div id="classes-content"></div>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
+    function renderDirect(container) {
+        var html = '';
 
-    function renderAllSections() {
-        console.log('renderAllSections called');
-        
-        // Check if all sub-modules are loaded
-        var modulesLoaded = {
-            disciplines: typeof window.renderDisciplinesView === 'function',
-            groups: typeof window.renderAutoGroupsView === 'function',
-            classView: typeof window.renderClassView === 'function',
-            instructorCalendar: typeof window.renderInstructorCalendar === 'function',
-            schedule: typeof window.renderStudentScheduleView === 'function' || typeof window.renderScheduleView === 'function',
-            grades: typeof window.renderGradesView === 'function',
-            ranking: typeof window.renderRankingView === 'function',
-            classes: typeof window.renderClassesView === 'function'
+        // Header
+        html += '<div class="page-header">';
+        html += '<h2>Curriculum</h2>';
+        html += '<span class="text-dim">Week: <span id="curriculum-current-week" style="cursor:pointer;">' + (window.data.curriculum.currentWeek || 1) + '</span></span>';
+        html += '</div>';
+
+        // Tab buttons
+        html += '<div class="tab-nav" style="display:flex;gap:4px;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:12px;flex-wrap:wrap;">';
+        var tabs = ['disciplines', 'groups', 'class-view', 'instructor-calendar', 'schedule', 'grades', 'ranking', 'classes'];
+        var labels = {
+            'disciplines': 'Disciplines',
+            'groups': 'Auto-Groups',
+            'class-view': 'Class View',
+            'instructor-calendar': 'Instructor Calendar',
+            'schedule': 'Student Schedule',
+            'grades': 'Grades',
+            'ranking': 'Ranking',
+            'classes': 'Classes'
         };
-        
-        console.log('Sub-modules loaded status:', modulesLoaded);
-
-        // Disciplines
-        var disciplinesContent = document.getElementById('disciplines-content');
-        if (disciplinesContent) {
-            if (modulesLoaded.disciplines) {
-                window.renderDisciplinesView(disciplinesContent);
-            } else {
-                disciplinesContent.innerHTML = '<p class="empty-state">Disciplines module loading... Please refresh the page.</p>';
-                setTimeout(function() {
-                    if (typeof window.renderDisciplinesView === 'function') {
-                        window.renderDisciplinesView(disciplinesContent);
-                    }
-                }, 500);
-            }
-        }
-
-        // Auto-Groups
-        var groupsContent = document.getElementById('groups-content');
-        if (groupsContent) {
-            if (modulesLoaded.groups) {
-                window.renderAutoGroupsView(groupsContent);
-            } else {
-                groupsContent.innerHTML = '<p class="empty-state">Auto-Groups module loading... Please refresh the page.</p>';
-                setTimeout(function() {
-                    if (typeof window.renderAutoGroupsView === 'function') {
-                        window.renderAutoGroupsView(groupsContent);
-                    }
-                }, 500);
-            }
-        }
-
-        // Class View
-        var classViewContent = document.getElementById('class-view-content');
-        if (classViewContent) {
-            if (modulesLoaded.classView) {
-                window.renderClassView(classViewContent);
-            } else {
-                classViewContent.innerHTML = '<p class="empty-state">Class View module loading... Please refresh the page.</p>';
-                setTimeout(function() {
-                    if (typeof window.renderClassView === 'function') {
-                        window.renderClassView(classViewContent);
-                    }
-                }, 500);
-            }
-        }
-
-        // Instructor Calendar
-        var instructorCalendarContent = document.getElementById('instructor-calendar-content');
-        if (instructorCalendarContent) {
-            if (modulesLoaded.instructorCalendar) {
-                window.renderInstructorCalendar(instructorCalendarContent);
-            } else {
-                instructorCalendarContent.innerHTML = '<p class="empty-state">Instructor Calendar module loading... Please refresh the page.</p>';
-                setTimeout(function() {
-                    if (typeof window.renderInstructorCalendar === 'function') {
-                        window.renderInstructorCalendar(instructorCalendarContent);
-                    }
-                }, 500);
-            }
-        }
-
-        // Schedule
-        var scheduleContent = document.getElementById('schedule-content');
-        if (scheduleContent) {
-            if (modulesLoaded.schedule) {
-                if (typeof window.renderStudentScheduleView === 'function') {
-                    window.renderStudentScheduleView(scheduleContent);
-                } else if (typeof window.renderScheduleView === 'function') {
-                    window.renderScheduleView(scheduleContent);
-                }
-            } else {
-                scheduleContent.innerHTML = '<p class="empty-state">Schedule module loading... Please refresh the page.</p>';
-                setTimeout(function() {
-                    if (typeof window.renderStudentScheduleView === 'function') {
-                        window.renderStudentScheduleView(scheduleContent);
-                    } else if (typeof window.renderScheduleView === 'function') {
-                        window.renderScheduleView(scheduleContent);
-                    }
-                }, 500);
-            }
-        }
-
-        // Grades
-        var gradesContent = document.getElementById('grades-content');
-        if (gradesContent) {
-            if (modulesLoaded.grades) {
-                window.renderGradesView(gradesContent);
-            } else {
-                gradesContent.innerHTML = '<p class="empty-state">Grades module loading... Please refresh the page.</p>';
-                setTimeout(function() {
-                    if (typeof window.renderGradesView === 'function') {
-                        window.renderGradesView(gradesContent);
-                    }
-                }, 500);
-            }
-        }
-
-        // Ranking
-        var rankingContent = document.getElementById('ranking-content');
-        if (rankingContent) {
-            if (modulesLoaded.ranking) {
-                window.renderRankingView(rankingContent);
-            } else {
-                rankingContent.innerHTML = '<p class="empty-state">Ranking module loading... Please refresh the page.</p>';
-                setTimeout(function() {
-                    if (typeof window.renderRankingView === 'function') {
-                        window.renderRankingView(rankingContent);
-                    }
-                }, 500);
-            }
-        }
-
-        // Classes
-        var classesContent = document.getElementById('classes-content');
-        if (classesContent) {
-            if (modulesLoaded.classes) {
-                window.renderClassesView(classesContent);
-            } else {
-                classesContent.innerHTML = '<p class="empty-state">Classes module loading... Please refresh the page.</p>';
-                setTimeout(function() {
-                    if (typeof window.renderClassesView === 'function') {
-                        window.renderClassesView(classesContent);
-                    }
-                }, 500);
-            }
-        }
-    }
-
-    function initCurriculumTabs() {
-        console.log('initCurriculumTabs called');
-        
-        var tabs = document.querySelectorAll('.tab-btn');
-        var panels = {
-            disciplines: document.getElementById('tab-disciplines'),
-            groups: document.getElementById('tab-groups'),
-            'class-view': document.getElementById('tab-class-view'),
-            'instructor-calendar': document.getElementById('tab-instructor-calendar'),
-            schedule: document.getElementById('tab-schedule'),
-            grades: document.getElementById('tab-grades'),
-            ranking: document.getElementById('tab-ranking'),
-            classes: document.getElementById('tab-classes')
-        };
-
-        // Hide all panels first
-        for (var key in panels) {
-            if (panels[key]) {
-                panels[key].style.display = 'none';
-                panels[key].classList.remove('active');
-            }
-        }
-
-        // Show active tab's panel
-        var activeTab = document.querySelector('.tab-btn.active');
-        if (activeTab) {
-            var activeTabName = activeTab.dataset.tab;
-            if (panels[activeTabName]) {
-                panels[activeTabName].style.display = 'block';
-                panels[activeTabName].classList.add('active');
-            }
-        } else if (panels.disciplines) {
-            panels.disciplines.style.display = 'block';
-            panels.disciplines.classList.add('active');
-        }
-
-        // Add click handlers using event delegation to avoid clone issues
-        var tabContainer = document.querySelector('.tab-nav');
-        if (tabContainer) {
-            // Remove existing listeners by cloning the container
-            var newContainer = tabContainer.cloneNode(true);
-            tabContainer.parentNode.replaceChild(newContainer, tabContainer);
-            
-            newContainer.addEventListener('click', function(e) {
-                var tab = e.target.closest('.tab-btn');
-                if (!tab) return;
-                
-                e.preventDefault();
-                e.stopPropagation();
-                
-                var tabName = tab.dataset.tab;
-                console.log('Curriculum tab clicked:', tabName);
-                
-                // Update tab buttons
-                document.querySelectorAll('.tab-btn').forEach(function(t) {
-                    t.classList.remove('active');
-                });
-                tab.classList.add('active');
-                
-                // Update panels
-                for (var key in panels) {
-                    if (panels[key]) {
-                        panels[key].style.display = 'none';
-                        panels[key].classList.remove('active');
-                    }
-                }
-                
-                if (panels[tabName]) {
-                    panels[tabName].style.display = 'block';
-                    panels[tabName].classList.add('active');
-                }
-                
-                // Refresh tab content
-                refreshTabContent(tabName);
-            });
-        }
-    }
-
-    function refreshTabContent(tabName) {
-        console.log('refreshTabContent called for:', tabName);
-        
-        // Use setTimeout to ensure panel is visible
-        setTimeout(function() {
-            try {
-                if (tabName === 'disciplines') {
-                    var content = document.getElementById('disciplines-content');
-                    if (content) {
-                        if (typeof window.renderDisciplinesView === 'function') {
-                            window.renderDisciplinesView(content);
-                        } else {
-                            content.innerHTML = '<p class="empty-state">Disciplines module not loaded. Please refresh the page.</p>';
-                        }
-                    }
-                } else if (tabName === 'groups') {
-                    var content = document.getElementById('groups-content');
-                    if (content) {
-                        if (typeof window.renderAutoGroupsView === 'function') {
-                            window.renderAutoGroupsView(content);
-                        } else {
-                            content.innerHTML = '<p class="empty-state">Auto-Groups module not loaded. Please refresh the page.</p>';
-                        }
-                    }
-                } else if (tabName === 'class-view') {
-                    var content = document.getElementById('class-view-content');
-                    if (content) {
-                        if (typeof window.renderClassView === 'function') {
-                            window.renderClassView(content);
-                        } else {
-                            content.innerHTML = '<p class="empty-state">Class View module not loaded. Please refresh the page.</p>';
-                        }
-                    }
-                } else if (tabName === 'instructor-calendar') {
-                    var content = document.getElementById('instructor-calendar-content');
-                    if (content) {
-                        if (typeof window.renderInstructorCalendar === 'function') {
-                            window.renderInstructorCalendar(content);
-                        } else {
-                            content.innerHTML = '<p class="empty-state">Instructor Calendar module not loaded. Please refresh the page.</p>';
-                        }
-                    }
-                } else if (tabName === 'schedule') {
-                    var content = document.getElementById('schedule-content');
-                    if (content) {
-                        if (typeof window.renderStudentScheduleView === 'function') {
-                            window.renderStudentScheduleView(content);
-                        } else if (typeof window.renderScheduleView === 'function') {
-                            window.renderScheduleView(content);
-                        } else {
-                            content.innerHTML = '<p class="empty-state">Schedule module not loaded. Please refresh the page.</p>';
-                        }
-                    }
-                } else if (tabName === 'grades') {
-                    var content = document.getElementById('grades-content');
-                    if (content) {
-                        if (typeof window.renderGradesView === 'function') {
-                            window.renderGradesView(content);
-                        } else {
-                            content.innerHTML = '<p class="empty-state">Grades module not loaded. Please refresh the page.</p>';
-                        }
-                    }
-                } else if (tabName === 'ranking') {
-                    var content = document.getElementById('ranking-content');
-                    if (content) {
-                        if (typeof window.renderRankingView === 'function') {
-                            window.renderRankingView(content);
-                        } else {
-                            content.innerHTML = '<p class="empty-state">Ranking module not loaded. Please refresh the page.</p>';
-                        }
-                    }
-                } else if (tabName === 'classes') {
-                    var content = document.getElementById('classes-content');
-                    if (content) {
-                        if (typeof window.renderClassesView === 'function') {
-                            window.renderClassesView(content);
-                        } else {
-                            content.innerHTML = '<p class="empty-state">Classes module not loaded. Please refresh the page.</p>';
-                        }
-                    }
-                }
-            } catch (e) {
-                console.error('Error refreshing tab content:', e);
-            }
-        }, 50);
-    }
-
-    function initCurriculumEvents() {
-        console.log('initCurriculumEvents called');
-        
-        // Each sub-module has its own init function
-        if (typeof window.initDisciplineEvents === 'function') {
-            window.initDisciplineEvents();
-        }
-        if (typeof window.initAutoGroupsEvents === 'function') {
-            window.initAutoGroupsEvents();
-        }
-        if (typeof window.initClassViewEvents === 'function') {
-            window.initClassViewEvents();
-        }
-        if (typeof window.initInstructorCalendarEvents === 'function') {
-            window.initInstructorCalendarEvents();
-        }
-        if (typeof window.initStudentScheduleEvents === 'function') {
-            window.initStudentScheduleEvents();
-        }
-        if (typeof window.initGradesEvents === 'function') {
-            window.initGradesEvents();
-        }
-        if (typeof window.initRankingEvents === 'function') {
-            window.initRankingEvents();
-        }
-        if (typeof window.initClassEvents === 'function') {
-            window.initClassEvents();
-        }
-    }
-
-    function populateStudentSelector(id) {
-        var select = document.getElementById(id);
-        if (!select) return;
-
-        var students = window.getStudents();
-        select.innerHTML = '<option value="">Select a student...</option>';
-        students.forEach(function(student) {
-            var name = window.getDisplayName(student);
-            var option = document.createElement('option');
-            option.value = student.id;
-            option.textContent = name;
-            select.appendChild(option);
+        tabs.forEach(function(tab) {
+            var isActive = (currentTab === tab);
+            html += '<button class="tab-btn ' + (isActive ? 'active' : '') + '" data-tab="' + tab + '" style="background:transparent;border:none;border-bottom:2px solid ' + (isActive ? 'var(--accent)' : 'transparent') + ';color:' + (isActive ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">' + labels[tab] + '</button>';
         });
+        html += '</div>';
+
+        // Content container
+        html += '<div id="curriculum-content-container"></div>';
+
+        container.innerHTML = html;
+
+        // Render the current tab
+        renderTabContent(currentTab, container);
     }
 
-    function getInstructorNames(discipline) {
-        var names = [];
-        if (discipline && discipline.instructorIds) {
-            discipline.instructorIds.forEach(function(id) {
-                var instructor = window.getCharacterById(id);
-                if (instructor) {
-                    names.push(window.getDisplayName(instructor));
+    function renderTabContent(tab, container) {
+        var contentContainer = container.querySelector('#curriculum-content-container');
+        if (!contentContainer) return;
+
+        currentTab = tab;
+
+        // Update tab buttons
+        var tabButtons = container.querySelectorAll('.tab-btn');
+        tabButtons.forEach(function(btn) {
+            var isActive = (btn.dataset.tab === tab);
+            btn.classList.toggle('active', isActive);
+            btn.style.color = isActive ? 'var(--accent)' : 'var(--text-dim)';
+            btn.style.borderBottomColor = isActive ? 'var(--accent)' : 'transparent';
+        });
+
+        // Render based on tab
+        switch(tab) {
+            case 'disciplines':
+                renderDisciplines(contentContainer);
+                break;
+            case 'groups':
+                renderGroups(contentContainer);
+                break;
+            case 'class-view':
+                renderClassView(contentContainer);
+                break;
+            case 'instructor-calendar':
+                renderInstructorCalendar(contentContainer);
+                break;
+            case 'schedule':
+                renderStudentSchedule(contentContainer);
+                break;
+            case 'grades':
+                renderGrades(contentContainer);
+                break;
+            case 'ranking':
+                renderRanking(contentContainer);
+                break;
+            case 'classes':
+                renderClasses(contentContainer);
+                break;
+            default:
+                contentContainer.innerHTML = '<p class="empty-state">Select a tab</p>';
+        }
+    }
+
+    // ============================================================
+    // DISCIPLINES RENDER
+    // ============================================================
+
+    function renderDisciplines(container) {
+        var disciplines = window.data.curriculum.disciplines || [];
+
+        var html = '';
+        html += '<div class="page-header" style="margin-bottom:8px;">';
+        html += '<h3 style="color:var(--accent);font-size:0.9rem;">Disciplines</h3>';
+        html += '<button id="add-discipline-btn" class="primary small">+ Add Discipline</button>';
+        html += '</div>';
+
+        if (disciplines.length === 0) {
+            html += '<p class="empty-state">No disciplines created yet.</p>';
+            container.innerHTML = html;
+            return;
+        }
+
+        html += '<div class="list-header" style="display:grid;grid-template-columns:1fr 0.8fr 1fr 0.8fr 0.6fr 0.6fr;gap:8px;padding:8px 12px;background:var(--panel-alt);border-radius:6px 6px 0 0;border:1px solid var(--border);border-bottom:none;font-weight:600;font-size:0.7rem;color:var(--text-dim);">';
+        html += '<span>Discipline</span>';
+        html += '<span>Type</span>';
+        html += '<span>Instructors</span>';
+        html += '<span>Weeks</span>';
+        html += '<span>Hours</span>';
+        html += '<span>Actions</span>';
+        html += '</div>';
+
+        disciplines.forEach(function(d) {
+            var typeLabel = d.type === 'mandatory' ? '■ Mandatory' : '□ Optional';
+            var typeColor = d.type === 'mandatory' ? 'var(--accent)' : 'var(--warning)';
+            var instructorNames = [];
+            if (d.instructorIds) {
+                d.instructorIds.forEach(function(id) {
+                    var inst = window.getCharacterById(id);
+                    if (inst) instructorNames.push(window.getDisplayName(inst));
+                });
+            }
+            var weekDisplay = (d.startWeek ? 'Wk ' + d.startWeek : '?') + (d.endWeek ? ' - Wk ' + d.endWeek : '');
+            var hoursDisplay = d.weeklyHours || '-';
+
+            html += '<div class="list-item" style="display:grid;grid-template-columns:1fr 0.8fr 1fr 0.8fr 0.6fr 0.6fr;gap:8px;padding:8px 12px;background:var(--panel);border:1px solid var(--border);border-top:none;">';
+            html += '<span><strong>' + d.name + '</strong></span>';
+            html += '<span style="color:' + typeColor + ';font-size:0.75rem;">' + typeLabel + '</span>';
+            html += '<span style="font-size:0.75rem;">' + (instructorNames.join(', ') || 'Not assigned') + '</span>';
+            html += '<span style="font-size:0.75rem;">' + weekDisplay + '</span>';
+            html += '<span style="font-size:0.75rem;">' + hoursDisplay + 'h</span>';
+            html += '<span class="actions" style="display:flex;gap:4px;flex-wrap:wrap;">';
+            html += '<button class="small edit-discipline" data-id="' + d.id + '" style="padding:2px 8px;font-size:0.65rem;">Edit</button>';
+            html += '<button class="small danger delete-discipline" data-id="' + d.id + '" style="padding:2px 8px;font-size:0.65rem;">Delete</button>';
+            html += '</span>';
+            html += '</div>';
+        });
+
+        container.innerHTML = html;
+
+        // Attach events
+        container.querySelectorAll('.edit-discipline').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                alert('Edit discipline: ' + this.dataset.id + '\n(Full implementation coming soon)');
+            });
+        });
+        container.querySelectorAll('.delete-discipline').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                if (confirm('Delete this discipline permanently?')) {
+                    var id = this.dataset.id;
+                    var data = window.data || {};
+                    if (data.curriculum) {
+                        data.curriculum.disciplines = data.curriculum.disciplines.filter(function(d) { return String(d.id) !== String(id); });
+                        if (typeof window.saveData === 'function') {
+                            window.saveData().catch(function(err) { /* ignore */ });
+                        }
+                        renderDisciplines(container);
+                    }
+                }
+            });
+        });
+
+        var addBtn = container.querySelector('#add-discipline-btn');
+        if (addBtn) {
+            addBtn.addEventListener('click', function() {
+                var name = prompt('Enter discipline name:');
+                if (!name) return;
+                var type = prompt('Enter type (mandatory/optional):', 'mandatory');
+                if (!type) return;
+                var data = window.data || {};
+                if (!data.curriculum) data.curriculum = { disciplines: [] };
+                data.curriculum.disciplines.push({
+                    id: window.generateId('disc'),
+                    name: name,
+                    type: type,
+                    instructorIds: [],
+                    startWeek: '',
+                    endWeek: '',
+                    weeklyHours: '',
+                    maxStudents: '',
+                    weight: 1,
+                    gradingSystem: [],
+                    createdAt: new Date().toISOString()
+                });
+                if (typeof window.saveData === 'function') {
+                    window.saveData().catch(function(err) { /* ignore */ });
+                }
+                renderDisciplines(container);
+            });
+        }
+    }
+
+    // ============================================================
+    // GROUPS RENDER
+    // ============================================================
+
+    function renderGroups(container) {
+        var html = '';
+        html += '<div class="page-header" style="margin-bottom:8px;">';
+        html += '<h3 style="color:var(--accent);font-size:0.9rem;">Auto-Groups</h3>';
+        html += '<span style="font-size:0.7rem;color:var(--text-dim);">Groups auto-created from Discipline + Instructor</span>';
+        html += '</div>';
+
+        // Get all groups from curriculum
+        var groups = window.data.curriculum.autoGroups || {};
+        var groupKeys = Object.keys(groups);
+
+        if (groupKeys.length === 0) {
+            html += '<p class="empty-state">No groups created yet. Groups are auto-created when students are assigned to classes.</p>';
+            container.innerHTML = html;
+            return;
+        }
+
+        html += '<div style="display:flex;flex-direction:column;gap:8px;">';
+        groupKeys.forEach(function(key) {
+            var group = groups[key];
+            var discipline = window.getDiscipline(group.disciplineId);
+            var instructor = window.getCharacterById(group.instructorId);
+            var disciplineName = discipline ? discipline.name : 'Unknown';
+            var instructorName = instructor ? window.getDisplayName(instructor) : 'Unknown';
+            var studentCount = group.students ? group.students.length : 0;
+            var slotCount = group.slots ? group.slots.length : 0;
+
+            html += '<div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;">';
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">';
+            html += '<div><strong style="color:var(--accent);">' + disciplineName + '</strong>';
+            html += ' <span style="color:var(--text-dim);font-size:0.75rem;">(' + instructorName + ')</span>';
+            html += ' <span style="color:var(--text-dim);font-size:0.7rem;">' + studentCount + ' students, ' + slotCount + ' slots</span>';
+            html += '</div>';
+            html += '</div>';
+            html += '</div>';
+        });
+        html += '</div>';
+
+        container.innerHTML = html;
+    }
+
+    // ============================================================
+    // CLASS VIEW RENDER
+    // ============================================================
+
+    function renderClassView(container) {
+        var week = window.data.curriculum.currentWeek || 1;
+        var students = window.getStudents();
+        var disciplines = window.getAvailableDisciplines(week);
+
+        var html = '';
+        html += '<div class="page-header" style="margin-bottom:8px;">';
+        html += '<h3 style="color:var(--accent);font-size:0.9rem;">Class View - Week ' + week + '</h3>';
+        html += '<div style="display:flex;gap:8px;">';
+        html += '<button id="prev-class-week" class="small secondary">← Prev</button>';
+        html += '<button id="next-class-week" class="small secondary">Next →</button>';
+        html += '</div>';
+        html += '</div>';
+
+        if (students.length === 0) {
+            html += '<p class="empty-state">No students found.</p>';
+            container.innerHTML = html;
+            return;
+        }
+
+        if (disciplines.length === 0) {
+            html += '<p class="empty-state">No disciplines available for week ' + week + '.</p>';
+            container.innerHTML = html;
+            return;
+        }
+
+        // Show classes by discipline
+        var dayNames = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+        disciplines.forEach(function(discipline) {
+            var classCount = 0;
+            var classData = {};
+
+            students.forEach(function(student) {
+                var schedule = window.getStudentSchedule(student.id, week);
+                for (var day in schedule) {
+                    for (var hour in schedule[day]) {
+                        if (String(schedule[day][hour]) === String(discipline.id)) {
+                            classCount++;
+                            var key = day + '_' + hour;
+                            if (!classData[key]) {
+                                classData[key] = {
+                                    day: parseInt(day),
+                                    hour: parseInt(hour),
+                                    students: []
+                                };
+                            }
+                            classData[key].students.push(student);
+                        }
+                    }
+                }
+            });
+
+            if (classCount === 0) return;
+
+            var typeLabel = discipline.type === 'mandatory' ? '■ Mandatory' : '□ Optional';
+            var typeColor = discipline.type === 'mandatory' ? 'var(--accent)' : 'var(--warning)';
+
+            html += '<div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;margin-bottom:12px;">';
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">';
+            html += '<h4 style="color:var(--accent);margin:0;">' + discipline.name + '</h4>';
+            html += '<span style="font-size:0.7rem;padding:2px 12px;border-radius:12px;background:' + typeColor + '33;color:' + typeColor + ';border:1px solid ' + typeColor + ';">' + typeLabel + '</span>';
+            html += '</div>';
+
+            var keys = Object.keys(classData).sort(function(a, b) {
+                var aParts = a.split('_');
+                var bParts = b.split('_');
+                if (parseInt(aParts[0]) !== parseInt(bParts[0])) return parseInt(aParts[0]) - parseInt(bParts[0]);
+                return parseInt(aParts[1]) - parseInt(bParts[1]);
+            });
+
+            keys.forEach(function(key) {
+                var data = classData[key];
+                var hourDisplay = data.hour > 12 ? data.hour - 12 : data.hour;
+                var ampm = data.hour >= 12 ? 'PM' : 'AM';
+                if (data.hour === 0) { hourDisplay = 12; ampm = 'AM'; }
+                if (data.hour === 12) { ampm = 'PM'; }
+
+                html += '<div style="background:var(--bg);border-radius:4px;padding:6px 10px;margin-bottom:4px;border-left:3px solid var(--accent);">';
+                html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px;">';
+                html += '<span style="font-weight:500;font-size:0.8rem;">' + dayNames[data.day] + ' at ' + hourDisplay + ':00 ' + ampm + '</span>';
+                html += '<span style="font-size:0.7rem;color:var(--text-dim);">' + data.students.length + ' student' + (data.students.length > 1 ? 's' : '') + '</span>';
+                html += '</div>';
+                html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">';
+                data.students.forEach(function(student) {
+                    html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;">' + window.getDisplayName(student) + '</span>';
+                });
+                html += '</div>';
+                html += '</div>';
+            });
+
+            html += '</div>';
+        });
+
+        container.innerHTML = html;
+
+        // Attach week navigation
+        var prevBtn = container.querySelector('#prev-class-week');
+        if (prevBtn) {
+            prevBtn.addEventListener('click', function() {
+                if (window.data.curriculum.currentWeek > 1) {
+                    window.data.curriculum.currentWeek--;
+                    renderClassView(container);
                 }
             });
         }
-        return names;
-    }
-
-    function getAllInstructorTemplatesForWeek(week) {
-        var results = {};
-        var weekNum = parseInt(week) || 1;
-        var data = window.data || {};
-        if (data.curriculum && data.curriculum.instructorTemplates) {
-            for (var templateKey in data.curriculum.instructorTemplates) {
-                var parts = templateKey.split('_');
-                var instructorId = parts[0];
-                var templateWeek = parseInt(parts[1]);
-                if (templateWeek === weekNum) {
-                    results[instructorId] = data.curriculum.instructorTemplates[templateKey];
+        var nextBtn = container.querySelector('#next-class-week');
+        if (nextBtn) {
+            nextBtn.addEventListener('click', function() {
+                if (window.data.curriculum.currentWeek < 52) {
+                    window.data.curriculum.currentWeek++;
+                    renderClassView(container);
                 }
-            }
+            });
         }
-        return results;
     }
 
-    function getInstructorTemplatesForWeek(instructorId, week) {
-        var templateKey = instructorId + '_' + week;
-        var data = window.data || {};
-        if (data.curriculum && data.curriculum.instructorTemplates && data.curriculum.instructorTemplates[templateKey]) {
-            return data.curriculum.instructorTemplates[templateKey];
+    // ============================================================
+    // INSTRUCTOR CALENDAR RENDER
+    // ============================================================
+
+    function renderInstructorCalendar(container) {
+        var instructors = window.getInstructors();
+        var week = window.data.curriculum.currentWeek || 1;
+
+        var html = '';
+        html += '<div class="page-header" style="margin-bottom:8px;">';
+        html += '<h3 style="color:var(--accent);font-size:0.9rem;">Instructor Calendar - Week ' + week + '</h3>';
+        html += '</div>';
+
+        if (instructors.length === 0) {
+            html += '<p class="empty-state">No instructors found.</p>';
+            container.innerHTML = html;
+            return;
         }
-        return {};
+
+        // Simple instructor list
+        html += '<div style="display:flex;flex-direction:column;gap:8px;">';
+        instructors.forEach(function(instructor) {
+            var name = window.getDisplayName(instructor);
+            var status = window.getCurrentStatus(instructor);
+
+            html += '<div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">';
+            html += '<span><strong>' + name + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + status + ')</span></span>';
+            html += '<span style="font-size:0.7rem;color:var(--text-dim);">Click to view schedule (coming soon)</span>';
+            html += '</div>';
+        });
+        html += '</div>';
+
+        container.innerHTML = html;
+    }
+
+    // ============================================================
+    // STUDENT SCHEDULE RENDER
+    // ============================================================
+
+    function renderStudentSchedule(container) {
+        var students = window.getStudents();
+        var week = window.data.curriculum.currentWeek || 1;
+
+        var html = '';
+        html += '<div class="page-header" style="margin-bottom:8px;">';
+        html += '<h3 style="color:var(--accent);font-size:0.9rem;">Student Schedule - Week ' + week + '</h3>';
+        html += '</div>';
+
+        if (students.length === 0) {
+            html += '<p class="empty-state">No students found.</p>';
+            container.innerHTML = html;
+            return;
+        }
+
+        // Student selector
+        html += '<div style="margin-bottom:12px;">';
+        html += '<label style="font-size:0.75rem;color:var(--text-dim);">Select Student:</label>';
+        html += '<select id="schedule-student-select" style="width:100%;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;margin-top:4px;">';
+        html += '<option value="">Select a student...</option>';
+        students.forEach(function(student) {
+            html += '<option value="' + student.id + '">' + window.getDisplayName(student) + '</option>';
+        });
+        html += '</select>';
+        html += '</div>';
+
+        // Schedule display
+        html += '<div id="schedule-display"><p class="empty-state">Select a student to view their schedule.</p></div>';
+
+        container.innerHTML = html;
+
+        var select = container.querySelector('#schedule-student-select');
+        if (select) {
+            select.addEventListener('change', function() {
+                var studentId = this.value;
+                var display = container.querySelector('#schedule-display');
+                if (!studentId || !display) return;
+
+                var student = window.getCharacterById(studentId);
+                if (!student) {
+                    display.innerHTML = '<p class="empty-state">Student not found.</p>';
+                    return;
+                }
+
+                var schedule = window.getStudentSchedule(studentId, week);
+                var dayNames = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+                var hasClasses = false;
+                var html2 = '<div style="margin-top:8px;"><strong>' + window.getDisplayName(student) + '</strong> - Week ' + week;
+                html2 += '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:8px;">';
+
+                for (var d = 1; d <= 7; d++) {
+                    html2 += '<div style="background:var(--bg);border:1px solid var(--border-soft);border-radius:4px;padding:4px;min-height:80px;">';
+                    html2 += '<div style="font-size:0.5rem;color:var(--text-dim);text-align:center;border-bottom:1px solid var(--border-soft);padding-bottom:2px;">' + dayNames[d] + '</div>';
+                    var hasDayClass = false;
+                    if (schedule[d]) {
+                        for (var h in schedule[d]) {
+                            if (schedule[d][h]) {
+                                hasDayClass = true;
+                                hasClasses = true;
+                                var disc = window.getDiscipline(schedule[d][h]);
+                                var hourDisplay = parseInt(h) > 12 ? parseInt(h) - 12 : parseInt(h);
+                                var ampm = parseInt(h) >= 12 ? 'PM' : 'AM';
+                                if (parseInt(h) === 0) { hourDisplay = 12; ampm = 'AM'; }
+                                if (parseInt(h) === 12) { ampm = 'PM'; }
+                                html2 += '<div style="font-size:0.55rem;padding:2px 4px;background:var(--accent-soft);border-radius:3px;margin-top:2px;border-left:2px solid var(--accent);">' + (disc ? disc.name : 'Unknown') + ' (' + hourDisplay + ':00 ' + ampm + ')</div>';
+                            }
+                        }
+                    }
+                    if (!hasDayClass) {
+                        html2 += '<div style="font-size:0.5rem;color:var(--text-dim);text-align:center;padding-top:4px;">—</div>';
+                    }
+                    html2 += '</div>';
+                }
+
+                html2 += '</div></div>';
+
+                if (!hasClasses) {
+                    html2 = '<p class="empty-state">No classes scheduled for this student in week ' + week + '.</p>';
+                }
+
+                display.innerHTML = html2;
+            });
+        }
+    }
+
+    // ============================================================
+    // GRADES RENDER
+    // ============================================================
+
+    function renderGrades(container) {
+        var students = window.getStudents();
+        var week = window.data.curriculum.currentWeek || 1;
+
+        var html = '';
+        html += '<div class="page-header" style="margin-bottom:8px;">';
+        html += '<h3 style="color:var(--accent);font-size:0.9rem;">Grades - Week ' + week + '</h3>';
+        html += '</div>';
+
+        if (students.length === 0) {
+            html += '<p class="empty-state">No students found.</p>';
+            container.innerHTML = html;
+            return;
+        }
+
+        // Student selector
+        html += '<div style="margin-bottom:12px;">';
+        html += '<label style="font-size:0.75rem;color:var(--text-dim);">Select Student:</label>';
+        html += '<select id="grades-student-select" style="width:100%;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;margin-top:4px;">';
+        html += '<option value="">Select a student...</option>';
+        students.forEach(function(student) {
+            html += '<option value="' + student.id + '">' + window.getDisplayName(student) + '</option>';
+        });
+        html += '</select>';
+        html += '</div>';
+
+        html += '<div id="grades-display"><p class="empty-state">Select a student to view grades.</p></div>';
+
+        container.innerHTML = html;
+
+        var select = container.querySelector('#grades-student-select');
+        if (select) {
+            select.addEventListener('change', function() {
+                var studentId = this.value;
+                var display = container.querySelector('#grades-display');
+                if (!studentId || !display) return;
+
+                var student = window.getCharacterById(studentId);
+                if (!student) {
+                    display.innerHTML = '<p class="empty-state">Student not found.</p>';
+                    return;
+                }
+
+                var grades = window.data.curriculum.grades || {};
+                var studentGrades = grades[studentId] || {};
+                var weekGrades = studentGrades[week] || {};
+
+                var disciplines = window.getAvailableDisciplines(week);
+                var hasGrades = false;
+
+                var html2 = '<div style="margin-top:8px;"><strong>' + window.getDisplayName(student) + '</strong> - Grades for Week ' + week;
+                html2 += '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:0.75rem;">';
+                html2 += '<thead><tr style="background:var(--panel-alt);border-bottom:2px solid var(--border);">';
+                html2 += '<th style="padding:4px 8px;text-align:left;">Discipline</th>';
+                html2 += '<th style="padding:4px 8px;text-align:left;">Score</th>';
+                html2 += '<th style="padding:4px 8px;text-align:left;">Grade</th>';
+                html2 += '</tr></thead><tbody>';
+
+                disciplines.forEach(function(d) {
+                    var score = weekGrades[d.id];
+                    var letter = '';
+                    if (score !== undefined && score !== null) {
+                        hasGrades = true;
+                        if (d.gradingSystem && d.gradingSystem.length > 0) {
+                            var sorted = d.gradingSystem.slice().sort(function(a, b) { return b.min - a.min; });
+                            for (var i = 0; i < sorted.length; i++) {
+                                if (score >= sorted[i].min && score <= sorted[i].max) {
+                                    letter = sorted[i].letter;
+                                    break;
+                                }
+                            }
+                        }
+                        html2 += '<tr style="border-bottom:1px solid var(--border-soft);">';
+                        html2 += '<td style="padding:4px 8px;">' + d.name + '</td>';
+                        html2 += '<td style="padding:4px 8px;font-weight:600;color:var(--accent);">' + score + '%</td>';
+                        html2 += '<td style="padding:4px 8px;">' + (letter || '—') + '</td>';
+                        html2 += '</tr>';
+                    }
+                });
+
+                html2 += '</tbody></table></div>';
+
+                if (!hasGrades) {
+                    html2 = '<p class="empty-state">No grades recorded for this student in week ' + week + '.</p>';
+                }
+
+                display.innerHTML = html2;
+            });
+        }
+    }
+
+    // ============================================================
+    // RANKING RENDER
+    // ============================================================
+
+    function renderRanking(container) {
+        var students = window.getStudents();
+        var week = window.data.curriculum.currentWeek || 1;
+
+        var html = '';
+        html += '<div class="page-header" style="margin-bottom:8px;">';
+        html += '<h3 style="color:var(--accent);font-size:0.9rem;">Ranking - Week ' + week + '</h3>';
+        html += '</div>';
+
+        if (students.length === 0) {
+            html += '<p class="empty-state">No students found.</p>';
+            container.innerHTML = html;
+            return;
+        }
+
+        var rankings = window.data.curriculum.rankings || {};
+        var weekRankings = rankings[week] || [];
+
+        // Calculate averages if no rankings exist
+        if (weekRankings.length === 0) {
+            var grades = window.data.curriculum.grades || {};
+            var disciplines = window.getAvailableDisciplines(week);
+            var rankData = [];
+
+            students.forEach(function(student) {
+                var studentGrades = grades[student.id] || {};
+                var weekGrades = studentGrades[week] || {};
+                var totalWeighted = 0;
+                var totalWeight = 0;
+
+                disciplines.forEach(function(d) {
+                    var score = weekGrades[d.id];
+                    if (score !== undefined && score !== null && d.weight) {
+                        totalWeighted += score * d.weight;
+                        totalWeight += d.weight;
+                    }
+                });
+
+                var average = totalWeight > 0 ? totalWeighted / totalWeight : 0;
+                rankData.push({
+                    studentId: student.id,
+                    name: window.getDisplayName(student),
+                    average: average,
+                    hasGrades: totalWeight > 0
+                });
+            });
+
+            rankData.sort(function(a, b) { return b.average - a.average; });
+            rankData.forEach(function(r, index) {
+                r.rank = index + 1;
+            });
+
+            html += '<table style="width:100%;border-collapse:collapse;font-size:0.75rem;">';
+            html += '<thead><tr style="background:var(--panel-alt);border-bottom:2px solid var(--border);">';
+            html += '<th style="padding:4px 8px;text-align:left;">Rank</th>';
+            html += '<th style="padding:4px 8px;text-align:left;">Student</th>';
+            html += '<th style="padding:4px 8px;text-align:left;">Average</th>';
+            html += '</tr></thead><tbody>';
+
+            rankData.forEach(function(r) {
+                var avgDisplay = r.hasGrades ? r.average.toFixed(1) : '—';
+                var color = r.rank === 1 ? 'var(--accent)' : 'var(--text)';
+                html += '<tr style="border-bottom:1px solid var(--border-soft);">';
+                html += '<td style="padding:4px 8px;font-weight:700;color:' + color + ';">#' + r.rank + '</td>';
+                html += '<td style="padding:4px 8px;">' + r.name + '</td>';
+                html += '<td style="padding:4px 8px;font-weight:600;color:' + color + ';">' + avgDisplay + '</td>';
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+        } else {
+            // Use existing rankings
+            html += '<table style="width:100%;border-collapse:collapse;font-size:0.75rem;">';
+            html += '<thead><tr style="background:var(--panel-alt);border-bottom:2px solid var(--border);">';
+            html += '<th style="padding:4px 8px;text-align:left;">Rank</th>';
+            html += '<th style="padding:4px 8px;text-align:left;">Student</th>';
+            html += '</tr></thead><tbody>';
+
+            weekRankings.sort(function(a, b) { return a.rank - b.rank; });
+            weekRankings.forEach(function(r) {
+                var student = window.getCharacterById(r.studentId);
+                var name = student ? window.getDisplayName(student) : 'Unknown';
+                var color = r.rank === 1 ? 'var(--accent)' : 'var(--text)';
+                html += '<tr style="border-bottom:1px solid var(--border-soft);">';
+                html += '<td style="padding:4px 8px;font-weight:700;color:' + color + ';">#' + r.rank + '</td>';
+                html += '<td style="padding:4px 8px;">' + name + '</td>';
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+        }
+
+        container.innerHTML = html;
+    }
+
+    // ============================================================
+    // CLASSES RENDER
+    // ============================================================
+
+    function renderClasses(container) {
+        var classes = window.getClasses() || [];
+
+        var html = '';
+        html += '<div class="page-header" style="margin-bottom:8px;">';
+        html += '<h3 style="color:var(--accent);font-size:0.9rem;">Academic Classes</h3>';
+        html += '<button id="add-class-btn" class="primary small">+ New Class</button>';
+        html += '</div>';
+
+        if (classes.length === 0) {
+            html += '<p class="empty-state">No classes created yet.</p>';
+            container.innerHTML = html;
+            return;
+        }
+
+        html += '<div style="display:flex;flex-direction:column;gap:8px;">';
+        classes.forEach(function(cls) {
+            var studentCount = window.getCharactersByClass(cls.id).length;
+            var teamCount = window.getTeamsByClass(cls.id).length;
+
+            html += '<div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">';
+            html += '<div><strong style="color:var(--accent);">' + cls.name + '</strong>';
+            html += ' <span style="color:var(--text-dim);font-size:0.7rem;">' + studentCount + ' students, ' + teamCount + ' teams</span>';
+            html += '</div>';
+            html += '<div style="display:flex;gap:4px;">';
+            html += '<button class="small view-class" data-id="' + cls.id + '" style="padding:2px 8px;font-size:0.65rem;">View</button>';
+            html += '<button class="small danger delete-class" data-id="' + cls.id + '" style="padding:2px 8px;font-size:0.65rem;">Delete</button>';
+            html += '</div>';
+            html += '</div>';
+        });
+        html += '</div>';
+
+        container.innerHTML = html;
+
+        container.querySelectorAll('.view-class').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var id = this.dataset.id;
+                var cls = window.getClass(id);
+                if (!cls) return;
+                var students = window.getCharactersByClass(id);
+                var teams = window.getTeamsByClass(id);
+
+                var msg = 'Class: ' + cls.name + '\n\n';
+                msg += 'Students (' + students.length + '):\n';
+                if (students.length > 0) {
+                    students.forEach(function(s) {
+                        msg += '  • ' + window.getDisplayName(s) + '\n';
+                    });
+                } else {
+                    msg += '  None\n';
+                }
+                msg += '\nAcademic Teams (' + teams.length + '):\n';
+                if (teams.length > 0) {
+                    teams.forEach(function(t) {
+                        msg += '  • ' + t.name + '\n';
+                    });
+                } else {
+                    msg += '  None\n';
+                }
+                alert(msg);
+            });
+        });
+
+        container.querySelectorAll('.delete-class').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var id = this.dataset.id;
+                if (confirm('Delete this class permanently?')) {
+                    var result = window.deleteClass(id);
+                    if (result.success) {
+                        renderClasses(container);
+                        if (typeof window.updateDashboardStats === 'function') {
+                            window.updateDashboardStats();
+                        }
+                    } else {
+                        alert(result.message);
+                    }
+                }
+            });
+        });
+
+        var addBtn = container.querySelector('#add-class-btn');
+        if (addBtn) {
+            addBtn.addEventListener('click', function() {
+                var name = prompt('Enter class name:');
+                if (!name) return;
+                var result = window.createClass(name);
+                if (result.success) {
+                    renderClasses(container);
+                    if (typeof window.updateDashboardStats === 'function') {
+                        window.updateDashboardStats();
+                    }
+                } else {
+                    alert(result.message);
+                }
+            });
+        }
+    }
+
+    // ============================================================
+    // INIT EVENTS
+    // ============================================================
+
+    function initCurriculumEvents(container) {
+        var tabNav = container.querySelector('.tab-nav');
+        if (tabNav) {
+            tabNav.addEventListener('click', function(e) {
+                var btn = e.target.closest('.tab-btn');
+                if (!btn) return;
+                var tab = btn.dataset.tab;
+                renderTabContent(tab, container);
+            });
+        }
+
+        // Week display click
+        var weekDisplay = container.querySelector('#curriculum-current-week');
+        if (weekDisplay) {
+            weekDisplay.addEventListener('click', function() {
+                var current = parseInt(this.textContent) || 1;
+                var newWeek = prompt('Enter week number (1-52):', current);
+                if (newWeek) {
+                    var w = parseInt(newWeek);
+                    if (!isNaN(w) && w >= 1 && w <= 52) {
+                        if (window.data.curriculum) {
+                            window.data.curriculum.currentWeek = w;
+                            this.textContent = w;
+                            // Refresh current tab
+                            renderTabContent(currentTab, container);
+                        }
+                    } else {
+                        alert('Please enter a valid week (1-52).');
+                    }
+                }
+            });
+        }
     }
 
     // ============================================================
@@ -544,21 +911,7 @@
         }, 100);
     }
 
-    // ============================================================
-    // EXPOSE FUNCTIONS
-    // ============================================================
-
     window.renderCurriculum = renderCurriculum;
-    window.renderAllSections = renderAllSections;
-    window.initCurriculumTabs = initCurriculumTabs;
-    window.initCurriculumEvents = initCurriculumEvents;
-    window.refreshTabContent = refreshTabContent;
-    window.populateStudentSelector = populateStudentSelector;
-    window.getInstructorNames = getInstructorNames;
-    window.getAllInstructorTemplatesForWeek = getAllInstructorTemplatesForWeek;
-    window.getInstructorTemplatesForWeek = getInstructorTemplatesForWeek;
     window.curriculumState = state;
-
-    console.log('curriculum-main.js loaded');
 
 })();
