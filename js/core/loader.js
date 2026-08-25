@@ -22,24 +22,19 @@ var DataLoader = {
         document.addEventListener('dataReady', function(e) {
             // Prevent re-entrancy
             if (self._isDispatching) return;
+            if (self._dispatched) return;
             
             self.data = e.detail.data || window.data;
             self.isReady = true;
             
-            // Use requestAnimationFrame or setTimeout to avoid stack issues
-            if (typeof requestAnimationFrame !== 'undefined') {
-                requestAnimationFrame(function() {
-                    self._dispatchReady();
-                });
-            } else {
-                setTimeout(function() {
-                    self._dispatchReady();
-                }, 10);
-            }
+            // Use setTimeout to avoid stack issues
+            setTimeout(function() {
+                self._dispatchReady();
+            }, 10);
         });
 
         // If data is already available, dispatch immediately but async
-        if (window.data) {
+        if (window.data && !this._dispatched) {
             self.data = window.data;
             self.isReady = true;
             setTimeout(function() {
@@ -52,13 +47,13 @@ var DataLoader = {
         var maxChecks = 20;
         var checkInterval = setInterval(function() {
             checkCount++;
-            if (window.data && !self.isReady) {
+            if (window.data && !self.isReady && !self._dispatched) {
                 self.data = window.data;
                 self.isReady = true;
                 self._dispatchReady();
                 clearInterval(checkInterval);
             }
-            if (self.isReady || checkCount >= maxChecks) {
+            if (self.isReady || self._dispatched || checkCount >= maxChecks) {
                 clearInterval(checkInterval);
             }
         }, 100);
@@ -84,16 +79,9 @@ var DataLoader = {
             }
         }, this);
 
-        // Dispatch a single event to notify that data is ready
-        // Use a different event name and only dispatch once
-        var event = new CustomEvent('dataLoaded', { 
-            detail: { data: this.data },
-            bubbles: false,
-            cancelable: false
-        });
-        document.dispatchEvent(event);
-
         this._isDispatching = false;
+        
+        console.log('DataLoader: data ready, callbacks processed');
     },
 
     whenReady: function(callback) {
