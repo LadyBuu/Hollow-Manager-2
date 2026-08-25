@@ -23,7 +23,7 @@
             return;
         }
         
-        // Remove any existing listeners by cloning
+        // Remove any existing listeners by cloning the toggle button only
         var newToggle = toggle.cloneNode(true);
         toggle.parentNode.replaceChild(newToggle, toggle);
         toggle = newToggle;
@@ -60,19 +60,8 @@
             }
         });
         
-        // Close menu when a nav link is clicked
-        nav.querySelectorAll('a').forEach(function(link) {
-            var newLink = link.cloneNode(true);
-            link.parentNode.replaceChild(newLink, link);
-            newLink.addEventListener('click', function() {
-                nav.classList.remove('open');
-                toggle.classList.remove('open');
-                toggle.textContent = '☰';
-                if (actions) {
-                    actions.classList.remove('open');
-                }
-            });
-        });
+        // NO CLONING OF NAV LINKS - TabManager handles this
+        // The menu closing on tab change is handled by TabManager._doSwitch
         
         console.log('Burger menu initialized');
     }
@@ -137,7 +126,7 @@
             setTimeout(initBurgerMenu, 200);
         });
         
-        // Listen for tab changes
+        // Listen for tab changes - just close menu, don't clone anything
         document.addEventListener('tabChanged', function(e) {
             console.log('App: tabChanged event received:', e.detail ? e.detail.tab : 'unknown');
             
@@ -197,9 +186,8 @@
         });
     }
 
-    // Also initialize after data loads (in case DOM was already ready)
+    // Also initialize after data loads
     document.addEventListener('dataReady', function() {
-        // Ensure burger menu is initialized
         if (typeof window.initBurgerMenu === 'function') {
             setTimeout(window.initBurgerMenu, 100);
         }
