@@ -34,7 +34,7 @@
 
         populateInstructorSelector();
         populateGroupFilter();
-        renderInstructorCalendarData();
+        renderCalendarData();
         renderGroupList();
         initInstructorCalendarEvents();
     }
@@ -112,7 +112,6 @@
         if (!select) return;
 
         var instructors = window.getInstructors();
-        var currentValue = select.value;
         select.innerHTML = '<option value="">Select an instructor...</option>';
 
         if (!instructors || instructors.length === 0) {
@@ -131,8 +130,8 @@
             select.appendChild(option);
         });
 
-        if (currentValue && !select.querySelector('option[value="' + currentValue + '"]')) {
-            state.selectedInstructorId = null;
+        if (state.selectedInstructorId && select.querySelector('option[value="' + state.selectedInstructorId + '"]')) {
+            select.value = state.selectedInstructorId;
         }
     }
 
@@ -150,7 +149,6 @@
         var groups = getDisciplineGroupsForInstructor(instructorId, week);
         var groupKeys = Object.keys(groups).sort();
 
-        var currentValue = select.value;
         select.innerHTML = '<option value="all">All Groups</option>';
         groupKeys.forEach(function(key) {
             var group = groups[key];
@@ -160,8 +158,8 @@
             select.appendChild(option);
         });
 
-        if (currentValue && groupKeys.indexOf(currentValue) !== -1) {
-            select.value = currentValue;
+        if (state.activeGroupFilter !== 'all' && groupKeys.indexOf(state.activeGroupFilter) !== -1) {
+            select.value = state.activeGroupFilter;
         } else {
             select.value = 'all';
             state.activeGroupFilter = 'all';
@@ -195,7 +193,16 @@
         return result;
     }
 
-    function renderInstructorCalendarData() {
+    function getInstructorTemplatesForWeek(instructorId, week) {
+        var templateKey = instructorId + '_' + week;
+        var data = window.data || {};
+        if (data.curriculum && data.curriculum.instructorTemplates && data.curriculum.instructorTemplates[templateKey]) {
+            return data.curriculum.instructorTemplates[templateKey];
+        }
+        return {};
+    }
+
+    function renderCalendarData() {
         var grid = document.getElementById('instructor-grid');
         if (!grid) return;
 
@@ -231,9 +238,39 @@
         var instructorId = state.selectedInstructorId;
         var activeFilter = state.activeGroupFilter;
 
+        // Build unified schedule map from all sources
         var scheduleMap = {};
-        var students = window.getStudents();
 
+        // 1. Get instructor templates (these define the class existence)
+        var templates = getInstructorTemplatesForWeek(instructorId, week);
+        for (var classKey in templates) {
+            var template = templates[classKey];
+            var parts = classKey.split('_');
+            var day = parseInt(parts[0]);
+            var hour = parseInt(parts[1]);
+
+            var mapKey = day + '_' + hour;
+            if (!scheduleMap[mapKey]) {
+                var discipline = window.getDiscipline(template.disciplineId);
+                if (discipline) {
+                    scheduleMap[mapKey] = {
+                        day: day,
+                        hour: hour,
+                        disciplineId: template.disciplineId,
+                        discipline: discipline,
+                        students: [],
+                        label: template.label || null,
+                        duration: template.duration || 1,
+                        groupLabel: template.groupLabel || null,
+                        isTemplate: true,
+                        assignedStudents: template.assignedStudents || []
+                    };
+                }
+            }
+        }
+
+        // 2. Get student schedules (these provide actual student assignments)
+        var students = window.getStudents();
         students.forEach(function(student) {
             var schedule = window.getStudentSchedule(student.id, week);
             for (var day in schedule) {
@@ -258,54 +295,65 @@
 
                     if (!isTeaching) continue;
 
-                    var key = day + '_' + hour;
-                    if (!scheduleMap[key]) {
-                        scheduleMap[key] = {
+                    var mapKey = day + '_' + hour;
+                    if (!scheduleMap[mapKey]) {
+                        var duration = 1;
+                        if (typeof window.getClassDuration === 'function') {
+                            duration = window.getClassDuration(student.id, week, parseInt(day), parseInt(hour)) || 1;
+                        }
+                        var label = null;
+                        if (typeof window.getClassLabel === 'function') {
+                            label = window.getClassLabel(student.id, week, parseInt(day), parseInt(hour));
+                        }
+                        var groupLabel = null;
+                        if (typeof window.getClassGroupLabel === 'function') {
+                            groupLabel = window.getClassGroupLabel(student.id, week, parseInt(day), parseInt(hour));
+                        }
+
+                        scheduleMap[mapKey] = {
                             day: parseInt(day),
                             hour: parseInt(hour),
                             disciplineId: disciplineId,
                             discipline: discipline,
                             students: [],
-                            label: null,
-                            duration: 1,
-                            groupLabel: null
+                            label: label,
+                            duration: duration,
+                            groupLabel: groupLabel,
+                            isTemplate: false,
+                            assignedStudents: []
                         };
                     }
 
-                    if (typeof window.getClassDuration === 'function') {
-                        var duration = window.getClassDuration(student.id, week, parseInt(day), parseInt(hour));
-                        if (duration && duration > scheduleMap[key].duration) {
-                            scheduleMap[key].duration = duration;
-                        }
-                    }
-
-                    if (typeof window.getClassLabel === 'function') {
-                        var label = window.getClassLabel(student.id, week, parseInt(day), parseInt(hour));
-                        if (label && !scheduleMap[key].label) {
-                            scheduleMap[key].label = label;
-                        }
-                    }
-
-                    if (typeof window.getClassGroupLabel === 'function') {
-                        var groupLabel = window.getClassGroupLabel(student.id, week, parseInt(day), parseInt(hour));
-                        if (groupLabel && !scheduleMap[key].groupLabel) {
-                            scheduleMap[key].groupLabel = groupLabel;
-                        }
-                    }
-
-                    var alreadyAdded = scheduleMap[key].students.some(function(s) {
+                    var alreadyAdded = scheduleMap[mapKey].students.some(function(s) {
                         return String(s.studentId) === String(student.id);
                     });
                     if (!alreadyAdded) {
-                        scheduleMap[key].students.push({
+                        scheduleMap[mapKey].students.push({
                             studentId: student.id,
                             studentName: window.getDisplayName(student),
-                            groupLabel: scheduleMap[key].groupLabel
+                            groupLabel: scheduleMap[mapKey].groupLabel
                         });
+                    }
+
+                    if (typeof window.getClassDuration === 'function') {
+                        var dur = window.getClassDuration(student.id, week, parseInt(day), parseInt(hour));
+                        if (dur && dur > scheduleMap[mapKey].duration) {
+                            scheduleMap[mapKey].duration = dur;
+                        }
                     }
                 }
             }
         });
+
+        // 3. Get blocked time
+        var blockedSlots = {};
+        var data = window.data || {};
+        if (data.curriculum && data.curriculum.instructorBlocks) {
+            var blockKey = instructorId + '_' + week;
+            if (data.curriculum.instructorBlocks[blockKey]) {
+                blockedSlots = data.curriculum.instructorBlocks[blockKey];
+            }
+        }
 
         var classArray = Object.values(scheduleMap).sort(function(a, b) {
             if (a.day !== b.day) return a.day - b.day;
@@ -353,6 +401,7 @@
                 timeLabel.textContent = hourDisplay + ':00 ' + ampm;
                 slot.appendChild(timeLabel);
 
+                var isBlocked = blockedSlots[day] && blockedSlots[day][hour];
                 var slotData = filteredClassArray.find(function(c) {
                     return c.day === day && c.hour === hour;
                 });
@@ -375,10 +424,11 @@
                     var labelDisplay = slotData.label ? ' [' + slotData.label + ']' : '';
                     var groupDisplay = slotData.groupLabel ? ' (G' + slotData.groupLabel + ')' : '';
                     var durationDisplay = duration > 1 ? ' (' + duration + 'h)' : '';
+                    var templateDisplay = slotData.isTemplate && studentCount === 0 ? ' (template)' : '';
 
                     var labelEl = document.createElement('span');
                     labelEl.className = 'slot-label';
-                    labelEl.textContent = slotData.discipline.name + labelDisplay + groupDisplay + durationDisplay + ' - ' + studentCount + ' students';
+                    labelEl.textContent = slotData.discipline.name + labelDisplay + groupDisplay + durationDisplay + templateDisplay + (studentCount > 0 ? ' - ' + studentCount + ' students' : '');
                     slot.appendChild(labelEl);
 
                     slot.addEventListener('click', function() {
@@ -389,6 +439,40 @@
                         e.preventDefault();
                         if (confirm('Remove this class?')) {
                             removeInstructorClass(slotData, day, hour);
+                        }
+                    });
+
+                } else if (isBlocked) {
+                    var blockDuration = isBlocked.duration || 1;
+
+                    for (var h = hour; h < hour + blockDuration && h <= 23; h++) {
+                        occupiedHours[h] = true;
+                    }
+
+                    slot.classList.add('occupied');
+                    slot.classList.add('blocked');
+                    slot.style.minHeight = (30 * blockDuration) + 'px';
+                    slot.style.height = (30 * blockDuration) + 'px';
+                    if (blockDuration > 1) {
+                        slot.classList.add('duration-' + blockDuration);
+                    }
+
+                    var blockLabel = isBlocked.label || 'Blocked Time';
+                    var blockGroup = isBlocked.groupLabel ? ' (G' + isBlocked.groupLabel + ')' : '';
+
+                    var labelEl = document.createElement('span');
+                    labelEl.className = 'slot-label';
+                    labelEl.textContent = '■ ' + blockLabel + blockGroup;
+                    slot.appendChild(labelEl);
+
+                    slot.addEventListener('click', function() {
+                        showBlockManagementModal(day, hour);
+                    });
+
+                    slot.addEventListener('contextmenu', function(e) {
+                        e.preventDefault();
+                        if (confirm('Remove this blocked time?')) {
+                            removeBlockedTime(day, hour);
                         }
                     });
 
@@ -526,6 +610,7 @@
                     <div class="detail-row"><span class="label">Duration:</span> <span><strong>${duration} hour${duration > 1 ? 's' : ''}</strong></span></div>
                     <div class="detail-row"><span class="label">Group Label:</span> <span><strong>${groupLabel || 'None'}</strong></span></div>
                     <div class="detail-row"><span class="label">Assigned Students:</span> <span>${assignedStudentIds.length > 0 ? assignedStudentIds.map(function(id) { var s = window.getCharacterById(id); return s ? window.getDisplayName(s) : 'Unknown'; }).join(', ') : 'None'}</span></div>
+                    ${slotData.isTemplate ? '<div class="detail-row"><span class="label">Status:</span> <span style="color:var(--warning);">Template Class</span></div>' : ''}
 
                     ${groupLabels.length > 0 ? `
                     <div style="margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border);">
@@ -721,7 +806,7 @@
                 if (typeof window.saveData === 'function') {
                     window.saveData().then(function() {
                         modal.remove();
-                        renderInstructorCalendarData();
+                        renderCalendarData();
                         populateGroupFilter();
                         if (typeof window.renderStudentSchedule === 'function') {
                             window.renderStudentSchedule();
@@ -732,7 +817,7 @@
                     });
                 } else {
                     modal.remove();
-                    renderInstructorCalendarData();
+                    renderCalendarData();
                 }
             });
         }
@@ -822,7 +907,7 @@
             if (typeof window.saveData === 'function') {
                 window.saveData().then(function() {
                     modal.remove();
-                    renderInstructorCalendarData();
+                    renderCalendarData();
                     populateGroupFilter();
                     if (typeof window.renderStudentSchedule === 'function') {
                         window.renderStudentSchedule();
@@ -833,7 +918,7 @@
                 });
             } else {
                 modal.remove();
-                renderInstructorCalendarData();
+                renderCalendarData();
             }
         };
 
@@ -887,17 +972,17 @@
 
         if (typeof window.saveData === 'function') {
             window.saveData().then(function() {
-                renderInstructorCalendarData();
+                renderCalendarData();
                 populateGroupFilter();
                 if (typeof window.renderStudentSchedule === 'function') {
                     window.renderStudentSchedule();
                 }
                 alert('Class removed!');
             }).catch(function(err) {
-                renderInstructorCalendarData();
+                renderCalendarData();
             });
         } else {
-            renderInstructorCalendarData();
+            renderCalendarData();
         }
     }
 
@@ -1017,14 +1102,14 @@
 
             if (typeof window.saveData === 'function') {
                 window.saveData().then(function() {
-                    renderInstructorCalendarData();
+                    renderCalendarData();
                     populateGroupFilter();
                     alert('Class template added! Click on the slot to assign students.');
                 }).catch(function(err) {
-                    renderInstructorCalendarData();
+                    renderCalendarData();
                 });
             } else {
-                renderInstructorCalendarData();
+                renderCalendarData();
             }
         };
     }
@@ -1243,7 +1328,7 @@
 
             if (typeof window.saveData === 'function') {
                 window.saveData().then(function() {
-                    renderInstructorCalendarData();
+                    renderCalendarData();
                     populateGroupFilter();
                     if (typeof window.renderStudentSchedule === 'function') {
                         window.renderStudentSchedule();
@@ -1256,10 +1341,10 @@
                     }
                     alert(msg);
                 }).catch(function(err) {
-                    renderInstructorCalendarData();
+                    renderCalendarData();
                 });
             } else {
-                renderInstructorCalendarData();
+                renderCalendarData();
             }
         };
     }
@@ -1343,13 +1428,13 @@
 
         if (typeof window.saveData === 'function') {
             window.saveData().then(function() {
-                renderInstructorCalendarData();
+                renderCalendarData();
                 populateGroupFilter();
             }).catch(function(err) {
-                renderInstructorCalendarData();
+                renderCalendarData();
             });
         } else {
-            renderInstructorCalendarData();
+            renderCalendarData();
         }
     }
 
@@ -1358,7 +1443,7 @@
         if (select) {
             select.addEventListener('change', function() {
                 state.selectedInstructorId = this.value;
-                renderInstructorCalendarData();
+                renderCalendarData();
                 renderGroupList();
             });
         }
@@ -1368,7 +1453,7 @@
             prevBtn.addEventListener('click', function() {
                 if (state.currentWeek > 1) {
                     state.currentWeek--;
-                    renderInstructorCalendarData();
+                    renderCalendarData();
                     renderGroupList();
                 }
             });
@@ -1379,7 +1464,7 @@
             nextBtn.addEventListener('click', function() {
                 if (state.currentWeek < 52) {
                     state.currentWeek++;
-                    renderInstructorCalendarData();
+                    renderCalendarData();
                     renderGroupList();
                 }
             });
@@ -1393,7 +1478,7 @@
                     var w = parseInt(week);
                     if (!isNaN(w) && w >= 1 && w <= 52) {
                         state.currentWeek = w;
-                        renderInstructorCalendarData();
+                        renderCalendarData();
                         renderGroupList();
                     } else {
                         alert('Please enter a valid week (1-52).');
@@ -1428,51 +1513,29 @@
         if (filterSelect) {
             filterSelect.addEventListener('change', function() {
                 state.activeGroupFilter = this.value;
-                renderInstructorCalendarData();
+                renderCalendarData();
             });
         }
     }
 
     // ============================================================
-    // REGISTER WITH TABMANAGER
+    // REGISTER WITH TABMANAGER - SINGLE ENTRY POINT
     // ============================================================
 
     if (typeof window.TabManager !== 'undefined') {
         window.TabManager.register('instructor-calendar', renderInstructorCalendar);
     }
 
-    document.addEventListener('dataReady', function() {
-        var container = document.getElementById('instructor-calendar-content');
-        if (container && container.style.display !== 'none') {
-            renderInstructorCalendar(container);
-        }
-    });
-
-    document.addEventListener('tabChanged', function(e) {
-        if (e.detail && e.detail.tab === 'instructor-calendar') {
-            var container = document.getElementById('instructor-calendar-content');
-            if (container) {
-                renderInstructorCalendar(container);
-            }
-        }
-    });
-
-    if (window.data) {
-        setTimeout(function() {
-            var container = document.getElementById('instructor-calendar-content');
-            if (container && container.style.display !== 'none') {
-                renderInstructorCalendar(container);
-            }
-        }, 100);
-    }
+    // Remove duplicate listeners - only TabManager handles rendering
 
     window.renderInstructorCalendar = renderInstructorCalendar;
-    window.renderInstructorCalendarData = renderInstructorCalendarData;
+    window.renderCalendarData = renderCalendarData;
     window.renderGroupList = renderGroupList;
     window.toggleGroup = toggleGroup;
     window.populateInstructorSelector = populateInstructorSelector;
     window.populateGroupFilter = populateGroupFilter;
     window.getDisciplineGroupsForInstructor = getDisciplineGroupsForInstructor;
+    window.getInstructorTemplatesForWeek = getInstructorTemplatesForWeek;
     window.initInstructorCalendarEvents = initInstructorCalendarEvents;
     window.instructorCalendarState = state;
 
