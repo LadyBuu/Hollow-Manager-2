@@ -59,7 +59,6 @@
         
         setTimeout(function() {
             initCurriculumTabs();
-            renderTabContent('disciplines');
             initCurriculumEvents();
         }, 50);
     }
@@ -78,7 +77,7 @@
                     <button class="tab-btn" data-tab="classes">Classes</button>
                 </div>
                 <div class="tab-content" id="curriculum-tab-content">
-                    <div id="tab-disciplines" class="tab-panel">
+                    <div id="tab-disciplines" class="tab-panel active">
                         <div id="disciplines-content"></div>
                     </div>
                     <div id="tab-groups" class="tab-panel">
@@ -111,6 +110,39 @@
         var tabContainer = document.getElementById('curriculum-tab-nav');
         if (!tabContainer) return;
 
+        var panels = document.querySelectorAll('#curriculum-tab-content .tab-panel');
+
+        // Find the active tab button
+        var activeBtn = tabContainer.querySelector('.tab-btn.active');
+        if (!activeBtn) {
+            activeBtn = tabContainer.querySelector('.tab-btn');
+        }
+        if (!activeBtn) return;
+
+        var activeTabName = activeBtn.dataset.tab;
+        currentTab = activeTabName;
+
+        // Hide all panels, then show the active one
+        panels.forEach(function(panel) {
+            panel.style.display = 'none';
+            panel.classList.remove('active');
+        });
+
+        var activePanel = document.getElementById('tab-' + activeTabName);
+        if (activePanel) {
+            activePanel.style.display = 'block';
+            activePanel.classList.add('active');
+        }
+
+        // Ensure the active tab button is marked correctly
+        tabContainer.querySelectorAll('.tab-btn').forEach(function(btn) {
+            btn.classList.toggle('active', btn === activeBtn);
+        });
+
+        // Render the active tab content
+        renderTabContent(activeTabName);
+
+        // Tab switching
         tabContainer.addEventListener('click', function(e) {
             var tab = e.target.closest('.tab-btn');
             if (!tab) return;
@@ -124,14 +156,12 @@
             currentTab = tabName;
             
             tabContainer.querySelectorAll('.tab-btn').forEach(function(t) {
-                t.classList.remove('active');
+                t.classList.toggle('active', t === tab);
             });
-            tab.classList.add('active');
             
-            var panels = document.querySelectorAll('#curriculum-tab-content .tab-panel');
-            panels.forEach(function(p) {
-                p.style.display = 'none';
-                p.classList.remove('active');
+            panels.forEach(function(panel) {
+                panel.style.display = 'none';
+                panel.classList.remove('active');
             });
             
             var activePanel = document.getElementById('tab-' + tabName);
@@ -145,7 +175,6 @@
     }
 
     function renderTabContent(tabName) {
-        // Log what we're trying to render
         console.log('[Curriculum] Rendering tab:', tabName);
         
         try {
@@ -213,9 +242,14 @@
                 return;
             }
 
-            // Call the renderer
             renderer(content);
+
             console.log('[Curriculum] Successfully rendered:', tabName);
+            console.log('[Curriculum] Content HTML length:', content.innerHTML.length);
+            console.log('[Curriculum] Content children:', content.children.length);
+            if (content.innerHTML.length > 0) {
+                console.log('[Curriculum] Content HTML preview:', content.innerHTML.substring(0, 500));
+            }
 
         } catch (e) {
             console.error('[Curriculum] Error rendering tab "' + tabName + '":', e);
