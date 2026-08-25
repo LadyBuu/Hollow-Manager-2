@@ -399,4 +399,4 @@ window.addEventListener('hashchange', function() {
     }
 });
 
-console.log('tab-manager.js loaded');
+
