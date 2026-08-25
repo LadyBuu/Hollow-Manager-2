@@ -7,27 +7,34 @@ var DB_NAME = 'HollowBladesDB';
 var DB_VERSION = 11;
 var STORE_NAME = 'appData';
 
-var db = null;
-var data = null;
-var dbOpenPromise = null;
-var isLoading = false;
-var isSaving = false;
+// INTERNAL: The actual IndexedDB connection (private)
+var _indexedDB = null;
+// INTERNAL: The application data cache
+var _data = null;
+// INTERNAL: Promise for database open operation
+var _dbOpenPromise = null;
+// INTERNAL: Loading state flags
+var _isLoading = false;
+var _isSaving = false;
 var _dataLoadedDispatched = false;
+// INTERNAL: Database initialization promise
 var _dbInitPromise = null;
+// INTERNAL: Save timeout for debouncing
+var _saveTimeout = null;
 
 // ============================================================
 // DATABASE OPENING - WITH VISIBLE ERRORS
 // ============================================================
 
 function openDatabase() {
-    if (db) {
-        return Promise.resolve(db);
+    if (_indexedDB) {
+        return Promise.resolve(_indexedDB);
     }
-    if (dbOpenPromise) {
-        return dbOpenPromise;
+    if (_dbOpenPromise) {
+        return _dbOpenPromise;
     }
 
-    dbOpenPromise = new Promise(function(resolve) {
+    _dbOpenPromise = new Promise(function(resolve) {
         try {
             var request = indexedDB.open(DB_NAME, DB_VERSION);
             
@@ -41,15 +48,15 @@ function openDatabase() {
                 console.error('Error:', error);
                 console.error('=================================');
                 
-                dbOpenPromise = null;
+                _dbOpenPromise = null;
                 resolve(null);
             };
             
             request.onsuccess = function(event) {
-                db = event.target.result;
-                dbOpenPromise = null;
-                console.log('IndexedDB opened successfully');
-                resolve(db);
+                _indexedDB = event.target.result;
+                _dbOpenPromise = null;
+                console.log('IndexedDB opened successfully:', _indexedDB.name, 'v' + _indexedDB.version);
+                resolve(_indexedDB);
             };
             
             request.onupgradeneeded = function(event) {
@@ -64,12 +71,12 @@ function openDatabase() {
             console.error('INDEXEDDB EXCEPTION');
             console.error('Error:', err);
             console.error('=================================');
-            dbOpenPromise = null;
+            _dbOpenPromise = null;
             resolve(null);
         }
     });
 
-    return dbOpenPromise;
+    return _dbOpenPromise;
 }
 
 function ensureDatabaseReady() {
@@ -79,9 +86,9 @@ function ensureDatabaseReady() {
     
     _dbInitPromise = openDatabase().then(function(result) {
         if (result) {
-            db = result;
+            _indexedDB = result;
         }
-        return db;
+        return _indexedDB;
     });
     
     return _dbInitPromise;
@@ -349,92 +356,92 @@ function createSafeCopy(data) {
 // ============================================================
 
 function loadData() {
-    if (isLoading) {
+    if (_isLoading) {
         return new Promise(function(resolve) {
             var checkInterval = setInterval(function() {
-                if (!isLoading) {
+                if (!_isLoading) {
                     clearInterval(checkInterval);
-                    resolve(window.data || data || getEmptyData());
+                    resolve(window.data || _data || getEmptyData());
                 }
             }, 50);
         });
     }
     
-    isLoading = true;
+    _isLoading = true;
     
     return new Promise(function(resolve) {
         ensureDatabaseReady().then(function(database) {
             if (!database) {
                 console.warn('Database not available, using empty data');
-                data = getEmptyData();
-                window.data = data;
-                isLoading = false;
-                resolve(data);
+                _data = getEmptyData();
+                window.data = _data;
+                _isLoading = false;
+                resolve(_data);
                 return;
             }
             
             doLoadData(resolve);
         }).catch(function(err) {
             console.error('Failed to ensure database:', err);
-            data = getEmptyData();
-            window.data = data;
-            isLoading = false;
-            resolve(data);
+            _data = getEmptyData();
+            window.data = _data;
+            _isLoading = false;
+            resolve(_data);
         });
     });
 }
 
 function doLoadData(resolve) {
-    if (!db || typeof db.transaction !== 'function') {
+    if (!_indexedDB || typeof _indexedDB.transaction !== 'function') {
         console.warn('Database not available, using empty data');
-        data = getEmptyData();
-        window.data = data;
-        isLoading = false;
-        resolve(data);
+        _data = getEmptyData();
+        window.data = _data;
+        _isLoading = false;
+        resolve(_data);
         return;
     }
 
     try {
-        var transaction = db.transaction([STORE_NAME], 'readonly');
+        var transaction = _indexedDB.transaction([STORE_NAME], 'readonly');
         var store = transaction.objectStore(STORE_NAME);
         var request = store.get('mainData');
         
         request.onsuccess = function() {
-            isLoading = false;
+            _isLoading = false;
             if (request.result && request.result.data) {
-                data = request.result.data;
-                ensureDataStructure(data);
-                migrateData(data);
-                window.data = data;
+                _data = request.result.data;
+                ensureDataStructure(_data);
+                migrateData(_data);
+                window.data = _data;
                 console.log('Data loaded from IndexedDB');
-                resolve(data);
+                resolve(_data);
             } else {
                 console.log('No data in IndexedDB, using empty data');
-                data = getEmptyData();
-                window.data = data;
-                resolve(data);
+                _data = getEmptyData();
+                window.data = _data;
+                resolve(_data);
             }
         };
         request.onerror = function(event) {
-            isLoading = false;
+            _isLoading = false;
             console.error('IndexedDB load error:', event.target.error);
-            data = getEmptyData();
-            window.data = data;
-            resolve(data);
+            _data = getEmptyData();
+            window.data = _data;
+            resolve(_data);
         };
         transaction.onerror = function(event) {
-            isLoading = false;
+            _isLoading = false;
             console.error('Transaction error:', event.target.error);
-            data = getEmptyData();
-            window.data = data;
-            resolve(data);
+            _data = getEmptyData();
+            window.data = _data;
+            resolve(_data);
         };
     } catch (err) {
-        isLoading = false;
+        _isLoading = false;
         console.error('Error in doLoadData:', err);
-        data = getEmptyData();
-        window.data = data;
-        resolve(data);
+        _data = getEmptyData();
+        window.data = _data;
+        resolve(_data);
     }
 }
 
@@ -444,17 +451,17 @@ function doLoadData(resolve) {
 
 function saveData() {
     // If already saving, return the existing promise
-    if (isSaving) {
+    if (_isSaving) {
         return Promise.resolve();
     }
     
-    isSaving = true;
+    _isSaving = true;
     
     return new Promise(function(resolve) {
         ensureDatabaseReady().then(function(database) {
             if (!database) {
                 console.warn('Database not available, skipping save');
-                isSaving = false;
+                _isSaving = false;
                 resolve();
                 return;
             }
@@ -462,27 +469,27 @@ function saveData() {
             executeSave(resolve);
         }).catch(function(err) {
             console.error('Failed to ensure database for save:', err);
-            isSaving = false;
+            _isSaving = false;
             resolve();
         });
     });
 }
 
 function executeSave(resolve) {
-    if (!db || typeof db.transaction !== 'function') {
+    if (!_indexedDB || typeof _indexedDB.transaction !== 'function') {
         console.warn('Database not available, skipping save');
-        isSaving = false;
+        _isSaving = false;
         resolve();
         return;
     }
     
     try {
-        var sourceData = window.data || data;
+        var sourceData = window.data || _data;
         
         if (!sourceData) {
             sourceData = getEmptyData();
             window.data = sourceData;
-            data = sourceData;
+            _data = sourceData;
         }
         
         ensureDataStructure(sourceData);
@@ -490,7 +497,7 @@ function executeSave(resolve) {
         // Create a clean copy - this will throw if structuredClone fails
         var safeData = createSafeCopy(sourceData);
         
-        var transaction = db.transaction([STORE_NAME], 'readwrite');
+        var transaction = _indexedDB.transaction([STORE_NAME], 'readwrite');
         var store = transaction.objectStore(STORE_NAME);
         var record = {
             id: 'mainData',
@@ -500,25 +507,25 @@ function executeSave(resolve) {
         var request = store.put(record);
         
         request.onsuccess = function() {
-            isSaving = false;
+            _isSaving = false;
             console.log('Data saved to IndexedDB');
             resolve();
         };
         
         request.onerror = function(event) {
-            isSaving = false;
+            _isSaving = false;
             console.error('IndexedDB save error:', event.target.error);
             resolve();
         };
         
         transaction.onerror = function(event) {
-            isSaving = false;
+            _isSaving = false;
             console.error('Transaction error:', event.target.error);
             resolve();
         };
         
     } catch (err) {
-        isSaving = false;
+        _isSaving = false;
         console.error('=================================');
         console.error('SAVE ERROR');
         console.error('Error:', err);
@@ -571,6 +578,7 @@ function _dispatchDataReady(data) {
 // EXPOSE GLOBALS
 // ============================================================
 
+// Public API - named window.db to match existing code expectations
 window.db = {
     openDatabase: openDatabase,
     ensureDatabaseReady: ensureDatabaseReady,
@@ -582,6 +590,7 @@ window.db = {
     createSafeCopy: createSafeCopy
 };
 
+// Also expose individual functions for backward compatibility
 window.loadData = loadData;
 window.saveData = saveData;
 window.getEmptyData = getEmptyData;
@@ -604,3 +613,22 @@ ensureDatabaseReady().then(function(database) {
 setTimeout(autoLoadData, 50);
 
 console.log('database.js loaded');
+
+// ============================================================
+// DEBUG HELPERS (remove in production)
+// ============================================================
+
+console.log('=== DATABASE DEBUG ===');
+console.log('window.db API:', window.db);
+console.log('Internal connection (_indexedDB):', _indexedDB);
+
+// Check if we have a valid connection
+setTimeout(function() {
+    console.log('=== CONNECTION CHECK ===');
+    console.log('_indexedDB exists:', !!_indexedDB);
+    if (_indexedDB) {
+        console.log('_indexedDB.transaction type:', typeof _indexedDB.transaction);
+        console.log('_indexedDB.name:', _indexedDB.name);
+        console.log('_indexedDB.version:', _indexedDB.version);
+    }
+}, 100);
