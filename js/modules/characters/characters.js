@@ -274,79 +274,95 @@
                         <!-- TAB: Stats -->
                         <div id="char-tab-stats" class="char-tab-panel" style="display:none;">
                             <div class="stat-input-group">
-                                <div class="form-group"><label>STR</label><input type="number" id="char-str" min="1" max="30" value="10" /></div>
-                                <div class="form-group"><label>DEX</label><input type="number" id="char-dex" min="1" max="30" value="10" /></div>
-                                <div class="form-group"><label>CON</label><input type="number" id="char-con" min="1" max="30" value="10" /></div>
-                                <div class="form-group"><label>INT</label><input type="number" id="char-int" min="1" max="30" value="10" /></div>
-                                <div class="form-group"><label>WIS</label><input type="number" id="char-wis" min="1" max="30" value="10" /></div>
-                                <div class="form-group"><label>CHA</label><input type="number" id="char-cha" min="1" max="30" value="10" /></div>
+                                <div class="form-group"><label>STR</label><input type="number" id="char-str" min="1" max="30" value="10" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label>DEX</label><input type="number" id="char-dex" min="1" max="30" value="10" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label>CON</label><input type="number" id="char-con" min="1" max="30" value="10" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label>INT</label><input type="number" id="char-int" min="1" max="30" value="10" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label>WIS</label><input type="number" id="char-wis" min="1" max="30" value="10" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label>CHA</label><input type="number" id="char-cha" min="1" max="30" value="10" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
                             </div>
-                            <div class="stat-actions">
-                                <label class="stat-label">Class:</label>
-                                <span id="suggested-class" class="suggested-class empty">—</span>
-                                <select id="manual-class-select">
-                                    <option value="">Auto-suggest</option>
-                                </select>
-                                <button type="button" id="random-stats-btn" class="small secondary">Random</button>
-                                <button type="button" id="recalculate-class-btn" class="small secondary">Recalc</button>
+                            <div class="stat-actions" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;border:1px solid var(--border-soft);">
+                                <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:1;">
+                                    <label class="stat-label" style="font-size:0.7rem;color:var(--text-dim);">Class:</label>
+                                    <span id="suggested-class" class="suggested-class empty">—</span>
+                                    <select id="manual-class-select" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;">
+                                        <option value="">Auto-suggest</option>
+                                    </select>
+                                    <button type="button" id="recalculate-class-btn" class="small secondary" style="font-size:0.6rem;padding:2px 8px;">Recalc</button>
+                                    <button type="button" id="random-stats-btn" class="small secondary" style="font-size:0.6rem;padding:2px 8px;">Random</button>
+                                </div>
                             </div>
-                            <div style="margin-top:8px;font-size:0.7rem;color:var(--text-dim);">
-                                <p>Classes represent character archetypes based on their stat distribution.</p>
-                                <p>• <strong style="color:var(--accent);">Primary stats</strong> define the core of the class</p>
-                                <p>• <strong style="color:var(--warning);">Secondary stats</strong> support the class</p>
-                                <p>• Classes are auto-suggested but can be manually overridden</p>
+                            <div id="class-description-display" style="margin-top:6px;padding:6px 10px;background:var(--panel-alt);border-radius:4px;font-size:0.7rem;color:var(--text-dim);border-left:3px solid var(--accent);">
+                                Select a class to see its description here.
                             </div>
-                            <div class="magic-grid" style="margin-top:12px;">
-                                <div class="magic-category-label elemental">Elemental <button type="button" id="random-elemental-btn" class="small secondary">Random</button></div>
-                                <div class="magic-item"><label>Earth</label><input type="number" id="magic-earth" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Water</label><input type="number" id="magic-water" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Fire</label><input type="number" id="magic-fire" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Air</label><input type="number" id="magic-air" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Metal</label><input type="number" id="magic-metal" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Wood</label><input type="number" id="magic-wood" min="0" max="10" value="0" /></div>
-                                <div class="magic-category-label body">Body <button type="button" id="random-body-btn" class="small secondary">Random</button></div>
-                                <div class="magic-item"><label>Blood</label><input type="number" id="magic-blood" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Bone</label><input type="number" id="magic-bone" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Mind</label><input type="number" id="magic-mind" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Morphic</label><input type="number" id="magic-morphic" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Life</label><input type="number" id="magic-life" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Death</label><input type="number" id="magic-death" min="0" max="10" value="0" /></div>
-                                <div class="magic-category-label aether">Aether <button type="button" id="random-aether-btn" class="small secondary">Random</button></div>
-                                <div class="magic-item"><label>Space</label><input type="number" id="magic-space" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Time</label><input type="number" id="magic-time" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Dimension</label><input type="number" id="magic-dimension" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Void</label><input type="number" id="magic-void" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Reality</label><input type="number" id="magic-reality" min="0" max="10" value="0" /></div>
-                                <div class="magic-item"><label>Transference</label><input type="number" id="magic-transference" min="0" max="10" value="0" /></div>
+
+                            <!-- Magic Stats - Same styling as physical stats -->
+                            <div class="magic-stats-grid" style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-top:12px;">
+                                <!-- Elemental Category -->
+                                <div class="form-group" style="grid-column:1/-1;margin:6px 0 2px 0;display:flex;align-items:center;gap:8px;">
+                                    <label style="color:var(--accent);font-weight:600;font-size:0.7rem;">Elemental</label>
+                                    <button type="button" id="random-elemental-btn" class="small secondary" style="font-size:0.5rem;padding:1px 6px;">Random</button>
+                                </div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Earth</label><input type="number" id="magic-earth" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Water</label><input type="number" id="magic-water" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Fire</label><input type="number" id="magic-fire" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Air</label><input type="number" id="magic-air" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Metal</label><input type="number" id="magic-metal" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Wood</label><input type="number" id="magic-wood" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                
+                                <!-- Body Category -->
+                                <div class="form-group" style="grid-column:1/-1;margin:6px 0 2px 0;display:flex;align-items:center;gap:8px;">
+                                    <label style="color:var(--danger);font-weight:600;font-size:0.7rem;">Body</label>
+                                    <button type="button" id="random-body-btn" class="small secondary" style="font-size:0.5rem;padding:1px 6px;">Random</button>
+                                </div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Blood</label><input type="number" id="magic-blood" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Bone</label><input type="number" id="magic-bone" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Mind</label><input type="number" id="magic-mind" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Morphic</label><input type="number" id="magic-morphic" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Life</label><input type="number" id="magic-life" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Death</label><input type="number" id="magic-death" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                
+                                <!-- Aether Category -->
+                                <div class="form-group" style="grid-column:1/-1;margin:6px 0 2px 0;display:flex;align-items:center;gap:8px;">
+                                    <label style="color:var(--info);font-weight:600;font-size:0.7rem;">Aether</label>
+                                    <button type="button" id="random-aether-btn" class="small secondary" style="font-size:0.5rem;padding:1px 6px;">Random</button>
+                                </div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Space</label><input type="number" id="magic-space" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Time</label><input type="number" id="magic-time" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Dimension</label><input type="number" id="magic-dimension" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Void</label><input type="number" id="magic-void" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Reality</label><input type="number" id="magic-reality" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
+                                <div class="form-group"><label style="font-size:0.55rem;text-align:center;display:block;">Transference</label><input type="number" id="magic-transference" min="0" max="10" value="0" style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" /></div>
                             </div>
-                            <div class="magic-actions">
-                                <label class="stat-label">Magic Class:</label>
+
+                            <div class="magic-actions" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;border:1px solid var(--border-soft);">
+                                <label class="stat-label" style="font-size:0.7rem;color:var(--text-dim);">Magic Class:</label>
                                 <span id="suggested-magic-class" class="suggested-class empty">—</span>
-                                <select id="manual-magic-class-select">
+                                <select id="manual-magic-class-select" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;">
                                     <option value="">Auto-suggest</option>
                                 </select>
-                                <button type="button" id="recalculate-magic-class-btn" class="small secondary">Recalc</button>
+                                <button type="button" id="recalculate-magic-class-btn" class="small secondary" style="font-size:0.6rem;padding:2px 8px;">Recalc</button>
                             </div>
-                            <div class="magic-power-display">
+                            <div class="magic-power-display" style="margin-top:6px;font-size:0.7rem;color:var(--text-dim);">
                                 Magic Power: <span id="magic-power-display-text">○○○○○ (0/180)</span>
                             </div>
-                            <div class="moves-grid" style="margin-top:12px;">
-                                <div class="moves-column">
-                                    <label class="move-label physical">Physical Moves</label>
-                                    <div id="physical-moves-list" class="moves-list"><p class="empty-state">None</p></div>
-                                    <div class="move-input-group">
-                                        <input type="text" id="physical-move-name" placeholder="Move name" />
-                                        <input type="text" id="physical-move-desc" placeholder="Description" />
-                                        <button type="button" id="add-physical-move-btn" class="small primary">+ Add</button>
+                            <div class="moves-grid" style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                                <div class="moves-column" style="background:var(--panel-alt);padding:6px;border-radius:6px;border:1px solid var(--border-soft);">
+                                    <label class="move-label physical" style="font-size:0.65rem;font-weight:600;color:var(--accent);">Physical Moves</label>
+                                    <div id="physical-moves-list" class="moves-list" style="margin-top:2px;max-height:70px;overflow-y:auto;"><p class="empty-state" style="padding:4px;font-size:0.7rem;">None</p></div>
+                                    <div class="move-input-group" style="margin-top:4px;">
+                                        <input type="text" id="physical-move-name" placeholder="Move name" style="width:100%;padding:2px 4px;font-size:0.6rem;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;margin-bottom:2px;" />
+                                        <input type="text" id="physical-move-desc" placeholder="Description" style="width:100%;padding:2px 4px;font-size:0.6rem;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;margin-bottom:2px;" />
+                                        <button type="button" id="add-physical-move-btn" class="small primary" style="font-size:0.6rem;padding:2px 8px;">+ Add</button>
                                     </div>
                                 </div>
-                                <div class="moves-column">
-                                    <label class="move-label magical">Magical Moves</label>
-                                    <div id="magical-moves-list" class="moves-list"><p class="empty-state">None</p></div>
-                                    <div class="move-input-group">
-                                        <input type="text" id="magical-move-name" placeholder="Move name" />
-                                        <input type="text" id="magical-move-desc" placeholder="Description" />
-                                        <button type="button" id="add-magical-move-btn" class="small primary">+ Add</button>
+                                <div class="moves-column" style="background:var(--panel-alt);padding:6px;border-radius:6px;border:1px solid var(--border-soft);">
+                                    <label class="move-label magical" style="font-size:0.65rem;font-weight:600;color:var(--info);">Magical Moves</label>
+                                    <div id="magical-moves-list" class="moves-list" style="margin-top:2px;max-height:70px;overflow-y:auto;"><p class="empty-state" style="padding:4px;font-size:0.7rem;">None</p></div>
+                                    <div class="move-input-group" style="margin-top:4px;">
+                                        <input type="text" id="magical-move-name" placeholder="Move name" style="width:100%;padding:2px 4px;font-size:0.6rem;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;margin-bottom:2px;" />
+                                        <input type="text" id="magical-move-desc" placeholder="Description" style="width:100%;padding:2px 4px;font-size:0.6rem;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;margin-bottom:2px;" />
+                                        <button type="button" id="add-magical-move-btn" class="small primary" style="font-size:0.6rem;padding:2px 8px;">+ Add</button>
                                     </div>
                                 </div>
                             </div>
@@ -1622,16 +1638,28 @@
             });
             classSelect.addEventListener('change', function() {
                 var display = document.getElementById('suggested-class');
+                var descDisplay = document.getElementById('class-description-display');
+                
                 if (this.value) {
-                    var selected = classes.find(function(c) { return c.id === this.value; });
+                    var selected = classes.find(function(c) { return c.id === this.value; }.bind(this));
                     if (selected) {
                         display.textContent = selected.icon + ' ' + selected.label;
                         display.style.color = 'var(--accent)';
                         display.style.background = 'var(--accent-soft)';
                         display.style.borderColor = 'var(--accent)';
+                        if (descDisplay) {
+                            descDisplay.textContent = selected.description || 'No description available.';
+                            descDisplay.style.borderLeftColor = 'var(--accent)';
+                            descDisplay.style.color = 'var(--text)';
+                        }
                     }
                 } else {
                     updateClassSuggestion();
+                    if (descDisplay) {
+                        descDisplay.textContent = 'Select a class to see its description here.';
+                        descDisplay.style.borderLeftColor = 'var(--accent)';
+                        descDisplay.style.color = 'var(--text-dim)';
+                    }
                 }
             });
         }
@@ -1680,6 +1708,7 @@
         var stats = { str: str, dex: dex, con: con, int: int, wis: wis, cha: cha };
         var suggested = window.suggestClass(stats);
         var display = document.getElementById('suggested-class');
+        var descDisplay = document.getElementById('class-description-display');
 
         if (display) {
             if (suggested) {
@@ -1687,11 +1716,21 @@
                 display.style.color = 'var(--accent)';
                 display.style.background = 'var(--accent-soft)';
                 display.style.borderColor = 'var(--accent)';
+                if (descDisplay && suggested.description) {
+                    descDisplay.textContent = suggested.description;
+                    descDisplay.style.borderLeftColor = 'var(--accent)';
+                    descDisplay.style.color = 'var(--text)';
+                }
             } else {
                 display.textContent = '—';
                 display.style.color = 'var(--text-dim)';
                 display.style.background = 'transparent';
                 display.style.borderColor = 'var(--border)';
+                if (descDisplay) {
+                    descDisplay.textContent = 'No class suggested based on current stats.';
+                    descDisplay.style.borderLeftColor = 'var(--border)';
+                    descDisplay.style.color = 'var(--text-dim)';
+                }
             }
         }
     }
