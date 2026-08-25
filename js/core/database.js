@@ -4,7 +4,7 @@
  */
 
 var DB_NAME = 'HollowBladesDB';
-var DB_VERSION = 11;
+var DB_VERSION = 12; // Increment version to force upgrade
 var STORE_NAME = 'appData';
 
 // INTERNAL: The actual IndexedDB connection (private)
@@ -19,11 +19,9 @@ var _isSaving = false;
 var _dataLoadedDispatched = false;
 // INTERNAL: Database initialization promise
 var _dbInitPromise = null;
-// INTERNAL: Save timeout for debouncing
-var _saveTimeout = null;
 
 // ============================================================
-// DATABASE OPENING - WITH VISIBLE ERRORS
+// DATABASE OPENING - WITH STORE CREATION
 // ============================================================
 
 function openDatabase() {
@@ -56,14 +54,46 @@ function openDatabase() {
                 _indexedDB = event.target.result;
                 _dbOpenPromise = null;
                 console.log('IndexedDB opened successfully:', _indexedDB.name, 'v' + _indexedDB.version);
+                
+                // Verify the store exists
+                if (!_indexedDB.objectStoreNames.contains(STORE_NAME)) {
+                    console.warn('Store "' + STORE_NAME + '" not found! Closing and reopening with upgrade...');
+                    _indexedDB.close();
+                    _indexedDB = null;
+                    _dbOpenPromise = null;
+                    // Reopen with a higher version to trigger upgrade
+                    var upgradeRequest = indexedDB.open(DB_NAME, DB_VERSION + 1);
+                    upgradeRequest.onupgradeneeded = function(upgradeEvent) {
+                        var db = upgradeEvent.target.result;
+                        if (!db.objectStoreNames.contains(STORE_NAME)) {
+                            db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                            console.log('Store "' + STORE_NAME + '" created during upgrade');
+                        }
+                    };
+                    upgradeRequest.onsuccess = function(upgradeEvent) {
+                        _indexedDB = upgradeEvent.target.result;
+                        _dbOpenPromise = null;
+                        console.log('IndexedDB reopened successfully with store');
+                        resolve(_indexedDB);
+                    };
+                    upgradeRequest.onerror = function(upgradeEvent) {
+                        console.error('Failed to reopen database with upgrade:', upgradeEvent.target.error);
+                        resolve(null);
+                    };
+                    return;
+                }
+                
                 resolve(_indexedDB);
             };
             
             request.onupgradeneeded = function(event) {
                 var database = event.target.result;
+                console.log('Upgrade needed - creating/updating stores...');
                 if (!database.objectStoreNames.contains(STORE_NAME)) {
                     database.createObjectStore(STORE_NAME, { keyPath: 'id' });
-                    console.log('IndexedDB store created');
+                    console.log('IndexedDB store "' + STORE_NAME + '" created');
+                } else {
+                    console.log('Store "' + STORE_NAME + '" already exists');
                 }
             };
         } catch (err) {
@@ -446,7 +476,7 @@ function doLoadData(resolve) {
 }
 
 // ============================================================
-// SAVE DATA - SIMPLIFIED
+// SAVE DATA - WITH STORE VERIFICATION
 // ============================================================
 
 function saveData() {
@@ -466,6 +496,14 @@ function saveData() {
                 return;
             }
             
+            // Verify the store exists before saving
+            if (!_indexedDB.objectStoreNames.contains(STORE_NAME)) {
+                console.error('Store "' + STORE_NAME + '" does not exist! Cannot save.');
+                _isSaving = false;
+                resolve();
+                return;
+            }
+            
             executeSave(resolve);
         }).catch(function(err) {
             console.error('Failed to ensure database for save:', err);
@@ -478,6 +516,14 @@ function saveData() {
 function executeSave(resolve) {
     if (!_indexedDB || typeof _indexedDB.transaction !== 'function') {
         console.warn('Database not available, skipping save');
+        _isSaving = false;
+        resolve();
+        return;
+    }
+    
+    // Double-check store exists
+    if (!_indexedDB.objectStoreNames.contains(STORE_NAME)) {
+        console.error('Store "' + STORE_NAME + '" does not exist! Cannot save.');
         _isSaving = false;
         resolve();
         return;
@@ -604,6 +650,7 @@ window.getDefaultMagicProficiencies = getDefaultMagicProficiencies;
 ensureDatabaseReady().then(function(database) {
     if (database) {
         console.log('Database initialization complete');
+        console.log('Available stores:', database.objectStoreNames ? Array.from(database.objectStoreNames) : 'unknown');
     } else {
         console.warn('Database initialization failed - running in memory-only mode');
     }
@@ -630,5 +677,7 @@ setTimeout(function() {
         console.log('_indexedDB.transaction type:', typeof _indexedDB.transaction);
         console.log('_indexedDB.name:', _indexedDB.name);
         console.log('_indexedDB.version:', _indexedDB.version);
+        console.log('Store names:', _indexedDB.objectStoreNames ? Array.from(_indexedDB.objectStoreNames) : 'none');
+        console.log('Has "' + STORE_NAME + '":', _indexedDB.objectStoreNames.contains(STORE_NAME));
     }
 }, 100);
