@@ -17,7 +17,6 @@
         classes: { selectedClassId: null, viewMode: 'roster', distributionWeek: 1, maxTeamSize: 4 }
     };
 
-    var _initialized = false;
     var currentTab = 'disciplines';
 
     function renderCurriculum(container) {
@@ -60,9 +59,8 @@
         
         setTimeout(function() {
             initCurriculumTabs();
-            renderAllSections();
+            renderTabContent('disciplines');
             initCurriculumEvents();
-            _initialized = true;
         }, 50);
     }
 
@@ -79,8 +77,8 @@
                     <button class="tab-btn" data-tab="ranking">Ranking</button>
                     <button class="tab-btn" data-tab="classes">Classes</button>
                 </div>
-                <div class="tab-content">
-                    <div id="tab-disciplines" class="tab-panel active">
+                <div class="tab-content" id="curriculum-tab-content">
+                    <div id="tab-disciplines" class="tab-panel">
                         <div id="disciplines-content"></div>
                     </div>
                     <div id="tab-groups" class="tab-panel">
@@ -109,66 +107,10 @@
         `;
     }
 
-    function renderAllSections() {
-        var activeTabName = currentTab || 'disciplines';
-        refreshTabContent(activeTabName);
-    }
-
     function initCurriculumTabs() {
         var tabContainer = document.getElementById('curriculum-tab-nav');
         if (!tabContainer) return;
 
-        var panels = {
-            disciplines: document.getElementById('tab-disciplines'),
-            groups: document.getElementById('tab-groups'),
-            'class-view': document.getElementById('tab-class-view'),
-            'instructor-calendar': document.getElementById('tab-instructor-calendar'),
-            schedule: document.getElementById('tab-schedule'),
-            grades: document.getElementById('tab-grades'),
-            ranking: document.getElementById('tab-ranking'),
-            classes: document.getElementById('tab-classes')
-        };
-
-        // Get the active tab - default to 'disciplines'
-        var activeTabName = 'disciplines';
-        var activeBtn = tabContainer.querySelector('.tab-btn.active');
-        if (activeBtn && activeBtn.dataset.tab) {
-            activeTabName = activeBtn.dataset.tab;
-        }
-
-        // Hide all panels first
-        for (var key in panels) {
-            if (panels[key]) {
-                panels[key].style.display = 'none';
-                panels[key].classList.remove('active');
-            }
-        }
-
-        // Show the active panel
-        if (panels[activeTabName]) {
-            panels[activeTabName].style.display = 'block';
-            panels[activeTabName].classList.add('active');
-        } else if (panels.disciplines) {
-            panels.disciplines.style.display = 'block';
-            panels.disciplines.classList.add('active');
-            activeTabName = 'disciplines';
-        }
-
-        // Make sure the correct tab button is active
-        tabContainer.querySelectorAll('.tab-btn').forEach(function(t) {
-            t.classList.remove('active');
-            if (t.dataset.tab === activeTabName) {
-                t.classList.add('active');
-            }
-        });
-
-        // Set currentTab
-        currentTab = activeTabName;
-
-        // Render the active tab content
-        refreshTabContent(activeTabName);
-
-        // Tab switching - use event delegation
         tabContainer.addEventListener('click', function(e) {
             var tab = e.target.closest('.tab-btn');
             if (!tab) return;
@@ -181,109 +123,138 @@
             
             currentTab = tabName;
             
-            // Update tab buttons
             tabContainer.querySelectorAll('.tab-btn').forEach(function(t) {
                 t.classList.remove('active');
             });
             tab.classList.add('active');
             
-            // Update panels
-            for (var key in panels) {
-                if (panels[key]) {
-                    panels[key].style.display = 'none';
-                    panels[key].classList.remove('active');
-                }
+            var panels = document.querySelectorAll('#curriculum-tab-content .tab-panel');
+            panels.forEach(function(p) {
+                p.style.display = 'none';
+                p.classList.remove('active');
+            });
+            
+            var activePanel = document.getElementById('tab-' + tabName);
+            if (activePanel) {
+                activePanel.style.display = 'block';
+                activePanel.classList.add('active');
             }
             
-            if (panels[tabName]) {
-                panels[tabName].style.display = 'block';
-                panels[tabName].classList.add('active');
-            }
-            
-            // Refresh tab content
-            refreshTabContent(tabName);
+            renderTabContent(tabName);
         });
     }
 
-    function refreshTabContent(tabName) {
-        setTimeout(function() {
-            try {
-                if (tabName === 'disciplines') {
-                    var content = document.getElementById('disciplines-content');
-                    if (content && typeof window.renderDisciplinesView === 'function') {
-                        window.renderDisciplinesView(content);
-                    }
-                } else if (tabName === 'groups') {
-                    var content = document.getElementById('groups-content');
-                    if (content && typeof window.renderAutoGroupsView === 'function') {
-                        window.renderAutoGroupsView(content);
-                    }
-                } else if (tabName === 'class-view') {
-                    var content = document.getElementById('class-view-content');
-                    if (content && typeof window.renderClassView === 'function') {
-                        window.renderClassView(content);
-                    }
-                } else if (tabName === 'instructor-calendar') {
-                    var content = document.getElementById('instructor-calendar-content');
-                    if (content && typeof window.renderInstructorCalendar === 'function') {
-                        window.renderInstructorCalendar(content);
-                    }
-                } else if (tabName === 'schedule') {
-                    var content = document.getElementById('schedule-content');
-                    if (content) {
-                        if (typeof window.renderStudentScheduleView === 'function') {
-                            window.renderStudentScheduleView(content);
-                        } else if (typeof window.renderScheduleView === 'function') {
-                            window.renderScheduleView(content);
-                        }
-                    }
-                } else if (tabName === 'grades') {
-                    var content = document.getElementById('grades-content');
-                    if (content && typeof window.renderGradesView === 'function') {
-                        window.renderGradesView(content);
-                    }
-                } else if (tabName === 'ranking') {
-                    var content = document.getElementById('ranking-content');
-                    if (content && typeof window.renderRankingView === 'function') {
-                        window.renderRankingView(content);
-                    }
-                } else if (tabName === 'classes') {
-                    var content = document.getElementById('classes-content');
-                    if (content && typeof window.renderClassesView === 'function') {
-                        window.renderClassesView(content);
-                    }
-                }
-            } catch (e) {
-                // Silently handle errors
+    function renderTabContent(tabName) {
+        // Log what we're trying to render
+        console.log('[Curriculum] Rendering tab:', tabName);
+        
+        try {
+            var content = null;
+            var renderer = null;
+            var rendererName = '';
+
+            switch (tabName) {
+                case 'disciplines':
+                    content = document.getElementById('disciplines-content');
+                    renderer = window.renderDisciplinesView;
+                    rendererName = 'renderDisciplinesView';
+                    break;
+                case 'groups':
+                    content = document.getElementById('groups-content');
+                    renderer = window.renderAutoGroupsView;
+                    rendererName = 'renderAutoGroupsView';
+                    break;
+                case 'class-view':
+                    content = document.getElementById('class-view-content');
+                    renderer = window.renderClassView;
+                    rendererName = 'renderClassView';
+                    break;
+                case 'instructor-calendar':
+                    content = document.getElementById('instructor-calendar-content');
+                    renderer = window.renderInstructorCalendar;
+                    rendererName = 'renderInstructorCalendar';
+                    break;
+                case 'schedule':
+                    content = document.getElementById('schedule-content');
+                    renderer = window.renderStudentScheduleView || window.renderScheduleView;
+                    rendererName = 'renderStudentScheduleView/renderScheduleView';
+                    break;
+                case 'grades':
+                    content = document.getElementById('grades-content');
+                    renderer = window.renderGradesView;
+                    rendererName = 'renderGradesView';
+                    break;
+                case 'ranking':
+                    content = document.getElementById('ranking-content');
+                    renderer = window.renderRankingView;
+                    rendererName = 'renderRankingView';
+                    break;
+                case 'classes':
+                    content = document.getElementById('classes-content');
+                    renderer = window.renderClassesView;
+                    rendererName = 'renderClassesView';
+                    break;
+                default:
+                    console.warn('[Curriculum] Unknown tab:', tabName);
+                    return;
             }
-        }, 50);
+
+            if (!content) {
+                console.error('[Curriculum] Content element not found for:', tabName);
+                return;
+            }
+
+            if (typeof renderer !== 'function') {
+                console.error('[Curriculum] Renderer "' + rendererName + '" is not a function for tab:', tabName);
+                console.log('[Curriculum] Available renderers:', Object.keys(window).filter(function(k) { 
+                    return k.toLowerCase().indexOf('render') !== -1 && typeof window[k] === 'function'; 
+                }));
+                content.innerHTML = '<p class="empty-state">Module not loaded. Please refresh the page.</p>';
+                return;
+            }
+
+            // Call the renderer
+            renderer(content);
+            console.log('[Curriculum] Successfully rendered:', tabName);
+
+        } catch (e) {
+            console.error('[Curriculum] Error rendering tab "' + tabName + '":', e);
+            var content = document.getElementById(tabName + '-content') || 
+                          document.getElementById(tabName.replace('-', '') + '-content') ||
+                          document.getElementById('disciplines-content');
+            if (content) {
+                content.innerHTML = '<p class="empty-state">Error loading content: ' + e.message + '</p>';
+            }
+        }
     }
 
     function initCurriculumEvents() {
-        if (typeof window.initDisciplineEvents === 'function') {
-            window.initDisciplineEvents();
-        }
-        if (typeof window.initAutoGroupsEvents === 'function') {
-            window.initAutoGroupsEvents();
-        }
-        if (typeof window.initClassViewEvents === 'function') {
-            window.initClassViewEvents();
-        }
-        if (typeof window.initInstructorCalendarEvents === 'function') {
-            window.initInstructorCalendarEvents();
-        }
-        if (typeof window.initStudentScheduleEvents === 'function') {
-            window.initStudentScheduleEvents();
-        }
-        if (typeof window.initGradesEvents === 'function') {
-            window.initGradesEvents();
-        }
-        if (typeof window.initRankingEvents === 'function') {
-            window.initRankingEvents();
-        }
-        if (typeof window.initClassEvents === 'function') {
-            window.initClassEvents();
-        }
+        var initializers = [
+            ['disciplines', window.initDisciplineEvents],
+            ['groups', window.initAutoGroupsEvents],
+            ['class-view', window.initClassViewEvents],
+            ['instructor-calendar', window.initInstructorCalendarEvents],
+            ['schedule', window.initStudentScheduleEvents],
+            ['grades', window.initGradesEvents],
+            ['ranking', window.initRankingEvents],
+            ['classes', window.initClassEvents]
+        ];
+
+        initializers.forEach(function(item) {
+            var name = item[0];
+            var fn = item[1];
+
+            if (typeof fn === 'function') {
+                try {
+                    fn();
+                    console.log('[Curriculum] Event init success:', name);
+                } catch (e) {
+                    console.error('[Curriculum] Event init failed:', name, e);
+                }
+            } else {
+                console.warn('[Curriculum] Event initializer missing:', name);
+            }
+        });
     }
 
     function populateStudentSelector(id) {
@@ -378,10 +349,9 @@
     // ============================================================
 
     window.renderCurriculum = renderCurriculum;
-    window.renderAllSections = renderAllSections;
     window.initCurriculumTabs = initCurriculumTabs;
     window.initCurriculumEvents = initCurriculumEvents;
-    window.refreshTabContent = refreshTabContent;
+    window.renderTabContent = renderTabContent;
     window.populateStudentSelector = populateStudentSelector;
     window.getInstructorNames = getInstructorNames;
     window.getAllInstructorTemplatesForWeek = getAllInstructorTemplatesForWeek;
