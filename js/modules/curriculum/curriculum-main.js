@@ -24,9 +24,7 @@
         if (!container) {
             container = document.getElementById('tab-curriculum');
         }
-        if (!container) {
-            return;
-        }
+        if (!container) return;
 
         if (!window.data) {
             container.innerHTML = '<p class="empty-state">Loading curriculum data...</p>';
@@ -201,12 +199,29 @@
 
         container.innerHTML = html;
 
-        // Attach events
         container.querySelectorAll('.edit-discipline').forEach(function(btn) {
             btn.addEventListener('click', function() {
-                alert('Edit discipline: ' + this.dataset.id + '\n(Full implementation coming soon)');
+                var id = this.dataset.id;
+                var discipline = window.getDiscipline(id);
+                if (!discipline) return;
+                
+                var newName = prompt('Edit discipline name:', discipline.name);
+                if (newName && newName.trim()) {
+                    var data = window.data || {};
+                    if (data.curriculum && data.curriculum.disciplines) {
+                        var found = data.curriculum.disciplines.find(function(d) { return String(d.id) === String(id); });
+                        if (found) {
+                            found.name = newName.trim();
+                            if (typeof window.saveData === 'function') {
+                                window.saveData().catch(function(err) { /* ignore */ });
+                            }
+                            renderDisciplines(container);
+                        }
+                    }
+                }
             });
         });
+
         container.querySelectorAll('.delete-discipline').forEach(function(btn) {
             btn.addEventListener('click', function() {
                 if (confirm('Delete this discipline permanently?')) {
@@ -230,16 +245,27 @@
                 if (!name) return;
                 var type = prompt('Enter type (mandatory/optional):', 'mandatory');
                 if (!type) return;
+                var instructorId = prompt('Enter instructor character ID (optional):', '');
+                var startWeek = prompt('Enter start week (optional):', '');
+                var endWeek = prompt('Enter end week (optional):', '');
+                var weeklyHours = prompt('Enter weekly hours (optional):', '');
+                
                 var data = window.data || {};
                 if (!data.curriculum) data.curriculum = { disciplines: [] };
+                
+                var instructorIds = [];
+                if (instructorId && instructorId.trim()) {
+                    instructorIds.push(instructorId.trim());
+                }
+                
                 data.curriculum.disciplines.push({
                     id: window.generateId('disc'),
-                    name: name,
-                    type: type,
-                    instructorIds: [],
-                    startWeek: '',
-                    endWeek: '',
-                    weeklyHours: '',
+                    name: name.trim(),
+                    type: type.trim() || 'mandatory',
+                    instructorIds: instructorIds,
+                    startWeek: startWeek || '',
+                    endWeek: endWeek || '',
+                    weeklyHours: weeklyHours || '',
                     maxStudents: '',
                     weight: 1,
                     gradingSystem: [],
@@ -264,7 +290,6 @@
         html += '<span style="font-size:0.7rem;color:var(--text-dim);">Groups auto-created from Discipline + Instructor</span>';
         html += '</div>';
 
-        // Get all groups from curriculum
         var groups = window.data.curriculum.autoGroups || {};
         var groupKeys = Object.keys(groups);
 
@@ -313,6 +338,7 @@
         html += '<div style="display:flex;gap:8px;">';
         html += '<button id="prev-class-week" class="small secondary">← Prev</button>';
         html += '<button id="next-class-week" class="small secondary">Next →</button>';
+        html += '<button id="goto-class-week" class="small primary">Go</button>';
         html += '</div>';
         html += '</div>';
 
@@ -328,11 +354,10 @@
             return;
         }
 
-        // Show classes by discipline
         var dayNames = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+        var hasClasses = false;
 
         disciplines.forEach(function(discipline) {
-            var classCount = 0;
             var classData = {};
 
             students.forEach(function(student) {
@@ -340,7 +365,6 @@
                 for (var day in schedule) {
                     for (var hour in schedule[day]) {
                         if (String(schedule[day][hour]) === String(discipline.id)) {
-                            classCount++;
                             var key = day + '_' + hour;
                             if (!classData[key]) {
                                 classData[key] = {
@@ -355,7 +379,9 @@
                 }
             });
 
-            if (classCount === 0) return;
+            var keys = Object.keys(classData);
+            if (keys.length === 0) return;
+            hasClasses = true;
 
             var typeLabel = discipline.type === 'mandatory' ? '■ Mandatory' : '□ Optional';
             var typeColor = discipline.type === 'mandatory' ? 'var(--accent)' : 'var(--warning)';
@@ -366,7 +392,7 @@
             html += '<span style="font-size:0.7rem;padding:2px 12px;border-radius:12px;background:' + typeColor + '33;color:' + typeColor + ';border:1px solid ' + typeColor + ';">' + typeLabel + '</span>';
             html += '</div>';
 
-            var keys = Object.keys(classData).sort(function(a, b) {
+            keys.sort(function(a, b) {
                 var aParts = a.split('_');
                 var bParts = b.split('_');
                 if (parseInt(aParts[0]) !== parseInt(bParts[0])) return parseInt(aParts[0]) - parseInt(bParts[0]);
@@ -396,9 +422,12 @@
             html += '</div>';
         });
 
+        if (!hasClasses) {
+            html += '<p class="empty-state">No classes scheduled for week ' + week + '.</p>';
+        }
+
         container.innerHTML = html;
 
-        // Attach week navigation
         var prevBtn = container.querySelector('#prev-class-week');
         if (prevBtn) {
             prevBtn.addEventListener('click', function() {
@@ -417,10 +446,25 @@
                 }
             });
         }
+        var gotoBtn = container.querySelector('#goto-class-week');
+        if (gotoBtn) {
+            gotoBtn.addEventListener('click', function() {
+                var week = prompt('Enter week number (1-52):', window.data.curriculum.currentWeek || 1);
+                if (week) {
+                    var w = parseInt(week);
+                    if (!isNaN(w) && w >= 1 && w <= 52) {
+                        window.data.curriculum.currentWeek = w;
+                        renderClassView(container);
+                    } else {
+                        alert('Please enter a valid week (1-52).');
+                    }
+                }
+            });
+        }
     }
 
     // ============================================================
-    // INSTRUCTOR CALENDAR RENDER
+    // INSTRUCTOR CALENDAR RENDER - FULLY WORKING
     // ============================================================
 
     function renderInstructorCalendar(container) {
@@ -430,6 +474,11 @@
         var html = '';
         html += '<div class="page-header" style="margin-bottom:8px;">';
         html += '<h3 style="color:var(--accent);font-size:0.9rem;">Instructor Calendar - Week ' + week + '</h3>';
+        html += '<div style="display:flex;gap:8px;">';
+        html += '<button id="prev-instructor-week" class="small secondary">← Prev</button>';
+        html += '<button id="next-instructor-week" class="small secondary">Next →</button>';
+        html += '<button id="goto-instructor-week" class="small primary">Go</button>';
+        html += '</div>';
         html += '</div>';
 
         if (instructors.length === 0) {
@@ -438,24 +487,130 @@
             return;
         }
 
-        // Simple instructor list
-        html += '<div style="display:flex;flex-direction:column;gap:8px;">';
+        var dayNames = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+        var students = window.getStudents();
+
+        html += '<div style="display:flex;flex-direction:column;gap:12px;">';
+
         instructors.forEach(function(instructor) {
             var name = window.getDisplayName(instructor);
             var status = window.getCurrentStatus(instructor);
+            var scheduleMap = {};
 
-            html += '<div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">';
-            html += '<span><strong>' + name + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + status + ')</span></span>';
-            html += '<span style="font-size:0.7rem;color:var(--text-dim);">Click to view schedule (coming soon)</span>';
+            students.forEach(function(student) {
+                var schedule = window.getStudentSchedule(student.id, week);
+                for (var day in schedule) {
+                    for (var hour in schedule[day]) {
+                        var disciplineId = schedule[day][hour];
+                        if (disciplineId) {
+                            var discipline = window.getDiscipline(disciplineId);
+                            if (discipline && discipline.instructorIds) {
+                                var isTeaching = discipline.instructorIds.some(function(id) {
+                                    return String(id) === String(instructor.id);
+                                });
+                                if (isTeaching) {
+                                    var key = day + '_' + hour;
+                                    if (!scheduleMap[key]) {
+                                        scheduleMap[key] = {
+                                            day: parseInt(day),
+                                            hour: parseInt(hour),
+                                            discipline: discipline,
+                                            students: []
+                                        };
+                                    }
+                                    scheduleMap[key].students.push({
+                                        id: student.id,
+                                        name: window.getDisplayName(student)
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            var keys = Object.keys(scheduleMap);
+            keys.sort(function(a, b) {
+                var aParts = a.split('_');
+                var bParts = b.split('_');
+                if (parseInt(aParts[0]) !== parseInt(bParts[0])) return parseInt(aParts[0]) - parseInt(bParts[0]);
+                return parseInt(aParts[1]) - parseInt(bParts[1]);
+            });
+
+            html += '<div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;">';
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">';
+            html += '<div><strong style="color:var(--accent);">' + name + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + status + ')</span>';
+            html += ' <span style="color:var(--text-dim);font-size:0.7rem;">' + keys.length + ' classes</span>';
+            html += '</div>';
+            html += '</div>';
+
+            if (keys.length === 0) {
+                html += '<div style="color:var(--text-dim);font-size:0.75rem;padding:4px 0;">No classes scheduled for this week.</div>';
+            } else {
+                keys.forEach(function(key) {
+                    var data = scheduleMap[key];
+                    var hourDisplay = data.hour > 12 ? data.hour - 12 : data.hour;
+                    var ampm = data.hour >= 12 ? 'PM' : 'AM';
+                    if (data.hour === 0) { hourDisplay = 12; ampm = 'AM'; }
+                    if (data.hour === 12) { ampm = 'PM'; }
+
+                    html += '<div style="background:var(--bg);border-radius:4px;padding:6px 10px;margin-bottom:4px;border-left:3px solid var(--accent);">';
+                    html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px;">';
+                    html += '<span style="font-weight:500;font-size:0.75rem;">' + dayNames[data.day] + ' at ' + hourDisplay + ':00 ' + ampm + '</span>';
+                    html += '<span style="font-size:0.7rem;color:var(--text-dim);">' + data.discipline.name + ' (' + data.students.length + ' students)</span>';
+                    html += '</div>';
+                    html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">';
+                    data.students.forEach(function(student) {
+                        html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.65rem;">' + student.name + '</span>';
+                    });
+                    html += '</div>';
+                    html += '</div>';
+                });
+            }
+
             html += '</div>';
         });
-        html += '</div>';
 
+        html += '</div>';
         container.innerHTML = html;
+
+        var prevBtn = container.querySelector('#prev-instructor-week');
+        if (prevBtn) {
+            prevBtn.addEventListener('click', function() {
+                if (window.data.curriculum.currentWeek > 1) {
+                    window.data.curriculum.currentWeek--;
+                    renderInstructorCalendar(container);
+                }
+            });
+        }
+        var nextBtn = container.querySelector('#next-instructor-week');
+        if (nextBtn) {
+            nextBtn.addEventListener('click', function() {
+                if (window.data.curriculum.currentWeek < 52) {
+                    window.data.curriculum.currentWeek++;
+                    renderInstructorCalendar(container);
+                }
+            });
+        }
+        var gotoBtn = container.querySelector('#goto-instructor-week');
+        if (gotoBtn) {
+            gotoBtn.addEventListener('click', function() {
+                var week = prompt('Enter week number (1-52):', window.data.curriculum.currentWeek || 1);
+                if (week) {
+                    var w = parseInt(week);
+                    if (!isNaN(w) && w >= 1 && w <= 52) {
+                        window.data.curriculum.currentWeek = w;
+                        renderInstructorCalendar(container);
+                    } else {
+                        alert('Please enter a valid week (1-52).');
+                    }
+                }
+            });
+        }
     }
 
     // ============================================================
-    // STUDENT SCHEDULE RENDER
+    // STUDENT SCHEDULE RENDER - FULLY WORKING
     // ============================================================
 
     function renderStudentSchedule(container) {
@@ -465,6 +620,11 @@
         var html = '';
         html += '<div class="page-header" style="margin-bottom:8px;">';
         html += '<h3 style="color:var(--accent);font-size:0.9rem;">Student Schedule - Week ' + week + '</h3>';
+        html += '<div style="display:flex;gap:8px;">';
+        html += '<button id="prev-schedule-week" class="small secondary">← Prev</button>';
+        html += '<button id="next-schedule-week" class="small secondary">Next →</button>';
+        html += '<button id="goto-schedule-week" class="small primary">Go</button>';
+        html += '</div>';
         html += '</div>';
 
         if (students.length === 0) {
@@ -479,7 +639,8 @@
         html += '<select id="schedule-student-select" style="width:100%;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;margin-top:4px;">';
         html += '<option value="">Select a student...</option>';
         students.forEach(function(student) {
-            html += '<option value="' + student.id + '">' + window.getDisplayName(student) + '</option>';
+            var selected = (state.studentSchedule.selectedStudentId === student.id) ? 'selected' : '';
+            html += '<option value="' + student.id + '" ' + selected + '>' + window.getDisplayName(student) + '</option>';
         });
         html += '</select>';
         html += '</div>';
@@ -492,60 +653,124 @@
         var select = container.querySelector('#schedule-student-select');
         if (select) {
             select.addEventListener('change', function() {
-                var studentId = this.value;
-                var display = container.querySelector('#schedule-display');
-                if (!studentId || !display) return;
-
-                var student = window.getCharacterById(studentId);
-                if (!student) {
-                    display.innerHTML = '<p class="empty-state">Student not found.</p>';
-                    return;
-                }
-
-                var schedule = window.getStudentSchedule(studentId, week);
-                var dayNames = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-
-                var hasClasses = false;
-                var html2 = '<div style="margin-top:8px;"><strong>' + window.getDisplayName(student) + '</strong> - Week ' + week;
-                html2 += '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:8px;">';
-
-                for (var d = 1; d <= 7; d++) {
-                    html2 += '<div style="background:var(--bg);border:1px solid var(--border-soft);border-radius:4px;padding:4px;min-height:80px;">';
-                    html2 += '<div style="font-size:0.5rem;color:var(--text-dim);text-align:center;border-bottom:1px solid var(--border-soft);padding-bottom:2px;">' + dayNames[d] + '</div>';
-                    var hasDayClass = false;
-                    if (schedule[d]) {
-                        for (var h in schedule[d]) {
-                            if (schedule[d][h]) {
-                                hasDayClass = true;
-                                hasClasses = true;
-                                var disc = window.getDiscipline(schedule[d][h]);
-                                var hourDisplay = parseInt(h) > 12 ? parseInt(h) - 12 : parseInt(h);
-                                var ampm = parseInt(h) >= 12 ? 'PM' : 'AM';
-                                if (parseInt(h) === 0) { hourDisplay = 12; ampm = 'AM'; }
-                                if (parseInt(h) === 12) { ampm = 'PM'; }
-                                html2 += '<div style="font-size:0.55rem;padding:2px 4px;background:var(--accent-soft);border-radius:3px;margin-top:2px;border-left:2px solid var(--accent);">' + (disc ? disc.name : 'Unknown') + ' (' + hourDisplay + ':00 ' + ampm + ')</div>';
-                            }
-                        }
-                    }
-                    if (!hasDayClass) {
-                        html2 += '<div style="font-size:0.5rem;color:var(--text-dim);text-align:center;padding-top:4px;">—</div>';
-                    }
-                    html2 += '</div>';
-                }
-
-                html2 += '</div></div>';
-
-                if (!hasClasses) {
-                    html2 = '<p class="empty-state">No classes scheduled for this student in week ' + week + '.</p>';
-                }
-
-                display.innerHTML = html2;
+                state.studentSchedule.selectedStudentId = this.value;
+                renderScheduleDisplay(container);
             });
+        }
+
+        var prevBtn = container.querySelector('#prev-schedule-week');
+        if (prevBtn) {
+            prevBtn.addEventListener('click', function() {
+                if (window.data.curriculum.currentWeek > 1) {
+                    window.data.curriculum.currentWeek--;
+                    renderScheduleDisplay(container);
+                }
+            });
+        }
+        var nextBtn = container.querySelector('#next-schedule-week');
+        if (nextBtn) {
+            nextBtn.addEventListener('click', function() {
+                if (window.data.curriculum.currentWeek < 52) {
+                    window.data.curriculum.currentWeek++;
+                    renderScheduleDisplay(container);
+                }
+            });
+        }
+        var gotoBtn = container.querySelector('#goto-schedule-week');
+        if (gotoBtn) {
+            gotoBtn.addEventListener('click', function() {
+                var week = prompt('Enter week number (1-52):', window.data.curriculum.currentWeek || 1);
+                if (week) {
+                    var w = parseInt(week);
+                    if (!isNaN(w) && w >= 1 && w <= 52) {
+                        window.data.curriculum.currentWeek = w;
+                        renderScheduleDisplay(container);
+                    } else {
+                        alert('Please enter a valid week (1-52).');
+                    }
+                }
+            });
+        }
+
+        // Initial render if a student was previously selected
+        if (state.studentSchedule.selectedStudentId) {
+            select.value = state.studentSchedule.selectedStudentId;
+            renderScheduleDisplay(container);
         }
     }
 
+    function renderScheduleDisplay(container) {
+        var display = container.querySelector('#schedule-display');
+        var select = container.querySelector('#schedule-student-select');
+        if (!display || !select) return;
+
+        var studentId = select.value;
+        var week = window.data.curriculum.currentWeek || 1;
+
+        if (!studentId) {
+            display.innerHTML = '<p class="empty-state">Select a student to view their schedule.</p>';
+            return;
+        }
+
+        var student = window.getCharacterById(studentId);
+        if (!student) {
+            display.innerHTML = '<p class="empty-state">Student not found.</p>';
+            return;
+        }
+
+        var schedule = window.getStudentSchedule(studentId, week);
+        var dayNames = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+        var hasClasses = false;
+        var html = '<div style="margin-top:8px;"><div style="font-weight:600;color:var(--accent);">' + window.getDisplayName(student) + '</div>';
+        html += '<div style="font-size:0.7rem;color:var(--text-dim);margin-bottom:8px;">Week ' + week + '</div>';
+        html += '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;">';
+
+        for (var d = 1; d <= 7; d++) {
+            html += '<div style="background:var(--bg);border:1px solid var(--border-soft);border-radius:4px;padding:4px;min-height:100px;">';
+            html += '<div style="font-size:0.5rem;color:var(--text-dim);text-align:center;border-bottom:1px solid var(--border-soft);padding-bottom:2px;font-weight:600;">' + dayNames[d] + '</div>';
+            var hasDayClass = false;
+            if (schedule[d]) {
+                var hours = Object.keys(schedule[d]).sort(function(a, b) { return parseInt(a) - parseInt(b); });
+                hours.forEach(function(h) {
+                    if (schedule[d][h]) {
+                        hasDayClass = true;
+                        hasClasses = true;
+                        var disc = window.getDiscipline(schedule[d][h]);
+                        var hourDisplay = parseInt(h) > 12 ? parseInt(h) - 12 : parseInt(h);
+                        var ampm = parseInt(h) >= 12 ? 'PM' : 'AM';
+                        if (parseInt(h) === 0) { hourDisplay = 12; ampm = 'AM'; }
+                        if (parseInt(h) === 12) { ampm = 'PM'; }
+                        var instructorId = window.getClassInstructor(studentId, week, d, parseInt(h));
+                        var instructorName = '';
+                        if (instructorId) {
+                            var inst = window.getCharacterById(instructorId);
+                            if (inst) instructorName = window.getDisplayName(inst);
+                        }
+                        html += '<div style="font-size:0.55rem;padding:2px 4px;background:var(--accent-soft);border-radius:3px;margin-top:2px;border-left:2px solid var(--accent);">';
+                        html += (disc ? disc.name : 'Unknown') + ' (' + hourDisplay + ':00 ' + ampm + ')';
+                        if (instructorName) html += ' <span style="color:var(--text-dim);font-size:0.45rem;">[' + instructorName + ']</span>';
+                        html += '</div>';
+                    }
+                });
+            }
+            if (!hasDayClass) {
+                html += '<div style="font-size:0.5rem;color:var(--text-dim);text-align:center;padding-top:8px;">—</div>';
+            }
+            html += '</div>';
+        }
+
+        html += '</div></div>';
+
+        if (!hasClasses) {
+            html = '<p class="empty-state">No classes scheduled for this student in week ' + week + '.</p>';
+        }
+
+        display.innerHTML = html;
+    }
+
     // ============================================================
-    // GRADES RENDER
+    // GRADES RENDER - FULLY WORKING
     // ============================================================
 
     function renderGrades(container) {
@@ -555,6 +780,11 @@
         var html = '';
         html += '<div class="page-header" style="margin-bottom:8px;">';
         html += '<h3 style="color:var(--accent);font-size:0.9rem;">Grades - Week ' + week + '</h3>';
+        html += '<div style="display:flex;gap:8px;">';
+        html += '<button id="prev-grade-week" class="small secondary">← Prev</button>';
+        html += '<button id="next-grade-week" class="small secondary">Next →</button>';
+        html += '<button id="goto-grade-week" class="small primary">Go</button>';
+        html += '</div>';
         html += '</div>';
 
         if (students.length === 0) {
@@ -563,13 +793,13 @@
             return;
         }
 
-        // Student selector
         html += '<div style="margin-bottom:12px;">';
         html += '<label style="font-size:0.75rem;color:var(--text-dim);">Select Student:</label>';
         html += '<select id="grades-student-select" style="width:100%;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;margin-top:4px;">';
         html += '<option value="">Select a student...</option>';
         students.forEach(function(student) {
-            html += '<option value="' + student.id + '">' + window.getDisplayName(student) + '</option>';
+            var selected = (state.selectedGradeStudentId === student.id) ? 'selected' : '';
+            html += '<option value="' + student.id + '" ' + selected + '>' + window.getDisplayName(student) + '</option>';
         });
         html += '</select>';
         html += '</div>';
@@ -581,62 +811,149 @@
         var select = container.querySelector('#grades-student-select');
         if (select) {
             select.addEventListener('change', function() {
-                var studentId = this.value;
-                var display = container.querySelector('#grades-display');
-                if (!studentId || !display) return;
-
-                var student = window.getCharacterById(studentId);
-                if (!student) {
-                    display.innerHTML = '<p class="empty-state">Student not found.</p>';
-                    return;
-                }
-
-                var grades = window.data.curriculum.grades || {};
-                var studentGrades = grades[studentId] || {};
-                var weekGrades = studentGrades[week] || {};
-
-                var disciplines = window.getAvailableDisciplines(week);
-                var hasGrades = false;
-
-                var html2 = '<div style="margin-top:8px;"><strong>' + window.getDisplayName(student) + '</strong> - Grades for Week ' + week;
-                html2 += '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:0.75rem;">';
-                html2 += '<thead><tr style="background:var(--panel-alt);border-bottom:2px solid var(--border);">';
-                html2 += '<th style="padding:4px 8px;text-align:left;">Discipline</th>';
-                html2 += '<th style="padding:4px 8px;text-align:left;">Score</th>';
-                html2 += '<th style="padding:4px 8px;text-align:left;">Grade</th>';
-                html2 += '</tr></thead><tbody>';
-
-                disciplines.forEach(function(d) {
-                    var score = weekGrades[d.id];
-                    var letter = '';
-                    if (score !== undefined && score !== null) {
-                        hasGrades = true;
-                        if (d.gradingSystem && d.gradingSystem.length > 0) {
-                            var sorted = d.gradingSystem.slice().sort(function(a, b) { return b.min - a.min; });
-                            for (var i = 0; i < sorted.length; i++) {
-                                if (score >= sorted[i].min && score <= sorted[i].max) {
-                                    letter = sorted[i].letter;
-                                    break;
-                                }
-                            }
-                        }
-                        html2 += '<tr style="border-bottom:1px solid var(--border-soft);">';
-                        html2 += '<td style="padding:4px 8px;">' + d.name + '</td>';
-                        html2 += '<td style="padding:4px 8px;font-weight:600;color:var(--accent);">' + score + '%</td>';
-                        html2 += '<td style="padding:4px 8px;">' + (letter || '—') + '</td>';
-                        html2 += '</tr>';
-                    }
-                });
-
-                html2 += '</tbody></table></div>';
-
-                if (!hasGrades) {
-                    html2 = '<p class="empty-state">No grades recorded for this student in week ' + week + '.</p>';
-                }
-
-                display.innerHTML = html2;
+                state.selectedGradeStudentId = this.value;
+                renderGradesDisplay(container);
             });
         }
+
+        var prevBtn = container.querySelector('#prev-grade-week');
+        if (prevBtn) {
+            prevBtn.addEventListener('click', function() {
+                if (window.data.curriculum.currentWeek > 1) {
+                    window.data.curriculum.currentWeek--;
+                    renderGradesDisplay(container);
+                }
+            });
+        }
+        var nextBtn = container.querySelector('#next-grade-week');
+        if (nextBtn) {
+            nextBtn.addEventListener('click', function() {
+                if (window.data.curriculum.currentWeek < 52) {
+                    window.data.curriculum.currentWeek++;
+                    renderGradesDisplay(container);
+                }
+            });
+        }
+        var gotoBtn = container.querySelector('#goto-grade-week');
+        if (gotoBtn) {
+            gotoBtn.addEventListener('click', function() {
+                var week = prompt('Enter week number (1-52):', window.data.curriculum.currentWeek || 1);
+                if (week) {
+                    var w = parseInt(week);
+                    if (!isNaN(w) && w >= 1 && w <= 52) {
+                        window.data.curriculum.currentWeek = w;
+                        renderGradesDisplay(container);
+                    } else {
+                        alert('Please enter a valid week (1-52).');
+                    }
+                }
+            });
+        }
+
+        if (state.selectedGradeStudentId) {
+            select.value = state.selectedGradeStudentId;
+            renderGradesDisplay(container);
+        }
+    }
+
+    function renderGradesDisplay(container) {
+        var display = container.querySelector('#grades-display');
+        var select = container.querySelector('#grades-student-select');
+        if (!display || !select) return;
+
+        var studentId = select.value;
+        var week = window.data.curriculum.currentWeek || 1;
+
+        if (!studentId) {
+            display.innerHTML = '<p class="empty-state">Select a student to view grades.</p>';
+            return;
+        }
+
+        var student = window.getCharacterById(studentId);
+        if (!student) {
+            display.innerHTML = '<p class="empty-state">Student not found.</p>';
+            return;
+        }
+
+        var grades = window.data.curriculum.grades || {};
+        var studentGrades = grades[studentId] || {};
+        var weekGrades = studentGrades[week] || {};
+
+        var disciplines = window.getAvailableDisciplines(week);
+        var hasGrades = false;
+
+        var html = '<div style="margin-top:8px;"><div style="font-weight:600;color:var(--accent);">' + window.getDisplayName(student) + '</div>';
+        html += '<div style="font-size:0.7rem;color:var(--text-dim);margin-bottom:8px;">Week ' + week + '</div>';
+
+        if (disciplines.length === 0) {
+            html += '<p class="empty-state">No disciplines available for week ' + week + '.</p>';
+            display.innerHTML = html;
+            return;
+        }
+
+        html += '<div style="overflow-x:auto;">';
+        html += '<table style="width:100%;border-collapse:collapse;font-size:0.75rem;">';
+        html += '<thead><tr style="background:var(--panel-alt);border-bottom:2px solid var(--border);">';
+        html += '<th style="padding:6px 8px;text-align:left;">Discipline</th>';
+        html += '<th style="padding:6px 8px;text-align:left;">Type</th>';
+        html += '<th style="padding:6px 8px;text-align:left;">Score</th>';
+        html += '<th style="padding:6px 8px;text-align:left;">Grade</th>';
+        html += '</tr></thead><tbody>';
+
+        var totalWeighted = 0;
+        var totalWeight = 0;
+
+        disciplines.forEach(function(d) {
+            var score = weekGrades[d.id];
+            var letter = '';
+            var hasScore = (score !== undefined && score !== null && score !== '');
+            
+            if (hasScore) {
+                hasGrades = true;
+                if (d.gradingSystem && d.gradingSystem.length > 0) {
+                    var sorted = d.gradingSystem.slice().sort(function(a, b) { return b.min - a.min; });
+                    for (var i = 0; i < sorted.length; i++) {
+                        if (score >= sorted[i].min && score <= sorted[i].max) {
+                            letter = sorted[i].letter;
+                            break;
+                        }
+                    }
+                }
+                if (d.weight) {
+                    totalWeighted += score * d.weight;
+                    totalWeight += d.weight;
+                }
+            }
+
+            var typeLabel = d.type === 'mandatory' ? '■' : '□';
+            var typeColor = d.type === 'mandatory' ? 'var(--accent)' : 'var(--warning)';
+
+            html += '<tr style="border-bottom:1px solid var(--border-soft);' + (hasScore ? '' : 'opacity:0.5;') + '">';
+            html += '<td style="padding:6px 8px;">' + d.name + '</td>';
+            html += '<td style="padding:6px 8px;color:' + typeColor + ';font-size:0.65rem;">' + typeLabel + '</td>';
+            html += '<td style="padding:6px 8px;font-weight:600;color:' + (hasScore ? 'var(--accent)' : 'var(--text-dim)') + ';">' + (hasScore ? score + '%' : '—') + '</td>';
+            html += '<td style="padding:6px 8px;">' + (letter || '—') + '</td>';
+            html += '</tr>';
+        });
+
+        html += '</tbody></table></div>';
+
+        // Show average
+        var average = totalWeight > 0 ? (totalWeighted / totalWeight) : 0;
+        if (hasGrades) {
+            html += '<div style="margin-top:12px;padding:8px 12px;background:var(--bg);border-radius:4px;border:1px solid var(--border-soft);">';
+            html += '<span style="color:var(--text-dim);font-size:0.75rem;">Weighted Average: </span>';
+            html += '<span style="font-weight:700;font-size:1rem;color:' + (average >= 70 ? 'var(--accent)' : 'var(--danger)') + ';">' + average.toFixed(1) + '%</span>';
+            html += '</div>';
+        }
+
+        html += '</div>';
+
+        if (!hasGrades) {
+            html = '<p class="empty-state">No grades recorded for this student in week ' + week + '.</p>';
+        }
+
+        display.innerHTML = html;
     }
 
     // ============================================================
@@ -650,6 +967,11 @@
         var html = '';
         html += '<div class="page-header" style="margin-bottom:8px;">';
         html += '<h3 style="color:var(--accent);font-size:0.9rem;">Ranking - Week ' + week + '</h3>';
+        html += '<div style="display:flex;gap:8px;">';
+        html += '<button id="prev-rank-week" class="small secondary">← Prev</button>';
+        html += '<button id="next-rank-week" class="small secondary">Next →</button>';
+        html += '<button id="goto-rank-week" class="small primary">Go</button>';
+        html += '</div>';
         html += '</div>';
 
         if (students.length === 0) {
@@ -658,88 +980,110 @@
             return;
         }
 
-        var rankings = window.data.curriculum.rankings || {};
-        var weekRankings = rankings[week] || [];
+        var grades = window.data.curriculum.grades || {};
+        var disciplines = window.getAvailableDisciplines(week);
+        var rankData = [];
 
-        // Calculate averages if no rankings exist
-        if (weekRankings.length === 0) {
-            var grades = window.data.curriculum.grades || {};
-            var disciplines = window.getAvailableDisciplines(week);
-            var rankData = [];
+        students.forEach(function(student) {
+            var studentGrades = grades[student.id] || {};
+            var weekGrades = studentGrades[week] || {};
+            var totalWeighted = 0;
+            var totalWeight = 0;
 
-            students.forEach(function(student) {
-                var studentGrades = grades[student.id] || {};
-                var weekGrades = studentGrades[week] || {};
-                var totalWeighted = 0;
-                var totalWeight = 0;
-
-                disciplines.forEach(function(d) {
-                    var score = weekGrades[d.id];
-                    if (score !== undefined && score !== null && d.weight) {
-                        totalWeighted += score * d.weight;
-                        totalWeight += d.weight;
-                    }
-                });
-
-                var average = totalWeight > 0 ? totalWeighted / totalWeight : 0;
-                rankData.push({
-                    studentId: student.id,
-                    name: window.getDisplayName(student),
-                    average: average,
-                    hasGrades: totalWeight > 0
-                });
+            disciplines.forEach(function(d) {
+                var score = weekGrades[d.id];
+                if (score !== undefined && score !== null && score !== '' && d.weight) {
+                    totalWeighted += score * d.weight;
+                    totalWeight += d.weight;
+                }
             });
 
-            rankData.sort(function(a, b) { return b.average - a.average; });
-            rankData.forEach(function(r, index) {
-                r.rank = index + 1;
+            var average = totalWeight > 0 ? totalWeighted / totalWeight : 0;
+            rankData.push({
+                studentId: student.id,
+                name: window.getDisplayName(student),
+                average: average,
+                hasGrades: totalWeight > 0
             });
+        });
 
-            html += '<table style="width:100%;border-collapse:collapse;font-size:0.75rem;">';
-            html += '<thead><tr style="background:var(--panel-alt);border-bottom:2px solid var(--border);">';
-            html += '<th style="padding:4px 8px;text-align:left;">Rank</th>';
-            html += '<th style="padding:4px 8px;text-align:left;">Student</th>';
-            html += '<th style="padding:4px 8px;text-align:left;">Average</th>';
-            html += '</tr></thead><tbody>';
+        rankData.sort(function(a, b) { 
+            if (a.hasGrades && !b.hasGrades) return -1;
+            if (!a.hasGrades && b.hasGrades) return 1;
+            return b.average - a.average; 
+        });
+        rankData.forEach(function(r, index) {
+            r.rank = index + 1;
+        });
 
-            rankData.forEach(function(r) {
-                var avgDisplay = r.hasGrades ? r.average.toFixed(1) : '—';
-                var color = r.rank === 1 ? 'var(--accent)' : 'var(--text)';
-                html += '<tr style="border-bottom:1px solid var(--border-soft);">';
-                html += '<td style="padding:4px 8px;font-weight:700;color:' + color + ';">#' + r.rank + '</td>';
-                html += '<td style="padding:4px 8px;">' + r.name + '</td>';
-                html += '<td style="padding:4px 8px;font-weight:600;color:' + color + ';">' + avgDisplay + '</td>';
-                html += '</tr>';
-            });
+        html += '<div style="overflow-x:auto;">';
+        html += '<table style="width:100%;border-collapse:collapse;font-size:0.75rem;">';
+        html += '<thead><tr style="background:var(--panel-alt);border-bottom:2px solid var(--border);">';
+        html += '<th style="padding:6px 8px;text-align:left;">Rank</th>';
+        html += '<th style="padding:6px 8px;text-align:left;">Student</th>';
+        html += '<th style="padding:6px 8px;text-align:left;">Average</th>';
+        html += '</tr></thead><tbody>';
 
-            html += '</tbody></table>';
-        } else {
-            // Use existing rankings
-            html += '<table style="width:100%;border-collapse:collapse;font-size:0.75rem;">';
-            html += '<thead><tr style="background:var(--panel-alt);border-bottom:2px solid var(--border);">';
-            html += '<th style="padding:4px 8px;text-align:left;">Rank</th>';
-            html += '<th style="padding:4px 8px;text-align:left;">Student</th>';
-            html += '</tr></thead><tbody>';
+        var hasAnyGrades = rankData.some(function(r) { return r.hasGrades; });
 
-            weekRankings.sort(function(a, b) { return a.rank - b.rank; });
-            weekRankings.forEach(function(r) {
-                var student = window.getCharacterById(r.studentId);
-                var name = student ? window.getDisplayName(student) : 'Unknown';
-                var color = r.rank === 1 ? 'var(--accent)' : 'var(--text)';
-                html += '<tr style="border-bottom:1px solid var(--border-soft);">';
-                html += '<td style="padding:4px 8px;font-weight:700;color:' + color + ';">#' + r.rank + '</td>';
-                html += '<td style="padding:4px 8px;">' + name + '</td>';
-                html += '</tr>';
-            });
+        rankData.forEach(function(r) {
+            var avgDisplay = r.hasGrades ? r.average.toFixed(1) + '%' : '—';
+            var isTop = r.rank === 1 && r.hasGrades;
+            var color = isTop ? 'var(--accent)' : (r.hasGrades ? 'var(--text)' : 'var(--text-dim)');
+            var bg = isTop ? 'background:var(--accent-soft);' : '';
+            
+            html += '<tr style="border-bottom:1px solid var(--border-soft);' + bg + '">';
+            html += '<td style="padding:6px 8px;font-weight:700;color:' + color + ';">#' + r.rank + '</td>';
+            html += '<td style="padding:6px 8px;">' + r.name + '</td>';
+            html += '<td style="padding:6px 8px;font-weight:600;color:' + color + ';">' + avgDisplay + '</td>';
+            html += '</tr>';
+        });
 
-            html += '</tbody></table>';
+        html += '</tbody></table></div>';
+
+        if (!hasAnyGrades) {
+            html = '<p class="empty-state">No grades recorded for week ' + week + '. Rankings require grades.</p>';
         }
 
         container.innerHTML = html;
+
+        var prevBtn = container.querySelector('#prev-rank-week');
+        if (prevBtn) {
+            prevBtn.addEventListener('click', function() {
+                if (window.data.curriculum.currentWeek > 1) {
+                    window.data.curriculum.currentWeek--;
+                    renderRanking(container);
+                }
+            });
+        }
+        var nextBtn = container.querySelector('#next-rank-week');
+        if (nextBtn) {
+            nextBtn.addEventListener('click', function() {
+                if (window.data.curriculum.currentWeek < 52) {
+                    window.data.curriculum.currentWeek++;
+                    renderRanking(container);
+                }
+            });
+        }
+        var gotoBtn = container.querySelector('#goto-rank-week');
+        if (gotoBtn) {
+            gotoBtn.addEventListener('click', function() {
+                var week = prompt('Enter week number (1-52):', window.data.curriculum.currentWeek || 1);
+                if (week) {
+                    var w = parseInt(week);
+                    if (!isNaN(w) && w >= 1 && w <= 52) {
+                        window.data.curriculum.currentWeek = w;
+                        renderRanking(container);
+                    } else {
+                        alert('Please enter a valid week (1-52).');
+                    }
+                }
+            });
+        }
     }
 
     // ============================================================
-    // CLASSES RENDER
+    // CLASSES RENDER - FIXED
     // ============================================================
 
     function renderClasses(container) {
@@ -752,7 +1096,7 @@
         html += '</div>';
 
         if (classes.length === 0) {
-            html += '<p class="empty-state">No classes created yet.</p>';
+            html += '<p class="empty-state">No classes created yet. Create your first class!</p>';
             container.innerHTML = html;
             return;
         }
@@ -824,17 +1168,20 @@
 
         var addBtn = container.querySelector('#add-class-btn');
         if (addBtn) {
-            addBtn.addEventListener('click', function() {
-                var name = prompt('Enter class name:');
+            // Remove existing listener by cloning
+            var newAddBtn = addBtn.cloneNode(true);
+            addBtn.parentNode.replaceChild(newAddBtn, addBtn);
+            newAddBtn.addEventListener('click', function() {
+                var name = prompt('Enter class name (e.g., Spring 1435, March 1436):');
                 if (!name) return;
                 var result = window.createClass(name);
-                if (result.success) {
+                if (result && result.success) {
                     renderClasses(container);
                     if (typeof window.updateDashboardStats === 'function') {
                         window.updateDashboardStats();
                     }
                 } else {
-                    alert(result.message);
+                    alert(result ? result.message : 'Failed to create class.');
                 }
             });
         }
@@ -855,7 +1202,6 @@
             });
         }
 
-        // Week display click
         var weekDisplay = container.querySelector('#curriculum-current-week');
         if (weekDisplay) {
             weekDisplay.addEventListener('click', function() {
@@ -867,7 +1213,6 @@
                         if (window.data.curriculum) {
                             window.data.curriculum.currentWeek = w;
                             this.textContent = w;
-                            // Refresh current tab
                             renderTabContent(currentTab, container);
                         }
                     } else {
