@@ -8,9 +8,6 @@ var DataLoader = {
     isInitialized: false,
     pendingCallbacks: [],
     data: null,
-    _dispatched: false,
-    _isDispatching: false,
-    _initDone: false,
 
     init: function() {
         if (this.isInitialized) return;
@@ -20,54 +17,27 @@ var DataLoader = {
 
         // Listen for data ready event from database.js
         document.addEventListener('dataReady', function(e) {
-            // Prevent re-entrancy
-            if (self._isDispatching) return;
-            if (self._dispatched) return;
-            
+            console.log('DataLoader: dataReady event received');
             self.data = e.detail.data || window.data;
             self.isReady = true;
-            
-            // Use setTimeout to avoid stack issues
-            setTimeout(function() {
-                self._dispatchReady();
-            }, 10);
+            self._processCallbacks();
         });
 
-        // If data is already available, dispatch immediately but async
-        if (window.data && !this._dispatched) {
+        // If data is already available via window.data, process immediately
+        if (window.data) {
+            console.log('DataLoader: window.data already available');
             self.data = window.data;
             self.isReady = true;
+            // Process callbacks after a short delay
             setTimeout(function() {
-                self._dispatchReady();
+                self._processCallbacks();
             }, 10);
         }
-
-        // Check periodically but with limits
-        var checkCount = 0;
-        var maxChecks = 20;
-        var checkInterval = setInterval(function() {
-            checkCount++;
-            if (window.data && !self.isReady && !self._dispatched) {
-                self.data = window.data;
-                self.isReady = true;
-                self._dispatchReady();
-                clearInterval(checkInterval);
-            }
-            if (self.isReady || self._dispatched || checkCount >= maxChecks) {
-                clearInterval(checkInterval);
-            }
-        }, 100);
     },
 
-    _dispatchReady: function() {
-        // Prevent re-entrancy
-        if (this._isDispatching) return;
-        if (this._dispatched) return;
+    _processCallbacks: function() {
+        if (!this.isReady || !this.data) return;
         
-        this._isDispatching = true;
-        this._dispatched = true;
-
-        // Process all pending callbacks
         var callbacks = this.pendingCallbacks.slice();
         this.pendingCallbacks = [];
         
@@ -78,15 +48,10 @@ var DataLoader = {
                 console.warn('Error in data ready callback:', e);
             }
         }, this);
-
-        this._isDispatching = false;
-        
-        console.log('DataLoader: data ready, callbacks processed');
     },
 
     whenReady: function(callback) {
         if (this.isReady && this.data) {
-            // Call immediately but asynchronously to avoid stack issues
             setTimeout(function() {
                 try {
                     callback(this.data);
@@ -111,11 +76,7 @@ function whenDataReady(callback) {
 window.DataLoader = DataLoader;
 window.whenDataReady = whenDataReady;
 
-// Initialize after a short delay to allow other scripts to load
-setTimeout(function() {
-    if (!DataLoader.isInitialized) {
-        DataLoader.init();
-    }
-}, 100);
+// Initialize immediately
+DataLoader.init();
 
 console.log('loader.js loaded');
