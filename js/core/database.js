@@ -193,25 +193,7 @@ function ensureDataStructure(data) {
     if (!data.social.nextId) data.social.nextId = 1;
     
     if (!data.statsConfig) {
-        data.statsConfig = {
-            classes: [
-                { id: 'warrior', label: 'Warrior', icon: '⚔', primaryStats: ['str', 'con'], secondaryStats: ['dex'], statWeights: { str: 0.4, con: 0.3, dex: 0.2, wis: 0.1 }, minStats: { str: 13, con: 12 } },
-                { id: 'skirmisher', label: 'Skirmisher', icon: '🏹', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.35, wis: 0.25, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 12 } },
-                { id: 'protector', label: 'Protector', icon: '🛡', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'cha'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, cha: 0.15, dex: 0.05 }, minStats: { str: 13, con: 12 } },
-                { id: 'sage', label: 'Sage', icon: '📚', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
-                { id: 'mystic', label: 'Mystic', icon: '🔮', primaryStats: ['wis', 'cha'], secondaryStats: ['con', 'int'], statWeights: { wis: 0.35, cha: 0.25, con: 0.2, int: 0.15, dex: 0.05 }, minStats: { wis: 13, cha: 12 } },
-                { id: 'stalker', label: 'Stalker', icon: '🗡', primaryStats: ['dex', 'int'], secondaryStats: ['cha', 'wis'], statWeights: { dex: 0.35, int: 0.25, cha: 0.2, wis: 0.15, str: 0.05 }, minStats: { dex: 13, int: 12 } },
-                { id: 'spellblade', label: 'Spellblade', icon: '⚡', primaryStats: ['str', 'int'], secondaryStats: ['dex', 'con'], statWeights: { str: 0.3, int: 0.3, dex: 0.2, con: 0.15, wis: 0.05 }, minStats: { str: 13, int: 12 } },
-                { id: 'channeler', label: 'Channeler', icon: '🌀', primaryStats: ['cha', 'con'], secondaryStats: ['dex', 'int'], statWeights: { cha: 0.35, con: 0.25, dex: 0.2, int: 0.15, wis: 0.05 }, minStats: { cha: 13, con: 12 } },
-                { id: 'warden', label: 'Warden', icon: '🌿', primaryStats: ['str', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { str: 0.3, wis: 0.25, con: 0.2, dex: 0.2, cha: 0.05 }, minStats: { str: 13, wis: 12 } },
-                { id: 'adept', label: 'Adept', icon: '🧘', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.3, wis: 0.3, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 13 } },
-                { id: 'artificer', label: 'Artificer', icon: '🔧', primaryStats: ['int', 'dex'], secondaryStats: ['con', 'wis'], statWeights: { int: 0.35, dex: 0.25, con: 0.2, wis: 0.15, cha: 0.05 }, minStats: { int: 13, dex: 12 } },
-                { id: 'occultist', label: 'Occultist', icon: '🌙', primaryStats: ['int', 'cha'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.3, cha: 0.3, con: 0.2, dex: 0.15, wis: 0.05 }, minStats: { int: 13, cha: 13 } },
-                { id: 'blade_dancer', label: 'Blade Dancer', icon: '🗡', primaryStats: ['dex', 'cha'], secondaryStats: ['str', 'con'], statWeights: { dex: 0.35, cha: 0.25, str: 0.2, con: 0.15, wis: 0.05 }, minStats: { dex: 13, cha: 12 } },
-                { id: 'elementalist', label: 'Elementalist', icon: '🌀', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
-                { id: 'sentinel', label: 'Sentinel', icon: '🏰', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'dex'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, dex: 0.15, cha: 0.05 }, minStats: { str: 13, con: 12 } }
-            ]
-        };
+        data.statsConfig = getEmptyData().statsConfig;
     }
 }
 
@@ -331,15 +313,49 @@ function migrateData(data) {
 }
 
 // ============================================================
-// NEW: Safe Data Copy for Storage - Fixes circular reference
+// CIRCULAR REFERENCE SAFE STRINGIFY
+// ============================================================
+
+function safeStringify(obj) {
+    var seen = [];
+    var MAX_DEPTH = 50;
+    var depth = 0;
+    
+    function replacer(key, value) {
+        depth++;
+        
+        if (depth > MAX_DEPTH) {
+            return '[MaxDepth]';
+        }
+        
+        if (typeof value === 'object' && value !== null) {
+            if (seen.indexOf(value) !== -1) {
+                return '[Circular]';
+            }
+            seen.push(value);
+        }
+        return value;
+    }
+    
+    try {
+        return JSON.stringify(obj, replacer);
+    } catch (e) {
+        console.error('safeStringify error:', e);
+        return '{}';
+    }
+}
+
+// ============================================================
+// SAFE DATA COPY FOR STORAGE
 // ============================================================
 
 function createSafeCopy(data) {
-    // Try JSON serialization first
+    // Use the safe stringify/parse method
     try {
-        return JSON.parse(JSON.stringify(data));
+        var json = safeStringify(data);
+        return JSON.parse(json);
     } catch (e) {
-        console.warn('JSON serialization failed, using manual safe copy');
+        console.warn('Safe copy failed, using manual copy:', e);
         return createManualSafeCopy(data);
     }
 }
@@ -347,7 +363,7 @@ function createSafeCopy(data) {
 function createManualSafeCopy(data) {
     var copy = {};
     
-    // Safe top-level keys
+    // Only copy primitive values and simple arrays/objects
     var safeKeys = [
         'characters', 'teams', 'tournaments', 'missions', 
         'activities', 'classes', 'currentYear', 'currentWeek'
@@ -355,119 +371,93 @@ function createManualSafeCopy(data) {
     
     safeKeys.forEach(function(key) {
         if (data[key] !== undefined && data[key] !== null) {
-            try {
-                if (Array.isArray(data[key])) {
-                    copy[key] = data[key].map(function(item) {
-                        try {
-                            return JSON.parse(JSON.stringify(item));
-                        } catch (e) {
-                            // Return a minimal version
-                            var minimal = {};
-                            if (item && typeof item === 'object') {
-                                if (item.id) minimal.id = item.id;
-                                if (item.name) minimal.name = item.name;
-                                if (item.firstName) minimal.firstName = item.firstName;
-                                if (item.lastName) minimal.lastName = item.lastName;
+            if (Array.isArray(data[key])) {
+                copy[key] = data[key].map(function(item) {
+                    if (item && typeof item === 'object') {
+                        var clean = {};
+                        for (var prop in item) {
+                            var val = item[prop];
+                            if (typeof val !== 'function' && 
+                                typeof val !== 'undefined' &&
+                                !(typeof val === 'object' && val === item)) {
+                                if (typeof val === 'object' && val !== null) {
+                                    try {
+                                        clean[prop] = JSON.parse(JSON.stringify(val));
+                                    } catch (e) {
+                                        clean[prop] = null;
+                                    }
+                                } else {
+                                    clean[prop] = val;
+                                }
                             }
-                            return minimal;
                         }
-                    });
-                } else {
-                    copy[key] = JSON.parse(JSON.stringify(data[key]));
-                }
-            } catch (e) {
-                copy[key] = Array.isArray(data[key]) ? [] : null;
+                        return clean;
+                    }
+                    return item;
+                });
+            } else {
+                copy[key] = data[key];
             }
         } else {
             copy[key] = Array.isArray(data[key]) ? [] : null;
         }
     });
     
-    // Copy curriculum safely
+    // Copy curriculum - only safe fields
     if (data.curriculum) {
-        try {
-            copy.curriculum = JSON.parse(JSON.stringify(data.curriculum));
-        } catch (e) {
-            copy.curriculum = {
-                disciplines: [],
-                schedules: {},
-                restDays: {},
-                examDays: {},
-                grades: {},
-                rankings: {},
-                currentWeek: 1,
-                classInstructors: {},
-                classLabels: {},
-                classGroupLabels: {},
-                classDurations: {},
-                instructorClasses: {},
-                instructorTemplates: {},
-                instructorBlocks: {},
-                instructorGroups: {},
-                disciplineGroups: {},
-                autoGroups: {}
-            };
-        }
+        var curriculum = {};
+        var curriculumKeys = [
+            'disciplines', 'schedules', 'restDays', 'examDays', 
+            'grades', 'rankings', 'currentWeek', 'classInstructors',
+            'classLabels', 'classGroupLabels', 'classDurations',
+            'instructorClasses', 'instructorTemplates', 'instructorBlocks',
+            'instructorGroups', 'disciplineGroups', 'autoGroups'
+        ];
+        
+        curriculumKeys.forEach(function(key) {
+            if (data.curriculum[key] !== undefined) {
+                if (Array.isArray(data.curriculum[key])) {
+                    curriculum[key] = data.curriculum[key].slice(0, 500);
+                } else if (typeof data.curriculum[key] === 'object' && data.curriculum[key] !== null) {
+                    try {
+                        curriculum[key] = JSON.parse(JSON.stringify(data.curriculum[key]));
+                    } catch (e) {
+                        curriculum[key] = {};
+                    }
+                } else {
+                    curriculum[key] = data.curriculum[key];
+                }
+            } else {
+                curriculum[key] = Array.isArray(data.curriculum[key]) ? [] : {};
+            }
+        });
+        copy.curriculum = curriculum;
     } else {
-        copy.curriculum = {
-            disciplines: [],
-            schedules: {},
-            restDays: {},
-            examDays: {},
-            grades: {},
-            rankings: {},
-            currentWeek: 1,
-            classInstructors: {},
-            classLabels: {},
-            classGroupLabels: {},
-            classDurations: {},
-            instructorClasses: {},
-            instructorTemplates: {},
-            instructorBlocks: {},
-            instructorGroups: {},
-            disciplineGroups: {},
-            autoGroups: {}
-        };
+        copy.curriculum = getEmptyData().curriculum;
     }
     
-    // Copy social safely
+    // Copy social - only safe fields
     if (data.social) {
-        try {
-            copy.social = JSON.parse(JSON.stringify(data.social));
-        } catch (e) {
-            copy.social = {
-                relationships: [],
-                relationshipTypes: [
-                    { id: 'familiar', label: 'Familiar', color: '#8cbb3a' },
-                    { id: 'professional', label: 'Professional', color: '#c9a24b' },
-                    { id: 'romantic', label: 'Romantic', color: '#c1453c' },
-                    { id: 'friendship', label: 'Friendship', color: '#4a9bc7' },
-                    { id: 'mentor', label: 'Mentor/Mentee', color: '#9b59b6' },
-                    { id: 'rivalry', label: 'Rivalry', color: '#e67e22' },
-                    { id: 'alliance', label: 'Alliance', color: '#27ae60' },
-                    { id: 'other', label: 'Other', color: '#7f8c8d' }
-                ],
-                nextId: 1
-            };
-        }
-    } else {
-        copy.social = {
+        var social = {
             relationships: [],
-            relationshipTypes: [
-                { id: 'familiar', label: 'Familiar', color: '#8cbb3a' },
-                { id: 'professional', label: 'Professional', color: '#c9a24b' },
-                { id: 'romantic', label: 'Romantic', color: '#c1453c' },
-                { id: 'friendship', label: 'Friendship', color: '#4a9bc7' },
-                { id: 'mentor', label: 'Mentor/Mentee', color: '#9b59b6' },
-                { id: 'rivalry', label: 'Rivalry', color: '#e67e22' },
-                { id: 'alliance', label: 'Alliance', color: '#27ae60' },
-                { id: 'other', label: 'Other', color: '#7f8c8d' }
-            ],
-            nextId: 1
+            relationshipTypes: [],
+            nextId: data.social.nextId || 1
         };
+        
+        if (data.social.relationships && Array.isArray(data.social.relationships)) {
+            social.relationships = data.social.relationships.slice(0, 500);
+        }
+        
+        if (data.social.relationshipTypes && Array.isArray(data.social.relationshipTypes)) {
+            social.relationshipTypes = data.social.relationshipTypes.slice(0, 20);
+        }
+        
+        copy.social = social;
+    } else {
+        copy.social = getEmptyData().social;
     }
     
-    // Copy statsConfig safely
+    // Copy statsConfig
     if (data.statsConfig) {
         try {
             copy.statsConfig = JSON.parse(JSON.stringify(data.statsConfig));
@@ -482,7 +472,7 @@ function createManualSafeCopy(data) {
 }
 
 // ============================================================
-// END OF SAFE COPY FUNCTIONS
+// LOAD DATA
 // ============================================================
 
 function loadData() {
@@ -582,6 +572,10 @@ function doLoadData(resolve) {
     }
 }
 
+// ============================================================
+// SAVE DATA - FIXED
+// ============================================================
+
 function saveData() {
     if (isSaving) {
         return Promise.resolve();
@@ -590,71 +584,75 @@ function saveData() {
     isSaving = true;
     
     return new Promise(function(resolve) {
-        if (!db || typeof db.transaction !== 'function') {
-            openDatabase()
-                .then(function(result) {
-                    if (result && typeof result.transaction === 'function') {
-                        db = result;
-                        saveData().then(resolve);
-                    } else {
+        // Ensure database is open
+        function doSave() {
+            if (!db || typeof db.transaction !== 'function') {
+                openDatabase()
+                    .then(function(result) {
+                        if (result && typeof result.transaction === 'function') {
+                            db = result;
+                            doSave();
+                        } else {
+                            isSaving = false;
+                            console.warn('Database not available, skipping save');
+                            resolve();
+                        }
+                    })
+                    .catch(function(err) {
                         isSaving = false;
+                        console.error('Failed to open database for save:', err);
                         resolve();
-                    }
-                })
-                .catch(function(err) {
-                    isSaving = false;
-                    console.error('Failed to open database for save:', err);
-                    resolve();
-                });
-            return;
-        }
-        
-        if (window.data) {
-            data = window.data;
-        }
-        
-        if (!data) {
-            data = getEmptyData();
-            window.data = data;
-        }
-        
-        ensureDataStructure(data);
-        
-        // ============================================================
-        // FIX: Create a safe copy for storage
-        // ============================================================
-        var safeData = createSafeCopy(data);
-        
-        try {
-            var transaction = db.transaction([STORE_NAME], 'readwrite');
-            var store = transaction.objectStore(STORE_NAME);
-            var record = {
-                id: 'mainData',
-                data: safeData, // Use safeData instead of data
-                updatedAt: new Date().toISOString()
-            };
-            var request = store.put(record);
+                    });
+                return;
+            }
             
-            request.onsuccess = function() {
+            try {
+                if (window.data) {
+                    data = window.data;
+                }
+                
+                if (!data) {
+                    data = getEmptyData();
+                    window.data = data;
+                }
+                
+                ensureDataStructure(data);
+                
+                // Create a clean copy for storage
+                var safeData = createSafeCopy(data);
+                
+                var transaction = db.transaction([STORE_NAME], 'readwrite');
+                var store = transaction.objectStore(STORE_NAME);
+                var record = {
+                    id: 'mainData',
+                    data: safeData,
+                    updatedAt: new Date().toISOString()
+                };
+                var request = store.put(record);
+                
+                request.onsuccess = function() {
+                    isSaving = false;
+                    console.log('Data saved to IndexedDB');
+                    resolve();
+                };
+                request.onerror = function(event) {
+                    isSaving = false;
+                    console.error('IndexedDB save error:', event.target.error);
+                    resolve();
+                };
+                transaction.onerror = function(event) {
+                    isSaving = false;
+                    console.error('Transaction error:', event.target.error);
+                    resolve();
+                };
+            } catch (err) {
                 isSaving = false;
-                console.log('Data saved to IndexedDB');
+                console.error('Error in saveData:', err);
                 resolve();
-            };
-            request.onerror = function(event) {
-                isSaving = false;
-                console.error('IndexedDB save error:', event.target.error);
-                resolve();
-            };
-            transaction.onerror = function(event) {
-                isSaving = false;
-                console.error('Transaction error:', event.target.error);
-                resolve();
-            };
-        } catch (err) {
-            isSaving = false;
-            console.error('Error in saveData:', err);
-            resolve();
+            }
         }
+        
+        doSave();
     });
 }
 
@@ -683,7 +681,6 @@ function _dispatchDataReady(data) {
     }
     _dataLoadedDispatched = true;
     
-    // Use setTimeout to avoid stack issues
     setTimeout(function() {
         var event = new CustomEvent('dataReady', { 
             detail: { data: data },
@@ -703,7 +700,8 @@ window.db = {
     getEmptyData: getEmptyData,
     getDefaultMagicProficiencies: getDefaultMagicProficiencies,
     autoLoadData: autoLoadData,
-    createSafeCopy: createSafeCopy
+    createSafeCopy: createSafeCopy,
+    safeStringify: safeStringify
 };
 
 window.loadData = loadData;
@@ -711,7 +709,7 @@ window.saveData = saveData;
 window.getEmptyData = getEmptyData;
 window.getDefaultMagicProficiencies = getDefaultMagicProficiencies;
 
-// Auto-load immediately with a slight delay to let other scripts initialize
+// Auto-load immediately with a slight delay
 setTimeout(autoLoadData, 50);
 
 console.log('database.js loaded - auto-loading data');
