@@ -21,18 +21,14 @@
         }
         if (!container) return;
 
-        // Check if data exists
         if (!window.data) {
-            console.warn('No data available, waiting for dataReady event');
             container.innerHTML = '<p class="empty-state">Loading data...</p>';
             return;
         }
 
-        // Ensure characters array exists
         if (!window.data.characters) {
             window.data.characters = [];
         }
-        // Ensure classes array exists
         if (!window.data.classes) {
             window.data.classes = [];
         }
@@ -296,7 +292,7 @@
                                 Select a class to see its description here.
                             </div>
 
-                            <!-- Magic Stats - Same styling as physical stats -->
+                            <!-- Magic Stats -->
                             <div class="magic-stats-grid" style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-top:12px;">
                                 <!-- Elemental Category -->
                                 <div class="form-group" style="grid-column:1/-1;margin:6px 0 2px 0;display:flex;align-items:center;gap:8px;">
@@ -782,7 +778,6 @@
             return t.members && t.members.some(function(m) { return String(m.characterId) === String(char.id); });
         }) : [];
 
-        // Sort by join period chronologically
         acadTeams.sort(function(a, b) {
             var aMember = a.members.find(function(m) { return String(m.characterId) === String(char.id); });
             var bMember = b.members.find(function(m) { return String(m.characterId) === String(char.id); });
@@ -1607,7 +1602,7 @@
     }
 
     // ============================================================
-    // STATS EVENTS
+    // STATS EVENTS - FIXED
     // ============================================================
 
     function initStatsEvents() {
@@ -1628,22 +1623,16 @@
 
         var classSelect = document.getElementById('manual-class-select');
         if (classSelect) {
-            var classes = window.CLASS_DEFINITIONS || [];
-            classSelect.innerHTML = '<option value="">Auto-suggest</option>';
-            classes.forEach(function(cls) {
-                var option = document.createElement('option');
-                option.value = cls.id;
-                option.textContent = cls.icon + ' ' + cls.label;
-                classSelect.appendChild(option);
-            });
+            populateClassSelect();
             classSelect.addEventListener('change', function() {
                 var display = document.getElementById('suggested-class');
                 var descDisplay = document.getElementById('class-description-display');
                 
                 if (this.value) {
+                    var classes = window.CLASS_DEFINITIONS || [];
                     var selected = classes.find(function(c) { return c.id === this.value; }.bind(this));
                     if (selected) {
-                        display.textContent = selected.icon + ' ' + selected.label;
+                        display.textContent = (selected.icon || '') + ' ' + (selected.label || '');
                         display.style.color = 'var(--accent)';
                         display.style.background = 'var(--accent-soft)';
                         display.style.borderColor = 'var(--accent)';
@@ -1686,15 +1675,39 @@
 
     function populateClassSelect() {
         var select = document.getElementById('manual-class-select');
-        if (!select) return;
+        if (!select) {
+            return;
+        }
+        
+        // Get class definitions safely
         var classes = window.CLASS_DEFINITIONS || [];
+        var currentValue = select.value || '';
+        
+        // Clear and rebuild options
         select.innerHTML = '<option value="">Auto-suggest</option>';
+        
         classes.forEach(function(cls) {
-            var option = document.createElement('option');
-            option.value = cls.id;
-            option.textContent = cls.icon + ' ' + cls.label;
-            select.appendChild(option);
+            if (cls && cls.id) {
+                var option = document.createElement('option');
+                option.value = cls.id;
+                option.textContent = (cls.icon || '') + ' ' + (cls.label || cls.id);
+                select.appendChild(option);
+            }
         });
+        
+        // Restore selected value if it exists and is valid
+        if (currentValue) {
+            var optionExists = false;
+            for (var i = 0; i < select.options.length; i++) {
+                if (select.options[i].value === currentValue) {
+                    optionExists = true;
+                    break;
+                }
+            }
+            if (optionExists) {
+                select.value = currentValue;
+            }
+        }
     }
 
     function updateClassSuggestion() {
@@ -1706,13 +1719,19 @@
         var cha = parseInt(document.getElementById('char-cha') ? document.getElementById('char-cha').value : 10) || 10;
 
         var stats = { str: str, dex: dex, con: con, int: int, wis: wis, cha: cha };
+        
+        // Check if suggestClass exists
+        if (typeof window.suggestClass !== 'function') {
+            return;
+        }
+        
         var suggested = window.suggestClass(stats);
         var display = document.getElementById('suggested-class');
         var descDisplay = document.getElementById('class-description-display');
 
         if (display) {
             if (suggested) {
-                display.textContent = suggested.icon + ' ' + suggested.label;
+                display.textContent = (suggested.icon || '') + ' ' + (suggested.label || '');
                 display.style.color = 'var(--accent)';
                 display.style.background = 'var(--accent-soft)';
                 display.style.borderColor = 'var(--accent)';
@@ -2063,7 +2082,7 @@
     }
 
     // ============================================================
-    // REGISTER
+    // REGISTER WITH TABMANAGER
     // ============================================================
 
     if (typeof window.TabManager !== 'undefined') {
@@ -2099,7 +2118,5 @@
     window.showCharacterForm = showCharacterForm;
     window.renderCharacterList = renderCharacterList;
     window.switchCharTab = switchCharTab;
-
-    console.log('characters.js loaded');
 
 })();
