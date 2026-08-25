@@ -36,12 +36,11 @@ var TabManager = {
             }
         });
 
-        // Find all nav links and attach events
+        // Find all nav links and attach events - NO CLONING
         document.querySelectorAll('#main-nav a[data-tab]').forEach(function(link) {
             self.navLinks.push(link);
-            var newLink = link.cloneNode(true);
-            link.parentNode.replaceChild(newLink, link);
-            newLink.addEventListener('click', function(e) {
+
+            link.addEventListener('click', function(e) {
                 e.preventDefault();
                 e.stopPropagation();
                 var tab = this.dataset.tab;
@@ -52,11 +51,9 @@ var TabManager = {
             });
         });
 
-        // Quick links on dashboard
+        // Quick links on dashboard - NO CLONING
         document.querySelectorAll('.quick-link[data-tab]').forEach(function(link) {
-            var newLink = link.cloneNode(true);
-            link.parentNode.replaceChild(newLink, link);
-            newLink.addEventListener('click', function(e) {
+            link.addEventListener('click', function(e) {
                 e.preventDefault();
                 e.stopPropagation();
                 var tab = this.dataset.tab;
@@ -68,9 +65,7 @@ var TabManager = {
         });
 
         document.querySelectorAll('.stat-link[data-tab]').forEach(function(link) {
-            var newLink = link.cloneNode(true);
-            link.parentNode.replaceChild(newLink, link);
-            newLink.addEventListener('click', function(e) {
+            link.addEventListener('click', function(e) {
                 e.preventDefault();
                 e.stopPropagation();
                 var tab = this.dataset.tab;
@@ -108,7 +103,6 @@ var TabManager = {
             this.init();
         } else {
             console.log('Dashboard not registered yet, waiting...');
-            // Wait a bit and try again
             var self = this;
             if (!this._pendingInit) {
                 this._pendingInit = true;
@@ -145,7 +139,6 @@ var TabManager = {
 
         if (!this.tabs[tabName]) {
             console.warn('Tab not registered:', tabName);
-            // Try to re-initialize if dashboard is missing
             if (tabName === 'dashboard') {
                 this.initWhenReady();
             }
@@ -181,7 +174,7 @@ var TabManager = {
         this.isRendering = true;
         this.currentTab = tabName;
 
-        // Update nav links
+        // Update nav links - now using actual DOM elements
         this.navLinks.forEach(function(link) {
             link.classList.toggle('active', link.dataset.tab === tabName);
         });
@@ -216,8 +209,6 @@ var TabManager = {
         var container = this.tabContentElements[tabName];
         if (container && this.tabs[tabName]) {
             try {
-                // Clear container before rendering to avoid duplication
-                // But preserve any static content if needed
                 this.tabs[tabName](container);
             } catch (e) {
                 console.error('Error rendering tab ' + tabName + ':', e);
@@ -263,7 +254,6 @@ var TabManager = {
         return false;
     },
 
-    // Safe re-render with debounce
     refreshCurrent: function() {
         var self = this;
         clearTimeout(this._refreshTimeout);
@@ -348,12 +338,11 @@ TabManager.register('social', function(container) {
 });
 
 // ============================================================
-// AUTO-INIT - Wait for modules to register
+// AUTO-INIT
 // ============================================================
 
 window.TabManager = TabManager;
 
-// Define the tryInitTabManager function
 function tryInitTabManager() {
     if (typeof TabManager === 'undefined') {
         console.warn('TabManager not defined, waiting...');
@@ -372,15 +361,12 @@ function tryInitTabManager() {
     
     if (!TabManager.isInitialized) {
         TabManager.initWhenReady();
-        // If still not initialized after short delay, try again
         setTimeout(tryInitTabManager, 200);
     }
 }
 
-// Start the init process
 setTimeout(tryInitTabManager, 100);
 
-// Also try again after data loads
 document.addEventListener('dataReady', function() {
     setTimeout(function() {
         if (typeof TabManager !== 'undefined' && !TabManager.isInitialized) {
@@ -389,7 +375,6 @@ document.addEventListener('dataReady', function() {
     }, 100);
 });
 
-// Also try again after DOM is ready
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
     setTimeout(function() {
         if (typeof TabManager !== 'undefined' && !TabManager.isInitialized) {
@@ -406,7 +391,6 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
     });
 }
 
-// Handle tab switching from hash changes
 window.addEventListener('hashchange', function() {
     if (typeof TabManager === 'undefined') return;
     var hash = window.location.hash.replace('#', '');
