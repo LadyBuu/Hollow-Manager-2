@@ -659,7 +659,7 @@ ensureDatabaseReady().then(function(database) {
 // Auto-load data after a short delay
 setTimeout(autoLoadData, 50);
 
-console.log('database.js loaded');
+
 
 // ============================================================
 // DEBUG HELPERS (remove in production)
