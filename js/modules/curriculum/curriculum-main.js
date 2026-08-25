@@ -1,6 +1,6 @@
 /**
  * js/modules/curriculum/curriculum-main.js - Main Curriculum Module
- * Entry point for all curriculum features - delegates to individual modules
+ * Entry point for all curriculum features
  * Path: js/modules/curriculum/curriculum-main.js
  */
 
@@ -17,8 +17,8 @@
         classes: { selectedClassId: null, viewMode: 'roster', distributionWeek: 1, maxTeamSize: 4 }
     };
 
-    var currentTab = 'disciplines';
     var _initialized = false;
+    var currentTab = 'disciplines';
 
     function renderCurriculum(container) {
         if (!container) {
@@ -110,28 +110,44 @@
     }
 
     function renderAllSections() {
-        // Disciplines
+        // Disciplines - use the existing module
         var disciplinesContent = document.getElementById('disciplines-content');
-        if (disciplinesContent && typeof window.renderDisciplinesView === 'function') {
-            window.renderDisciplinesView(disciplinesContent);
+        if (disciplinesContent) {
+            if (typeof window.renderDisciplinesView === 'function') {
+                window.renderDisciplinesView(disciplinesContent);
+            } else {
+                disciplinesContent.innerHTML = '<p class="empty-state">Disciplines module loading...</p>';
+            }
         }
 
         // Auto-Groups
         var groupsContent = document.getElementById('groups-content');
-        if (groupsContent && typeof window.renderAutoGroupsView === 'function') {
-            window.renderAutoGroupsView(groupsContent);
+        if (groupsContent) {
+            if (typeof window.renderAutoGroupsView === 'function') {
+                window.renderAutoGroupsView(groupsContent);
+            } else {
+                groupsContent.innerHTML = '<p class="empty-state">Auto-Groups module loading...</p>';
+            }
         }
 
         // Class View
         var classViewContent = document.getElementById('class-view-content');
-        if (classViewContent && typeof window.renderClassView === 'function') {
-            window.renderClassView(classViewContent);
+        if (classViewContent) {
+            if (typeof window.renderClassView === 'function') {
+                window.renderClassView(classViewContent);
+            } else {
+                classViewContent.innerHTML = '<p class="empty-state">Class View module loading...</p>';
+            }
         }
 
         // Instructor Calendar
         var instructorCalendarContent = document.getElementById('instructor-calendar-content');
-        if (instructorCalendarContent && typeof window.renderInstructorCalendar === 'function') {
-            window.renderInstructorCalendar(instructorCalendarContent);
+        if (instructorCalendarContent) {
+            if (typeof window.renderInstructorCalendar === 'function') {
+                window.renderInstructorCalendar(instructorCalendarContent);
+            } else {
+                instructorCalendarContent.innerHTML = '<p class="empty-state">Instructor Calendar module loading...</p>';
+            }
         }
 
         // Schedule
@@ -141,25 +157,39 @@
                 window.renderStudentScheduleView(scheduleContent);
             } else if (typeof window.renderScheduleView === 'function') {
                 window.renderScheduleView(scheduleContent);
+            } else {
+                scheduleContent.innerHTML = '<p class="empty-state">Schedule module loading...</p>';
             }
         }
 
         // Grades
         var gradesContent = document.getElementById('grades-content');
-        if (gradesContent && typeof window.renderGradesView === 'function') {
-            window.renderGradesView(gradesContent);
+        if (gradesContent) {
+            if (typeof window.renderGradesView === 'function') {
+                window.renderGradesView(gradesContent);
+            } else {
+                gradesContent.innerHTML = '<p class="empty-state">Grades module loading...</p>';
+            }
         }
 
         // Ranking
         var rankingContent = document.getElementById('ranking-content');
-        if (rankingContent && typeof window.renderRankingView === 'function') {
-            window.renderRankingView(rankingContent);
+        if (rankingContent) {
+            if (typeof window.renderRankingView === 'function') {
+                window.renderRankingView(rankingContent);
+            } else {
+                rankingContent.innerHTML = '<p class="empty-state">Ranking module loading...</p>';
+            }
         }
 
         // Classes
         var classesContent = document.getElementById('classes-content');
-        if (classesContent && typeof window.renderClassesView === 'function') {
-            window.renderClassesView(classesContent);
+        if (classesContent) {
+            if (typeof window.renderClassesView === 'function') {
+                window.renderClassesView(classesContent);
+            } else {
+                classesContent.innerHTML = '<p class="empty-state">Classes module loading...</p>';
+            }
         }
     }
 
@@ -187,7 +217,7 @@
         }
 
         // Show active tab's panel
-        var activeTab = document.querySelector('.tab-btn.active');
+        var activeTab = tabContainer.querySelector('.tab-btn.active');
         if (activeTab) {
             var activeTabName = activeTab.dataset.tab;
             if (panels[activeTabName]) {
@@ -199,7 +229,7 @@
             panels.disciplines.classList.add('active');
         }
 
-        // Tab switching
+        // Tab switching - use event delegation
         tabContainer.addEventListener('click', function(e) {
             var tab = e.target.closest('.tab-btn');
             if (!tab) return;
@@ -211,7 +241,7 @@
             currentTab = tabName;
             
             // Update tab buttons
-            document.querySelectorAll('#curriculum-tab-nav .tab-btn').forEach(function(t) {
+            tabContainer.querySelectorAll('.tab-btn').forEach(function(t) {
                 t.classList.remove('active');
             });
             tab.classList.add('active');
@@ -229,12 +259,13 @@
                 panels[tabName].classList.add('active');
             }
             
-            // Refresh tab content
+            // Refresh tab content - call the appropriate module
             refreshTabContent(tabName);
         });
     }
 
     function refreshTabContent(tabName) {
+        // Use setTimeout to ensure panel is visible
         setTimeout(function() {
             try {
                 if (tabName === 'disciplines') {
@@ -283,13 +314,13 @@
                     }
                 }
             } catch (e) {
-                // Silently handle errors
+                // Silently handle errors - the user will see an empty state
             }
         }, 50);
     }
 
     function initCurriculumEvents() {
-        // Each sub-module has its own init function
+        // Each sub-module has its own init function - call them if they exist
         if (typeof window.initDisciplineEvents === 'function') {
             window.initDisciplineEvents();
         }
