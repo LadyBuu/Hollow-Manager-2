@@ -25,7 +25,7 @@ var AppState = {
         expandedTeamId: null,
         currentTeamId: null,
         filters: {
-            academic: { filterWeek: 1, filterStatus: 'active' },
+            academic: { filterWeek: 1, filterStatus: 'active', filterClass: 'all' },
             professional: { filterYear: '', filterStatus: 'active' },
             temporary: { filterYear: '', filterStatus: 'active' },
             civilian: { filterStatus: 'active' }
@@ -80,21 +80,35 @@ var AppState = {
     }
 };
 
-// Make globally available
-window.AppState = AppState;
+// ============================================================
+// STATE GETTERS / SETTERS
+// ============================================================
 
-// Convenience getters/setters
 function getState(module, key) {
-    if (AppState[module] && AppState[module][key] !== undefined) {
-        return AppState[module][key];
+    if (!AppState[module]) {
+        console.warn('Unknown state module:', module);
+        return undefined;
     }
-    return undefined;
+
+    return AppState[module][key];
 }
 
 function setState(module, key, value) {
-    if (AppState[module]) {
-        AppState[module][key] = value;
+    if (!AppState[module]) {
+        console.warn('Unknown state module:', module);
+        return;
     }
+
+    if (!(key in AppState[module])) {
+        console.warn('Unknown state key:', module + '.' + key);
+        return;
+    }
+
+    AppState[module][key] = value;
+}
+
+function getModuleState(module) {
+    return AppState[module] || null;
 }
 
 function getCurriculumState() {
@@ -117,12 +131,16 @@ function getSocialState() {
     return AppState.social;
 }
 
-// Export to window
+// ============================================================
+// EXPOSE GLOBALS
+// ============================================================
+
+window.AppState = AppState;
 window.getState = getState;
 window.setState = setState;
+window.getModuleState = getModuleState;
 window.getCurriculumState = getCurriculumState;
 window.getCharacterState = getCharacterState;
 window.getTeamState = getTeamState;
 window.getTournamentState = getTournamentState;
 window.getSocialState = getSocialState;
-
