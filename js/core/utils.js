@@ -851,4 +851,3 @@ window.getCharacterClassNames = getCharacterClassNames;
 window.addCharacterToClass = addCharacterToClass;
 window.removeCharacterFromClass = removeCharacterFromClass;
 
-console.log('utils.js loaded');
