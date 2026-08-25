@@ -79,4 +79,3 @@ window.whenDataReady = whenDataReady;
 // Initialize immediately
 DataLoader.init();
 
-console.log('loader.js loaded');
