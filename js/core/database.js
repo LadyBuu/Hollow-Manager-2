@@ -4,128 +4,25 @@
  */
 
 var DB_NAME = 'HollowBladesDB';
-var DB_VERSION = 12; // Increment version to force upgrade
+var DB_VERSION = 12;
+var DATA_VERSION = 12;
 var STORE_NAME = 'appData';
 
 // INTERNAL: The actual IndexedDB connection (private)
 var _indexedDB = null;
-// INTERNAL: The application data cache
 var _data = null;
-// INTERNAL: Promise for database open operation
 var _dbOpenPromise = null;
-// INTERNAL: Loading state flags
-var _isLoading = false;
+var _loadPromise = null;
 var _isSaving = false;
+var _savePending = false;
+var _savePromise = null;
 var _dataLoadedDispatched = false;
-// INTERNAL: Database initialization promise
 var _dbInitPromise = null;
+var _dbStatus = 'uninitialized';
+var _loadError = null;
 
 // ============================================================
-// DATABASE OPENING - WITH STORE CREATION
-// ============================================================
-
-function openDatabase() {
-    if (_indexedDB) {
-        return Promise.resolve(_indexedDB);
-    }
-    if (_dbOpenPromise) {
-        return _dbOpenPromise;
-    }
-
-    _dbOpenPromise = new Promise(function(resolve) {
-        try {
-            var request = indexedDB.open(DB_NAME, DB_VERSION);
-            
-            request.onerror = function(event) {
-                var error = event.target.error;
-                
-                console.error('=================================');
-                console.error('INDEXEDDB OPEN FAILED');
-                console.error('Name:', error && error.name);
-                console.error('Message:', error && error.message);
-                console.error('Error:', error);
-                console.error('=================================');
-                
-                _dbOpenPromise = null;
-                resolve(null);
-            };
-            
-            request.onsuccess = function(event) {
-                _indexedDB = event.target.result;
-                _dbOpenPromise = null;
-                console.log('IndexedDB opened successfully:', _indexedDB.name, 'v' + _indexedDB.version);
-                
-                // Verify the store exists
-                if (!_indexedDB.objectStoreNames.contains(STORE_NAME)) {
-                    console.warn('Store "' + STORE_NAME + '" not found! Closing and reopening with upgrade...');
-                    _indexedDB.close();
-                    _indexedDB = null;
-                    _dbOpenPromise = null;
-                    // Reopen with a higher version to trigger upgrade
-                    var upgradeRequest = indexedDB.open(DB_NAME, DB_VERSION + 1);
-                    upgradeRequest.onupgradeneeded = function(upgradeEvent) {
-                        var db = upgradeEvent.target.result;
-                        if (!db.objectStoreNames.contains(STORE_NAME)) {
-                            db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-                            console.log('Store "' + STORE_NAME + '" created during upgrade');
-                        }
-                    };
-                    upgradeRequest.onsuccess = function(upgradeEvent) {
-                        _indexedDB = upgradeEvent.target.result;
-                        _dbOpenPromise = null;
-                        console.log('IndexedDB reopened successfully with store');
-                        resolve(_indexedDB);
-                    };
-                    upgradeRequest.onerror = function(upgradeEvent) {
-                        console.error('Failed to reopen database with upgrade:', upgradeEvent.target.error);
-                        resolve(null);
-                    };
-                    return;
-                }
-                
-                resolve(_indexedDB);
-            };
-            
-            request.onupgradeneeded = function(event) {
-                var database = event.target.result;
-                console.log('Upgrade needed - creating/updating stores...');
-                if (!database.objectStoreNames.contains(STORE_NAME)) {
-                    database.createObjectStore(STORE_NAME, { keyPath: 'id' });
-                    console.log('IndexedDB store "' + STORE_NAME + '" created');
-                } else {
-                    console.log('Store "' + STORE_NAME + '" already exists');
-                }
-            };
-        } catch (err) {
-            console.error('=================================');
-            console.error('INDEXEDDB EXCEPTION');
-            console.error('Error:', err);
-            console.error('=================================');
-            _dbOpenPromise = null;
-            resolve(null);
-        }
-    });
-
-    return _dbOpenPromise;
-}
-
-function ensureDatabaseReady() {
-    if (_dbInitPromise) {
-        return _dbInitPromise;
-    }
-    
-    _dbInitPromise = openDatabase().then(function(result) {
-        if (result) {
-            _indexedDB = result;
-        }
-        return _indexedDB;
-    });
-    
-    return _dbInitPromise;
-}
-
-// ============================================================
-// DATA STRUCTURES
+// DEFAULT FACTORIES
 // ============================================================
 
 function getDefaultMagicProficiencies() {
@@ -137,136 +34,355 @@ function getDefaultMagicProficiencies() {
     return proficiencies;
 }
 
+function getDefaultSocialData() {
+    return {
+        relationships: [],
+        relationshipTypes: [
+            { id: 'familiar', label: 'Familiar', color: '#8cbb3a' },
+            { id: 'professional', label: 'Professional', color: '#c9a24b' },
+            { id: 'romantic', label: 'Romantic', color: '#c1453c' },
+            { id: 'friendship', label: 'Friendship', color: '#4a9bc7' },
+            { id: 'mentor', label: 'Mentor/Mentee', color: '#9b59b6' },
+            { id: 'rivalry', label: 'Rivalry', color: '#e67e22' },
+            { id: 'alliance', label: 'Alliance', color: '#27ae60' },
+            { id: 'other', label: 'Other', color: '#7f8c8d' }
+        ],
+        nextId: 1
+    };
+}
+
+function getDefaultCurriculumData() {
+    return {
+        disciplines: [],
+        schedules: {},
+        restDays: {},
+        examDays: {},
+        grades: {},
+        rankings: {},
+        currentWeek: 1,
+        classInstructors: {},
+        classLabels: {},
+        classGroupLabels: {},
+        classDurations: {},
+        classLocations: {},
+        instructorClasses: {},
+        instructorTemplates: {},
+        instructorBlocks: {},
+        instructorGroups: {},
+        disciplineGroups: {},
+        autoGroups: {}
+    };
+}
+
+function getDefaultStatsConfig() {
+    return {
+        classes: [
+            { id: 'warrior', label: 'Warrior', icon: '⚔', primaryStats: ['str', 'con'], secondaryStats: ['dex'], statWeights: { str: 0.4, con: 0.3, dex: 0.2, wis: 0.1 }, minStats: { str: 13, con: 12 } },
+            { id: 'skirmisher', label: 'Skirmisher', icon: '🏹', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.35, wis: 0.25, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 12 } },
+            { id: 'protector', label: 'Protector', icon: '🛡', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'cha'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, cha: 0.15, dex: 0.05 }, minStats: { str: 13, con: 12 } },
+            { id: 'sage', label: 'Sage', icon: '📚', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
+            { id: 'mystic', label: 'Mystic', icon: '✦', primaryStats: ['wis', 'cha'], secondaryStats: ['con', 'int'], statWeights: { wis: 0.35, cha: 0.25, con: 0.2, int: 0.15, dex: 0.05 }, minStats: { wis: 13, cha: 12 } },
+            { id: 'stalker', label: 'Stalker', icon: '🗡', primaryStats: ['dex', 'int'], secondaryStats: ['cha', 'wis'], statWeights: { dex: 0.35, int: 0.25, cha: 0.2, wis: 0.15, str: 0.05 }, minStats: { dex: 13, int: 12 } },
+            { id: 'spellblade', label: 'Spellblade', icon: '⚡', primaryStats: ['str', 'int'], secondaryStats: ['dex', 'con'], statWeights: { str: 0.3, int: 0.3, dex: 0.2, con: 0.15, wis: 0.05 }, minStats: { str: 13, int: 12 } },
+            { id: 'channeler', label: 'Channeler', icon: '✦', primaryStats: ['cha', 'con'], secondaryStats: ['dex', 'int'], statWeights: { cha: 0.35, con: 0.25, dex: 0.2, int: 0.15, wis: 0.05 }, minStats: { cha: 13, con: 12 } },
+            { id: 'warden', label: 'Warden', icon: '⚔', primaryStats: ['str', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { str: 0.3, wis: 0.25, con: 0.2, dex: 0.2, cha: 0.05 }, minStats: { str: 13, wis: 12 } },
+            { id: 'adept', label: 'Adept', icon: '✦', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.3, wis: 0.3, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 13 } },
+            { id: 'artificer', label: 'Artificer', icon: '⚙', primaryStats: ['int', 'dex'], secondaryStats: ['con', 'wis'], statWeights: { int: 0.35, dex: 0.25, con: 0.2, wis: 0.15, cha: 0.05 }, minStats: { int: 13, dex: 12 } },
+            { id: 'occultist', label: 'Occultist', icon: '✦', primaryStats: ['int', 'cha'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.3, cha: 0.3, con: 0.2, dex: 0.15, wis: 0.05 }, minStats: { int: 13, cha: 13 } },
+            { id: 'blade_dancer', label: 'Blade Dancer', icon: '🗡', primaryStats: ['dex', 'cha'], secondaryStats: ['str', 'con'], statWeights: { dex: 0.35, cha: 0.25, str: 0.2, con: 0.15, wis: 0.05 }, minStats: { dex: 13, cha: 12 } },
+            { id: 'elementalist', label: 'Elementalist', icon: '✦', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
+            { id: 'sentinel', label: 'Sentinel', icon: '🛡', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'dex'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, dex: 0.15, cha: 0.05 }, minStats: { str: 13, con: 12 } }
+        ]
+    };
+}
+
 function getEmptyData() {
     return {
+        _dataVersion: DATA_VERSION,
         characters: [],
         teams: [],
         tournaments: [],
         missions: [],
         activities: [],
         classes: [],
+        locations: [],
+        locationSchedules: {},
         currentYear: new Date().getFullYear(),
         currentWeek: 1,
-        curriculum: {
-            disciplines: [],
-            schedules: {},
-            restDays: {},
-            examDays: {},
-            grades: {},
-            rankings: {},
-            currentWeek: 1,
-            classInstructors: {},
-            classLabels: {},
-            classGroupLabels: {},
-            classDurations: {},
-            instructorClasses: {},
-            instructorTemplates: {},
-            instructorBlocks: {},
-            instructorGroups: {},
-            disciplineGroups: {},
-            autoGroups: {}
-        },
-        social: {
-            relationships: [],
-            relationshipTypes: [
-                { id: 'familiar', label: 'Familiar', color: '#8cbb3a' },
-                { id: 'professional', label: 'Professional', color: '#c9a24b' },
-                { id: 'romantic', label: 'Romantic', color: '#c1453c' },
-                { id: 'friendship', label: 'Friendship', color: '#4a9bc7' },
-                { id: 'mentor', label: 'Mentor/Mentee', color: '#9b59b6' },
-                { id: 'rivalry', label: 'Rivalry', color: '#e67e22' },
-                { id: 'alliance', label: 'Alliance', color: '#27ae60' },
-                { id: 'other', label: 'Other', color: '#7f8c8d' }
-            ],
-            nextId: 1
-        },
-        statsConfig: {
-            classes: [
-                { id: 'warrior', label: 'Warrior', icon: '⚔', primaryStats: ['str', 'con'], secondaryStats: ['dex'], statWeights: { str: 0.4, con: 0.3, dex: 0.2, wis: 0.1 }, minStats: { str: 13, con: 12 } },
-                { id: 'skirmisher', label: 'Skirmisher', icon: '🏹', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.35, wis: 0.25, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 12 } },
-                { id: 'protector', label: 'Protector', icon: '🛡', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'cha'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, cha: 0.15, dex: 0.05 }, minStats: { str: 13, con: 12 } },
-                { id: 'sage', label: 'Sage', icon: '📚', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
-                { id: 'mystic', label: 'Mystic', icon: '🔮', primaryStats: ['wis', 'cha'], secondaryStats: ['con', 'int'], statWeights: { wis: 0.35, cha: 0.25, con: 0.2, int: 0.15, dex: 0.05 }, minStats: { wis: 13, cha: 12 } },
-                { id: 'stalker', label: 'Stalker', icon: '🗡', primaryStats: ['dex', 'int'], secondaryStats: ['cha', 'wis'], statWeights: { dex: 0.35, int: 0.25, cha: 0.2, wis: 0.15, str: 0.05 }, minStats: { dex: 13, int: 12 } },
-                { id: 'spellblade', label: 'Spellblade', icon: '⚡', primaryStats: ['str', 'int'], secondaryStats: ['dex', 'con'], statWeights: { str: 0.3, int: 0.3, dex: 0.2, con: 0.15, wis: 0.05 }, minStats: { str: 13, int: 12 } },
-                { id: 'channeler', label: 'Channeler', icon: '🌀', primaryStats: ['cha', 'con'], secondaryStats: ['dex', 'int'], statWeights: { cha: 0.35, con: 0.25, dex: 0.2, int: 0.15, wis: 0.05 }, minStats: { cha: 13, con: 12 } },
-                { id: 'warden', label: 'Warden', icon: '🌿', primaryStats: ['str', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { str: 0.3, wis: 0.25, con: 0.2, dex: 0.2, cha: 0.05 }, minStats: { str: 13, wis: 12 } },
-                { id: 'adept', label: 'Adept', icon: '🧘', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.3, wis: 0.3, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 13 } },
-                { id: 'artificer', label: 'Artificer', icon: '🔧', primaryStats: ['int', 'dex'], secondaryStats: ['con', 'wis'], statWeights: { int: 0.35, dex: 0.25, con: 0.2, wis: 0.15, cha: 0.05 }, minStats: { int: 13, dex: 12 } },
-                { id: 'occultist', label: 'Occultist', icon: '🌙', primaryStats: ['int', 'cha'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.3, cha: 0.3, con: 0.2, dex: 0.15, wis: 0.05 }, minStats: { int: 13, cha: 13 } },
-                { id: 'blade_dancer', label: 'Blade Dancer', icon: '🗡', primaryStats: ['dex', 'cha'], secondaryStats: ['str', 'con'], statWeights: { dex: 0.35, cha: 0.25, str: 0.2, con: 0.15, wis: 0.05 }, minStats: { dex: 13, cha: 12 } },
-                { id: 'elementalist', label: 'Elementalist', icon: '🌀', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
-                { id: 'sentinel', label: 'Sentinel', icon: '🏰', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'dex'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, dex: 0.15, cha: 0.05 }, minStats: { str: 13, con: 12 } }
-            ]
-        }
+        curriculum: getDefaultCurriculumData(),
+        social: getDefaultSocialData(),
+        statsConfig: getDefaultStatsConfig()
     };
 }
 
-function ensureDataStructure(data) {
-    if (!data.tournaments) data.tournaments = [];
-    if (!data.characters) data.characters = [];
-    if (!data.teams) data.teams = [];
-    if (!data.missions) data.missions = [];
-    if (!data.activities) data.activities = [];
-    if (!data.classes) data.classes = [];
-    if (!data.currentYear) data.currentYear = new Date().getFullYear();
-    if (!data.currentWeek) data.currentWeek = 1;
-    
-    data.characters.forEach(function(char) {
-        if (!char.classIds) char.classIds = [];
-    });
-    
-    data.teams.forEach(function(team) {
-        if (team.type === 'academic' && !team.classId) {
-            team.classId = null;
+// ============================================================
+// DEEP MERGE HELPERS
+// ============================================================
+
+function deepMergeDefaults(target, defaults) {
+    if (!target || typeof target !== 'object' || Array.isArray(target)) {
+        return target === undefined ? defaults : target;
+    }
+
+    if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)) {
+        return target;
+    }
+
+    var result = {};
+    var keys = Object.keys(defaults);
+
+    keys.forEach(function(key) {
+        if (target[key] === undefined) {
+            result[key] = defaults[key];
+        } else if (
+            target[key] &&
+            typeof target[key] === 'object' &&
+            !Array.isArray(target[key]) &&
+            defaults[key] &&
+            typeof defaults[key] === 'object' &&
+            !Array.isArray(defaults[key])
+        ) {
+            result[key] = deepMergeDefaults(target[key], defaults[key]);
+        } else {
+            result[key] = target[key];
         }
-        if (!team.teamNumber) team.teamNumber = '';
     });
-    
-    if (!data.curriculum) {
-        data.curriculum = getEmptyData().curriculum;
-    }
-    
-    if (!data.social) {
-        data.social = getEmptyData().social;
-    }
-    if (!data.social.relationships) data.social.relationships = [];
-    if (!data.social.nextId) data.social.nextId = 1;
-    
-    if (!data.statsConfig) {
-        data.statsConfig = getEmptyData().statsConfig;
-    }
+
+    Object.keys(target).forEach(function(key) {
+        if (result[key] === undefined) {
+            result[key] = target[key];
+        }
+    });
+
+    return result;
 }
 
-function migrateData(data) {
-    if (!data) return;
+// ============================================================
+// DATABASE OPENING
+// ============================================================
+
+function openDatabase() {
+    if (_indexedDB && _dbStatus === 'ready') {
+        return Promise.resolve(_indexedDB);
+    }
+    if (_dbOpenPromise) {
+        return _dbOpenPromise;
+    }
+
+    _dbOpenPromise = new Promise(function(resolve, reject) {
+        try {
+            var request = indexedDB.open(DB_NAME, DB_VERSION);
+            
+            request.onerror = function(event) {
+                var error = event.target.error;
+                _dbOpenPromise = null;
+                _dbStatus = 'failed';
+                reject(error);
+            };
+            
+            request.onblocked = function() {
+                // Another tab has the database open - waiting for it to close
+            };
+            
+            request.onsuccess = function(event) {
+                _indexedDB = event.target.result;
+                _dbOpenPromise = null;
+                _dbStatus = 'ready';
+                
+                _indexedDB.onversionchange = function() {
+                    _indexedDB.close();
+                    _indexedDB = null;
+                    _dbInitPromise = null;
+                    _dbStatus = 'uninitialized';
+                };
+                
+                _indexedDB.onclose = function() {
+                    _indexedDB = null;
+                    _dbInitPromise = null;
+                    _dbStatus = 'uninitialized';
+                };
+                
+                _indexedDB.onerror = function(event) {
+                    // Connection-level error
+                };
+                
+                resolve(_indexedDB);
+            };
+            
+            request.onupgradeneeded = function(event) {
+                var database = event.target.result;
+                if (!database.objectStoreNames.contains(STORE_NAME)) {
+                    database.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                }
+            };
+        } catch (err) {
+            _dbOpenPromise = null;
+            _dbStatus = 'failed';
+            reject(err);
+        }
+    });
+
+    return _dbOpenPromise;
+}
+
+// ============================================================
+// DATABASE STATUS
+// ============================================================
+
+function getDatabaseStatus() {
+    return _dbStatus;
+}
+
+function isDatabaseReady() {
+    return _dbStatus === 'ready' && _indexedDB !== null;
+}
+
+function getLoadError() {
+    return _loadError;
+}
+
+// ============================================================
+// ENSURE DATABASE READY
+// ============================================================
+
+function ensureDatabaseReady() {
+    if (_dbInitPromise) {
+        return _dbInitPromise;
+    }
     
+    _dbStatus = 'initializing';
+    _dbInitPromise = openDatabase()
+        .then(function(result) {
+            if (result) {
+                _indexedDB = result;
+                _dbStatus = 'ready';
+            }
+            return _indexedDB;
+        })
+        .catch(function(err) {
+            _dbStatus = 'failed';
+            _dbInitPromise = null;
+            throw err;
+        });
+    
+    return _dbInitPromise;
+}
+
+// ============================================================
+// ENSURE MIGRATION BASE STRUCTURE
+// ============================================================
+
+function ensureMigrationBaseStructure(data) {
+    if (!Array.isArray(data.characters)) data.characters = [];
+    if (!Array.isArray(data.teams)) data.teams = [];
+    if (!Array.isArray(data.tournaments)) data.tournaments = [];
+    if (!Array.isArray(data.missions)) data.missions = [];
+}
+
+// ============================================================
+// DATA MIGRATION - VERSIONED
+// ============================================================
+
+function migrateData(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('Invalid database data format');
+    }
+
+    ensureMigrationBaseStructure(data);
+
+    if (typeof data._dataVersion !== 'number') {
+        data._dataVersion = 1;
+    }
+
+    if (data._dataVersion > DATA_VERSION) {
+        throw new Error(
+            'Data version ' + data._dataVersion +
+            ' is newer than supported version ' + DATA_VERSION
+        );
+    }
+
+    var originalVersion = data._dataVersion;
+
+    while (data._dataVersion < DATA_VERSION) {
+        var currentVersion = data._dataVersion;
+        switch (currentVersion) {
+            case 1:
+                migrateToVersion2(data);
+                break;
+            case 2:
+                migrateToVersion3(data);
+                break;
+            case 3:
+                migrateToVersion4(data);
+                break;
+            case 4:
+                migrateToVersion5(data);
+                break;
+            case 5:
+                migrateToVersion6(data);
+                break;
+            case 6:
+                migrateToVersion7(data);
+                break;
+            case 7:
+                migrateToVersion8(data);
+                break;
+            case 8:
+                migrateToVersion9(data);
+                break;
+            case 9:
+                migrateToVersion10(data);
+                break;
+            case 10:
+                migrateToVersion11(data);
+                break;
+            case 11:
+                migrateToVersion12(data);
+                break;
+            default:
+                data._dataVersion = DATA_VERSION;
+                break;
+        }
+    }
+
+    return originalVersion;
+}
+
+function migrateToVersion2(data) {
     data.characters.forEach(function(char) {
         if (char.deceased === undefined) char.deceased = false;
-        if (!char.careerStatus) char.careerStatus = [];
-        if (!char.eliminatedWeeks) char.eliminatedWeeks = [];
-        if (!char.eliminations) char.eliminations = [];
-        if (!char.middleName) char.middleName = '';
-        if (!char.nickname) char.nickname = '';
-        if (!char.alias) char.alias = '';
-        if (!char.previousNames) char.previousNames = [];
-        if (!char.nameFormat) char.nameFormat = 'firstlast';
-        if (!char.eyes) char.eyes = '';
-        if (!char.hair) char.hair = '';
-        if (!char.skin) char.skin = '';
-        if (!char.height) char.height = '';
-        if (!char.weight) char.weight = '';
-        if (!char.build) char.build = '';
-        if (!char.appearanceNotes) char.appearanceNotes = '';
-        if (!char.specialty) char.specialty = '';
-        if (!char.deathYear) char.deathYear = '';
-        if (!char.deathCause) char.deathCause = '';
-        if (!char.deathAge) char.deathAge = '';
-        if (!char.notes) char.notes = '';
-        if (!char.gender) char.gender = '';
-        if (!char.classIds) char.classIds = [];
-        
-        if (!char.stats) {
+        if (!Array.isArray(char.careerStatus)) char.careerStatus = [];
+        if (!Array.isArray(char.eliminatedWeeks)) char.eliminatedWeeks = [];
+        if (!Array.isArray(char.eliminations)) char.eliminations = [];
+        if (char.middleName === undefined) char.middleName = '';
+        if (char.nickname === undefined) char.nickname = '';
+        if (char.alias === undefined) char.alias = '';
+        if (!Array.isArray(char.previousNames)) char.previousNames = [];
+        if (char.nameFormat === undefined) char.nameFormat = 'firstlast';
+        if (char.eyes === undefined) char.eyes = '';
+        if (char.hair === undefined) char.hair = '';
+        if (char.skin === undefined) char.skin = '';
+        if (char.height === undefined) char.height = '';
+        if (char.weight === undefined) char.weight = '';
+        if (char.build === undefined) char.build = '';
+        if (char.appearanceNotes === undefined) char.appearanceNotes = '';
+        if (char.specialty === undefined) char.specialty = '';
+        if (char.deathYear === undefined) char.deathYear = '';
+        if (char.deathCause === undefined) char.deathCause = '';
+        if (char.deathAge === undefined) char.deathAge = '';
+        if (char.notes === undefined) char.notes = '';
+        if (char.gender === undefined) char.gender = '';
+        if (!Array.isArray(char.classIds)) char.classIds = [];
+        if (!char.stats || typeof char.stats !== 'object' || Array.isArray(char.stats)) {
+            char.stats = { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
+        }
+    });
+    data._dataVersion = 2;
+}
+
+function migrateToVersion3(data) {
+    data.characters.forEach(function(char) {
+        if (!char.stats || typeof char.stats !== 'object' || Array.isArray(char.stats)) {
             char.stats = { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
         }
         ['str','dex','con','int','wis','cha'].forEach(function(key) {
@@ -274,8 +390,7 @@ function migrateData(data) {
                 char.stats[key] = 10;
             }
         });
-        
-        if (!char.magic) {
+        if (!char.magic || typeof char.magic !== 'object' || Array.isArray(char.magic)) {
             char.magic = getDefaultMagicProficiencies();
         }
         var magicTypes = ['earth','water','fire','air','metal','wood',
@@ -286,97 +401,204 @@ function migrateData(data) {
                 char.magic[key] = 0;
             }
         });
-        
-        char.careerStatus.forEach(function(status) {
-            if (!status.status) status.status = 'civilian';
-            if (!status.startYear) status.startYear = '';
-            if (!status.endYear) status.endYear = '';
-        });
-        
-        char.eliminations.forEach(function(elim) {
-            if (!elim.tournamentId) elim.tournamentId = '';
-            if (!elim.week) elim.week = '';
-            if (!elim.reason) elim.reason = 'Eliminated from tournament';
-        });
     });
-    
+    data._dataVersion = 3;
+}
+
+function migrateToVersion4(data) {
     data.teams.forEach(function(team) {
-        if (!team.nameHistory) team.nameHistory = [];
-        if (!team.rankingHistory) team.rankingHistory = [];
-        if (!team.members) team.members = [];
-        if (!team.status) team.status = 'active';
-        if (!team.currentRank) team.currentRank = '';
-        if (!team.startPeriod) team.startPeriod = '';
-        if (!team.endPeriod) team.endPeriod = '';
-        if (!team.type) team.type = 'academic';
-        if (!team.temporaryMission) team.temporaryMission = null;
-        if (!team.classId && team.type === 'academic') team.classId = null;
-        if (!team.teamNumber) team.teamNumber = '';
+        if (!Array.isArray(team.nameHistory)) team.nameHistory = [];
+        if (!Array.isArray(team.rankingHistory)) team.rankingHistory = [];
+        if (!Array.isArray(team.members)) team.members = [];
+        if (team.status === undefined) team.status = 'active';
+        if (team.currentRank === undefined) team.currentRank = '';
+        if (team.startPeriod === undefined) team.startPeriod = '';
+        if (team.endPeriod === undefined) team.endPeriod = '';
+        if (team.type === undefined) team.type = 'academic';
+        if (team.temporaryMission === undefined) team.temporaryMission = null;
+        if (team.type === 'academic' && team.classId === undefined) team.classId = null;
+        if (team.teamNumber === undefined) team.teamNumber = '';
+    });
+    data._dataVersion = 4;
+}
+
+function migrateToVersion5(data) {
+    data.teams.forEach(function(team) {
+        if (!Array.isArray(team.members)) team.members = [];
         team.members.forEach(function(member) {
-            if (!member.role) member.role = 'Member';
-            if (!member.joinPeriod) member.joinPeriod = '';
-            if (!member.leavePeriod) member.leavePeriod = '';
+            if (member.role === undefined) member.role = 'Member';
+            if (member.joinPeriod === undefined) member.joinPeriod = '';
+            if (member.leavePeriod === undefined) member.leavePeriod = '';
         });
     });
-    
+    data._dataVersion = 5;
+}
+
+function migrateToVersion6(data) {
     data.tournaments.forEach(function(tourn) {
-        if (!tourn.mode) tourn.mode = 'teams';
-        if (!tourn.status) tourn.status = 'draft';
-        if (!tourn.participants) tourn.participants = [];
-        if (!tourn.rounds) tourn.rounds = [];
-        if (!tourn.eliminations) tourn.eliminations = [];
-        if (!tourn.winners) tourn.winners = [];
-        if (!tourn.totalRounds) tourn.totalRounds = 1;
-        if (!tourn.startWeek) tourn.startWeek = 1;
-        if (!tourn.endWeek) tourn.endWeek = 52;
-        if (!tourn.winner) tourn.winner = null;
-        if (!tourn.currentRound) tourn.currentRound = 0;
-        if (!tourn.teams) tourn.teams = [];
-        if (!tourn.matches) tourn.matches = [];
-        if (!tourn.createdAt) tourn.createdAt = new Date().toISOString();
+        if (tourn.mode === undefined) tourn.mode = 'teams';
+        if (tourn.status === undefined) tourn.status = 'draft';
+        if (!Array.isArray(tourn.participants)) tourn.participants = [];
+        if (!Array.isArray(tourn.rounds)) tourn.rounds = [];
+        if (!Array.isArray(tourn.eliminations)) tourn.eliminations = [];
+        if (!Array.isArray(tourn.winners)) tourn.winners = [];
+        if (tourn.totalRounds === undefined) tourn.totalRounds = 1;
+        if (tourn.startWeek === undefined) tourn.startWeek = 1;
+        if (tourn.endWeek === undefined) tourn.endWeek = 52;
+        if (tourn.winner === undefined) tourn.winner = null;
+        if (tourn.currentRound === undefined) tourn.currentRound = 0;
+        if (!Array.isArray(tourn.teams)) tourn.teams = [];
+        if (!Array.isArray(tourn.matches)) tourn.matches = [];
+        if (tourn.createdAt === undefined) tourn.createdAt = new Date().toISOString();
     });
-    
+    data._dataVersion = 6;
+}
+
+function migrateToVersion7(data) {
     data.missions.forEach(function(mission) {
-        if (!mission.status) mission.status = 'active';
-        if (!mission.createdAt) mission.createdAt = new Date().toISOString();
-        if (!mission.completedAt) mission.completedAt = null;
-        if (!mission.assignedTeamId) mission.assignedTeamId = null;
-        if (!mission.priority) mission.priority = 'medium';
-        if (!mission.tags) mission.tags = [];
-        if (!mission.objectives) mission.objectives = [];
-        if (!mission.progress) mission.progress = 0;
-        if (!mission.log) mission.log = [];
-        if (!mission.notes) mission.notes = '';
-        if (!mission.location) mission.location = '';
-        if (!mission.duration) mission.duration = '';
-        if (!mission.difficulty) mission.difficulty = 'medium';
-        if (!mission.pay) mission.pay = '';
-        if (!mission.objective) mission.objective = '';
+        if (mission.status === undefined) mission.status = 'active';
+        if (mission.createdAt === undefined) mission.createdAt = new Date().toISOString();
+        if (mission.completedAt === undefined) mission.completedAt = null;
+        if (mission.assignedTeamId === undefined) mission.assignedTeamId = null;
+        if (mission.priority === undefined) mission.priority = 'medium';
+        if (!Array.isArray(mission.tags)) mission.tags = [];
+        if (!Array.isArray(mission.objectives)) mission.objectives = [];
+        if (mission.progress === undefined) mission.progress = 0;
+        if (!Array.isArray(mission.log)) mission.log = [];
+        if (mission.notes === undefined) mission.notes = '';
+        if (mission.location === undefined) mission.location = '';
+        if (mission.duration === undefined) mission.duration = '';
+        if (mission.difficulty === undefined) mission.difficulty = 'medium';
+        if (mission.pay === undefined) mission.pay = '';
+        if (mission.objective === undefined) mission.objective = '';
     });
+    data._dataVersion = 7;
+}
+
+function migrateToVersion8(data) {
+    if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
+        data.curriculum = getDefaultCurriculumData();
+    }
+    data._dataVersion = 8;
+}
+
+function migrateToVersion9(data) {
+    if (!data.social || typeof data.social !== 'object' || Array.isArray(data.social)) {
+        data.social = getDefaultSocialData();
+    }
+    if (!Array.isArray(data.social.relationships)) data.social.relationships = [];
+    if (data.social.nextId === undefined) data.social.nextId = 1;
+    data._dataVersion = 9;
+}
+
+function migrateToVersion10(data) {
+    if (!Array.isArray(data.classes)) data.classes = [];
+    if (!Array.isArray(data.locations)) data.locations = [];
+    if (!data.locationSchedules || typeof data.locationSchedules !== 'object') data.locationSchedules = {};
+    if (data.curriculum) {
+        if (!data.curriculum.classLocations || typeof data.curriculum.classLocations !== 'object' || Array.isArray(data.curriculum.classLocations)) {
+            data.curriculum.classLocations = {};
+        }
+    }
+    data._dataVersion = 10;
+}
+
+function migrateToVersion11(data) {
+    if (!data.statsConfig || typeof data.statsConfig !== 'object' || Array.isArray(data.statsConfig)) {
+        data.statsConfig = getDefaultStatsConfig();
+    }
+    data._dataVersion = 11;
+}
+
+function migrateToVersion12(data) {
+    data.characters.forEach(function(char) {
+        if (!char.personality || typeof char.personality !== 'object' || Array.isArray(char.personality)) {
+            char.personality = {};
+        }
+        if (!char.specialMoves || typeof char.specialMoves !== 'object' || Array.isArray(char.specialMoves)) {
+            char.specialMoves = { physical: [], magical: [] };
+        } else {
+            if (!Array.isArray(char.specialMoves.physical)) {
+                char.specialMoves.physical = [];
+            }
+            if (!Array.isArray(char.specialMoves.magical)) {
+                char.specialMoves.magical = [];
+            }
+        }
+    });
+    data._dataVersion = 12;
 }
 
 // ============================================================
-// SAFE CLONE - NO JSON FALLBACK
+// ENSURE DATA STRUCTURE
+// ============================================================
+
+function ensureDataStructure(data) {
+    if (!Array.isArray(data.tournaments)) data.tournaments = [];
+    if (!Array.isArray(data.characters)) data.characters = [];
+    if (!Array.isArray(data.teams)) data.teams = [];
+    if (!Array.isArray(data.missions)) data.missions = [];
+    if (!Array.isArray(data.activities)) data.activities = [];
+    if (!Array.isArray(data.classes)) data.classes = [];
+    if (!Array.isArray(data.locations)) data.locations = [];
+    if (!data.locationSchedules || typeof data.locationSchedules !== 'object') data.locationSchedules = {};
+    if (data.currentYear === undefined || data.currentYear === null) data.currentYear = new Date().getFullYear();
+    if (data.currentWeek === undefined || data.currentWeek === null) data.currentWeek = 1;
+
+    data.characters.forEach(function(char) {
+        if (!Array.isArray(char.classIds)) char.classIds = [];
+        if (!char.personality || typeof char.personality !== 'object' || Array.isArray(char.personality)) {
+            char.personality = {};
+        }
+        if (!char.specialMoves || typeof char.specialMoves !== 'object' || Array.isArray(char.specialMoves)) {
+            char.specialMoves = { physical: [], magical: [] };
+        } else {
+            if (!Array.isArray(char.specialMoves.physical)) {
+                char.specialMoves.physical = [];
+            }
+            if (!Array.isArray(char.specialMoves.magical)) {
+                char.specialMoves.magical = [];
+            }
+        }
+    });
+
+    data.teams.forEach(function(team) {
+        if (team.type === 'academic' && team.classId === undefined) {
+            team.classId = null;
+        }
+        if (team.teamNumber === undefined) team.teamNumber = '';
+    });
+
+    if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
+        data.curriculum = getDefaultCurriculumData();
+    } else {
+        data.curriculum = deepMergeDefaults(data.curriculum, getDefaultCurriculumData());
+    }
+
+    if (!data.social || typeof data.social !== 'object' || Array.isArray(data.social)) {
+        data.social = getDefaultSocialData();
+    } else {
+        data.social = deepMergeDefaults(data.social, getDefaultSocialData());
+    }
+
+    if (!data.statsConfig || typeof data.statsConfig !== 'object' || Array.isArray(data.statsConfig)) {
+        data.statsConfig = getDefaultStatsConfig();
+    } else {
+        data.statsConfig = deepMergeDefaults(data.statsConfig, getDefaultStatsConfig());
+    }
+}
+
+// ============================================================
+// SAFE CLONE
 // ============================================================
 
 function createSafeCopy(data) {
-    // Only use structuredClone - fail loudly if it doesn't work
     if (typeof structuredClone !== 'function') {
-        throw new Error(
-            'This browser does not support structuredClone(). ' +
-            'Please use a modern browser.'
-        );
+        throw new Error('This browser does not support structuredClone().');
     }
-
     try {
         return structuredClone(data);
     } catch (err) {
-        console.error('=================================');
-        console.error('STRUCTURED CLONE FAILED');
-        console.error('Error:', err);
-        console.error('Data type:', typeof data);
-        console.error('Data keys:', data ? Object.keys(data) : 'null');
-        console.error('=================================');
         throw err;
     }
 }
@@ -386,198 +608,175 @@ function createSafeCopy(data) {
 // ============================================================
 
 function loadData() {
-    if (_isLoading) {
-        return new Promise(function(resolve) {
-            var checkInterval = setInterval(function() {
-                if (!_isLoading) {
-                    clearInterval(checkInterval);
-                    resolve(window.data || _data || getEmptyData());
-                }
-            }, 50);
-        });
+    if (_loadPromise) {
+        return _loadPromise;
     }
-    
-    _isLoading = true;
-    
-    return new Promise(function(resolve) {
-        ensureDatabaseReady().then(function(database) {
-            if (!database) {
-                console.warn('Database not available, using empty data');
-                _data = getEmptyData();
-                window.data = _data;
-                _isLoading = false;
-                resolve(_data);
-                return;
-            }
-            
-            doLoadData(resolve);
-        }).catch(function(err) {
-            console.error('Failed to ensure database:', err);
-            _data = getEmptyData();
-            window.data = _data;
-            _isLoading = false;
-            resolve(_data);
-        });
+
+    _loadError = null;
+    _loadPromise = new Promise(function(resolve, reject) {
+        if (!_indexedDB || _dbStatus !== 'ready') {
+            var error = new Error('Database not available');
+            _loadError = error;
+            reject(error);
+            return;
+        }
+
+        doLoadData(resolve, reject);
     });
+
+    return _loadPromise;
 }
 
-function doLoadData(resolve) {
-    if (!_indexedDB || typeof _indexedDB.transaction !== 'function') {
-        console.warn('Database not available, using empty data');
-        _data = getEmptyData();
-        window.data = _data;
-        _isLoading = false;
-        resolve(_data);
-        return;
-    }
-
+function doLoadData(resolve, reject) {
     try {
         var transaction = _indexedDB.transaction([STORE_NAME], 'readonly');
         var store = transaction.objectStore(STORE_NAME);
         var request = store.get('mainData');
-        
+
         request.onsuccess = function() {
-            _isLoading = false;
-            if (request.result && request.result.data) {
-                _data = request.result.data;
-                ensureDataStructure(_data);
-                migrateData(_data);
-                window.data = _data;
-                console.log('Data loaded from IndexedDB');
-                resolve(_data);
-            } else {
-                console.log('No data in IndexedDB, using empty data');
-                _data = getEmptyData();
-                window.data = _data;
-                resolve(_data);
+            try {
+                if (request.result && request.result.data) {
+                    _data = request.result.data;
+
+                    var originalVersion = migrateData(_data);
+                    ensureDataStructure(_data);
+                    window.data = _data;
+
+                    var migrationPromise = Promise.resolve();
+
+                    if (originalVersion !== undefined && originalVersion !== _data._dataVersion) {
+                        migrationPromise = saveData();
+                    }
+
+                    migrationPromise
+                        .then(function() {
+                            _loadPromise = null;
+                            resolve(_data);
+                        })
+                        .catch(function(err) {
+                            _loadError = err;
+                            _loadPromise = null;
+                            reject(err);
+                        });
+
+                } else {
+                    _data = getEmptyData();
+                    window.data = _data;
+                    _loadPromise = null;
+
+                    saveData()
+                        .then(function() {
+                            resolve(_data);
+                        })
+                        .catch(function(err) {
+                            reject(err);
+                        });
+                }
+            } catch (err) {
+                _loadError = err;
+                _loadPromise = null;
+                reject(err);
             }
         };
         request.onerror = function(event) {
-            _isLoading = false;
-            console.error('IndexedDB load error:', event.target.error);
-            _data = getEmptyData();
-            window.data = _data;
-            resolve(_data);
+            _loadError = event.target.error;
+            _loadPromise = null;
+            reject(event.target.error);
         };
         transaction.onerror = function(event) {
-            _isLoading = false;
-            console.error('Transaction error:', event.target.error);
-            _data = getEmptyData();
-            window.data = _data;
-            resolve(_data);
+            _loadError = event.target.error;
+            _loadPromise = null;
+            reject(event.target.error);
+        };
+        transaction.onabort = function(event) {
+            _loadError = event.target.error || new Error('IndexedDB transaction aborted');
+            _loadPromise = null;
+            reject(_loadError);
         };
     } catch (err) {
-        _isLoading = false;
-        console.error('Error in doLoadData:', err);
-        _data = getEmptyData();
-        window.data = _data;
-        resolve(_data);
+        _loadError = err;
+        _loadPromise = null;
+        reject(err);
     }
 }
 
 // ============================================================
-// SAVE DATA - WITH STORE VERIFICATION
+// SAVE DATA
 // ============================================================
 
 function saveData() {
-    // If already saving, return the existing promise
     if (_isSaving) {
-        return Promise.resolve();
+        _savePending = true;
+        return _savePromise;
     }
-    
+
     _isSaving = true;
-    
-    return new Promise(function(resolve) {
-        ensureDatabaseReady().then(function(database) {
-            if (!database) {
-                console.warn('Database not available, skipping save');
+    _savePending = false;
+
+    _savePromise = performSave()
+        .then(function() {
+            if (_savePending) {
+                _savePending = false;
                 _isSaving = false;
-                resolve();
-                return;
+                return saveData();
             }
-            
-            // Verify the store exists before saving
-            if (!_indexedDB.objectStoreNames.contains(STORE_NAME)) {
-                console.error('Store "' + STORE_NAME + '" does not exist! Cannot save.');
-                _isSaving = false;
-                resolve();
-                return;
-            }
-            
-            executeSave(resolve);
-        }).catch(function(err) {
-            console.error('Failed to ensure database for save:', err);
             _isSaving = false;
-            resolve();
+            return;
+        })
+        .catch(function(err) {
+            _isSaving = false;
+            throw err;
         });
-    });
+
+    return _savePromise;
 }
 
-function executeSave(resolve) {
-    if (!_indexedDB || typeof _indexedDB.transaction !== 'function') {
-        console.warn('Database not available, skipping save');
-        _isSaving = false;
-        resolve();
-        return;
-    }
-    
-    // Double-check store exists
-    if (!_indexedDB.objectStoreNames.contains(STORE_NAME)) {
-        console.error('Store "' + STORE_NAME + '" does not exist! Cannot save.');
-        _isSaving = false;
-        resolve();
-        return;
-    }
-    
-    try {
-        var sourceData = window.data || _data;
-        
-        if (!sourceData) {
-            sourceData = getEmptyData();
-            window.data = sourceData;
-            _data = sourceData;
+function performSave() {
+    return new Promise(function(resolve, reject) {
+        if (!_indexedDB || _dbStatus !== 'ready') {
+            reject(new Error('Database not available'));
+            return;
         }
-        
-        ensureDataStructure(sourceData);
-        
-        // Create a clean copy - this will throw if structuredClone fails
-        var safeData = createSafeCopy(sourceData);
-        
-        var transaction = _indexedDB.transaction([STORE_NAME], 'readwrite');
-        var store = transaction.objectStore(STORE_NAME);
-        var record = {
-            id: 'mainData',
-            data: safeData,
-            updatedAt: new Date().toISOString()
-        };
-        var request = store.put(record);
-        
-        request.onsuccess = function() {
-            _isSaving = false;
-            console.log('Data saved to IndexedDB');
-            resolve();
-        };
-        
-        request.onerror = function(event) {
-            _isSaving = false;
-            console.error('IndexedDB save error:', event.target.error);
-            resolve();
-        };
-        
-        transaction.onerror = function(event) {
-            _isSaving = false;
-            console.error('Transaction error:', event.target.error);
-            resolve();
-        };
-        
-    } catch (err) {
-        _isSaving = false;
-        console.error('=================================');
-        console.error('SAVE ERROR');
-        console.error('Error:', err);
-        console.error('=================================');
-        resolve();
-    }
+
+        try {
+            var sourceData = window.data || _data;
+            if (!sourceData) {
+                sourceData = getEmptyData();
+                window.data = sourceData;
+                _data = sourceData;
+            }
+
+            ensureDataStructure(sourceData);
+            var safeData = createSafeCopy(sourceData);
+
+            var transaction = _indexedDB.transaction([STORE_NAME], 'readwrite');
+            var store = transaction.objectStore(STORE_NAME);
+            var record = {
+                id: 'mainData',
+                data: safeData,
+                updatedAt: new Date().toISOString()
+            };
+            var request = store.put(record);
+
+            transaction.oncomplete = function() {
+                resolve();
+            };
+
+            transaction.onerror = function(event) {
+                reject(event.target.error);
+            };
+
+            transaction.onabort = function(event) {
+                reject(event.target.error || new Error('IndexedDB transaction aborted'));
+            };
+
+            request.onerror = function(event) {
+                reject(event.target.error);
+            };
+        } catch (err) {
+            reject(err);
+        }
+    });
 }
 
 // ============================================================
@@ -585,38 +784,54 @@ function executeSave(resolve) {
 // ============================================================
 
 function autoLoadData() {
-    console.log('Auto-loading data from IndexedDB...');
-    
     if (window.data) {
-        console.log('Data already exists in window.data, skipping load');
         _dispatchDataReady(window.data);
-        return;
+        return Promise.resolve(window.data);
     }
-    
-    loadData().then(function(result) {
-        console.log('Data auto-loaded successfully');
-        _dispatchDataReady(result);
-    }).catch(function(err) {
-        console.error('Auto-load failed:', err);
-        _dispatchDataReady(getEmptyData());
-    });
+
+    return loadData()
+        .then(function(result) {
+            if (result) {
+                _dispatchDataReady(result);
+            }
+            return result;
+        })
+        .catch(function(err) {
+            _loadError = err;
+            _dispatchDataFailure(err);
+            throw err;
+        });
 }
 
+// ============================================================
+// DATA READY / FAILURE DISPATCH
+// ============================================================
+
 function _dispatchDataReady(data) {
-    if (_dataLoadedDispatched) {
-        console.log('Data already dispatched, skipping');
-        return;
-    }
+    if (_dataLoadedDispatched) return;
     _dataLoadedDispatched = true;
-    
+
     setTimeout(function() {
-        var event = new CustomEvent('dataReady', { 
-            detail: { data: data },
+        var event = new CustomEvent('dataReady', {
+            detail: { data: data, status: 'ready' },
             bubbles: false,
             cancelable: false
         });
         document.dispatchEvent(event);
-        console.log('dataReady event dispatched');
+    }, 10);
+}
+
+function _dispatchDataFailure(err) {
+    if (_dataLoadedDispatched) return;
+    _dataLoadedDispatched = true;
+
+    setTimeout(function() {
+        var event = new CustomEvent('dataReady', {
+            detail: { data: null, status: 'failed', error: err },
+            bubbles: false,
+            cancelable: false
+        });
+        document.dispatchEvent(event);
     }, 10);
 }
 
@@ -624,7 +839,6 @@ function _dispatchDataReady(data) {
 // EXPOSE GLOBALS
 // ============================================================
 
-// Public API - named window.db to match existing code expectations
 window.db = {
     openDatabase: openDatabase,
     ensureDatabaseReady: ensureDatabaseReady,
@@ -633,51 +847,26 @@ window.db = {
     getEmptyData: getEmptyData,
     getDefaultMagicProficiencies: getDefaultMagicProficiencies,
     autoLoadData: autoLoadData,
-    createSafeCopy: createSafeCopy
+    createSafeCopy: createSafeCopy,
+    getDatabaseStatus: getDatabaseStatus,
+    isDatabaseReady: isDatabaseReady,
+    getLoadError: getLoadError
 };
 
-// Also expose individual functions for backward compatibility
 window.loadData = loadData;
 window.saveData = saveData;
 window.getEmptyData = getEmptyData;
 window.getDefaultMagicProficiencies = getDefaultMagicProficiencies;
 
 // ============================================================
-// INITIALIZE
+// INITIALIZE - SEQUENTIAL STARTUP
 // ============================================================
 
-// Start database initialization immediately
-ensureDatabaseReady().then(function(database) {
-    if (database) {
-        console.log('Database initialization complete');
-        console.log('Available stores:', database.objectStoreNames ? Array.from(database.objectStoreNames) : 'unknown');
-    } else {
-        console.warn('Database initialization failed - running in memory-only mode');
-    }
-});
-
-// Auto-load data after a short delay
-setTimeout(autoLoadData, 50);
-
-
-
-// ============================================================
-// DEBUG HELPERS (remove in production)
-// ============================================================
-
-console.log('=== DATABASE DEBUG ===');
-console.log('window.db API:', window.db);
-console.log('Internal connection (_indexedDB):', _indexedDB);
-
-// Check if we have a valid connection
-setTimeout(function() {
-    console.log('=== CONNECTION CHECK ===');
-    console.log('_indexedDB exists:', !!_indexedDB);
-    if (_indexedDB) {
-        console.log('_indexedDB.transaction type:', typeof _indexedDB.transaction);
-        console.log('_indexedDB.name:', _indexedDB.name);
-        console.log('_indexedDB.version:', _indexedDB.version);
-        console.log('Store names:', _indexedDB.objectStoreNames ? Array.from(_indexedDB.objectStoreNames) : 'none');
-        console.log('Has "' + STORE_NAME + '":', _indexedDB.objectStoreNames.contains(STORE_NAME));
-    }
-}, 100);
+ensureDatabaseReady()
+    .then(function() {
+        return autoLoadData();
+    })
+    .catch(function(err) {
+        _loadError = err;
+        // data failure has already been dispatched by autoLoadData()
+    });
