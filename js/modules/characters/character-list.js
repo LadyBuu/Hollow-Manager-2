@@ -1,6 +1,15 @@
 /**
  * js/modules/characters/character-list.js - Character List
+ * Renders and filters the character list with search and filtering
  * Path: js/modules/characters/character-list.js
+ * 
+ * This module is responsible for:
+ *   - Rendering the character list
+ *   - Filtering by name, status, and class
+ *   - Highlighting the currently selected character
+ *   - Populating the class filter dropdown
+ * 
+ * IMPORTANT: All user-controlled data is escaped to prevent XSS.
  */
 
 (function() {
@@ -25,15 +34,26 @@
             .replace(/'/g, '&#039;');
     }
 
+    // ============================================================
+    // RENDER CHARACTER LIST
+    // ============================================================
+
     function render(container) {
         var listContainer = document.getElementById('characters-container');
         if (!listContainer) return;
 
+        // Populate filter BEFORE reading values
         populateClassFilter();
 
-        var statusFilter = document.getElementById('char-status-filter') ? document.getElementById('char-status-filter').value : 'all';
-        var nameFilter = document.getElementById('char-name-filter') ? document.getElementById('char-name-filter').value.toLowerCase() : '';
-        var classFilter = document.getElementById('char-class-filter') ? document.getElementById('char-class-filter').value : 'all';
+        var statusFilter = document.getElementById('char-status-filter') 
+            ? document.getElementById('char-status-filter').value 
+            : 'all';
+        var nameFilter = document.getElementById('char-name-filter') 
+            ? document.getElementById('char-name-filter').value.toLowerCase() 
+            : '';
+        var classFilter = document.getElementById('char-class-filter') 
+            ? document.getElementById('char-class-filter').value 
+            : 'all';
 
         var data = window.data || {};
         if (!data.characters || data.characters.length === 0) {
@@ -82,12 +102,14 @@
         });
         listContainer.innerHTML = html;
 
+        // Attach click listeners to list items
         listContainer.querySelectorAll('.char-list-item').forEach(function(el) {
             el.addEventListener('click', function() {
                 var id = this.dataset.id;
                 if (typeof window.showCharacterForm === 'function') {
                     window.showCharacterForm(id);
                 }
+                // Close list on mobile
                 if (window.innerWidth < 768) {
                     if (typeof window.toggleCharacterList === 'function') {
                         window.toggleCharacterList(false);
@@ -97,7 +119,114 @@
         });
     }
 
-    // ... (applyFilters, populateClassFilter, getStatusIndicator, getStatusColor, getCharacterClassNames remain the same)
+    // ============================================================
+    // FILTER FUNCTIONS
+    // ============================================================
+
+    function applyFilters(char, nameFilter, statusFilter, classFilter) {
+        // Name filter
+        if (nameFilter) {
+            var displayName = window.getDisplayName(char).toLowerCase();
+            var fullName = window.getFullName(char).toLowerCase();
+            if (displayName.indexOf(nameFilter) === -1 && fullName.indexOf(nameFilter) === -1) {
+                return false;
+            }
+        }
+
+        // Status filter
+        if (statusFilter !== 'all') {
+            if (statusFilter === 'deceased') {
+                if (!char.deceased) return false;
+            } else if (statusFilter === 'eliminated') {
+                var hasElimination = char.eliminations && char.eliminations.length > 0;
+                if (!hasElimination) return false;
+            } else {
+                var status = window.getCurrentStatus(char).toLowerCase();
+                if (status !== statusFilter && !status.startsWith(statusFilter + ' ')) {
+                    return false;
+                }
+            }
+        }
+
+        // Class filter
+        if (classFilter !== 'all') {
+            if (!char.classIds || !char.classIds.some(function(cid) { 
+                return String(cid) === String(classFilter); 
+            })) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // ============================================================
+    // CLASS FILTER POPULATION
+    // ============================================================
+
+    function populateClassFilter() {
+        var select = document.getElementById('char-class-filter');
+        if (!select) return;
+
+        // Defensive: ensure getClasses exists and returns an array
+        var classes = typeof window.getClasses === 'function'
+            ? window.getClasses()
+            : [];
+        
+        var currentValue = select.value;
+        select.innerHTML = '<option value="all">All Classes</option>';
+        classes.forEach(function(cls) {
+            var option = document.createElement('option');
+            option.value = cls.id;
+            option.textContent = cls.name;
+            select.appendChild(option);
+        });
+        if (currentValue) select.value = currentValue;
+    }
+
+    // ============================================================
+    // STATUS HELPERS
+    // ============================================================
+
+    function getStatusIndicator(status) {
+        var statusLower = status.toLowerCase();
+        if (statusLower === 'trainee' || statusLower === 'rookie') return '▸';
+        if (statusLower === 'junior' || statusLower === 'senior') return '◆';
+        if (statusLower === 'instructor') return '◇';
+        if (statusLower === 'support') return '◈';
+        if (statusLower === 'civilian') return '○';
+        return '';
+    }
+
+    function getStatusColor(status) {
+        var statusLower = status.toLowerCase();
+        if (statusLower === 'trainee' || statusLower === 'rookie') return 'var(--accent)';
+        if (statusLower === 'junior' || statusLower === 'senior') return 'var(--warning)';
+        if (statusLower === 'instructor' || statusLower === 'support') return 'var(--info)';
+        if (statusLower === 'civilian') return 'var(--text-dim)';
+        return 'var(--text-dim)';
+    }
+
+    // ============================================================
+    // CHARACTER CLASS NAME HELPER
+    // ============================================================
+
+    function getCharacterClassNames(char) {
+        var names = [];
+        if (char.classIds && char.classIds.length > 0) {
+            // Defensive: ensure getClasses exists and returns an array
+            var classes = typeof window.getClasses === 'function'
+                ? window.getClasses()
+                : [];
+            char.classIds.forEach(function(cid) {
+                var cls = classes.find(function(c) { 
+                    return String(c.id) === String(cid); 
+                });
+                if (cls) names.push(cls.name);
+            });
+        }
+        return names;
+    }
 
     // ============================================================
     // EXPOSE
