@@ -3,8 +3,16 @@
  * Renders academic, professional, and social views for a character
  * Path: js/modules/characters/character-views.js
  * 
+ * This module is responsible for:
+ *   - Rendering academic view (teams, grades, eliminations)
+ *   - Rendering professional view (teams, missions)
+ *   - Rendering social view (relationships)
+ *   - Career status entry creation (DOM-based)
+ * 
  * IMPORTANT: All user-controlled data must be escaped with escapeHtml()
  * before being inserted into innerHTML. This prevents XSS attacks.
+ * User-controlled text is inserted using safe DOM APIs/textContent
+ * rather than raw HTML where possible.
  */
 
 (function() {
@@ -279,35 +287,72 @@
     }
 
     // ============================================================
-    // CAREER STATUS HELPERS
+    // CAREER STATUS HELPERS - DOM-BASED FOR SAFETY
     // ============================================================
 
     function addCareerStatusEntry(container, status, startYear, endYear) {
         var entry = document.createElement('div');
         entry.className = 'career-status-entry';
-        entry.innerHTML = `
-            <select class="career-status-select">
-                <option value="">Select status...</option>
-                <option value="civilian" ${status === 'civilian' ? 'selected' : ''}>Civilian</option>
-                <option value="trainee" ${status === 'trainee' ? 'selected' : ''}>Trainee</option>
-                <option value="rookie" ${status === 'rookie' ? 'selected' : ''}>Rookie</option>
-                <option value="junior" ${status === 'junior' ? 'selected' : ''}>Junior</option>
-                <option value="senior" ${status === 'senior' ? 'selected' : ''}>Senior</option>
-                <option value="instructor" ${status === 'instructor' ? 'selected' : ''}>Instructor</option>
-                <option value="support" ${status === 'support' ? 'selected' : ''}>Support</option>
-            </select>
-            <input type="number" class="career-start-year" placeholder="Start Year" value="${escapeHtml(startYear || '')}">
-            <input type="number" class="career-end-year" placeholder="End Year" value="${escapeHtml(endYear || '')}">
-            <button type="button" class="small danger remove-status">✕</button>
-        `;
+        
+        // Create select with DOM API
+        var select = document.createElement('select');
+        select.className = 'career-status-select';
+        var statusOptions = [
+            { value: '', label: 'Select status...' },
+            { value: 'civilian', label: 'Civilian' },
+            { value: 'trainee', label: 'Trainee' },
+            { value: 'rookie', label: 'Rookie' },
+            { value: 'junior', label: 'Junior' },
+            { value: 'senior', label: 'Senior' },
+            { value: 'instructor', label: 'Instructor' },
+            { value: 'support', label: 'Support' }
+        ];
+        statusOptions.forEach(function(opt) {
+            var option = document.createElement('option');
+            option.value = opt.value;
+            option.textContent = opt.label;
+            if (status === opt.value) {
+                option.selected = true;
+            }
+            select.appendChild(option);
+        });
+        
+        // Create input fields
+        var startInput = document.createElement('input');
+        startInput.type = 'number';
+        startInput.className = 'career-start-year';
+        startInput.placeholder = 'Start Year';
+        if (startYear) {
+            startInput.value = startYear;
+        }
+        
+        var endInput = document.createElement('input');
+        endInput.type = 'number';
+        endInput.className = 'career-end-year';
+        endInput.placeholder = 'End Year';
+        if (endYear) {
+            endInput.value = endYear;
+        }
+        
+        // Create remove button
+        var removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'small danger remove-status';
+        removeBtn.textContent = '✕';
+        
+        entry.appendChild(select);
+        entry.appendChild(startInput);
+        entry.appendChild(endInput);
+        entry.appendChild(removeBtn);
         container.appendChild(entry);
-        entry.querySelector('.remove-status').onclick = function() {
+        
+        removeBtn.addEventListener('click', function() {
             if (container.children.length > 1) {
                 entry.remove();
             } else {
                 alert('You need at least one status entry.');
             }
-        };
+        });
     }
 
     // ============================================================
@@ -340,17 +385,22 @@
         });
     }
 
+    // Fixed: String comparison for ID matching
     function getRelationshipTypeLabel(typeId) {
         var data = window.data || {};
         if (!data.social || !data.social.relationshipTypes) return typeId || 'Other';
-        var type = data.social.relationshipTypes.find(function(t) { return t.id === typeId; });
+        var type = data.social.relationshipTypes.find(function(t) { 
+            return String(t.id) === String(typeId); 
+        });
         return type ? type.label : typeId || 'Other';
     }
 
     function getRelationshipTypeColor(typeId) {
         var data = window.data || {};
         if (!data.social || !data.social.relationshipTypes) return '#7f8c8d';
-        var type = data.social.relationshipTypes.find(function(t) { return t.id === typeId; });
+        var type = data.social.relationshipTypes.find(function(t) { 
+            return String(t.id) === String(typeId); 
+        });
         return type ? type.color : '#7f8c8d';
     }
 
@@ -367,6 +417,7 @@
                 if (!Object.prototype.hasOwnProperty.call(schedule[week], day)) continue;
                 for (var hour in schedule[week][day]) {
                     if (!Object.prototype.hasOwnProperty.call(schedule[week][day], hour)) continue;
+                    // Truthy means scheduled - verify against schedule schema
                     if (schedule[week][day][hour]) count++;
                 }
             }
