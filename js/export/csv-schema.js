@@ -8,10 +8,9 @@
  * Primary importers should store references as-is and let post-import validation
  * handle dangling references. This makes the import genuinely order-independent.
  * 
- * DEPENDENCY ORDER NOTE:
- *   The actual import order is not enforced by the schema.
- *   All primary entities are imported first, then relationships.
- *   Reference validation happens after migration.
+ * IMPORTANT: Primary entities are collected before relationships, so relationship
+ * importers can safely reference context.teamMap etc. after they've been built.
+ * Final referential cleanup still occurs in Phase 4.
  */
 
 (function() {
@@ -214,11 +213,11 @@
             import: function(row, context) {
                 var teamId = utils.requireField(row, 0, 'TeamId');
                 var charId = utils.requireField(row, 1, 'CharacterId');
+                
+                // Primary entities have already been collected before relationships,
+                // so teamMap is populated. Final referential cleanup still occurs in Phase 4.
                 var team = context.teamMap[utils.normaliseId(teamId)];
 
-                // Note: We don't validate team/character existence here.
-                // That happens in Phase 4 post-import validation.
-                // This keeps the import order-independent.
                 if (!team) {
                     context.addWarning('Team member references unknown team "' + teamId + '" - will skip in post-validation');
                     return null;
@@ -311,19 +310,9 @@
                      'AcademicYear', 'Status', 'WinnerType', 'WinnerId'],
             sectionMarker: '# TOURNAMENTS',
             export: function(tourn) {
-                var winnerType = '';
-                var winnerId = '';
-                if (tourn.winner) {
-                    var winnerTeam = window.getTeamById ? window.getTeamById(tourn.winner) : null;
-                    var winnerChar = window.getCharacterById ? window.getCharacterById(tourn.winner) : null;
-                    if (winnerTeam) {
-                        winnerType = 'team';
-                        winnerId = tourn.winner;
-                    } else if (winnerChar) {
-                        winnerType = 'character';
-                        winnerId = tourn.winner;
-                    }
-                }
+                // Use stored winnerType if available, otherwise infer
+                var winnerType = tourn.winnerType || '';
+                var winnerId = tourn.winner || '';
                 return [
                     tourn.id || '',
                     tourn.name || '',
@@ -369,6 +358,7 @@
                     academicYear: String(row[6] == null ? '' : row[6]).trim(),
                     status: status,
                     winner: null,
+                    winnerType: null,
                     teams: [],
                     matches: [],
                     eliminations: [],
@@ -379,9 +369,10 @@
                     createdAt: new Date().toISOString()
                 };
 
-                // Store winner if it exists - validation happens in Phase 4
+                // Store winner with its type - validation happens in Phase 4
                 if (winnerId) {
                     tourn.winner = winnerId;
+                    tourn.winnerType = winnerType || null;
                 }
 
                 return tourn;
@@ -414,6 +405,9 @@
             import: function(row, context) {
                 var tournId = utils.requireField(row, 0, 'TournamentId');
                 var teamId = utils.requireField(row, 1, 'TeamId');
+                
+                // Primary entities have already been collected before relationships,
+                // so tournMap is populated. Final referential cleanup still occurs in Phase 4.
                 var tourn = context.tournMap[utils.normaliseId(tournId)];
 
                 if (!tourn) {
@@ -451,17 +445,8 @@
                 var rows = [];
                 if (!Array.isArray(tourn.matches)) return rows;
                 tourn.matches.forEach(function(m) {
-                    var winnerType = '';
+                    var winnerType = m.winnerType || '';
                     var winnerId = m.winner || '';
-                    if (winnerId) {
-                        var winnerTeam = window.getTeamById ? window.getTeamById(winnerId) : null;
-                        var winnerChar = window.getCharacterById ? window.getCharacterById(winnerId) : null;
-                        if (winnerTeam) {
-                            winnerType = 'team';
-                        } else if (winnerChar) {
-                            winnerType = 'character';
-                        }
-                    }
                     rows.push([
                         tourn.id || '',
                         winnerType,
@@ -474,6 +459,9 @@
             },
             import: function(row, context) {
                 var tournId = utils.requireField(row, 0, 'TournamentId');
+                
+                // Primary entities have already been collected before relationships,
+                // so tournMap is populated. Final referential cleanup still occurs in Phase 4.
                 var tourn = context.tournMap[utils.normaliseId(tournId)];
                 if (!tourn) {
                     context.addWarning('Tournament match references unknown tournament "' + tournId + '" - will skip in post-validation');
@@ -500,8 +488,8 @@
                 tourn.matches.push({
                     team1Id: team1Id,
                     team2Id: team2Id,
-                    winner: winnerId,
-                    winnerType: winnerType
+                    winner: winnerId || null,
+                    winnerType: winnerType || null
                 });
                 return null;
             },
@@ -536,6 +524,9 @@
             },
             import: function(row, context) {
                 var tournId = utils.requireField(row, 0, 'TournamentId');
+                
+                // Primary entities have already been collected before relationships,
+                // so tournMap is populated. Final referential cleanup still occurs in Phase 4.
                 var tourn = context.tournMap[utils.normaliseId(tournId)];
                 if (!tourn) {
                     context.addWarning('Tournament elimination references unknown tournament "' + tournId + '" - will skip in post-validation');
@@ -565,7 +556,7 @@
                 tourn.eliminations.push({
                     participantId: participantId,
                     participantType: participantType,
-                    teamId: teamId,
+                    teamId: teamId || null,
                     week: week
                 });
                 return null;
@@ -599,6 +590,9 @@
             },
             import: function(row, context) {
                 var tournId = utils.requireField(row, 0, 'TournamentId');
+                
+                // Primary entities have already been collected before relationships,
+                // so tournMap is populated. Final referential cleanup still occurs in Phase 4.
                 var tourn = context.tournMap[utils.normaliseId(tournId)];
                 if (!tourn) {
                     context.addWarning('Tournament participant references unknown tournament "' + tournId + '" - will skip in post-validation');
