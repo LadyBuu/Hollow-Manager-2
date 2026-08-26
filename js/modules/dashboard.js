@@ -2,10 +2,23 @@
  * js/modules/dashboard.js - Dashboard Module
  * Renders the dashboard with statistics and quick actions
  * Path: js/modules/dashboard.js
+ * 
+ * This module is responsible for:
+ *   - Rendering the dashboard UI
+ *   - Updating statistics
+ *   - Managing quick actions
+ *   - Year management (with proper persistence ordering)
+ * 
+ * IMPORTANT: Year changes are logged BEFORE saving so the activity persists.
+ * This follows the app.js contract: logActivity() updates memory, saveData() persists.
  */
 
 (function() {
     'use strict';
+
+    // ============================================================
+    // RENDER DASHBOARD
+    // ============================================================
 
     function renderDashboard(container) {
         if (!container) {
@@ -29,6 +42,10 @@
         updateDashboardStats();
         initDashboardEvents();
     }
+
+    // ============================================================
+    // DASHBOARD HTML
+    // ============================================================
 
     function getDashboardHTML() {
         return `
@@ -87,8 +104,17 @@
         `;
     }
 
+    // ============================================================
+    // UPDATE STATISTICS
+    // ============================================================
+
     function updateDashboardStats() {
-        var data = window.data || {};
+        // Don't render if data isn't ready
+        if (!window.data) {
+            return;
+        }
+
+        var data = window.data;
 
         var charCount = document.getElementById('char-count');
         var teamCount = document.getElementById('team-count');
@@ -104,7 +130,11 @@
         }
 
         if (teamCount) {
-            var activeTeams = data.teams ? data.teams.filter(function(t) { return t.status !== 'deleted'; }).length : 0;
+            var activeTeams = data.teams 
+                ? data.teams.filter(function(t) { 
+                    return t.status !== 'deleted'; 
+                  }).length 
+                : 0;
             teamCount.textContent = activeTeams;
         }
 
@@ -118,16 +148,25 @@
         }
 
         if (disciplineCount) {
-            var count = data.curriculum && data.curriculum.disciplines ? data.curriculum.disciplines.length : 0;
+            var count = data.curriculum && data.curriculum.disciplines 
+                ? data.curriculum.disciplines.length 
+                : 0;
             disciplineCount.textContent = count;
         }
 
         if (missionCount) {
-            missionCount.textContent = data.missions ? data.missions.length : 0;
+            var activeMissions = data.missions 
+                ? data.missions.filter(function(m) { 
+                    return m.status !== 'deleted'; 
+                  }).length 
+                : 0;
+            missionCount.textContent = activeMissions;
         }
 
         if (socialCount) {
-            socialCount.textContent = data.social && data.social.relationships ? data.social.relationships.length : 0;
+            socialCount.textContent = data.social && data.social.relationships 
+                ? data.social.relationships.length 
+                : 0;
         }
 
         if (yearDisplay) {
@@ -135,26 +174,37 @@
         }
     }
 
+    // ============================================================
+    // YEAR MODAL
+    // ============================================================
+
     function showYearModal() {
         var data = window.data || {};
         var currentYear = data.currentYear || new Date().getFullYear();
         var newYear = prompt('Enter the current year:', currentYear);
 
         if (newYear !== null && newYear !== '') {
-            var yearNum = parseInt(newYear);
-            if (!isNaN(yearNum) && yearNum > 0) {
+            // Use Number() for strict parsing - rejects "2026blah"
+            var yearNum = Number(newYear);
+            
+            if (Number.isInteger(yearNum) && yearNum > 0) {
+                // Update data
                 data.currentYear = yearNum;
                 window.data = data;
 
+                // Log activity BEFORE saving so it's included in the persistence
+                if (typeof window.logActivity === 'function') {
+                    window.logActivity('Set current year to ' + yearNum);
+                }
+
+                // Save data (includes the new activity)
                 if (typeof window.saveData === 'function') {
                     window.saveData()
                         .then(function() {
-                            if (typeof window.logActivity === 'function') {
-                                window.logActivity('Set current year to ' + yearNum);
-                            }
                             updateDashboardStats();
                         })
                         .catch(function(err) {
+                            console.error('Failed to save current year:', err);
                             alert('Failed to save year. Please try again.');
                         });
                 } else {
@@ -166,57 +216,21 @@
         }
     }
 
+    // ============================================================
+    // EVENT INITIALIZATION
+    // ============================================================
+
     function initDashboardEvents() {
+        // Year display - single listener
         var yearDisplay = document.getElementById('header-current-year');
-        if (yearDisplay) {
-            // Remove any existing listeners
-            var newYearDisplay = yearDisplay.cloneNode(true);
-            yearDisplay.parentNode.replaceChild(newYearDisplay, yearDisplay);
-            newYearDisplay.addEventListener('click', showYearModal);
+        if (yearDisplay && !yearDisplay._listener) {
+            yearDisplay._listener = true;
+            yearDisplay.addEventListener('click', showYearModal);
         }
 
-        // Quick links - handled by TabManager, but ensure they work
-        document.querySelectorAll('.quick-link[data-tab]').forEach(function(link) {
-            if (!link._listener) {
-                link._listener = true;
-                link.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    var tab = this.dataset.tab;
-                    if (tab) {
-                        if (typeof window.TabManager !== 'undefined' && window.TabManager.switchTo) {
-                            window.TabManager.switchTo(tab);
-                        } else {
-                            // Fallback: try to find and click the nav link
-                            var navLink = document.querySelector('#main-nav a[data-tab="' + tab + '"]');
-                            if (navLink) {
-                                navLink.click();
-                            }
-                        }
-                    }
-                });
-            }
-        });
-
-        document.querySelectorAll('.stat-link[data-tab]').forEach(function(link) {
-            if (!link._listener) {
-                link._listener = true;
-                link.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    var tab = this.dataset.tab;
-                    if (tab) {
-                        if (typeof window.TabManager !== 'undefined' && window.TabManager.switchTo) {
-                            window.TabManager.switchTo(tab);
-                        } else {
-                            // Fallback: try to find and click the nav link
-                            var navLink = document.querySelector('#main-nav a[data-tab="' + tab + '"]');
-                            if (navLink) {
-                                navLink.click();
-                            }
-                        }
-                    }
-                });
-            }
-        });
+        // All [data-tab] elements - handled by TabManager
+        // dashboard.js only needs to ensure the elements exist
+        // TabManager handles the actual navigation
     }
 
     // ============================================================
@@ -227,7 +241,7 @@
         window.TabManager.register('dashboard', renderDashboard);
     }
 
-    // Handle data loading
+    // Dashboard handles its own data updates - no duplicate listeners
     document.addEventListener('dataReady', function() {
         updateDashboardStats();
         var container = document.getElementById('tab-dashboard');
