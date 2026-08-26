@@ -28,6 +28,8 @@
  *   - Invalid enum values → abort import with error
  *   - Blank rows → silently skipped
  *   - Warnings are capped at 50 to prevent UI explosion
+ *   - JSON fields are type-validated (arrays must be arrays, etc.)
+ *   - Numeric fields are strictly validated (no "12garbage" allowed)
  */
 
 (function() {
@@ -93,36 +95,35 @@
                 ];
             },
             import: function(row, context) {
-                // Validate primary fields
-                var id = String(row[0] || '').trim() || utils.generateImportId('char');
+                var id = String(row[0] == null ? '' : row[0]).trim() || utils.generateImportId('char');
                 var firstName = utils.requireField(row, 1, 'FirstName');
                 var lastName = utils.requireField(row, 3, 'LastName');
-                
-                // Optional fields with validation
-                var careerStatus = utils.parseJSONField(row, 20, 'CareerStatus', [], context.addWarning);
-                var eliminatedWeeks = utils.parseJSONField(row, 21, 'EliminatedWeeks', [], context.addWarning);
-                
+
+                // Use typed JSON parsing - expects arrays
+                var careerStatus = utils.parseJSONArray(row, 20, 'CareerStatus', [], context.addWarning);
+                var eliminatedWeeks = utils.parseJSONArray(row, 21, 'EliminatedWeeks', [], context.addWarning);
+
                 return {
                     id: id,
                     firstName: firstName,
-                    middleName: String(row[2] || '').trim(),
+                    middleName: String(row[2] == null ? '' : row[2]).trim(),
                     lastName: lastName,
-                    birthYear: String(row[4] || '').trim(),
-                    gender: String(row[5] || '').trim(),
-                    associatedNames: String(row[6] || '').trim(),
-                    eyes: String(row[7] || '').trim(),
-                    hair: String(row[8] || '').trim(),
-                    skin: String(row[9] || '').trim(),
-                    height: String(row[10] || '').trim(),
-                    weight: String(row[11] || '').trim(),
-                    build: String(row[12] || '').trim(),
-                    appearanceNotes: String(row[13] || '').trim(),
-                    notes: String(row[14] || '').trim(),
-                    deceased: String(row[15] || '').trim() === 'true',
-                    deathYear: String(row[16] || '').trim(),
-                    deathCause: String(row[17] || '').trim(),
-                    deathAge: String(row[18] || '').trim(),
-                    specialty: String(row[19] || '').trim(),
+                    birthYear: String(row[4] == null ? '' : row[4]).trim(),
+                    gender: String(row[5] == null ? '' : row[5]).trim(),
+                    associatedNames: String(row[6] == null ? '' : row[6]).trim(),
+                    eyes: String(row[7] == null ? '' : row[7]).trim(),
+                    hair: String(row[8] == null ? '' : row[8]).trim(),
+                    skin: String(row[9] == null ? '' : row[9]).trim(),
+                    height: String(row[10] == null ? '' : row[10]).trim(),
+                    weight: String(row[11] == null ? '' : row[11]).trim(),
+                    build: String(row[12] == null ? '' : row[12]).trim(),
+                    appearanceNotes: String(row[13] == null ? '' : row[13]).trim(),
+                    notes: String(row[14] == null ? '' : row[14]).trim(),
+                    deceased: String(row[15] == null ? '' : row[15]).trim() === 'true',
+                    deathYear: String(row[16] == null ? '' : row[16]).trim(),
+                    deathCause: String(row[17] == null ? '' : row[17]).trim(),
+                    deathAge: String(row[18] == null ? '' : row[18]).trim(),
+                    specialty: String(row[19] == null ? '' : row[19]).trim(),
                     careerStatus: careerStatus,
                     eliminatedWeeks: eliminatedWeeks,
                     // These will be filled by normalisation
@@ -141,7 +142,7 @@
                 var expected = this.header;
                 if (header.length < expected.length) return false;
                 for (var i = 0; i < expected.length; i++) {
-                    if ((header[i] || '').trim() !== expected[i]) {
+                    if ((header[i] == null ? '' : header[i]).trim() !== expected[i]) {
                         return false;
                     }
                 }
@@ -168,28 +169,27 @@
                 ];
             },
             import: function(row, context) {
-                var id = String(row[0] || '').trim() || utils.generateImportId('team');
+                var id = String(row[0] == null ? '' : row[0]).trim() || utils.generateImportId('team');
                 var name = utils.requireField(row, 1, 'TeamName');
-                
-                // Optional with defaults
-                var type = utils.requireEnum(row, 2, 'TeamType', 
+
+                var type = utils.requireEnum(row, 2, 'TeamType',
                     ['academic', 'professional', 'temporary', 'civilian'], 'academic');
-                
-                var nameHistory = utils.parseJSONField(row, 7, 'NameHistory', [], context.addWarning);
-                
+
+                var nameHistory = utils.parseJSONArray(row, 7, 'NameHistory', [], context.addWarning);
+
                 return {
                     id: id,
                     name: name,
                     type: type,
-                    startPeriod: String(row[3] || '').trim(),
-                    endPeriod: String(row[4] || '').trim(),
-                    currentRank: String(row[5] || '').trim(),
-                    status: utils.requireEnum(row, 6, 'Status', 
+                    startPeriod: String(row[3] == null ? '' : row[3]).trim(),
+                    endPeriod: String(row[4] == null ? '' : row[4]).trim(),
+                    currentRank: String(row[5] == null ? '' : row[5]).trim(),
+                    status: utils.requireEnum(row, 6, 'Status',
                         ['active', 'inactive', 'deprecated'], 'active'),
                     nameHistory: nameHistory,
-                    temporaryMission: String(row[8] || '').trim() || null,
-                    teamNumber: String(row[9] || '').trim(),
-                    classId: String(row[10] || '').trim() || null,
+                    temporaryMission: String(row[8] == null ? '' : row[8]).trim() || null,
+                    teamNumber: String(row[9] == null ? '' : row[9]).trim(),
+                    classId: String(row[10] == null ? '' : row[10]).trim() || null,
                     members: [],
                     rankingHistory: [],
                     createdAt: new Date().toISOString()
@@ -199,7 +199,7 @@
                 var expected = this.header;
                 if (header.length < expected.length) return false;
                 for (var i = 0; i < expected.length; i++) {
-                    if ((header[i] || '').trim() !== expected[i]) {
+                    if ((header[i] == null ? '' : header[i]).trim() !== expected[i]) {
                         return false;
                     }
                 }
@@ -213,7 +213,7 @@
                 var rows = [];
                 if (!Array.isArray(team.members)) return rows;
                 team.members.forEach(function(m) {
-                    // Status is derived, not stored - but we export it for readability
+                    // Status is derived/presentation-only - not stored
                     var status = 'active';
                     var char = window.getCharacterById ? window.getCharacterById(m.characterId) : null;
                     if (char && char.deceased) status = 'deceased';
@@ -225,7 +225,7 @@
                         m.role || '',
                         m.joinPeriod || '',
                         m.leavePeriod || '',
-                        status  // Read-only - not imported
+                        status // Read-only - not imported
                     ]);
                 });
                 return rows;
@@ -234,32 +234,32 @@
                 var teamId = utils.requireField(row, 0, 'TeamId');
                 var charId = utils.requireField(row, 1, 'CharacterId');
                 var team = context.teamMap[utils.normaliseId(teamId)];
-                
+
                 if (!team) {
                     context.addWarning('Team member references unknown team "' + teamId + '"');
                     return null;
                 }
-                
+
                 if (!context.charMap[utils.normaliseId(charId)]) {
                     context.addWarning('Team member references unknown character "' + charId + '"');
                     return null;
                 }
-                
+
                 // Check for duplicate membership
                 var exists = team.members.some(function(m) {
                     return utils.normaliseId(m.characterId) === utils.normaliseId(charId);
                 });
-                
+
                 if (exists) {
                     context.addWarning('Duplicate team member: "' + charId + '" already in team "' + teamId + '"');
                     return null;
                 }
-                
+
                 team.members.push({
                     characterId: charId,
-                    role: String(row[2] || '').trim() || 'Member',
-                    joinPeriod: String(row[3] || '').trim(),
-                    leavePeriod: String(row[4] || '').trim()
+                    role: String(row[2] == null ? '' : row[2]).trim() || 'Member',
+                    joinPeriod: String(row[3] == null ? '' : row[3]).trim(),
+                    leavePeriod: String(row[4] == null ? '' : row[4]).trim()
                 });
                 return null;
             },
@@ -267,7 +267,7 @@
                 var expected = this.header;
                 if (header.length < expected.length) return false;
                 for (var i = 0; i < expected.length; i++) {
-                    if ((header[i] || '').trim() !== expected[i]) {
+                    if ((header[i] == null ? '' : header[i]).trim() !== expected[i]) {
                         return false;
                     }
                 }
@@ -296,20 +296,20 @@
                     context.addWarning('Team ranking references unknown team "' + teamId + '"');
                     return null;
                 }
-                
+
                 var period = utils.requireField(row, 1, 'Period');
                 var rank = utils.requireField(row, 2, 'Rank');
-                
+
                 // Check for duplicate ranking entry
                 var exists = team.rankingHistory.some(function(r) {
                     return r.period === period;
                 });
-                
+
                 if (exists) {
                     context.addWarning('Duplicate ranking for team "' + teamId + '" period "' + period + '"');
                     return null;
                 }
-                
+
                 if (!Array.isArray(team.rankingHistory)) team.rankingHistory = [];
                 team.rankingHistory.push({
                     period: period,
@@ -321,7 +321,7 @@
                 var expected = this.header;
                 if (header.length < expected.length) return false;
                 for (var i = 0; i < expected.length; i++) {
-                    if ((header[i] || '').trim() !== expected[i]) {
+                    if ((header[i] == null ? '' : header[i]).trim() !== expected[i]) {
                         return false;
                     }
                 }
@@ -360,19 +360,19 @@
                 ];
             },
             import: function(row, context) {
-                var id = String(row[0] || '').trim() || utils.generateImportId('tourn');
+                var id = String(row[0] == null ? '' : row[0]).trim() || utils.generateImportId('tourn');
                 var name = utils.requireField(row, 1, 'TournamentName');
                 var mode = utils.requireEnum(row, 2, 'Mode', ['teams', 'individuals'], 'teams');
-                
+
                 var startWeek = utils.requireInteger(row, 3, 'StartWeek', 1);
                 var endWeek = utils.requireInteger(row, 4, 'EndWeek', 52);
                 var totalRounds = utils.requireInteger(row, 5, 'TotalRounds', 1);
                 var status = utils.requireEnum(row, 7, 'Status', ['draft', 'active', 'completed'], 'draft');
-                
+
                 if (startWeek > endWeek) {
                     throw new Error('StartWeek (' + startWeek + ') cannot be greater than EndWeek (' + endWeek + ')');
                 }
-                
+
                 var tourn = {
                     id: id,
                     name: name,
@@ -380,7 +380,7 @@
                     startWeek: startWeek,
                     endWeek: endWeek,
                     totalRounds: totalRounds,
-                    academicYear: String(row[6] || '').trim(),
+                    academicYear: String(row[6] == null ? '' : row[6]).trim(),
                     status: status,
                     winner: null,
                     teams: [],
@@ -392,9 +392,9 @@
                     currentRound: 0,
                     createdAt: new Date().toISOString()
                 };
-                
-                var winnerType = String(row[8] || '').trim();
-                var winnerId = String(row[9] || '').trim();
+
+                var winnerType = String(row[8] == null ? '' : row[8]).trim();
+                var winnerId = String(row[9] == null ? '' : row[9]).trim();
                 if (winnerId) {
                     if (winnerType === 'team' && context.teamMap[utils.normaliseId(winnerId)]) {
                         tourn.winner = winnerId;
@@ -410,7 +410,7 @@
                 var expected = this.header;
                 if (header.length < expected.length) return false;
                 for (var i = 0; i < expected.length; i++) {
-                    if ((header[i] || '').trim() !== expected[i]) {
+                    if ((header[i] == null ? '' : header[i]).trim() !== expected[i]) {
                         return false;
                     }
                 }
@@ -435,27 +435,27 @@
                 var tournId = utils.requireField(row, 0, 'TournamentId');
                 var teamId = utils.requireField(row, 1, 'TeamId');
                 var tourn = context.tournMap[utils.normaliseId(tournId)];
-                
+
                 if (!tourn) {
                     context.addWarning('Tournament team references unknown tournament "' + tournId + '"');
                     return null;
                 }
-                
+
                 if (!context.teamMap[utils.normaliseId(teamId)]) {
                     context.addWarning('Tournament team references unknown team "' + teamId + '"');
                     return null;
                 }
-                
+
                 // Check for duplicate
                 var exists = tourn.teams.some(function(t) {
                     return utils.normaliseId(t.teamId) === utils.normaliseId(teamId);
                 });
-                
+
                 if (exists) {
                     context.addWarning('Duplicate tournament team: "' + teamId + '" already in tournament "' + tournId + '"');
                     return null;
                 }
-                
+
                 tourn.teams.push({ teamId: teamId });
                 return null;
             },
@@ -463,7 +463,7 @@
                 var expected = this.header;
                 if (header.length < expected.length) return false;
                 for (var i = 0; i < expected.length; i++) {
-                    if ((header[i] || '').trim() !== expected[i]) {
+                    if ((header[i] == null ? '' : header[i]).trim() !== expected[i]) {
                         return false;
                     }
                 }
@@ -505,13 +505,13 @@
                     context.addWarning('Tournament match references unknown tournament "' + tournId + '"');
                     return null;
                 }
-                
-                var winnerType = String(row[1] || '').trim();
-                var team1Id = String(row[2] || '').trim();
-                var team2Id = String(row[3] || '').trim();
-                var winnerId = String(row[4] || '').trim();
+
+                var winnerType = String(row[1] == null ? '' : row[1]).trim();
+                var team1Id = String(row[2] == null ? '' : row[2]).trim();
+                var team2Id = String(row[3] == null ? '' : row[3]).trim();
+                var winnerId = String(row[4] == null ? '' : row[4]).trim();
                 var valid = true;
-                
+
                 // Validate team references
                 if (team1Id && !context.teamMap[utils.normaliseId(team1Id)]) {
                     context.addWarning('Tournament match references unknown team "' + team1Id + '" - skipping match');
@@ -521,25 +521,32 @@
                     context.addWarning('Tournament match references unknown team "' + team2Id + '" - skipping match');
                     valid = false;
                 }
-                
-                // Validate winner with type
+
+                // Validate winner with type and match participation
                 if (winnerId) {
                     var winnerExists = false;
                     if (winnerType === 'team' && context.teamMap[utils.normaliseId(winnerId)]) {
                         winnerExists = true;
+                        // Check if winner is one of the match participants
+                        if (winnerId !== team1Id && winnerId !== team2Id) {
+                            context.addWarning('Tournament match winner "' + winnerId + '" is not one of the match teams - skipping match');
+                            valid = false;
+                        }
                     } else if (winnerType === 'character' && context.charMap[utils.normaliseId(winnerId)]) {
                         winnerExists = true;
+                        // For character winners, we can't easily validate against participants
+                        // since matches are between teams - this depends on tournament model
                     }
                     if (!winnerExists) {
                         context.addWarning('Tournament match references unknown winner "' + winnerId + '" - skipping match');
                         valid = false;
                     }
                 }
-                
+
                 if (!valid) {
                     return null;
                 }
-                
+
                 tourn.matches.push({
                     team1Id: team1Id,
                     team2Id: team2Id,
@@ -552,7 +559,7 @@
                 var expected = this.header;
                 if (header.length < expected.length) return false;
                 for (var i = 0; i < expected.length; i++) {
-                    if ((header[i] || '').trim() !== expected[i]) {
+                    if ((header[i] == null ? '' : header[i]).trim() !== expected[i]) {
                         return false;
                     }
                 }
@@ -584,19 +591,19 @@
                     context.addWarning('Tournament elimination references unknown tournament "' + tournId + '"');
                     return null;
                 }
-                
-                var participantId = String(row[1] || '').trim();
+
+                var participantId = String(row[1] == null ? '' : row[1]).trim();
                 var participantType = utils.requireEnum(row, 2, 'ParticipantType', ['character', 'team'], 'character');
-                var teamId = String(row[3] || '').trim();
+                var teamId = String(row[3] == null ? '' : row[3]).trim();
                 var week = utils.requireInteger(row, 4, 'Week', 1);
-                
+
                 if (week < 1 || week > 52) {
-                    context.addWarning('Invalid week "' + week + '" for elimination - must be 1-52');
+                    context.addWarning('Invalid week "' + week + '" for elimination - must be 1-52, using 1');
                     week = 1;
                 }
-                
+
                 var valid = true;
-                
+
                 // Validate references
                 if (participantType === 'character' && participantId && !context.charMap[utils.normaliseId(participantId)]) {
                     context.addWarning('Tournament elimination references unknown character "' + participantId + '" - skipping elimination');
@@ -610,29 +617,29 @@
                     context.addWarning('Tournament elimination references unknown team "' + teamId + '" - skipping elimination');
                     valid = false;
                 }
-                
+
                 if (!valid) {
                     return null;
                 }
-                
+
                 // Check for duplicate elimination
                 var exists = tourn.eliminations.some(function(e) {
                     return utils.normaliseId(e.participantId) === utils.normaliseId(participantId) &&
                            e.participantType === participantType;
                 });
-                
+
                 if (exists) {
                     context.addWarning('Duplicate elimination for "' + participantId + '" in tournament "' + tournId + '"');
                     return null;
                 }
-                
+
                 tourn.eliminations.push({
                     participantId: participantId,
                     participantType: participantType,
                     teamId: teamId,
                     week: week
                 });
-                
+
                 if (participantType === 'character' && context.charMap[utils.normaliseId(participantId)]) {
                     var char = context.charMap[utils.normaliseId(participantId)];
                     if (!Array.isArray(char.eliminatedWeeks)) char.eliminatedWeeks = [];
@@ -646,7 +653,7 @@
                 var expected = this.header;
                 if (header.length < expected.length) return false;
                 for (var i = 0; i < expected.length; i++) {
-                    if ((header[i] || '').trim() !== expected[i]) {
+                    if ((header[i] == null ? '' : header[i]).trim() !== expected[i]) {
                         return false;
                     }
                 }
@@ -676,10 +683,10 @@
                     context.addWarning('Tournament participant references unknown tournament "' + tournId + '"');
                     return null;
                 }
-                
-                var participantId = String(row[1] || '').trim();
+
+                var participantId = String(row[1] == null ? '' : row[1]).trim();
                 var participantType = utils.requireEnum(row, 2, 'ParticipantType', ['character', 'team'], 'character');
-                
+
                 // Validate reference
                 var valid = true;
                 if (participantType === 'character' && participantId && !context.charMap[utils.normaliseId(participantId)]) {
@@ -690,22 +697,22 @@
                     context.addWarning('Tournament participant references unknown team "' + participantId + '" - skipping participant');
                     valid = false;
                 }
-                
+
                 if (!valid) {
                     return null;
                 }
-                
+
                 // Check for duplicate participant
                 var exists = tourn.participants.some(function(p) {
                     return utils.normaliseId(p.id) === utils.normaliseId(participantId) &&
                            p.type === participantType;
                 });
-                
+
                 if (exists) {
                     context.addWarning('Duplicate participant "' + participantId + '" in tournament "' + tournId + '"');
                     return null;
                 }
-                
+
                 tourn.participants.push({
                     id: participantId,
                     type: participantType
@@ -716,7 +723,7 @@
                 var expected = this.header;
                 if (header.length < expected.length) return false;
                 for (var i = 0; i < expected.length; i++) {
-                    if ((header[i] || '').trim() !== expected[i]) {
+                    if ((header[i] == null ? '' : header[i]).trim() !== expected[i]) {
                         return false;
                     }
                 }
@@ -743,30 +750,32 @@
                 ];
             },
             import: function(row, context) {
-                var id = String(row[0] || '').trim() || utils.generateImportId('miss');
+                var id = String(row[0] == null ? '' : row[0]).trim() || utils.generateImportId('miss');
                 var title = utils.requireField(row, 1, 'Title');
-                
-                var status = utils.requireEnum(row, 2, 'Status', 
+
+                var status = utils.requireEnum(row, 2, 'Status',
                     ['active', 'completed', 'cancelled'], 'active');
-                var priority = utils.requireEnum(row, 3, 'Priority', 
+                var priority = utils.requireEnum(row, 3, 'Priority',
                     ['low', 'medium', 'high', 'critical'], 'medium');
-                var difficulty = utils.requireEnum(row, 4, 'Difficulty', 
+                var difficulty = utils.requireEnum(row, 4, 'Difficulty',
                     ['easy', 'medium', 'hard', 'expert'], 'medium');
                 var progress = utils.requireInteger(row, 9, 'Progress', 0);
-                
+
                 // Validate progress range
                 if (progress < 0) progress = 0;
                 if (progress > 100) progress = 100;
-                
-                var teamId = String(row[5] || '').trim() || null;
-                var objectives = utils.parseJSONField(row, 10, 'Objectives', [], context.addWarning);
-                
+
+                var teamId = String(row[5] == null ? '' : row[5]).trim() || null;
+
+                // Use typed JSON parsing - expects array of objectives
+                var objectives = utils.parseJSONArray(row, 10, 'Objectives', [], context.addWarning);
+
                 // Validate team reference - null it if invalid
                 if (teamId && !context.teamMap[utils.normaliseId(teamId)]) {
                     context.addWarning('Mission "' + title + '" references unknown team "' + teamId + '" - unassigning mission');
                     teamId = null;
                 }
-                
+
                 return {
                     id: id,
                     title: title,
@@ -774,9 +783,9 @@
                     priority: priority,
                     difficulty: difficulty,
                     assignedTeamId: teamId,
-                    location: String(row[6] || '').trim(),
-                    duration: String(row[7] || '').trim(),
-                    pay: String(row[8] || '').trim(),
+                    location: String(row[6] == null ? '' : row[6]).trim(),
+                    duration: String(row[7] == null ? '' : row[7]).trim(),
+                    pay: String(row[8] == null ? '' : row[8]).trim(),
                     progress: progress,
                     objectives: objectives,
                     description: '',
@@ -791,7 +800,7 @@
                 var expected = this.header;
                 if (header.length < expected.length) return false;
                 for (var i = 0; i < expected.length; i++) {
-                    if ((header[i] || '').trim() !== expected[i]) {
+                    if ((header[i] == null ? '' : header[i]).trim() !== expected[i]) {
                         return false;
                     }
                 }
@@ -816,12 +825,13 @@
                 ];
             },
             import: function(row, context) {
-                var id = String(row[0] || '').trim() || utils.generateImportId('disc');
+                var id = String(row[0] == null ? '' : row[0]).trim() || utils.generateImportId('disc');
                 var name = utils.requireField(row, 1, 'DisciplineName');
                 var type = utils.requireEnum(row, 2, 'Type', ['mandatory', 'optional'], 'mandatory');
-                
-                var instructorIds = utils.parseJSONField(row, 3, 'Instructors', [], context.addWarning);
-                
+
+                // Use typed JSON parsing - expects array of instructor IDs
+                var instructorIds = utils.parseJSONArray(row, 3, 'Instructors', [], context.addWarning);
+
                 // Validate instructor references - filter out invalid ones
                 if (Array.isArray(instructorIds)) {
                     var validInstructors = instructorIds.filter(function(instrId) {
@@ -834,17 +844,17 @@
                     });
                     instructorIds = validInstructors;
                 }
-                
+
                 var startWeek = utils.requireInteger(row, 4, 'StartWeek', 1);
                 var endWeek = utils.requireInteger(row, 5, 'EndWeek', 52);
                 var weeklyHours = utils.requireNumber(row, 6, 'WeeklyHours', 1);
                 var maxStudents = utils.requireInteger(row, 7, 'MaxStudents', 0);
                 var weight = utils.requireNumber(row, 8, 'Weight', 1);
-                
+
                 if (startWeek > endWeek) {
                     throw new Error('StartWeek (' + startWeek + ') cannot be greater than EndWeek (' + endWeek + ')');
                 }
-                
+
                 return {
                     id: id,
                     name: name,
@@ -864,7 +874,7 @@
                 var expected = this.header;
                 if (header.length < expected.length) return false;
                 for (var i = 0; i < expected.length; i++) {
-                    if ((header[i] || '').trim() !== expected[i]) {
+                    if ((header[i] == null ? '' : header[i]).trim() !== expected[i]) {
                         return false;
                     }
                 }
