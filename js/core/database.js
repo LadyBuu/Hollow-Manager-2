@@ -1,6 +1,24 @@
 /**
  * js/core/database.js - IndexedDB Operations
  * Path: js/core/database.js
+ * 
+ * This module handles all IndexedDB persistence operations with:
+ * - Safe migration system
+ * - Coalescing save queue (pending saves are batched)
+ * - Proper error handling with events
+ * - Data cloning to prevent reference issues
+ * - Status tracking for UI feedback
+ * 
+ * PERSISTENCE CONTRACT:
+ * - saveData() returns a Promise that resolves to true on success
+ * - Save failures dispatch 'dataSaveFailed' events
+ * - All mutations are applied to window.data in memory
+ * - Persistence is explicitly triggered by callers
+ * 
+ * SAVE QUEUE SEMANTICS:
+ * - Multiple saves requested while one is in progress are coalesced
+ * - All waiters share the result of the single save
+ * - This prevents redundant IndexedDB transactions
  */
 
 var DB_NAME = 'HollowBladesDB';
@@ -13,13 +31,13 @@ var _indexedDB = null;
 var _data = null;
 var _dbOpenPromise = null;
 var _loadPromise = null;
-var _isSaving = false;
-var _savePending = false;
-var _savePromise = null;
-var _dataLoadedDispatched = false;
-var _dbInitPromise = null;
+var _dataReadyDispatched = false;
 var _dbStatus = 'uninitialized';
 var _loadError = null;
+
+// Save queue state - coalescing
+var _isSaving = false;
+var _saveWaiters = [];
 
 // ============================================================
 // DEFAULT FACTORIES
@@ -161,6 +179,8 @@ function deepMergeDefaults(target, defaults) {
 // DATABASE OPENING
 // ============================================================
 
+var _dbInitPromise = null;
+
 function openDatabase() {
     if (_indexedDB && _dbStatus === 'ready') {
         return Promise.resolve(_indexedDB);
@@ -182,6 +202,7 @@ function openDatabase() {
             
             request.onblocked = function() {
                 // Another tab has the database open - waiting for it to close
+                console.warn('IndexedDB open blocked. Another tab may have the database open.');
             };
             
             request.onsuccess = function(event) {
@@ -190,8 +211,13 @@ function openDatabase() {
                 _dbStatus = 'ready';
                 
                 _indexedDB.onversionchange = function() {
-                    _indexedDB.close();
-                    _indexedDB = null;
+                    // Database schema is being upgraded elsewhere
+                    // Close our connection to allow the upgrade
+                    if (_indexedDB) {
+                        _indexedDB.close();
+                        _indexedDB = null;
+                    }
+                    // Reset promise state so ensureDatabaseReady can retry
                     _dbInitPromise = null;
                     _dbStatus = 'uninitialized';
                 };
@@ -204,6 +230,8 @@ function openDatabase() {
                 
                 _indexedDB.onerror = function(event) {
                     // Connection-level error
+                    console.error('IndexedDB connection error:', event.target.error);
+                    _dispatchSaveFailure(event.target.error);
                 };
                 
                 resolve(_indexedDB);
@@ -290,7 +318,13 @@ function migrateData(data) {
 
     ensureMigrationBaseStructure(data);
 
-    if (typeof data._dataVersion !== 'number') {
+    // Validate data version - strict checking
+    if (
+        typeof data._dataVersion !== 'number' ||
+        !Number.isFinite(data._dataVersion) ||
+        !Number.isInteger(data._dataVersion) ||
+        data._dataVersion < 1
+    ) {
         data._dataVersion = 1;
     }
 
@@ -636,7 +670,8 @@ function doLoadData(resolve, reject) {
         request.onsuccess = function() {
             try {
                 if (request.result && request.result.data) {
-                    _data = request.result.data;
+                    // Clone the data to create a clean boundary between storage and application
+                    _data = createSafeCopy(request.result.data);
 
                     var originalVersion = migrateData(_data);
                     ensureDataStructure(_data);
@@ -701,34 +736,69 @@ function doLoadData(resolve, reject) {
 }
 
 // ============================================================
-// SAVE DATA
+// SAVE DATA - Coalescing queue
 // ============================================================
 
+/**
+ * Save data to IndexedDB.
+ * Uses a coalescing queue: multiple saves requested while one is in progress
+ * are batched into a single transaction.
+ * Returns a Promise that resolves to true on success.
+ */
 function saveData() {
-    if (_isSaving) {
-        _savePending = true;
-        return _savePromise;
+    return new Promise(function(resolve, reject) {
+        _saveWaiters.push({
+            resolve: resolve,
+            reject: reject
+        });
+        processSaveQueue();
+    });
+}
+
+function processSaveQueue() {
+    // If already saving, waiters will be resolved when the current save completes
+    if (_isSaving || _saveWaiters.length === 0) {
+        return;
     }
 
     _isSaving = true;
-    _savePending = false;
 
-    _savePromise = performSave()
+    performSave()
         .then(function() {
-            if (_savePending) {
-                _savePending = false;
-                _isSaving = false;
-                return saveData();
-            }
             _isSaving = false;
-            return;
+
+            // Resolve all waiters with the successful result
+            var waiters = _saveWaiters;
+            _saveWaiters = [];
+
+            waiters.forEach(function(waiter) {
+                try {
+                    waiter.resolve(true);
+                } catch (err) {
+                    console.error('Error resolving save waiter:', err);
+                }
+            });
+
+            // If new saves were requested while we were resolving, process them
+            if (_saveWaiters.length > 0) {
+                processSaveQueue();
+            }
         })
         .catch(function(err) {
             _isSaving = false;
-            throw err;
-        });
 
-    return _savePromise;
+            // Reject all waiters with the error
+            var waiters = _saveWaiters;
+            _saveWaiters = [];
+
+            waiters.forEach(function(waiter) {
+                try {
+                    waiter.reject(err);
+                } catch (rejectErr) {
+                    console.error('Error rejecting save waiter:', rejectErr);
+                }
+            });
+        });
 }
 
 function performSave() {
@@ -763,20 +833,46 @@ function performSave() {
             };
 
             transaction.onerror = function(event) {
-                reject(event.target.error);
+                var error = event.target.error;
+                _dispatchSaveFailure(error);
+                reject(error);
             };
 
             transaction.onabort = function(event) {
-                reject(event.target.error || new Error('IndexedDB transaction aborted'));
+                var error = event.target.error || new Error('IndexedDB transaction aborted');
+                _dispatchSaveFailure(error);
+                reject(error);
             };
 
             request.onerror = function(event) {
-                reject(event.target.error);
+                var error = event.target.error;
+                _dispatchSaveFailure(error);
+                reject(error);
             };
         } catch (err) {
+            _dispatchSaveFailure(err);
             reject(err);
         }
     });
+}
+
+// ============================================================
+// SAVE FAILURE DISPATCH
+// ============================================================
+
+function _dispatchSaveFailure(error) {
+    if (typeof window.dispatchEvent === 'function') {
+        try {
+            var event = new CustomEvent('dataSaveFailed', {
+                detail: { error: error },
+                bubbles: false,
+                cancelable: false
+            });
+            window.dispatchEvent(event);
+        } catch (e) {
+            // Ignore event dispatch errors
+        }
+    }
 }
 
 // ============================================================
@@ -784,7 +880,8 @@ function performSave() {
 // ============================================================
 
 function autoLoadData() {
-    if (window.data) {
+    // Only use window.data if it was set by this module
+    if (window.data && window.data === _data) {
         _dispatchDataReady(window.data);
         return Promise.resolve(window.data);
     }
@@ -808,8 +905,8 @@ function autoLoadData() {
 // ============================================================
 
 function _dispatchDataReady(data) {
-    if (_dataLoadedDispatched) return;
-    _dataLoadedDispatched = true;
+    if (_dataReadyDispatched) return;
+    _dataReadyDispatched = true;
 
     setTimeout(function() {
         var event = new CustomEvent('dataReady', {
@@ -822,8 +919,8 @@ function _dispatchDataReady(data) {
 }
 
 function _dispatchDataFailure(err) {
-    if (_dataLoadedDispatched) return;
-    _dataLoadedDispatched = true;
+    if (_dataReadyDispatched) return;
+    _dataReadyDispatched = true;
 
     setTimeout(function() {
         var event = new CustomEvent('dataReady', {
