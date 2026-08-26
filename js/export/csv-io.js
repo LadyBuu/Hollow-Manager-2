@@ -29,14 +29,15 @@
  *     ↓
  *   Swap live state
  *     ↓
- *   Render
+ *   Render (with separate error handling)
  * 
  * IMPORT PHILOSOPHY:
- *   - Missing optional reference → null it (missions)
+ *   - Missing optional reference → null it (missions, classId)
  *   - Missing required reference → skip relationship (team members, tournament records)
  *   - Malformed primary entity → abort import with error
  *   - Invalid enum values → abort import with error
  *   - Blank rows → silently skipped
+ *   - Malformed JSON field → warn and use fallback
  *   - Warnings are capped at 50 to prevent UI explosion
  *   - JSON fields are type-validated (arrays must be arrays, etc.)
  *   - Numeric fields are strictly validated (no "12garbage" allowed)
@@ -194,6 +195,7 @@
     function importCSV(file) {
         var reader = new FileReader();
         reader.onload = function(e) {
+            // Outer try/catch for all import errors - single alert
             try {
                 var records = window.CSV.parse(e.target.result);
                 if (records.length === 0) {
@@ -303,7 +305,7 @@
                 // PHASE 2: Process primary entities FIRST (order independent)
                 // ============================================================
 
-                var primarySections = ['characters', 'teams', 'tournaments', 'missions', 'disciplines'];
+                var primarySections = utils.CSV_PRIMARY_COLLECTIONS;
 
                 primarySections.forEach(function(sectionName) {
                     var rows = sections[sectionName] || [];
@@ -460,10 +462,10 @@
 
                 // Create backup only after confirmation
                 var backup = utils.cloneData(window.data);
+                var persisted = false;
 
                 // saveData must exist and return true on success
                 if (typeof window.saveData !== 'function') {
-                    // Fail loudly - no in-memory-only mode
                     alert(
                         'Cannot import CSV: saveData() is unavailable.\n\n' +
                         'The imported data was not applied.\n' +
@@ -480,13 +482,24 @@
                             throw new Error('saveData did not confirm successful persistence.');
                         }
                         
-                        // Persistence confirmed - swap live state
+                        // Persistence confirmed
+                        persisted = true;
                         window.data = newData;
-                        onImportSuccess(newData, true, 'CSV', warnings);
+
+                        // Post-persistence UI refresh - separate error handling
+                        try {
+                            onImportSuccess(newData, true, 'CSV', warnings);
+                        } catch (renderErr) {
+                            console.error('Import persisted successfully, but UI refresh failed:', renderErr);
+                            alert(
+                                'CSV import was saved successfully, but the interface could not refresh.\n\n' +
+                                'Please reload the page to see your imported data.'
+                            );
+                        }
                     })
                     .catch(function(err) {
-                        // Rollback memory (database rollback is handled by atomic transaction)
-                        if (backup) {
+                        // Only roll back if persistence actually failed
+                        if (!persisted && backup) {
                             window.data = backup;
                         }
                         alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
@@ -729,34 +742,28 @@
         }
 
         // Show the result with warnings if any
-        if (persisted) {
-            var charCount = data.characters ? data.characters.length : 0;
-            var teamCount = data.teams ? data.teams.length : 0;
-            var tournCount = data.tournaments ? data.tournaments.length : 0;
-            var missionCount = data.missions ? data.missions.length : 0;
+        var charCount = data.characters ? data.characters.length : 0;
+        var teamCount = data.teams ? data.teams.length : 0;
+        var tournCount = data.tournaments ? data.tournaments.length : 0;
+        var missionCount = data.missions ? data.missions.length : 0;
 
-            var msg = format + ' import completed successfully!\n\n' +
-                'Characters: ' + charCount + '\n' +
-                'Teams: ' + teamCount + '\n' +
-                'Tournaments: ' + tournCount + '\n' +
-                'Missions: ' + missionCount;
+        var msg = format + ' import completed successfully!\n\n' +
+            'Characters: ' + charCount + '\n' +
+            'Teams: ' + teamCount + '\n' +
+            'Tournaments: ' + tournCount + '\n' +
+            'Missions: ' + missionCount;
 
-            if (warnings && warnings.length > 0) {
-                msg += '\n\n⚠ Warnings:\n' + warnings.join('\n');
-            }
-
-            if (format === 'CSV') {
-                msg += '\n\nNote: CSV imports Characters, Teams, Tournaments, Missions, and Disciplines,\n' +
-                       'including related team and tournament records.\n' +
-                       'Use JSON for complete data restoration.';
-            }
-
-            alert(msg);
-        } else {
-            // This should never happen with the new contract, but keep for safety
-            alert(format + ' import completed but persistence was not confirmed.\n\n' +
-                  'The data may not be saved. Please check your browser settings.');
+        if (warnings && warnings.length > 0) {
+            msg += '\n\n⚠ Warnings:\n' + warnings.join('\n');
         }
+
+        if (format === 'CSV') {
+            msg += '\n\nNote: CSV imports Characters, Teams, Tournaments, Missions, and Disciplines,\n' +
+                   'including related team and tournament records.\n' +
+                   'Use JSON for complete data restoration.';
+        }
+
+        alert(msg);
     }
 
     // Delegate to canonical data/state layer - fail loudly if not available
