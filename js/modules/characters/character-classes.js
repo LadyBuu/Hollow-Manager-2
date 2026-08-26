@@ -56,6 +56,67 @@
     }
 
     // ============================================================
+    // CORE REMOVE FUNCTION - Single source of truth for removal
+    // ============================================================
+
+    function removeClassById(charId, classId) {
+        var char = window.getCharacterById(charId);
+        if (!char) {
+            alert('Character not found.');
+            return Promise.resolve(false);
+        }
+
+        var cls = window.getClass(classId);
+        if (!cls) {
+            alert('Class not found.');
+            return Promise.resolve(false);
+        }
+
+        if (!char.classIds || !char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+            alert('Character is not in this class.');
+            return Promise.resolve(false);
+        }
+
+        var data = window.data || {};
+        var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
+
+        // 1. MUTATE
+        char.classIds = char.classIds.filter(function(cid) {
+            return String(cid) !== String(classId);
+        });
+
+        // 2. LOG
+        var name = window.getDisplayName(char);
+        if (typeof window.logActivity === 'function') {
+            window.logActivity('Removed ' + name + ' from class: ' + cls.name);
+        }
+
+        // 3. SAVE
+        if (typeof window.saveData === 'function') {
+            return window.saveData()
+                .then(function() {
+                    refreshUI(char);
+                    alert('Character removed from class successfully!');
+                    return true;
+                })
+                .catch(function(err) {
+                    console.error('Failed to remove character from class:', err);
+                    if (backup) {
+                        window.data = backup;
+                        safeRenderCharacterList();
+                        safeShowCharacterForm(charId);
+                    }
+                    alert('Failed to remove character from class. Please try again.');
+                    return false;
+                });
+        } else {
+            refreshUI(char);
+            alert('Character removed from class successfully!');
+            return Promise.resolve(true);
+        }
+    }
+
+    // ============================================================
     // ADD TO CLASS
     // ============================================================
 
@@ -97,8 +158,6 @@
         }
 
         var data = window.data || {};
-        
-        // Save backup for rollback
         var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
 
         // 1. MUTATE
@@ -134,7 +193,7 @@
     }
 
     // ============================================================
-    // REMOVE FROM CLASS
+    // REMOVE FROM CLASS - Prompt-based (uses removeClassById)
     // ============================================================
 
     function removeFromClass() {
@@ -182,40 +241,7 @@
             return;
         }
 
-        var data = window.data || {};
-        
-        // Save backup for rollback
-        var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
-
-        // 1. MUTATE
-        char.classIds = char.classIds.filter(function(cid) { return String(cid) !== String(cls.id); });
-
-        // 2. LOG
-        var name = window.getDisplayName(char);
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Removed ' + name + ' from class: ' + cls.name);
-        }
-
-        // 3. SAVE
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    refreshUI(char);
-                    alert('Character removed from class successfully!');
-                })
-                .catch(function(err) {
-                    console.error('Failed to remove character from class:', err);
-                    if (backup) {
-                        window.data = backup;
-                        safeRenderCharacterList();
-                        safeShowCharacterForm(charId);
-                    }
-                    alert('Failed to remove character from class. Please try again.');
-                });
-        } else {
-            refreshUI(char);
-            alert('Character removed from class successfully!');
-        }
+        removeClassById(charId, cls.id);
     }
 
     // ============================================================
@@ -230,8 +256,10 @@
         var emptyMsg = container.querySelector('span[style*="text-dim"]');
         if (emptyMsg) emptyMsg.remove();
         
-        // Check if tag already exists (idempotent)
-        var existing = container.querySelector('[data-class-id="' + classId + '"]');
+        // Check if tag already exists (idempotent) - safe selector
+        var existing = Array.from(container.querySelectorAll('[data-class-id]')).find(function(tag) {
+            return String(tag.dataset.classId) === String(classId);
+        });
         if (existing) return;
         
         // Build DOM elements safely - no innerHTML for user data
@@ -253,16 +281,27 @@
         tag.appendChild(button);
         container.appendChild(tag);
         
-        // Use closest() for safer removal
+        // Use removeClassById for actual removal
         button.addEventListener('click', function() {
-            var tag = this.closest('[data-class-id]');
-            if (tag) {
-                tag.remove();
-                var container = document.getElementById('class-tag-container');
-                if (container && container.children.length === 0) {
-                    container.innerHTML = '<span style="color:var(--text-dim);font-size:0.7rem;padding:4px;">No classes assigned</span>';
-                }
+            var charId = safeGetCurrentEditId();
+            var classId = this.dataset.id;
+            
+            if (!charId) {
+                alert('No character selected.');
+                return;
             }
+            
+            if (!classId) {
+                alert('Class not found.');
+                return;
+            }
+            
+            // Confirm before removal
+            if (!confirm('Remove this class from the character?')) {
+                return;
+            }
+            
+            removeClassById(charId, classId);
         });
     }
 
@@ -387,15 +426,25 @@
 
     function getAvailableStudentsForClass(classId, week) {
         if (!classId) return [];
-        var weekNum = parseInt(week) || 1;
+        var weekNum = Number(week);
+        if (!Number.isInteger(weekNum) || weekNum < 1) {
+            weekNum = 1;
+        }
         var data = window.data || {};
         
         var classChars = getCharactersByClass(classId);
         
         var available = classChars.filter(function(char) {
-            if (char.deceased) return false;
+            // Check elimination status using the authoritative elimination module
+            if (
+                window.CharacterEliminations &&
+                typeof window.CharacterEliminations.isCharacterEliminatedByWeek === 'function' &&
+                window.CharacterEliminations.isCharacterEliminatedByWeek(char, weekNum)
+            ) {
+                return false;
+            }
             
-            var inTeam = false;
+            // Check if already in a team
             if (data.teams) {
                 for (var i = 0; i < data.teams.length; i++) {
                     var team = data.teams[i];
@@ -410,17 +459,15 @@
                                 var join = parseInt(member.joinPeriod);
                                 var leave = parseInt(member.leavePeriod);
                                 if (!isNaN(join) && join <= weekNum && (isNaN(leave) || leave >= weekNum)) {
-                                    inTeam = true;
-                                    break;
+                                    return false;
                                 }
                             }
                         }
                     }
-                    if (inTeam) break;
                 }
             }
             
-            return !inTeam;
+            return true;
         });
         
         return available;
@@ -433,6 +480,7 @@
     window.CharacterClasses = {
         addToClass: addToClass,
         removeFromClass: removeFromClass,
+        removeClassById: removeClassById,
         populateAcademicClassSelector: populateAcademicClassSelector,
         updateCurrentClassesDisplay: updateCurrentClassesDisplay,
         addClassTag: addClassTag,
