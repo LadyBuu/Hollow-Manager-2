@@ -15,6 +15,11 @@
  *   User-controlled text is inserted using safe DOM APIs/textContent
  *   rather than raw HTML, preventing XSS.
  *   Rollback is performed on save failure.
+ * 
+ * STATE SOURCE OF TRUTH:
+ *   - Uses AppState for current edit ID via getState('characters', 'formEditId')
+ *   - Uses window.data for domain data
+ *   - DOM is rendered from state, not the other way around
  */
 
 (function() {
@@ -25,6 +30,41 @@
         return;
     }
     window.__characterClassesLoaded = true;
+
+    // ============================================================
+    // STATE ACCESS - Single source of truth
+    // ============================================================
+
+    function getCurrentEditId() {
+        if (typeof window.getState === 'function') {
+            return window.getState('characters', 'formEditId');
+        }
+        return null;
+    }
+
+    function setCurrentEditId(id) {
+        if (typeof window.setState === 'function') {
+            window.setState('characters', 'formEditId', id);
+        }
+    }
+
+    // ============================================================
+    // SAFE CLONE - Use database module's clone
+    // ============================================================
+
+    function createSafeBackup(data) {
+        try {
+            if (window.db && typeof window.db.createSafeCopy === 'function') {
+                return window.db.createSafeCopy(data);
+            }
+            if (typeof structuredClone === 'function') {
+                return structuredClone(data);
+            }
+            return null;
+        } catch (err) {
+            return null;
+        }
+    }
 
     // ============================================================
     // SAFE RENDER HELPERS
@@ -48,11 +88,31 @@
         }
     }
 
-    function safeGetCurrentEditId() {
-        if (typeof window.currentEditId === 'function') {
-            return window.currentEditId();
+    // ============================================================
+    // NOTIFICATION
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+
+        if (typeof window.showToast === 'function') {
+            window.showToast(message, type);
+            return;
         }
-        return null;
+
+        if (typeof window.setSession === 'function') {
+            window.setSession('toast', {
+                message: message,
+                type: type,
+                timestamp: Date.now()
+            });
+            if (typeof window.renderToast === 'function') {
+                window.renderToast();
+            }
+            return;
+        }
+
+        alert(type === 'error' ? 'Error: ' + message : message);
     }
 
     // ============================================================
@@ -73,7 +133,7 @@
     function removeClassById(charId, classId) {
         var char = window.getCharacterById(charId);
         if (!char) {
-            alert('Character not found.');
+            showNotification('Character not found.', 'error');
             return Promise.resolve(false);
         }
 
@@ -81,12 +141,12 @@
 
         var cls = window.getClass(classId);
         if (!cls) {
-            alert('Class not found.');
+            showNotification('Class not found.', 'error');
             return Promise.resolve(false);
         }
 
         if (!char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
-            alert('Character is not in this class.');
+            showNotification('Character is not in this class.', 'error');
             return Promise.resolve(false);
         }
 
@@ -97,7 +157,7 @@
         }
 
         var data = window.data || {};
-        var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
+        var backup = createSafeBackup(data);
 
         // 1. MUTATE
         char.classIds = char.classIds.filter(function(cid) {
@@ -113,8 +173,9 @@
         if (typeof window.saveData === 'function') {
             return window.saveData()
                 .then(function() {
-                    refreshUI(char);
-                    alert('Character removed from class successfully!');
+                    var savedChar = window.getCharacterById(charId);
+                    refreshUI(savedChar);
+                    showNotification('Character removed from class successfully!', 'success');
                     return true;
                 })
                 .catch(function(err) {
@@ -122,14 +183,15 @@
                     if (backup) {
                         window.data = backup;
                         safeRenderCharacterList();
+                        setCurrentEditId(charId);
                         safeShowCharacterForm(charId);
                     }
-                    alert('Failed to remove character from class. Please try again.');
+                    showNotification('Failed to remove character from class. Please try again.', 'error');
                     return false;
                 });
         } else {
             refreshUI(char);
-            alert('Character removed from class successfully!');
+            showNotification('Character removed from class successfully!', 'success');
             return Promise.resolve(true);
         }
     }
@@ -141,44 +203,44 @@
     function addToClass() {
         var select = document.getElementById('academic-class-select');
         if (!select) {
-            alert('Class selector not found. Please refresh the page.');
-            return;
-        }
-        
-        var classId = select.value;
-        if (!classId) {
-            alert('Please select a class.');
-            return;
+            showNotification('Class selector not found. Please refresh the page.', 'error');
+            return Promise.resolve(false);
         }
 
-        var charId = safeGetCurrentEditId();
+        var classId = select.value;
+        if (!classId) {
+            showNotification('Please select a class.', 'error');
+            return Promise.resolve(false);
+        }
+
+        var charId = getCurrentEditId();
         if (!charId) {
-            alert('No character selected.');
-            return;
+            showNotification('No character selected.', 'error');
+            return Promise.resolve(false);
         }
 
         var char = window.getCharacterById(charId);
         if (!char) {
-            alert('Character not found.');
-            return;
+            showNotification('Character not found.', 'error');
+            return Promise.resolve(false);
         }
 
         normaliseClassIds(char);
 
         var cls = window.getClass(classId);
         if (!cls) {
-            alert('Class not found.');
-            return;
+            showNotification('Class not found.', 'error');
+            return Promise.resolve(false);
         }
 
         // Check if already in class
         if (char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
-            alert('Character is already in this class.');
-            return;
+            showNotification('Character is already in this class.', 'error');
+            return Promise.resolve(false);
         }
 
         var data = window.data || {};
-        var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
+        var backup = createSafeBackup(data);
 
         // 1. MUTATE
         char.classIds.push(classId);
@@ -191,75 +253,137 @@
 
         // 3. SAVE
         if (typeof window.saveData === 'function') {
-            window.saveData()
+            return window.saveData()
                 .then(function() {
-                    refreshUI(char);
-                    alert('Character added to class successfully!');
+                    var savedChar = window.getCharacterById(charId);
+                    refreshUI(savedChar);
+                    showNotification('Character added to class successfully!', 'success');
+                    return true;
                 })
                 .catch(function(err) {
                     console.error('Failed to add character to class:', err);
                     if (backup) {
                         window.data = backup;
                         safeRenderCharacterList();
+                        setCurrentEditId(charId);
                         safeShowCharacterForm(charId);
                     }
-                    alert('Failed to add character to class. Please try again.');
+                    showNotification('Failed to add character to class. Please try again.', 'error');
+                    return false;
                 });
         } else {
             refreshUI(char);
-            alert('Character added to class successfully!');
+            showNotification('Character added to class successfully!', 'success');
+            return Promise.resolve(true);
         }
     }
 
     // ============================================================
-    // REMOVE FROM CLASS - Prompt-based (uses removeClassById)
+    // REMOVE FROM CLASS - Selector-based
     // ============================================================
 
     function removeFromClass() {
-        var charId = safeGetCurrentEditId();
+        var charId = getCurrentEditId();
         if (!charId) {
-            alert('No character selected.');
-            return;
+            showNotification('No character selected.', 'error');
+            return Promise.resolve(false);
         }
 
         var char = window.getCharacterById(charId);
         if (!char) {
-            alert('Character not found.');
-            return;
+            showNotification('Character not found.', 'error');
+            return Promise.resolve(false);
         }
 
         normaliseClassIds(char);
 
         if (char.classIds.length === 0) {
-            alert('Character is not in any classes.');
-            return;
+            showNotification('Character is not in any classes.', 'error');
+            return Promise.resolve(false);
         }
 
+        // Get currently assigned classes with display names
         var classes = window.getClasses() || [];
-        var classNames = char.classIds.map(function(cid) {
+        var assignedClasses = char.classIds.map(function(cid) {
             var cls = classes.find(function(c) { return String(c.id) === String(cid); });
-            return cls ? cls.name : 'Unknown';
+            return cls ? { id: cls.id, name: cls.name } : null;
+        }).filter(function(c) { return c; });
+
+        if (assignedClasses.length === 0) {
+            showNotification('Character is not in any valid classes.', 'error');
+            return Promise.resolve(false);
+        }
+
+        // Build selector UI
+        var modal = document.createElement('div');
+        modal.className = 'modal';
+        modal.style.display = 'flex';
+
+        var optionsHtml = assignedClasses.map(function(c) {
+            return '<option value="' + c.id + '">' + c.name + '</option>';
+        }).join('');
+
+        modal.innerHTML = `
+            <div class="modal-content small">
+                <div class="modal-header">
+                    <h3>Remove from Class</h3>
+                    <button class="close-modal" id="remove-class-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:12px;">
+                        Select a class to remove <strong>${window.getDisplayName(char)}</strong> from:
+                    </p>
+                    <div class="form-group">
+                        <select id="remove-class-select" style="width:100%;padding:8px;">
+                            ${optionsHtml}
+                        </select>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" id="remove-class-cancel" class="secondary">Cancel</button>
+                        <button type="button" id="remove-class-confirm" class="danger">Remove</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+
+        return new Promise(function(resolve) {
+            function cleanup() {
+                if (modal.parentNode) modal.remove();
+            }
+
+            modal.querySelector('#remove-class-close').onclick = function() {
+                cleanup();
+                resolve(false);
+            };
+
+            modal.querySelector('#remove-class-cancel').onclick = function() {
+                cleanup();
+                resolve(false);
+            };
+
+            modal.addEventListener('click', function(e) {
+                if (e.target === modal) {
+                    cleanup();
+                    resolve(false);
+                }
+            });
+
+            modal.querySelector('#remove-class-confirm').onclick = function() {
+                var select = document.getElementById('remove-class-select');
+                var selectedId = select.value;
+                cleanup();
+
+                if (selectedId) {
+                    removeClassById(charId, selectedId)
+                        .then(resolve)
+                        .catch(function() { resolve(false); });
+                } else {
+                    resolve(false);
+                }
+            };
         });
-
-        var classList = classNames.join('\n• ');
-        var choice = prompt('Enter the name of the class to remove:\n\nCurrent classes:\n• ' + classList, '');
-        if (!choice) return;
-
-        var cls = window.getClassByName(choice.trim());
-        if (!cls) {
-            alert('Class "' + choice + '" not found.');
-            return;
-        }
-
-        // Check if character is actually in this class
-        var isInClass = char.classIds.some(function(cid) { return String(cid) === String(cls.id); });
-        if (!isInClass) {
-            alert('Character is not in class "' + cls.name + '".');
-            return;
-        }
-
-        // removeClassById handles confirmation internally
-        removeClassById(charId, cls.id);
     }
 
     // ============================================================
@@ -269,51 +393,51 @@
     function addClassTag(classId, className) {
         var container = document.getElementById('class-tag-container');
         if (!container) return;
-        
+
         // Remove empty message if present
         var emptyMsg = container.querySelector('span[style*="text-dim"]');
         if (emptyMsg) emptyMsg.remove();
-        
+
         // Check if tag already exists (idempotent) - safe selector
         var existing = Array.from(container.querySelectorAll('[data-class-id]')).find(function(tag) {
             return String(tag.dataset.classId) === String(classId);
         });
         if (existing) return;
-        
+
         // Build DOM elements safely - no innerHTML for user data
         var tag = document.createElement('span');
         tag.style.cssText = 'background:var(--accent-soft);padding:2px 8px;border-radius:10px;font-size:0.7rem;border:1px solid var(--accent);display:inline-flex;align-items:center;gap:4px;';
         tag.dataset.classId = classId;
-        
+
         var nameSpan = document.createElement('span');
-        nameSpan.textContent = className;  // Safe: textContent escapes
-        
+        nameSpan.textContent = className;
+
         var button = document.createElement('button');
         button.className = 'remove-class-tag';
         button.dataset.id = classId;
         button.textContent = '✕';
         button.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;';
         button.setAttribute('aria-label', 'Remove class ' + className);
-        
+
         tag.appendChild(nameSpan);
         tag.appendChild(button);
         container.appendChild(tag);
-        
+
         // removeClassById handles confirmation internally
         button.addEventListener('click', function() {
-            var charId = safeGetCurrentEditId();
+            var charId = getCurrentEditId();
             var classId = this.dataset.id;
-            
+
             if (!charId) {
-                alert('No character selected.');
+                showNotification('No character selected.', 'error');
                 return;
             }
-            
+
             if (!classId) {
-                alert('Class not found.');
+                showNotification('Class not found.', 'error');
                 return;
             }
-            
+
             removeClassById(charId, classId);
         });
     }
@@ -343,7 +467,7 @@
     function populateClassTags(classIds) {
         clearClassTags();
         if (!classIds || classIds.length === 0) return;
-        
+
         var classes = window.getClasses() || [];
         classIds.forEach(function(cid) {
             var cls = classes.find(function(c) { return String(c.id) === String(cid); });
@@ -362,15 +486,15 @@
         if (!select) return;
 
         var classes = window.getClasses() || [];
-        
+
         // Reset select - this is an "add class" selector
         select.innerHTML = '<option value="">Select a class...</option>';
-        
+
         var existingClassIds = (char && Array.isArray(char.classIds)) ? char.classIds : [];
-        
+
         classes.forEach(function(cls) {
-            var isAssigned = existingClassIds.some(function(cid) { 
-                return String(cid) === String(cls.id); 
+            var isAssigned = existingClassIds.some(function(cid) {
+                return String(cid) === String(cls.id);
             });
             if (!isAssigned) {
                 var option = document.createElement('option');
@@ -379,7 +503,7 @@
                 select.appendChild(option);
             }
         });
-        
+
         // Always reset to empty - current value may no longer be valid
         select.value = '';
     }
@@ -421,7 +545,7 @@
         if (!char) return [];
         var classIds = Array.isArray(char.classIds) ? char.classIds : [];
         if (classIds.length === 0) return [];
-        
+
         var classes = window.getClasses() || [];
         return classes.filter(function(c) {
             return classIds.some(function(cid) { return String(cid) === String(c.id); });
@@ -447,12 +571,13 @@
         if (!classId) return [];
         var weekNum = Number(week);
         if (!Number.isInteger(weekNum) || weekNum < 1) {
-            weekNum = 1;
+            return [];
         }
+
         var data = window.data || {};
-        
+
         var classChars = getCharactersByClass(classId);
-        
+
         var available = classChars.filter(function(char) {
             // Check elimination status using the authoritative elimination module
             if (
@@ -462,15 +587,15 @@
             ) {
                 return false;
             }
-            
+
             // Check if already in a team
             if (data.teams) {
                 for (var i = 0; i < data.teams.length; i++) {
                     var team = data.teams[i];
                     if (team.type !== 'academic') continue;
-                    if (team.status === 'deleted') continue;
+                    if (team.status === 'deleted' || team.status === 'inactive' || team.status === 'deprecated') continue;
                     if (String(team.classId) !== String(classId)) continue;
-                    
+
                     if (team.members) {
                         for (var j = 0; j < team.members.length; j++) {
                             var member = team.members[j];
@@ -485,10 +610,10 @@
                     }
                 }
             }
-            
+
             return true;
         });
-        
+
         return available;
     }
 
@@ -510,7 +635,9 @@
         getCharacterClassNames: getCharacterClassNames,
         getCharactersByClass: getCharactersByClass,
         getAvailableStudentsForClass: getAvailableStudentsForClass,
-        refreshUI: refreshUI
+        refreshUI: refreshUI,
+        getCurrentEditId: getCurrentEditId,
+        setCurrentEditId: setCurrentEditId
     };
 
 })();
