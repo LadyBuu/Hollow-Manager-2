@@ -38,7 +38,7 @@
     // RENDER CHARACTER LIST
     // ============================================================
 
-    function render(container) {
+    function render() {
         var listContainer = document.getElementById('characters-container');
         if (!listContainer) return;
 
@@ -66,8 +66,8 @@
                 return applyFilters(char, nameFilter, statusFilter, classFilter);
             })
             .sort(function(a, b) {
-                var nameA = window.getDisplayName(a).toLowerCase();
-                var nameB = window.getDisplayName(b).toLowerCase();
+                var nameA = String(window.getDisplayName(a) || '').toLowerCase();
+                var nameB = String(window.getDisplayName(b) || '').toLowerCase();
                 return nameA.localeCompare(nameB);
             });
 
@@ -126,8 +126,8 @@
     function applyFilters(char, nameFilter, statusFilter, classFilter) {
         // Name filter
         if (nameFilter) {
-            var displayName = window.getDisplayName(char).toLowerCase();
-            var fullName = window.getFullName(char).toLowerCase();
+            var displayName = String(window.getDisplayName(char) || '').toLowerCase();
+            var fullName = String(window.getFullName(char) || '').toLowerCase();
             if (displayName.indexOf(nameFilter) === -1 && fullName.indexOf(nameFilter) === -1) {
                 return false;
             }
@@ -141,7 +141,7 @@
                 var hasElimination = char.eliminations && char.eliminations.length > 0;
                 if (!hasElimination) return false;
             } else {
-                var status = window.getCurrentStatus(char).toLowerCase();
+                var status = String(window.getCurrentStatus(char) || '').toLowerCase();
                 if (status !== statusFilter && !status.startsWith(statusFilter + ' ')) {
                     return false;
                 }
@@ -161,7 +161,7 @@
     }
 
     // ============================================================
-    // CLASS FILTER POPULATION
+    // CLASS FILTER POPULATION - Fixed stale selection
     // ============================================================
 
     function populateClassFilter() {
@@ -174,6 +174,7 @@
             : [];
         
         var currentValue = select.value;
+        
         select.innerHTML = '<option value="all">All Classes</option>';
         classes.forEach(function(cls) {
             var option = document.createElement('option');
@@ -181,7 +182,13 @@
             option.textContent = cls.name;
             select.appendChild(option);
         });
-        if (currentValue) select.value = currentValue;
+        
+        // Check if current value still exists as an option
+        var exists = Array.from(select.options).some(function(option) {
+            return option.value === currentValue;
+        });
+        
+        select.value = exists ? currentValue : 'all';
     }
 
     // ============================================================
@@ -189,7 +196,7 @@
     // ============================================================
 
     function getStatusIndicator(status) {
-        var statusLower = status.toLowerCase();
+        var statusLower = String(status || '').toLowerCase();
         if (statusLower === 'trainee' || statusLower === 'rookie') return '▸';
         if (statusLower === 'junior' || statusLower === 'senior') return '◆';
         if (statusLower === 'instructor') return '◇';
@@ -199,7 +206,7 @@
     }
 
     function getStatusColor(status) {
-        var statusLower = status.toLowerCase();
+        var statusLower = String(status || '').toLowerCase();
         if (statusLower === 'trainee' || statusLower === 'rookie') return 'var(--accent)';
         if (statusLower === 'junior' || statusLower === 'senior') return 'var(--warning)';
         if (statusLower === 'instructor' || statusLower === 'support') return 'var(--info)';
