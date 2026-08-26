@@ -7,6 +7,39 @@
     'use strict';
 
     // ============================================================
+    // SAFE RENDER HELPER
+    // ============================================================
+
+    function safeRenderCharacterList() {
+        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+            window.CharacterList.render();
+        }
+    }
+
+    function safeShowCharacterForm(id) {
+        if (typeof window.showCharacterForm === 'function') {
+            window.showCharacterForm(id);
+        }
+    }
+
+    function safeSetCurrentEditId(id) {
+        if (typeof window.setCurrentEditId === 'function') {
+            window.setCurrentEditId(id);
+        }
+    }
+
+    // ============================================================
+    // ENSURE DATA STRUCTURE
+    // ============================================================
+
+    function ensureDataArray(data, key) {
+        if (!data) return;
+        if (!Array.isArray(data[key])) {
+            data[key] = [];
+        }
+    }
+
+    // ============================================================
     // SAVE CHARACTER
     // ============================================================
 
@@ -14,6 +47,9 @@
         var form = document.getElementById('char-form');
         var editId = form ? form.dataset.editId : null;
         var data = window.data || {};
+        
+        // Ensure data structure
+        ensureDataArray(data, 'characters');
         
         var deceasedEl = document.getElementById('char-deceased');
         if (!deceasedEl) {
@@ -88,16 +124,16 @@
                     // Rollback memory if backup exists
                     if (backup) {
                         window.data = backup;
-                        window.CharacterList.render();
+                        safeRenderCharacterList();
                         
                         if (isEditing) {
                             // For editing, show the original character
-                            window.setCurrentEditId(editId);
-                            window.showCharacterForm(editId);
+                            safeSetCurrentEditId(editId);
+                            safeShowCharacterForm(editId);
                         } else {
                             // For new character, reset to empty form
-                            window.setCurrentEditId(null);
-                            window.showCharacterForm(null);
+                            safeSetCurrentEditId(null);
+                            safeShowCharacterForm(null);
                         }
                     }
                     
@@ -113,7 +149,7 @@
             window.updateDashboardStats();
         }
 
-        window.showCharacterForm(id);
+        safeShowCharacterForm(id);
         alert(isEditing ? 'Character saved successfully!' : 'Character created successfully!');
     }
 
@@ -128,6 +164,9 @@
         }
 
         var data = window.data || {};
+        ensureDataArray(data, 'characters');
+        ensureDataArray(data, 'teams');
+
         var char = data.characters.find(function(c) { return String(c.id) === String(id); });
         if (!char) {
             alert('Character not found.');
@@ -177,11 +216,11 @@
                     // Rollback memory if backup exists
                     if (backup) {
                         window.data = backup;
-                        window.CharacterList.render();
+                        safeRenderCharacterList();
                         
                         // Restore the deleted character in the form
-                        window.setCurrentEditId(id);
-                        window.showCharacterForm(id);
+                        safeSetCurrentEditId(id);
+                        safeShowCharacterForm(id);
                     }
                     
                     alert('Failed to delete character. Please try again.');
@@ -192,16 +231,16 @@
     }
 
     function onDeleteSuccess() {
-        window.setCurrentEditId(null);
+        safeSetCurrentEditId(null);
         if (typeof window.updateDashboardStats === 'function') {
             window.updateDashboardStats();
         }
-        window.showCharacterForm(null);
+        safeShowCharacterForm(null);
         alert('Character deleted successfully!');
     }
 
     // ============================================================
-    // HELPER FUNCTIONS
+    // HELPER FUNCTIONS (unchanged)
     // ============================================================
 
     function getClassIds() {
@@ -408,7 +447,7 @@
             createdAt: new Date().toISOString()
         };
         data.characters.push(newChar);
-        window.setCurrentEditId(id);
+        safeSetCurrentEditId(id);
         window.data = data;
         return id;
     }
