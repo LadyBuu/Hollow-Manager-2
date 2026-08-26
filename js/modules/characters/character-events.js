@@ -1,35 +1,22 @@
 /**
  * js/modules/characters/character-events.js - Character Events
- * Initializes all character module event listeners
  * Path: js/modules/characters/character-events.js
- * 
- * This module is responsible for:
- *   - Toggle character list
- *   - Add character button
- *   - Form submission (save/delete)
- *   - Tab switching
- *   - Filter controls (search, status, class)
- *   - Career status management
- *   - Deceased toggle
- *   - Elimination controls
- *   - Class tag input
- *   - Academic class management
- *   - Social relationship button
- *   - Stats/magic events (delegated to CharacterStats)
- *   - Special moves events (delegated to CharacterStats)
- *   - Click outside to close list
  */
 
 (function() {
     'use strict';
 
     var characterListOpen = false;
+    var initialized = false;
 
     // ============================================================
-    // MAIN INITIALIZATION
+    // MAIN INITIALIZATION - IDEMPOTENT
     // ============================================================
 
     function init(container) {
+        if (initialized) return;
+        initialized = true;
+
         if (!container) {
             container = document.getElementById('tab-characters');
         }
@@ -48,9 +35,6 @@
         initAcademicClassControls(container);
         initSocialButton(container);
         initClickOutside(container);
-        
-        // Stats/magic events are initialized by CharacterStats module
-        // This is called from character-form.js
     }
 
     // ============================================================
@@ -116,7 +100,7 @@
     }
 
     // ============================================================
-    // DELETE BUTTON
+    // DELETE BUTTON - NO CONFIRMATION HERE (CRUD owns it)
     // ============================================================
 
     function initDeleteButton(container) {
@@ -124,7 +108,7 @@
         if (deleteBtn) {
             deleteBtn.addEventListener('click', function() {
                 var id = window.currentEditId ? window.currentEditId() : null;
-                if (id && confirm('Delete this character permanently?')) {
+                if (id) {
                     window.CharacterCRUD.delete(id);
                 }
             });
@@ -155,7 +139,6 @@
             panel.classList.toggle('active', panelId === tab);
         });
         
-        // Refresh views when switching to certain tabs
         var id = window.currentEditId ? window.currentEditId() : null;
         if (id) {
             var char = window.getCharacterById(id);
@@ -221,7 +204,6 @@
             });
         }
 
-        // Handle remove status via event delegation
         document.addEventListener('click', function(e) {
             if (e.target && e.target.classList.contains('remove-status')) {
                 var entry = e.target.closest('.career-status-entry');
@@ -263,7 +245,6 @@
             });
         }
 
-        // Handle remove standalone elimination via event delegation
         document.addEventListener('click', function(e) {
             if (e.target && e.target.classList.contains('remove-standalone-elim')) {
                 var id = window.currentEditId ? window.currentEditId() : null;
@@ -312,7 +293,6 @@
             });
         }
 
-        // Handle remove class tag via event delegation
         document.addEventListener('click', function(e) {
             if (e.target && e.target.classList.contains('remove-class-tag')) {
                 var id = e.target.dataset.id;
@@ -369,7 +349,7 @@
     }
 
     // ============================================================
-    // CLICK OUTSIDE TO CLOSE LIST
+    // CLICK OUTSIDE
     // ============================================================
 
     function initClickOutside(container) {
