@@ -11,10 +11,32 @@
  *   - Magic power calculation and display
  *   - Special moves management (physical and magical)
  *   - UI event binding for stats/magic controls
+ * 
+ * IMPORTANT: All user-controlled data in special moves must be escaped.
+ * Class/magic suggestions are read-only - persistence handled by parent form.
  */
 
 (function() {
     'use strict';
+
+    // Guard against duplicate script loading
+    if (window.__characterStatsLoaded) {
+        return;
+    }
+    window.__characterStatsLoaded = true;
+
+    // ============================================================
+    // HTML ESCAPING - Prevents XSS in special moves
+    // ============================================================
+
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
 
     // ============================================================
     // STAT DEFINITIONS
@@ -214,6 +236,24 @@
     };
 
     // ============================================================
+    // MAGIC TYPE HELPERS
+    // ============================================================
+
+    function getMagicTypeKeys() {
+        return Object.keys(MAGIC_TYPES);
+    }
+
+    function getMagicCategoryTypes(category) {
+        var result = [];
+        for (var key in MAGIC_TYPES) {
+            if (MAGIC_TYPES[key].category === category) {
+                result.push(key);
+            }
+        }
+        return result;
+    }
+
+    // ============================================================
     // STAT FUNCTIONS
     // ============================================================
 
@@ -386,9 +426,10 @@
 
     function getDefaultMagicProficiencies() {
         var proficiencies = {};
-        for (var key in MAGIC_TYPES) {
+        var keys = getMagicTypeKeys();
+        keys.forEach(function(key) {
             proficiencies[key] = 0;
-        }
+        });
         return proficiencies;
     }
 
@@ -399,8 +440,10 @@
             return char.magic;
         }
 
+        var keys = getMagicTypeKeys();
         var hasAll = true;
-        for (var key in MAGIC_TYPES) {
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
             if (char.magic[key] === undefined || char.magic[key] === null) {
                 hasAll = false;
                 break;
@@ -422,59 +465,40 @@
     function calculateMagicPower(char) {
         var magic = getCharacterMagic(char);
         var total = 0;
-        for (var key in magic) {
+        var keys = getMagicTypeKeys();
+        keys.forEach(function(key) {
             total += parseInt(magic[key]) || 0;
-        }
+        });
         return total;
     }
 
     function getMagicPowerDisplay(char) {
         var power = calculateMagicPower(char);
-        var maxPower = Object.keys(MAGIC_TYPES).length * 10;
+        var maxPower = getMagicTypeKeys().length * 10;
         var percentage = Math.min(100, Math.round((power / maxPower) * 100));
-        var level = Math.floor(percentage / 20);
-        if (level > 4) level = 4;
-        if (level < 0) level = 0;
-
-        var filled = '●';
-        var empty = '○';
+        var filledCount = Math.ceil(percentage / 20);
 
         var display = '';
         for (var i = 0; i < 5; i++) {
-            display += (i <= level) ? filled : empty;
+            display += i < filledCount ? '●' : '○';
         }
 
-        return display;
+        return display + ' (' + power + '/' + maxPower + ')';
     }
 
     function updateMagicPowerDisplay() {
-        var types = ['earth', 'water', 'fire', 'air', 'metal', 'wood',
-            'blood', 'bone', 'mind', 'morphic', 'life', 'death',
-            'space', 'time', 'dimension', 'void', 'reality', 'transference'
-        ];
-        var total = 0;
-        types.forEach(function(key) {
+        var el = document.getElementById('magic-power-display-text');
+        if (!el) return;
+
+        var magic = {};
+        var keys = getMagicTypeKeys();
+        keys.forEach(function(key) {
             var input = document.getElementById('magic-' + key);
-            var val = input ? parseInt(input.value) || 0 : 0;
-            total += val;
+            magic[key] = input ? parseInt(input.value) || 0 : 0;
         });
 
-        var maxPower = 180;
-        var percentage = Math.min(100, Math.round((total / maxPower) * 100));
-        var level = Math.floor(percentage / 20);
-        if (level > 4) level = 4;
-        if (level < 0) level = 0;
-        var filled = '●';
-        var empty = '○';
-        var display = '';
-        for (var i = 0; i < 5; i++) {
-            display += (i <= level) ? filled : empty;
-        }
-
-        var el = document.getElementById('magic-power-display-text');
-        if (el) {
-            el.textContent = display + ' (' + total + '/' + maxPower + ')';
-        }
+        var tempChar = { magic: magic };
+        el.textContent = getMagicPowerDisplay(tempChar);
     }
 
     function suggestMagicClass(char) {
@@ -482,9 +506,10 @@
         if (!magic) return null;
 
         var scores = {};
-        for (var key in magic) {
+        var keys = getMagicTypeKeys();
+        keys.forEach(function(key) {
             scores[key] = parseInt(magic[key]) || 0;
-        }
+        });
 
         var categoryScores = { elemental: 0, body: 0, aether: 0 };
         var categoryCounts = { elemental: 0, body: 0, aether: 0 };
@@ -498,6 +523,7 @@
             }
         }
 
+        // Find winning category by average
         var highestCategory = 'elemental';
         var highestAvg = 0;
         for (var cat in categoryScores) {
@@ -510,9 +536,11 @@
             }
         }
 
+        // Find highest type WITHIN the winning category
         var highestType = null;
-        var highestScore = 0;
+        var highestScore = -1;
         for (var key in scores) {
+            if (MAGIC_TYPES[key].category !== highestCategory) continue;
             if (scores[key] > highestScore) {
                 highestScore = scores[key];
                 highestType = key;
@@ -569,11 +597,8 @@
 
     function updateMagicClassSuggestion() {
         var magic = {};
-        var types = ['earth', 'water', 'fire', 'air', 'metal', 'wood',
-            'blood', 'bone', 'mind', 'morphic', 'life', 'death',
-            'space', 'time', 'dimension', 'void', 'reality', 'transference'
-        ];
-        types.forEach(function(key) {
+        var keys = getMagicTypeKeys();
+        keys.forEach(function(key) {
             var input = document.getElementById('magic-' + key);
             magic[key] = input ? parseInt(input.value) || 0 : 0;
         });
@@ -616,31 +641,25 @@
     }
 
     function generateRandomMagicCategory(category) {
-        var types = {
-            elemental: ['earth', 'water', 'fire', 'air', 'metal', 'wood'],
-            body: ['blood', 'bone', 'mind', 'morphic', 'life', 'death'],
-            aether: ['space', 'time', 'dimension', 'void', 'reality', 'transference']
-        };
-
+        var categoryTypes = getMagicCategoryTypes(category);
         var magic = {};
-        var categoryTypes = types[category] || [];
         categoryTypes.forEach(function(key) {
             var roll = Math.random();
             if (roll < 0.3) {
                 magic[key] = 0;
             } else if (roll < 0.6) {
-                magic[key] = Math.floor(Math.random() * 4) + 1;
+                magic[key] = Math.floor(Math.random() * 3) + 1;  // 1-3
             } else if (roll < 0.85) {
-                magic[key] = Math.floor(Math.random() * 4) + 5;
+                magic[key] = Math.floor(Math.random() * 3) + 4;  // 4-6
             } else {
-                magic[key] = Math.floor(Math.random() * 3) + 8;
+                magic[key] = Math.floor(Math.random() * 3) + 7;  // 7-9
             }
         });
         return magic;
     }
 
     // ============================================================
-    // SPECIAL MOVES FUNCTIONS
+    // SPECIAL MOVES FUNCTIONS - WITH XSS PROTECTION
     // ============================================================
 
     function getSpecialMoves(char) {
@@ -667,7 +686,8 @@
     function removeSpecialMove(char, type, index) {
         if (!char) return false;
         var moves = getSpecialMoves(char);
-        if (!moves[type] || !moves[type][index]) return false;
+        if (!moves[type]) return false;
+        if (index < 0 || index >= moves[type].length) return false;
         moves[type].splice(index, 1);
         return true;
     }
@@ -685,7 +705,7 @@
         var html = '';
         moves.forEach(function(move, index) {
             html += '<div class="special-move-entry" style="display:flex;justify-content:space-between;align-items:center;padding:2px 4px;border-left:2px solid ' + color + ';background:var(--bg);border-radius:3px;margin-bottom:2px;font-size:0.65rem;">';
-            html += '<div><span class="move-name" style="font-weight:600;">' + move.name + '</span> <span class="move-desc" style="color:var(--text-dim);font-size:0.55rem;">' + (move.description || '') + '</span></div>';
+            html += '<div><span class="move-name" style="font-weight:600;">' + escapeHtml(move.name) + '</span> <span class="move-desc" style="color:var(--text-dim);font-size:0.55rem;">' + escapeHtml(move.description || '') + '</span></div>';
             html += '<button class="remove-special-move small" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;" data-type="' + type + '" data-index="' + index + '">✕</button>';
             html += '</div>';
         });
@@ -751,56 +771,39 @@
 
     function getMagicTabHTML() {
         var magicHTML = '';
-        
-        // Elemental
+        var categories = ['elemental', 'body', 'aether'];
+        var categoryLabels = {
+            'elemental': { label: 'Elemental', color: 'var(--accent)' },
+            'body': { label: 'Body', color: 'var(--danger)' },
+            'aether': { label: 'Aether', color: 'var(--info)' }
+        };
+        var categoryButtons = {
+            'elemental': 'random-elemental-btn',
+            'body': 'random-body-btn',
+            'aether': 'random-aether-btn'
+        };
+
         magicHTML += '<div class="magic-stats-grid" style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-top:12px;">';
-        magicHTML += '<div class="form-group" style="grid-column:1/-1;margin:6px 0 2px 0;display:flex;align-items:center;gap:8px;">';
-        magicHTML += '<label style="color:var(--accent);font-weight:600;font-size:0.7rem;">Elemental</label>';
-        magicHTML += '<button type="button" id="random-elemental-btn" class="small secondary" style="font-size:0.5rem;padding:1px 6px;">Random</button>';
-        magicHTML += '</div>';
-        
-        ['earth','water','fire','air','metal','wood'].forEach(function(key) {
-            magicHTML += `
-                <div class="form-group">
-                    <label style="font-size:0.55rem;text-align:center;display:block;">${key.charAt(0).toUpperCase() + key.slice(1)}</label>
-                    <input type="number" id="magic-${key}" min="0" max="10" value="0" 
-                           style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" />
-                </div>
-            `;
+
+        categories.forEach(function(cat) {
+            var types = getMagicCategoryTypes(cat);
+            magicHTML += '<div class="form-group" style="grid-column:1/-1;margin:6px 0 2px 0;display:flex;align-items:center;gap:8px;">';
+            magicHTML += '<label style="color:' + categoryLabels[cat].color + ';font-weight:600;font-size:0.7rem;">' + categoryLabels[cat].label + '</label>';
+            magicHTML += '<button type="button" id="' + categoryButtons[cat] + '" class="small secondary" style="font-size:0.5rem;padding:1px 6px;">Random</button>';
+            magicHTML += '</div>';
+
+            types.forEach(function(key) {
+                var label = key.charAt(0).toUpperCase() + key.slice(1);
+                magicHTML += `
+                    <div class="form-group">
+                        <label style="font-size:0.55rem;text-align:center;display:block;">${label}</label>
+                        <input type="number" id="magic-${key}" min="0" max="10" value="0" 
+                               style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" />
+                    </div>
+                `;
+            });
         });
-        
-        // Body
-        magicHTML += '<div class="form-group" style="grid-column:1/-1;margin:6px 0 2px 0;display:flex;align-items:center;gap:8px;">';
-        magicHTML += '<label style="color:var(--danger);font-weight:600;font-size:0.7rem;">Body</label>';
-        magicHTML += '<button type="button" id="random-body-btn" class="small secondary" style="font-size:0.5rem;padding:1px 6px;">Random</button>';
-        magicHTML += '</div>';
-        
-        ['blood','bone','mind','morphic','life','death'].forEach(function(key) {
-            magicHTML += `
-                <div class="form-group">
-                    <label style="font-size:0.55rem;text-align:center;display:block;">${key.charAt(0).toUpperCase() + key.slice(1)}</label>
-                    <input type="number" id="magic-${key}" min="0" max="10" value="0" 
-                           style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" />
-                </div>
-            `;
-        });
-        
-        // Aether
-        magicHTML += '<div class="form-group" style="grid-column:1/-1;margin:6px 0 2px 0;display:flex;align-items:center;gap:8px;">';
-        magicHTML += '<label style="color:var(--info);font-weight:600;font-size:0.7rem;">Aether</label>';
-        magicHTML += '<button type="button" id="random-aether-btn" class="small secondary" style="font-size:0.5rem;padding:1px 6px;">Random</button>';
-        magicHTML += '</div>';
-        
-        ['space','time','dimension','void','reality','transference'].forEach(function(key) {
-            magicHTML += `
-                <div class="form-group">
-                    <label style="font-size:0.55rem;text-align:center;display:block;">${key.charAt(0).toUpperCase() + key.slice(1)}</label>
-                    <input type="number" id="magic-${key}" min="0" max="10" value="0" 
-                           style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" />
-                </div>
-            `;
-        });
-        
+
         magicHTML += '</div>';
 
         magicHTML += `
@@ -948,11 +951,9 @@
     }
 
     function initMagicEvents() {
-        var magicInputs = ['magic-earth', 'magic-water', 'magic-fire', 'magic-air', 'magic-metal', 'magic-wood',
-            'magic-blood', 'magic-bone', 'magic-mind', 'magic-morphic', 'magic-life', 'magic-death',
-            'magic-space', 'magic-time', 'magic-dimension', 'magic-void', 'magic-reality', 'magic-transference'
-        ];
-        magicInputs.forEach(function(id) {
+        var magicInputs = getMagicTypeKeys();
+        magicInputs.forEach(function(key) {
+            var id = 'magic-' + key;
             var el = document.getElementById(id);
             if (el) {
                 el.addEventListener('input', function() {
@@ -1023,7 +1024,7 @@
         if (randomElementalBtn) {
             randomElementalBtn.addEventListener('click', function() {
                 var magic = generateRandomMagicCategory('elemental');
-                var types = ['earth', 'water', 'fire', 'air', 'metal', 'wood'];
+                var types = getMagicCategoryTypes('elemental');
                 types.forEach(function(key) {
                     var input = document.getElementById('magic-' + key);
                     if (input && magic[key] !== undefined) {
@@ -1039,7 +1040,7 @@
         if (randomBodyBtn) {
             randomBodyBtn.addEventListener('click', function() {
                 var magic = generateRandomMagicCategory('body');
-                var types = ['blood', 'bone', 'mind', 'morphic', 'life', 'death'];
+                var types = getMagicCategoryTypes('body');
                 types.forEach(function(key) {
                     var input = document.getElementById('magic-' + key);
                     if (input && magic[key] !== undefined) {
@@ -1055,7 +1056,7 @@
         if (randomAetherBtn) {
             randomAetherBtn.addEventListener('click', function() {
                 var magic = generateRandomMagicCategory('aether');
-                var types = ['space', 'time', 'dimension', 'void', 'reality', 'transference'];
+                var types = getMagicCategoryTypes('aether');
                 types.forEach(function(key) {
                     var input = document.getElementById('magic-' + key);
                     if (input && magic[key] !== undefined) {
@@ -1130,6 +1131,10 @@
         CLASS_DEFINITIONS: CLASS_DEFINITIONS,
         MAGIC_TYPES: MAGIC_TYPES,
         MAGIC_CATEGORIES: MAGIC_CATEGORIES,
+
+        // Magic helpers
+        getMagicTypeKeys: getMagicTypeKeys,
+        getMagicCategoryTypes: getMagicCategoryTypes,
 
         // Stat functions
         getDefaultStats: getDefaultStats,
