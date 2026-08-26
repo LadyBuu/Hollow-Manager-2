@@ -48,7 +48,8 @@
  *   - saveData() must return true on success, throw/reject on failure
  *   - If saveData is unavailable, import fails (no in-memory only mode)
  *   - Dangling required relationships are REMOVED, not just warned about
- *   - Tournament winners with invalid references are cleared
+ *   - Tournament participants are validated by type (character/team)
+ *   - Tournament winners are validated by type (character/team)
  */
 
 (function() {
@@ -453,11 +454,15 @@
                 var teamCount = newData.teams ? newData.teams.length : 0;
                 var tournCount = newData.tournaments ? newData.tournaments.length : 0;
                 var missionCount = newData.missions ? newData.missions.length : 0;
+                var disciplineCount = newData.curriculum && Array.isArray(newData.curriculum.disciplines) 
+                    ? newData.curriculum.disciplines.length 
+                    : 0;
 
                 confirmMsg += 'Characters: ' + charCount + '\n';
                 confirmMsg += 'Teams: ' + teamCount + '\n';
                 confirmMsg += 'Tournaments: ' + tournCount + '\n';
-                confirmMsg += 'Missions: ' + missionCount + '\n\n';
+                confirmMsg += 'Missions: ' + missionCount + '\n';
+                confirmMsg += 'Disciplines: ' + disciplineCount + '\n\n';
 
                 if (warnings.length > 0) {
                     confirmMsg += '⚠ Warnings:\n';
@@ -637,14 +642,29 @@
                     });
                 }
 
-                // Clean tournament participants
+                // Clean tournament participants - validate by type
                 if (Array.isArray(tourn.participants)) {
                     tourn.participants = tourn.participants.filter(function(participant) {
-                        if (!utils.hasId(data.characters, participant.id) && 
-                            !utils.hasId(data.teams, participant.id)) {
+                        if (participant.type === 'character') {
+                            if (!utils.hasId(data.characters, participant.id)) {
+                                addWarning(
+                                    'Tournament "' + tourn.name + '" references unknown character participant "' + 
+                                    participant.id + '" - skipping participant'
+                                );
+                                return false;
+                            }
+                        } else if (participant.type === 'team') {
+                            if (!utils.hasId(data.teams, participant.id)) {
+                                addWarning(
+                                    'Tournament "' + tourn.name + '" references unknown team participant "' + 
+                                    participant.id + '" - skipping participant'
+                                );
+                                return false;
+                            }
+                        } else {
                             addWarning(
-                                'Tournament "' + tourn.name + '" references unknown participant "' + 
-                                participant.id + '" - skipping participant'
+                                'Tournament "' + tourn.name + '" has invalid participant type "' + 
+                                participant.type + '" - skipping participant'
                             );
                             return false;
                         }
@@ -652,7 +672,7 @@
                     });
                 }
 
-                // Clean tournament eliminations
+                // Clean tournament eliminations - validate participant by type, null optional TeamId
                 if (Array.isArray(tourn.eliminations)) {
                     tourn.eliminations = tourn.eliminations.filter(function(elim) {
                         var valid = true;
@@ -673,12 +693,13 @@
                             }
                         }
 
+                        // TeamId is optional - null it if invalid rather than deleting the elimination
                         if (elim.teamId && !utils.hasId(data.teams, elim.teamId)) {
                             addWarning(
                                 'Tournament "' + tourn.name + '" elimination references unknown team "' + 
-                                elim.teamId + '" - skipping elimination'
+                                elim.teamId + '" - clearing team reference'
                             );
-                            valid = false;
+                            elim.teamId = null;
                         }
 
                         return valid;
@@ -713,9 +734,11 @@
                             } else if (match.winnerType === 'character') {
                                 winnerExists = utils.hasId(data.characters, match.winner);
                             } else {
-                                // Try both if type not specified
-                                winnerExists = utils.hasId(data.teams, match.winner) ||
-                                             utils.hasId(data.characters, match.winner);
+                                // If winner type is missing, treat as unknown
+                                addWarning(
+                                    'Tournament "' + tourn.name + '" match winner has no valid type - skipping match'
+                                );
+                                valid = false;
                             }
                             if (!winnerExists) {
                                 addWarning(
@@ -730,13 +753,31 @@
                     });
                 }
 
-                // Clean tournament winner - clear if invalid
+                // Clean tournament winner - validate by type, clear if invalid
                 if (tourn.winner) {
-                    var winnerExists = utils.hasId(data.teams, tourn.winner) ||
-                                      utils.hasId(data.characters, tourn.winner);
-                    if (!winnerExists) {
-                        addWarning('Tournament "' + tourn.name + '" references unknown winner "' + tourn.winner + '" - clearing winner');
+                    var winnerExists = false;
+                    var winnerType = tourn.winnerType;
+
+                    if (winnerType === 'team') {
+                        winnerExists = utils.hasId(data.teams, tourn.winner);
+                    } else if (winnerType === 'character') {
+                        winnerExists = utils.hasId(data.characters, tourn.winner);
+                    } else {
+                        // Invalid or missing winner type
+                        addWarning(
+                            'Tournament "' + tourn.name + '" has a winner without a valid winner type - clearing winner'
+                        );
                         tourn.winner = null;
+                        tourn.winnerType = null;
+                    }
+
+                    if (tourn.winner && !winnerExists) {
+                        addWarning(
+                            'Tournament "' + tourn.name + '" references unknown winner "' + 
+                            tourn.winner + '" - clearing winner'
+                        );
+                        tourn.winner = null;
+                        tourn.winnerType = null;
                     }
                 }
             });
@@ -769,12 +810,16 @@
         var teamCount = data.teams ? data.teams.length : 0;
         var tournCount = data.tournaments ? data.tournaments.length : 0;
         var missionCount = data.missions ? data.missions.length : 0;
+        var disciplineCount = data.curriculum && Array.isArray(data.curriculum.disciplines) 
+            ? data.curriculum.disciplines.length 
+            : 0;
 
         var msg = format + ' import completed successfully!\n\n' +
             'Characters: ' + charCount + '\n' +
             'Teams: ' + teamCount + '\n' +
             'Tournaments: ' + tournCount + '\n' +
-            'Missions: ' + missionCount;
+            'Missions: ' + missionCount + '\n' +
+            'Disciplines: ' + disciplineCount;
 
         if (warnings && warnings.length > 0) {
             msg += '\n\n⚠ Warnings:\n' + warnings.join('\n');
