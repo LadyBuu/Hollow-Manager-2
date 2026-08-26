@@ -186,7 +186,6 @@
         var clearFilter = document.getElementById('clear-char-filter');
         if (clearFilter) {
             clearFilter.addEventListener('click', function() {
-                // Defensive: check elements exist before resetting
                 var nameEl = document.getElementById('char-name-filter');
                 var statusEl = document.getElementById('char-status-filter');
                 var classEl = document.getElementById('char-class-filter');
