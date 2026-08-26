@@ -8,6 +8,7 @@
  *   - Tabbed navigation between detail sections
  *   - Pure read-only rendering (no mutations)
  *   - HTML escaping for XSS prevention
+ *   - Safe CSS color validation for relationship types
  */
 
 (function() {
@@ -29,6 +30,58 @@
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    }
+
+    // ============================================================
+    // SAFE CSS COLOR VALIDATION
+    // ============================================================
+
+    function getSafeRelationshipColor(typeId) {
+        var color = getRelationshipTypeColor(typeId);
+        
+        // Only allow valid CSS colors
+        if (/^#[0-9a-fA-F]{3,8}$/.test(color)) {
+            return color;
+        }
+        
+        if (/^rgba?\(\s*[\d\s.,%]+\)$/.test(color)) {
+            return color;
+        }
+        
+        // Known CSS color names (basic safety)
+        var safeColors = ['black', 'white', 'red', 'green', 'blue', 'yellow', 'orange', 
+                          'purple', 'pink', 'brown', 'gray', 'grey', 'silver', 'gold',
+                          'aqua', 'azure', 'beige', 'bisque', 'blanchedalmond', 'burlywood',
+                          'chocolate', 'coral', 'cornflowerblue', 'crimson', 'darkblue',
+                          'darkcyan', 'darkgoldenrod', 'darkgray', 'darkgreen', 'darkkhaki',
+                          'darkmagenta', 'darkolivegreen', 'darkorange', 'darkorchid',
+                          'darkred', 'darksalmon', 'darkseagreen', 'darkslateblue',
+                          'darkslategray', 'darkturquoise', 'darkviolet', 'deeppink',
+                          'deepskyblue', 'dimgray', 'dodgerblue', 'firebrick', 'floralwhite',
+                          'forestgreen', 'gainsboro', 'ghostwhite', 'goldenrod', 'greenyellow',
+                          'honeydew', 'hotpink', 'indianred', 'indigo', 'ivory', 'khaki',
+                          'lavender', 'lavenderblush', 'lawngreen', 'lemonchiffon', 'lightblue',
+                          'lightcoral', 'lightcyan', 'lightgoldenrodyellow', 'lightgray',
+                          'lightgreen', 'lightpink', 'lightsalmon', 'lightseagreen',
+                          'lightskyblue', 'lightslategray', 'lightsteelblue', 'lightyellow',
+                          'lime', 'limegreen', 'linen', 'magenta', 'maroon', 'mediumaquamarine',
+                          'mediumblue', 'mediumorchid', 'mediumpurple', 'mediumseagreen',
+                          'mediumslateblue', 'mediumspringgreen', 'mediumturquoise',
+                          'mediumvioletred', 'midnightblue', 'mintcream', 'mistyrose',
+                          'moccasin', 'navajowhite', 'navy', 'oldlace', 'olive', 'olivedrab',
+                          'orange', 'orangered', 'orchid', 'palegoldenrod', 'palegreen',
+                          'paleturquoise', 'palevioletred', 'papayawhip', 'peachpuff',
+                          'peru', 'plum', 'powderblue', 'rosybrown', 'royalblue', 'saddlebrown',
+                          'salmon', 'sandybrown', 'seagreen', 'seashell', 'sienna', 'skyblue',
+                          'slateblue', 'slategray', 'snow', 'springgreen', 'steelblue', 'tan',
+                          'teal', 'thistle', 'tomato', 'turquoise', 'violet', 'wheat',
+                          'whitesmoke', 'yellowgreen'];
+        
+        if (safeColors.indexOf(color.toLowerCase()) !== -1) {
+            return color;
+        }
+        
+        return '#7f8c8d'; // Default safe color
     }
 
     // ============================================================
@@ -518,11 +571,10 @@
         for (var key in stats) {
             var val = stats[key] || 10;
             var mod = Math.floor((val - 10) / 2);
-            var modClass = mod > 0 ? 'positive' : (mod < 0 ? 'negative' : 'zero');
             html += '<div style="background:var(--bg);padding:6px 10px;border-radius:4px;border:1px solid var(--border-soft);text-align:center;">';
             html += '<div style="font-size:0.6rem;color:var(--text-dim);">' + escapeHtml(statLabels[key]) + '</div>';
             html += '<div style="font-size:1.2rem;font-weight:700;color:var(--accent);">' + escapeHtml(val) + '</div>';
-            html += '<div class="stat-modifier ' + modClass + '" style="font-size:0.65rem;color:' + (mod > 0 ? 'var(--accent)' : mod < 0 ? 'var(--danger)' : 'var(--text-dim)') + ';">' + (mod >= 0 ? '+' : '') + mod + '</div>';
+            html += '<div class="stat-modifier" style="font-size:0.65rem;color:' + (mod > 0 ? 'var(--accent)' : mod < 0 ? 'var(--danger)' : 'var(--text-dim)') + ';">' + (mod >= 0 ? '+' : '') + mod + '</div>';
             html += '</div>';
         }
         html += '</div>';
@@ -632,7 +684,7 @@
                 var other = window.getCharacterById(otherId);
                 var otherName = other ? window.getDisplayName(other) : 'Unknown';
                 var typeLabel = getRelationshipTypeLabel(rel.typeId);
-                var typeColor = getRelationshipTypeColor(rel.typeId);
+                var typeColor = getSafeRelationshipColor(rel.typeId);
                 var period = '';
                 if (rel.startYear && rel.endYear) {
                     period = rel.startYear + ' \u2192 ' + rel.endYear;
