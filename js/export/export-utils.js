@@ -1,10 +1,99 @@
 /**
  * js/export/export-utils.js - Shared Export Utilities
  * Path: js/export/export-utils.js
+ * 
+ * This file contains the canonical definitions and utilities for CSV/JSON import/export.
+ * All other files should depend on these primitives.
  */
 
 (function() {
     'use strict';
+
+    // ============================================================
+    // CANONICAL COLLECTION DEFINITIONS
+    // ============================================================
+
+    /**
+     * Primary entity collections that CSV can import
+     * These are the top-level collections that can exist independently
+     */
+    var CSV_PRIMARY_COLLECTIONS = [
+        'characters',
+        'teams',
+        'tournaments',
+        'missions',
+        'disciplines'  // Note: disciplines are stored in curriculum
+    ];
+
+    /**
+     * Relationship sections that depend on primary entities
+     * These are imported after primary entities to ensure referential integrity
+     */
+    var CSV_RELATIONSHIP_SECTIONS = [
+        'teamMembers',
+        'teamRankings',
+        'tournamentTeams',
+        'tournamentMatches',
+        'tournamentEliminations',
+        'tournamentParticipants'
+    ];
+
+    // ============================================================
+    // WARNING MANAGEMENT
+    // ============================================================
+
+    var MAX_WARNINGS = 50;
+
+    /**
+     * Add a warning with a cap
+     * Maximum warnings = MAX_WARNINGS (including the omission message)
+     */
+    function addWarning(warnings, message) {
+        if (!Array.isArray(warnings)) return;
+        
+        if (warnings.length < MAX_WARNINGS - 1) {
+            warnings.push(message);
+        } else if (warnings.length === MAX_WARNINGS - 1) {
+            warnings.push('Additional warnings omitted.');
+        }
+    }
+
+    // ============================================================
+    // ID HANDLING
+    // ============================================================
+
+    /**
+     * Normalise an ID for consistent comparison
+     * Does NOT lowercase - IDs may be case-sensitive
+     */
+    function normaliseId(id) {
+        return id == null ? '' : String(id).trim();
+    }
+
+    /**
+     * Check if an ID exists in a collection
+     * Uses normalised IDs for consistent comparison
+     */
+    function hasId(collection, id) {
+        if (!Array.isArray(collection)) return false;
+
+        var target = normaliseId(id);
+        if (!target) return false;
+
+        return collection.some(function(item) {
+            return normaliseId(item && item.id) === target;
+        });
+    }
+
+    /**
+     * Generate a safe ID for imports
+     */
+    function generateImportId(prefix) {
+        if (typeof window.generateId === 'function') {
+            return window.generateId(prefix);
+        }
+        return prefix + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+    }
 
     // ============================================================
     // STRICT DATA VALIDATION HELPERS
@@ -18,13 +107,6 @@
         return row.every(function(cell) {
             return String(cell == null ? '' : cell).trim() === '';
         });
-    }
-
-    /**
-     * Normalise an ID for consistent comparison
-     */
-    function normaliseId(id) {
-        return id == null ? '' : String(id).trim();
     }
 
     /**
@@ -61,9 +143,9 @@
 
         var parsed = Number(value);
         
-        // Check for finite number (prevents overflow/Infinity)
-        if (!isFinite(parsed)) {
-            throw new Error('Integer "' + value + '" is out of range for field "' + fieldName + '" at column ' + (index + 1));
+        // Check for safe integer (prevents overflow/Infinity)
+        if (!Number.isSafeInteger(parsed)) {
+            throw new Error('Integer "' + value + '" is outside the safe numeric range for field "' + fieldName + '" at column ' + (index + 1));
         }
 
         return parsed;
@@ -124,10 +206,9 @@
 
     /**
      * Parse a JSON array field with type validation
-     * Malformed JSON → warn and use fallback (does not abort)
-     * @throws {Error} if JSON is not an array
+     * Returns fallback and optionally records a warning if JSON is invalid
      */
-    function parseJSONArray(row, index, fieldName, fallback, addWarning) {
+    function parseJSONArray(row, index, fieldName, fallback, warnFn) {
         var value = String(row[index] == null ? '' : row[index]).trim();
 
         if (value === '') {
@@ -143,8 +224,8 @@
 
             return parsed;
         } catch (e) {
-            if (typeof addWarning === 'function') {
-                addWarning('Invalid JSON array in "' + fieldName + '" at column ' + (index + 1) + ': ' + e.message + ' - using fallback');
+            if (typeof warnFn === 'function') {
+                warnFn('Invalid JSON array in "' + fieldName + '" at column ' + (index + 1) + ': ' + e.message + ' - using fallback');
             }
             return fallback;
         }
@@ -152,10 +233,9 @@
 
     /**
      * Parse a JSON object field with type validation
-     * Malformed JSON → warn and use fallback (does not abort)
-     * @throws {Error} if JSON is not an object
+     * Returns fallback and optionally records a warning if JSON is invalid
      */
-    function parseJSONObject(row, index, fieldName, fallback, addWarning) {
+    function parseJSONObject(row, index, fieldName, fallback, warnFn) {
         var value = String(row[index] == null ? '' : row[index]).trim();
 
         if (value === '') {
@@ -171,8 +251,8 @@
 
             return parsed;
         } catch (e) {
-            if (typeof addWarning === 'function') {
-                addWarning('Invalid JSON object in "' + fieldName + '" at column ' + (index + 1) + ': ' + e.message + ' - using fallback');
+            if (typeof warnFn === 'function') {
+                warnFn('Invalid JSON object in "' + fieldName + '" at column ' + (index + 1) + ': ' + e.message + ' - using fallback');
             }
             return fallback;
         }
@@ -193,42 +273,8 @@
     }
 
     // ============================================================
-    // CSV ENTITY COLLECTION DEFINITIONS
+    // APPLICATION DATA VALIDATION
     // ============================================================
-
-    /**
-     * Primary entity collections that CSV can import
-     */
-    var CSV_PRIMARY_COLLECTIONS = [
-        'characters',
-        'teams',
-        'tournaments',
-        'missions',
-        'disciplines'  // Note: disciplines are stored in curriculum
-    ];
-
-    /**
-     * Check if data has CSV-exportable content
-     */
-    function hasCSVExportableData(data) {
-        if (!data || typeof data !== 'object') return false;
-
-        for (var i = 0; i < CSV_PRIMARY_COLLECTIONS.length; i++) {
-            var key = CSV_PRIMARY_COLLECTIONS[i];
-            if (key === 'disciplines') {
-                // Special case: disciplines are in curriculum
-                if (data.curriculum &&
-                    Array.isArray(data.curriculum.disciplines) &&
-                    data.curriculum.disciplines.length > 0) {
-                    return true;
-                }
-            } else if (Array.isArray(data[key]) && data[key].length > 0) {
-                return true;
-            }
-        }
-
-        return false;
-    }
 
     /**
      * Check if data contains meaningful application data (for JSON)
@@ -285,8 +331,31 @@
         return false;
     }
 
+    /**
+     * Check if data has CSV-exportable content
+     */
+    function hasCSVExportableData(data) {
+        if (!data || typeof data !== 'object') return false;
+
+        for (var i = 0; i < CSV_PRIMARY_COLLECTIONS.length; i++) {
+            var key = CSV_PRIMARY_COLLECTIONS[i];
+            if (key === 'disciplines') {
+                // Special case: disciplines are in curriculum
+                if (data.curriculum &&
+                    Array.isArray(data.curriculum.disciplines) &&
+                    data.curriculum.disciplines.length > 0) {
+                    return true;
+                }
+            } else if (Array.isArray(data[key]) && data[key].length > 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     // ============================================================
-    // FILE AND ID HELPERS
+    // FILE HELPERS
     // ============================================================
 
     /**
@@ -304,16 +373,6 @@
     }
 
     /**
-     * Generate a safe ID for imports
-     */
-    function generateImportId(prefix) {
-        if (typeof window.generateId === 'function') {
-            return window.generateId(prefix);
-        }
-        return prefix + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
-    }
-
-    /**
      * Create a deep clone of data for rollback
      */
     function cloneData(data) {
@@ -321,13 +380,33 @@
     }
 
     // ============================================================
+    // CREATE PROTOTYPE-SAFE OBJECTS
+    // ============================================================
+
+    function createSafeMap() {
+        return Object.create(null);
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.ExportUtils = {
+        // Canonical definitions
+        CSV_PRIMARY_COLLECTIONS: CSV_PRIMARY_COLLECTIONS,
+        CSV_RELATIONSHIP_SECTIONS: CSV_RELATIONSHIP_SECTIONS,
+        MAX_WARNINGS: MAX_WARNINGS,
+
+        // Warning management
+        addWarning: addWarning,
+
+        // ID handling
+        normaliseId: normaliseId,
+        hasId: hasId,
+        generateImportId: generateImportId,
+
         // Validation
         isBlankRow: isBlankRow,
-        normaliseId: normaliseId,
         requireField: requireField,
         requireInteger: requireInteger,
         requireNumber: requireNumber,
@@ -336,15 +415,16 @@
         parseJSONObject: parseJSONObject,
         safeJSONParse: safeJSONParse,
 
-        // Collections
-        CSV_PRIMARY_COLLECTIONS: CSV_PRIMARY_COLLECTIONS,
-
-        // Core
+        // Data validation
         containsApplicationData: containsApplicationData,
         hasCSVExportableData: hasCSVExportableData,
+
+        // File helpers
         downloadBlob: downloadBlob,
-        generateImportId: generateImportId,
-        cloneData: cloneData
+        cloneData: cloneData,
+
+        // Object helpers
+        createSafeMap: createSafeMap
     };
 
 })();
