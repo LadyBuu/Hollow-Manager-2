@@ -14,6 +14,12 @@
 (function() {
     'use strict';
 
+    // Guard against duplicate script loading
+    if (window.__characterDetailLoaded) {
+        return;
+    }
+    window.__characterDetailLoaded = true;
+
     var state = {
         characterId: null,
         activeTab: 'name'
@@ -39,8 +45,8 @@
     function getSafeRelationshipColor(typeId) {
         var color = getRelationshipTypeColor(typeId);
         
-        // Allow hex values
-        if (/^#[0-9a-fA-F]{3,8}$/.test(color)) {
+        // Standard CSS hex colors: 3, 4, 6, or 8 hex digits
+        if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color)) {
             return color;
         }
         
@@ -322,7 +328,7 @@
         if (char.careerStatus && char.careerStatus.length > 0) {
             html += '<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px;">';
             char.careerStatus.forEach(function(status) {
-                // Fixed: handle missing startYear
+                // Handle missing startYear
                 var period = status.startYear || '?';
                 if (status.endYear) {
                     period += ' \u2192 ' + status.endYear;
@@ -685,7 +691,7 @@
                 } else if (rel.startYear) {
                     period = 'From ' + rel.startYear;
                 }
-                // Fixed: escape the value, then build the string
+                // Escape the value, then build the string
                 var clarification = rel.clarification 
                     ? ' (' + escapeHtml(rel.clarification) + ')' 
                     : '';
