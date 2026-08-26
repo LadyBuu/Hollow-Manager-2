@@ -20,6 +20,11 @@
  *   Disciplines           │
  *                         │
  *   └── All relationships ─┘
+ * 
+ * IMPORT PHILOSOPHY:
+ *   - Missing optional reference → null it (missions)
+ *   - Missing required reference → skip relationship (team members, tournament records)
+ *   - Malformed primary entity → abort import
  */
 
 (function() {
@@ -125,6 +130,16 @@
                     classIds: [],
                     createdAt: new Date().toISOString()
                 };
+            },
+            validateHeader: function(header) {
+                var expected = this.header;
+                if (header.length < expected.length) return false;
+                for (var i = 0; i < expected.length; i++) {
+                    if ((header[i] || '').trim() !== expected[i]) {
+                        return false;
+                    }
+                }
+                return true;
             }
         },
         teams: {
@@ -165,6 +180,16 @@
                     rankingHistory: [],
                     createdAt: new Date().toISOString()
                 };
+            },
+            validateHeader: function(header) {
+                var expected = this.header;
+                if (header.length < expected.length) return false;
+                for (var i = 0; i < expected.length; i++) {
+                    if ((header[i] || '').trim() !== expected[i]) {
+                        return false;
+                    }
+                }
+                return true;
             }
         },
         teamMembers: {
@@ -196,12 +221,12 @@
                 var team = context.teamMap[teamId];
                 
                 if (!team) {
-                    context.warnings.push('Team member references unknown team "' + teamId + '"');
+                    context.addWarning('Team member references unknown team "' + teamId + '"');
                     return null;
                 }
                 
                 if (!context.charMap[charId]) {
-                    context.warnings.push('Team member references unknown character "' + charId + '"');
+                    context.addWarning('Team member references unknown character "' + charId + '"');
                     return null;
                 }
                 
@@ -212,6 +237,16 @@
                     leavePeriod: row[4] || ''
                 });
                 return null;
+            },
+            validateHeader: function(header) {
+                var expected = this.header;
+                if (header.length < expected.length) return false;
+                for (var i = 0; i < expected.length; i++) {
+                    if ((header[i] || '').trim() !== expected[i]) {
+                        return false;
+                    }
+                }
+                return true;
             }
         },
         teamRankings: {
@@ -233,7 +268,7 @@
                 var teamId = row[0];
                 var team = context.teamMap[teamId];
                 if (!team) {
-                    context.warnings.push('Team ranking references unknown team "' + teamId + '"');
+                    context.addWarning('Team ranking references unknown team "' + teamId + '"');
                     return null;
                 }
                 if (!Array.isArray(team.rankingHistory)) team.rankingHistory = [];
@@ -242,6 +277,16 @@
                     rank: row[2] || ''
                 });
                 return null;
+            },
+            validateHeader: function(header) {
+                var expected = this.header;
+                if (header.length < expected.length) return false;
+                for (var i = 0; i < expected.length; i++) {
+                    if ((header[i] || '').trim() !== expected[i]) {
+                        return false;
+                    }
+                }
+                return true;
             }
         },
         tournaments: {
@@ -304,10 +349,20 @@
                     } else if (winnerType === 'character' && context.charMap[winnerId]) {
                         tourn.winner = winnerId;
                     } else if (winnerId) {
-                        context.warnings.push('Tournament "' + tourn.name + '" references unknown winner "' + winnerId + '"');
+                        context.addWarning('Tournament "' + tourn.name + '" references unknown winner "' + winnerId + '"');
                     }
                 }
                 return tourn;
+            },
+            validateHeader: function(header) {
+                var expected = this.header;
+                if (header.length < expected.length) return false;
+                for (var i = 0; i < expected.length; i++) {
+                    if ((header[i] || '').trim() !== expected[i]) {
+                        return false;
+                    }
+                }
+                return true;
             }
         },
         tournamentTeams: {
@@ -330,31 +385,53 @@
                 var tourn = context.tournMap[tournId];
                 
                 if (!tourn) {
-                    context.warnings.push('Tournament team references unknown tournament "' + tournId + '"');
+                    context.addWarning('Tournament team references unknown tournament "' + tournId + '"');
                     return null;
                 }
                 
                 if (!context.teamMap[teamId]) {
-                    context.warnings.push('Tournament team references unknown team "' + teamId + '"');
+                    context.addWarning('Tournament team references unknown team "' + teamId + '"');
                     return null;
                 }
                 
                 tourn.teams.push({ teamId: teamId });
                 return null;
+            },
+            validateHeader: function(header) {
+                var expected = this.header;
+                if (header.length < expected.length) return false;
+                for (var i = 0; i < expected.length; i++) {
+                    if ((header[i] || '').trim() !== expected[i]) {
+                        return false;
+                    }
+                }
+                return true;
             }
         },
         tournamentMatches: {
-            header: ['TournamentId', 'Team1Id', 'Team2Id', 'WinnerId'],
+            header: ['TournamentId', 'WinnerType', 'Team1Id', 'Team2Id', 'WinnerId'],
             sectionMarker: '# TOURNAMENT MATCHES',
             export: function(tourn) {
                 var rows = [];
                 if (!Array.isArray(tourn.matches)) return rows;
                 tourn.matches.forEach(function(m) {
+                    var winnerType = '';
+                    var winnerId = m.winner || '';
+                    if (winnerId) {
+                        var winnerTeam = window.getTeamById ? window.getTeamById(winnerId) : null;
+                        var winnerChar = window.getCharacterById ? window.getCharacterById(winnerId) : null;
+                        if (winnerTeam) {
+                            winnerType = 'team';
+                        } else if (winnerChar) {
+                            winnerType = 'character';
+                        }
+                    }
                     rows.push([
                         tourn.id || '',
+                        winnerType,
                         m.team1Id || '',
                         m.team2Id || '',
-                        m.winner || ''
+                        winnerId
                     ]);
                 });
                 return rows;
@@ -363,27 +440,36 @@
                 var tournId = row[0];
                 var tourn = context.tournMap[tournId];
                 if (!tourn) {
-                    context.warnings.push('Tournament match references unknown tournament "' + tournId + '"');
+                    context.addWarning('Tournament match references unknown tournament "' + tournId + '"');
                     return null;
                 }
                 
-                var team1Id = row[1] || '';
-                var team2Id = row[2] || '';
-                var winnerId = row[3] || '';
+                var winnerType = row[1] || '';
+                var team1Id = row[2] || '';
+                var team2Id = row[3] || '';
+                var winnerId = row[4] || '';
                 var valid = true;
                 
                 // Validate references - skip row if invalid
                 if (team1Id && !context.teamMap[team1Id]) {
-                    context.warnings.push('Tournament match references unknown team "' + team1Id + '" - skipping match');
+                    context.addWarning('Tournament match references unknown team "' + team1Id + '" - skipping match');
                     valid = false;
                 }
                 if (team2Id && !context.teamMap[team2Id]) {
-                    context.warnings.push('Tournament match references unknown team "' + team2Id + '" - skipping match');
+                    context.addWarning('Tournament match references unknown team "' + team2Id + '" - skipping match');
                     valid = false;
                 }
-                if (winnerId && !context.teamMap[winnerId] && !context.charMap[winnerId]) {
-                    context.warnings.push('Tournament match references unknown winner "' + winnerId + '" - skipping match');
-                    valid = false;
+                if (winnerId) {
+                    var winnerExists = false;
+                    if (winnerType === 'team' && context.teamMap[winnerId]) {
+                        winnerExists = true;
+                    } else if (winnerType === 'character' && context.charMap[winnerId]) {
+                        winnerExists = true;
+                    }
+                    if (!winnerExists) {
+                        context.addWarning('Tournament match references unknown winner "' + winnerId + '" - skipping match');
+                        valid = false;
+                    }
                 }
                 
                 if (!valid) {
@@ -393,9 +479,20 @@
                 tourn.matches.push({
                     team1Id: team1Id,
                     team2Id: team2Id,
-                    winner: winnerId
+                    winner: winnerId,
+                    winnerType: winnerType
                 });
                 return null;
+            },
+            validateHeader: function(header) {
+                var expected = this.header;
+                if (header.length < expected.length) return false;
+                for (var i = 0; i < expected.length; i++) {
+                    if ((header[i] || '').trim() !== expected[i]) {
+                        return false;
+                    }
+                }
+                return true;
             }
         },
         tournamentEliminations: {
@@ -420,7 +517,7 @@
                 var tournId = row[0];
                 var tourn = context.tournMap[tournId];
                 if (!tourn) {
-                    context.warnings.push('Tournament elimination references unknown tournament "' + tournId + '"');
+                    context.addWarning('Tournament elimination references unknown tournament "' + tournId + '"');
                     return null;
                 }
                 
@@ -432,15 +529,15 @@
                 
                 // Validate references - skip row if invalid
                 if (participantType === 'character' && participantId && !context.charMap[participantId]) {
-                    context.warnings.push('Tournament elimination references unknown character "' + participantId + '" - skipping elimination');
+                    context.addWarning('Tournament elimination references unknown character "' + participantId + '" - skipping elimination');
                     valid = false;
                 }
                 if (participantType === 'team' && participantId && !context.teamMap[participantId]) {
-                    context.warnings.push('Tournament elimination references unknown team "' + participantId + '" - skipping elimination');
+                    context.addWarning('Tournament elimination references unknown team "' + participantId + '" - skipping elimination');
                     valid = false;
                 }
                 if (teamId && !context.teamMap[teamId]) {
-                    context.warnings.push('Tournament elimination references unknown team "' + teamId + '" - skipping elimination');
+                    context.addWarning('Tournament elimination references unknown team "' + teamId + '" - skipping elimination');
                     valid = false;
                 }
                 
@@ -463,6 +560,16 @@
                     }
                 }
                 return null;
+            },
+            validateHeader: function(header) {
+                var expected = this.header;
+                if (header.length < expected.length) return false;
+                for (var i = 0; i < expected.length; i++) {
+                    if ((header[i] || '').trim() !== expected[i]) {
+                        return false;
+                    }
+                }
+                return true;
             }
         },
         tournamentParticipants: {
@@ -485,7 +592,7 @@
                 var tournId = row[0];
                 var tourn = context.tournMap[tournId];
                 if (!tourn) {
-                    context.warnings.push('Tournament participant references unknown tournament "' + tournId + '"');
+                    context.addWarning('Tournament participant references unknown tournament "' + tournId + '"');
                     return null;
                 }
                 
@@ -495,11 +602,11 @@
                 
                 // Validate references - skip row if invalid
                 if (participantType === 'character' && participantId && !context.charMap[participantId]) {
-                    context.warnings.push('Tournament participant references unknown character "' + participantId + '" - skipping participant');
+                    context.addWarning('Tournament participant references unknown character "' + participantId + '" - skipping participant');
                     valid = false;
                 }
                 if (participantType === 'team' && participantId && !context.teamMap[participantId]) {
-                    context.warnings.push('Tournament participant references unknown team "' + participantId + '" - skipping participant');
+                    context.addWarning('Tournament participant references unknown team "' + participantId + '" - skipping participant');
                     valid = false;
                 }
                 
@@ -512,6 +619,16 @@
                     type: participantType
                 });
                 return null;
+            },
+            validateHeader: function(header) {
+                var expected = this.header;
+                if (header.length < expected.length) return false;
+                for (var i = 0; i < expected.length; i++) {
+                    if ((header[i] || '').trim() !== expected[i]) {
+                        return false;
+                    }
+                }
+                return true;
             }
         },
         missions: {
@@ -540,7 +657,7 @@
                 
                 // Validate team reference - null it if invalid rather than keeping broken reference
                 if (teamId && !context.teamMap[teamId]) {
-                    context.warnings.push('Mission "' + (row[1] || '') + '" references unknown team "' + teamId + '" - unassigning mission');
+                    context.addWarning('Mission "' + (row[1] || '') + '" references unknown team "' + teamId + '" - unassigning mission');
                     teamId = null;
                 }
                 
@@ -563,6 +680,16 @@
                     createdAt: new Date().toISOString(),
                     completedAt: null
                 };
+            },
+            validateHeader: function(header) {
+                var expected = this.header;
+                if (header.length < expected.length) return false;
+                for (var i = 0; i < expected.length; i++) {
+                    if ((header[i] || '').trim() !== expected[i]) {
+                        return false;
+                    }
+                }
+                return true;
             }
         },
         disciplines: {
@@ -582,9 +709,22 @@
                     discipline.weight || '1'
                 ];
             },
-            import: function(row) {
+            import: function(row, context) {
                 var id = row[0] || utils.generateImportId('disc');
                 var instructorIds = utils.safeJSONParse(row[3], []);
+                
+                // Validate instructor references - filter out invalid ones
+                if (Array.isArray(instructorIds)) {
+                    var validInstructors = instructorIds.filter(function(instrId) {
+                        if (instrId && context.charMap && !context.charMap[instrId]) {
+                            context.addWarning('Discipline "' + (row[1] || '') + '" references unknown instructor "' + instrId + '" - removing');
+                            return false;
+                        }
+                        return true;
+                    });
+                    instructorIds = validInstructors;
+                }
+                
                 return {
                     id: id,
                     name: row[1] || '',
@@ -599,6 +739,16 @@
                     gradingSystem: [],
                     createdAt: new Date().toISOString()
                 };
+            },
+            validateHeader: function(header) {
+                var expected = this.header;
+                if (header.length < expected.length) return false;
+                for (var i = 0; i < expected.length; i++) {
+                    if ((header[i] || '').trim() !== expected[i]) {
+                        return false;
+                    }
+                }
+                return true;
             }
         }
     };
