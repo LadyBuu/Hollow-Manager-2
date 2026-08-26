@@ -77,11 +77,15 @@
 
     /**
      * Escape a field for CSV output
+     * Now handles \r as well
      */
     function escapeCSVField(value) {
         if (value === null || value === undefined) return '';
         var str = String(value);
-        if (str.indexOf(',') !== -1 || str.indexOf('"') !== -1 || str.indexOf('\n') !== -1) {
+        if (str.indexOf(',') !== -1 || 
+            str.indexOf('"') !== -1 || 
+            str.indexOf('\n') !== -1 ||
+            str.indexOf('\r') !== -1) {
             return '"' + str.replace(/"/g, '""') + '"';
         }
         return str;
@@ -96,11 +100,25 @@
         }).join('\r\n');
     }
 
+    /**
+     * Check if a field might contain a spreadsheet formula
+     * (for warning purposes, not for blocking)
+     */
+    function isPotentialFormula(value) {
+        if (!value || typeof value !== 'string') return false;
+        var trimmed = value.trim();
+        return trimmed.startsWith('=') || 
+               trimmed.startsWith('+') || 
+               trimmed.startsWith('-') || 
+               trimmed.startsWith('@');
+    }
+
     // Expose
     window.CSV = {
         parse: parseCSV,
         escape: escapeCSVField,
-        arrayToCSV: arrayToCSV
+        arrayToCSV: arrayToCSV,
+        isPotentialFormula: isPotentialFormula
     };
 
 })();
