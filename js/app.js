@@ -13,6 +13,8 @@
  * IMPORTANT: logActivity() does NOT persist the entire dataset.
  * It only updates in-memory state. The caller is responsible for saving.
  * This prevents recursive save chains and race conditions.
+ * 
+ * Modules like dashboard.js own their own data updates.
  */
 
 (function() {
@@ -71,7 +73,7 @@
     }
 
     // ============================================================
-    // RENDER ALL FUNCTION
+    // RENDER ALL FUNCTION - CLEAN BOUNDARY
     // ============================================================
 
     function renderAll() {
@@ -89,12 +91,6 @@
             typeof window.TabManager.forceRefresh === 'function'
         ) {
             window.TabManager.forceRefresh(currentTab);
-        }
-        
-        // Note: TabManager.forceRefresh may already update dashboard stats
-        // This is a safety net in case it doesn't
-        if (typeof window.updateDashboardStats === 'function') {
-            window.updateDashboardStats();
         }
     }
 
@@ -136,15 +132,8 @@
         if (appInitialized) return;
         appInitialized = true;
 
-        // Initialize burger menu immediately (static HTML)
+        // Initialize burger menu (static HTML)
         initBurgerMenu();
-        
-        // Data ready handler - updates stats when data loads
-        document.addEventListener('dataReady', function() {
-            if (typeof window.updateDashboardStats === 'function') {
-                window.updateDashboardStats();
-            }
-        });
         
         // Close menu when tab changes
         document.addEventListener('tabChanged', function() {
@@ -195,15 +184,13 @@
     window.initApp = initApp;
 
     // ============================================================
-    // AUTO-INIT
+    // AUTO-INIT - No arbitrary delay
     // ============================================================
 
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        setTimeout(initApp, 50);
+        initApp();
     } else {
-        document.addEventListener('DOMContentLoaded', function() {
-            setTimeout(initApp, 50);
-        });
+        document.addEventListener('DOMContentLoaded', initApp);
     }
 
 })();
