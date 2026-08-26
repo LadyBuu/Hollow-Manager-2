@@ -100,8 +100,8 @@
         }
         
         char.eliminations.forEach(function(e) {
-            var week = parseInt(e.week);
-            if (!isNaN(week) && char.eliminatedWeeks.indexOf(week) === -1) {
+            var week = Number(e.week);
+            if (Number.isInteger(week) && char.eliminatedWeeks.indexOf(week) === -1) {
                 char.eliminatedWeeks.push(week);
             }
         });
@@ -119,7 +119,8 @@
     }
 
     // ============================================================
-    // IS CHARACTER ELIMINATED BY WEEK - SOURCE OF TRUTH
+    // IS CHARACTER ELIMINATED BY WEEK
+    // Combines explicit elimination records with death timeline data.
     // ============================================================
 
     function isCharacterEliminatedByWeek(char, week) {
