@@ -3,10 +3,18 @@
  * Handles adding/removing characters from classes
  * Path: js/modules/characters/character-classes.js
  * 
+ * This module is responsible for:
+ *   - Adding characters to classes (with MUTATE → LOG → SAVE)
+ *   - Removing characters from classes (with MUTATE → LOG → SAVE)
+ *   - Rendering class tags in the form
+ *   - Populating class selectors
+ *   - Querying character-class relationships
+ * 
  * IMPORTANT: All mutations follow the correct pattern:
  *   MUTATE → LOG → SAVE
  *   All user-controlled data is escaped to prevent XSS.
  *   Rollback is performed on save failure.
+ *   Class tags use DOM API (textContent) instead of innerHTML for safety.
  */
 
 (function() {
@@ -34,12 +42,6 @@
         }
     }
 
-    function safeSetCurrentEditId(id) {
-        if (typeof window.setCurrentEditId === 'function') {
-            window.setCurrentEditId(id);
-        }
-    }
-
     function safeUpdateDashboardStats() {
         if (typeof window.updateDashboardStats === 'function') {
             window.updateDashboardStats();
@@ -59,7 +61,10 @@
 
     function addToClass() {
         var select = document.getElementById('academic-class-select');
-        if (!select) return;
+        if (!select) {
+            alert('Class selector not found. Please refresh the page.');
+            return;
+        }
         
         var classId = select.value;
         if (!classId) {
@@ -214,7 +219,7 @@
     }
 
     // ============================================================
-    // ADD CLASS TAG - FIXED XSS (no innerHTML)
+    // ADD CLASS TAG - IDEMPOTENT, XSS-SAFE
     // ============================================================
 
     function addClassTag(classId, className) {
@@ -224,6 +229,10 @@
         // Remove empty message if present
         var emptyMsg = container.querySelector('span[style*="text-dim"]');
         if (emptyMsg) emptyMsg.remove();
+        
+        // Check if tag already exists (idempotent)
+        var existing = container.querySelector('[data-class-id="' + classId + '"]');
+        if (existing) return;
         
         // Build DOM elements safely - no innerHTML for user data
         var tag = document.createElement('span');
@@ -238,18 +247,21 @@
         button.dataset.id = classId;
         button.textContent = '✕';
         button.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;';
+        button.setAttribute('aria-label', 'Remove class ' + className);
         
         tag.appendChild(nameSpan);
         tag.appendChild(button);
         container.appendChild(tag);
         
+        // Use closest() for safer removal
         button.addEventListener('click', function() {
-            var id = this.dataset.id;
-            var container = document.getElementById('class-tag-container');
-            var tag = container.querySelector('[data-class-id="' + id + '"]');
-            if (tag) tag.remove();
-            if (container.children.length === 0) {
-                container.innerHTML = '<span style="color:var(--text-dim);font-size:0.7rem;padding:4px;">No classes assigned</span>';
+            var tag = this.closest('[data-class-id]');
+            if (tag) {
+                tag.remove();
+                var container = document.getElementById('class-tag-container');
+                if (container && container.children.length === 0) {
+                    container.innerHTML = '<span style="color:var(--text-dim);font-size:0.7rem;padding:4px;">No classes assigned</span>';
+                }
             }
         });
     }
@@ -260,9 +272,12 @@
 
     function getClassTags() {
         var ids = [];
-        document.querySelectorAll('#class-tag-container [data-class-id]').forEach(function(tag) {
-            ids.push(tag.dataset.classId);
-        });
+        var container = document.getElementById('class-tag-container');
+        if (container) {
+            container.querySelectorAll('[data-class-id]').forEach(function(tag) {
+                ids.push(tag.dataset.classId);
+            });
+        }
         return ids;
     }
 
