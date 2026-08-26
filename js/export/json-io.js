@@ -67,6 +67,7 @@
 
                 // Create backup only after confirmation
                 var backup = utils.cloneData(window.data);
+                var persisted = false;
 
                 // saveData must exist and return true on success
                 if (typeof window.saveData !== 'function') {
@@ -80,15 +81,26 @@
 
                 Promise.resolve(window.saveData(imported))
                     .then(function(result) {
+                        // Strict contract: result must be exactly true
                         if (result !== true) {
                             throw new Error('saveData did not confirm successful persistence.');
                         }
                         
+                        persisted = true;
                         window.data = imported;
-                        onImportSuccess(imported, true, 'JSON');
+
+                        try {
+                            onImportSuccess(imported, true, 'JSON');
+                        } catch (renderErr) {
+                            console.error('Import persisted successfully, but UI refresh failed:', renderErr);
+                            alert(
+                                'JSON import was saved successfully, but the interface could not refresh.\n\n' +
+                                'Please reload the page to see your imported data.'
+                            );
+                        }
                     })
                     .catch(function(err) {
-                        if (backup) {
+                        if (!persisted && backup) {
                             window.data = backup;
                         }
                         alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
