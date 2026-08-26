@@ -39,45 +39,29 @@
     function getSafeRelationshipColor(typeId) {
         var color = getRelationshipTypeColor(typeId);
         
-        // Only allow valid CSS colors
+        // Allow hex values
         if (/^#[0-9a-fA-F]{3,8}$/.test(color)) {
             return color;
         }
         
-        if (/^rgba?\(\s*[\d\s.,%]+\)$/.test(color)) {
+        // Allow rgb/rgba values
+        if (/^rgba?\(\s*[\d\s.,%]+\)$/i.test(color)) {
             return color;
         }
         
-        // Known CSS color names (basic safety)
-        var safeColors = ['black', 'white', 'red', 'green', 'blue', 'yellow', 'orange', 
-                          'purple', 'pink', 'brown', 'gray', 'grey', 'silver', 'gold',
-                          'aqua', 'azure', 'beige', 'bisque', 'blanchedalmond', 'burlywood',
-                          'chocolate', 'coral', 'cornflowerblue', 'crimson', 'darkblue',
-                          'darkcyan', 'darkgoldenrod', 'darkgray', 'darkgreen', 'darkkhaki',
-                          'darkmagenta', 'darkolivegreen', 'darkorange', 'darkorchid',
-                          'darkred', 'darksalmon', 'darkseagreen', 'darkslateblue',
-                          'darkslategray', 'darkturquoise', 'darkviolet', 'deeppink',
-                          'deepskyblue', 'dimgray', 'dodgerblue', 'firebrick', 'floralwhite',
-                          'forestgreen', 'gainsboro', 'ghostwhite', 'goldenrod', 'greenyellow',
-                          'honeydew', 'hotpink', 'indianred', 'indigo', 'ivory', 'khaki',
-                          'lavender', 'lavenderblush', 'lawngreen', 'lemonchiffon', 'lightblue',
-                          'lightcoral', 'lightcyan', 'lightgoldenrodyellow', 'lightgray',
-                          'lightgreen', 'lightpink', 'lightsalmon', 'lightseagreen',
-                          'lightskyblue', 'lightslategray', 'lightsteelblue', 'lightyellow',
-                          'lime', 'limegreen', 'linen', 'magenta', 'maroon', 'mediumaquamarine',
-                          'mediumblue', 'mediumorchid', 'mediumpurple', 'mediumseagreen',
-                          'mediumslateblue', 'mediumspringgreen', 'mediumturquoise',
-                          'mediumvioletred', 'midnightblue', 'mintcream', 'mistyrose',
-                          'moccasin', 'navajowhite', 'navy', 'oldlace', 'olive', 'olivedrab',
-                          'orange', 'orangered', 'orchid', 'palegoldenrod', 'palegreen',
-                          'paleturquoise', 'palevioletred', 'papayawhip', 'peachpuff',
-                          'peru', 'plum', 'powderblue', 'rosybrown', 'royalblue', 'saddlebrown',
-                          'salmon', 'sandybrown', 'seagreen', 'seashell', 'sienna', 'skyblue',
-                          'slateblue', 'slategray', 'snow', 'springgreen', 'steelblue', 'tan',
-                          'teal', 'thistle', 'tomato', 'turquoise', 'violet', 'wheat',
-                          'whitesmoke', 'yellowgreen'];
+        // Common safe CSS colors used in the app
+        var safeColors = {
+            '#8cbb3a': true,  // familiar
+            '#c9a24b': true,  // professional
+            '#c1453c': true,  // romantic
+            '#4a9bc7': true,  // friendship
+            '#9b59b6': true,  // mentor
+            '#e67e22': true,  // rivalry
+            '#27ae60': true,  // alliance
+            '#7f8c8d': true   // other
+        };
         
-        if (safeColors.indexOf(color.toLowerCase()) !== -1) {
+        if (safeColors[color]) {
             return color;
         }
         
@@ -338,9 +322,13 @@
         if (char.careerStatus && char.careerStatus.length > 0) {
             html += '<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px;">';
             char.careerStatus.forEach(function(status) {
-                var period = status.startYear;
-                if (status.endYear) period += ' \u2192 ' + status.endYear;
-                else period += ' \u2192 Present';
+                // Fixed: handle missing startYear
+                var period = status.startYear || '?';
+                if (status.endYear) {
+                    period += ' \u2192 ' + status.endYear;
+                } else {
+                    period += ' \u2192 Present';
+                }
                 var statusName = status.status || 'Unknown';
                 var displayName = statusName.charAt(0).toUpperCase() + statusName.slice(1);
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);">';
@@ -472,13 +460,17 @@
             html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No academic teams</p>';
         }
 
-        // Grades
+        // Grades - with defensive own-property protection
         html += '<h4 style="color:var(--info);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Grades</h4>';
         var curriculum = data.curriculum || {};
         var grades = curriculum.grades && curriculum.grades[char.id] ? curriculum.grades[char.id] : {};
         var classCount = 0;
+        
+        // Count with own-property protection
         for (var week in grades) {
+            if (!Object.prototype.hasOwnProperty.call(grades, week)) continue;
             for (var discId in grades[week]) {
+                if (!Object.prototype.hasOwnProperty.call(grades[week], discId)) continue;
                 classCount++;
             }
         }
@@ -486,7 +478,9 @@
         if (classCount > 0) {
             html += '<div style="max-height:120px;overflow-y:auto;font-size:0.75rem;">';
             for (var week in grades) {
+                if (!Object.prototype.hasOwnProperty.call(grades, week)) continue;
                 for (var discId in grades[week]) {
+                    if (!Object.prototype.hasOwnProperty.call(grades[week], discId)) continue;
                     var disc = window.getDiscipline(discId);
                     var score = grades[week][discId];
                     var discName = disc ? disc.name : 'Unknown';
@@ -691,11 +685,14 @@
                 } else if (rel.startYear) {
                     period = 'From ' + rel.startYear;
                 }
-                var clarification = rel.clarification ? ' (' + rel.clarification + ')' : '';
+                // Fixed: escape the value, then build the string
+                var clarification = rel.clarification 
+                    ? ' (' + escapeHtml(rel.clarification) + ')' 
+                    : '';
                 var notes = rel.notes ? ' 📝' : '';
 
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + typeColor + ';">';
-                html += '<span><strong>' + escapeHtml(otherName) + '</strong> <span style="color:' + typeColor + ';font-size:0.8rem;">' + escapeHtml(typeLabel) + escapeHtml(clarification) + '</span></span>';
+                html += '<span><strong>' + escapeHtml(otherName) + '</strong> <span style="color:' + typeColor + ';font-size:0.8rem;">' + escapeHtml(typeLabel) + clarification + '</span></span>';
                 if (period) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">' + escapeHtml(period) + '</span>';
                 if (notes) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">' + notes + '</span>';
                 html += '</div>';
@@ -728,8 +725,11 @@
         
         var count = 0;
         for (var week in schedule) {
+            if (!Object.prototype.hasOwnProperty.call(schedule, week)) continue;
             for (var day in schedule[week]) {
+                if (!Object.prototype.hasOwnProperty.call(schedule[week], day)) continue;
                 for (var hour in schedule[week][day]) {
+                    if (!Object.prototype.hasOwnProperty.call(schedule[week][day], hour)) continue;
                     if (schedule[week][day][hour]) count++;
                 }
             }
