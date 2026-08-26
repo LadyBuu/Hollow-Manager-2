@@ -1,13 +1,32 @@
 /**
  * js/modules/characters/character-crud.js - Character CRUD Operations
  * Path: js/modules/characters/character-crud.js
+ * 
+ * This module handles all character CRUD operations with:
+ * - Clean persistence boundary (mutates window.data, caller saves)
+ * - Proper rollback on save failure
+ * - Consistent state management via AppState as single source of truth
+ * - Defensive cloning for backups using database module's clone
+ * - Explicit notification rendering
+ * 
+ * PERSISTENCE CONTRACT:
+ * - All mutations are applied to window.data in memory
+ * - Caller is responsible for saveData() persistence
+ * - Rollback restores window.data on failure
+ * - UI state is managed via AppState, not DOM attributes
+ * 
+ * STATE SOURCE OF TRUTH:
+ * - AppState.characters.formEditId is the canonical edit state
+ * - DOM is rendered from state, not the other way around
+ * - showCharacterForm() should read from AppState
+ * - CRUD module reads from AppState, not dataset.editId
  */
 
 (function() {
     'use strict';
 
     // ============================================================
-    // SAFE RENDER HELPER
+    // SAFE RENDER HELPERS
     // ============================================================
 
     function safeRenderCharacterList() {
@@ -22,225 +41,114 @@
         }
     }
 
-    function safeSetCurrentEditId(id) {
-        if (typeof window.setCurrentEditId === 'function') {
-            window.setCurrentEditId(id);
+    function safeUpdateDashboardStats() {
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
         }
     }
 
     // ============================================================
-    // ENSURE DATA STRUCTURE
+    // STATE ACCESS - Single source of truth
     // ============================================================
 
+    function getCurrentEditId() {
+        if (typeof window.getState === 'function') {
+            return window.getState('characters', 'formEditId');
+        }
+        return null;
+    }
+
+    function setCurrentEditId(id) {
+        if (typeof window.setState === 'function') {
+            window.setState('characters', 'formEditId', id);
+        }
+    }
+
+    // ============================================================
+    // NOTIFICATION - Explicit rendering
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+
+        // Use explicit notification API if available
+        if (typeof window.showToast === 'function') {
+            window.showToast(message, type);
+            return;
+        }
+
+        // Fallback: update SessionState and trigger render
+        if (typeof window.setSession === 'function') {
+            window.setSession('toast', {
+                message: message,
+                type: type,
+                timestamp: Date.now()
+            });
+
+            // Trigger toast render if available
+            if (typeof window.renderToast === 'function') {
+                window.renderToast();
+            }
+            return;
+        }
+
+        // Ultimate fallback
+        alert(type === 'error' ? 'Error: ' + message : message);
+    }
+
+    // ============================================================
+    // SAFE CLONE - Use database module's clone (synchronous)
+    // ============================================================
+
+    function createSafeBackup(data) {
+        try {
+            if (window.db && typeof window.db.createSafeCopy === 'function') {
+                return window.db.createSafeCopy(data);
+            }
+            if (typeof structuredClone === 'function') {
+                return structuredClone(data);
+            }
+            // No safe cloning available - return null (rollback disabled)
+            return null;
+        } catch (err) {
+            // If cloning fails, return null (no rollback available)
+            return null;
+        }
+    }
+
+    // ============================================================
+    // ID GENERATION
+    // ============================================================
+
+    function generateCharacterId() {
+        if (typeof window.generateId === 'function') {
+            return window.generateId('char');
+        }
+        return 'char_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    }
+
+    // ============================================================
+    // DATA STRUCTURE VALIDATION
+    // ============================================================
+
+    function validateDataArray(data, key) {
+        if (!data) return false;
+        if (!Array.isArray(data[key])) {
+            return false;
+        }
+        return true;
+    }
+
     function ensureDataArray(data, key) {
-        if (!data) return;
+        if (!data) return false;
         if (!Array.isArray(data[key])) {
             data[key] = [];
         }
+        return true;
     }
 
     // ============================================================
-    // SAVE CHARACTER
-    // ============================================================
-
-    function save() {
-        var form = document.getElementById('char-form');
-        var editId = form ? form.dataset.editId : null;
-        var data = window.data || {};
-        
-        // Ensure data structure
-        ensureDataArray(data, 'characters');
-        
-        var deceasedEl = document.getElementById('char-deceased');
-        if (!deceasedEl) {
-            alert('Form error: Missing required fields. Please refresh the page.');
-            return;
-        }
-        
-        var isDeceased = deceasedEl.checked;
-        var deathYear = document.getElementById('char-death-year') ? document.getElementById('char-death-year').value.trim() : '';
-        var deathCause = document.getElementById('char-death-cause') ? document.getElementById('char-death-cause').value.trim() : '';
-        var deathAge = document.getElementById('char-death-age') ? document.getElementById('char-death-age').value.trim() : '';
-
-        var classIds = getClassIds();
-        var careerStatus = getCareerStatus();
-        var magic = getMagic();
-        var physicalMoves = getFormSpecialMoves('physical');
-        var magicalMoves = getFormSpecialMoves('magical');
-
-        var charData = buildCharacterData(
-            classIds, careerStatus, magic, physicalMoves, magicalMoves,
-            isDeceased, deathYear, deathCause, deathAge
-        );
-
-        if (!validateCharacter(charData)) {
-            return;
-        }
-
-        var isEditing = editId !== null && editId !== undefined && editId !== '';
-        var existingChar = null;
-        var name = charData.firstName + ' ' + charData.lastName;
-        var newId = null;
-
-        if (isEditing) {
-            existingChar = data.characters.find(function(c) { 
-                return String(c.id) === String(editId); 
-            });
-            if (!existingChar) {
-                alert('Character not found.');
-                return;
-            }
-            name = window.getDisplayName(existingChar);
-        }
-
-        // Save a backup for rollback if needed
-        var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
-
-        // 1. MUTATE
-        if (isEditing) {
-            updateExistingCharacter(existingChar, charData, data);
-            newId = editId;
-        } else {
-            newId = createNewCharacter(charData, data);
-            name = charData.firstName + ' ' + charData.lastName;
-        }
-
-        // 2. LOG
-        if (typeof window.logActivity === 'function') {
-            window.logActivity(
-                isEditing ? 'Updated character: ' + name : 'Created character: ' + name
-            );
-        }
-
-        // 3. SAVE
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    onSaveSuccess(newId, isEditing);
-                })
-                .catch(function(err) {
-                    console.error('Failed to save character:', err);
-                    
-                    // Rollback memory if backup exists
-                    if (backup) {
-                        window.data = backup;
-                        safeRenderCharacterList();
-                        
-                        if (isEditing) {
-                            // For editing, show the original character
-                            safeSetCurrentEditId(editId);
-                            safeShowCharacterForm(editId);
-                        } else {
-                            // For new character, reset to empty form
-                            safeSetCurrentEditId(null);
-                            safeShowCharacterForm(null);
-                        }
-                    }
-                    
-                    alert('Failed to save character. Please try again.');
-                });
-        } else {
-            onSaveSuccess(newId, isEditing);
-        }
-    }
-
-    function onSaveSuccess(id, isEditing) {
-        if (typeof window.updateDashboardStats === 'function') {
-            window.updateDashboardStats();
-        }
-
-        safeShowCharacterForm(id);
-        alert(isEditing ? 'Character saved successfully!' : 'Character created successfully!');
-    }
-
-    // ============================================================
-    // DELETE CHARACTER
-    // ============================================================
-
-    function deleteCharacter(id) {
-        if (!id) {
-            alert('No character selected.');
-            return;
-        }
-
-        var data = window.data || {};
-        ensureDataArray(data, 'characters');
-        ensureDataArray(data, 'teams');
-
-        var char = data.characters.find(function(c) { return String(c.id) === String(id); });
-        if (!char) {
-            alert('Character not found.');
-            return;
-        }
-
-        var name = window.getDisplayName(char);
-
-        // Single confirmation - this is the only one
-        if (!confirm('Delete "' + name + '" permanently? This will also remove them from all teams.')) {
-            return;
-        }
-
-        // Save a backup for rollback if needed
-        var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
-
-        // 1. MUTATE - remove from teams
-        if (Array.isArray(data.teams)) {
-            data.teams.forEach(function(team) {
-                if (Array.isArray(team.members)) {
-                    team.members = team.members.filter(function(m) {
-                        return String(m.characterId) !== String(id);
-                    });
-                }
-            });
-        }
-
-        // 1. MUTATE - remove character
-        data.characters = data.characters.filter(function(c) { 
-            return String(c.id) !== String(id); 
-        });
-
-        // 2. LOG
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Deleted character: ' + name);
-        }
-
-        // 3. SAVE
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    onDeleteSuccess();
-                })
-                .catch(function(err) {
-                    console.error('Failed to delete character:', err);
-                    
-                    // Rollback memory if backup exists
-                    if (backup) {
-                        window.data = backup;
-                        safeRenderCharacterList();
-                        
-                        // Restore the deleted character in the form
-                        safeSetCurrentEditId(id);
-                        safeShowCharacterForm(id);
-                    }
-                    
-                    alert('Failed to delete character. Please try again.');
-                });
-        } else {
-            onDeleteSuccess();
-        }
-    }
-
-    function onDeleteSuccess() {
-        safeSetCurrentEditId(null);
-        if (typeof window.updateDashboardStats === 'function') {
-            window.updateDashboardStats();
-        }
-        safeShowCharacterForm(null);
-        alert('Character deleted successfully!');
-    }
-
-    // ============================================================
-    // HELPER FUNCTIONS (unchanged)
+    // HELPER FUNCTIONS
     // ============================================================
 
     function getClassIds() {
@@ -276,15 +184,14 @@
 
     function getMagic() {
         var magic = {};
-        var magicTypes = ['earth', 'water', 'fire', 'air', 'metal', 'wood',
+        var magicTypes = [
+            'earth', 'water', 'fire', 'air', 'metal', 'wood',
             'blood', 'bone', 'mind', 'morphic', 'life', 'death',
             'space', 'time', 'dimension', 'void', 'reality', 'transference'
         ];
         magicTypes.forEach(function(key) {
             var input = document.getElementById('magic-' + key);
-            if (input) {
-                magic[key] = parseInt(input.value) || 0;
-            }
+            magic[key] = input ? (parseInt(input.value, 10) || 0) : 0;
         });
         return magic;
     }
@@ -312,8 +219,10 @@
         return moves;
     }
 
-    function buildCharacterData(classIds, careerStatus, magic, physicalMoves, magicalMoves,
-                               isDeceased, deathYear, deathCause, deathAge) {
+    function buildCharacterData(
+        classIds, careerStatus, magic, physicalMoves, magicalMoves,
+        isDeceased, deathYear, deathCause, deathAge
+    ) {
         var getVal = function(id, fallback) {
             var el = document.getElementById(id);
             return el ? el.value.trim() : fallback;
@@ -322,9 +231,14 @@
         var getInt = function(id, fallback) {
             var el = document.getElementById(id);
             if (!el) return fallback;
-            var val = parseInt(el.value);
+            var val = parseInt(el.value, 10);
             return isNaN(val) ? fallback : val;
         };
+
+        // Clear death fields if not deceased
+        var finalDeathYear = isDeceased ? deathYear : '';
+        var finalDeathCause = isDeceased ? deathCause : '';
+        var finalDeathAge = isDeceased ? deathAge : '';
 
         return {
             firstName: getVal('char-firstname', ''),
@@ -332,8 +246,8 @@
             lastName: getVal('char-lastname', ''),
             nickname: getVal('char-nickname', ''),
             alias: getVal('char-alias', ''),
-            previousNames: getVal('char-previous-names', '').split(',').map(function(n) { 
-                return n.trim(); 
+            previousNames: getVal('char-previous-names', '').split(',').map(function(n) {
+                return n.trim();
             }).filter(function(n) { return n; }),
             nameFormat: getVal('char-name-format', 'firstlast'),
             birthYear: getVal('char-birthyear', ''),
@@ -347,9 +261,9 @@
             appearanceNotes: getVal('char-appearance-notes', ''),
             notes: getVal('char-notes', ''),
             deceased: isDeceased,
-            deathYear: deathYear,
-            deathCause: deathCause,
-            deathAge: deathAge,
+            deathYear: finalDeathYear,
+            deathCause: finalDeathCause,
+            deathAge: finalDeathAge,
             careerStatus: careerStatus,
             specialty: getVal('char-specialty', ''),
             classIds: classIds,
@@ -383,73 +297,255 @@
 
     function validateCharacter(charData) {
         if (!charData.firstName) {
-            alert('First name is required.');
-            return false;
+            return { valid: false, message: 'First name is required.' };
         }
         if (!charData.lastName) {
-            alert('Last name is required.');
-            return false;
+            return { valid: false, message: 'Last name is required.' };
         }
         if (charData.deceased && !charData.deathYear && !charData.deathAge) {
-            alert('Please enter either Death Year or Death Age for deceased characters.');
-            return false;
+            return { valid: false, message: 'Please enter either Death Year or Death Age for deceased characters.' };
         }
-        return true;
+        return { valid: true };
     }
 
     function updateExistingCharacter(existing, charData, data) {
-        charData.id = existing.id;
-        charData.createdAt = existing.createdAt;
+        var updatedCharacter = Object.assign({}, existing, charData, {
+            id: existing.id,
+            createdAt: existing.createdAt
+        });
 
-        var index = data.characters.findIndex(function(c) { 
-            return String(c.id) === String(existing.id); 
+        var index = data.characters.findIndex(function(c) {
+            return String(c.id) === String(existing.id);
         });
         if (index !== -1) {
-            data.characters[index] = Object.assign({}, existing, charData);
+            data.characters[index] = updatedCharacter;
         }
         window.data = data;
     }
 
     function createNewCharacter(charData, data) {
-        var id = window.generateId ? window.generateId('char') : 'char_' + Date.now();
-        var newChar = {
+        var id = generateCharacterId();
+
+        // Generated fields win (prevent charData from overwriting them)
+        var newChar = Object.assign({}, charData, {
             id: id,
-            firstName: charData.firstName,
-            middleName: charData.middleName,
-            lastName: charData.lastName,
-            nickname: charData.nickname,
-            alias: charData.alias,
-            previousNames: charData.previousNames,
-            nameFormat: charData.nameFormat,
-            birthYear: charData.birthYear,
-            gender: charData.gender,
-            eyes: charData.eyes,
-            hair: charData.hair,
-            skin: charData.skin,
-            height: charData.height,
-            weight: charData.weight,
-            build: charData.build,
-            appearanceNotes: charData.appearanceNotes,
-            notes: charData.notes,
-            deceased: charData.deceased,
-            deathYear: charData.deathYear,
-            deathCause: charData.deathCause,
-            deathAge: charData.deathAge,
-            careerStatus: charData.careerStatus,
-            specialty: charData.specialty,
-            classIds: charData.classIds,
-            personality: charData.personality,
-            stats: charData.stats,
-            magic: charData.magic,
-            specialMoves: charData.specialMoves,
             eliminations: [],
             eliminatedWeeks: [],
             createdAt: new Date().toISOString()
-        };
+        });
+
         data.characters.push(newChar);
-        safeSetCurrentEditId(id);
+        setCurrentEditId(id);
         window.data = data;
+
         return id;
+    }
+
+    // ============================================================
+    // SAVE CHARACTER
+    // ============================================================
+
+    function save() {
+        var data = window.data || {};
+
+        // Validate data structure
+        if (!validateDataArray(data, 'characters')) {
+            if (!ensureDataArray(data, 'characters')) {
+                showNotification('Data structure is corrupted. Please reload.', 'error');
+                return;
+            }
+        }
+
+        var editId = getCurrentEditId();
+
+        var deceasedEl = document.getElementById('char-deceased');
+        if (!deceasedEl) {
+            showNotification('Form error: Missing required fields. Please refresh the page.', 'error');
+            return;
+        }
+
+        var isDeceased = deceasedEl.checked;
+        var deathYear = document.getElementById('char-death-year') ? document.getElementById('char-death-year').value.trim() : '';
+        var deathCause = document.getElementById('char-death-cause') ? document.getElementById('char-death-cause').value.trim() : '';
+        var deathAge = document.getElementById('char-death-age') ? document.getElementById('char-death-age').value.trim() : '';
+
+        var classIds = getClassIds();
+        var careerStatus = getCareerStatus();
+        var magic = getMagic();
+        var physicalMoves = getFormSpecialMoves('physical');
+        var magicalMoves = getFormSpecialMoves('magical');
+
+        var charData = buildCharacterData(
+            classIds, careerStatus, magic, physicalMoves, magicalMoves,
+            isDeceased, deathYear, deathCause, deathAge
+        );
+
+        var validation = validateCharacter(charData);
+        if (!validation.valid) {
+            showNotification(validation.message, 'error');
+            return;
+        }
+
+        var isEditing = editId !== null && editId !== undefined && editId !== '';
+        var existingChar = null;
+        var name = charData.firstName + ' ' + charData.lastName;
+        var newId = null;
+
+        if (isEditing) {
+            existingChar = data.characters.find(function(c) {
+                return String(c.id) === String(editId);
+            });
+            if (!existingChar) {
+                showNotification('Character not found.', 'error');
+                return;
+            }
+            name = window.getDisplayName ? window.getDisplayName(existingChar) : existingChar.firstName + ' ' + existingChar.lastName;
+        }
+
+        // Save a backup for rollback if needed
+        var backup = createSafeBackup(data);
+
+        // 1. MUTATE
+        if (isEditing) {
+            updateExistingCharacter(existingChar, charData, data);
+            newId = editId;
+        } else {
+            newId = createNewCharacter(charData, data);
+            name = charData.firstName + ' ' + charData.lastName;
+        }
+
+        // 2. LOG (logActivity should NOT call saveData)
+        if (typeof window.logActivity === 'function') {
+            window.logActivity(
+                isEditing ? 'Updated character: ' + name : 'Created character: ' + name
+            );
+        }
+
+        // 3. PERSIST
+        if (typeof window.saveData === 'function') {
+            window.saveData()
+                .then(function() {
+                    onSaveSuccess(newId, isEditing);
+                })
+                .catch(function(err) {
+                    // Rollback memory if backup exists
+                    if (backup) {
+                        window.data = backup;
+                        safeRenderCharacterList();
+
+                        if (isEditing) {
+                            // For editing, show the original character
+                            setCurrentEditId(editId);
+                            safeShowCharacterForm(editId);
+                        } else {
+                            // For new character, reset to empty form
+                            setCurrentEditId(null);
+                            safeShowCharacterForm(null);
+                        }
+                    }
+
+                    showNotification('Failed to save character. Please try again.', 'error');
+                });
+        } else {
+            onSaveSuccess(newId, isEditing);
+        }
+    }
+
+    function onSaveSuccess(id, isEditing) {
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
+        }
+
+        safeShowCharacterForm(id);
+        showNotification(isEditing ? 'Character saved successfully!' : 'Character created successfully!', 'success');
+    }
+
+    // ============================================================
+    // DELETE CHARACTER
+    // ============================================================
+
+    function deleteCharacter(id) {
+        if (!id) {
+            showNotification('No character selected.', 'error');
+            return;
+        }
+
+        var data = window.data || {};
+
+        if (!validateDataArray(data, 'characters') || !validateDataArray(data, 'teams')) {
+            showNotification('Data structure is corrupted. Please reload.', 'error');
+            return;
+        }
+
+        var char = data.characters.find(function(c) { return String(c.id) === String(id); });
+        if (!char) {
+            showNotification('Character not found.', 'error');
+            return;
+        }
+
+        var name = window.getDisplayName ? window.getDisplayName(char) : char.firstName + ' ' + char.lastName;
+
+        // Single confirmation - this is the only one
+        if (!confirm('Delete "' + name + '" permanently? This will also remove them from all teams.')) {
+            return;
+        }
+
+        // Save a backup for rollback if needed
+        var backup = createSafeBackup(data);
+
+        // MUTATE
+        // Clean team memberships
+        if (Array.isArray(data.teams)) {
+            data.teams.forEach(function(team) {
+                if (Array.isArray(team.members)) {
+                    team.members = team.members.filter(function(m) {
+                        return String(m.characterId) !== String(id);
+                    });
+                }
+            });
+        }
+
+        // Remove character
+        data.characters = data.characters.filter(function(c) {
+            return String(c.id) !== String(id);
+        });
+
+        // LOG
+        if (typeof window.logActivity === 'function') {
+            window.logActivity('Deleted character: ' + name);
+        }
+
+        // PERSIST
+        if (typeof window.saveData === 'function') {
+            window.saveData()
+                .then(function() {
+                    onDeleteSuccess();
+                })
+                .catch(function(err) {
+                    // Rollback memory if backup exists
+                    if (backup) {
+                        window.data = backup;
+                        safeRenderCharacterList();
+
+                        // Restore the deleted character in the form
+                        setCurrentEditId(id);
+                        safeShowCharacterForm(id);
+                    }
+
+                    showNotification('Failed to delete character. Please try again.', 'error');
+                });
+        } else {
+            onDeleteSuccess();
+        }
+    }
+
+    function onDeleteSuccess() {
+        setCurrentEditId(null);
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
+        }
+        safeShowCharacterForm(null);
+        showNotification('Character deleted successfully!', 'success');
     }
 
     // ============================================================
@@ -464,7 +560,11 @@
         getMagic: getMagic,
         getFormSpecialMoves: getFormSpecialMoves,
         buildCharacterData: buildCharacterData,
-        validateCharacter: validateCharacter
+        validateCharacter: validateCharacter,
+        createSafeBackup: createSafeBackup,
+        generateCharacterId: generateCharacterId,
+        getCurrentEditId: getCurrentEditId,
+        setCurrentEditId: setCurrentEditId
     };
 
 })();
