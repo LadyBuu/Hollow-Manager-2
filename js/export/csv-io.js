@@ -1,6 +1,31 @@
 /**
  * js/export/csv-io.js - CSV Import/Export
  * Path: js/export/csv-io.js
+ * 
+ * Import pipeline:
+ *   Parse
+ *     ↓
+ *   Detect format version
+ *     ↓
+ *   Build empty canonical structure
+ *     ↓
+ *   Import primary entities (Characters → Teams → Tournaments → Missions → Disciplines)
+ *     ↓
+ *   Import relationships (Team Members, Team Rankings, Tournament Teams, etc.)
+ *     ↓
+ *   Normalise / Migrate
+ *     ↓
+ *   Validate references
+ *     ↓
+ *   Show warnings
+ *     ↓
+ *   Confirm replacement
+ *     ↓
+ *   Persist to database
+ *     ↓
+ *   Swap live state
+ *     ↓
+ *   Render
  */
 
 (function() {
@@ -150,9 +175,16 @@
                     return;
                 }
 
-                // Check for format version
-                var version = detectCSVVersion(records);
-                if (version !== '1') {
+                // Detect format version using canonical parser
+                var version = schema.version.detect(records);
+                if (version === 'unknown') {
+                    // No version marker - assume version 1 but warn
+                    if (!confirm('This CSV file does not contain a format version marker.\n\n' +
+                                 'Assuming format version 1.\n\n' +
+                                 'Continue with import?')) {
+                        return;
+                    }
+                } else if (version !== '1') {
                     if (!confirm('This CSV file appears to be from a different version.\n\n' +
                                  'Detected version: ' + version + '\n' +
                                  'Supported version: 1\n\n' +
@@ -183,16 +215,15 @@
                 var section = '';
                 var foundExportableData = false;
 
+                // Process rows
                 for (var i = 0; i < records.length; i++) {
                     var row = records[i];
                     if (row.length === 0) continue;
 
                     var first = (row[0] || '').trim();
 
-                    // Check for version marker
+                    // Skip version marker
                     if (first === '# HOLLOW BLADES CSV') {
-                        var versionResult = schema.version.import(row);
-                        version = versionResult.version;
                         continue;
                     }
 
@@ -268,6 +299,9 @@
                     return;
                 }
 
+                // Post-import referential validation
+                validateImportedReferences(newData, warnings);
+
                 // Migrate and normalise
                 if (typeof window.migrateData === 'function') {
                     try {
@@ -284,17 +318,27 @@
                     return;
                 }
 
-                // Show warnings before confirmation
+                // Build confirmation message with warnings
+                var confirmMsg = 'This import will replace all current data.\n\n';
+                
+                var charCount = newData.characters ? newData.characters.length : 0;
+                var teamCount = newData.teams ? newData.teams.length : 0;
+                var tournCount = newData.tournaments ? newData.tournaments.length : 0;
+                var missionCount = newData.missions ? newData.missions.length : 0;
+                
+                confirmMsg += 'Characters: ' + charCount + '\n';
+                confirmMsg += 'Teams: ' + teamCount + '\n';
+                confirmMsg += 'Tournaments: ' + tournCount + '\n';
+                confirmMsg += 'Missions: ' + missionCount + '\n\n';
+                
                 if (warnings.length > 0) {
-                    var warnMsg = '⚠ The following issues were found during import:\n\n' +
-                                  warnings.join('\n') + '\n\n' +
-                                  'You can continue with the import, but some data may be incomplete.';
-                    if (!confirm(warnMsg + '\n\nContinue with import?')) {
-                        return;
-                    }
+                    confirmMsg += '⚠ Warnings:\n';
+                    confirmMsg += warnings.join('\n') + '\n\n';
                 }
-
-                if (!confirm('This will replace all current data. Continue?')) {
+                
+                confirmMsg += 'Continue with import?';
+                
+                if (!confirm(confirmMsg)) {
                     return;
                 }
 
@@ -327,22 +371,154 @@
         reader.readAsText(file);
     }
 
-    function detectCSVVersion(records) {
-        for (var i = 0; i < records.length && i < 10; i++) {
-            var row = records[i];
-            if (row.length === 0) continue;
-            var first = (row[0] || '').trim();
-            if (first === '# HOLLOW BLADES CSV') {
-                if (row.length > 1) {
-                    var versionParts = row[1].trim().split(' ');
-                    if (versionParts[0] === 'FORMAT' && versionParts[1] === 'VERSION') {
-                        return row[2] || '1';
+    /**
+     * Post-import referential validation
+     * Checks all foreign keys after import is complete
+     */
+    function validateImportedReferences(data, warnings) {
+        // Validate missions
+        if (Array.isArray(data.missions)) {
+            data.missions.forEach(function(mission) {
+                if (mission.assignedTeamId) {
+                    var teamExists = data.teams && data.teams.some(function(t) {
+                        return String(t.id) === String(mission.assignedTeamId);
+                    });
+                    if (!teamExists) {
+                        warnings.push('Mission "' + mission.title + '" references unknown team "' + mission.assignedTeamId + '"');
                     }
                 }
-                return '1';
-            }
+            });
         }
-        return 'unknown';
+
+        // Validate team members
+        if (Array.isArray(data.teams)) {
+            data.teams.forEach(function(team) {
+                if (Array.isArray(team.members)) {
+                    team.members.forEach(function(member) {
+                        var charExists = data.characters && data.characters.some(function(c) {
+                            return String(c.id) === String(member.characterId);
+                        });
+                        if (!charExists) {
+                            warnings.push('Team "' + team.name + '" references unknown character "' + member.characterId + '"');
+                        }
+                    });
+                }
+            });
+        }
+
+        // Validate tournament teams
+        if (Array.isArray(data.tournaments)) {
+            data.tournaments.forEach(function(tourn) {
+                if (Array.isArray(tourn.teams)) {
+                    tourn.teams.forEach(function(entry) {
+                        var teamExists = data.teams && data.teams.some(function(t) {
+                            return String(t.id) === String(entry.teamId);
+                        });
+                        if (!teamExists) {
+                            warnings.push('Tournament "' + tourn.name + '" references unknown team "' + entry.teamId + '"');
+                        }
+                    });
+                }
+
+                // Validate tournament matches
+                if (Array.isArray(tourn.matches)) {
+                    tourn.matches.forEach(function(match) {
+                        if (match.team1Id) {
+                            var team1Exists = data.teams && data.teams.some(function(t) {
+                                return String(t.id) === String(match.team1Id);
+                            });
+                            if (!team1Exists) {
+                                warnings.push('Tournament "' + tourn.name + '" match references unknown team1 "' + match.team1Id + '"');
+                            }
+                        }
+                        if (match.team2Id) {
+                            var team2Exists = data.teams && data.teams.some(function(t) {
+                                return String(t.id) === String(match.team2Id);
+                            });
+                            if (!team2Exists) {
+                                warnings.push('Tournament "' + tourn.name + '" match references unknown team2 "' + match.team2Id + '"');
+                            }
+                        }
+                        if (match.winner) {
+                            var winnerExists = false;
+                            if (data.teams && data.teams.some(function(t) { return String(t.id) === String(match.winner); })) {
+                                winnerExists = true;
+                            }
+                            if (!winnerExists && data.characters && data.characters.some(function(c) { return String(c.id) === String(match.winner); })) {
+                                winnerExists = true;
+                            }
+                            if (!winnerExists) {
+                                warnings.push('Tournament "' + tourn.name + '" match references unknown winner "' + match.winner + '"');
+                            }
+                        }
+                    });
+                }
+
+                // Validate tournament eliminations
+                if (Array.isArray(tourn.eliminations)) {
+                    tourn.eliminations.forEach(function(elim) {
+                        if (elim.participantId) {
+                            var participantExists = false;
+                            if (elim.participantType === 'character') {
+                                participantExists = data.characters && data.characters.some(function(c) {
+                                    return String(c.id) === String(elim.participantId);
+                                });
+                            } else if (elim.participantType === 'team') {
+                                participantExists = data.teams && data.teams.some(function(t) {
+                                    return String(t.id) === String(elim.participantId);
+                                });
+                            }
+                            if (!participantExists) {
+                                warnings.push('Tournament "' + tourn.name + '" elimination references unknown participant "' + elim.participantId + '"');
+                            }
+                        }
+                        if (elim.teamId) {
+                            var teamExists = data.teams && data.teams.some(function(t) {
+                                return String(t.id) === String(elim.teamId);
+                            });
+                            if (!teamExists) {
+                                warnings.push('Tournament "' + tourn.name + '" elimination references unknown team "' + elim.teamId + '"');
+                            }
+                        }
+                    });
+                }
+
+                // Validate tournament participants
+                if (Array.isArray(tourn.participants)) {
+                    tourn.participants.forEach(function(participant) {
+                        if (participant.id) {
+                            var exists = false;
+                            if (participant.type === 'character') {
+                                exists = data.characters && data.characters.some(function(c) {
+                                    return String(c.id) === String(participant.id);
+                                });
+                            } else if (participant.type === 'team') {
+                                exists = data.teams && data.teams.some(function(t) {
+                                    return String(t.id) === String(participant.id);
+                                });
+                            }
+                            if (!exists) {
+                                warnings.push('Tournament "' + tourn.name + '" references unknown participant "' + participant.id + '"');
+                            }
+                        }
+                    });
+                }
+
+                // Validate tournament winner
+                if (tourn.winner) {
+                    var winnerExists = false;
+                    if (data.teams && data.teams.some(function(t) { return String(t.id) === String(tourn.winner); })) {
+                        winnerExists = true;
+                    }
+                    if (!winnerExists && data.characters && data.characters.some(function(c) { return String(c.id) === String(tourn.winner); })) {
+                        winnerExists = true;
+                    }
+                    if (!winnerExists) {
+                        warnings.push('Tournament "' + tourn.name + '" references unknown winner "' + tourn.winner + '"');
+                    }
+                }
+            });
+        }
     }
 
     function getCollectionForSection(section) {
@@ -416,30 +592,16 @@
         return window.getDefaultData();
     }
 
+    // Delegate to canonical curriculum initializer - fail loudly if not available
     function getEmptyCurriculum() {
-        if (typeof window.getDefaultCurriculum === 'function') {
-            return window.getDefaultCurriculum();
+        if (typeof window.getDefaultCurriculum !== 'function') {
+            throw new Error(
+                'Cannot import CSV: canonical curriculum initializer is unavailable.\n\n' +
+                'Please ensure the application has loaded correctly before importing CSV.'
+            );
         }
-        return {
-            disciplines: [],
-            schedules: {},
-            restDays: {},
-            examDays: {},
-            grades: {},
-            rankings: {},
-            currentWeek: 1,
-            classInstructors: {},
-            classLabels: {},
-            classGroupLabels: {},
-            classDurations: {},
-            classLocations: {},
-            instructorClasses: {},
-            instructorTemplates: {},
-            instructorBlocks: {},
-            instructorGroups: {},
-            disciplineGroups: {},
-            autoGroups: {}
-        };
+
+        return window.getDefaultCurriculum();
     }
 
     // Expose
