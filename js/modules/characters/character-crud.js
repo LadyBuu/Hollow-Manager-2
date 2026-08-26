@@ -41,12 +41,12 @@
             return;
         }
 
+        var isEditing = editId !== null && editId !== undefined && editId !== '';
         var existingChar = null;
         var name = charData.firstName + ' ' + charData.lastName;
-        var isNew = false;
         var newId = null;
 
-        if (editId) {
+        if (isEditing) {
             existingChar = data.characters.find(function(c) { 
                 return String(c.id) === String(editId); 
             });
@@ -57,20 +57,22 @@
             name = window.getDisplayName(existingChar);
         }
 
+        // Save a backup for rollback if needed
+        var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
+
         // 1. MUTATE
-        if (editId) {
+        if (isEditing) {
             updateExistingCharacter(existingChar, charData, data);
             newId = editId;
         } else {
             newId = createNewCharacter(charData, data);
-            isNew = true;
             name = charData.firstName + ' ' + charData.lastName;
         }
 
         // 2. LOG
         if (typeof window.logActivity === 'function') {
             window.logActivity(
-                editId ? 'Updated character: ' + name : 'Created character: ' + name
+                isEditing ? 'Updated character: ' + name : 'Created character: ' + name
             );
         }
 
@@ -78,25 +80,33 @@
         if (typeof window.saveData === 'function') {
             window.saveData()
                 .then(function() {
-                    onSaveSuccess(newId, isNew);
+                    onSaveSuccess(newId, isEditing);
                 })
                 .catch(function(err) {
                     console.error('Failed to save character:', err);
+                    // Rollback memory if backup exists
+                    if (backup) {
+                        window.data = backup;
+                        // Re-render to reflect rollback
+                        window.CharacterList.render();
+                        if (window.currentEditId) {
+                            window.showCharacterForm(window.currentEditId());
+                        }
+                    }
                     alert('Failed to save character. Please try again.');
                 });
         } else {
-            onSaveSuccess(newId, isNew);
+            onSaveSuccess(newId, isEditing);
         }
     }
 
-    function onSaveSuccess(id, isNew) {
+    function onSaveSuccess(id, isEditing) {
         if (typeof window.updateDashboardStats === 'function') {
             window.updateDashboardStats();
         }
 
         window.showCharacterForm(id);
-
-        alert(isNew ? 'Character created successfully!' : 'Character saved successfully!');
+        alert(isEditing ? 'Character saved successfully!' : 'Character created successfully!');
     }
 
     // ============================================================
@@ -118,9 +128,13 @@
 
         var name = window.getDisplayName(char);
 
+        // Single confirmation - this is the only one
         if (!confirm('Delete "' + name + '" permanently? This will also remove them from all teams.')) {
             return;
         }
+
+        // Save a backup for rollback if needed
+        var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
 
         // 1. MUTATE - remove from teams
         if (Array.isArray(data.teams)) {
@@ -132,6 +146,9 @@
                 }
             });
         }
+
+        // TODO: Clean other references (social relationships, missions, tournaments, etc.)
+        // For now, we only clean team references.
 
         // 1. MUTATE - remove character
         data.characters = data.characters.filter(function(c) { 
@@ -151,6 +168,14 @@
                 })
                 .catch(function(err) {
                     console.error('Failed to delete character:', err);
+                    // Rollback memory if backup exists
+                    if (backup) {
+                        window.data = backup;
+                        window.CharacterList.render();
+                        if (window.currentEditId) {
+                            window.showCharacterForm(window.currentEditId());
+                        }
+                    }
                     alert('Failed to delete character. Please try again.');
                 });
         } else {
@@ -217,7 +242,6 @@
         return magic;
     }
 
-    // Renamed to avoid collision with character-detail's getSpecialMoves
     function getFormSpecialMoves(type) {
         var moves = [];
         var containerId = type === 'physical' ? 'physical-moves-list' : 'magical-moves-list';
@@ -227,10 +251,16 @@
                 var nameEl = el.querySelector('.move-name');
                 var descEl = el.querySelector('.move-desc');
                 if (nameEl) {
-                    moves.push({
-                        name: nameEl.textContent,
-                        description: descEl ? descEl.textContent : ''
-                    });
+                    // If these are input/textarea elements, use .value
+                    // If they're display elements, use .textContent
+                    var name = nameEl.value !== undefined ? nameEl.value.trim() : nameEl.textContent.trim();
+                    var desc = descEl ? (descEl.value !== undefined ? descEl.value.trim() : descEl.textContent.trim()) : '';
+                    if (name) {
+                        moves.push({
+                            name: name,
+                            description: desc
+                        });
+                    }
                 }
             });
         }
@@ -242,11 +272,6 @@
         var getVal = function(id, fallback) {
             var el = document.getElementById(id);
             return el ? el.value.trim() : fallback;
-        };
-
-        var getChecked = function(id) {
-            var el = document.getElementById(id);
-            return el ? el.checked : false;
         };
 
         var getInt = function(id, fallback) {
@@ -286,6 +311,7 @@
             personality: {
                 traits: getVal('char-traits', ''),
                 ideals: getVal('char-ideals', ''),
+                bonds: getVal('char-bonds', ''),  // ADDED: bonds field
                 flaws: getVal('char-flaws', ''),
                 alignment: getVal('char-alignment', ''),
                 likes: getVal('char-likes', ''),
