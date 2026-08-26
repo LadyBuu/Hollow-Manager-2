@@ -67,27 +67,32 @@
 
                 // Create backup only after confirmation
                 var backup = utils.cloneData(window.data);
-                var persisted = false;
 
-                // Use the standardised saveData API - assumes atomic transaction
-                if (typeof window.saveData === 'function') {
-                    Promise.resolve(window.saveData(imported))
-                        .then(function() {
-                            persisted = true;
-                            window.data = imported;
-                            onImportSuccess(imported, persisted, 'JSON');
-                        })
-                        .catch(function(err) {
-                            // Rollback memory (database rollback is handled by atomic transaction)
-                            if (backup) {
-                                window.data = backup;
-                            }
-                            alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
-                        });
-                } else {
-                    window.data = imported;
-                    onImportSuccess(imported, false, 'JSON');
+                // saveData must exist and return true on success
+                if (typeof window.saveData !== 'function') {
+                    alert(
+                        'Cannot import JSON: saveData() is unavailable.\n\n' +
+                        'The imported data was not applied.\n' +
+                        'Please ensure the application has loaded correctly before importing.'
+                    );
+                    return;
                 }
+
+                Promise.resolve(window.saveData(imported))
+                    .then(function(result) {
+                        if (result !== true) {
+                            throw new Error('saveData did not confirm successful persistence.');
+                        }
+                        
+                        window.data = imported;
+                        onImportSuccess(imported, true, 'JSON');
+                    })
+                    .catch(function(err) {
+                        if (backup) {
+                            window.data = backup;
+                        }
+                        alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
+                    });
 
             } catch (err) {
                 alert('Failed to import JSON: ' + err.message);
@@ -106,7 +111,19 @@
         if (typeof window.updateDashboardStats === 'function') {
             window.updateDashboardStats();
         }
-        utils.showImportResult(persisted, data, format);
+
+        var charCount = data.characters ? data.characters.length : 0;
+        var teamCount = data.teams ? data.teams.length : 0;
+        var tournCount = data.tournaments ? data.tournaments.length : 0;
+        var missionCount = data.missions ? data.missions.length : 0;
+
+        var msg = format + ' import completed successfully!\n\n' +
+            'Characters: ' + charCount + '\n' +
+            'Teams: ' + teamCount + '\n' +
+            'Tournaments: ' + tournCount + '\n' +
+            'Missions: ' + missionCount;
+
+        alert(msg);
     }
 
     // Expose
