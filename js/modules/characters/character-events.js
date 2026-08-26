@@ -10,17 +10,20 @@
     var initialized = false;
 
     // ============================================================
-    // MAIN INITIALIZATION - IDEMPOTENT
+    // MAIN INITIALIZATION - IDEMPOTENT WITH CORRECT ORDER
     // ============================================================
 
     function init(container) {
         if (initialized) return;
-        initialized = true;
 
         if (!container) {
             container = document.getElementById('tab-characters');
         }
+
         if (!container) return;
+
+        // Only mark initialized after container is confirmed
+        initialized = true;
 
         initToggleList(container);
         initAddCharacter(container);
@@ -155,7 +158,7 @@
     }
 
     // ============================================================
-    // FILTERS
+    // FILTERS - WITH DEFENSIVE ELEMENT CHECKS
     // ============================================================
 
     function initFilters(container) {
@@ -183,9 +186,15 @@
         var clearFilter = document.getElementById('clear-char-filter');
         if (clearFilter) {
             clearFilter.addEventListener('click', function() {
-                document.getElementById('char-name-filter').value = '';
-                document.getElementById('char-status-filter').value = 'all';
-                document.getElementById('char-class-filter').value = 'all';
+                // Defensive: check elements exist before resetting
+                var nameEl = document.getElementById('char-name-filter');
+                var statusEl = document.getElementById('char-status-filter');
+                var classEl = document.getElementById('char-class-filter');
+                
+                if (nameEl) nameEl.value = '';
+                if (statusEl) statusEl.value = 'all';
+                if (classEl) classEl.value = 'all';
+                
                 window.CharacterList.render();
             });
         }
@@ -349,15 +358,19 @@
     }
 
     // ============================================================
-    // CLICK OUTSIDE
+    // CLICK OUTSIDE - FIXED: toggle may not exist
     // ============================================================
 
     function initClickOutside(container) {
         document.addEventListener('click', function(e) {
             var panel = document.getElementById('char-list-panel');
             var toggle = document.getElementById('toggle-char-list');
+            
             if (panel && panel.classList.contains('open')) {
-                if (!panel.contains(e.target) && !toggle.contains(e.target)) {
+                var clickedOutsidePanel = !panel.contains(e.target);
+                var clickedToggle = toggle && toggle.contains(e.target);
+                
+                if (clickedOutsidePanel && !clickedToggle) {
                     toggleCharacterList(false);
                 }
             }
