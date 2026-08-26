@@ -15,11 +15,15 @@
  *   All user-controlled data is escaped to prevent XSS.
  *   eliminatedWeeks is derived from eliminations to maintain consistency.
  * 
+ * ELIMINATION SOURCES OF TRUTH:
+ *   1. eliminations array - explicit elimination records (tournament or standalone)
+ *   2. deceased + deathWeek - character death as a timeline boundary
+ * 
  * DECEASED HANDLING:
  *   - If a character has a deathWeek, they are eliminated from that week onward.
  *   - If a character is deceased but has no deathWeek, they are considered
  *     eliminated for all timeline weeks (week 1 onward).
- *   - This is the authoritative source: eliminations array is the source of truth.
+ *   - This is a deliberate data policy: deceased without deathWeek = permanently unavailable.
  */
 
 (function() {
@@ -106,12 +110,12 @@
     }
 
     // ============================================================
-    // VALIDATE WEEK
+    // VALIDATE WEEK - STRICT
     // ============================================================
 
     function validateWeek(week) {
-        var num = parseInt(week);
-        return !isNaN(num) && num >= 1 && num <= 52;
+        var num = Number(week);
+        return Number.isInteger(num) && num >= 1 && num <= 52;
     }
 
     // ============================================================
@@ -121,7 +125,10 @@
     function isCharacterEliminatedByWeek(char, week) {
         if (!char) return false;
         
-        var weekNum = parseInt(week) || 1;
+        var weekNum = Number(week);
+        if (!Number.isInteger(weekNum) || weekNum < 1) {
+            return false;
+        }
         
         // DECEASED HANDLING
         if (char.deceased) {
@@ -131,8 +138,8 @@
                 char.deathWeek !== null &&
                 char.deathWeek !== ''
             ) {
-                var deathWeek = parseInt(char.deathWeek);
-                if (!isNaN(deathWeek) && deathWeek <= weekNum) {
+                var deathWeek = Number(char.deathWeek);
+                if (Number.isInteger(deathWeek) && deathWeek <= weekNum) {
                     return true;
                 }
                 // Death occurs in the future relative to this week
@@ -145,11 +152,11 @@
             return true;
         }
         
-        // Check elimination records (source of truth)
+        // Check elimination records (source of truth for explicit eliminations)
         if (char.eliminations) {
             for (var i = 0; i < char.eliminations.length; i++) {
-                var elimWeek = parseInt(char.eliminations[i].week);
-                if (!isNaN(elimWeek) && elimWeek <= weekNum) {
+                var elimWeek = Number(char.eliminations[i].week);
+                if (Number.isInteger(elimWeek) && elimWeek <= weekNum) {
                     return true;
                 }
             }
@@ -202,11 +209,10 @@
 
         var standaloneItems = [];
         if (char.eliminations) {
-            char.eliminations.forEach(function(elim, index) {
+            char.eliminations.forEach(function(elim) {
                 if (elim.standalone) {
                     standaloneItems.push({
                         elimination: elim,
-                        originalIndex: index,
                         id: elim.id
                     });
                 }
@@ -255,12 +261,12 @@
         var weekInput = document.getElementById('standalone-elim-week');
         var reasonInput = document.getElementById('standalone-elim-reason');
         
-        var week = weekInput ? parseInt(weekInput.value) || 1 : 1;
+        var week = weekInput ? Number(weekInput.value) : NaN;
         var reason = reasonInput ? reasonInput.value.trim() || 'Dropped out' : 'Dropped out';
 
-        // Validate week
+        // Validate week - strict
         if (!validateWeek(week)) {
-            alert('Week must be between 1 and 52.');
+            alert('Please enter a valid week (1-52).');
             return;
         }
 
@@ -408,24 +414,34 @@
     // ============================================================
 
     function markCharacterEliminated(charId, tournamentId, week, reason) {
+        // Validate tournament ID
+        if (tournamentId === null || tournamentId === undefined || tournamentId === '') {
+            console.warn('markCharacterEliminated: Missing tournament ID');
+            return Promise.resolve(false);
+        }
+
         // Validate week - abort on invalid
         if (!validateWeek(week)) {
             console.warn('markCharacterEliminated: Invalid week "' + week + '" - aborting');
-            return false;
+            return Promise.resolve(false);
         }
 
         var data = window.data || {};
-        if (!data.characters) return false;
+        if (!data.characters) {
+            return Promise.resolve(false);
+        }
 
         var char = data.characters.find(function(c) { return String(c.id) === String(charId); });
-        if (!char) return false;
+        if (!char) {
+            return Promise.resolve(false);
+        }
 
-        var weekNum = parseInt(week) || 1;
+        var weekNum = Number(week);
 
         // Check if already eliminated at or before this week
         if (isCharacterEliminatedByWeek(char, weekNum)) {
             console.log('markCharacterEliminated: Character already eliminated by week ' + weekNum);
-            return false;
+            return Promise.resolve(false);
         }
 
         // Check if this specific tournament already has an elimination
@@ -435,7 +451,7 @@
 
         if (alreadyExists) {
             console.log('markCharacterEliminated: Character already eliminated from this tournament');
-            return false;
+            return Promise.resolve(false);
         }
 
         var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
@@ -488,16 +504,26 @@
         } else {
             safeRenderCharacterList();
             safeUpdateDashboardStats();
-            return true;
+            return Promise.resolve(true);
         }
     }
 
     function unmarkCharacterEliminated(charId, tournamentId) {
+        // Validate tournament ID
+        if (tournamentId === null || tournamentId === undefined || tournamentId === '') {
+            console.warn('unmarkCharacterEliminated: Missing tournament ID');
+            return Promise.resolve(false);
+        }
+
         var data = window.data || {};
-        if (!data.characters) return false;
+        if (!data.characters) {
+            return Promise.resolve(false);
+        }
 
         var char = data.characters.find(function(c) { return String(c.id) === String(charId); });
-        if (!char) return false;
+        if (!char) {
+            return Promise.resolve(false);
+        }
 
         // Check if anything will be removed
         var hasMatchingElimination = char.eliminations && char.eliminations.some(function(e) {
@@ -506,7 +532,7 @@
 
         if (!hasMatchingElimination) {
             console.log('unmarkCharacterEliminated: No matching elimination found');
-            return false;
+            return Promise.resolve(false);
         }
 
         var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
@@ -553,7 +579,7 @@
         } else {
             safeRenderCharacterList();
             safeUpdateDashboardStats();
-            return true;
+            return Promise.resolve(true);
         }
     }
 
@@ -562,7 +588,11 @@
     // ============================================================
 
     function getEliminatedCharacters(week) {
-        var weekNum = parseInt(week) || 1;
+        var weekNum = Number(week);
+        if (!Number.isInteger(weekNum) || weekNum < 1) {
+            return [];
+        }
+        
         var result = [];
         var data = window.data || {};
         var chars = data.characters || [];
