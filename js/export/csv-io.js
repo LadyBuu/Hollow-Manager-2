@@ -13,7 +13,11 @@
  *     ↓
  *   Scan all rows: collect relationships (order-independent)
  *     ↓
+ *   Rebuild reference maps
+ *     ↓
  *   Migrate / Normalise
+ *     ↓
+ *   Rebuild reference maps (post-migration)
  *     ↓
  *   Validate references (post-migration)
  *     ↓
@@ -21,7 +25,7 @@
  *     ↓
  *   Confirm replacement
  *     ↓
- *   Persist to database
+ *   Persist to database (with explicit success/failure check)
  *     ↓
  *   Swap live state
  *     ↓
@@ -34,6 +38,9 @@
  *   - Invalid enum values → abort import with error
  *   - Blank rows → silently skipped
  *   - Warnings are capped at 50 to prevent UI explosion
+ *   - JSON fields are type-validated (arrays must be arrays, etc.)
+ *   - Numeric fields are strictly validated (no "12garbage" allowed)
+ *   - saveData() must explicitly indicate success (resolve with true) or failure (reject)
  */
 
 (function() {
@@ -175,7 +182,7 @@
         var csvContent = window.CSV.arrayToCSV(records);
         var blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
         var filename = 'hollow-blades-data-' + new Date().toISOString().slice(0, 10) + '.csv';
-        
+
         utils.downloadBlob(blob, filename);
 
         if (typeof window.logActivity === 'function') {
@@ -224,9 +231,9 @@
                     disciplines: {}
                 };
                 var warnings = [];
-                var context = { 
-                    charMap: charMap, 
-                    teamMap: teamMap, 
+                var context = {
+                    charMap: charMap,
+                    teamMap: teamMap,
                     tournMap: tournMap,
                     addWarning: function(msg) {
                         addWarning(warnings, msg);
@@ -245,7 +252,7 @@
                     var row = records[i];
                     if (utils.isBlankRow(row)) continue;
 
-                    var first = (row[0] || '').trim();
+                    var first = (row[0] == null ? '' : row[0]).trim();
 
                     // Skip version marker
                     if (first === '# HOLLOW BLADES CSV') {
@@ -305,11 +312,11 @@
                     rows.forEach(function(row, idx) {
                         try {
                             var result = importer.import(row, context);
-                            
+
                             if (result && typeof result === 'object') {
                                 var id = result.id;
                                 var collection = getCollectionForSection(sectionName);
-                                
+
                                 if (id && collection && idTracker[collection] && idTracker[collection][id]) {
                                     throw new Error('Duplicate ' + collection.slice(0, -1) + ' ID "' + id + '" found in CSV.');
                                 }
@@ -351,7 +358,7 @@
                 // PHASE 3: Process relationships SECOND (order independent)
                 // ============================================================
 
-                var relationshipSections = ['teamMembers', 'teamRankings', 'tournamentTeams', 
+                var relationshipSections = ['teamMembers', 'teamRankings', 'tournamentTeams',
                                            'tournamentMatches', 'tournamentEliminations', 'tournamentParticipants'];
 
                 relationshipSections.forEach(function(sectionName) {
@@ -376,10 +383,13 @@
                 }
 
                 // ============================================================
-                // PHASE 4: Migrate and validate
+                // PHASE 4: Rebuild maps, migrate, rebuild again, validate
                 // ============================================================
 
-                // MIGRATE AND NORMALISE BEFORE VALIDATION
+                // Rebuild reference maps before migration (ensures consistency)
+                rebuildReferenceMaps(newData, context);
+
+                // MIGRATE AND NORMALISE
                 if (typeof window.migrateData === 'function') {
                     try {
                         newData = window.migrateData(newData);
@@ -388,6 +398,9 @@
                         return;
                     }
                 }
+
+                // Rebuild reference maps after migration (migration may have changed IDs/structure)
+                rebuildReferenceMaps(newData, context);
 
                 // Post-migration referential validation
                 validateImportedReferences(newData, warnings, context.addWarning);
@@ -404,24 +417,24 @@
 
                 // Build confirmation message with warnings
                 var confirmMsg = 'This import will replace all current data.\n\n';
-                
+
                 var charCount = newData.characters ? newData.characters.length : 0;
                 var teamCount = newData.teams ? newData.teams.length : 0;
                 var tournCount = newData.tournaments ? newData.tournaments.length : 0;
                 var missionCount = newData.missions ? newData.missions.length : 0;
-                
+
                 confirmMsg += 'Characters: ' + charCount + '\n';
                 confirmMsg += 'Teams: ' + teamCount + '\n';
                 confirmMsg += 'Tournaments: ' + tournCount + '\n';
                 confirmMsg += 'Missions: ' + missionCount + '\n\n';
-                
+
                 if (warnings.length > 0) {
                     confirmMsg += '⚠ Warnings:\n';
                     confirmMsg += warnings.join('\n') + '\n\n';
                 }
-                
+
                 confirmMsg += 'Continue with import?';
-                
+
                 if (!confirm(confirmMsg)) {
                     return;
                 }
@@ -430,10 +443,14 @@
                 var backup = utils.cloneData(window.data);
                 var persisted = false;
 
-                // Use the standardised saveData API - assumes atomic transaction
+                // Use the standardised saveData API with explicit success/failure check
                 if (typeof window.saveData === 'function') {
                     Promise.resolve(window.saveData(newData))
-                        .then(function() {
+                        .then(function(result) {
+                            // Explicitly check if saveData returned false (indicating failure)
+                            if (result === false) {
+                                throw new Error('saveData reported failure.');
+                            }
                             persisted = true;
                             window.data = newData;
                             onImportSuccess(newData, persisted, 'CSV', warnings);
@@ -458,11 +475,34 @@
     }
 
     /**
+     * Rebuild reference maps from the current data
+     * Used before and after migration
+     */
+    function rebuildReferenceMaps(data, context) {
+        context.charMap = {};
+        context.teamMap = {};
+        context.tournMap = {};
+
+        (data.characters || []).forEach(function(char) {
+            context.charMap[utils.normaliseId(char.id)] = char;
+        });
+
+        (data.teams || []).forEach(function(team) {
+            context.teamMap[utils.normaliseId(team.id)] = team;
+        });
+
+        (data.tournaments || []).forEach(function(tourn) {
+            context.tournMap[utils.normaliseId(tourn.id)] = tourn;
+        });
+    }
+
+    /**
      * Post-import referential validation
      * Checks all foreign keys after import is complete
+     * Repairs dangling references where possible (nulls them)
      */
     function validateImportedReferences(data, warnings, addWarning) {
-        // Validate missions
+        // Validate missions - null broken references
         if (Array.isArray(data.missions)) {
             data.missions.forEach(function(mission) {
                 if (mission.assignedTeamId) {
@@ -470,13 +510,14 @@
                         return utils.normaliseId(t.id) === utils.normaliseId(mission.assignedTeamId);
                     });
                     if (!teamExists) {
-                        addWarning('Mission "' + mission.title + '" references unknown team "' + mission.assignedTeamId + '"');
+                        addWarning('Mission "' + mission.title + '" references unknown team "' + mission.assignedTeamId + '" - clearing reference');
+                        mission.assignedTeamId = null;
                     }
                 }
             });
         }
 
-        // Validate team members
+        // Validate team members and class IDs
         if (Array.isArray(data.teams)) {
             data.teams.forEach(function(team) {
                 if (Array.isArray(team.members)) {
@@ -489,13 +530,14 @@
                         }
                     });
                 }
-                // Validate team classId - warning only since classes aren't exported in CSV
+                // Validate team classId - null if invalid
                 if (team.classId) {
                     var classExists = data.classes && data.classes.some(function(c) {
                         return utils.normaliseId(c.id) === utils.normaliseId(team.classId);
                     });
                     if (!classExists) {
-                        addWarning('Team "' + team.name + '" references class "' + team.classId + '" which was not imported');
+                        addWarning('Team "' + team.name + '" references class "' + team.classId + '" which was not imported - clearing reference');
+                        team.classId = null;
                     }
                 }
             });
@@ -648,40 +690,40 @@
         if (typeof window.updateDashboardStats === 'function') {
             window.updateDashboardStats();
         }
-        
+
         // Show the result with warnings if any
         if (persisted) {
             var charCount = data.characters ? data.characters.length : 0;
             var teamCount = data.teams ? data.teams.length : 0;
             var tournCount = data.tournaments ? data.tournaments.length : 0;
             var missionCount = data.missions ? data.missions.length : 0;
-            
+
             var msg = format + ' import completed successfully!\n\n' +
                 'Characters: ' + charCount + '\n' +
                 'Teams: ' + teamCount + '\n' +
                 'Tournaments: ' + tournCount + '\n' +
                 'Missions: ' + missionCount;
-            
+
             if (warnings && warnings.length > 0) {
                 msg += '\n\n⚠ Warnings:\n' + warnings.join('\n');
             }
-            
+
             if (format === 'CSV') {
                 msg += '\n\nNote: CSV imports Characters, Teams, Tournaments, Missions, and Disciplines,\n' +
                        'including related team and tournament records.\n' +
                        'Use JSON for complete data restoration.';
             }
-            
+
             alert(msg);
         } else {
             var warnMsg = format + ' import completed but data could NOT be saved to persistent storage.\n\n' +
                   'Your data will be lost when you refresh the page.\n' +
                   'Please check your browser settings and try again.';
-            
+
             if (warnings && warnings.length > 0) {
                 warnMsg += '\n\n⚠ Warnings:\n' + warnings.join('\n');
             }
-            
+
             alert(warnMsg);
         }
     }
