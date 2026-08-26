@@ -37,13 +37,18 @@
             return;
         }
 
+        // FIX: Get current ID correctly
+        var currentId = typeof window.currentEditId === 'function'
+            ? window.currentEditId()
+            : null;
+
         var html = '';
         filteredChars.forEach(function(char) {
             var displayName = window.getDisplayName(char);
             var status = window.getCurrentStatus(char);
             var isDead = char.deceased || false;
             var deadMarker = isDead ? ' ✝' : '';
-            var isActive = (char.id === window.currentEditId ? window.currentEditId() : null);
+            var isActive = String(char.id) === String(currentId);
             var activeClass = isActive ? ' active' : '';
             
             var statusIndicator = getStatusIndicator(status);
@@ -64,7 +69,7 @@
                 var id = this.dataset.id;
                 window.showCharacterForm(id);
                 if (window.innerWidth < 768) {
-                    window.toggleCharacterList(false);
+                    window.CharacterEvents.toggleCharacterList(false);
                 }
             });
         });
