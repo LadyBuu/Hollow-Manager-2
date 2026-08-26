@@ -8,6 +8,8 @@
 
     function exportTemplateCSV() {
         var records = [
+            ['# HOLLOW BLADES CSV', 'FORMAT VERSION', '1'],
+            [],
             ['# CHARACTERS'],
             ['CharacterId', 'FirstName', 'MiddleName', 'LastName', 'BirthYear', 'Gender', 'AssociatedNames',
              'EyeColor', 'HairColor', 'SkinColor', 'Height', 'Weight', 'Build', 'AppearanceNotes',
@@ -46,8 +48,8 @@
             ['', ''],
             [],
             ['# TOURNAMENT MATCHES'],
-            ['TournamentId', 'Team1Id', 'Team2Id', 'WinnerId'],
-            ['', '', '', ''],
+            ['TournamentId', 'WinnerType', 'Team1Id', 'Team2Id', 'WinnerId'],
+            ['', '', '', '', ''],
             [],
             ['# TOURNAMENT ELIMINATIONS'],
             ['TournamentId', 'ParticipantId', 'ParticipantType', 'TeamId', 'Week'],
