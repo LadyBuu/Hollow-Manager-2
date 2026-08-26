@@ -9,6 +9,15 @@
  *   - Pure read-only rendering (no mutations)
  *   - HTML escaping for XSS prevention
  *   - Safe CSS color validation for relationship types
+ * 
+ * SECURITY CONTRACT:
+ *   Every dynamic value entering an HTML string must pass through escapeHtml(),
+ *   except values originating exclusively from hard-coded internal constants.
+ *   This is a strict invariant enforced throughout this module.
+ * 
+ * DATA VALIDATION:
+ *   All array/object access is validated to prevent runtime errors from
+ *   corrupted or malformed persisted data.
  */
 
 (function() {
@@ -18,7 +27,6 @@
     if (window.__characterDetailLoaded) {
         return;
     }
-    window.__characterDetailLoaded = true;
 
     var state = {
         characterId: null,
@@ -39,39 +47,220 @@
     }
 
     // ============================================================
-    // SAFE CSS COLOR VALIDATION
+    // SAFE CSS COLOR VALIDATION - Whitelist based
     // ============================================================
+
+    // Strictly whitelisted colours used by the application
+    var ALLOWED_COLORS = {
+        '#8cbb3a': true,  // familiar
+        '#c9a24b': true,  // professional
+        '#c1453c': true,  // romantic
+        '#4a9bc7': true,  // friendship
+        '#9b59b6': true,  // mentor
+        '#e67e22': true,  // rivalry
+        '#27ae60': true,  // alliance
+        '#7f8c8d': true   // other
+    };
+
+    // Allowed rgb/rgba pattern (restrictive)
+    var RGB_PATTERN = /^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*0?\.?\d+\s*)?\)$/i;
 
     function getSafeRelationshipColor(typeId) {
         var color = getRelationshipTypeColor(typeId);
         
-        // Standard CSS hex colors: 3, 4, 6, or 8 hex digits
-        if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color)) {
+        if (!color || typeof color !== 'string') {
+            return '#7f8c8d';
+        }
+
+        // Check whitelist first
+        if (ALLOWED_COLORS[color]) {
             return color;
         }
-        
-        // Allow rgb/rgba values
-        if (/^rgba?\(\s*[\d\s.,%]+\)$/i.test(color)) {
+
+        // Allow only strict RGB/RGBA format
+        if (RGB_PATTERN.test(color)) {
             return color;
         }
+
+        return '#7f8c8d';
+    }
+
+    // ============================================================
+    // DATA VALIDATION HELPERS
+    // ============================================================
+
+    function getArray(value, fallback) {
+        return Array.isArray(value) ? value : (fallback || []);
+    }
+
+    function getObject(value, fallback) {
+        return value && typeof value === 'object' && !Array.isArray(value)
+            ? value
+            : (fallback || {});
+    }
+
+    function getString(value, fallback) {
+        return value !== undefined && value !== null ? String(value) : (fallback || '');
+    }
+
+    // ============================================================
+    // RELATIONSHIP TYPE HELPERS - Single source of truth
+    // ============================================================
+
+    function getRelationshipType(typeId) {
+        var data = window.data || {};
+        var social = data.social || {};
+        var types = Array.isArray(social.relationshipTypes) ? social.relationshipTypes : [];
+        return types.find(function(t) {
+            return t && String(t.id) === String(typeId);
+        }) || null;
+    }
+
+    function getRelationshipTypeLabel(typeId) {
+        var type = getRelationshipType(typeId);
+        return type ? type.label : (typeId || 'Other');
+    }
+
+    function getRelationshipTypeColor(typeId) {
+        var type = getRelationshipType(typeId);
+        return type ? type.color : '#7f8c8d';
+    }
+
+    // ============================================================
+    // TEAM/MISSION QUERY HELPERS - Single source of truth
+    // ============================================================
+
+    function getCharacterTeamsByType(charId, types) {
+        var data = window.data || {};
+        var teams = Array.isArray(data.teams) ? data.teams : [];
         
-        // Common safe CSS colors used in the app
-        var safeColors = {
-            '#8cbb3a': true,  // familiar
-            '#c9a24b': true,  // professional
-            '#c1453c': true,  // romantic
-            '#4a9bc7': true,  // friendship
-            '#9b59b6': true,  // mentor
-            '#e67e22': true,  // rivalry
-            '#27ae60': true,  // alliance
-            '#7f8c8d': true   // other
-        };
-        
-        if (safeColors[color]) {
-            return color;
+        if (!Array.isArray(types)) {
+            types = [types];
         }
-        
-        return '#7f8c8d'; // Default safe color
+
+        return teams.filter(function(team) {
+            if (!team || typeof team !== 'object') return false;
+            if (team.status === 'deleted') return false;
+            if (types.indexOf(team.type) === -1) return false;
+            if (!Array.isArray(team.members)) return false;
+            return team.members.some(function(m) {
+                return m && String(m.characterId) === String(charId);
+            });
+        });
+    }
+
+    function getCharacterMissions(charId) {
+        var data = window.data || {};
+        var teams = Array.isArray(data.teams) ? data.teams : [];
+        var missions = Array.isArray(data.missions) ? data.missions : [];
+
+        return missions.filter(function(m) {
+            if (!m || typeof m !== 'object') return false;
+            if (!m.assignedTeamId) return false;
+            return teams.some(function(t) {
+                if (!t || typeof t !== 'object') return false;
+                if (String(t.id) !== String(m.assignedTeamId)) return false;
+                if (!Array.isArray(t.members)) return false;
+                return t.members.some(function(mem) {
+                    return mem && String(mem.characterId) === String(charId);
+                });
+            });
+        });
+    }
+
+    function getScheduleCount(charId) {
+        var data = window.data || {};
+        var curriculum = data.curriculum || {};
+        var schedules = curriculum.schedules || {};
+        var charSchedule = schedules[charId] || {};
+
+        var count = 0;
+        for (var week in charSchedule) {
+            if (!Object.prototype.hasOwnProperty.call(charSchedule, week)) continue;
+            var weekData = charSchedule[week];
+            if (!weekData || typeof weekData !== 'object') continue;
+            for (var day in weekData) {
+                if (!Object.prototype.hasOwnProperty.call(weekData, day)) continue;
+                var dayData = weekData[day];
+                if (!dayData || typeof dayData !== 'object') continue;
+                for (var hour in dayData) {
+                    if (!Object.prototype.hasOwnProperty.call(dayData, hour)) continue;
+                    if (dayData[hour]) count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    function getCharacterTournamentEliminations(char) {
+        var data = window.data || {};
+        var eliminations = Array.isArray(char.eliminations) ? char.eliminations : [];
+        var tournaments = Array.isArray(data.tournaments) ? data.tournaments : [];
+
+        return eliminations.filter(function(e) {
+            return e && !e.standalone;
+        }).map(function(e) {
+            var tournName = 'Unknown Tournament';
+            if (e.tournamentId) {
+                var tourn = tournaments.find(function(t) {
+                    return t && String(t.id) === String(e.tournamentId);
+                });
+                if (tourn) tournName = tourn.name;
+            }
+            return {
+                tournamentName: tournName,
+                week: e.week || '?',
+                reason: e.reason || ''
+            };
+        });
+    }
+
+    function getCharacterStandaloneEliminations(char) {
+        var eliminations = Array.isArray(char.eliminations) ? char.eliminations : [];
+        return eliminations.filter(function(e) {
+            return e && e.standalone;
+        });
+    }
+
+    function getCharacterGrades(charId) {
+        var data = window.data || {};
+        var curriculum = data.curriculum || {};
+        var grades = curriculum.grades || {};
+        var charGrades = grades[charId] || {};
+
+        var result = [];
+        for (var week in charGrades) {
+            if (!Object.prototype.hasOwnProperty.call(charGrades, week)) continue;
+            var weekData = charGrades[week];
+            if (!weekData || typeof weekData !== 'object') continue;
+            for (var discId in weekData) {
+                if (!Object.prototype.hasOwnProperty.call(weekData, discId)) continue;
+                var score = weekData[discId];
+                var disc = window.getDiscipline ? window.getDiscipline(discId) : null;
+                result.push({
+                    week: week,
+                    disciplineId: discId,
+                    disciplineName: disc ? disc.name : 'Unknown',
+                    score: score
+                });
+            }
+        }
+        return result;
+    }
+
+    // ============================================================
+    // PERIOD FORMATTING
+    // ============================================================
+
+    function formatPeriod(joinPeriod, leavePeriod, prefix) {
+        prefix = prefix || '';
+        var join = getString(joinPeriod, '?');
+        var leave = getString(leavePeriod, '');
+
+        if (!join && !leave) return prefix + '?';
+        if (join && leave) return prefix + join + ' → ' + prefix + leave;
+        if (join) return prefix + join + ' → Present';
+        return prefix + leave;
     }
 
     // ============================================================
@@ -79,13 +268,12 @@
     // ============================================================
 
     function openCharacterDetail(charId) {
-        var char = window.getCharacterById(charId);
+        var char = window.getCharacterById ? window.getCharacterById(charId) : null;
         if (!char) {
             alert('Character not found.');
             return;
         }
 
-        // Reset state when opening
         state.characterId = charId;
         state.activeTab = 'name';
 
@@ -195,7 +383,7 @@
             panel.classList.toggle('active', panelId === tab);
         });
 
-        var char = window.getCharacterById(state.characterId);
+        var char = window.getCharacterById ? window.getCharacterById(state.characterId) : null;
         if (char) {
             renderDetailTab(tab, char);
         }
@@ -206,11 +394,10 @@
     // ============================================================
 
     function renderCharacterDetail(char) {
-        var name = window.getDisplayName(char);
+        var name = window.getDisplayName ? window.getDisplayName(char) : 'Unknown';
         var nameEl = document.getElementById('detail-character-name');
         if (nameEl) nameEl.textContent = name;
 
-        // Render only the active tab
         renderDetailTab(state.activeTab, char);
     }
 
@@ -264,16 +451,19 @@
             'alias': 'Alias'
         };
 
+        var displayName = window.getDisplayName ? window.getDisplayName(char) : 'Unknown';
+        var age = window.getCharacterAge ? window.getCharacterAge(char) : '-';
+
         var html = '<div class="detail-section">';
-        html += '<div class="detail-row"><span class="label">Display Name:</span> <span style="font-weight:600;font-size:1.1rem;color:var(--accent);">' + escapeHtml(window.getDisplayName(char)) + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Display Name:</span> <span style="font-weight:600;font-size:1.1rem;color:var(--accent);">' + escapeHtml(displayName) + '</span></div>';
         html += '<div class="detail-row"><span class="label">First Name:</span> <span>' + escapeHtml(char.firstName || '-') + '</span></div>';
         html += '<div class="detail-row"><span class="label">Middle Name:</span> <span>' + escapeHtml(char.middleName || '-') + '</span></div>';
         html += '<div class="detail-row"><span class="label">Last Name:</span> <span>' + escapeHtml(char.lastName || '-') + '</span></div>';
         html += '<div class="detail-row"><span class="label">Nickname:</span> <span>' + escapeHtml(char.nickname || '-') + '</span></div>';
         html += '<div class="detail-row"><span class="label">Alias:</span> <span>' + escapeHtml(char.alias || '-') + '</span></div>';
-        html += '<div class="detail-row"><span class="label">Previous Names:</span> <span>' + escapeHtml((char.previousNames || []).join(', ') || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Previous Names:</span> <span>' + escapeHtml((Array.isArray(char.previousNames) ? char.previousNames : []).join(', ') || '-') + '</span></div>';
         html += '<div class="detail-row"><span class="label">Display Format:</span> <span>' + escapeHtml(formatLabels[nameFormat] || 'First + Last') + '</span></div>';
-        html += '<div class="detail-row"><span class="label">Age:</span> <span>' + escapeHtml(window.getCharacterAge(char)) + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Age:</span> <span>' + escapeHtml(age) + '</span></div>';
         html += '<div class="detail-row"><span class="label">Year of Birth:</span> <span>' + escapeHtml(char.birthYear || '-') + '</span></div>';
 
         if (char.deceased) {
@@ -302,7 +492,7 @@
     }
 
     function renderPersonalityTab(char) {
-        var personality = char.personality || {};
+        var personality = getObject(char.personality, {});
         var html = '<div class="detail-section">';
         html += '<div class="detail-row"><span class="label">Traits:</span> <span>' + escapeHtml(personality.traits || '-') + '</span></div>';
         html += '<div class="detail-row"><span class="label">Ideals:</span> <span>' + escapeHtml(personality.ideals || '-') + '</span></div>';
@@ -320,20 +510,21 @@
 
     function renderCareerTab(char) {
         var data = window.data || {};
+        var careerStatus = Array.isArray(char.careerStatus) ? char.careerStatus : [];
+
         var html = '<div class="detail-section">';
         
-        // Career Status History
         html += '<h4 style="color:var(--accent);font-size:0.85rem;margin-bottom:8px;">Career Status History</h4>';
 
-        if (char.careerStatus && char.careerStatus.length > 0) {
+        if (careerStatus.length > 0) {
             html += '<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px;">';
-            char.careerStatus.forEach(function(status) {
-                // Handle missing startYear
+            careerStatus.forEach(function(status) {
+                if (!status || typeof status !== 'object') return;
                 var period = status.startYear || '?';
                 if (status.endYear) {
-                    period += ' \u2192 ' + status.endYear;
+                    period += ' → ' + status.endYear;
                 } else {
-                    period += ' \u2192 Present';
+                    period += ' → Present';
                 }
                 var statusName = status.status || 'Unknown';
                 var displayName = statusName.charAt(0).toUpperCase() + statusName.slice(1);
@@ -349,17 +540,13 @@
 
         // Professional Teams
         html += '<h4 style="color:var(--info);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Professional Teams</h4>';
-        var profTeams = data.teams ? data.teams.filter(function(t) {
-            if (t.type !== 'professional') return false;
-            if (t.status === 'deleted') return false;
-            return t.members && t.members.some(function(m) { return String(m.characterId) === String(char.id); });
-        }) : [];
-
+        var profTeams = getCharacterTeamsByType(char.id, 'professional');
         if (profTeams.length > 0) {
             profTeams.forEach(function(team) {
-                var member = team.members.find(function(m) { return String(m.characterId) === String(char.id); });
-                var period = member ? (member.joinPeriod || '?') : '?';
-                if (member && member.leavePeriod) period += ' \u2192 ' + member.leavePeriod;
+                var member = Array.isArray(team.members) ? team.members.find(function(m) {
+                    return m && String(m.characterId) === String(char.id);
+                }) : null;
+                var period = formatPeriod(member ? member.joinPeriod : null, member ? member.leavePeriod : null);
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--info);margin-bottom:4px;">';
                 html += '<span><strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.8rem;">(' + escapeHtml(period) + ')</span></span>';
                 if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">[' + escapeHtml(member.role) + ']</span>';
@@ -371,17 +558,13 @@
 
         // Temporary Teams
         html += '<h4 style="color:var(--warning);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Temporary Teams</h4>';
-        var tempTeams = data.teams ? data.teams.filter(function(t) {
-            if (t.type !== 'temporary' && t.type !== 'internship') return false;
-            if (t.status === 'deleted') return false;
-            return t.members && t.members.some(function(m) { return String(m.characterId) === String(char.id); });
-        }) : [];
-
+        var tempTeams = getCharacterTeamsByType(char.id, ['temporary', 'internship']);
         if (tempTeams.length > 0) {
             tempTeams.forEach(function(team) {
-                var member = team.members.find(function(m) { return String(m.characterId) === String(char.id); });
-                var period = member ? (member.joinPeriod || '?') : '?';
-                if (member && member.leavePeriod) period += ' \u2192 ' + member.leavePeriod;
+                var member = Array.isArray(team.members) ? team.members.find(function(m) {
+                    return m && String(m.characterId) === String(char.id);
+                }) : null;
+                var period = formatPeriod(member ? member.joinPeriod : null, member ? member.leavePeriod : null);
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--warning);margin-bottom:4px;">';
                 html += '<span><strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.8rem;">(' + escapeHtml(period) + ')</span></span>';
                 if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">[' + escapeHtml(member.role) + ']</span>';
@@ -393,17 +576,13 @@
 
         // Civilian Teams
         html += '<h4 style="color:var(--text-dim);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Civilian Teams</h4>';
-        var civTeams = data.teams ? data.teams.filter(function(t) {
-            if (t.type !== 'civilian') return false;
-            if (t.status === 'deleted') return false;
-            return t.members && t.members.some(function(m) { return String(m.characterId) === String(char.id); });
-        }) : [];
-
+        var civTeams = getCharacterTeamsByType(char.id, 'civilian');
         if (civTeams.length > 0) {
             civTeams.forEach(function(team) {
-                var member = team.members.find(function(m) { return String(m.characterId) === String(char.id); });
-                var period = member ? (member.joinPeriod || '?') : '?';
-                if (member && member.leavePeriod) period += ' \u2192 ' + member.leavePeriod;
+                var member = Array.isArray(team.members) ? team.members.find(function(m) {
+                    return m && String(m.characterId) === String(char.id);
+                }) : null;
+                var period = formatPeriod(member ? member.joinPeriod : null, member ? member.leavePeriod : null);
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--text-dim);margin-bottom:4px;">';
                 html += '<span><strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.8rem;">(' + escapeHtml(period) + ')</span></span>';
                 if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">[' + escapeHtml(member.role) + ']</span>';
@@ -415,13 +594,7 @@
 
         // Missions
         html += '<h4 style="color:var(--warning);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Missions</h4>';
-        var missions = data.missions ? data.missions.filter(function(m) {
-            return m.assignedTeamId && data.teams && data.teams.some(function(t) {
-                return String(t.id) === String(m.assignedTeamId) &&
-                       t.members && t.members.some(function(mem) { return String(mem.characterId) === String(char.id); });
-            });
-        }) : [];
-
+        var missions = getCharacterMissions(char.id);
         if (missions.length > 0) {
             missions.forEach(function(m) {
                 var statusColor = m.status === 'completed' ? 'var(--accent)' : 
@@ -445,20 +618,16 @@
 
         // Academic Teams
         html += '<h4 style="color:var(--accent);font-size:0.85rem;margin-bottom:8px;">Academic Teams</h4>';
-        var acadTeams = data.teams ? data.teams.filter(function(t) {
-            if (t.type !== 'academic') return false;
-            if (t.status === 'deleted') return false;
-            return t.members && t.members.some(function(m) { return String(m.characterId) === String(char.id); });
-        }) : [];
-
+        var acadTeams = getCharacterTeamsByType(char.id, 'academic');
         if (acadTeams.length > 0) {
             acadTeams.forEach(function(team) {
-                var member = team.members.find(function(m) { return String(m.characterId) === String(char.id); });
-                var period = member ? (member.joinPeriod || '?') : '?';
-                if (member && member.leavePeriod) period += ' \u2192 ' + member.leavePeriod;
-                var classDisplay = team.classId ? ' [' + escapeHtml(window.getClassDisplayName(team.classId)) + ']' : '';
+                var member = Array.isArray(team.members) ? team.members.find(function(m) {
+                    return m && String(m.characterId) === String(char.id);
+                }) : null;
+                var period = formatPeriod(member ? member.joinPeriod : null, member ? member.leavePeriod : null, 'Wk ');
+                var classDisplay = team.classId ? ' [' + escapeHtml(window.getClassDisplayName ? window.getClassDisplayName(team.classId) : 'Unknown') + ']' : '';
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);margin-bottom:4px;">';
-                html += '<span><strong>' + escapeHtml(team.name) + '</strong>' + classDisplay + ' <span style="color:var(--text-dim);font-size:0.8rem;">(Wk ' + escapeHtml(period) + ')</span></span>';
+                html += '<span><strong>' + escapeHtml(team.name) + '</strong>' + classDisplay + ' <span style="color:var(--text-dim);font-size:0.8rem;">(' + escapeHtml(period) + ')</span></span>';
                 if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">[' + escapeHtml(member.role) + ']</span>';
                 html += '</div>';
             });
@@ -466,36 +635,17 @@
             html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No academic teams</p>';
         }
 
-        // Grades - with defensive own-property protection
+        // Grades
         html += '<h4 style="color:var(--info);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Grades</h4>';
-        var curriculum = data.curriculum || {};
-        var grades = curriculum.grades && curriculum.grades[char.id] ? curriculum.grades[char.id] : {};
-        var classCount = 0;
-        
-        // Count with own-property protection
-        for (var week in grades) {
-            if (!Object.prototype.hasOwnProperty.call(grades, week)) continue;
-            for (var discId in grades[week]) {
-                if (!Object.prototype.hasOwnProperty.call(grades[week], discId)) continue;
-                classCount++;
-            }
-        }
-
-        if (classCount > 0) {
+        var grades = getCharacterGrades(char.id);
+        if (grades.length > 0) {
             html += '<div style="max-height:120px;overflow-y:auto;font-size:0.75rem;">';
-            for (var week in grades) {
-                if (!Object.prototype.hasOwnProperty.call(grades, week)) continue;
-                for (var discId in grades[week]) {
-                    if (!Object.prototype.hasOwnProperty.call(grades[week], discId)) continue;
-                    var disc = window.getDiscipline(discId);
-                    var score = grades[week][discId];
-                    var discName = disc ? disc.name : 'Unknown';
-                    html += '<div style="padding:3px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;display:flex;justify-content:space-between;">';
-                    html += '<span>' + escapeHtml(discName) + ' (Wk ' + escapeHtml(week) + ')</span>';
-                    html += '<span style="color:var(--accent);font-weight:600;">' + escapeHtml(score) + '%</span>';
-                    html += '</div>';
-                }
-            }
+            grades.forEach(function(g) {
+                html += '<div style="padding:3px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;display:flex;justify-content:space-between;">';
+                html += '<span>' + escapeHtml(g.disciplineName) + ' (Wk ' + escapeHtml(g.week) + ')</span>';
+                html += '<span style="color:var(--accent);font-weight:600;">' + escapeHtml(g.score) + '%</span>';
+                html += '</div>';
+            });
             html += '</div>';
         } else {
             html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No grades recorded</p>';
@@ -503,22 +653,11 @@
 
         // Tournament Eliminations
         html += '<h4 style="color:var(--danger);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Tournament Eliminations</h4>';
-        var tournElims = [];
-        if (char.eliminations) {
-            tournElims = char.eliminations.filter(function(e) { return !e.standalone; });
-        }
-
+        var tournElims = getCharacterTournamentEliminations(char);
         if (tournElims.length > 0) {
             tournElims.forEach(function(elim) {
-                var tournName = 'Unknown Tournament';
-                if (elim.tournamentId && data.tournaments) {
-                    var tourn = data.tournaments.find(function(t) { 
-                        return String(t.id) === String(elim.tournamentId); 
-                    });
-                    if (tourn) tournName = tourn.name;
-                }
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--danger);margin-bottom:3px;">';
-                html += '<span style="font-size:0.75rem;"><strong>' + escapeHtml(tournName) + '</strong> - Week ' + escapeHtml(elim.week) + (elim.reason ? ' (' + escapeHtml(elim.reason) + ')' : '') + '</span>';
+                html += '<span style="font-size:0.75rem;"><strong>' + escapeHtml(elim.tournamentName) + '</strong> - Week ' + escapeHtml(elim.week) + (elim.reason ? ' (' + escapeHtml(elim.reason) + ')' : '') + '</span>';
                 html += '</div>';
             });
         } else {
@@ -527,11 +666,7 @@
 
         // Standalone Eliminations
         html += '<h4 style="color:var(--warning);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Standalone Eliminations</h4>';
-        var standaloneElims = [];
-        if (char.eliminations) {
-            standaloneElims = char.eliminations.filter(function(e) { return e.standalone; });
-        }
-
+        var standaloneElims = getCharacterStandaloneEliminations(char);
         if (standaloneElims.length > 0) {
             standaloneElims.forEach(function(elim) {
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--warning);margin-bottom:3px;">';
@@ -556,11 +691,13 @@
     }
 
     function renderStatsTab(char) {
-        var stats = window.getCharacterStats(char);
-        var suggestedClass = window.suggestClass(stats);
-        var magic = window.getCharacterMagic(char);
-        var magicClass = window.suggestMagicClass(char);
-        var moves = getCharacterSpecialMoves(char);
+        var stats = window.getCharacterStats ? window.getCharacterStats(char) : { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
+        var suggestedClass = window.suggestClass ? window.suggestClass(stats) : null;
+        var magic = window.getCharacterMagic ? window.getCharacterMagic(char) : {};
+        var magicClass = window.suggestMagicClass ? window.suggestMagicClass(char) : null;
+        var moves = window.getCharacterSpecialMoves ? window.getCharacterSpecialMoves(char) : { physical: [], magical: [] };
+        var magicPower = window.calculateMagicPower ? window.calculateMagicPower(char) : 0;
+        var magicPowerDisplay = window.getMagicPowerDisplay ? window.getMagicPowerDisplay(char) : '';
 
         var html = '<div class="detail-section">';
 
@@ -568,7 +705,7 @@
         html += '<h4 style="color:var(--accent);font-size:0.85rem;margin-bottom:8px;">Physical Stats</h4>';
         html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;">';
         var statLabels = { str: 'STR', dex: 'DEX', con: 'CON', int: 'INT', wis: 'WIS', cha: 'CHA' };
-        for (var key in stats) {
+        for (var key in statLabels) {
             var val = stats[key] || 10;
             var mod = Math.floor((val - 10) / 2);
             html += '<div style="background:var(--bg);padding:6px 10px;border-radius:4px;border:1px solid var(--border-soft);text-align:center;">';
@@ -618,14 +755,11 @@
         html += '</div>';
 
         // Magic Power
-        var magicPower = window.calculateMagicPower(char);
-        var magicPowerDisplay = window.getMagicPowerDisplay(char);
-        html += '<div style="font-size:0.75rem;color:var(--text-dim);">Magic Power: <span style="font-weight:600;color:var(--info);">' + escapeHtml(magicPowerDisplay) + ' (' + escapeHtml(magicPower) + '/180)</span></div>';
+        html += '<div style="font-size:0.75rem;color:var(--text-dim);">Magic Power: <span style="font-weight:600;color:var(--info);">' + escapeHtml(magicPowerDisplay || magicPower + '/180') + '</span></div>';
 
         // Special Moves
         html += '<h4 style="color:var(--accent);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Special Moves</h4>';
 
-        // Physical Moves
         html += '<div style="margin-bottom:8px;">';
         html += '<span style="font-size:0.75rem;color:var(--accent);font-weight:600;">Physical:</span>';
         if (moves.physical && moves.physical.length > 0) {
@@ -642,7 +776,6 @@
         }
         html += '</div>';
 
-        // Magical Moves
         html += '<div>';
         html += '<span style="font-size:0.75rem;color:var(--info);font-weight:600;">Magical:</span>';
         if (moves.magical && moves.magical.length > 0) {
@@ -665,15 +798,14 @@
 
     function renderSocialTab(char) {
         var data = window.data || {};
+        var social = data.social || {};
+        var relationships = Array.isArray(social.relationships) ? social.relationships : [];
+        var rels = relationships.filter(function(r) {
+            return r && (String(r.character1) === String(char.id) || String(r.character2) === String(char.id));
+        });
+
         var html = '<div class="detail-section">';
         html += '<h4 style="color:var(--accent);font-size:0.85rem;margin-bottom:8px;">Social Connections</h4>';
-
-        var rels = [];
-        if (data.social && data.social.relationships) {
-            rels = data.social.relationships.filter(function(r) {
-                return String(r.character1) === String(char.id) || String(r.character2) === String(char.id);
-            });
-        }
 
         if (rels.length === 0) {
             html += '<p class="empty-state" style="padding:8px;font-size:0.8rem;">No social connections</p>';
@@ -681,20 +813,18 @@
             html += '<div style="display:flex;flex-direction:column;gap:4px;">';
             rels.forEach(function(rel) {
                 var otherId = String(rel.character1) === String(char.id) ? rel.character2 : rel.character1;
-                var other = window.getCharacterById(otherId);
-                var otherName = other ? window.getDisplayName(other) : 'Unknown';
-                var typeLabel = getRelationshipTypeLabel(rel.typeId);
+                var other = window.getCharacterById ? window.getCharacterById(otherId) : null;
+                var otherName = other ? (window.getDisplayName ? window.getDisplayName(other) : 'Unknown') : 'Unknown';
+                var type = getRelationshipType(rel.typeId);
+                var typeLabel = type ? type.label : (rel.typeId || 'Other');
                 var typeColor = getSafeRelationshipColor(rel.typeId);
                 var period = '';
                 if (rel.startYear && rel.endYear) {
-                    period = rel.startYear + ' \u2192 ' + rel.endYear;
+                    period = rel.startYear + ' → ' + rel.endYear;
                 } else if (rel.startYear) {
                     period = 'From ' + rel.startYear;
                 }
-                // Escape the value, then build the string
-                var clarification = rel.clarification 
-                    ? ' (' + escapeHtml(rel.clarification) + ')' 
-                    : '';
+                var clarification = rel.clarification ? ' (' + escapeHtml(rel.clarification) + ')' : '';
                 var notes = rel.notes ? ' 📝' : '';
 
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + typeColor + ';">';
@@ -720,55 +850,13 @@
     }
 
     // ============================================================
-    // HELPER FUNCTIONS
-    // ============================================================
-
-    function getScheduleCount(charId) {
-        var data = window.data || {};
-        if (!data.curriculum || !data.curriculum.schedules) return 0;
-        var schedule = data.curriculum.schedules[charId];
-        if (!schedule) return 0;
-        
-        var count = 0;
-        for (var week in schedule) {
-            if (!Object.prototype.hasOwnProperty.call(schedule, week)) continue;
-            for (var day in schedule[week]) {
-                if (!Object.prototype.hasOwnProperty.call(schedule[week], day)) continue;
-                for (var hour in schedule[week][day]) {
-                    if (!Object.prototype.hasOwnProperty.call(schedule[week][day], hour)) continue;
-                    if (schedule[week][day][hour]) count++;
-                }
-            }
-        }
-        return count;
-    }
-
-    function getRelationshipTypeLabel(typeId) {
-        var data = window.data || {};
-        if (!data.social || !data.social.relationshipTypes) return typeId || 'Other';
-        var type = data.social.relationshipTypes.find(function(t) { return t.id === typeId; });
-        return type ? type.label : typeId || 'Other';
-    }
-
-    function getRelationshipTypeColor(typeId) {
-        var data = window.data || {};
-        if (!data.social || !data.social.relationshipTypes) return '#7f8c8d';
-        var type = data.social.relationshipTypes.find(function(t) { return t.id === typeId; });
-        return type ? type.color : '#7f8c8d';
-    }
-
-    // ============================================================
-    // PURE SPECIAL MOVES - NO MUTATION
+    // SPECIAL MOVES - PURE
     // ============================================================
 
     function getCharacterSpecialMoves(char) {
-        if (!char || !char.specialMoves) {
-            return {
-                physical: [],
-                magical: []
-            };
+        if (!char || !char.specialMoves || typeof char.specialMoves !== 'object') {
+            return { physical: [], magical: [] };
         }
-
         return {
             physical: Array.isArray(char.specialMoves.physical)
                 ? char.specialMoves.physical
@@ -780,13 +868,25 @@
     }
 
     // ============================================================
-    // EXPOSE
+    // EXPOSE - Namespaced API
     // ============================================================
 
+    window.CharacterDetail = {
+        open: openCharacterDetail,
+        close: closeCharacterDetail,
+        switchTab: switchDetailTab,
+        render: renderCharacterDetail,
+        getSpecialMoves: getCharacterSpecialMoves
+    };
+
+    // Legacy compatibility
     window.openCharacterDetail = openCharacterDetail;
     window.closeCharacterDetail = closeCharacterDetail;
     window.switchDetailTab = switchDetailTab;
     window.renderCharacterDetail = renderCharacterDetail;
     window.getCharacterSpecialMoves = getCharacterSpecialMoves;
+
+    // Mark as loaded
+    window.__characterDetailLoaded = true;
 
 })();
