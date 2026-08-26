@@ -1,6 +1,5 @@
 /**
  * js/export/json-io.js - JSON Import/Export
- * Handles JSON backup/restore with proper transaction semantics
  * Path: js/export/json-io.js
  */
 
@@ -16,7 +15,7 @@
             return;
         }
 
-        var exportData = JSON.parse(JSON.stringify(data));
+        var exportData = utils.cloneData(data);
         var jsonData = JSON.stringify(exportData, null, 2);
         var blob = new Blob([jsonData], { type: 'application/json' });
         var filename = 'hollow-blades-data-' + new Date().toISOString().slice(0, 10) + '.json';
@@ -39,8 +38,11 @@
                     return;
                 }
 
-                // Create backup before any changes
-                var backup = utils.backupData(window.data);
+                // Validate before migration
+                if (!utils.containsApplicationData(imported)) {
+                    alert('No valid data found in JSON file.');
+                    return;
+                }
 
                 // Migrate data
                 if (typeof window.migrateData === 'function') {
@@ -52,41 +54,34 @@
                     }
                 }
 
-                if (!utils.containsApplicationData(imported)) {
-                    alert('No valid data found in JSON file.');
-                    return;
-                }
-
                 if (!confirm('This will replace all current data. Continue?')) {
                     return;
                 }
 
-                // Save to database first, then update in-memory state
+                // Create backup only after confirmation
+                var backup = utils.cloneData(window.data);
+                var persisted = false;
+
+                // Use the standardised saveData API
                 if (typeof window.saveData === 'function') {
-                    // If saveData accepts data, use that
-                    if (window.saveData.length >= 1) {
-                        window.saveData(imported).then(function() {
+                    // Ensure we get a Promise
+                    Promise.resolve(window.saveData(imported))
+                        .then(function() {
+                            persisted = true;
                             window.data = imported;
-                            onImportSuccess(imported);
-                        }).catch(function(err) {
-                            utils.rollbackData(backup);
+                            onImportSuccess(imported, persisted, 'JSON');
+                        })
+                        .catch(function(err) {
+                            // Rollback memory
+                            if (backup) {
+                                window.data = backup;
+                            }
                             alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
                         });
-                    } else {
-                        // Legacy saveData that uses window.data
-                        window.data = imported;
-                        window.saveData().then(function() {
-                            onImportSuccess(imported);
-                        }).catch(function(err) {
-                            utils.rollbackData(backup);
-                            alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
-                        });
-                    }
                 } else {
                     // No persistence available - just update memory
                     window.data = imported;
-                    onImportSuccess(imported);
-                    alert('Data imported into memory, but could not be saved to persistent storage.');
+                    onImportSuccess(imported, false, 'JSON');
                 }
 
             } catch (err) {
@@ -96,9 +91,9 @@
         reader.readAsText(file);
     }
 
-    function onImportSuccess(data) {
+    function onImportSuccess(data, persisted, format) {
         if (typeof window.logActivity === 'function') {
-            window.logActivity('Imported data from JSON');
+            window.logActivity('Imported data from ' + format);
         }
         if (typeof window.renderAll === 'function') {
             window.renderAll();
@@ -106,10 +101,7 @@
         if (typeof window.updateDashboardStats === 'function') {
             window.updateDashboardStats();
         }
-        alert('Data imported successfully!\n' +
-              'Characters: ' + (data.characters ? data.characters.length : 0) + '\n' +
-              'Teams: ' + (data.teams ? data.teams.length : 0) + '\n' +
-              'Tournaments: ' + (data.tournaments ? data.tournaments.length : 0));
+        utils.showImportResult(persisted, data, format);
     }
 
     // Expose
