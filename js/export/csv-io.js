@@ -15,7 +15,7 @@
  *     ↓
  *   Rebuild reference maps
  *     ↓
- *   Migrate / Normalise
+ *   Migrate / Normalise (with validation)
  *     ↓
  *   Rebuild reference maps (post-migration)
  *     ↓
@@ -25,7 +25,7 @@
  *     ↓
  *   Confirm replacement
  *     ↓
- *   Persist to database (with explicit success/failure check)
+ *   Persist to database (saveData must return true on success)
  *     ↓
  *   Swap live state
  *     ↓
@@ -40,7 +40,8 @@
  *   - Warnings are capped at 50 to prevent UI explosion
  *   - JSON fields are type-validated (arrays must be arrays, etc.)
  *   - Numeric fields are strictly validated (no "12garbage" allowed)
- *   - saveData() must explicitly indicate success (resolve with true) or failure (reject)
+ *   - saveData() must return true on success, throw/reject on failure
+ *   - If saveData is unavailable, import fails (no in-memory only mode)
  */
 
 (function() {
@@ -348,8 +349,12 @@
                                 }
                             }
                         } catch (err) {
-                            alert('Error importing ' + sectionName + ' row ' + (idx + 1) + ': ' + err.message);
-                            throw err;
+                            // Wrap error with context and rethrow for outer handler
+                            throw new Error(
+                                'Error importing ' + sectionName +
+                                ' row ' + (idx + 1) +
+                                ': ' + err.message
+                            );
                         }
                     });
                 });
@@ -370,8 +375,11 @@
                         try {
                             importer.import(row, context);
                         } catch (err) {
-                            alert('Error importing ' + sectionName + ' row ' + (idx + 1) + ': ' + err.message);
-                            throw err;
+                            throw new Error(
+                                'Error importing ' + sectionName +
+                                ' row ' + (idx + 1) +
+                                ': ' + err.message
+                            );
                         }
                     });
                 });
@@ -389,10 +397,17 @@
                 // Rebuild reference maps before migration (ensures consistency)
                 rebuildReferenceMaps(newData, context);
 
-                // MIGRATE AND NORMALISE
+                // MIGRATE AND NORMALISE - with validation
                 if (typeof window.migrateData === 'function') {
                     try {
-                        newData = window.migrateData(newData);
+                        var migratedData = window.migrateData(newData);
+                        
+                        // Validate migration result
+                        if (!migratedData || typeof migratedData !== 'object') {
+                            throw new Error('Migration returned an invalid data structure.');
+                        }
+                        
+                        newData = migratedData;
                     } catch (migrateErr) {
                         alert('Migration failed: ' + migrateErr.message);
                         return;
@@ -439,35 +454,46 @@
                     return;
                 }
 
+                // ============================================================
+                // PHASE 6: Persist with explicit contract enforcement
+                // ============================================================
+
                 // Create backup only after confirmation
                 var backup = utils.cloneData(window.data);
-                var persisted = false;
 
-                // Use the standardised saveData API with explicit success/failure check
-                if (typeof window.saveData === 'function') {
-                    Promise.resolve(window.saveData(newData))
-                        .then(function(result) {
-                            // Explicitly check if saveData returned false (indicating failure)
-                            if (result === false) {
-                                throw new Error('saveData reported failure.');
-                            }
-                            persisted = true;
-                            window.data = newData;
-                            onImportSuccess(newData, persisted, 'CSV', warnings);
-                        })
-                        .catch(function(err) {
-                            // Rollback memory (database rollback is handled by atomic transaction)
-                            if (backup) {
-                                window.data = backup;
-                            }
-                            alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
-                        });
-                } else {
-                    window.data = newData;
-                    onImportSuccess(newData, false, 'CSV', warnings);
+                // saveData must exist and return true on success
+                if (typeof window.saveData !== 'function') {
+                    // Fail loudly - no in-memory-only mode
+                    alert(
+                        'Cannot import CSV: saveData() is unavailable.\n\n' +
+                        'The imported data was not applied.\n' +
+                        'Please ensure the application has loaded correctly before importing.'
+                    );
+                    return;
                 }
 
+                // Execute save with explicit success check
+                Promise.resolve(window.saveData(newData))
+                    .then(function(result) {
+                        // Strict contract: result must be exactly true
+                        if (result !== true) {
+                            throw new Error('saveData did not confirm successful persistence.');
+                        }
+                        
+                        // Persistence confirmed - swap live state
+                        window.data = newData;
+                        onImportSuccess(newData, true, 'CSV', warnings);
+                    })
+                    .catch(function(err) {
+                        // Rollback memory (database rollback is handled by atomic transaction)
+                        if (backup) {
+                            window.data = backup;
+                        }
+                        alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
+                    });
+
             } catch (err) {
+                // Single alert for all import errors
                 alert('Failed to import CSV: ' + err.message);
             }
         };
@@ -532,11 +558,22 @@
                 }
                 // Validate team classId - null if invalid
                 if (team.classId) {
-                    var classExists = data.classes && data.classes.some(function(c) {
-                        return utils.normaliseId(c.id) === utils.normaliseId(team.classId);
-                    });
+                    // Check if classId refers to a discipline in curriculum
+                    var classExists = data.curriculum && 
+                                      Array.isArray(data.curriculum.disciplines) &&
+                                      data.curriculum.disciplines.some(function(d) {
+                                          return utils.normaliseId(d.id) === utils.normaliseId(team.classId);
+                                      });
+                    
+                    // Also check if there's a separate classes collection
+                    if (!classExists && data.classes) {
+                        classExists = data.classes.some(function(c) {
+                            return utils.normaliseId(c.id) === utils.normaliseId(team.classId);
+                        });
+                    }
+                    
                     if (!classExists) {
-                        addWarning('Team "' + team.name + '" references class "' + team.classId + '" which was not imported - clearing reference');
+                        addWarning('Team "' + team.name + '" references class "' + team.classId + '" which was not found - clearing reference');
                         team.classId = null;
                     }
                 }
@@ -716,15 +753,9 @@
 
             alert(msg);
         } else {
-            var warnMsg = format + ' import completed but data could NOT be saved to persistent storage.\n\n' +
-                  'Your data will be lost when you refresh the page.\n' +
-                  'Please check your browser settings and try again.';
-
-            if (warnings && warnings.length > 0) {
-                warnMsg += '\n\n⚠ Warnings:\n' + warnings.join('\n');
-            }
-
-            alert(warnMsg);
+            // This should never happen with the new contract, but keep for safety
+            alert(format + ' import completed but persistence was not confirmed.\n\n' +
+                  'The data may not be saved. Please check your browser settings.');
         }
     }
 
