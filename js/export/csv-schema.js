@@ -11,6 +11,17 @@
     var utils = window.ExportUtils;
 
     var CSV_SCHEMA = {
+        // Format version marker
+        version: {
+            sectionMarker: '# HOLLOW BLADES CSV',
+            import: function(row) {
+                var version = row[1] || '1';
+                return { version: version };
+            },
+            export: function() {
+                return ['# HOLLOW BLADES CSV', 'FORMAT VERSION', '1'];
+            }
+        },
         characters: {
             header: ['CharacterId', 'FirstName', 'MiddleName', 'LastName', 'BirthYear', 'Gender', 'AssociatedNames',
                      'EyeColor', 'HairColor', 'SkinColor', 'Height', 'Weight', 'Build', 'AppearanceNotes',
@@ -259,6 +270,8 @@
                         tourn.winner = winnerId;
                     } else if (winnerType === 'character' && context.charMap[winnerId]) {
                         tourn.winner = winnerId;
+                    } else if (winnerId) {
+                        context.warnings.push('Tournament "' + tourn.name + '" references unknown winner "' + winnerId + '"');
                     }
                 }
                 return tourn;
@@ -320,10 +333,26 @@
                     context.warnings.push('Tournament match references unknown tournament "' + tournId + '"');
                     return null;
                 }
+                
+                var team1Id = row[1] || '';
+                var team2Id = row[2] || '';
+                var winnerId = row[3] || '';
+                
+                // Validate references
+                if (team1Id && !context.teamMap[team1Id]) {
+                    context.warnings.push('Tournament match references unknown team "' + team1Id + '"');
+                }
+                if (team2Id && !context.teamMap[team2Id]) {
+                    context.warnings.push('Tournament match references unknown team "' + team2Id + '"');
+                }
+                if (winnerId && !context.teamMap[winnerId] && !context.charMap[winnerId]) {
+                    context.warnings.push('Tournament match references unknown winner "' + winnerId + '"');
+                }
+                
                 tourn.matches.push({
-                    team1Id: row[1] || '',
-                    team2Id: row[2] || '',
-                    winner: row[3] || ''
+                    team1Id: team1Id,
+                    team2Id: team2Id,
+                    winner: winnerId
                 });
                 return null;
             }
@@ -354,10 +383,21 @@
                     return null;
                 }
                 
-                var participantId = row[1];
+                var participantId = row[1] || '';
                 var participantType = row[2] || 'character';
                 var teamId = row[3] || '';
                 var week = parseInt(row[4]) || 1;
+                
+                // Validate references
+                if (participantType === 'character' && participantId && !context.charMap[participantId]) {
+                    context.warnings.push('Tournament elimination references unknown character "' + participantId + '"');
+                }
+                if (participantType === 'team' && participantId && !context.teamMap[participantId]) {
+                    context.warnings.push('Tournament elimination references unknown team "' + participantId + '"');
+                }
+                if (teamId && !context.teamMap[teamId]) {
+                    context.warnings.push('Tournament elimination references unknown team "' + teamId + '"');
+                }
                 
                 tourn.eliminations.push({
                     participantId: participantId,
@@ -399,9 +439,21 @@
                     context.warnings.push('Tournament participant references unknown tournament "' + tournId + '"');
                     return null;
                 }
+                
+                var participantId = row[1] || '';
+                var participantType = row[2] || 'character';
+                
+                // Validate reference
+                if (participantType === 'character' && participantId && !context.charMap[participantId]) {
+                    context.warnings.push('Tournament participant references unknown character "' + participantId + '"');
+                }
+                if (participantType === 'team' && participantId && !context.teamMap[participantId]) {
+                    context.warnings.push('Tournament participant references unknown team "' + participantId + '"');
+                }
+                
                 tourn.participants.push({
-                    id: row[1] || '',
-                    type: row[2] || 'character'
+                    id: participantId,
+                    type: participantType
                 });
                 return null;
             }
