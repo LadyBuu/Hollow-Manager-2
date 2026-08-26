@@ -1,6 +1,20 @@
 /**
  * js/modules/characters/character-eliminations.js - Character Eliminations
+ * Handles tournament and standalone eliminations for characters
  * Path: js/modules/characters/character-eliminations.js
+ * 
+ * This module is responsible for:
+ *   - Rendering tournament eliminations
+ *   - Rendering standalone eliminations
+ *   - Adding standalone eliminations (with MUTATE → LOG → SAVE)
+ *   - Removing standalone eliminations (with MUTATE → LOG → SAVE)
+ *   - Marking/unmarking tournament eliminations (programmatic)
+ * 
+ * IMPORTANT: All mutations follow the correct pattern:
+ *   MUTATE → LOG → SAVE
+ *   All user-controlled data is escaped to prevent XSS.
+ *   eliminatedWeeks is derived from eliminations to maintain consistency.
+ *   Deceased characters are considered eliminated from their death week onward.
  */
 
 (function() {
@@ -13,7 +27,7 @@
     window.__characterEliminationsLoaded = true;
 
     // ============================================================
-    // HTML ESCAPING
+    // HTML ESCAPING - Prevents XSS
     // ============================================================
 
     function escapeHtml(value) {
@@ -55,7 +69,15 @@
     }
 
     // ============================================================
-    // REBUILD ELIMINATED WEEKS
+    // GENERATE ELIMINATION ID
+    // ============================================================
+
+    function generateEliminationId() {
+        return 'elim_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    }
+
+    // ============================================================
+    // REBUILD ELIMINATED WEEKS - Derived from eliminations
     // ============================================================
 
     function rebuildEliminatedWeeks(char) {
@@ -85,6 +107,93 @@
     function validateWeek(week) {
         var num = parseInt(week);
         return !isNaN(num) && num >= 1 && num <= 52;
+    }
+
+    // ============================================================
+    // CHECK ELIMINATED BY WEEK - WITH DECEASED TIMELINE
+    // ============================================================
+
+    function isCharacterEliminatedByWeek(char, week) {
+        if (!char) return false;
+        
+        var weekNum = parseInt(week) || 1;
+        
+        // Check if deceased and death occurred at or before this week
+        if (char.deceased) {
+            // If deathWeek is stored, use it
+            if (char.deathWeek !== undefined && char.deathWeek !== null && char.deathWeek !== '') {
+                var deathWeek = parseInt(char.deathWeek);
+                if (!isNaN(deathWeek) && deathWeek <= weekNum) {
+                    return true;
+                }
+            }
+            // If deathAge is stored, derive death week from birthYear + deathAge
+            if (char.birthYear && char.deathAge) {
+                var birthYear = parseInt(char.birthYear);
+                var deathAge = parseInt(char.deathAge);
+                if (!isNaN(birthYear) && !isNaN(deathAge)) {
+                    var derivedDeathWeek = birthYear + deathAge;
+                    if (derivedDeathWeek <= weekNum) {
+                        return true;
+                    }
+                }
+            }
+            // If no death timeline info, assume deceased means eliminated from all weeks
+            return true;
+        }
+        
+        // Check elimination records
+        if (char.eliminatedWeeks && char.eliminatedWeeks.length > 0) {
+            for (var i = 0; i < char.eliminatedWeeks.length; i++) {
+                var elimWeek = parseInt(char.eliminatedWeeks[i]);
+                if (!isNaN(elimWeek) && elimWeek <= weekNum) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // ============================================================
+    // CHECK ELIMINATED BY WEEK (DIRECT) - Uses eliminations directly
+    // ============================================================
+
+    function isCharacterEliminatedDirect(char, week) {
+        if (!char) return false;
+        
+        var weekNum = parseInt(week) || 1;
+        
+        // Check deceased with timeline
+        if (char.deceased) {
+            if (char.deathWeek !== undefined && char.deathWeek !== null && char.deathWeek !== '') {
+                var deathWeek = parseInt(char.deathWeek);
+                if (!isNaN(deathWeek) && deathWeek <= weekNum) {
+                    return true;
+                }
+            }
+            if (char.birthYear && char.deathAge) {
+                var birthYear = parseInt(char.birthYear);
+                var deathAge = parseInt(char.deathAge);
+                if (!isNaN(birthYear) && !isNaN(deathAge)) {
+                    var derivedDeathWeek = birthYear + deathAge;
+                    if (derivedDeathWeek <= weekNum) {
+                        return true;
+                    }
+                }
+            }
+            return true;
+        }
+        
+        // Check eliminations directly
+        if (char.eliminations) {
+            for (var i = 0; i < char.eliminations.length; i++) {
+                var elimWeek = parseInt(char.eliminations[i].week);
+                if (!isNaN(elimWeek) && elimWeek <= weekNum) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     // ============================================================
@@ -136,7 +245,8 @@
                 if (elim.standalone) {
                     standaloneItems.push({
                         elimination: elim,
-                        originalIndex: index
+                        originalIndex: index,
+                        id: elim.id
                     });
                 }
             });
@@ -151,10 +261,11 @@
         standaloneItems.forEach(function(item) {
             var elim = item.elimination;
             var originalIndex = item.originalIndex;
+            var id = item.id;
 
             html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--warning-soft);border-radius:4px;margin-bottom:2px;border-left:3px solid var(--warning);">';
             html += '<span style="font-size:0.75rem;">Week ' + escapeHtml(elim.week) + (elim.reason ? ' - ' + escapeHtml(elim.reason) : '') + ' <span style="color:var(--warning);font-size:0.6rem;">[Standalone]</span></span>';
-            html += '<button class="remove-standalone-elim small" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 4px;" data-index="' + originalIndex + '">✕</button>';
+            html += '<button class="remove-standalone-elim small" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 4px;" data-index="' + originalIndex + '" data-id="' + escapeHtml(id) + '">✕</button>';
             html += '</div>';
         });
         container.innerHTML = html;
@@ -205,18 +316,8 @@
             return;
         }
 
-        // Check if already eliminated at or before this week
-        var alreadyEliminated = false;
-        if (char.eliminatedWeeks) {
-            for (var i = 0; i < char.eliminatedWeeks.length; i++) {
-                if (parseInt(char.eliminatedWeeks[i]) <= week) {
-                    alreadyEliminated = true;
-                    break;
-                }
-            }
-        }
-
-        if (alreadyEliminated) {
+        // Check if already eliminated at or before this week (using direct elimination check)
+        if (isCharacterEliminatedDirect(char, week)) {
             alert('This character is already eliminated at or before week ' + week + '.');
             return;
         }
@@ -228,6 +329,7 @@
         if (!char.eliminatedWeeks) char.eliminatedWeeks = [];
 
         char.eliminations.push({
+            id: generateEliminationId(),
             tournamentId: null,
             week: week,
             reason: reason,
@@ -353,12 +455,17 @@
 
         var weekNum = parseInt(week) || 1;
 
-        // Check if already exists
+        // Check if already eliminated at or before this week
+        if (isCharacterEliminatedDirect(char, weekNum)) {
+            console.log('markCharacterEliminated: Character already eliminated by week ' + weekNum);
+            return;
+        }
+
+        // Check if this specific tournament already has an elimination
         var alreadyExists = char.eliminations && char.eliminations.some(function(e) {
             return !e.standalone && String(e.tournamentId) === String(tournamentId);
         });
 
-        // If already exists, don't log or save again
         if (alreadyExists) {
             console.log('markCharacterEliminated: Character already eliminated from this tournament');
             return;
@@ -371,6 +478,7 @@
         if (!char.eliminatedWeeks) char.eliminatedWeeks = [];
 
         char.eliminations.push({
+            id: generateEliminationId(),
             tournamentId: tournamentId,
             week: weekNum,
             reason: reason || 'Eliminated from tournament',
@@ -426,7 +534,6 @@
             return String(e.tournamentId) === String(tournamentId) && !e.standalone;
         });
 
-        // If nothing to remove, return early
         if (!hasMatchingElimination) {
             console.log('unmarkCharacterEliminated: No matching elimination found');
             return;
@@ -480,22 +587,6 @@
     // ============================================================
     // QUERY FUNCTIONS
     // ============================================================
-
-    function isCharacterEliminatedByWeek(char, week) {
-        if (!char) return false;
-        if (char.deceased) return true;
-        
-        if (char.eliminatedWeeks && char.eliminatedWeeks.length > 0) {
-            var weekNum = parseInt(week) || 1;
-            for (var i = 0; i < char.eliminatedWeeks.length; i++) {
-                var elimWeek = parseInt(char.eliminatedWeeks[i]);
-                if (!isNaN(elimWeek) && elimWeek <= weekNum) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
 
     function getEliminatedCharacters(week) {
         var weekNum = parseInt(week) || 1;
