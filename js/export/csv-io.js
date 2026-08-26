@@ -146,7 +146,8 @@
                     return;
                 }
 
-                var newData = createEmptyData();
+                // Get a fresh empty data structure from the canonical source
+                var newData = getEmptyData();
                 var charMap = {};
                 var teamMap = {};
                 var tournMap = {};
@@ -157,7 +158,13 @@
                     missions: {},
                     disciplines: {}
                 };
-                var context = { charMap: charMap, teamMap: teamMap, tournMap: tournMap };
+                var warnings = [];
+                var context = { 
+                    charMap: charMap, 
+                    teamMap: teamMap, 
+                    tournMap: tournMap,
+                    warnings: warnings
+                };
                 var section = '';
 
                 for (var i = 0; i < records.length; i++) {
@@ -215,12 +222,11 @@
                             } else if (section === 'missions') {
                                 newData.missions.push(result);
                             } else if (section === 'disciplines') {
-                                if (!newData.curriculum) newData.curriculum = createEmptyData().curriculum;
+                                if (!newData.curriculum) newData.curriculum = getEmptyCurriculum();
                                 if (!Array.isArray(newData.curriculum.disciplines)) newData.curriculum.disciplines = [];
                                 newData.curriculum.disciplines.push(result);
                             }
                         }
-                        // If result is null or undefined, it was a relational import (team members, rankings, etc.)
                     } catch (err) {
                         alert('Error importing row ' + (i + 1) + ': ' + err.message);
                         return;
@@ -255,7 +261,7 @@
                         .then(function() {
                             persisted = true;
                             window.data = newData;
-                            onImportSuccess(newData, persisted, 'CSV');
+                            onImportSuccess(newData, persisted, 'CSV', warnings);
                         })
                         .catch(function(err) {
                             if (backup) {
@@ -265,7 +271,7 @@
                         });
                 } else {
                     window.data = newData;
-                    onImportSuccess(newData, false, 'CSV');
+                    onImportSuccess(newData, false, 'CSV', warnings);
                 }
 
             } catch (err) {
@@ -286,7 +292,7 @@
         return map[section] || null;
     }
 
-    function onImportSuccess(data, persisted, format) {
+    function onImportSuccess(data, persisted, format, warnings) {
         if (typeof window.logActivity === 'function') {
             window.logActivity('Imported data from ' + format);
         }
@@ -296,10 +302,50 @@
         if (typeof window.updateDashboardStats === 'function') {
             window.updateDashboardStats();
         }
-        utils.showImportResult(persisted, data, format);
+        
+        // Show the result with warnings if any
+        if (persisted) {
+            var charCount = data.characters ? data.characters.length : 0;
+            var teamCount = data.teams ? data.teams.length : 0;
+            var tournCount = data.tournaments ? data.tournaments.length : 0;
+            var missionCount = data.missions ? data.missions.length : 0;
+            
+            var msg = format + ' import completed successfully!\n\n' +
+                'Characters: ' + charCount + '\n' +
+                'Teams: ' + teamCount + '\n' +
+                'Tournaments: ' + tournCount + '\n' +
+                'Missions: ' + missionCount;
+            
+            if (warnings && warnings.length > 0) {
+                msg += '\n\n⚠ Warnings:\n' + warnings.join('\n');
+            }
+            
+            if (format === 'CSV') {
+                msg += '\n\nNote: CSV only imports basic character info, teams, tournaments, missions, and disciplines.\n' +
+                       'Use JSON for complete data restoration.';
+            }
+            
+            alert(msg);
+        } else {
+            var warnMsg = format + ' import completed but data could NOT be saved to persistent storage.\n\n' +
+                  'Your data will be lost when you refresh the page.\n' +
+                  'Please check your browser settings and try again.';
+            
+            if (warnings && warnings.length > 0) {
+                warnMsg += '\n\n⚠ Warnings:\n' + warnings.join('\n');
+            }
+            
+            alert(warnMsg);
+        }
     }
 
-    function createEmptyData() {
+    // Delegate to canonical data/state layer
+    function getEmptyData() {
+        if (typeof window.getDefaultData === 'function') {
+            return window.getDefaultData();
+        }
+        
+        // Fallback - but ideally this should come from the canonical source
         return {
             characters: [],
             teams: [],
@@ -311,60 +357,72 @@
             locationSchedules: {},
             currentYear: new Date().getFullYear(),
             currentWeek: 1,
-            curriculum: {
-                disciplines: [],
-                schedules: {},
-                restDays: {},
-                examDays: {},
-                grades: {},
-                rankings: {},
-                currentWeek: 1,
-                classInstructors: {},
-                classLabels: {},
-                classGroupLabels: {},
-                classDurations: {},
-                classLocations: {},
-                instructorClasses: {},
-                instructorTemplates: {},
-                instructorBlocks: {},
-                instructorGroups: {},
-                disciplineGroups: {},
-                autoGroups: {}
-            },
-            social: {
-                relationships: [],
-                relationshipTypes: [
-                    { id: 'familiar', label: 'Familiar', color: '#8cbb3a' },
-                    { id: 'professional', label: 'Professional', color: '#c9a24b' },
-                    { id: 'romantic', label: 'Romantic', color: '#c1453c' },
-                    { id: 'friendship', label: 'Friendship', color: '#4a9bc7' },
-                    { id: 'mentor', label: 'Mentor/Mentee', color: '#9b59b6' },
-                    { id: 'rivalry', label: 'Rivalry', color: '#e67e22' },
-                    { id: 'alliance', label: 'Alliance', color: '#27ae60' },
-                    { id: 'other', label: 'Other', color: '#7f8c8d' }
-                ],
-                nextId: 1
-            },
-            statsConfig: {
-                classes: [
-                    { id: 'warrior', label: 'Warrior', icon: '⚔', primaryStats: ['str', 'con'], secondaryStats: ['dex'], statWeights: { str: 0.4, con: 0.3, dex: 0.2, wis: 0.1 }, minStats: { str: 13, con: 12 } },
-                    { id: 'skirmisher', label: 'Skirmisher', icon: '🏹', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.35, wis: 0.25, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 12 } },
-                    { id: 'protector', label: 'Protector', icon: '🛡', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'cha'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, cha: 0.15, dex: 0.05 }, minStats: { str: 13, con: 12 } },
-                    { id: 'sage', label: 'Sage', icon: '📚', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
-                    { id: 'mystic', label: 'Mystic', icon: '✦', primaryStats: ['wis', 'cha'], secondaryStats: ['con', 'int'], statWeights: { wis: 0.35, cha: 0.25, con: 0.2, int: 0.15, dex: 0.05 }, minStats: { wis: 13, cha: 12 } },
-                    { id: 'stalker', label: 'Stalker', icon: '🗡', primaryStats: ['dex', 'int'], secondaryStats: ['cha', 'wis'], statWeights: { dex: 0.35, int: 0.25, cha: 0.2, wis: 0.15, str: 0.05 }, minStats: { dex: 13, int: 12 } },
-                    { id: 'spellblade', label: 'Spellblade', icon: '⚡', primaryStats: ['str', 'int'], secondaryStats: ['dex', 'con'], statWeights: { str: 0.3, int: 0.3, dex: 0.2, con: 0.15, wis: 0.05 }, minStats: { str: 13, int: 12 } },
-                    { id: 'channeler', label: 'Channeler', icon: '✦', primaryStats: ['cha', 'con'], secondaryStats: ['dex', 'int'], statWeights: { cha: 0.35, con: 0.25, dex: 0.2, int: 0.15, wis: 0.05 }, minStats: { cha: 13, con: 12 } },
-                    { id: 'warden', label: 'Warden', icon: '⚔', primaryStats: ['str', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { str: 0.3, wis: 0.25, con: 0.2, dex: 0.2, cha: 0.05 }, minStats: { str: 13, wis: 12 } },
-                    { id: 'adept', label: 'Adept', icon: '✦', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.3, wis: 0.3, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 13 } },
-                    { id: 'artificer', label: 'Artificer', icon: '⚙', primaryStats: ['int', 'dex'], secondaryStats: ['con', 'wis'], statWeights: { int: 0.35, dex: 0.25, con: 0.2, wis: 0.15, cha: 0.05 }, minStats: { int: 13, dex: 12 } },
-                    { id: 'occultist', label: 'Occultist', icon: '✦', primaryStats: ['int', 'cha'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.3, cha: 0.3, con: 0.2, dex: 0.15, wis: 0.05 }, minStats: { int: 13, cha: 13 } },
-                    { id: 'blade_dancer', label: 'Blade Dancer', icon: '🗡', primaryStats: ['dex', 'cha'], secondaryStats: ['str', 'con'], statWeights: { dex: 0.35, cha: 0.25, str: 0.2, con: 0.15, wis: 0.05 }, minStats: { dex: 13, cha: 12 } },
-                    { id: 'elementalist', label: 'Elementalist', icon: '✦', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
-                    { id: 'sentinel', label: 'Sentinel', icon: '🛡', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'dex'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, dex: 0.15, cha: 0.05 }, minStats: { str: 13, con: 12 } }
-                ]
-            },
+            curriculum: getEmptyCurriculum(),
+            social: getEmptySocial(),
+            statsConfig: getDefaultStatsConfig(),
             _dataVersion: 12
+        };
+    }
+
+    function getEmptyCurriculum() {
+        return {
+            disciplines: [],
+            schedules: {},
+            restDays: {},
+            examDays: {},
+            grades: {},
+            rankings: {},
+            currentWeek: 1,
+            classInstructors: {},
+            classLabels: {},
+            classGroupLabels: {},
+            classDurations: {},
+            classLocations: {},
+            instructorClasses: {},
+            instructorTemplates: {},
+            instructorBlocks: {},
+            instructorGroups: {},
+            disciplineGroups: {},
+            autoGroups: {}
+        };
+    }
+
+    function getEmptySocial() {
+        return {
+            relationships: [],
+            relationshipTypes: [
+                { id: 'familiar', label: 'Familiar', color: '#8cbb3a' },
+                { id: 'professional', label: 'Professional', color: '#c9a24b' },
+                { id: 'romantic', label: 'Romantic', color: '#c1453c' },
+                { id: 'friendship', label: 'Friendship', color: '#4a9bc7' },
+                { id: 'mentor', label: 'Mentor/Mentee', color: '#9b59b6' },
+                { id: 'rivalry', label: 'Rivalry', color: '#e67e22' },
+                { id: 'alliance', label: 'Alliance', color: '#27ae60' },
+                { id: 'other', label: 'Other', color: '#7f8c8d' }
+            ],
+            nextId: 1
+        };
+    }
+
+    function getDefaultStatsConfig() {
+        return {
+            classes: [
+                { id: 'warrior', label: 'Warrior', icon: '⚔', primaryStats: ['str', 'con'], secondaryStats: ['dex'], statWeights: { str: 0.4, con: 0.3, dex: 0.2, wis: 0.1 }, minStats: { str: 13, con: 12 } },
+                { id: 'skirmisher', label: 'Skirmisher', icon: '🏹', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.35, wis: 0.25, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 12 } },
+                { id: 'protector', label: 'Protector', icon: '🛡', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'cha'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, cha: 0.15, dex: 0.05 }, minStats: { str: 13, con: 12 } },
+                { id: 'sage', label: 'Sage', icon: '📚', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
+                { id: 'mystic', label: 'Mystic', icon: '✦', primaryStats: ['wis', 'cha'], secondaryStats: ['con', 'int'], statWeights: { wis: 0.35, cha: 0.25, con: 0.2, int: 0.15, dex: 0.05 }, minStats: { wis: 13, cha: 12 } },
+                { id: 'stalker', label: 'Stalker', icon: '🗡', primaryStats: ['dex', 'int'], secondaryStats: ['cha', 'wis'], statWeights: { dex: 0.35, int: 0.25, cha: 0.2, wis: 0.15, str: 0.05 }, minStats: { dex: 13, int: 12 } },
+                { id: 'spellblade', label: 'Spellblade', icon: '⚡', primaryStats: ['str', 'int'], secondaryStats: ['dex', 'con'], statWeights: { str: 0.3, int: 0.3, dex: 0.2, con: 0.15, wis: 0.05 }, minStats: { str: 13, int: 12 } },
+                { id: 'channeler', label: 'Channeler', icon: '✦', primaryStats: ['cha', 'con'], secondaryStats: ['dex', 'int'], statWeights: { cha: 0.35, con: 0.25, dex: 0.2, int: 0.15, wis: 0.05 }, minStats: { cha: 13, con: 12 } },
+                { id: 'warden', label: 'Warden', icon: '⚔', primaryStats: ['str', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { str: 0.3, wis: 0.25, con: 0.2, dex: 0.2, cha: 0.05 }, minStats: { str: 13, wis: 12 } },
+                { id: 'adept', label: 'Adept', icon: '✦', primaryStats: ['dex', 'wis'], secondaryStats: ['con', 'str'], statWeights: { dex: 0.3, wis: 0.3, con: 0.2, str: 0.15, int: 0.05 }, minStats: { dex: 13, wis: 13 } },
+                { id: 'artificer', label: 'Artificer', icon: '⚙', primaryStats: ['int', 'dex'], secondaryStats: ['con', 'wis'], statWeights: { int: 0.35, dex: 0.25, con: 0.2, wis: 0.15, cha: 0.05 }, minStats: { int: 13, dex: 12 } },
+                { id: 'occultist', label: 'Occultist', icon: '✦', primaryStats: ['int', 'cha'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.3, cha: 0.3, con: 0.2, dex: 0.15, wis: 0.05 }, minStats: { int: 13, cha: 13 } },
+                { id: 'blade_dancer', label: 'Blade Dancer', icon: '🗡', primaryStats: ['dex', 'cha'], secondaryStats: ['str', 'con'], statWeights: { dex: 0.35, cha: 0.25, str: 0.2, con: 0.15, wis: 0.05 }, minStats: { dex: 13, cha: 12 } },
+                { id: 'elementalist', label: 'Elementalist', icon: '✦', primaryStats: ['int', 'wis'], secondaryStats: ['con', 'dex'], statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, minStats: { int: 13, wis: 12 } },
+                { id: 'sentinel', label: 'Sentinel', icon: '🛡', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'dex'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, dex: 0.15, cha: 0.05 }, minStats: { str: 13, con: 12 } }
+            ]
         };
     }
 
