@@ -9,9 +9,9 @@
  *     ↓
  *   Build empty canonical structure
  *     ↓
- *   Import primary entities (Characters → Teams → Tournaments → Missions → Disciplines)
+ *   Scan all rows: collect primary entities first (order-independent)
  *     ↓
- *   Import relationships (Team Members, Team Rankings, Tournament Teams, etc.)
+ *   Scan all rows: collect relationships (order-independent)
  *     ↓
  *   Migrate / Normalise
  *     ↓
@@ -30,7 +30,9 @@
  * IMPORT PHILOSOPHY:
  *   - Missing optional reference → null it (missions)
  *   - Missing required reference → skip relationship (team members, tournament records)
- *   - Malformed primary entity → abort import
+ *   - Malformed primary entity → abort import with error
+ *   - Invalid enum values → abort import with error
+ *   - Blank rows → silently skipped
  *   - Warnings are capped at 50 to prevent UI explosion
  */
 
@@ -230,13 +232,18 @@
                         addWarning(warnings, msg);
                     }
                 };
-                var section = '';
                 var foundExportableData = false;
 
-                // Process rows
+                // ============================================================
+                // PHASE 1: Parse sections and collect rows by type
+                // ============================================================
+
+                var sections = {};
+                var currentSection = null;
+
                 for (var i = 0; i < records.length; i++) {
                     var row = records[i];
-                    if (row.length === 0) continue;
+                    if (utils.isBlankRow(row)) continue;
 
                     var first = (row[0] || '').trim();
 
@@ -256,76 +263,121 @@
                     }
 
                     if (detectedSection) {
-                        section = detectedSection;
+                        currentSection = detectedSection;
                         i++;
                         // Read and validate header
                         var headerRow = records[i] || [];
-                        var headerValidator = schema[section].validateHeader;
+                        var headerValidator = schema[currentSection].validateHeader;
                         if (typeof headerValidator === 'function') {
                             if (!headerValidator(headerRow)) {
-                                alert('Invalid header for section "' + section + '".\n\n' +
-                                      'Expected: ' + schema[section].header.join(', ') + '\n' +
+                                alert('Invalid header for section "' + currentSection + '".\n\n' +
+                                      'Expected: ' + schema[currentSection].header.join(', ') + '\n' +
                                       'Got: ' + headerRow.join(', '));
                                 return;
                             }
                         }
+                        if (!sections[currentSection]) {
+                            sections[currentSection] = [];
+                        }
                         continue;
                     }
 
-                    if (!section) continue;
+                    if (!currentSection) continue;
 
-                    var importer = schema[section];
-                    if (!importer || typeof importer.import !== 'function') continue;
-
-                    try {
-                        var result = importer.import(row, context);
-                        
-                        // Determine which collection this result belongs to
-                        if (result && typeof result === 'object') {
-                            var id = result.id;
-                            var collection = getCollectionForSection(section);
-                            
-                            if (id && collection && idTracker[collection] && idTracker[collection][id]) {
-                                throw new Error('Duplicate ' + collection.slice(0, -1) + ' ID "' + id + '" found in CSV.');
-                            }
-                            if (id && collection && idTracker[collection]) {
-                                idTracker[collection][id] = true;
-                            }
-
-                            // Add to appropriate collection
-                            if (section === 'characters') {
-                                newData.characters.push(result);
-                                charMap[result.id] = result;
-                                foundExportableData = true;
-                            } else if (section === 'teams') {
-                                newData.teams.push(result);
-                                teamMap[result.id] = result;
-                                foundExportableData = true;
-                            } else if (section === 'tournaments') {
-                                newData.tournaments.push(result);
-                                tournMap[result.id] = result;
-                                foundExportableData = true;
-                            } else if (section === 'missions') {
-                                newData.missions.push(result);
-                                foundExportableData = true;
-                            } else if (section === 'disciplines') {
-                                if (!newData.curriculum) newData.curriculum = getEmptyCurriculum();
-                                if (!Array.isArray(newData.curriculum.disciplines)) newData.curriculum.disciplines = [];
-                                newData.curriculum.disciplines.push(result);
-                                foundExportableData = true;
-                            }
-                        }
-                    } catch (err) {
-                        alert('Error importing row ' + (i + 1) + ': ' + err.message);
-                        return;
+                    // Store row for later processing
+                    if (!sections[currentSection]) {
+                        sections[currentSection] = [];
                     }
+                    sections[currentSection].push(row);
                 }
+
+                // ============================================================
+                // PHASE 2: Process primary entities FIRST (order independent)
+                // ============================================================
+
+                var primarySections = ['characters', 'teams', 'tournaments', 'missions', 'disciplines'];
+
+                primarySections.forEach(function(sectionName) {
+                    var rows = sections[sectionName] || [];
+                    var importer = schema[sectionName];
+                    if (!importer || typeof importer.import !== 'function') return;
+
+                    rows.forEach(function(row, idx) {
+                        try {
+                            var result = importer.import(row, context);
+                            
+                            if (result && typeof result === 'object') {
+                                var id = result.id;
+                                var collection = getCollectionForSection(sectionName);
+                                
+                                if (id && collection && idTracker[collection] && idTracker[collection][id]) {
+                                    throw new Error('Duplicate ' + collection.slice(0, -1) + ' ID "' + id + '" found in CSV.');
+                                }
+                                if (id && collection && idTracker[collection]) {
+                                    idTracker[collection][id] = true;
+                                }
+
+                                // Add to appropriate collection
+                                if (sectionName === 'characters') {
+                                    newData.characters.push(result);
+                                    charMap[utils.normaliseId(result.id)] = result;
+                                    foundExportableData = true;
+                                } else if (sectionName === 'teams') {
+                                    newData.teams.push(result);
+                                    teamMap[utils.normaliseId(result.id)] = result;
+                                    foundExportableData = true;
+                                } else if (sectionName === 'tournaments') {
+                                    newData.tournaments.push(result);
+                                    tournMap[utils.normaliseId(result.id)] = result;
+                                    foundExportableData = true;
+                                } else if (sectionName === 'missions') {
+                                    newData.missions.push(result);
+                                    foundExportableData = true;
+                                } else if (sectionName === 'disciplines') {
+                                    if (!newData.curriculum) newData.curriculum = getEmptyCurriculum();
+                                    if (!Array.isArray(newData.curriculum.disciplines)) newData.curriculum.disciplines = [];
+                                    newData.curriculum.disciplines.push(result);
+                                    foundExportableData = true;
+                                }
+                            }
+                        } catch (err) {
+                            alert('Error importing ' + sectionName + ' row ' + (idx + 1) + ': ' + err.message);
+                            throw err;
+                        }
+                    });
+                });
+
+                // ============================================================
+                // PHASE 3: Process relationships SECOND (order independent)
+                // ============================================================
+
+                var relationshipSections = ['teamMembers', 'teamRankings', 'tournamentTeams', 
+                                           'tournamentMatches', 'tournamentEliminations', 'tournamentParticipants'];
+
+                relationshipSections.forEach(function(sectionName) {
+                    var rows = sections[sectionName] || [];
+                    var importer = schema[sectionName];
+                    if (!importer || typeof importer.import !== 'function') return;
+
+                    rows.forEach(function(row, idx) {
+                        try {
+                            importer.import(row, context);
+                        } catch (err) {
+                            alert('Error importing ' + sectionName + ' row ' + (idx + 1) + ': ' + err.message);
+                            throw err;
+                        }
+                    });
+                });
 
                 // Validate that we found something to import
                 if (!foundExportableData) {
                     alert('No valid CSV-exportable data found in file.\n\nCSV imports: Characters, Teams, Tournaments, Missions, and Disciplines.');
                     return;
                 }
+
+                // ============================================================
+                // PHASE 4: Migrate and validate
+                // ============================================================
 
                 // MIGRATE AND NORMALISE BEFORE VALIDATION
                 if (typeof window.migrateData === 'function') {
@@ -345,6 +397,10 @@
                     alert('Imported data failed validation. The resulting data structure appears incomplete.');
                     return;
                 }
+
+                // ============================================================
+                // PHASE 5: Confirm and persist
+                // ============================================================
 
                 // Build confirmation message with warnings
                 var confirmMsg = 'This import will replace all current data.\n\n';
@@ -411,7 +467,7 @@
             data.missions.forEach(function(mission) {
                 if (mission.assignedTeamId) {
                     var teamExists = data.teams && data.teams.some(function(t) {
-                        return String(t.id) === String(mission.assignedTeamId);
+                        return utils.normaliseId(t.id) === utils.normaliseId(mission.assignedTeamId);
                     });
                     if (!teamExists) {
                         addWarning('Mission "' + mission.title + '" references unknown team "' + mission.assignedTeamId + '"');
@@ -426,20 +482,20 @@
                 if (Array.isArray(team.members)) {
                     team.members.forEach(function(member) {
                         var charExists = data.characters && data.characters.some(function(c) {
-                            return String(c.id) === String(member.characterId);
+                            return utils.normaliseId(c.id) === utils.normaliseId(member.characterId);
                         });
                         if (!charExists) {
                             addWarning('Team "' + team.name + '" references unknown character "' + member.characterId + '"');
                         }
                     });
                 }
-                // Validate team classId
+                // Validate team classId - warning only since classes aren't exported in CSV
                 if (team.classId) {
                     var classExists = data.classes && data.classes.some(function(c) {
-                        return String(c.id) === String(team.classId);
+                        return utils.normaliseId(c.id) === utils.normaliseId(team.classId);
                     });
                     if (!classExists) {
-                        addWarning('Team "' + team.name + '" references unknown class "' + team.classId + '"');
+                        addWarning('Team "' + team.name + '" references class "' + team.classId + '" which was not imported');
                     }
                 }
             });
@@ -451,7 +507,7 @@
                 if (Array.isArray(tourn.teams)) {
                     tourn.teams.forEach(function(entry) {
                         var teamExists = data.teams && data.teams.some(function(t) {
-                            return String(t.id) === String(entry.teamId);
+                            return utils.normaliseId(t.id) === utils.normaliseId(entry.teamId);
                         });
                         if (!teamExists) {
                             addWarning('Tournament "' + tourn.name + '" references unknown team "' + entry.teamId + '"');
@@ -464,7 +520,7 @@
                     tourn.matches.forEach(function(match) {
                         if (match.team1Id) {
                             var team1Exists = data.teams && data.teams.some(function(t) {
-                                return String(t.id) === String(match.team1Id);
+                                return utils.normaliseId(t.id) === utils.normaliseId(match.team1Id);
                             });
                             if (!team1Exists) {
                                 addWarning('Tournament "' + tourn.name + '" match references unknown team1 "' + match.team1Id + '"');
@@ -472,7 +528,7 @@
                         }
                         if (match.team2Id) {
                             var team2Exists = data.teams && data.teams.some(function(t) {
-                                return String(t.id) === String(match.team2Id);
+                                return utils.normaliseId(t.id) === utils.normaliseId(match.team2Id);
                             });
                             if (!team2Exists) {
                                 addWarning('Tournament "' + tourn.name + '" match references unknown team2 "' + match.team2Id + '"');
@@ -482,18 +538,18 @@
                             var winnerExists = false;
                             if (match.winnerType === 'team') {
                                 winnerExists = data.teams && data.teams.some(function(t) {
-                                    return String(t.id) === String(match.winner);
+                                    return utils.normaliseId(t.id) === utils.normaliseId(match.winner);
                                 });
                             } else if (match.winnerType === 'character') {
                                 winnerExists = data.characters && data.characters.some(function(c) {
-                                    return String(c.id) === String(match.winner);
+                                    return utils.normaliseId(c.id) === utils.normaliseId(match.winner);
                                 });
                             } else {
                                 // Try both if type not specified
-                                if (data.teams && data.teams.some(function(t) { return String(t.id) === String(match.winner); })) {
+                                if (data.teams && data.teams.some(function(t) { return utils.normaliseId(t.id) === utils.normaliseId(match.winner); })) {
                                     winnerExists = true;
                                 }
-                                if (!winnerExists && data.characters && data.characters.some(function(c) { return String(c.id) === String(match.winner); })) {
+                                if (!winnerExists && data.characters && data.characters.some(function(c) { return utils.normaliseId(c.id) === utils.normaliseId(match.winner); })) {
                                     winnerExists = true;
                                 }
                             }
@@ -511,11 +567,11 @@
                             var participantExists = false;
                             if (elim.participantType === 'character') {
                                 participantExists = data.characters && data.characters.some(function(c) {
-                                    return String(c.id) === String(elim.participantId);
+                                    return utils.normaliseId(c.id) === utils.normaliseId(elim.participantId);
                                 });
                             } else if (elim.participantType === 'team') {
                                 participantExists = data.teams && data.teams.some(function(t) {
-                                    return String(t.id) === String(elim.participantId);
+                                    return utils.normaliseId(t.id) === utils.normaliseId(elim.participantId);
                                 });
                             }
                             if (!participantExists) {
@@ -524,7 +580,7 @@
                         }
                         if (elim.teamId) {
                             var teamExists = data.teams && data.teams.some(function(t) {
-                                return String(t.id) === String(elim.teamId);
+                                return utils.normaliseId(t.id) === utils.normaliseId(elim.teamId);
                             });
                             if (!teamExists) {
                                 addWarning('Tournament "' + tourn.name + '" elimination references unknown team "' + elim.teamId + '"');
@@ -540,11 +596,11 @@
                             var exists = false;
                             if (participant.type === 'character') {
                                 exists = data.characters && data.characters.some(function(c) {
-                                    return String(c.id) === String(participant.id);
+                                    return utils.normaliseId(c.id) === utils.normaliseId(participant.id);
                                 });
                             } else if (participant.type === 'team') {
                                 exists = data.teams && data.teams.some(function(t) {
-                                    return String(t.id) === String(participant.id);
+                                    return utils.normaliseId(t.id) === utils.normaliseId(participant.id);
                                 });
                             }
                             if (!exists) {
@@ -557,10 +613,10 @@
                 // Validate tournament winner
                 if (tourn.winner) {
                     var winnerExists = false;
-                    if (data.teams && data.teams.some(function(t) { return String(t.id) === String(tourn.winner); })) {
+                    if (data.teams && data.teams.some(function(t) { return utils.normaliseId(t.id) === utils.normaliseId(tourn.winner); })) {
                         winnerExists = true;
                     }
-                    if (!winnerExists && data.characters && data.characters.some(function(c) { return String(c.id) === String(tourn.winner); })) {
+                    if (!winnerExists && data.characters && data.characters.some(function(c) { return utils.normaliseId(c.id) === utils.normaliseId(tourn.winner); })) {
                         winnerExists = true;
                     }
                     if (!winnerExists) {
