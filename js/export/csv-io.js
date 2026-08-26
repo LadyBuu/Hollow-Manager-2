@@ -36,8 +36,8 @@
  *   Render (with separate error handling)
  * 
  * IMPORT PHILOSOPHY:
- *   - Missing optional reference → null it (missions, classId)
- *   - Missing required reference → skip relationship (team members, tournament records)
+ *   - Missing optional reference → null it (missions, classId, tournament.winner)
+ *   - Missing required reference → skip relationship (team members, tournament teams, matches, eliminations, participants)
  *   - Malformed primary entity → abort import with error
  *   - Invalid enum values → abort import with error
  *   - Blank rows → silently skipped
@@ -48,6 +48,7 @@
  *   - saveData() must return true on success, throw/reject on failure
  *   - If saveData is unavailable, import fails (no in-memory only mode)
  *   - Dangling required relationships are REMOVED, not just warned about
+ *   - Tournament winners with invalid references are cleared
  */
 
 (function() {
@@ -602,7 +603,24 @@
             });
         }
 
-        // 3. Validate and clean tournament data
+        // 3. Validate and clean disciplines - remove invalid instructors
+        if (data.curriculum && Array.isArray(data.curriculum.disciplines)) {
+            data.curriculum.disciplines.forEach(function(discipline) {
+                if (!Array.isArray(discipline.instructorIds)) return;
+
+                discipline.instructorIds = discipline.instructorIds.filter(function(instrId) {
+                    if (!utils.hasId(data.characters, instrId)) {
+                        addWarning(
+                            'Discipline "' + discipline.name + '" references unknown instructor "' + instrId + '" - removing instructor'
+                        );
+                        return false;
+                    }
+                    return true;
+                });
+            });
+        }
+
+        // 4. Validate and clean tournament data
         if (Array.isArray(data.tournaments)) {
             data.tournaments.forEach(function(tourn) {
                 // Clean tournament teams
@@ -622,18 +640,8 @@
                 // Clean tournament participants
                 if (Array.isArray(tourn.participants)) {
                     tourn.participants = tourn.participants.filter(function(participant) {
-                        if (!participant.id) {
-                            return true;
-                        }
-
-                        var exists = false;
-                        if (participant.type === 'character') {
-                            exists = utils.hasId(data.characters, participant.id);
-                        } else if (participant.type === 'team') {
-                            exists = utils.hasId(data.teams, participant.id);
-                        }
-
-                        if (!exists) {
+                        if (!utils.hasId(data.characters, participant.id) && 
+                            !utils.hasId(data.teams, participant.id)) {
                             addWarning(
                                 'Tournament "' + tourn.name + '" references unknown participant "' + 
                                 participant.id + '" - skipping participant'
@@ -722,12 +730,13 @@
                     });
                 }
 
-                // Validate tournament winner (don't remove, just warn)
+                // Clean tournament winner - clear if invalid
                 if (tourn.winner) {
                     var winnerExists = utils.hasId(data.teams, tourn.winner) ||
                                       utils.hasId(data.characters, tourn.winner);
                     if (!winnerExists) {
-                        addWarning('Tournament "' + tourn.name + '" references unknown winner "' + tourn.winner + '"');
+                        addWarning('Tournament "' + tourn.name + '" references unknown winner "' + tourn.winner + '" - clearing winner');
+                        tourn.winner = null;
                     }
                 }
             });
