@@ -6,6 +6,12 @@
 (function() {
     'use strict';
 
+    // Guard against duplicate script loading
+    if (window.__characterEventsLoaded) {
+        return;
+    }
+    window.__characterEventsLoaded = true;
+
     var characterListOpen = false;
     var initialized = false;
 
@@ -79,8 +85,8 @@
         var addBtn = document.getElementById('add-character-btn');
         if (addBtn) {
             addBtn.addEventListener('click', function() {
-                window.setCurrentEditId(null);
-                window.showCharacterForm(null);
+                safeSetCurrentEditId(null);
+                safeShowCharacterForm(null);
                 if (window.innerWidth < 768) {
                     toggleCharacterList(false);
                 }
@@ -97,7 +103,9 @@
         if (form) {
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
-                window.CharacterCRUD.save();
+                if (window.CharacterCRUD && typeof window.CharacterCRUD.save === 'function') {
+                    window.CharacterCRUD.save();
+                }
             });
         }
     }
@@ -110,9 +118,11 @@
         var deleteBtn = document.getElementById('delete-char-btn');
         if (deleteBtn) {
             deleteBtn.addEventListener('click', function() {
-                var id = window.currentEditId ? window.currentEditId() : null;
+                var id = getCurrentEditId();
                 if (id) {
-                    window.CharacterCRUD.delete(id);
+                    if (window.CharacterCRUD && typeof window.CharacterCRUD.delete === 'function') {
+                        window.CharacterCRUD.delete(id);
+                    }
                 }
             });
         }
@@ -142,16 +152,22 @@
             panel.classList.toggle('active', panelId === tab);
         });
         
-        var id = window.currentEditId ? window.currentEditId() : null;
+        var id = getCurrentEditId();
         if (id) {
             var char = window.getCharacterById(id);
             if (char) {
                 if (tab === 'academic') {
-                    window.CharacterViews.renderAcademic(char);
+                    if (window.CharacterViews && typeof window.CharacterViews.renderAcademic === 'function') {
+                        window.CharacterViews.renderAcademic(char);
+                    }
                 } else if (tab === 'professional') {
-                    window.CharacterViews.renderProfessional(char);
+                    if (window.CharacterViews && typeof window.CharacterViews.renderProfessional === 'function') {
+                        window.CharacterViews.renderProfessional(char);
+                    }
                 } else if (tab === 'social') {
-                    window.CharacterViews.renderSocial(char);
+                    if (window.CharacterViews && typeof window.CharacterViews.renderSocial === 'function') {
+                        window.CharacterViews.renderSocial(char);
+                    }
                 }
             }
         }
@@ -165,21 +181,21 @@
         var nameFilter = document.getElementById('char-name-filter');
         if (nameFilter) {
             nameFilter.addEventListener('input', function() {
-                window.CharacterList.render();
+                safeRenderCharacterList();
             });
         }
 
         var statusFilter = document.getElementById('char-status-filter');
         if (statusFilter) {
             statusFilter.addEventListener('change', function() {
-                window.CharacterList.render();
+                safeRenderCharacterList();
             });
         }
 
         var classFilter = document.getElementById('char-class-filter');
         if (classFilter) {
             classFilter.addEventListener('change', function() {
-                window.CharacterList.render();
+                safeRenderCharacterList();
             });
         }
 
@@ -194,7 +210,7 @@
                 if (statusEl) statusEl.value = 'all';
                 if (classEl) classEl.value = 'all';
                 
-                window.CharacterList.render();
+                safeRenderCharacterList();
             });
         }
     }
@@ -208,7 +224,9 @@
         if (addStatusBtn) {
             addStatusBtn.addEventListener('click', function() {
                 var container = document.getElementById('career-status-container');
-                window.CharacterViews.addCareerStatusEntry(container);
+                if (window.CharacterViews && typeof window.CharacterViews.addCareerStatusEntry === 'function') {
+                    window.CharacterViews.addCareerStatusEntry(container);
+                }
             });
         }
 
@@ -249,16 +267,20 @@
         var addElimBtn = document.getElementById('add-standalone-elim-btn');
         if (addElimBtn) {
             addElimBtn.addEventListener('click', function() {
-                window.CharacterEliminations.addStandalone();
+                if (window.CharacterEliminations && typeof window.CharacterEliminations.addStandalone === 'function') {
+                    window.CharacterEliminations.addStandalone();
+                }
             });
         }
 
         document.addEventListener('click', function(e) {
             if (e.target && e.target.classList.contains('remove-standalone-elim')) {
-                var id = window.currentEditId ? window.currentEditId() : null;
+                var id = getCurrentEditId();
                 var index = parseInt(e.target.dataset.index);
                 if (id !== null && !isNaN(index)) {
-                    window.CharacterEliminations.removeStandalone(id, index);
+                    if (window.CharacterEliminations && typeof window.CharacterEliminations.removeStandalone === 'function') {
+                        window.CharacterEliminations.removeStandalone(id, index);
+                    }
                 }
             }
         });
@@ -295,7 +317,9 @@
                         return;
                     }
                     
-                    window.CharacterClasses.addClassTag(cls.id, cls.name);
+                    if (window.CharacterClasses && typeof window.CharacterClasses.addClassTag === 'function') {
+                        window.CharacterClasses.addClassTag(cls.id, cls.name);
+                    }
                     this.value = '';
                 }
             });
@@ -322,14 +346,18 @@
         var addToClassBtn = document.getElementById('add-to-class-btn');
         if (addToClassBtn) {
             addToClassBtn.addEventListener('click', function() {
-                window.CharacterClasses.addToClass();
+                if (window.CharacterClasses && typeof window.CharacterClasses.addToClass === 'function') {
+                    window.CharacterClasses.addToClass();
+                }
             });
         }
 
         var removeFromClassBtn = document.getElementById('remove-from-class-btn');
         if (removeFromClassBtn) {
             removeFromClassBtn.addEventListener('click', function() {
-                window.CharacterClasses.removeFromClass();
+                if (window.CharacterClasses && typeof window.CharacterClasses.removeFromClass === 'function') {
+                    window.CharacterClasses.removeFromClass();
+                }
             });
         }
     }
@@ -342,7 +370,7 @@
         var socialBtn = document.getElementById('add-social-relation-btn');
         if (socialBtn) {
             socialBtn.addEventListener('click', function() {
-                var id = window.currentEditId ? window.currentEditId() : null;
+                var id = getCurrentEditId();
                 if (!id) {
                     alert('Please save the character first.');
                     return;
@@ -374,6 +402,35 @@
                 }
             }
         });
+    }
+
+    // ============================================================
+    // SAFE HELPER FUNCTIONS
+    // ============================================================
+
+    function getCurrentEditId() {
+        if (typeof window.currentEditId === 'function') {
+            return window.currentEditId();
+        }
+        return null;
+    }
+
+    function safeSetCurrentEditId(id) {
+        if (typeof window.setCurrentEditId === 'function') {
+            window.setCurrentEditId(id);
+        }
+    }
+
+    function safeShowCharacterForm(id) {
+        if (typeof window.showCharacterForm === 'function') {
+            window.showCharacterForm(id);
+        }
+    }
+
+    function safeRenderCharacterList() {
+        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+            window.CharacterList.render();
+        }
     }
 
     // ============================================================
