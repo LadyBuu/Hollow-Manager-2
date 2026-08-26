@@ -2,6 +2,24 @@
  * js/export/csv-schema.js - CSV Schema Definitions
  * Defines what gets exported/imported and how
  * Path: js/export/csv-schema.js
+ * 
+ * IMPORTANT: Import order matters for referential integrity.
+ * Dependencies must be imported before dependent records.
+ * 
+ * DEPENDENCY ORDER:
+ *   Characters (charMap)
+ *   Teams (teamMap) ─────┐
+ *   Team Members          │
+ *   Team Rankings         │
+ *   Tournaments (tournMap)│
+ *   Tournament Teams      │
+ *   Tournament Matches    │
+ *   Tournament Eliminations│
+ *   Tournament Participants│
+ *   Missions              │
+ *   Disciplines           │
+ *                         │
+ *   └── All relationships ─┘
  */
 
 (function() {
@@ -11,15 +29,30 @@
     var utils = window.ExportUtils;
 
     var CSV_SCHEMA = {
-        // Format version marker
+        // Format version marker - CANONICAL VERSION PARSING
         version: {
             sectionMarker: '# HOLLOW BLADES CSV',
             import: function(row) {
-                var version = row[1] || '1';
-                return { version: version };
+                // row[0] = '# HOLLOW BLADES CSV'
+                // row[1] = 'FORMAT VERSION'
+                // row[2] = actual version number
+                return {
+                    version: (row[2] || '1').trim()
+                };
             },
             export: function() {
                 return ['# HOLLOW BLADES CSV', 'FORMAT VERSION', '1'];
+            },
+            detect: function(records) {
+                for (var i = 0; i < records.length; i++) {
+                    var row = records[i];
+                    if (row.length === 0) continue;
+                    var first = (row[0] || '').trim();
+                    if (first === '# HOLLOW BLADES CSV') {
+                        return (row[2] || '1').trim();
+                    }
+                }
+                return 'unknown';
             }
         },
         characters: {
@@ -337,16 +370,24 @@
                 var team1Id = row[1] || '';
                 var team2Id = row[2] || '';
                 var winnerId = row[3] || '';
+                var valid = true;
                 
-                // Validate references
+                // Validate references - skip row if invalid
                 if (team1Id && !context.teamMap[team1Id]) {
-                    context.warnings.push('Tournament match references unknown team "' + team1Id + '"');
+                    context.warnings.push('Tournament match references unknown team "' + team1Id + '" - skipping match');
+                    valid = false;
                 }
                 if (team2Id && !context.teamMap[team2Id]) {
-                    context.warnings.push('Tournament match references unknown team "' + team2Id + '"');
+                    context.warnings.push('Tournament match references unknown team "' + team2Id + '" - skipping match');
+                    valid = false;
                 }
                 if (winnerId && !context.teamMap[winnerId] && !context.charMap[winnerId]) {
-                    context.warnings.push('Tournament match references unknown winner "' + winnerId + '"');
+                    context.warnings.push('Tournament match references unknown winner "' + winnerId + '" - skipping match');
+                    valid = false;
+                }
+                
+                if (!valid) {
+                    return null;
                 }
                 
                 tourn.matches.push({
@@ -387,16 +428,24 @@
                 var participantType = row[2] || 'character';
                 var teamId = row[3] || '';
                 var week = parseInt(row[4]) || 1;
+                var valid = true;
                 
-                // Validate references
+                // Validate references - skip row if invalid
                 if (participantType === 'character' && participantId && !context.charMap[participantId]) {
-                    context.warnings.push('Tournament elimination references unknown character "' + participantId + '"');
+                    context.warnings.push('Tournament elimination references unknown character "' + participantId + '" - skipping elimination');
+                    valid = false;
                 }
                 if (participantType === 'team' && participantId && !context.teamMap[participantId]) {
-                    context.warnings.push('Tournament elimination references unknown team "' + participantId + '"');
+                    context.warnings.push('Tournament elimination references unknown team "' + participantId + '" - skipping elimination');
+                    valid = false;
                 }
                 if (teamId && !context.teamMap[teamId]) {
-                    context.warnings.push('Tournament elimination references unknown team "' + teamId + '"');
+                    context.warnings.push('Tournament elimination references unknown team "' + teamId + '" - skipping elimination');
+                    valid = false;
+                }
+                
+                if (!valid) {
+                    return null;
                 }
                 
                 tourn.eliminations.push({
@@ -442,13 +491,20 @@
                 
                 var participantId = row[1] || '';
                 var participantType = row[2] || 'character';
+                var valid = true;
                 
-                // Validate reference
+                // Validate references - skip row if invalid
                 if (participantType === 'character' && participantId && !context.charMap[participantId]) {
-                    context.warnings.push('Tournament participant references unknown character "' + participantId + '"');
+                    context.warnings.push('Tournament participant references unknown character "' + participantId + '" - skipping participant');
+                    valid = false;
                 }
                 if (participantType === 'team' && participantId && !context.teamMap[participantId]) {
-                    context.warnings.push('Tournament participant references unknown team "' + participantId + '"');
+                    context.warnings.push('Tournament participant references unknown team "' + participantId + '" - skipping participant');
+                    valid = false;
+                }
+                
+                if (!valid) {
+                    return null;
                 }
                 
                 tourn.participants.push({
@@ -482,8 +538,10 @@
                 var objectives = utils.safeJSONParse(row[10], []);
                 var teamId = row[5] || null;
                 
+                // Validate team reference - null it if invalid rather than keeping broken reference
                 if (teamId && !context.teamMap[teamId]) {
-                    context.warnings.push('Mission "' + (row[1] || '') + '" references unknown team "' + teamId + '"');
+                    context.warnings.push('Mission "' + (row[1] || '') + '" references unknown team "' + teamId + '" - unassigning mission');
+                    teamId = null;
                 }
                 
                 return {
