@@ -2,10 +2,68 @@
  * js/modules/characters/character-views.js - Character Views
  * Renders academic, professional, and social views for a character
  * Path: js/modules/characters/character-views.js
+ * 
+ * IMPORTANT: All user-controlled data must be escaped with escapeHtml()
+ * before being inserted into innerHTML. This prevents XSS attacks.
  */
 
 (function() {
     'use strict';
+
+    // Guard against duplicate script loading
+    if (window.__characterViewsLoaded) {
+        return;
+    }
+    window.__characterViewsLoaded = true;
+
+    // ============================================================
+    // HTML ESCAPING - Prevents XSS
+    // ============================================================
+
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    // ============================================================
+    // SAFE CSS COLOR VALIDATION
+    // ============================================================
+
+    function getSafeRelationshipColor(typeId) {
+        var color = getRelationshipTypeColor(typeId);
+        
+        // Standard CSS hex colors: 3, 4, 6, or 8 hex digits
+        if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color)) {
+            return color;
+        }
+        
+        // Allow rgb/rgba values
+        if (/^rgba?\(\s*[\d\s.,%]+\)$/i.test(color)) {
+            return color;
+        }
+        
+        // Common safe CSS colors used in the app
+        var safeColors = {
+            '#8cbb3a': true,  // familiar
+            '#c9a24b': true,  // professional
+            '#c1453c': true,  // romantic
+            '#4a9bc7': true,  // friendship
+            '#9b59b6': true,  // mentor
+            '#e67e22': true,  // rivalry
+            '#27ae60': true,  // alliance
+            '#7f8c8d': true   // other
+        };
+        
+        if (safeColors[color]) {
+            return color;
+        }
+        
+        return '#7f8c8d'; // Default safe color
+    }
 
     // ============================================================
     // ACADEMIC VIEW
@@ -29,23 +87,26 @@
                 });
                 var period = member ? (member.joinPeriod || '?') : '?';
                 if (member && member.leavePeriod) period += ' → ' + member.leavePeriod;
-                var classDisplay = team.classId ? ' [' + window.getClassDisplayName(team.classId) + ']' : '';
+                var classDisplay = team.classId ? ' [' + escapeHtml(window.getClassDisplayName(team.classId)) + ']' : '';
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + team.name + '</strong>' + classDisplay + ' <span style="color:var(--text-dim);font-size:0.7rem;">(Wk ' + period + ')</span>';
-                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + member.role + ']</span>';
+                html += '<strong>' + escapeHtml(team.name) + '</strong>' + classDisplay + ' <span style="color:var(--text-dim);font-size:0.7rem;">(Wk ' + escapeHtml(period) + ')</span>';
+                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(member.role) + ']</span>';
                 html += '</div>';
             });
         } else {
             html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No academic teams</p>';
         }
 
-        // Grades
+        // Grades - with defensive own-property protection
         html += '<h4 style="color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;">Grades</h4>';
         var curriculum = data.curriculum || {};
         var grades = curriculum.grades && curriculum.grades[char.id] ? curriculum.grades[char.id] : {};
         var classCount = 0;
+        
         for (var week in grades) {
+            if (!Object.prototype.hasOwnProperty.call(grades, week)) continue;
             for (var discId in grades[week]) {
+                if (!Object.prototype.hasOwnProperty.call(grades[week], discId)) continue;
                 classCount++;
             }
         }
@@ -53,27 +114,21 @@
         if (classCount > 0) {
             html += '<div style="max-height:100px;overflow-y:auto;font-size:0.7rem;">';
             for (var week in grades) {
+                if (!Object.prototype.hasOwnProperty.call(grades, week)) continue;
                 for (var discId in grades[week]) {
+                    if (!Object.prototype.hasOwnProperty.call(grades[week], discId)) continue;
                     var disc = window.getDiscipline(discId);
                     var score = grades[week][discId];
+                    var discName = disc ? disc.name : 'Unknown';
                     html += '<div style="padding:2px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;display:flex;justify-content:space-between;">';
-                    html += '<span>' + (disc ? disc.name : 'Unknown') + ' (Wk ' + week + ')</span>';
-                    html += '<span style="color:var(--accent);font-weight:600;">' + score + '%</span>';
+                    html += '<span>' + escapeHtml(discName) + ' (Wk ' + escapeHtml(week) + ')</span>';
+                    html += '<span style="color:var(--accent);font-weight:600;">' + escapeHtml(score) + '%</span>';
                     html += '</div>';
                 }
             }
             html += '</div>';
         } else {
             html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No grades recorded</p>';
-        }
-
-        // Schedule Summary
-        html += '<h4 style="color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;">Schedule Summary</h4>';
-        var scheduleCount = getScheduleCount(char.id);
-        if (scheduleCount > 0) {
-            html += '<p style="font-size:0.75rem;color:var(--text-dim);">Total classes scheduled: <strong>' + scheduleCount + '</strong></p>';
-        } else {
-            html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No schedule recorded</p>';
         }
 
         container.innerHTML = html;
@@ -102,15 +157,15 @@
                 var period = member ? (member.joinPeriod || '?') : '?';
                 if (member && member.leavePeriod) period += ' → ' + member.leavePeriod;
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--info);margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + team.name + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + period + ')</span>';
-                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + member.role + ']</span>';
+                html += '<strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(period) + ')</span>';
+                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(member.role) + ']</span>';
                 html += '</div>';
             });
         } else {
             html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No professional teams</p>';
         }
 
-        // Temporary/Internship Teams
+        // Temporary Teams
         html += '<h4 style="color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;">Temporary Teams</h4>';
         var tempTeams = getTeamsByTypeAndCharacter(['temporary', 'internship'], char.id);
         
@@ -122,8 +177,8 @@
                 var period = member ? (member.joinPeriod || '?') : '?';
                 if (member && member.leavePeriod) period += ' → ' + member.leavePeriod;
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--warning);margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + team.name + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + period + ')</span>';
-                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + member.role + ']</span>';
+                html += '<strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(period) + ')</span>';
+                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(member.role) + ']</span>';
                 html += '</div>';
             });
         } else {
@@ -142,8 +197,8 @@
                 var period = member ? (member.joinPeriod || '?') : '?';
                 if (member && member.leavePeriod) period += ' → ' + member.leavePeriod;
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--text-dim);margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + team.name + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + period + ')</span>';
-                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + member.role + ']</span>';
+                html += '<strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(period) + ')</span>';
+                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(member.role) + ']</span>';
                 html += '</div>';
             });
         } else {
@@ -166,8 +221,8 @@
                 var statusColor = m.status === 'completed' ? 'var(--accent)' : 
                                  m.status === 'cancelled' ? 'var(--danger)' : 'var(--warning)';
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + statusColor + ';margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + m.title + '</strong> <span style="color:' + statusColor + ';font-size:0.65rem;">' + (m.status || 'active') + '</span>';
-                if (m.location) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">(' + m.location + ')</span>';
+                html += '<strong>' + escapeHtml(m.title) + '</strong> <span style="color:' + statusColor + ';font-size:0.65rem;">' + escapeHtml(m.status || 'active') + '</span>';
+                if (m.location) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">(' + escapeHtml(m.location) + ')</span>';
                 html += '</div>';
             });
         } else {
@@ -203,19 +258,21 @@
             var other = window.getCharacterById(otherId);
             var otherName = other ? window.getDisplayName(other) : 'Unknown';
             var typeLabel = getRelationshipTypeLabel(rel.typeId);
-            var typeColor = getRelationshipTypeColor(rel.typeId);
+            var typeColor = getSafeRelationshipColor(rel.typeId);
             var period = '';
             if (rel.startYear && rel.endYear) {
                 period = rel.startYear + ' → ' + rel.endYear;
             } else if (rel.startYear) {
                 period = 'From ' + rel.startYear;
             }
-            var clarification = rel.clarification ? ' (' + rel.clarification + ')' : '';
-            var notes = rel.notes ? ' 📝' : '';
+            // Escape the value, then build the string
+            var clarification = rel.clarification 
+                ? ' (' + escapeHtml(rel.clarification) + ')' 
+                : '';
 
             html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + typeColor + ';margin-bottom:3px;font-size:0.75rem;">';
-            html += '<span><strong>' + otherName + '</strong> <span style="color:' + typeColor + ';">' + typeLabel + clarification + '</span></span>';
-            html += '<span style="font-size:0.65rem;color:var(--text-dim);">' + period + notes + '</span>';
+            html += '<span><strong>' + escapeHtml(otherName) + '</strong> <span style="color:' + typeColor + ';">' + escapeHtml(typeLabel) + clarification + '</span></span>';
+            html += '<span style="font-size:0.65rem;color:var(--text-dim);">' + escapeHtml(period) + '</span>';
             html += '</div>';
         });
         container.innerHTML = html;
@@ -239,8 +296,8 @@
                 <option value="instructor" ${status === 'instructor' ? 'selected' : ''}>Instructor</option>
                 <option value="support" ${status === 'support' ? 'selected' : ''}>Support</option>
             </select>
-            <input type="number" class="career-start-year" placeholder="Start Year" value="${startYear || ''}">
-            <input type="number" class="career-end-year" placeholder="End Year" value="${endYear || ''}">
+            <input type="number" class="career-start-year" placeholder="Start Year" value="${escapeHtml(startYear || '')}">
+            <input type="number" class="career-end-year" placeholder="End Year" value="${escapeHtml(endYear || '')}">
             <button type="button" class="small danger remove-status">✕</button>
         `;
         container.appendChild(entry);
@@ -305,8 +362,11 @@
         
         var count = 0;
         for (var week in schedule) {
+            if (!Object.prototype.hasOwnProperty.call(schedule, week)) continue;
             for (var day in schedule[week]) {
+                if (!Object.prototype.hasOwnProperty.call(schedule[week], day)) continue;
                 for (var hour in schedule[week][day]) {
+                    if (!Object.prototype.hasOwnProperty.call(schedule[week][day], hour)) continue;
                     if (schedule[week][day][hour]) count++;
                 }
             }
