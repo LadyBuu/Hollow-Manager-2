@@ -1,67 +1,17 @@
 /**
  * js/export/json-io.js - JSON Import/Export
- * Handles JSON backup/restore
+ * Handles JSON backup/restore with proper transaction semantics
  * Path: js/export/json-io.js
  */
 
 (function() {
     'use strict';
 
-    function hasExportableData(data) {
-        if (!data || typeof data !== 'object') return false;
-
-        var collections = [
-            'characters', 'teams', 'tournaments', 'missions', 'activities',
-            'classes', 'locations'
-        ];
-
-        for (var i = 0; i < collections.length; i++) {
-            var key = collections[i];
-            if (Array.isArray(data[key]) && data[key].length > 0) {
-                return true;
-            }
-        }
-
-        if (data.locationSchedules &&
-            typeof data.locationSchedules === 'object' &&
-            Object.keys(data.locationSchedules).length > 0) {
-            return true;
-        }
-
-        if (data.curriculum && typeof data.curriculum === 'object') {
-            var curriculumKeys = [
-                'disciplines', 'schedules', 'restDays', 'examDays',
-                'grades', 'rankings', 'classInstructors', 'classLabels',
-                'classGroupLabels', 'classDurations', 'classLocations',
-                'instructorClasses', 'instructorTemplates', 'instructorBlocks',
-                'instructorGroups', 'disciplineGroups', 'autoGroups'
-            ];
-
-            for (var j = 0; j < curriculumKeys.length; j++) {
-                var cKey = curriculumKeys[j];
-                var val = data.curriculum[cKey];
-                if (Array.isArray(val) && val.length > 0) {
-                    return true;
-                }
-                if (val && typeof val === 'object' && Object.keys(val).length > 0) {
-                    return true;
-                }
-            }
-        }
-
-        if (data.social &&
-            typeof data.social === 'object' &&
-            Array.isArray(data.social.relationships) &&
-            data.social.relationships.length > 0) {
-            return true;
-        }
-
-        return false;
-    }
+    var utils = window.ExportUtils;
 
     function exportJSON() {
         var data = window.data || {};
-        if (!hasExportableData(data)) {
+        if (!utils.containsApplicationData(data)) {
             alert('No data to export.');
             return;
         }
@@ -69,14 +19,9 @@
         var exportData = JSON.parse(JSON.stringify(data));
         var jsonData = JSON.stringify(exportData, null, 2);
         var blob = new Blob([jsonData], { type: 'application/json' });
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = url;
-        a.download = 'hollow-blades-data-' + new Date().toISOString().slice(0, 10) + '.json';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        var filename = 'hollow-blades-data-' + new Date().toISOString().slice(0, 10) + '.json';
+        
+        utils.downloadBlob(blob, filename);
 
         if (typeof window.logActivity === 'function') {
             window.logActivity('Exported data to JSON');
@@ -94,44 +39,56 @@
                     return;
                 }
 
-                var oldDataCopy = window.data ? JSON.parse(JSON.stringify(window.data)) : null;
+                // Create backup before any changes
+                var backup = utils.backupData(window.data);
 
+                // Migrate data
                 if (typeof window.migrateData === 'function') {
-                    imported = window.migrateData(imported);
+                    try {
+                        imported = window.migrateData(imported);
+                    } catch (migrateErr) {
+                        alert('Migration failed: ' + migrateErr.message);
+                        return;
+                    }
                 }
 
-                if (!hasExportableData(imported)) {
+                if (!utils.containsApplicationData(imported)) {
                     alert('No valid data found in JSON file.');
                     return;
                 }
 
-                if (!confirm('This will replace all current data. Continue?')) return;
-
-                window.data = imported;
-
-                if (typeof window.saveData === 'function') {
-                    window.saveData().then(function() {
-                        if (typeof window.logActivity === 'function') {
-                            window.logActivity('Imported data from JSON');
-                        }
-                        if (typeof window.renderAll === 'function') {
-                            window.renderAll();
-                        }
-                        if (typeof window.updateDashboardStats === 'function') {
-                            window.updateDashboardStats();
-                        }
-                        alert('Data imported successfully!\n' +
-                              'Characters: ' + (imported.characters ? imported.characters.length : 0) + '\n' +
-                              'Teams: ' + (imported.teams ? imported.teams.length : 0) + '\n' +
-                              'Tournaments: ' + (imported.tournaments ? imported.tournaments.length : 0));
-                    }).catch(function(err) {
-                        if (oldDataCopy) window.data = oldDataCopy;
-                        alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
-                    });
-                } else {
-                    if (oldDataCopy) window.data = oldDataCopy;
-                    alert('Could not save imported data.');
+                if (!confirm('This will replace all current data. Continue?')) {
+                    return;
                 }
+
+                // Save to database first, then update in-memory state
+                if (typeof window.saveData === 'function') {
+                    // If saveData accepts data, use that
+                    if (window.saveData.length >= 1) {
+                        window.saveData(imported).then(function() {
+                            window.data = imported;
+                            onImportSuccess(imported);
+                        }).catch(function(err) {
+                            utils.rollbackData(backup);
+                            alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
+                        });
+                    } else {
+                        // Legacy saveData that uses window.data
+                        window.data = imported;
+                        window.saveData().then(function() {
+                            onImportSuccess(imported);
+                        }).catch(function(err) {
+                            utils.rollbackData(backup);
+                            alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
+                        });
+                    }
+                } else {
+                    // No persistence available - just update memory
+                    window.data = imported;
+                    onImportSuccess(imported);
+                    alert('Data imported into memory, but could not be saved to persistent storage.');
+                }
+
             } catch (err) {
                 alert('Failed to import JSON: ' + err.message);
             }
@@ -139,9 +96,24 @@
         reader.readAsText(file);
     }
 
+    function onImportSuccess(data) {
+        if (typeof window.logActivity === 'function') {
+            window.logActivity('Imported data from JSON');
+        }
+        if (typeof window.renderAll === 'function') {
+            window.renderAll();
+        }
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
+        }
+        alert('Data imported successfully!\n' +
+              'Characters: ' + (data.characters ? data.characters.length : 0) + '\n' +
+              'Teams: ' + (data.teams ? data.teams.length : 0) + '\n' +
+              'Tournaments: ' + (data.tournaments ? data.tournaments.length : 0));
+    }
+
     // Expose
     window.exportJSON = exportJSON;
     window.importJSON = importJSON;
-    window.hasExportableData = hasExportableData;
 
 })();
