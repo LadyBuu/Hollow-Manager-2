@@ -3,13 +3,67 @@
  * Handles tournament and standalone eliminations for characters
  * Path: js/modules/characters/character-eliminations.js
  * 
+ * This module is responsible for:
+ *   - Rendering tournament eliminations
+ *   - Rendering standalone eliminations
+ *   - Adding standalone eliminations (with MUTATE → LOG → SAVE)
+ *   - Removing standalone eliminations (with MUTATE → LOG → SAVE)
+ *   - Marking/unmarking tournament eliminations (programmatic)
+ * 
  * IMPORTANT: All mutations follow the correct pattern:
  *   MUTATE → LOG → SAVE
- *   This ensures activities are persisted with the data change.
+ *   All user-controlled data is escaped to prevent XSS.
  */
 
 (function() {
     'use strict';
+
+    // Guard against duplicate script loading
+    if (window.__characterEliminationsLoaded) {
+        return;
+    }
+    window.__characterEliminationsLoaded = true;
+
+    // ============================================================
+    // HTML ESCAPING - Prevents XSS
+    // ============================================================
+
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    // ============================================================
+    // SAFE RENDER HELPERS
+    // ============================================================
+
+    function safeRenderCharacterList() {
+        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+            window.CharacterList.render();
+        }
+    }
+
+    function safeShowCharacterForm(id) {
+        if (typeof window.showCharacterForm === 'function') {
+            window.showCharacterForm(id);
+        }
+    }
+
+    function safeSetCurrentEditId(id) {
+        if (typeof window.setCurrentEditId === 'function') {
+            window.setCurrentEditId(id);
+        }
+    }
+
+    function safeUpdateDashboardStats() {
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
+        }
+    }
 
     // ============================================================
     // TOURNAMENT ELIMINATIONS
@@ -40,7 +94,7 @@
                 if (tourn) tournName = tourn.name;
             }
             html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--info-soft);border-radius:4px;margin-bottom:2px;border-left:3px solid var(--info);">';
-            html += '<span style="font-size:0.75rem;"><strong>' + tournName + '</strong> - Week ' + elim.week + (elim.reason ? ' (' + elim.reason + ')' : '') + '</span>';
+            html += '<span style="font-size:0.75rem;"><strong>' + escapeHtml(tournName) + '</strong> - Week ' + escapeHtml(elim.week) + (elim.reason ? ' (' + escapeHtml(elim.reason) + ')' : '') + '</span>';
             html += '</div>';
         });
         container.innerHTML = html;
@@ -67,7 +121,7 @@
         var html = '';
         standaloneElims.forEach(function(elim, index) {
             html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--warning-soft);border-radius:4px;margin-bottom:2px;border-left:3px solid var(--warning);">';
-            html += '<span style="font-size:0.75rem;">Week ' + elim.week + (elim.reason ? ' - ' + elim.reason : '') + ' <span style="color:var(--warning);font-size:0.6rem;">[Standalone]</span></span>';
+            html += '<span style="font-size:0.75rem;">Week ' + escapeHtml(elim.week) + (elim.reason ? ' - ' + escapeHtml(elim.reason) : '') + ' <span style="color:var(--warning);font-size:0.6rem;">[Standalone]</span></span>';
             html += '<button class="remove-standalone-elim small" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 4px;" data-index="' + index + '">✕</button>';
             html += '</div>';
         });
@@ -75,9 +129,9 @@
 
         container.querySelectorAll('.remove-standalone-elim').forEach(function(btn) {
             btn.addEventListener('click', function() {
-                var id = window.currentEditId ? window.currentEditId() : null;
+                var id = getCurrentEditId();
                 var index = parseInt(this.dataset.index);
-                if (id !== null) {
+                if (id !== null && !isNaN(index)) {
                     removeStandaloneElimination(id, index);
                 }
             });
@@ -89,7 +143,7 @@
     // ============================================================
 
     function addStandaloneElimination() {
-        var charId = window.currentEditId ? window.currentEditId() : null;
+        var charId = getCurrentEditId();
         if (!charId) {
             alert('Please select a character first.');
             return;
@@ -98,10 +152,15 @@
         var weekInput = document.getElementById('standalone-elim-week');
         var reasonInput = document.getElementById('standalone-elim-reason');
         
-        var week = parseInt(weekInput ? weekInput.value : 1) || 1;
+        var week = weekInput ? parseInt(weekInput.value) || 1 : 1;
         var reason = reasonInput ? reasonInput.value.trim() || 'Dropped out' : 'Dropped out';
 
         var data = window.data || {};
+        if (!data.characters) {
+            alert('Character data not found.');
+            return;
+        }
+
         var char = data.characters.find(function(c) { return String(c.id) === String(charId); });
         if (!char) {
             alert('Character not found.');
@@ -130,7 +189,10 @@
             return;
         }
 
-        // MUTATE
+        // Save backup for rollback
+        var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
+
+        // 1. MUTATE
         if (!char.eliminations) char.eliminations = [];
         if (!char.eliminatedWeeks) char.eliminatedWeeks = [];
 
@@ -145,35 +207,37 @@
         char.eliminatedWeeks.push(week);
         char.eliminatedWeeks.sort(function(a, b) { return a - b; });
 
-        // LOG
+        // 2. LOG
         var name = window.getDisplayName(char);
         if (typeof window.logActivity === 'function') {
             window.logActivity('Eliminated ' + name + ' (standalone, week ' + week + '): ' + reason);
         }
 
-        // SAVE
+        // 3. SAVE
         if (typeof window.saveData === 'function') {
             window.saveData()
                 .then(function() {
-                    window.CharacterList.render();
-                    window.showCharacterForm(charId);
-                    if (typeof window.updateDashboardStats === 'function') {
-                        window.updateDashboardStats();
-                    }
-                    alert('Character eliminated successfully!');
+                    onAddSuccess(charId);
                 })
                 .catch(function(err) {
                     console.error('Failed to add elimination:', err);
+                    if (backup) {
+                        window.data = backup;
+                        safeRenderCharacterList();
+                        safeShowCharacterForm(charId);
+                    }
                     alert('Failed to add elimination. Please try again.');
                 });
         } else {
-            window.CharacterList.render();
-            window.showCharacterForm(charId);
-            if (typeof window.updateDashboardStats === 'function') {
-                window.updateDashboardStats();
-            }
-            alert('Character eliminated successfully!');
+            onAddSuccess(charId);
         }
+    }
+
+    function onAddSuccess(charId) {
+        safeRenderCharacterList();
+        safeUpdateDashboardStats();
+        safeShowCharacterForm(charId);
+        alert('Character eliminated successfully!');
     }
 
     // ============================================================
@@ -184,13 +248,27 @@
         if (!confirm('Remove this standalone elimination?')) return;
         
         var data = window.data || {};
+        if (!data.characters) {
+            alert('Character data not found.');
+            return;
+        }
+
         var char = data.characters.find(function(c) { return String(c.id) === String(charId); });
-        if (!char || !char.eliminations) return;
+        if (!char || !char.eliminations) {
+            alert('Character or elimination not found.');
+            return;
+        }
 
         var elim = char.eliminations[index];
-        if (!elim || !elim.standalone) return;
+        if (!elim || !elim.standalone) {
+            alert('Elimination not found or is not standalone.');
+            return;
+        }
 
-        // MUTATE
+        // Save backup for rollback
+        var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
+
+        // 1. MUTATE
         if (char.eliminatedWeeks) {
             var weekIdx = char.eliminatedWeeks.indexOf(parseInt(elim.week));
             if (weekIdx !== -1) {
@@ -199,49 +277,53 @@
         }
         char.eliminations.splice(index, 1);
 
-        // LOG
+        // 2. LOG
         var name = window.getDisplayName(char);
         if (typeof window.logActivity === 'function') {
             window.logActivity('Removed standalone elimination for ' + name + ' (week ' + elim.week + ')');
         }
 
-        // SAVE
+        // 3. SAVE
         if (typeof window.saveData === 'function') {
             window.saveData()
                 .then(function() {
-                    window.CharacterList.render();
-                    window.showCharacterForm(charId);
-                    if (typeof window.updateDashboardStats === 'function') {
-                        window.updateDashboardStats();
-                    }
-                    alert('Standalone elimination removed.');
+                    onRemoveSuccess(charId);
                 })
                 .catch(function(err) {
                     console.error('Failed to remove elimination:', err);
+                    if (backup) {
+                        window.data = backup;
+                        safeRenderCharacterList();
+                        safeShowCharacterForm(charId);
+                    }
                     alert('Failed to remove elimination. Please try again.');
                 });
         } else {
-            window.CharacterList.render();
-            window.showCharacterForm(charId);
-            if (typeof window.updateDashboardStats === 'function') {
-                window.updateDashboardStats();
-            }
-            alert('Standalone elimination removed.');
+            onRemoveSuccess(charId);
         }
     }
 
+    function onRemoveSuccess(charId) {
+        safeRenderCharacterList();
+        safeUpdateDashboardStats();
+        safeShowCharacterForm(charId);
+        alert('Standalone elimination removed.');
+    }
+
     // ============================================================
-    // TOURNAMENT ELIMINATION HELPERS
+    // TOURNAMENT ELIMINATION HELPERS (Programmatic)
     // ============================================================
 
     function markCharacterEliminated(charId, tournamentId, week, reason) {
         var data = window.data || {};
+        if (!data.characters) return;
+
         var char = data.characters.find(function(c) { return String(c.id) === String(charId); });
         if (!char) return;
 
         var weekNum = parseInt(week) || 1;
 
-        // MUTATE
+        // 1. MUTATE
         if (!char.eliminatedWeeks) char.eliminatedWeeks = [];
         if (char.eliminatedWeeks.indexOf(weekNum) === -1) {
             char.eliminatedWeeks.push(weekNum);
@@ -263,7 +345,7 @@
             });
         }
 
-        // LOG
+        // 2. LOG
         var name = window.getDisplayName(char);
         if (typeof window.logActivity === 'function') {
             var tournName = 'Unknown Tournament';
@@ -276,14 +358,12 @@
             window.logActivity(name + ' eliminated from ' + tournName + ' (week ' + weekNum + ')');
         }
 
-        // SAVE
+        // 3. SAVE
         if (typeof window.saveData === 'function') {
             window.saveData()
                 .then(function() {
-                    window.CharacterList.render();
-                    if (typeof window.updateDashboardStats === 'function') {
-                        window.updateDashboardStats();
-                    }
+                    safeRenderCharacterList();
+                    safeUpdateDashboardStats();
                 })
                 .catch(function(err) {
                     console.error('Failed to mark character eliminated:', err);
@@ -293,12 +373,13 @@
 
     function unmarkCharacterEliminated(charId, tournamentId) {
         var data = window.data || {};
+        if (!data.characters) return;
+
         var char = data.characters.find(function(c) { return String(c.id) === String(charId); });
         if (!char) return;
 
-        // MUTATE
+        // 1. MUTATE
         if (char.eliminatedWeeks && tournamentId) {
-            // Remove weeks associated with this tournament
             var tourn = data.tournaments.find(function(t) { 
                 return String(t.id) === String(tournamentId); 
             });
@@ -317,7 +398,7 @@
             });
         }
 
-        // LOG
+        // 2. LOG
         var name = window.getDisplayName(char);
         if (typeof window.logActivity === 'function') {
             var tournName = 'Unknown Tournament';
@@ -330,20 +411,22 @@
             window.logActivity('Restored ' + name + ' from ' + tournName);
         }
 
-        // SAVE
+        // 3. SAVE
         if (typeof window.saveData === 'function') {
             window.saveData()
                 .then(function() {
-                    window.CharacterList.render();
-                    if (typeof window.updateDashboardStats === 'function') {
-                        window.updateDashboardStats();
-                    }
+                    safeRenderCharacterList();
+                    safeUpdateDashboardStats();
                 })
                 .catch(function(err) {
                     console.error('Failed to unmark character eliminated:', err);
                 });
         }
     }
+
+    // ============================================================
+    // QUERY FUNCTIONS
+    // ============================================================
 
     function isCharacterEliminatedByWeek(char, week) {
         if (!char) return false;
@@ -376,6 +459,17 @@
     }
 
     // ============================================================
+    // SAFE HELPERS
+    // ============================================================
+
+    function getCurrentEditId() {
+        if (typeof window.currentEditId === 'function') {
+            return window.currentEditId();
+        }
+        return null;
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -390,4 +484,4 @@
         getEliminatedCharacters: getEliminatedCharacters
     };
 
-})();chara
+})();
