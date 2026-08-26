@@ -2,6 +2,10 @@
  * js/export/csv-io.js - CSV Import/Export
  * Path: js/export/csv-io.js
  * 
+ * This file orchestrates CSV import/export using the canonical utilities.
+ * It does NOT contain business logic about what entities look like -
+ * that belongs in csv-schema.js.
+ * 
  * Import pipeline:
  *   Parse
  *     ↓
@@ -19,9 +23,9 @@
  *     ↓
  *   Rebuild reference maps (post-migration)
  *     ↓
- *   Validate references (post-migration)
+ *   Validate references (post-migration) - removes dangling relationships
  *     ↓
- *   Show warnings (capped)
+ *   Show warnings (capped at 50)
  *     ↓
  *   Confirm replacement
  *     ↓
@@ -43,6 +47,7 @@
  *   - Numeric fields are strictly validated (no "12garbage" allowed)
  *   - saveData() must return true on success, throw/reject on failure
  *   - If saveData is unavailable, import fails (no in-memory only mode)
+ *   - Dangling required relationships are REMOVED, not just warned about
  */
 
 (function() {
@@ -50,21 +55,22 @@
 
     var utils = window.ExportUtils;
     var schema = window.CSVSchema;
-    var MAX_WARNINGS = 50;
 
-    // Warning helper with cap
-    function addWarning(warnings, message) {
-        if (warnings.length < MAX_WARNINGS) {
-            warnings.push(message);
-        } else if (warnings.length === MAX_WARNINGS) {
-            warnings.push('Additional warnings omitted.');
-        }
+    // Validate dependencies
+    if (!window.CSV || typeof window.CSV.parse !== 'function') {
+        throw new Error('Cannot import CSV: CSV parser is unavailable.');
     }
 
     function exportCSV() {
         var data = window.data || {};
         if (!utils.hasCSVExportableData(data)) {
             alert('No CSV-exportable data found.\n\nCSV exports Characters, Teams, Tournaments, Missions, and Disciplines,\nincluding related team and tournament records.\nUse JSON for complete backups.');
+            return;
+        }
+
+        // Validate CSV encoder
+        if (!window.CSV || typeof window.CSV.arrayToCSV !== 'function') {
+            alert('Cannot export CSV: CSV encoder is unavailable.\n\nPlease ensure the application has loaded correctly.');
             return;
         }
 
@@ -195,7 +201,7 @@
     function importCSV(file) {
         var reader = new FileReader();
         reader.onload = function(e) {
-            // Outer try/catch for all import errors - single alert
+            // Single outer try/catch for all import errors
             try {
                 var records = window.CSV.parse(e.target.result);
                 if (records.length === 0) {
@@ -206,7 +212,6 @@
                 // Detect format version using canonical parser
                 var version = schema.version.detect(records);
                 if (version === 'unknown') {
-                    // No version marker - assume version 1 but warn
                     if (!confirm('This CSV file does not contain a format version marker.\n\n' +
                                  'Assuming format version 1.\n\n' +
                                  'Continue with import?')) {
@@ -223,23 +228,27 @@
 
                 // Get a fresh empty data structure from the canonical source
                 var newData = getEmptyData();
-                var charMap = {};
-                var teamMap = {};
-                var tournMap = {};
+                
+                // Use prototype-safe maps
+                var charMap = utils.createSafeMap();
+                var teamMap = utils.createSafeMap();
+                var tournMap = utils.createSafeMap();
+                
                 var idTracker = {
-                    characters: {},
-                    teams: {},
-                    tournaments: {},
-                    missions: {},
-                    disciplines: {}
+                    characters: utils.createSafeMap(),
+                    teams: utils.createSafeMap(),
+                    tournaments: utils.createSafeMap(),
+                    missions: utils.createSafeMap(),
+                    disciplines: utils.createSafeMap()
                 };
+                
                 var warnings = [];
                 var context = {
                     charMap: charMap,
                     teamMap: teamMap,
                     tournMap: tournMap,
                     addWarning: function(msg) {
-                        addWarning(warnings, msg);
+                        utils.addWarning(warnings, msg);
                     }
                 };
                 var foundExportableData = false;
@@ -262,11 +271,13 @@
                         continue;
                     }
 
-                    // Detect section
+                    // Detect section with prototype-safe iteration
                     var detectedSection = null;
                     for (var key in schema) {
+                        if (!Object.prototype.hasOwnProperty.call(schema, key)) continue;
                         if (key === 'version') continue;
-                        if (schema[key].sectionMarker === first) {
+                        
+                        if (schema[key] && schema[key].sectionMarker === first) {
                             detectedSection = key;
                             break;
                         }
@@ -280,10 +291,11 @@
                         var headerValidator = schema[currentSection].validateHeader;
                         if (typeof headerValidator === 'function') {
                             if (!headerValidator(headerRow)) {
-                                alert('Invalid header for section "' + currentSection + '".\n\n' +
-                                      'Expected: ' + schema[currentSection].header.join(', ') + '\n' +
-                                      'Got: ' + headerRow.join(', '));
-                                return;
+                                throw new Error(
+                                    'Invalid header for section "' + currentSection + '".\n\n' +
+                                    'Expected: ' + schema[currentSection].header.join(', ') + '\n' +
+                                    'Got: ' + headerRow.join(', ')
+                                );
                             }
                         }
                         if (!sections[currentSection]) {
@@ -319,12 +331,17 @@
                             if (result && typeof result === 'object') {
                                 var id = result.id;
                                 var collection = getCollectionForSection(sectionName);
+                                var normalisedId = utils.normaliseId(id);
 
-                                if (id && collection && idTracker[collection] && idTracker[collection][id]) {
-                                    throw new Error('Duplicate ' + collection.slice(0, -1) + ' ID "' + id + '" found in CSV.');
+                                if (normalisedId && collection && idTracker[collection] &&
+                                    idTracker[collection][normalisedId]) {
+                                    throw new Error(
+                                        'Duplicate ' + collection.slice(0, -1) +
+                                        ' ID "' + id + '" found in CSV.'
+                                    );
                                 }
-                                if (id && collection && idTracker[collection]) {
-                                    idTracker[collection][id] = true;
+                                if (normalisedId && collection && idTracker[collection]) {
+                                    idTracker[collection][normalisedId] = true;
                                 }
 
                                 // Add to appropriate collection
@@ -351,7 +368,6 @@
                                 }
                             }
                         } catch (err) {
-                            // Wrap error with context and rethrow for outer handler
                             throw new Error(
                                 'Error importing ' + sectionName +
                                 ' row ' + (idx + 1) +
@@ -365,8 +381,7 @@
                 // PHASE 3: Process relationships SECOND (order independent)
                 // ============================================================
 
-                var relationshipSections = ['teamMembers', 'teamRankings', 'tournamentTeams',
-                                           'tournamentMatches', 'tournamentEliminations', 'tournamentParticipants'];
+                var relationshipSections = utils.CSV_RELATIONSHIP_SECTIONS;
 
                 relationshipSections.forEach(function(sectionName) {
                     var rows = sections[sectionName] || [];
@@ -396,7 +411,7 @@
                 // PHASE 4: Rebuild maps, migrate, rebuild again, validate
                 // ============================================================
 
-                // Rebuild reference maps before migration (ensures consistency)
+                // Rebuild reference maps before migration
                 rebuildReferenceMaps(newData, context);
 
                 // MIGRATE AND NORMALISE - with validation
@@ -404,23 +419,21 @@
                     try {
                         var migratedData = window.migrateData(newData);
                         
-                        // Validate migration result
                         if (!migratedData || typeof migratedData !== 'object') {
                             throw new Error('Migration returned an invalid data structure.');
                         }
                         
                         newData = migratedData;
                     } catch (migrateErr) {
-                        alert('Migration failed: ' + migrateErr.message);
-                        return;
+                        throw new Error('Migration failed: ' + migrateErr.message);
                     }
                 }
 
-                // Rebuild reference maps after migration (migration may have changed IDs/structure)
+                // Rebuild reference maps after migration
                 rebuildReferenceMaps(newData, context);
 
-                // Post-migration referential validation
-                validateImportedReferences(newData, warnings, context.addWarning);
+                // Post-migration referential validation - REMOVES dangling relationships
+                validateAndCleanReferences(newData, context.addWarning);
 
                 // Validate the resulting data structure
                 if (!utils.hasCSVExportableData(newData)) {
@@ -460,11 +473,9 @@
                 // PHASE 6: Persist with explicit contract enforcement
                 // ============================================================
 
-                // Create backup only after confirmation
                 var backup = utils.cloneData(window.data);
                 var persisted = false;
 
-                // saveData must exist and return true on success
                 if (typeof window.saveData !== 'function') {
                     alert(
                         'Cannot import CSV: saveData() is unavailable.\n\n' +
@@ -474,15 +485,17 @@
                     return;
                 }
 
-                // Execute save with explicit success check
-                Promise.resolve(window.saveData(newData))
+                // Uniform async chain with strict contract
+                Promise.resolve()
+                    .then(function() {
+                        return window.saveData(newData);
+                    })
                     .then(function(result) {
                         // Strict contract: result must be exactly true
                         if (result !== true) {
                             throw new Error('saveData did not confirm successful persistence.');
                         }
-                        
-                        // Persistence confirmed
+
                         persisted = true;
                         window.data = newData;
 
@@ -518,9 +531,9 @@
      * Used before and after migration
      */
     function rebuildReferenceMaps(data, context) {
-        context.charMap = {};
-        context.teamMap = {};
-        context.tournMap = {};
+        context.charMap = utils.createSafeMap();
+        context.teamMap = utils.createSafeMap();
+        context.tournMap = utils.createSafeMap();
 
         (data.characters || []).forEach(function(char) {
             context.charMap[utils.normaliseId(char.id)] = char;
@@ -536,19 +549,15 @@
     }
 
     /**
-     * Post-import referential validation
-     * Checks all foreign keys after import is complete
-     * Repairs dangling references where possible (nulls them)
+     * Post-import referential validation and cleaning
+     * Removes dangling relationships rather than just warning about them
      */
-    function validateImportedReferences(data, warnings, addWarning) {
-        // Validate missions - null broken references
+    function validateAndCleanReferences(data, addWarning) {
+        // 1. Validate missions - null broken references
         if (Array.isArray(data.missions)) {
             data.missions.forEach(function(mission) {
                 if (mission.assignedTeamId) {
-                    var teamExists = data.teams && data.teams.some(function(t) {
-                        return utils.normaliseId(t.id) === utils.normaliseId(mission.assignedTeamId);
-                    });
-                    if (!teamExists) {
+                    if (!utils.hasId(data.teams, mission.assignedTeamId)) {
                         addWarning('Mission "' + mission.title + '" references unknown team "' + mission.assignedTeamId + '" - clearing reference');
                         mission.assignedTeamId = null;
                     }
@@ -556,33 +565,33 @@
             });
         }
 
-        // Validate team members and class IDs
+        // 2. Validate and clean team members
         if (Array.isArray(data.teams)) {
             data.teams.forEach(function(team) {
+                // Clean members - remove those with dangling character references
                 if (Array.isArray(team.members)) {
-                    team.members.forEach(function(member) {
-                        var charExists = data.characters && data.characters.some(function(c) {
-                            return utils.normaliseId(c.id) === utils.normaliseId(member.characterId);
-                        });
-                        if (!charExists) {
-                            addWarning('Team "' + team.name + '" references unknown character "' + member.characterId + '"');
+                    team.members = team.members.filter(function(member) {
+                        if (!utils.hasId(data.characters, member.characterId)) {
+                            addWarning(
+                                'Team "' + team.name + '" references unknown character "' + 
+                                member.characterId + '" - skipping member'
+                            );
+                            return false;
                         }
+                        return true;
                     });
                 }
-                // Validate team classId - null if invalid
+
+                // Clean team classId - null if invalid
                 if (team.classId) {
                     // Check if classId refers to a discipline in curriculum
                     var classExists = data.curriculum && 
                                       Array.isArray(data.curriculum.disciplines) &&
-                                      data.curriculum.disciplines.some(function(d) {
-                                          return utils.normaliseId(d.id) === utils.normaliseId(team.classId);
-                                      });
+                                      utils.hasId(data.curriculum.disciplines, team.classId);
                     
                     // Also check if there's a separate classes collection
                     if (!classExists && data.classes) {
-                        classExists = data.classes.some(function(c) {
-                            return utils.normaliseId(c.id) === utils.normaliseId(team.classId);
-                        });
+                        classExists = utils.hasId(data.classes, team.classId);
                     }
                     
                     if (!classExists) {
@@ -593,124 +602,130 @@
             });
         }
 
-        // Validate tournament teams
+        // 3. Validate and clean tournament data
         if (Array.isArray(data.tournaments)) {
             data.tournaments.forEach(function(tourn) {
+                // Clean tournament teams
                 if (Array.isArray(tourn.teams)) {
-                    tourn.teams.forEach(function(entry) {
-                        var teamExists = data.teams && data.teams.some(function(t) {
-                            return utils.normaliseId(t.id) === utils.normaliseId(entry.teamId);
-                        });
-                        if (!teamExists) {
-                            addWarning('Tournament "' + tourn.name + '" references unknown team "' + entry.teamId + '"');
+                    tourn.teams = tourn.teams.filter(function(entry) {
+                        if (!utils.hasId(data.teams, entry.teamId)) {
+                            addWarning(
+                                'Tournament "' + tourn.name + '" references unknown team "' + 
+                                entry.teamId + '" - skipping tournament team'
+                            );
+                            return false;
                         }
+                        return true;
                     });
                 }
 
-                // Validate tournament matches
+                // Clean tournament participants
+                if (Array.isArray(tourn.participants)) {
+                    tourn.participants = tourn.participants.filter(function(participant) {
+                        if (!participant.id) {
+                            return true;
+                        }
+
+                        var exists = false;
+                        if (participant.type === 'character') {
+                            exists = utils.hasId(data.characters, participant.id);
+                        } else if (participant.type === 'team') {
+                            exists = utils.hasId(data.teams, participant.id);
+                        }
+
+                        if (!exists) {
+                            addWarning(
+                                'Tournament "' + tourn.name + '" references unknown participant "' + 
+                                participant.id + '" - skipping participant'
+                            );
+                            return false;
+                        }
+                        return true;
+                    });
+                }
+
+                // Clean tournament eliminations
+                if (Array.isArray(tourn.eliminations)) {
+                    tourn.eliminations = tourn.eliminations.filter(function(elim) {
+                        var valid = true;
+
+                        if (elim.participantId) {
+                            var exists = false;
+                            if (elim.participantType === 'character') {
+                                exists = utils.hasId(data.characters, elim.participantId);
+                            } else if (elim.participantType === 'team') {
+                                exists = utils.hasId(data.teams, elim.participantId);
+                            }
+                            if (!exists) {
+                                addWarning(
+                                    'Tournament "' + tourn.name + '" elimination references unknown participant "' + 
+                                    elim.participantId + '" - skipping elimination'
+                                );
+                                valid = false;
+                            }
+                        }
+
+                        if (elim.teamId && !utils.hasId(data.teams, elim.teamId)) {
+                            addWarning(
+                                'Tournament "' + tourn.name + '" elimination references unknown team "' + 
+                                elim.teamId + '" - skipping elimination'
+                            );
+                            valid = false;
+                        }
+
+                        return valid;
+                    });
+                }
+
+                // Clean tournament matches - remove those with invalid team references
                 if (Array.isArray(tourn.matches)) {
-                    tourn.matches.forEach(function(match) {
-                        if (match.team1Id) {
-                            var team1Exists = data.teams && data.teams.some(function(t) {
-                                return utils.normaliseId(t.id) === utils.normaliseId(match.team1Id);
-                            });
-                            if (!team1Exists) {
-                                addWarning('Tournament "' + tourn.name + '" match references unknown team1 "' + match.team1Id + '"');
-                            }
+                    tourn.matches = tourn.matches.filter(function(match) {
+                        var valid = true;
+
+                        if (match.team1Id && !utils.hasId(data.teams, match.team1Id)) {
+                            addWarning(
+                                'Tournament "' + tourn.name + '" match references unknown team1 "' + 
+                                match.team1Id + '" - skipping match'
+                            );
+                            valid = false;
                         }
-                        if (match.team2Id) {
-                            var team2Exists = data.teams && data.teams.some(function(t) {
-                                return utils.normaliseId(t.id) === utils.normaliseId(match.team2Id);
-                            });
-                            if (!team2Exists) {
-                                addWarning('Tournament "' + tourn.name + '" match references unknown team2 "' + match.team2Id + '"');
-                            }
+
+                        if (match.team2Id && !utils.hasId(data.teams, match.team2Id)) {
+                            addWarning(
+                                'Tournament "' + tourn.name + '" match references unknown team2 "' + 
+                                match.team2Id + '" - skipping match'
+                            );
+                            valid = false;
                         }
+
                         if (match.winner) {
                             var winnerExists = false;
                             if (match.winnerType === 'team') {
-                                winnerExists = data.teams && data.teams.some(function(t) {
-                                    return utils.normaliseId(t.id) === utils.normaliseId(match.winner);
-                                });
+                                winnerExists = utils.hasId(data.teams, match.winner);
                             } else if (match.winnerType === 'character') {
-                                winnerExists = data.characters && data.characters.some(function(c) {
-                                    return utils.normaliseId(c.id) === utils.normaliseId(match.winner);
-                                });
+                                winnerExists = utils.hasId(data.characters, match.winner);
                             } else {
                                 // Try both if type not specified
-                                if (data.teams && data.teams.some(function(t) { return utils.normaliseId(t.id) === utils.normaliseId(match.winner); })) {
-                                    winnerExists = true;
-                                }
-                                if (!winnerExists && data.characters && data.characters.some(function(c) { return utils.normaliseId(c.id) === utils.normaliseId(match.winner); })) {
-                                    winnerExists = true;
-                                }
+                                winnerExists = utils.hasId(data.teams, match.winner) ||
+                                             utils.hasId(data.characters, match.winner);
                             }
                             if (!winnerExists) {
-                                addWarning('Tournament "' + tourn.name + '" match references unknown winner "' + match.winner + '"');
+                                addWarning(
+                                    'Tournament "' + tourn.name + '" match references unknown winner "' + 
+                                    match.winner + '" - skipping match'
+                                );
+                                valid = false;
                             }
                         }
+
+                        return valid;
                     });
                 }
 
-                // Validate tournament eliminations
-                if (Array.isArray(tourn.eliminations)) {
-                    tourn.eliminations.forEach(function(elim) {
-                        if (elim.participantId) {
-                            var participantExists = false;
-                            if (elim.participantType === 'character') {
-                                participantExists = data.characters && data.characters.some(function(c) {
-                                    return utils.normaliseId(c.id) === utils.normaliseId(elim.participantId);
-                                });
-                            } else if (elim.participantType === 'team') {
-                                participantExists = data.teams && data.teams.some(function(t) {
-                                    return utils.normaliseId(t.id) === utils.normaliseId(elim.participantId);
-                                });
-                            }
-                            if (!participantExists) {
-                                addWarning('Tournament "' + tourn.name + '" elimination references unknown participant "' + elim.participantId + '"');
-                            }
-                        }
-                        if (elim.teamId) {
-                            var teamExists = data.teams && data.teams.some(function(t) {
-                                return utils.normaliseId(t.id) === utils.normaliseId(elim.teamId);
-                            });
-                            if (!teamExists) {
-                                addWarning('Tournament "' + tourn.name + '" elimination references unknown team "' + elim.teamId + '"');
-                            }
-                        }
-                    });
-                }
-
-                // Validate tournament participants
-                if (Array.isArray(tourn.participants)) {
-                    tourn.participants.forEach(function(participant) {
-                        if (participant.id) {
-                            var exists = false;
-                            if (participant.type === 'character') {
-                                exists = data.characters && data.characters.some(function(c) {
-                                    return utils.normaliseId(c.id) === utils.normaliseId(participant.id);
-                                });
-                            } else if (participant.type === 'team') {
-                                exists = data.teams && data.teams.some(function(t) {
-                                    return utils.normaliseId(t.id) === utils.normaliseId(participant.id);
-                                });
-                            }
-                            if (!exists) {
-                                addWarning('Tournament "' + tourn.name + '" references unknown participant "' + participant.id + '"');
-                            }
-                        }
-                    });
-                }
-
-                // Validate tournament winner
+                // Validate tournament winner (don't remove, just warn)
                 if (tourn.winner) {
-                    var winnerExists = false;
-                    if (data.teams && data.teams.some(function(t) { return utils.normaliseId(t.id) === utils.normaliseId(tourn.winner); })) {
-                        winnerExists = true;
-                    }
-                    if (!winnerExists && data.characters && data.characters.some(function(c) { return utils.normaliseId(c.id) === utils.normaliseId(tourn.winner); })) {
-                        winnerExists = true;
-                    }
+                    var winnerExists = utils.hasId(data.teams, tourn.winner) ||
+                                      utils.hasId(data.characters, tourn.winner);
                     if (!winnerExists) {
                         addWarning('Tournament "' + tourn.name + '" references unknown winner "' + tourn.winner + '"');
                     }
@@ -741,7 +756,6 @@
             window.updateDashboardStats();
         }
 
-        // Show the result with warnings if any
         var charCount = data.characters ? data.characters.length : 0;
         var teamCount = data.teams ? data.teams.length : 0;
         var tournCount = data.tournaments ? data.tournaments.length : 0;
@@ -766,7 +780,6 @@
         alert(msg);
     }
 
-    // Delegate to canonical data/state layer - fail loudly if not available
     function getEmptyData() {
         if (typeof window.getDefaultData !== 'function') {
             throw new Error(
@@ -774,11 +787,9 @@
                 'Please ensure the application has loaded correctly before importing CSV.'
             );
         }
-
         return window.getDefaultData();
     }
 
-    // Delegate to canonical curriculum initializer - fail loudly if not available
     function getEmptyCurriculum() {
         if (typeof window.getDefaultCurriculum !== 'function') {
             throw new Error(
@@ -786,7 +797,6 @@
                 'Please ensure the application has loaded correctly before importing CSV.'
             );
         }
-
         return window.getDefaultCurriculum();
     }
 
