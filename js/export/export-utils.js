@@ -6,9 +6,138 @@
 (function() {
     'use strict';
 
+    // ============================================================
+    // DATA VALIDATION HELPERS
+    // ============================================================
+
+    /**
+     * Check if a row is completely blank (all cells empty)
+     */
+    function isBlankRow(row) {
+        if (!row || row.length === 0) return true;
+        return row.every(function(cell) {
+            return String(cell || '').trim() === '';
+        });
+    }
+
+    /**
+     * Require a field to be non-empty
+     * @throws {Error} if field is missing or empty
+     */
+    function requireField(row, index, fieldName) {
+        var value = String(row[index] || '').trim();
+        if (!value) {
+            throw new Error('Missing required field "' + fieldName + '" at column ' + (index + 1));
+        }
+        return value;
+    }
+
+    /**
+     * Require a field to be a valid integer
+     * @throws {Error} if value is not a valid integer
+     */
+    function requireInteger(row, index, fieldName, fallback) {
+        var value = String(row[index] || '').trim();
+        
+        // If blank and fallback provided, return fallback
+        if (value === '' && fallback !== undefined) {
+            return fallback;
+        }
+        
+        // If blank and no fallback, throw
+        if (value === '') {
+            throw new Error('Missing required numeric field "' + fieldName + '" at column ' + (index + 1));
+        }
+        
+        var parsed = parseInt(value, 10);
+        if (isNaN(parsed)) {
+            throw new Error('Invalid integer "' + value + '" for field "' + fieldName + '" at column ' + (index + 1));
+        }
+        
+        return parsed;
+    }
+
+    /**
+     * Require a field to be a valid number (float)
+     * @throws {Error} if value is not a valid number
+     */
+    function requireNumber(row, index, fieldName, fallback) {
+        var value = String(row[index] || '').trim();
+        
+        if (value === '' && fallback !== undefined) {
+            return fallback;
+        }
+        
+        if (value === '') {
+            throw new Error('Missing required numeric field "' + fieldName + '" at column ' + (index + 1));
+        }
+        
+        var parsed = parseFloat(value);
+        if (isNaN(parsed)) {
+            throw new Error('Invalid number "' + value + '" for field "' + fieldName + '" at column ' + (index + 1));
+        }
+        
+        return parsed;
+    }
+
+    /**
+     * Require a field to be one of the allowed enum values
+     * @throws {Error} if value is not in the allowed list
+     */
+    function requireEnum(row, index, fieldName, allowed, defaultValue) {
+        var value = String(row[index] || '').trim();
+        
+        if (value === '' && defaultValue !== undefined) {
+            return defaultValue;
+        }
+        
+        if (value === '') {
+            throw new Error('Missing required field "' + fieldName + '" at column ' + (index + 1));
+        }
+        
+        if (allowed.indexOf(value) === -1) {
+            throw new Error('Invalid value "' + value + '" for field "' + fieldName + '" at column ' + (index + 1) + 
+                          '. Allowed values: ' + allowed.join(', '));
+        }
+        
+        return value;
+    }
+
+    /**
+     * Parse JSON field with warning support
+     * @returns {object} parsed JSON or fallback
+     */
+    function parseJSONField(row, index, fieldName, fallback, addWarning) {
+        var value = String(row[index] || '').trim();
+        
+        if (value === '') {
+            return fallback;
+        }
+        
+        try {
+            var parsed = JSON.parse(value);
+            return parsed !== undefined && parsed !== null ? parsed : fallback;
+        } catch (e) {
+            if (typeof addWarning === 'function') {
+                addWarning('Invalid JSON in "' + fieldName + '" at column ' + (index + 1) + ': ' + e.message);
+            }
+            return fallback;
+        }
+    }
+
+    /**
+     * Normalise an ID for consistent comparison
+     */
+    function normaliseId(id) {
+        return id == null ? '' : String(id).trim();
+    }
+
+    // ============================================================
+    // EXPORT/IMPORT HELPERS
+    // ============================================================
+
     /**
      * Check if data contains meaningful application data
-     * Used for both export and import validation
      */
     function containsApplicationData(data) {
         if (!data || typeof data !== 'object') return false;
@@ -64,7 +193,6 @@
 
     /**
      * Check if data has CSV-exportable content
-     * CSV is intentionally limited to simpler tabular data
      */
     function hasCSVExportableData(data) {
         if (!data || typeof data !== 'object') return false;
@@ -102,7 +230,7 @@
     }
 
     /**
-     * Safe JSON parse with fallback
+     * Safe JSON parse with fallback (legacy - use parseJSONField for new code)
      */
     function safeJSONParse(str, fallback) {
         if (!str) return fallback;
@@ -148,7 +276,8 @@
                 'Missions: ' + missionCount;
             
             if (format === 'CSV') {
-                msg += '\n\nNote: CSV only imports basic character info, teams, tournaments, missions, and disciplines.\n' +
+                msg += '\n\nNote: CSV imports Characters, Teams, Tournaments, Missions, and Disciplines,\n' +
+                       'including related team and tournament records.\n' +
                        'Use JSON for complete data restoration.';
             }
             
@@ -160,8 +289,21 @@
         }
     }
 
-    // Expose
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
     window.ExportUtils = {
+        // Validation
+        isBlankRow: isBlankRow,
+        requireField: requireField,
+        requireInteger: requireInteger,
+        requireNumber: requireNumber,
+        requireEnum: requireEnum,
+        parseJSONField: parseJSONField,
+        normaliseId: normaliseId,
+        
+        // Core
         containsApplicationData: containsApplicationData,
         hasCSVExportableData: hasCSVExportableData,
         downloadBlob: downloadBlob,
