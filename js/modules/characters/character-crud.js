@@ -1,14 +1,6 @@
 /**
  * js/modules/characters/character-crud.js - Character CRUD Operations
- * Handles create, read, update, delete for characters
  * Path: js/modules/characters/character-crud.js
- * 
- * IMPORTANT: All mutations follow the correct pattern:
- *   MUTATE → LOG → SAVE
- *   This ensures activities are persisted with the data change.
- * 
- * Contract: logActivity() updates memory only.
- *           Caller (CRUD) is responsible for saveData().
  */
 
 (function() {
@@ -22,16 +14,23 @@
         var form = document.getElementById('char-form');
         var editId = form ? form.dataset.editId : null;
         var data = window.data || {};
-        var isDeceased = document.getElementById('char-deceased').checked;
-        var deathYear = document.getElementById('char-death-year').value.trim();
-        var deathCause = document.getElementById('char-death-cause').value.trim();
-        var deathAge = document.getElementById('char-death-age').value.trim();
+        
+        var deceasedEl = document.getElementById('char-deceased');
+        if (!deceasedEl) {
+            alert('Form error: Missing required fields. Please refresh the page.');
+            return;
+        }
+        
+        var isDeceased = deceasedEl.checked;
+        var deathYear = document.getElementById('char-death-year') ? document.getElementById('char-death-year').value.trim() : '';
+        var deathCause = document.getElementById('char-death-cause') ? document.getElementById('char-death-cause').value.trim() : '';
+        var deathAge = document.getElementById('char-death-age') ? document.getElementById('char-death-age').value.trim() : '';
 
         var classIds = getClassIds();
         var careerStatus = getCareerStatus();
         var magic = getMagic();
-        var physicalMoves = getSpecialMoves('physical');
-        var magicalMoves = getSpecialMoves('magical');
+        var physicalMoves = getFormSpecialMoves('physical');
+        var magicalMoves = getFormSpecialMoves('magical');
 
         var charData = buildCharacterData(
             classIds, careerStatus, magic, physicalMoves, magicalMoves,
@@ -45,6 +44,7 @@
         var existingChar = null;
         var name = charData.firstName + ' ' + charData.lastName;
         var isNew = false;
+        var newId = null;
 
         if (editId) {
             existingChar = data.characters.find(function(c) { 
@@ -60,8 +60,9 @@
         // 1. MUTATE
         if (editId) {
             updateExistingCharacter(existingChar, charData, data);
+            newId = editId;
         } else {
-            createNewCharacter(charData, data);
+            newId = createNewCharacter(charData, data);
             isNew = true;
             name = charData.firstName + ' ' + charData.lastName;
         }
@@ -77,24 +78,24 @@
         if (typeof window.saveData === 'function') {
             window.saveData()
                 .then(function() {
-                    onSaveSuccess(editId, isNew);
+                    onSaveSuccess(newId, isNew);
                 })
                 .catch(function(err) {
                     console.error('Failed to save character:', err);
                     alert('Failed to save character. Please try again.');
                 });
         } else {
-            onSaveSuccess(editId, isNew);
+            onSaveSuccess(newId, isNew);
         }
     }
 
-    function onSaveSuccess(editId, isNew) {
-        window.CharacterList.render();
+    function onSaveSuccess(id, isNew) {
         if (typeof window.updateDashboardStats === 'function') {
             window.updateDashboardStats();
         }
-        var id = window.currentEditId ? window.currentEditId() : null;
+
         window.showCharacterForm(id);
+
         alert(isNew ? 'Character created successfully!' : 'Character saved successfully!');
     }
 
@@ -121,14 +122,16 @@
             return;
         }
 
-        // 1. MUTATE - remove from teams first
-        data.teams.forEach(function(team) {
-            if (team.members) {
-                team.members = team.members.filter(function(m) { 
-                    return String(m.characterId) !== String(id); 
-                });
-            }
-        });
+        // 1. MUTATE - remove from teams
+        if (Array.isArray(data.teams)) {
+            data.teams.forEach(function(team) {
+                if (Array.isArray(team.members)) {
+                    team.members = team.members.filter(function(m) {
+                        return String(m.characterId) !== String(id);
+                    });
+                }
+            });
+        }
 
         // 1. MUTATE - remove character
         data.characters = data.characters.filter(function(c) { 
@@ -157,7 +160,6 @@
 
     function onDeleteSuccess() {
         window.setCurrentEditId(null);
-        window.CharacterList.render();
         if (typeof window.updateDashboardStats === 'function') {
             window.updateDashboardStats();
         }
@@ -171,26 +173,32 @@
 
     function getClassIds() {
         var ids = [];
-        document.querySelectorAll('#class-tag-container [data-class-id]').forEach(function(tag) {
-            ids.push(tag.dataset.classId);
-        });
+        var container = document.getElementById('class-tag-container');
+        if (container) {
+            container.querySelectorAll('[data-class-id]').forEach(function(tag) {
+                ids.push(tag.dataset.classId);
+            });
+        }
         return ids;
     }
 
     function getCareerStatus() {
         var statuses = [];
-        document.querySelectorAll('.career-status-entry').forEach(function(entry) {
-            var select = entry.querySelector('.career-status-select');
-            var startInput = entry.querySelector('.career-start-year');
-            var endInput = entry.querySelector('.career-end-year');
-            if (select && select.value) {
-                statuses.push({
-                    status: select.value,
-                    startYear: startInput ? startInput.value || '' : '',
-                    endYear: endInput ? endInput.value || '' : ''
-                });
-            }
-        });
+        var container = document.getElementById('career-status-container');
+        if (container) {
+            container.querySelectorAll('.career-status-entry').forEach(function(entry) {
+                var select = entry.querySelector('.career-status-select');
+                var startInput = entry.querySelector('.career-start-year');
+                var endInput = entry.querySelector('.career-end-year');
+                if (select && select.value) {
+                    statuses.push({
+                        status: select.value,
+                        startYear: startInput ? startInput.value || '' : '',
+                        endYear: endInput ? endInput.value || '' : ''
+                    });
+                }
+            });
+        }
         return statuses;
     }
 
@@ -209,7 +217,8 @@
         return magic;
     }
 
-    function getSpecialMoves(type) {
+    // Renamed to avoid collision with character-detail's getSpecialMoves
+    function getFormSpecialMoves(type) {
         var moves = [];
         var containerId = type === 'physical' ? 'physical-moves-list' : 'magical-moves-list';
         var container = document.getElementById(containerId);
@@ -230,51 +239,68 @@
 
     function buildCharacterData(classIds, careerStatus, magic, physicalMoves, magicalMoves,
                                isDeceased, deathYear, deathCause, deathAge) {
+        var getVal = function(id, fallback) {
+            var el = document.getElementById(id);
+            return el ? el.value.trim() : fallback;
+        };
+
+        var getChecked = function(id) {
+            var el = document.getElementById(id);
+            return el ? el.checked : false;
+        };
+
+        var getInt = function(id, fallback) {
+            var el = document.getElementById(id);
+            if (!el) return fallback;
+            var val = parseInt(el.value);
+            return isNaN(val) ? fallback : val;
+        };
+
         return {
-            firstName: document.getElementById('char-firstname').value.trim(),
-            middleName: document.getElementById('char-middlename').value.trim(),
-            lastName: document.getElementById('char-lastname').value.trim(),
-            nickname: document.getElementById('char-nickname').value.trim(),
-            alias: document.getElementById('char-alias').value.trim(),
-            previousNames: document.getElementById('char-previous-names').value.split(',').map(function(n) { 
+            firstName: getVal('char-firstname', ''),
+            middleName: getVal('char-middlename', ''),
+            lastName: getVal('char-lastname', ''),
+            nickname: getVal('char-nickname', ''),
+            alias: getVal('char-alias', ''),
+            previousNames: getVal('char-previous-names', '').split(',').map(function(n) { 
                 return n.trim(); 
             }).filter(function(n) { return n; }),
-            nameFormat: document.getElementById('char-name-format').value || 'firstlast',
-            birthYear: document.getElementById('char-birthyear').value || '',
-            gender: document.getElementById('char-gender').value.trim(),
-            eyes: document.getElementById('char-eyes').value.trim(),
-            hair: document.getElementById('char-hair').value.trim(),
-            skin: document.getElementById('char-skin').value.trim(),
-            height: document.getElementById('char-height').value.trim(),
-            weight: document.getElementById('char-weight').value.trim(),
-            build: document.getElementById('char-build').value.trim(),
-            appearanceNotes: document.getElementById('char-appearance-notes').value.trim(),
-            notes: document.getElementById('char-notes').value.trim(),
+            nameFormat: getVal('char-name-format', 'firstlast'),
+            birthYear: getVal('char-birthyear', ''),
+            gender: getVal('char-gender', ''),
+            eyes: getVal('char-eyes', ''),
+            hair: getVal('char-hair', ''),
+            skin: getVal('char-skin', ''),
+            height: getVal('char-height', ''),
+            weight: getVal('char-weight', ''),
+            build: getVal('char-build', ''),
+            appearanceNotes: getVal('char-appearance-notes', ''),
+            notes: getVal('char-notes', ''),
             deceased: isDeceased,
             deathYear: deathYear,
             deathCause: deathCause,
             deathAge: deathAge,
             careerStatus: careerStatus,
-            specialty: document.getElementById('char-specialty').value.trim(),
+            specialty: getVal('char-specialty', ''),
             classIds: classIds,
             personality: {
-                traits: document.getElementById('char-traits').value.trim(),
-                ideals: document.getElementById('char-ideals').value.trim(),
-                flaws: document.getElementById('char-flaws').value.trim(),
-                alignment: document.getElementById('char-alignment').value.trim(),
-                likes: document.getElementById('char-likes').value.trim(),
-                dislikes: document.getElementById('char-dislikes').value.trim(),
-                habits: document.getElementById('char-habits').value.trim(),
-                fears: document.getElementById('char-fears').value.trim(),
-                goals: document.getElementById('char-goals').value.trim()
+                traits: getVal('char-traits', ''),
+                ideals: getVal('char-ideals', ''),
+                flaws: getVal('char-flaws', ''),
+                alignment: getVal('char-alignment', ''),
+                likes: getVal('char-likes', ''),
+                dislikes: getVal('char-dislikes', ''),
+                habits: getVal('char-habits', ''),
+                fears: getVal('char-fears', ''),
+                goals: getVal('char-goals', '')
             },
             stats: {
-                str: parseInt(document.getElementById('char-str').value) || 10,
-                dex: parseInt(document.getElementById('char-dex').value) || 10,
-                con: parseInt(document.getElementById('char-con').value) || 10,
-                int: parseInt(document.getElementById('char-int').value) || 10,
-                wis: parseInt(document.getElementById('char-wis').value) || 10,
-                cha: parseInt(document.getElementById('char-cha').value) || 10
+                str: getInt('char-str', 10),
+                dex: getInt('char-dex', 10),
+                con: getInt('char-con', 10),
+                int: getInt('char-int', 10),
+                wis: getInt('char-wis', 10),
+                cha: getInt('char-cha', 10)
             },
             magic: magic,
             specialMoves: {
@@ -301,16 +327,9 @@
     }
 
     function updateExistingCharacter(existing, charData, data) {
-        // Preserve eliminations and other fields not in the form
-        if (!charData.eliminations && existing.eliminations) {
-            charData.eliminations = existing.eliminations.slice();
-        }
-        if (!charData.eliminatedWeeks && existing.eliminatedWeeks) {
-            charData.eliminatedWeeks = existing.eliminatedWeeks.slice();
-        }
         charData.id = existing.id;
         charData.createdAt = existing.createdAt;
-        
+
         var index = data.characters.findIndex(function(c) { 
             return String(c.id) === String(existing.id); 
         });
@@ -321,8 +340,9 @@
     }
 
     function createNewCharacter(charData, data) {
+        var id = window.generateId ? window.generateId('char') : 'char_' + Date.now();
         var newChar = {
-            id: window.generateId ? window.generateId('char') : 'char_' + Date.now(),
+            id: id,
             firstName: charData.firstName,
             middleName: charData.middleName,
             lastName: charData.lastName,
@@ -356,8 +376,9 @@
             createdAt: new Date().toISOString()
         };
         data.characters.push(newChar);
-        window.setCurrentEditId(newChar.id);
+        window.setCurrentEditId(id);
         window.data = data;
+        return id;
     }
 
     // ============================================================
@@ -370,7 +391,7 @@
         getClassIds: getClassIds,
         getCareerStatus: getCareerStatus,
         getMagic: getMagic,
-        getSpecialMoves: getSpecialMoves,
+        getFormSpecialMoves: getFormSpecialMoves,
         buildCharacterData: buildCharacterData,
         validateCharacter: validateCharacter
     };
