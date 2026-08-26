@@ -12,9 +12,9 @@
  * 
  * IMPORTANT: All mutations follow the correct pattern:
  *   MUTATE → LOG → SAVE
- *   All user-controlled data is escaped to prevent XSS.
+ *   User-controlled text is inserted using safe DOM APIs/textContent
+ *   rather than raw HTML, preventing XSS.
  *   Rollback is performed on save failure.
- *   Class tags use DOM API (textContent) instead of innerHTML for safety.
  */
 
 (function() {
@@ -56,6 +56,17 @@
     }
 
     // ============================================================
+    // NORMALISE CLASS IDS - Defensive
+    // ============================================================
+
+    function normaliseClassIds(char) {
+        if (!char) return;
+        if (!Array.isArray(char.classIds)) {
+            char.classIds = [];
+        }
+    }
+
+    // ============================================================
     // CORE REMOVE FUNCTION - Single source of truth for removal
     // ============================================================
 
@@ -66,14 +77,22 @@
             return Promise.resolve(false);
         }
 
+        normaliseClassIds(char);
+
         var cls = window.getClass(classId);
         if (!cls) {
             alert('Class not found.');
             return Promise.resolve(false);
         }
 
-        if (!char.classIds || !char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+        if (!char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
             alert('Character is not in this class.');
+            return Promise.resolve(false);
+        }
+
+        // Centralised confirmation
+        var name = window.getDisplayName(char);
+        if (!confirm('Remove ' + name + ' from class "' + cls.name + '"?')) {
             return Promise.resolve(false);
         }
 
@@ -86,7 +105,6 @@
         });
 
         // 2. LOG
-        var name = window.getDisplayName(char);
         if (typeof window.logActivity === 'function') {
             window.logActivity('Removed ' + name + ' from class: ' + cls.name);
         }
@@ -145,6 +163,8 @@
             return;
         }
 
+        normaliseClassIds(char);
+
         var cls = window.getClass(classId);
         if (!cls) {
             alert('Class not found.');
@@ -152,7 +172,7 @@
         }
 
         // Check if already in class
-        if (char.classIds && char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+        if (char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
             alert('Character is already in this class.');
             return;
         }
@@ -161,7 +181,6 @@
         var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
 
         // 1. MUTATE
-        if (!char.classIds) char.classIds = [];
         char.classIds.push(classId);
 
         // 2. LOG
@@ -209,7 +228,9 @@
             return;
         }
 
-        if (!char.classIds || char.classIds.length === 0) {
+        normaliseClassIds(char);
+
+        if (char.classIds.length === 0) {
             alert('Character is not in any classes.');
             return;
         }
@@ -237,10 +258,7 @@
             return;
         }
 
-        if (!confirm('Remove ' + window.getDisplayName(char) + ' from class "' + cls.name + '"?')) {
-            return;
-        }
-
+        // removeClassById handles confirmation internally
         removeClassById(charId, cls.id);
     }
 
@@ -281,7 +299,7 @@
         tag.appendChild(button);
         container.appendChild(tag);
         
-        // Use removeClassById for actual removal
+        // removeClassById handles confirmation internally
         button.addEventListener('click', function() {
             var charId = safeGetCurrentEditId();
             var classId = this.dataset.id;
@@ -293,11 +311,6 @@
             
             if (!classId) {
                 alert('Class not found.');
-                return;
-            }
-            
-            // Confirm before removal
-            if (!confirm('Remove this class from the character?')) {
                 return;
             }
             
@@ -349,10 +362,11 @@
         if (!select) return;
 
         var classes = window.getClasses() || [];
-        var currentValue = select.value;
+        
+        // Reset select - this is an "add class" selector
         select.innerHTML = '<option value="">Select a class...</option>';
         
-        var existingClassIds = (char && char.classIds) || [];
+        var existingClassIds = (char && Array.isArray(char.classIds)) ? char.classIds : [];
         
         classes.forEach(function(cls) {
             var isAssigned = existingClassIds.some(function(cid) { 
@@ -366,14 +380,15 @@
             }
         });
         
-        if (currentValue) select.value = currentValue;
+        // Always reset to empty - current value may no longer be valid
+        select.value = '';
     }
 
     function updateCurrentClassesDisplay(char) {
         var display = document.getElementById('current-classes-list');
         if (!display) return;
 
-        var classIds = (char && char.classIds) || [];
+        var classIds = (char && Array.isArray(char.classIds)) ? char.classIds : [];
         if (classIds.length === 0) {
             display.textContent = 'None';
             return;
@@ -403,10 +418,13 @@
     // ============================================================
 
     function getCharacterClasses(char) {
-        if (!char || !char.classIds) return [];
+        if (!char) return [];
+        var classIds = Array.isArray(char.classIds) ? char.classIds : [];
+        if (classIds.length === 0) return [];
+        
         var classes = window.getClasses() || [];
         return classes.filter(function(c) {
-            return char.classIds.some(function(cid) { return String(cid) === String(c.id); });
+            return classIds.some(function(cid) { return String(cid) === String(c.id); });
         });
     }
 
@@ -420,7 +438,8 @@
         var data = window.data || {};
         if (!data.characters) return [];
         return data.characters.filter(function(c) {
-            return c.classIds && c.classIds.some(function(cid) { return String(cid) === String(classId); });
+            var classIds = Array.isArray(c.classIds) ? c.classIds : [];
+            return classIds.some(function(cid) { return String(cid) === String(classId); });
         });
     }
 
