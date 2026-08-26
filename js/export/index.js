@@ -7,12 +7,7 @@
 (function() {
     'use strict';
 
-    var initialized = false;
-
     function initImportExport() {
-        if (initialized) return;
-        initialized = true;
-
         // JSON buttons
         bindButton('export-json-btn', function(e) {
             e.preventDefault();
@@ -82,7 +77,7 @@
         });
     }
 
-    // Initialise when DOM is ready - no magic delay
+    // Initialise when DOM is ready - no magic delay, no global gate
     function tryInit() {
         if (document.readyState === 'complete' || document.readyState === 'interactive') {
             initImportExport();
@@ -92,19 +87,9 @@
     }
 
     // Also init when data loads (in case buttons are rendered dynamically)
-    document.addEventListener('dataReady', function() {
-        // Only init if not already done (idempotent)
-        if (!initialized) {
-            initImportExport();
-        }
-    });
-
-    // One more safety net - if dataReady fires before DOM is ready
-    document.addEventListener('dataLoaded', function() {
-        if (!initialized) {
-            tryInit();
-        }
-    });
+    // Note: No global gate - bind functions are idempotent via data-export-bound
+    document.addEventListener('dataReady', initImportExport);
+    document.addEventListener('dataLoaded', initImportExport);
 
     tryInit();
 
