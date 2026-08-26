@@ -3,16 +3,11 @@
  * Handles physical stats, magic proficiencies, class suggestions, special moves
  * Path: js/modules/characters/character-stats.js
  * 
- * This module is responsible for:
- *   - Physical stat management (STR, DEX, CON, INT, WIS, CHA)
- *   - Magic proficiency management (18 types across 3 categories)
- *   - Class suggestion based on stats
- *   - Magic class suggestion based on proficiencies
- *   - Magic power calculation and display
- *   - Special moves management (physical and magical)
- *   - UI event binding for stats/magic controls
+ * IMPORTANT: getCharacterStats() and getCharacterMagic() are PURE getters.
+ * They do NOT mutate characters. Default values are provided on read.
+ * Migration/repair should happen at the data layer, not here.
  * 
- * IMPORTANT: All user-controlled data in special moves must be escaped.
+ * All user-controlled data in special moves must be escaped.
  * Class/magic suggestions are read-only - persistence handled by parent form.
  */
 
@@ -235,6 +230,9 @@
         aether: { label: 'Aether Magic', color: '#4a9bc7' }
     };
 
+    // Magic scale: 0-10, where 9-10 is Master
+    var MAGIC_MAX = 10;
+
     // ============================================================
     // MAGIC TYPE HELPERS
     // ============================================================
@@ -254,7 +252,7 @@
     }
 
     // ============================================================
-    // STAT FUNCTIONS
+    // STAT FUNCTIONS - PURE GETTERS (no mutation)
     // ============================================================
 
     function getDefaultStats() {
@@ -263,31 +261,24 @@
 
     function getCharacterStats(char) {
         if (!char) return getDefaultStats();
-        if (!char.stats) {
-            char.stats = getDefaultStats();
-            return char.stats;
+        if (!char.stats || typeof char.stats !== 'object') {
+            return getDefaultStats();
         }
+        var stats = char.stats;
         var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-        var hasAll = true;
+        var result = {};
         for (var i = 0; i < statKeys.length; i++) {
-            if (char.stats[statKeys[i]] === undefined || char.stats[statKeys[i]] === null) {
-                hasAll = false;
-                break;
-            }
+            var key = statKeys[i];
+            var val = stats[key];
+            result[key] = (val !== undefined && val !== null && typeof val === 'number') ? val : 10;
         }
-        if (!hasAll) {
-            var defaultStats = getDefaultStats();
-            for (var key in defaultStats) {
-                if (char.stats[key] === undefined || char.stats[key] === null) {
-                    char.stats[key] = defaultStats[key];
-                }
-            }
-        }
-        return char.stats;
+        return result;
     }
 
     function getAbilityModifier(score) {
-        return Math.floor((parseInt(score) - 10) / 2);
+        var value = parseInt(score);
+        if (isNaN(value)) value = 10;
+        return Math.floor((value - 10) / 2);
     }
 
     function getModifierDisplay(score) {
@@ -360,25 +351,7 @@
             }
         });
 
-        if (!bestClass) {
-            var fallbackScore = -Infinity;
-            CLASS_DEFINITIONS.forEach(function(cls) {
-                var total = 0;
-                var totalWeight = 0;
-                for (var stat in cls.statWeights) {
-                    var weight = cls.statWeights[stat] || 0;
-                    var score = scores[stat] || 10;
-                    total += (score - 10) * weight;
-                    totalWeight += weight;
-                }
-                var normalized = totalWeight > 0 ? total / totalWeight : 0;
-                if (normalized > fallbackScore) {
-                    fallbackScore = normalized;
-                    bestClass = cls;
-                }
-            });
-        }
-
+        // No fallback - if no class qualifies, return null
         return bestClass;
     }
 
@@ -421,7 +394,7 @@
     }
 
     // ============================================================
-    // MAGIC FUNCTIONS
+    // MAGIC FUNCTIONS - PURE GETTERS (no mutation)
     // ============================================================
 
     function getDefaultMagicProficiencies() {
@@ -435,31 +408,18 @@
 
     function getCharacterMagic(char) {
         if (!char) return getDefaultMagicProficiencies();
-        if (!char.magic) {
-            char.magic = getDefaultMagicProficiencies();
-            return char.magic;
+        if (!char.magic || typeof char.magic !== 'object') {
+            return getDefaultMagicProficiencies();
         }
-
+        var magic = char.magic;
         var keys = getMagicTypeKeys();
-        var hasAll = true;
+        var result = {};
         for (var i = 0; i < keys.length; i++) {
             var key = keys[i];
-            if (char.magic[key] === undefined || char.magic[key] === null) {
-                hasAll = false;
-                break;
-            }
+            var val = magic[key];
+            result[key] = (val !== undefined && val !== null && typeof val === 'number') ? val : 0;
         }
-
-        if (!hasAll) {
-            var defaultMagic = getDefaultMagicProficiencies();
-            for (var key in defaultMagic) {
-                if (char.magic[key] === undefined || char.magic[key] === null) {
-                    char.magic[key] = defaultMagic[key];
-                }
-            }
-        }
-
-        return char.magic;
+        return result;
     }
 
     function calculateMagicPower(char) {
@@ -467,16 +427,18 @@
         var total = 0;
         var keys = getMagicTypeKeys();
         keys.forEach(function(key) {
-            total += parseInt(magic[key]) || 0;
+            total += magic[key] || 0;
         });
         return total;
     }
 
     function getMagicPowerDisplay(char) {
         var power = calculateMagicPower(char);
-        var maxPower = getMagicTypeKeys().length * 10;
+        var maxPower = getMagicTypeKeys().length * MAGIC_MAX;
         var percentage = Math.min(100, Math.round((power / maxPower) * 100));
-        var filledCount = Math.ceil(percentage / 20);
+        // Use floor for thresholds - 0% = 0 dots, 1-19% = 1 dot, 20-39% = 2 dots, etc.
+        var filledCount = Math.floor(percentage / 20);
+        if (filledCount > 5) filledCount = 5;
 
         var display = '';
         for (var i = 0; i < 5; i++) {
@@ -494,7 +456,12 @@
         var keys = getMagicTypeKeys();
         keys.forEach(function(key) {
             var input = document.getElementById('magic-' + key);
-            magic[key] = input ? parseInt(input.value) || 0 : 0;
+            if (input) {
+                var val = parseInt(input.value);
+                magic[key] = isNaN(val) ? 0 : Math.min(Math.max(val, 0), MAGIC_MAX);
+            } else {
+                magic[key] = 0;
+            }
         });
 
         var tempChar = { magic: magic };
@@ -507,9 +474,16 @@
 
         var scores = {};
         var keys = getMagicTypeKeys();
+        var totalPower = 0;
         keys.forEach(function(key) {
-            scores[key] = parseInt(magic[key]) || 0;
+            scores[key] = magic[key] || 0;
+            totalPower += scores[key];
         });
+
+        // If no magic power at all, return null
+        if (totalPower <= 0) {
+            return null;
+        }
 
         var categoryScores = { elemental: 0, body: 0, aether: 0 };
         var categoryCounts = { elemental: 0, body: 0, aether: 0 };
@@ -523,30 +497,48 @@
             }
         }
 
-        // Find winning category by average
+        // Find winning category by total (all categories have same number of types)
         var highestCategory = 'elemental';
-        var highestAvg = 0;
+        var highestScore = -1;
         for (var cat in categoryScores) {
-            if (categoryCounts[cat] > 0) {
-                var avg = categoryScores[cat] / categoryCounts[cat];
-                if (avg > highestAvg) {
-                    highestAvg = avg;
-                    highestCategory = cat;
-                }
+            if (categoryScores[cat] > highestScore) {
+                highestScore = categoryScores[cat];
+                highestCategory = cat;
             }
+        }
+
+        // Check if there's a tie for highest category
+        var tiedCategories = [];
+        for (var cat in categoryScores) {
+            if (categoryScores[cat] === highestScore && highestScore > 0) {
+                tiedCategories.push(cat);
+            }
+        }
+
+        // If tied and high enough, return "Balanced Mage"
+        if (tiedCategories.length > 1 && highestScore >= 18) {
+            return {
+                name: 'Balanced Mage',
+                category: null,
+                categoryLabel: null,
+                primaryType: null,
+                primaryLabel: null,
+                score: highestScore
+            };
         }
 
         // Find highest type WITHIN the winning category
         var highestType = null;
-        var highestScore = -1;
+        var highestTypeScore = -1;
         for (var key in scores) {
             if (MAGIC_TYPES[key].category !== highestCategory) continue;
-            if (scores[key] > highestScore) {
-                highestScore = scores[key];
+            if (scores[key] > highestTypeScore) {
+                highestTypeScore = scores[key];
                 highestType = key;
             }
         }
 
+        // If tied within category, use first one (deterministic)
         var classMap = {
             elemental: {
                 earth: 'Geomancer',
@@ -591,7 +583,7 @@
             categoryLabel: MAGIC_CATEGORIES[highestCategory] ? MAGIC_CATEGORIES[highestCategory].label : highestCategory,
             primaryType: highestType,
             primaryLabel: highestType ? MAGIC_TYPES[highestType] ? MAGIC_TYPES[highestType].label : null : null,
-            score: highestScore
+            score: highestTypeScore
         };
     }
 
@@ -600,7 +592,12 @@
         var keys = getMagicTypeKeys();
         keys.forEach(function(key) {
             var input = document.getElementById('magic-' + key);
-            magic[key] = input ? parseInt(input.value) || 0 : 0;
+            if (input) {
+                var val = parseInt(input.value);
+                magic[key] = isNaN(val) ? 0 : Math.min(Math.max(val, 0), MAGIC_MAX);
+            } else {
+                magic[key] = 0;
+            }
         });
 
         var tempChar = { magic: magic };
@@ -664,19 +661,20 @@
 
     function getSpecialMoves(char) {
         if (!char) return { physical: [], magical: [] };
-        if (!char.specialMoves) {
-            char.specialMoves = { physical: [], magical: [] };
+        if (!char.specialMoves || typeof char.specialMoves !== 'object') {
+            return { physical: [], magical: [] };
         }
-        if (!char.specialMoves.physical) char.specialMoves.physical = [];
-        if (!char.specialMoves.magical) char.specialMoves.magical = [];
-        return char.specialMoves;
+        return {
+            physical: Array.isArray(char.specialMoves.physical) ? char.specialMoves.physical.slice() : [],
+            magical: Array.isArray(char.specialMoves.magical) ? char.specialMoves.magical.slice() : []
+        };
     }
 
     function addSpecialMove(char, type, name, description) {
         if (!char) return false;
-        var moves = getSpecialMoves(char);
-        if (!moves[type]) moves[type] = [];
-        moves[type].push({
+        if (!char.specialMoves) char.specialMoves = { physical: [], magical: [] };
+        if (!char.specialMoves[type]) char.specialMoves[type] = [];
+        char.specialMoves[type].push({
             name: name || 'Unnamed Move',
             description: description || ''
         });
@@ -686,9 +684,8 @@
     function removeSpecialMove(char, type, index) {
         if (!char) return false;
         var moves = getSpecialMoves(char);
-        if (!moves[type]) return false;
-        if (index < 0 || index >= moves[type].length) return false;
-        moves[type].splice(index, 1);
+        if (!moves[type] || index < 0 || index >= moves[type].length) return false;
+        char.specialMoves[type].splice(index, 1);
         return true;
     }
 
@@ -728,7 +725,9 @@
                 renderSpecialMoves('physical-moves-list', moves.physical, 'physical');
                 renderSpecialMoves('magical-moves-list', moves.magical, 'magical');
                 if (typeof window.saveData === 'function') {
-                    window.saveData().catch(function(err) { /* ignore */ });
+                    window.saveData().catch(function(err) {
+                        console.error('Failed to save special move:', err);
+                    });
                 }
             });
         });
@@ -797,7 +796,7 @@
                 magicHTML += `
                     <div class="form-group">
                         <label style="font-size:0.55rem;text-align:center;display:block;">${label}</label>
-                        <input type="number" id="magic-${key}" min="0" max="10" value="0" 
+                        <input type="number" id="magic-${key}" min="0" max="${MAGIC_MAX}" value="0" 
                                style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" />
                     </div>
                 `;
@@ -812,11 +811,14 @@
                 <span id="suggested-magic-class" class="suggested-class empty" style="background:transparent;border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:0.7rem;color:var(--text-dim);font-weight:600;">—</span>
                 <select id="manual-magic-class-select" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;">
                     <option value="">Auto-suggest</option>
+                    <option value="elementalist">Elementalist</option>
+                    <option value="body_mage">Body Mage</option>
+                    <option value="aether_mage">Aether Mage</option>
                 </select>
                 <button type="button" id="recalculate-magic-class-btn" class="small secondary" style="font-size:0.6rem;padding:2px 8px;">Recalc</button>
             </div>
             <div class="magic-power-display" style="margin-top:6px;font-size:0.7rem;color:var(--text-dim);">
-                Magic Power: <span id="magic-power-display-text">○○○○○ (0/180)</span>
+                Magic Power: <span id="magic-power-display-text">○○○○○ (0/${getMagicTypeKeys().length * MAGIC_MAX})</span>
             </div>
             ${getSpecialMovesHTML()}
         `;
@@ -858,12 +860,20 @@
         statInputs.forEach(function(id) {
             var el = document.getElementById(id);
             if (el) {
-                el.addEventListener('input', function() {
+                // Use blur for sanitization, not input - allows editing
+                el.addEventListener('blur', function() {
                     var val = parseInt(this.value);
-                    if (isNaN(val)) val = 10;
-                    if (val < 1) val = 1;
-                    if (val > 30) val = 30;
-                    this.value = val;
+                    if (isNaN(val)) {
+                        this.value = 10;
+                    } else if (val < 1) {
+                        this.value = 1;
+                    } else if (val > 30) {
+                        this.value = 30;
+                    }
+                    updateClassSuggestion();
+                });
+                // Also update on change
+                el.addEventListener('change', function() {
                     updateClassSuggestion();
                 });
             }
@@ -956,12 +966,21 @@
             var id = 'magic-' + key;
             var el = document.getElementById(id);
             if (el) {
-                el.addEventListener('input', function() {
+                // Use blur for sanitization, not input - allows editing
+                el.addEventListener('blur', function() {
                     var val = parseInt(this.value);
-                    if (isNaN(val)) val = 0;
-                    if (val < 0) val = 0;
-                    if (val > 10) val = 10;
-                    this.value = val;
+                    if (isNaN(val)) {
+                        this.value = 0;
+                    } else if (val < 0) {
+                        this.value = 0;
+                    } else if (val > MAGIC_MAX) {
+                        this.value = MAGIC_MAX;
+                    }
+                    updateMagicClassSuggestion();
+                    updateMagicPowerDisplay();
+                });
+                // Also update on change
+                el.addEventListener('change', function() {
                     updateMagicClassSuggestion();
                     updateMagicPowerDisplay();
                 });
@@ -976,19 +995,6 @@
                 { value: 'body_mage', label: 'Body Mage' },
                 { value: 'aether_mage', label: 'Aether Mage' }
             ];
-            var classMap = {
-                elemental: { earth: 'Geomancer', water: 'Hydromancer', fire: 'Pyromancer',
-                    air: 'Aeromancer', metal: 'Ferromancer', wood: 'Dendromancer' },
-                body: { blood: 'Hemomancer', bone: 'Osteomancer', mind: 'Psychomancer',
-                    morphic: 'Morphomancer', life: 'Vitalmancer', death: 'Necromancer' },
-                aether: { space: 'Spatiomancer', time: 'Chronomancer', dimension: 'Dimensionist',
-                    void: 'Voidmancer', reality: 'Reality Weaver', transference: 'Transference Mage' }
-            };
-            for (var cat in classMap) {
-                for (var type in classMap[cat]) {
-                    magicOptions.push({ value: type, label: classMap[cat][type] });
-                }
-            }
             magicClassSelect.innerHTML = '';
             magicOptions.forEach(function(opt) {
                 var option = document.createElement('option');
@@ -1090,7 +1096,9 @@
                 document.getElementById('physical-move-name').value = '';
                 document.getElementById('physical-move-desc').value = '';
                 if (typeof window.saveData === 'function') {
-                    window.saveData().catch(function(err) { /* ignore */ });
+                    window.saveData().catch(function(err) {
+                        console.error('Failed to save physical move:', err);
+                    });
                 }
             });
         }
@@ -1115,7 +1123,9 @@
                 document.getElementById('magical-move-name').value = '';
                 document.getElementById('magical-move-desc').value = '';
                 if (typeof window.saveData === 'function') {
-                    window.saveData().catch(function(err) { /* ignore */ });
+                    window.saveData().catch(function(err) {
+                        console.error('Failed to save magical move:', err);
+                    });
                 }
             });
         }
@@ -1131,6 +1141,7 @@
         CLASS_DEFINITIONS: CLASS_DEFINITIONS,
         MAGIC_TYPES: MAGIC_TYPES,
         MAGIC_CATEGORIES: MAGIC_CATEGORIES,
+        MAGIC_MAX: MAGIC_MAX,
 
         // Magic helpers
         getMagicTypeKeys: getMagicTypeKeys,
