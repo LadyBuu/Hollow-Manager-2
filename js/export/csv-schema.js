@@ -7,6 +7,9 @@
 (function() {
     'use strict';
 
+    // Use shared utilities
+    var utils = window.ExportUtils;
+
     var CSV_SCHEMA = {
         characters: {
             header: ['CharacterId', 'FirstName', 'MiddleName', 'LastName', 'BirthYear', 'Gender', 'AssociatedNames',
@@ -41,9 +44,9 @@
                 ];
             },
             import: function(row) {
-                var id = row[0] || generateImportId('char');
-                var careerStatus = safeJSONParse(row[20], []);
-                var eliminatedWeeks = safeJSONParse(row[21], []);
+                var id = row[0] || utils.generateImportId('char');
+                var careerStatus = utils.safeJSONParse(row[20], []);
+                var eliminatedWeeks = utils.safeJSONParse(row[21], []);
                 return {
                     id: id,
                     firstName: row[1] || '',
@@ -100,8 +103,8 @@
                 ];
             },
             import: function(row) {
-                var id = row[0] || generateImportId('team');
-                var nameHistory = safeJSONParse(row[7], []);
+                var id = row[0] || utils.generateImportId('team');
+                var nameHistory = utils.safeJSONParse(row[7], []);
                 return {
                     id: id,
                     name: row[1] || '',
@@ -144,19 +147,27 @@
                 return rows;
             },
             import: function(row, context) {
-                // context: { teamMap, charMap }
                 var teamId = row[0];
                 var charId = row[1];
                 var team = context.teamMap[teamId];
-                if (team && context.charMap[charId]) {
-                    team.members.push({
-                        characterId: charId,
-                        role: row[2] || 'Member',
-                        joinPeriod: row[3] || '',
-                        leavePeriod: row[4] || ''
-                    });
+                
+                if (!team) {
+                    context.warnings.push('Team member references unknown team "' + teamId + '"');
+                    return null;
                 }
-                return null; // Returns nothing, mutates team
+                
+                if (!context.charMap[charId]) {
+                    context.warnings.push('Team member references unknown character "' + charId + '"');
+                    return null;
+                }
+                
+                team.members.push({
+                    characterId: charId,
+                    role: row[2] || 'Member',
+                    joinPeriod: row[3] || '',
+                    leavePeriod: row[4] || ''
+                });
+                return null;
             }
         },
         teamRankings: {
@@ -177,13 +188,15 @@
             import: function(row, context) {
                 var teamId = row[0];
                 var team = context.teamMap[teamId];
-                if (team) {
-                    if (!Array.isArray(team.rankingHistory)) team.rankingHistory = [];
-                    team.rankingHistory.push({
-                        period: row[1] || '',
-                        rank: row[2] || ''
-                    });
+                if (!team) {
+                    context.warnings.push('Team ranking references unknown team "' + teamId + '"');
+                    return null;
                 }
+                if (!Array.isArray(team.rankingHistory)) team.rankingHistory = [];
+                team.rankingHistory.push({
+                    period: row[1] || '',
+                    rank: row[2] || ''
+                });
                 return null;
             }
         },
@@ -219,7 +232,7 @@
                 ];
             },
             import: function(row, context) {
-                var id = row[0] || generateImportId('tourn');
+                var id = row[0] || utils.generateImportId('tourn');
                 var tourn = {
                     id: id,
                     name: row[1] || '',
@@ -269,9 +282,18 @@
                 var tournId = row[0];
                 var teamId = row[1];
                 var tourn = context.tournMap[tournId];
-                if (tourn && context.teamMap[teamId]) {
-                    tourn.teams.push({ teamId: teamId });
+                
+                if (!tourn) {
+                    context.warnings.push('Tournament team references unknown tournament "' + tournId + '"');
+                    return null;
                 }
+                
+                if (!context.teamMap[teamId]) {
+                    context.warnings.push('Tournament team references unknown team "' + teamId + '"');
+                    return null;
+                }
+                
+                tourn.teams.push({ teamId: teamId });
                 return null;
             }
         },
@@ -294,13 +316,15 @@
             import: function(row, context) {
                 var tournId = row[0];
                 var tourn = context.tournMap[tournId];
-                if (tourn) {
-                    tourn.matches.push({
-                        team1Id: row[1] || '',
-                        team2Id: row[2] || '',
-                        winner: row[3] || ''
-                    });
+                if (!tourn) {
+                    context.warnings.push('Tournament match references unknown tournament "' + tournId + '"');
+                    return null;
                 }
+                tourn.matches.push({
+                    team1Id: row[1] || '',
+                    team2Id: row[2] || '',
+                    winner: row[3] || ''
+                });
                 return null;
             }
         },
@@ -325,23 +349,28 @@
             import: function(row, context) {
                 var tournId = row[0];
                 var tourn = context.tournMap[tournId];
-                if (tourn) {
-                    var participantId = row[1];
-                    var participantType = row[2] || 'character';
-                    var teamId = row[3] || '';
-                    var week = parseInt(row[4]) || 1;
-                    tourn.eliminations.push({
-                        participantId: participantId,
-                        participantType: participantType,
-                        teamId: teamId,
-                        week: week
-                    });
-                    if (participantType === 'character' && context.charMap[participantId]) {
-                        var char = context.charMap[participantId];
-                        if (!Array.isArray(char.eliminatedWeeks)) char.eliminatedWeeks = [];
-                        if (char.eliminatedWeeks.indexOf(week) === -1) {
-                            char.eliminatedWeeks.push(week);
-                        }
+                if (!tourn) {
+                    context.warnings.push('Tournament elimination references unknown tournament "' + tournId + '"');
+                    return null;
+                }
+                
+                var participantId = row[1];
+                var participantType = row[2] || 'character';
+                var teamId = row[3] || '';
+                var week = parseInt(row[4]) || 1;
+                
+                tourn.eliminations.push({
+                    participantId: participantId,
+                    participantType: participantType,
+                    teamId: teamId,
+                    week: week
+                });
+                
+                if (participantType === 'character' && context.charMap[participantId]) {
+                    var char = context.charMap[participantId];
+                    if (!Array.isArray(char.eliminatedWeeks)) char.eliminatedWeeks = [];
+                    if (char.eliminatedWeeks.indexOf(week) === -1) {
+                        char.eliminatedWeeks.push(week);
                     }
                 }
                 return null;
@@ -366,12 +395,14 @@
             import: function(row, context) {
                 var tournId = row[0];
                 var tourn = context.tournMap[tournId];
-                if (tourn) {
-                    tourn.participants.push({
-                        id: row[1] || '',
-                        type: row[2] || 'character'
-                    });
+                if (!tourn) {
+                    context.warnings.push('Tournament participant references unknown tournament "' + tournId + '"');
+                    return null;
                 }
+                tourn.participants.push({
+                    id: row[1] || '',
+                    type: row[2] || 'character'
+                });
                 return null;
             }
         },
@@ -395,12 +426,14 @@
                 ];
             },
             import: function(row, context) {
-                var id = row[0] || generateImportId('miss');
-                var objectives = safeJSONParse(row[10], []);
+                var id = row[0] || utils.generateImportId('miss');
+                var objectives = utils.safeJSONParse(row[10], []);
                 var teamId = row[5] || null;
+                
                 if (teamId && !context.teamMap[teamId]) {
-                    console.warn('Mission "' + (row[1] || '') + '" references unknown team: ' + teamId);
+                    context.warnings.push('Mission "' + (row[1] || '') + '" references unknown team "' + teamId + '"');
                 }
+                
                 return {
                     id: id,
                     title: row[1] || '',
@@ -440,8 +473,8 @@
                 ];
             },
             import: function(row) {
-                var id = row[0] || generateImportId('disc');
-                var instructorIds = safeJSONParse(row[3], []);
+                var id = row[0] || utils.generateImportId('disc');
+                var instructorIds = utils.safeJSONParse(row[3], []);
                 return {
                     id: id,
                     name: row[1] || '',
@@ -460,27 +493,7 @@
         }
     };
 
-    // Helper: Safe JSON parse with fallback
-    function safeJSONParse(str, fallback) {
-        if (!str) return fallback;
-        try {
-            var parsed = JSON.parse(str);
-            return parsed !== undefined && parsed !== null ? parsed : fallback;
-        } catch (e) {
-            return fallback;
-        }
-    }
-
-    // Helper: Generate import ID
-    function generateImportId(prefix) {
-        if (typeof window.generateId === 'function') {
-            return window.generateId(prefix);
-        }
-        return prefix + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
-    }
-
     // Expose
     window.CSVSchema = CSV_SCHEMA;
-    window.safeJSONParse = safeJSONParse;
 
 })();
