@@ -40,8 +40,8 @@
     }
 
     /**
-     * Require a field to be a valid integer with strict parsing
-     * @throws {Error} if value is not a valid integer
+     * Require a field to be a valid finite integer with strict parsing
+     * @throws {Error} if value is not a valid finite integer
      */
     function requireInteger(row, index, fieldName, fallback) {
         var value = String(row[index] == null ? '' : row[index]).trim();
@@ -59,12 +59,19 @@
             throw new Error('Invalid integer "' + value + '" for field "' + fieldName + '" at column ' + (index + 1));
         }
 
-        return Number(value);
+        var parsed = Number(value);
+        
+        // Check for finite number (prevents overflow/Infinity)
+        if (!isFinite(parsed)) {
+            throw new Error('Integer "' + value + '" is out of range for field "' + fieldName + '" at column ' + (index + 1));
+        }
+
+        return parsed;
     }
 
     /**
-     * Require a field to be a valid number with strict parsing
-     * @throws {Error} if value is not a valid number
+     * Require a field to be a valid finite number with strict parsing
+     * @throws {Error} if value is not a valid finite number
      */
     function requireNumber(row, index, fieldName, fallback) {
         var value = String(row[index] == null ? '' : row[index]).trim();
@@ -82,7 +89,14 @@
             throw new Error('Invalid number "' + value + '" for field "' + fieldName + '" at column ' + (index + 1));
         }
 
-        return Number(value);
+        var parsed = Number(value);
+        
+        // Check for finite number (prevents overflow/Infinity)
+        if (!isFinite(parsed)) {
+            throw new Error('Number "' + value + '" is out of range for field "' + fieldName + '" at column ' + (index + 1));
+        }
+
+        return parsed;
     }
 
     /**
@@ -110,6 +124,7 @@
 
     /**
      * Parse a JSON array field with type validation
+     * Malformed JSON → warn and use fallback (does not abort)
      * @throws {Error} if JSON is not an array
      */
     function parseJSONArray(row, index, fieldName, fallback, addWarning) {
@@ -129,7 +144,7 @@
             return parsed;
         } catch (e) {
             if (typeof addWarning === 'function') {
-                addWarning('Invalid JSON array in "' + fieldName + '" at column ' + (index + 1) + ': ' + e.message);
+                addWarning('Invalid JSON array in "' + fieldName + '" at column ' + (index + 1) + ': ' + e.message + ' - using fallback');
             }
             return fallback;
         }
@@ -137,6 +152,7 @@
 
     /**
      * Parse a JSON object field with type validation
+     * Malformed JSON → warn and use fallback (does not abort)
      * @throws {Error} if JSON is not an object
      */
     function parseJSONObject(row, index, fieldName, fallback, addWarning) {
@@ -156,14 +172,15 @@
             return parsed;
         } catch (e) {
             if (typeof addWarning === 'function') {
-                addWarning('Invalid JSON object in "' + fieldName + '" at column ' + (index + 1) + ': ' + e.message);
+                addWarning('Invalid JSON object in "' + fieldName + '" at column ' + (index + 1) + ': ' + e.message + ' - using fallback');
             }
             return fallback;
         }
     }
 
     /**
-     * Legacy safe JSON parse with fallback (deprecated - use typed versions above)
+     * Legacy safe JSON parse with fallback - DEPRECATED
+     * Use parseJSONArray or parseJSONObject instead
      */
     function safeJSONParse(str, fallback) {
         if (!str) return fallback;
@@ -176,11 +193,45 @@
     }
 
     // ============================================================
-    // APPLICATION DATA VALIDATION
+    // CSV ENTITY COLLECTION DEFINITIONS
     // ============================================================
 
     /**
-     * Check if data contains meaningful application data
+     * Primary entity collections that CSV can import
+     */
+    var CSV_PRIMARY_COLLECTIONS = [
+        'characters',
+        'teams',
+        'tournaments',
+        'missions',
+        'disciplines'  // Note: disciplines are stored in curriculum
+    ];
+
+    /**
+     * Check if data has CSV-exportable content
+     */
+    function hasCSVExportableData(data) {
+        if (!data || typeof data !== 'object') return false;
+
+        for (var i = 0; i < CSV_PRIMARY_COLLECTIONS.length; i++) {
+            var key = CSV_PRIMARY_COLLECTIONS[i];
+            if (key === 'disciplines') {
+                // Special case: disciplines are in curriculum
+                if (data.curriculum &&
+                    Array.isArray(data.curriculum.disciplines) &&
+                    data.curriculum.disciplines.length > 0) {
+                    return true;
+                }
+            } else if (Array.isArray(data[key]) && data[key].length > 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if data contains meaningful application data (for JSON)
      */
     function containsApplicationData(data) {
         if (!data || typeof data !== 'object') return false;
@@ -228,30 +279,6 @@
             typeof data.social === 'object' &&
             Array.isArray(data.social.relationships) &&
             data.social.relationships.length > 0) {
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if data has CSV-exportable content
-     */
-    function hasCSVExportableData(data) {
-        if (!data || typeof data !== 'object') return false;
-
-        var csvCollections = ['characters', 'teams', 'tournaments', 'missions'];
-        for (var i = 0; i < csvCollections.length; i++) {
-            var key = csvCollections[i];
-            if (Array.isArray(data[key]) && data[key].length > 0) {
-                return true;
-            }
-        }
-
-        if (data.curriculum &&
-            typeof data.curriculum === 'object' &&
-            Array.isArray(data.curriculum.disciplines) &&
-            data.curriculum.disciplines.length > 0) {
             return true;
         }
 
@@ -308,6 +335,9 @@
         parseJSONArray: parseJSONArray,
         parseJSONObject: parseJSONObject,
         safeJSONParse: safeJSONParse,
+
+        // Collections
+        CSV_PRIMARY_COLLECTIONS: CSV_PRIMARY_COLLECTIONS,
 
         // Core
         containsApplicationData: containsApplicationData,
