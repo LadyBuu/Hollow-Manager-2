@@ -54,6 +54,13 @@
                     }
                 }
 
+                // Validate after migration
+                if (!utils.containsApplicationData(imported)) {
+                    alert('Imported data failed validation after migration.\n\n' +
+                          'The data structure appears incomplete or corrupt.');
+                    return;
+                }
+
                 if (!confirm('This will replace all current data. Continue?')) {
                     return;
                 }
@@ -62,9 +69,8 @@
                 var backup = utils.cloneData(window.data);
                 var persisted = false;
 
-                // Use the standardised saveData API
+                // Use the standardised saveData API - assumes atomic transaction
                 if (typeof window.saveData === 'function') {
-                    // Ensure we get a Promise
                     Promise.resolve(window.saveData(imported))
                         .then(function() {
                             persisted = true;
@@ -72,14 +78,13 @@
                             onImportSuccess(imported, persisted, 'JSON');
                         })
                         .catch(function(err) {
-                            // Rollback memory
+                            // Rollback memory (database rollback is handled by atomic transaction)
                             if (backup) {
                                 window.data = backup;
                             }
                             alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
                         });
                 } else {
-                    // No persistence available - just update memory
                     window.data = imported;
                     onImportSuccess(imported, false, 'JSON');
                 }
