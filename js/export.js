@@ -1,17 +1,49 @@
 /**
  * js/export.js - CSV/JSON Import/Export
  * Handles data import and export in various formats
+ * 
+ * IMPORTANT: CSV is a human-editable interchange format and does NOT preserve
+ * all application data. Use JSON for complete backups.
+ * 
+ * CSV preserves: characters (basic info), teams, team members, team rankings,
+ * tournaments, tournament teams, matches, eliminations, participants, missions,
+ * and disciplines.
+ * 
+ * CSV does NOT preserve: statistics, magic, personality, special moves,
+ * previous names, class IDs, eliminations details, curriculum schedules,
+ * rest days, exam days, grades, rankings (curriculum), class metadata,
+ * instructor data, social relationships, locations, location schedules,
+ * activities, statsConfig, and other complex nested data.
+ * 
+ * For complete data preservation, always use JSON export/import.
+ * 
  * Path: js/export.js
  */
 
 (function() {
     'use strict';
 
+    var CURRENT_DATA_VERSION = 12;
+
+    // ============================================================
+    // ID GENERATION - SAFE FALLBACK
+    // ============================================================
+
+    function generateImportId(prefix) {
+        if (typeof window.generateId === 'function') {
+            return window.generateId(prefix);
+        }
+        return prefix + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+    }
+
     // ============================================================
     // CSV PARSER - FULLY SUPPORTS QUOTED FIELDS WITH NEWLINES
     // ============================================================
 
     function parseCSV(text) {
+        // Remove UTF-8 BOM if present (Excel loves this)
+        text = String(text || '').replace(/^\uFEFF/, '');
+
         var records = [];
         var current = [];
         var field = '';
@@ -160,13 +192,17 @@
                     { id: 'sentinel', label: 'Sentinel', icon: '🛡', primaryStats: ['str', 'con'], secondaryStats: ['wis', 'dex'], statWeights: { str: 0.3, con: 0.3, wis: 0.2, dex: 0.15, cha: 0.05 }, minStats: { str: 13, con: 12 } }
                 ]
             },
-            _dataVersion: 12
+            _dataVersion: CURRENT_DATA_VERSION
         };
     }
 
-    function normaliseData(data) {
-        if (!data || typeof data !== 'object') {
-            return createEmptyData();
+    // ============================================================
+    // DATA MIGRATION - VERSIONED
+    // ============================================================
+
+    function migrateData(data) {
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            throw new Error('Invalid database data format');
         }
 
         var defaultData = createEmptyData();
@@ -187,6 +223,62 @@
         if (typeof data.currentYear !== 'number') data.currentYear = defaultData.currentYear;
         if (typeof data.currentWeek !== 'number') data.currentWeek = defaultData.currentWeek;
 
+        if (typeof data._dataVersion !== 'number') {
+            data._dataVersion = 1;
+        }
+
+        if (data._dataVersion > CURRENT_DATA_VERSION) {
+            throw new Error(
+                'Data version ' + data._dataVersion +
+                ' is newer than supported version ' + CURRENT_DATA_VERSION
+            );
+        }
+
+        var originalVersion = data._dataVersion;
+
+        // Run migrations from current version to latest
+        while (data._dataVersion < CURRENT_DATA_VERSION) {
+            var currentVersion = data._dataVersion;
+            switch (currentVersion) {
+                case 1:
+                    migrateToVersion2(data);
+                    break;
+                case 2:
+                    migrateToVersion3(data);
+                    break;
+                case 3:
+                    migrateToVersion4(data);
+                    break;
+                case 4:
+                    migrateToVersion5(data);
+                    break;
+                case 5:
+                    migrateToVersion6(data);
+                    break;
+                case 6:
+                    migrateToVersion7(data);
+                    break;
+                case 7:
+                    migrateToVersion8(data);
+                    break;
+                case 8:
+                    migrateToVersion9(data);
+                    break;
+                case 9:
+                    migrateToVersion10(data);
+                    break;
+                case 10:
+                    migrateToVersion11(data);
+                    break;
+                case 11:
+                    migrateToVersion12(data);
+                    break;
+                default:
+                    data._dataVersion = CURRENT_DATA_VERSION;
+                    break;
+            }
+        }
+
         // Ensure curriculum
         data.curriculum = normaliseCurriculum(data.curriculum);
 
@@ -199,6 +291,21 @@
         } else {
             if (!Array.isArray(data.statsConfig.classes)) {
                 data.statsConfig.classes = defaultData.statsConfig.classes;
+            } else {
+                // Deep normalise each class
+                data.statsConfig.classes.forEach(function(cls, index) {
+                    var defaultClass = defaultData.statsConfig.classes.find(function(dc) {
+                        return dc.id === cls.id;
+                    });
+                    if (defaultClass) {
+                        // Ensure all properties exist
+                        for (var key in defaultClass) {
+                            if (cls[key] === undefined) {
+                                cls[key] = defaultClass[key];
+                            }
+                        }
+                    }
+                });
             }
         }
 
@@ -233,7 +340,7 @@
         // Normalise each activity
         if (Array.isArray(data.activities)) {
             data.activities.forEach(function(activity) {
-                if (!activity.id) activity.id = window.generateId('act');
+                if (!activity.id) activity.id = generateImportId('act');
                 if (!activity.timestamp) activity.timestamp = new Date().toISOString();
             });
         }
@@ -241,7 +348,7 @@
         // Normalise each class
         if (Array.isArray(data.classes)) {
             data.classes.forEach(function(cls) {
-                if (!cls.id) cls.id = window.generateId('class');
+                if (!cls.id) cls.id = generateImportId('class');
                 if (!cls.name) cls.name = 'Unnamed Class';
                 if (!cls.createdAt) cls.createdAt = new Date().toISOString();
             });
@@ -250,7 +357,7 @@
         // Normalise each location
         if (Array.isArray(data.locations)) {
             data.locations.forEach(function(loc) {
-                if (!loc.id) loc.id = window.generateId('loc');
+                if (!loc.id) loc.id = generateImportId('loc');
                 if (!loc.name) loc.name = 'Unnamed Location';
                 if (!loc.type) loc.type = 'other';
                 if (!loc.createdAt) loc.createdAt = new Date().toISOString();
@@ -317,8 +424,9 @@
     function normaliseCharacter(char) {
         if (!char || typeof char !== 'object') return;
 
+        // Use a factory function for defaults to avoid shared references
         var defaultChar = {
-            id: window.generateId('char'),
+            id: generateImportId('char'),
             firstName: '',
             middleName: '',
             lastName: '',
@@ -359,6 +467,14 @@
             }
         }
 
+        // Ensure arrays are proper arrays
+        if (!Array.isArray(char.careerStatus)) char.careerStatus = [];
+        if (!Array.isArray(char.eliminatedWeeks)) char.eliminatedWeeks = [];
+        if (!Array.isArray(char.eliminations)) char.eliminations = [];
+        if (!Array.isArray(char.previousNames)) char.previousNames = [];
+        if (!Array.isArray(char.classIds)) char.classIds = [];
+
+        // Ensure stats object
         if (!char.stats || typeof char.stats !== 'object') {
             char.stats = { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
         }
@@ -368,6 +484,7 @@
             }
         });
 
+        // Ensure magic object
         if (!char.magic || typeof char.magic !== 'object') {
             char.magic = {};
         }
@@ -380,12 +497,12 @@
             }
         });
 
-        if (!Array.isArray(char.careerStatus)) char.careerStatus = [];
-        if (!Array.isArray(char.eliminatedWeeks)) char.eliminatedWeeks = [];
-        if (!Array.isArray(char.eliminations)) char.eliminations = [];
-        if (!Array.isArray(char.previousNames)) char.previousNames = [];
-        if (!Array.isArray(char.classIds)) char.classIds = [];
-        if (!char.personality || typeof char.personality !== 'object') char.personality = {};
+        // Ensure personality object
+        if (!char.personality || typeof char.personality !== 'object') {
+            char.personality = {};
+        }
+
+        // Ensure specialMoves object
         if (!char.specialMoves || typeof char.specialMoves !== 'object') {
             char.specialMoves = { physical: [], magical: [] };
         }
@@ -397,7 +514,7 @@
         if (!team || typeof team !== 'object') return;
 
         var defaultTeam = {
-            id: window.generateId('team'),
+            id: generateImportId('team'),
             name: '',
             type: 'academic',
             startPeriod: '',
@@ -435,7 +552,7 @@
         if (!tourn || typeof tourn !== 'object') return;
 
         var defaultTourn = {
-            id: window.generateId('tourn'),
+            id: generateImportId('tourn'),
             name: '',
             mode: 'teams',
             startWeek: 1,
@@ -486,7 +603,7 @@
         if (!mission || typeof mission !== 'object') return;
 
         var defaultMission = {
-            id: window.generateId('miss'),
+            id: generateImportId('miss'),
             title: '',
             status: 'active',
             priority: 'medium',
@@ -516,6 +633,210 @@
         if (!Array.isArray(mission.log)) mission.log = [];
     }
 
+    // ============================================================
+    // MIGRATION FUNCTIONS - VERSIONED
+    // ============================================================
+
+    function migrateToVersion2(data) {
+        data.characters.forEach(function(char) {
+            if (char.deceased === undefined) char.deceased = false;
+            if (!Array.isArray(char.careerStatus)) char.careerStatus = [];
+            if (!Array.isArray(char.eliminatedWeeks)) char.eliminatedWeeks = [];
+            if (!Array.isArray(char.eliminations)) char.eliminations = [];
+            if (char.middleName === undefined) char.middleName = '';
+            if (char.nickname === undefined) char.nickname = '';
+            if (char.alias === undefined) char.alias = '';
+            if (!Array.isArray(char.previousNames)) char.previousNames = [];
+            if (char.nameFormat === undefined) char.nameFormat = 'firstlast';
+            if (char.eyes === undefined) char.eyes = '';
+            if (char.hair === undefined) char.hair = '';
+            if (char.skin === undefined) char.skin = '';
+            if (char.height === undefined) char.height = '';
+            if (char.weight === undefined) char.weight = '';
+            if (char.build === undefined) char.build = '';
+            if (char.appearanceNotes === undefined) char.appearanceNotes = '';
+            if (char.specialty === undefined) char.specialty = '';
+            if (char.deathYear === undefined) char.deathYear = '';
+            if (char.deathCause === undefined) char.deathCause = '';
+            if (char.deathAge === undefined) char.deathAge = '';
+            if (char.notes === undefined) char.notes = '';
+            if (char.gender === undefined) char.gender = '';
+            if (!Array.isArray(char.classIds)) char.classIds = [];
+            if (!char.stats || typeof char.stats !== 'object' || Array.isArray(char.stats)) {
+                char.stats = { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
+            }
+        });
+        data._dataVersion = 2;
+    }
+
+    function migrateToVersion3(data) {
+        data.characters.forEach(function(char) {
+            if (!char.stats || typeof char.stats !== 'object' || Array.isArray(char.stats)) {
+                char.stats = { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
+            }
+            ['str','dex','con','int','wis','cha'].forEach(function(key) {
+                if (char.stats[key] === undefined || char.stats[key] === null) {
+                    char.stats[key] = 10;
+                }
+            });
+            if (!char.magic || typeof char.magic !== 'object' || Array.isArray(char.magic)) {
+                char.magic = {};
+            }
+            var magicTypes = ['earth','water','fire','air','metal','wood',
+                              'blood','bone','mind','morphic','life','death',
+                              'space','time','dimension','void','reality','transference'];
+            magicTypes.forEach(function(key) {
+                if (char.magic[key] === undefined || char.magic[key] === null) {
+                    char.magic[key] = 0;
+                }
+            });
+        });
+        data._dataVersion = 3;
+    }
+
+    function migrateToVersion4(data) {
+        data.teams.forEach(function(team) {
+            if (!Array.isArray(team.nameHistory)) team.nameHistory = [];
+            if (!Array.isArray(team.rankingHistory)) team.rankingHistory = [];
+            if (!Array.isArray(team.members)) team.members = [];
+            if (team.status === undefined) team.status = 'active';
+            if (team.currentRank === undefined) team.currentRank = '';
+            if (team.startPeriod === undefined) team.startPeriod = '';
+            if (team.endPeriod === undefined) team.endPeriod = '';
+            if (team.type === undefined) team.type = 'academic';
+            if (team.temporaryMission === undefined) team.temporaryMission = null;
+            if (team.type === 'academic' && team.classId === undefined) team.classId = null;
+            if (team.teamNumber === undefined) team.teamNumber = '';
+        });
+        data._dataVersion = 4;
+    }
+
+    function migrateToVersion5(data) {
+        data.teams.forEach(function(team) {
+            if (!Array.isArray(team.members)) team.members = [];
+            team.members.forEach(function(member) {
+                if (member.role === undefined) member.role = 'Member';
+                if (member.joinPeriod === undefined) member.joinPeriod = '';
+                if (member.leavePeriod === undefined) member.leavePeriod = '';
+            });
+        });
+        data._dataVersion = 5;
+    }
+
+    function migrateToVersion6(data) {
+        data.tournaments.forEach(function(tourn) {
+            if (tourn.mode === undefined) tourn.mode = 'teams';
+            if (tourn.status === undefined) tourn.status = 'draft';
+            if (!Array.isArray(tourn.participants)) tourn.participants = [];
+            if (!Array.isArray(tourn.rounds)) tourn.rounds = [];
+            if (!Array.isArray(tourn.eliminations)) tourn.eliminations = [];
+            if (!Array.isArray(tourn.winners)) tourn.winners = [];
+            if (tourn.totalRounds === undefined) tourn.totalRounds = 1;
+            if (tourn.startWeek === undefined) tourn.startWeek = 1;
+            if (tourn.endWeek === undefined) tourn.endWeek = 52;
+            if (tourn.winner === undefined) tourn.winner = null;
+            if (tourn.currentRound === undefined) tourn.currentRound = 0;
+            if (!Array.isArray(tourn.teams)) tourn.teams = [];
+            if (!Array.isArray(tourn.matches)) tourn.matches = [];
+            if (tourn.createdAt === undefined) tourn.createdAt = new Date().toISOString();
+        });
+        data._dataVersion = 6;
+    }
+
+    function migrateToVersion7(data) {
+        data.missions.forEach(function(mission) {
+            if (mission.status === undefined) mission.status = 'active';
+            if (mission.createdAt === undefined) mission.createdAt = new Date().toISOString();
+            if (mission.completedAt === undefined) mission.completedAt = null;
+            if (mission.assignedTeamId === undefined) mission.assignedTeamId = null;
+            if (mission.priority === undefined) mission.priority = 'medium';
+            if (!Array.isArray(mission.tags)) mission.tags = [];
+            if (!Array.isArray(mission.objectives)) mission.objectives = [];
+            if (mission.progress === undefined) mission.progress = 0;
+            if (!Array.isArray(mission.log)) mission.log = [];
+            if (mission.notes === undefined) mission.notes = '';
+            if (mission.location === undefined) mission.location = '';
+            if (mission.duration === undefined) mission.duration = '';
+            if (mission.difficulty === undefined) mission.difficulty = 'medium';
+            if (mission.pay === undefined) mission.pay = '';
+            
+            // Migrate singular objective to objectives array
+            if (mission.objective !== undefined && mission.objective) {
+                if (!Array.isArray(mission.objectives)) {
+                    mission.objectives = [];
+                }
+                mission.objectives.push({
+                    text: mission.objective,
+                    done: false
+                });
+                delete mission.objective;
+            }
+            
+            if (!Array.isArray(mission.objectives)) {
+                mission.objectives = [];
+            }
+        });
+        data._dataVersion = 7;
+    }
+
+    function migrateToVersion8(data) {
+        if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
+            data.curriculum = createEmptyData().curriculum;
+        }
+        data._dataVersion = 8;
+    }
+
+    function migrateToVersion9(data) {
+        if (!data.social || typeof data.social !== 'object' || Array.isArray(data.social)) {
+            data.social = createEmptyData().social;
+        }
+        if (!Array.isArray(data.social.relationships)) data.social.relationships = [];
+        if (data.social.nextId === undefined) data.social.nextId = 1;
+        data._dataVersion = 9;
+    }
+
+    function migrateToVersion10(data) {
+        if (!Array.isArray(data.classes)) data.classes = [];
+        if (!Array.isArray(data.locations)) data.locations = [];
+        if (!data.locationSchedules || typeof data.locationSchedules !== 'object') data.locationSchedules = {};
+        if (data.curriculum) {
+            if (!data.curriculum.classLocations || typeof data.curriculum.classLocations !== 'object' || Array.isArray(data.curriculum.classLocations)) {
+                data.curriculum.classLocations = {};
+            }
+        }
+        data._dataVersion = 10;
+    }
+
+    function migrateToVersion11(data) {
+        if (!data.statsConfig || typeof data.statsConfig !== 'object' || Array.isArray(data.statsConfig)) {
+            data.statsConfig = createEmptyData().statsConfig;
+        }
+        data._dataVersion = 11;
+    }
+
+    function migrateToVersion12(data) {
+        data.characters.forEach(function(char) {
+            if (!char.personality || typeof char.personality !== 'object' || Array.isArray(char.personality)) {
+                char.personality = {};
+            }
+            if (!char.specialMoves || typeof char.specialMoves !== 'object' || Array.isArray(char.specialMoves)) {
+                char.specialMoves = { physical: [], magical: [] };
+            } else {
+                if (!Array.isArray(char.specialMoves.physical)) {
+                    char.specialMoves.physical = [];
+                }
+                if (!Array.isArray(char.specialMoves.magical)) {
+                    char.specialMoves.magical = [];
+                }
+            }
+        });
+        data._dataVersion = 12;
+    }
+
+    // ============================================================
+    // HAS EXPORTABLE DATA - COMPREHENSIVE CHECK
+    // ============================================================
+
     function hasExportableData(data) {
         if (!data || typeof data !== 'object') return false;
 
@@ -542,14 +863,24 @@
             return true;
         }
 
-        if (data.curriculum &&
-            typeof data.curriculum === 'object') {
-            if (
-                (Array.isArray(data.curriculum.disciplines) && data.curriculum.disciplines.length > 0) ||
-                Object.keys(data.curriculum.schedules || {}).length > 0 ||
-                Object.keys(data.curriculum.grades || {}).length > 0
-            ) {
-                return true;
+        if (data.curriculum && typeof data.curriculum === 'object') {
+            var curriculumKeys = [
+                'disciplines', 'schedules', 'restDays', 'examDays',
+                'grades', 'rankings', 'classInstructors', 'classLabels',
+                'classGroupLabels', 'classDurations', 'classLocations',
+                'instructorClasses', 'instructorTemplates', 'instructorBlocks',
+                'instructorGroups', 'disciplineGroups', 'autoGroups'
+            ];
+
+            for (var j = 0; j < curriculumKeys.length; j++) {
+                var cKey = curriculumKeys[j];
+                var val = data.curriculum[cKey];
+                if (Array.isArray(val) && val.length > 0) {
+                    return true;
+                }
+                if (val && typeof val === 'object' && Object.keys(val).length > 0) {
+                    return true;
+                }
             }
         }
 
@@ -564,13 +895,44 @@
     }
 
     // ============================================================
+    // CSV-SPECIFIC: Check if data has CSV-exportable content
+    // ============================================================
+
+    function hasCSVExportableData(data) {
+        if (!data || typeof data !== 'object') return false;
+
+        var csvCollections = [
+            'characters',
+            'teams',
+            'tournaments',
+            'missions'
+        ];
+
+        for (var i = 0; i < csvCollections.length; i++) {
+            var key = csvCollections[i];
+            if (Array.isArray(data[key]) && data[key].length > 0) {
+                return true;
+            }
+        }
+
+        if (data.curriculum && 
+            typeof data.curriculum === 'object' &&
+            Array.isArray(data.curriculum.disciplines) &&
+            data.curriculum.disciplines.length > 0) {
+            return true;
+        }
+
+        return false;
+    }
+
+    // ============================================================
     // EXPORT FUNCTIONS
     // ============================================================
 
     function exportCSV() {
         var data = window.data || {};
-        if (!hasExportableData(data)) {
-            alert('No data to export.');
+        if (!hasCSVExportableData(data)) {
+            alert('No CSV-exportable data found.\n\nCSV exports: Characters, Teams, Tournaments, Missions, and Disciplines.\nUse JSON for complete backups.');
             return;
         }
 
@@ -584,13 +946,9 @@
                       'CareerStatus', 'EliminatedWeeks']);
 
         (data.characters || []).forEach(function(c) {
-            var careerStr = '';
-            if (Array.isArray(c.careerStatus)) {
-                careerStr = c.careerStatus.map(function(s) {
-                    return s.status + ':' + s.startYear + '-' + (s.endYear || 'present');
-                }).join(';');
-            }
-            var elimWeeks = Array.isArray(c.eliminatedWeeks) ? c.eliminatedWeeks.join(';') : '';
+            // Use JSON for structured data to avoid semicolon/colon parsing issues
+            var careerStr = JSON.stringify(c.careerStatus || []);
+            var elimWeeks = JSON.stringify(c.eliminatedWeeks || []);
             records.push([
                 c.id || '',
                 c.firstName || '',
@@ -625,12 +983,7 @@
                       'NameHistory', 'TemporaryMission', 'TeamNumber', 'ClassId']);
 
         (data.teams || []).forEach(function(t) {
-            var nameHistoryStr = '';
-            if (Array.isArray(t.nameHistory)) {
-                nameHistoryStr = t.nameHistory.map(function(n) {
-                    return n.name + ':' + n.startPeriod + '-' + (n.endPeriod || 'present');
-                }).join(';');
-            }
+            var nameHistoryStr = JSON.stringify(t.nameHistory || []);
             records.push([
                 t.id || '',
                 t.name || '',
@@ -803,12 +1156,7 @@
                       'Duration', 'Pay', 'Progress', 'Objectives']);
 
         (data.missions || []).forEach(function(m) {
-            var objectivesStr = '';
-            if (Array.isArray(m.objectives)) {
-                objectivesStr = m.objectives.map(function(o) {
-                    return o.text + (o.done ? ' \u2713' : '');
-                }).join(';');
-            }
+            var objectivesStr = JSON.stringify(m.objectives || []);
             records.push([
                 m.id || '',
                 m.title || '',
@@ -833,10 +1181,7 @@
 
         if (data.curriculum && Array.isArray(data.curriculum.disciplines)) {
             data.curriculum.disciplines.forEach(function(d) {
-                var instructors = '';
-                if (Array.isArray(d.instructorIds)) {
-                    instructors = d.instructorIds.join(';');
-                }
+                var instructors = JSON.stringify(d.instructorIds || []);
                 records.push([
                     d.id || '',
                     d.name || '',
@@ -852,7 +1197,7 @@
         }
 
         var csvContent = recordsToCSV(records);
-        var blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        var blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a');
         a.href = url;
@@ -875,16 +1220,16 @@
              'Notes', 'Deceased', 'DeathYear', 'DeathCause', 'DeathAge', 'Specialty',
              'CareerStatus', 'EliminatedWeeks'],
             ['', 'John', '', 'Doe', '1990', 'Male', '', 'Blue', 'Brown', 'Fair', '5\'10"', '75kg', 'Athletic',
-             '', 'Example character', 'false', '', '', '', '', '', ''],
+             '', 'Example character', 'false', '', '', '', '', '[{"status":"trainee","startYear":"1920","endYear":"1923"}]', '[]'],
             ['', 'Jane', 'Mary', 'Smith', '1992', 'Female', 'The Shadow', 'Green', 'Black', 'Olive',
-             '5\'7"', '60kg', 'Slim', 'Scar on cheek', '', 'false', '', '', '', '', 'trainee:1920-1923;rookie:1923-', ''],
+             '5\'7"', '60kg', 'Slim', 'Scar on cheek', '', 'false', '', '', '', '', '[{"status":"trainee","startYear":"1920","endYear":"1923"}]', '[]'],
             [],
             ['# TEAMS'],
             ['TeamId', 'TeamName', 'TeamType', 'StartPeriod', 'EndPeriod', 'CurrentRank', 'Status',
              'NameHistory', 'TemporaryMission', 'TeamNumber', 'ClassId'],
-            ['', 'Example Team', 'academic', '1', '2', '1', 'active', 'Example Team:1-2', '', '', ''],
-            ['', 'Another Team', 'academic', '3', '4', '2', 'active', 'Another Team:3-4', '', '', ''],
-            ['', 'Professional Team', 'professional', '1920', '1925', '1', 'active', '', '', '', ''],
+            ['', 'Example Team', 'academic', '1', '2', '1', 'active', '[{"name":"Example Team","startPeriod":"1","endPeriod":"2"}]', '', '', ''],
+            ['', 'Another Team', 'academic', '3', '4', '2', 'active', '[{"name":"Another Team","startPeriod":"3","endPeriod":"4"}]', '', '', ''],
+            ['', 'Professional Team', 'professional', '1920', '1925', '1', 'active', '[]', '', '', ''],
             [],
             ['# TEAM MEMBERS'],
             ['TeamId', 'CharacterId', 'Role', 'JoinPeriod', 'LeavePeriod', 'Status'],
@@ -922,19 +1267,19 @@
             ['MissionId', 'Title', 'Status', 'Priority', 'Difficulty', 'TeamId', 'Location',
              'Duration', 'Pay', 'Progress', 'Objectives'],
             ['', 'Operation Nightfall', 'active', 'high', 'hard', '', 'Berlin',
-             '2 weeks', '5000 credits', '50', 'Infiltrate base;Retrieve documents \u2713'],
+             '2 weeks', '5000 credits', '50', '[{"text":"Infiltrate base","done":true},{"text":"Retrieve documents","done":true}]'],
             ['', 'Rescue Mission', 'active', 'medium', 'medium', '', 'London',
-             '3 days', '2000 credits', '0', 'Find hostages;Extract safely'],
+             '3 days', '2000 credits', '0', '[{"text":"Find hostages","done":false},{"text":"Extract safely","done":false}]'],
             [],
             ['# DISCIPLINES'],
             ['DisciplineId', 'DisciplineName', 'Type', 'Instructors', 'StartWeek', 'EndWeek',
              'WeeklyHours', 'MaxStudents', 'Weight'],
-            ['', 'Combat Training', 'mandatory', '', '1', '10', '4', '20', '2'],
-            ['', 'Stealth', 'mandatory', '', '1', '8', '3', '15', '1.5']
+            ['', 'Combat Training', 'mandatory', '[]', '1', '10', '4', '20', '2'],
+            ['', 'Stealth', 'mandatory', '[]', '1', '8', '3', '15', '1.5']
         ];
 
         var csvContent = recordsToCSV(records);
-        var blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        var blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a');
         a.href = url;
@@ -989,8 +1334,10 @@
                 }
 
                 var oldData = window.data;
+                var oldDataCopy = oldData ? JSON.parse(JSON.stringify(oldData)) : null;
 
-                imported = normaliseData(imported);
+                // Migrate and normalise
+                imported = migrateData(imported);
 
                 if (!hasExportableData(imported)) {
                     alert('No valid data found in JSON file.');
@@ -1020,11 +1367,18 @@
                               'Teams: ' + teamCount + '\n' +
                               'Tournaments: ' + tournCount);
                     }).catch(function(err) {
-                        window.data = oldData;
+                        // Rollback
+                        if (oldDataCopy) {
+                            window.data = oldDataCopy;
+                        }
                         alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
                     });
                 } else {
-                    alert('Data imported into memory, but could not be saved.');
+                    // Rollback if saveData is not available
+                    if (oldDataCopy) {
+                        window.data = oldDataCopy;
+                    }
+                    alert('Could not save imported data.');
                 }
             } catch (err) {
                 alert('Failed to import JSON: ' + err.message);
@@ -1049,75 +1403,78 @@
                 var tournMap = {};
                 var section = '';
                 var headers = [];
-                var duplicateWarnings = [];
+                var idTracker = {};
+
+                // Save old data for rollback
+                var oldDataCopy = window.data ? JSON.parse(JSON.stringify(window.data)) : null;
 
                 for (var i = 0; i < records.length; i++) {
                     var row = records[i];
                     if (row.length === 0) continue;
 
-                    var first = row[0] || '';
+                    var first = (row[0] || '').trim();
 
-                    if (first.startsWith('# CHARACTERS')) {
+                    if (first === '# CHARACTERS') {
                         section = 'characters';
                         i++;
                         headers = records[i] || [];
                         continue;
                     }
-                    if (first.startsWith('# TEAMS')) {
+                    if (first === '# TEAMS') {
                         section = 'teams';
                         i++;
                         headers = records[i] || [];
                         continue;
                     }
-                    if (first.startsWith('# TEAM MEMBERS')) {
+                    if (first === '# TEAM MEMBERS') {
                         section = 'members';
                         i++;
                         headers = records[i] || [];
                         continue;
                     }
-                    if (first.startsWith('# TEAM RANKINGS')) {
+                    if (first === '# TEAM RANKINGS') {
                         section = 'rankings';
                         i++;
                         headers = records[i] || [];
                         continue;
                     }
-                    if (first.startsWith('# TOURNAMENTS')) {
+                    if (first === '# TOURNAMENTS') {
                         section = 'tournaments';
                         i++;
                         headers = records[i] || [];
                         continue;
                     }
-                    if (first.startsWith('# TOURNAMENT TEAMS')) {
+                    if (first === '# TOURNAMENT TEAMS') {
                         section = 'tournament_teams';
                         i++;
                         headers = records[i] || [];
                         continue;
                     }
-                    if (first.startsWith('# TOURNAMENT MATCHES')) {
+                    if (first === '# TOURNAMENT MATCHES') {
                         section = 'tournament_matches';
                         i++;
                         headers = records[i] || [];
                         continue;
                     }
-                    if (first.startsWith('# TOURNAMENT ELIMINATIONS')) {
+                    if (first === '# TOURNAMENT ELIMINATIONS') {
                         section = 'tournament_eliminations';
                         i++;
                         headers = records[i] || [];
                         continue;
                     }
-                    if (first.startsWith('# TOURNAMENT PARTICIPANTS')) {
+                    if (first === '# TOURNAMENT PARTICIPANTS') {
                         section = 'tournament_participants';
                         i++;
                         headers = records[i] || [];
                         continue;
                     }
-                    if (first.startsWith('# MISSIONS')) {
+                    if (first === '# MISSIONS') {
                         section = 'missions';
                         i++;
                         headers = records[i] || [];
                         continue;
                     }
-                    if (first.startsWith('# DISCIPLINES')) {
+                    if (first === '# DISCIPLINES') {
                         section = 'disciplines';
                         i++;
                         headers = records[i] || [];
@@ -1125,26 +1482,48 @@
                     }
 
                     if (section === 'characters' && row.length >= 22) {
+                        var id = row[0] || generateImportId('char');
+                        
+                        // Check for duplicate IDs
+                        if (idTracker[id]) {
+                            throw new Error('Duplicate CharacterId "' + id + '" found in CSV. Each character must have a unique ID.');
+                        }
+                        idTracker[id] = true;
+
                         var careerStatus = [];
-                        if (row[20]) {
-                            var careerParts = row[20].split(';');
-                            careerParts.forEach(function(part) {
-                                var match = part.match(/([^:]+):([^-]+)-(.+)/);
-                                if (match) {
-                                    careerStatus.push({
-                                        status: match[1],
-                                        startYear: match[2],
-                                        endYear: match[3] === 'present' ? '' : match[3]
-                                    });
-                                }
-                            });
+                        try {
+                            careerStatus = JSON.parse(row[20] || '[]');
+                            if (!Array.isArray(careerStatus)) careerStatus = [];
+                        } catch (err) {
+                            // Fallback: try to parse legacy semicolon format
+                            if (row[20]) {
+                                var careerParts = row[20].split(';');
+                                careerParts.forEach(function(part) {
+                                    var match = part.match(/([^:]+):([^-]+)-(.+)/);
+                                    if (match) {
+                                        careerStatus.push({
+                                            status: match[1],
+                                            startYear: match[2],
+                                            endYear: match[3] === 'present' ? '' : match[3]
+                                        });
+                                    }
+                                });
+                            }
                         }
+
                         var eliminatedWeeks = [];
-                        if (row[21]) {
-                            eliminatedWeeks = row[21].split(';').map(function(w) { return parseInt(w); }).filter(function(w) { return !isNaN(w); });
+                        try {
+                            eliminatedWeeks = JSON.parse(row[21] || '[]');
+                            if (!Array.isArray(eliminatedWeeks)) eliminatedWeeks = [];
+                        } catch (err) {
+                            // Fallback: try to parse legacy semicolon format
+                            if (row[21]) {
+                                eliminatedWeeks = row[21].split(';').map(function(w) { return parseInt(w); }).filter(function(w) { return !isNaN(w); });
+                            }
                         }
+
                         var char = {
-                            id: row[0] || window.generateId('char'),
+                            id: id,
                             firstName: row[1] || '',
                             middleName: row[2] || '',
                             lastName: row[3] || '',
@@ -1179,22 +1558,37 @@
                         newData.characters.push(char);
                         charMap[char.id] = char;
                     } else if (section === 'teams' && row.length >= 11) {
-                        var nameHistory = [];
-                        if (row[7]) {
-                            var nameParts = row[7].split(';');
-                            nameParts.forEach(function(part) {
-                                var match = part.match(/([^:]+):([^-]+)-(.+)/);
-                                if (match) {
-                                    nameHistory.push({
-                                        name: match[1],
-                                        startPeriod: match[2],
-                                        endPeriod: match[3] === 'present' ? '' : match[3]
-                                    });
-                                }
-                            });
+                        var id = row[0] || generateImportId('team');
+                        
+                        // Check for duplicate IDs
+                        if (idTracker[id]) {
+                            throw new Error('Duplicate TeamId "' + id + '" found in CSV. Each team must have a unique ID.');
                         }
+                        idTracker[id] = true;
+
+                        var nameHistory = [];
+                        try {
+                            nameHistory = JSON.parse(row[7] || '[]');
+                            if (!Array.isArray(nameHistory)) nameHistory = [];
+                        } catch (err) {
+                            // Fallback: try to parse legacy semicolon format
+                            if (row[7]) {
+                                var nameParts = row[7].split(';');
+                                nameParts.forEach(function(part) {
+                                    var match = part.match(/([^:]+):([^-]+)-(.+)/);
+                                    if (match) {
+                                        nameHistory.push({
+                                            name: match[1],
+                                            startPeriod: match[2],
+                                            endPeriod: match[3] === 'present' ? '' : match[3]
+                                        });
+                                    }
+                                });
+                            }
+                        }
+
                         var team = {
-                            id: row[0] || window.generateId('team'),
+                            id: id,
                             name: row[1] || '',
                             type: row[2] || 'academic',
                             startPeriod: row[3] || '',
@@ -1234,8 +1628,16 @@
                             });
                         }
                     } else if (section === 'tournaments' && row.length >= 10) {
+                        var id = row[0] || generateImportId('tourn');
+                        
+                        // Check for duplicate IDs
+                        if (idTracker[id]) {
+                            throw new Error('Duplicate TournamentId "' + id + '" found in CSV. Each tournament must have a unique ID.');
+                        }
+                        idTracker[id] = true;
+
                         var tourn = {
-                            id: row[0] || window.generateId('tourn'),
+                            id: id,
                             name: row[1] || '',
                             mode: row[2] || 'teams',
                             startWeek: parseInt(row[3]) || 1,
@@ -1313,27 +1715,49 @@
                             });
                         }
                     } else if (section === 'missions' && row.length >= 11) {
-                        var objectives = [];
-                        if (row[10]) {
-                            var objParts = row[10].split(';');
-                            objParts.forEach(function(part) {
-                                part = part.trim();
-                                if (part) {
-                                    var done = part.endsWith('\u2713');
-                                    var text = part.replace('\u2713', '').trim();
-                                    if (text) {
-                                        objectives.push({ text: text, done: done });
-                                    }
-                                }
-                            });
+                        var id = row[0] || generateImportId('miss');
+                        
+                        // Check for duplicate IDs
+                        if (idTracker[id]) {
+                            throw new Error('Duplicate MissionId "' + id + '" found in CSV. Each mission must have a unique ID.');
                         }
+                        idTracker[id] = true;
+
+                        var objectives = [];
+                        try {
+                            objectives = JSON.parse(row[10] || '[]');
+                            if (!Array.isArray(objectives)) objectives = [];
+                        } catch (err) {
+                            // Fallback: try to parse legacy semicolon format
+                            if (row[10]) {
+                                var objParts = row[10].split(';');
+                                objParts.forEach(function(part) {
+                                    part = part.trim();
+                                    if (part) {
+                                        var done = part.endsWith('\u2713');
+                                        var text = part.replace('\u2713', '').trim();
+                                        if (text) {
+                                            objectives.push({ text: text, done: done });
+                                        }
+                                    }
+                                });
+                            }
+                        }
+
+                        // Validate team reference
+                        var teamId = row[5] || null;
+                        if (teamId && !teamMap[teamId]) {
+                            // Warn but preserve the reference
+                            console.warn('Mission "' + (row[1] || '') + '" references unknown team: ' + teamId);
+                        }
+
                         var mission = {
-                            id: row[0] || window.generateId('miss'),
+                            id: id,
                             title: row[1] || '',
                             status: row[2] || 'active',
                             priority: row[3] || 'medium',
                             difficulty: row[4] || 'medium',
-                            assignedTeamId: row[5] || null,
+                            assignedTeamId: teamId,
                             location: row[6] || '',
                             duration: row[7] || '',
                             pay: row[8] || '',
@@ -1348,14 +1772,30 @@
                         };
                         newData.missions.push(mission);
                     } else if (section === 'disciplines' && row.length >= 9) {
+                        var id = row[0] || generateImportId('disc');
+                        
+                        // Check for duplicate IDs
+                        if (idTracker[id]) {
+                            throw new Error('Duplicate DisciplineId "' + id + '" found in CSV. Each discipline must have a unique ID.');
+                        }
+                        idTracker[id] = true;
+
                         if (!newData.curriculum) newData.curriculum = createEmptyData().curriculum;
                         if (!Array.isArray(newData.curriculum.disciplines)) newData.curriculum.disciplines = [];
+                        
                         var instructorIds = [];
-                        if (row[3]) {
-                            instructorIds = row[3].split(';').filter(function(id) { return id; });
+                        try {
+                            instructorIds = JSON.parse(row[3] || '[]');
+                            if (!Array.isArray(instructorIds)) instructorIds = [];
+                        } catch (err) {
+                            // Fallback: try to parse legacy semicolon format
+                            if (row[3]) {
+                                instructorIds = row[3].split(';').filter(function(id) { return id; });
+                            }
                         }
+
                         var discipline = {
-                            id: row[0] || window.generateId('disc'),
+                            id: id,
                             name: row[1] || '',
                             type: row[2] || 'mandatory',
                             instructorIds: instructorIds,
@@ -1372,16 +1812,15 @@
                     }
                 }
 
-                newData = normaliseData(newData);
+                newData = migrateData(newData);
 
-                if (!hasExportableData(newData)) {
-                    alert('No valid data found in CSV file.');
+                if (!hasCSVExportableData(newData)) {
+                    alert('No valid CSV-exportable data found in file.\n\nCSV imports: Characters, Teams, Tournaments, Missions, and Disciplines.');
                     return;
                 }
 
                 if (!confirm('This will replace all current data. Continue?')) return;
 
-                var oldData = window.data;
                 window.data = newData;
 
                 if (typeof window.saveData === 'function') {
@@ -1403,13 +1842,22 @@
                               'Characters: ' + charCount + '\n' +
                               'Teams: ' + teamCount + '\n' +
                               'Tournaments: ' + tournCount + '\n' +
-                              'Missions: ' + missionCount);
+                              'Missions: ' + missionCount + '\n\n' +
+                              'Note: CSV only imports basic character info, teams, tournaments, missions, and disciplines.\n' +
+                              'Use JSON for complete data restoration.');
                     }).catch(function(err) {
-                        window.data = oldData;
+                        // Rollback
+                        if (oldDataCopy) {
+                            window.data = oldDataCopy;
+                        }
                         alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
                     });
                 } else {
-                    alert('Data imported into memory, but could not be saved.');
+                    // Rollback if saveData is not available
+                    if (oldDataCopy) {
+                        window.data = oldDataCopy;
+                    }
+                    alert('Could not save imported data.');
                 }
 
             } catch (err) {
@@ -1431,6 +1879,19 @@
         btn.addEventListener('click', handler);
     }
 
+    function bindFileInput(id, handler) {
+        var input = document.getElementById(id);
+        if (!input) return;
+        if (input.dataset.exportBound === 'true') return;
+        input.dataset.exportBound = 'true';
+        input.addEventListener('change', function() {
+            if (this.files && this.files.length > 0) {
+                handler(this.files[0]);
+                this.value = '';
+            }
+        });
+    }
+
     function initImportExport() {
         bindButton('export-json-btn', function(e) {
             e.preventDefault();
@@ -1443,17 +1904,7 @@
             if (input) input.click();
         });
 
-        var jsonInput = document.getElementById('json-file-input');
-        if (jsonInput) {
-            var newInput = jsonInput.cloneNode(true);
-            jsonInput.parentNode.replaceChild(newInput, jsonInput);
-            newInput.addEventListener('change', function() {
-                if (this.files.length > 0) {
-                    importJSON(this.files[0]);
-                    this.value = '';
-                }
-            });
-        }
+        bindFileInput('json-file-input', importJSON);
 
         bindButton('export-csv-btn', function(e) {
             e.preventDefault();
@@ -1466,17 +1917,7 @@
             if (input) input.click();
         });
 
-        var csvInput = document.getElementById('csv-file-input');
-        if (csvInput) {
-            var newInput = csvInput.cloneNode(true);
-            csvInput.parentNode.replaceChild(newInput, csvInput);
-            newInput.addEventListener('change', function() {
-                if (this.files.length > 0) {
-                    importCSV(this.files[0]);
-                    this.value = '';
-                }
-            });
-        }
+        bindFileInput('csv-file-input', importCSV);
 
         bindButton('template-csv-btn', function(e) {
             e.preventDefault();
@@ -1497,9 +1938,11 @@
     window.csvField = csvField;
     window.recordsToCSV = recordsToCSV;
     window.parseCSV = parseCSV;
-    window.normaliseData = normaliseData;
+    window.migrateData = migrateData;
     window.hasExportableData = hasExportableData;
+    window.hasCSVExportableData = hasCSVExportableData;
     window.normaliseName = normaliseName;
+    window.generateImportId = generateImportId;
 
     // Auto-initialize
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
