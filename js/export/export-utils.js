@@ -125,21 +125,39 @@
     }
 
     /**
-     * Create a backup copy of data for rollback
+     * Create a deep clone of data for rollback
      */
-    function backupData(data) {
+    function cloneData(data) {
         return data ? JSON.parse(JSON.stringify(data)) : null;
     }
 
     /**
-     * Rollback data to a backup
+     * Show an import result message
      */
-    function rollbackData(backup) {
-        if (backup) {
-            window.data = backup;
-            return true;
+    function showImportResult(persisted, data, format) {
+        if (persisted) {
+            var charCount = data.characters ? data.characters.length : 0;
+            var teamCount = data.teams ? data.teams.length : 0;
+            var tournCount = data.tournaments ? data.tournaments.length : 0;
+            var missionCount = data.missions ? data.missions.length : 0;
+            
+            var msg = format + ' import completed successfully!\n\n' +
+                'Characters: ' + charCount + '\n' +
+                'Teams: ' + teamCount + '\n' +
+                'Tournaments: ' + tournCount + '\n' +
+                'Missions: ' + missionCount;
+            
+            if (format === 'CSV') {
+                msg += '\n\nNote: CSV only imports basic character info, teams, tournaments, missions, and disciplines.\n' +
+                       'Use JSON for complete data restoration.';
+            }
+            
+            alert(msg);
+        } else {
+            alert(format + ' import completed but data could NOT be saved to persistent storage.\n\n' +
+                  'Your data will be lost when you refresh the page.\n' +
+                  'Please check your browser settings and try again.');
         }
-        return false;
     }
 
     // Expose
@@ -149,8 +167,8 @@
         downloadBlob: downloadBlob,
         safeJSONParse: safeJSONParse,
         generateImportId: generateImportId,
-        backupData: backupData,
-        rollbackData: rollbackData
+        cloneData: cloneData,
+        showImportResult: showImportResult
     };
 
 })();
