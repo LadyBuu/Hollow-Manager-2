@@ -5,11 +5,53 @@
  * 
  * IMPORTANT: All mutations follow the correct pattern:
  *   MUTATE → LOG → SAVE
- *   This ensures activities are persisted with the data change.
+ *   All user-controlled data is escaped to prevent XSS.
+ *   Rollback is performed on save failure.
  */
 
 (function() {
     'use strict';
+
+    // Guard against duplicate script loading
+    if (window.__characterClassesLoaded) {
+        return;
+    }
+    window.__characterClassesLoaded = true;
+
+    // ============================================================
+    // SAFE RENDER HELPERS
+    // ============================================================
+
+    function safeRenderCharacterList() {
+        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+            window.CharacterList.render();
+        }
+    }
+
+    function safeShowCharacterForm(id) {
+        if (typeof window.showCharacterForm === 'function') {
+            window.showCharacterForm(id);
+        }
+    }
+
+    function safeSetCurrentEditId(id) {
+        if (typeof window.setCurrentEditId === 'function') {
+            window.setCurrentEditId(id);
+        }
+    }
+
+    function safeUpdateDashboardStats() {
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
+        }
+    }
+
+    function safeGetCurrentEditId() {
+        if (typeof window.currentEditId === 'function') {
+            return window.currentEditId();
+        }
+        return null;
+    }
 
     // ============================================================
     // ADD TO CLASS
@@ -25,7 +67,7 @@
             return;
         }
 
-        var charId = window.currentEditId ? window.currentEditId() : null;
+        var charId = safeGetCurrentEditId();
         if (!charId) {
             alert('No character selected.');
             return;
@@ -49,18 +91,22 @@
             return;
         }
 
-        // MUTATE
+        var data = window.data || {};
+        
+        // Save backup for rollback
+        var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
+
+        // 1. MUTATE
         if (!char.classIds) char.classIds = [];
         char.classIds.push(classId);
-        window.data = window.data || {};
 
-        // LOG
+        // 2. LOG
         var name = window.getDisplayName(char);
         if (typeof window.logActivity === 'function') {
             window.logActivity('Added ' + name + ' to class: ' + cls.name);
         }
 
-        // SAVE
+        // 3. SAVE
         if (typeof window.saveData === 'function') {
             window.saveData()
                 .then(function() {
@@ -69,6 +115,11 @@
                 })
                 .catch(function(err) {
                     console.error('Failed to add character to class:', err);
+                    if (backup) {
+                        window.data = backup;
+                        safeRenderCharacterList();
+                        safeShowCharacterForm(charId);
+                    }
                     alert('Failed to add character to class. Please try again.');
                 });
         } else {
@@ -82,7 +133,7 @@
     // ============================================================
 
     function removeFromClass() {
-        var charId = window.currentEditId ? window.currentEditId() : null;
+        var charId = safeGetCurrentEditId();
         if (!charId) {
             alert('No character selected.');
             return;
@@ -126,17 +177,21 @@
             return;
         }
 
-        // MUTATE
-        char.classIds = char.classIds.filter(function(cid) { return String(cid) !== String(cls.id); });
-        window.data = window.data || {};
+        var data = window.data || {};
+        
+        // Save backup for rollback
+        var backup = window.ExportUtils ? window.ExportUtils.cloneData(data) : null;
 
-        // LOG
+        // 1. MUTATE
+        char.classIds = char.classIds.filter(function(cid) { return String(cid) !== String(cls.id); });
+
+        // 2. LOG
         var name = window.getDisplayName(char);
         if (typeof window.logActivity === 'function') {
             window.logActivity('Removed ' + name + ' from class: ' + cls.name);
         }
 
-        // SAVE
+        // 3. SAVE
         if (typeof window.saveData === 'function') {
             window.saveData()
                 .then(function() {
@@ -145,6 +200,11 @@
                 })
                 .catch(function(err) {
                     console.error('Failed to remove character from class:', err);
+                    if (backup) {
+                        window.data = backup;
+                        safeRenderCharacterList();
+                        safeShowCharacterForm(charId);
+                    }
                     alert('Failed to remove character from class. Please try again.');
                 });
         } else {
@@ -154,75 +214,36 @@
     }
 
     // ============================================================
-    // POPULATE CLASS SELECTOR
-    // ============================================================
-
-    function populateAcademicClassSelector(char) {
-        var select = document.getElementById('academic-class-select');
-        if (!select) return;
-
-        var classes = window.getClasses() || [];
-        var currentValue = select.value;
-        select.innerHTML = '<option value="">Select a class...</option>';
-        
-        var existingClassIds = (char && char.classIds) || [];
-        
-        classes.forEach(function(cls) {
-            var isAssigned = existingClassIds.some(function(cid) { 
-                return String(cid) === String(cls.id); 
-            });
-            if (!isAssigned) {
-                var option = document.createElement('option');
-                option.value = cls.id;
-                option.textContent = cls.name;
-                select.appendChild(option);
-            }
-        });
-        
-        if (currentValue) select.value = currentValue;
-    }
-
-    // ============================================================
-    // UPDATE DISPLAY
-    // ============================================================
-
-    function updateCurrentClassesDisplay(char) {
-        var display = document.getElementById('current-classes-list');
-        if (!display) return;
-
-        var classIds = (char && char.classIds) || [];
-        if (classIds.length === 0) {
-            display.textContent = 'None';
-            return;
-        }
-
-        var classes = window.getClasses() || [];
-        var names = [];
-        classIds.forEach(function(cid) {
-            var cls = classes.find(function(c) { return String(c.id) === String(cid); });
-            if (cls) names.push(cls.name);
-        });
-        display.textContent = names.length > 0 ? names.join(', ') : 'None';
-    }
-
-    // ============================================================
-    // CLASS TAG MANAGEMENT
+    // ADD CLASS TAG - FIXED XSS (no innerHTML)
     // ============================================================
 
     function addClassTag(classId, className) {
         var container = document.getElementById('class-tag-container');
         if (!container) return;
         
+        // Remove empty message if present
         var emptyMsg = container.querySelector('span[style*="text-dim"]');
         if (emptyMsg) emptyMsg.remove();
         
+        // Build DOM elements safely - no innerHTML for user data
         var tag = document.createElement('span');
         tag.style.cssText = 'background:var(--accent-soft);padding:2px 8px;border-radius:10px;font-size:0.7rem;border:1px solid var(--accent);display:inline-flex;align-items:center;gap:4px;';
         tag.dataset.classId = classId;
-        tag.innerHTML = className + ' <button class="remove-class-tag" data-id="' + classId + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;">✕</button>';
+        
+        var nameSpan = document.createElement('span');
+        nameSpan.textContent = className;  // Safe: textContent escapes
+        
+        var button = document.createElement('button');
+        button.className = 'remove-class-tag';
+        button.dataset.id = classId;
+        button.textContent = '✕';
+        button.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;';
+        
+        tag.appendChild(nameSpan);
+        tag.appendChild(button);
         container.appendChild(tag);
         
-        tag.querySelector('.remove-class-tag').addEventListener('click', function() {
+        button.addEventListener('click', function() {
             var id = this.dataset.id;
             var container = document.getElementById('class-tag-container');
             var tag = container.querySelector('[data-class-id="' + id + '"]');
@@ -232,6 +253,10 @@
             }
         });
     }
+
+    // ============================================================
+    // CLASS TAG HELPERS
+    // ============================================================
 
     function getClassTags() {
         var ids = [];
@@ -262,7 +287,65 @@
     }
 
     // ============================================================
-    // CHARACTER CLASS QUERIES
+    // UI HELPERS
+    // ============================================================
+
+    function populateAcademicClassSelector(char) {
+        var select = document.getElementById('academic-class-select');
+        if (!select) return;
+
+        var classes = window.getClasses() || [];
+        var currentValue = select.value;
+        select.innerHTML = '<option value="">Select a class...</option>';
+        
+        var existingClassIds = (char && char.classIds) || [];
+        
+        classes.forEach(function(cls) {
+            var isAssigned = existingClassIds.some(function(cid) { 
+                return String(cid) === String(cls.id); 
+            });
+            if (!isAssigned) {
+                var option = document.createElement('option');
+                option.value = cls.id;
+                option.textContent = cls.name;
+                select.appendChild(option);
+            }
+        });
+        
+        if (currentValue) select.value = currentValue;
+    }
+
+    function updateCurrentClassesDisplay(char) {
+        var display = document.getElementById('current-classes-list');
+        if (!display) return;
+
+        var classIds = (char && char.classIds) || [];
+        if (classIds.length === 0) {
+            display.textContent = 'None';
+            return;
+        }
+
+        var classes = window.getClasses() || [];
+        var names = [];
+        classIds.forEach(function(cid) {
+            var cls = classes.find(function(c) { return String(c.id) === String(cid); });
+            if (cls) names.push(cls.name);
+        });
+        display.textContent = names.length > 0 ? names.join(', ') : 'None';
+    }
+
+    function refreshUI(char) {
+        safeRenderCharacterList();
+        populateAcademicClassSelector(char);
+        updateCurrentClassesDisplay(char);
+        safeUpdateDashboardStats();
+        if (char) {
+            safeShowCharacterForm(char.id);
+        }
+    }
+
+    // ============================================================
+    // QUERY FUNCTIONS
     // ============================================================
 
     function getCharacterClasses(char) {
@@ -326,20 +409,6 @@
         });
         
         return available;
-    }
-
-    // ============================================================
-    // UI REFRESH
-    // ============================================================
-
-    function refreshUI(char) {
-        window.CharacterList.render();
-        window.CharacterForm.populateFormFields(char);
-        populateAcademicClassSelector(char);
-        updateCurrentClassesDisplay(char);
-        if (typeof window.updateDashboardStats === 'function') {
-            window.updateDashboardStats();
-        }
     }
 
     // ============================================================
