@@ -7,42 +7,17 @@
 (function() {
     'use strict';
 
-    /**
-     * Check if data has CSV-exportable content
-     */
-    function hasCSVExportableData(data) {
-        if (!data || typeof data !== 'object') return false;
+    var utils = window.ExportUtils;
+    var schema = window.CSVSchema;
 
-        var csvCollections = ['characters', 'teams', 'tournaments', 'missions'];
-        for (var i = 0; i < csvCollections.length; i++) {
-            var key = csvCollections[i];
-            if (Array.isArray(data[key]) && data[key].length > 0) {
-                return true;
-            }
-        }
-
-        if (data.curriculum && 
-            typeof data.curriculum === 'object' &&
-            Array.isArray(data.curriculum.disciplines) &&
-            data.curriculum.disciplines.length > 0) {
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Export data to CSV
-     */
     function exportCSV() {
         var data = window.data || {};
-        if (!hasCSVExportableData(data)) {
+        if (!utils.hasCSVExportableData(data)) {
             alert('No CSV-exportable data found.\n\nCSV exports: Characters, Teams, Tournaments, Missions, and Disciplines.\nUse JSON for complete backups.');
             return;
         }
 
         var records = [];
-        var schema = window.CSVSchema;
 
         // Characters
         records.push([schema.characters.sectionMarker]);
@@ -153,23 +128,15 @@
 
         var csvContent = window.CSV.arrayToCSV(records);
         var blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = url;
-        a.download = 'hollow-blades-data-' + new Date().toISOString().slice(0, 10) + '.csv';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        var filename = 'hollow-blades-data-' + new Date().toISOString().slice(0, 10) + '.csv';
+        
+        utils.downloadBlob(blob, filename);
 
         if (typeof window.logActivity === 'function') {
             window.logActivity('Exported data to CSV');
         }
     }
 
-    /**
-     * Import data from CSV
-     */
     function importCSV(file) {
         var reader = new FileReader();
         reader.onload = function(e) {
@@ -180,7 +147,6 @@
                     return;
                 }
 
-                var schema = window.CSVSchema;
                 var newData = createEmptyData();
                 var charMap = {};
                 var teamMap = {};
@@ -190,8 +156,8 @@
                 var section = '';
                 var headers = [];
 
-                // Save old data for rollback
-                var oldDataCopy = window.data ? JSON.parse(JSON.stringify(window.data)) : null;
+                // Create backup before any changes
+                var backup = utils.backupData(window.data);
 
                 for (var i = 0; i < records.length; i++) {
                     var row = records[i];
@@ -223,11 +189,9 @@
                     try {
                         var result = importer.import(row, context);
                         
-                        // If result is an object, add it to the appropriate collection
                         if (result && typeof result === 'object') {
                             var id = result.id;
                             
-                            // Check for duplicate IDs
                             if (id && idTracker[id]) {
                                 throw new Error('Duplicate ID "' + id + '" found in ' + section + '. Each entity must have a unique ID.');
                             }
@@ -251,7 +215,6 @@
                                 newData.curriculum.disciplines.push(result);
                             }
                         }
-                        // If result is null, it was a relational import (team members, rankings, etc.)
                     } catch (err) {
                         alert('Error importing row ' + (i + 1) + ': ' + err.message);
                         return;
@@ -259,42 +222,47 @@
                 }
 
                 // Migrate and normalise
-                newData = window.migrateData ? window.migrateData(newData) : newData;
+                if (typeof window.migrateData === 'function') {
+                    try {
+                        newData = window.migrateData(newData);
+                    } catch (migrateErr) {
+                        alert('Migration failed: ' + migrateErr.message);
+                        return;
+                    }
+                }
 
-                if (!hasCSVExportableData(newData)) {
+                if (!utils.hasCSVExportableData(newData)) {
                     alert('No valid CSV-exportable data found in file.\n\nCSV imports: Characters, Teams, Tournaments, Missions, and Disciplines.');
                     return;
                 }
 
-                if (!confirm('This will replace all current data. Continue?')) return;
+                if (!confirm('This will replace all current data. Continue?')) {
+                    return;
+                }
 
-                window.data = newData;
-
+                // Save to database first, then update in-memory state
                 if (typeof window.saveData === 'function') {
-                    window.saveData().then(function() {
-                        if (typeof window.logActivity === 'function') {
-                            window.logActivity('Imported data from CSV');
-                        }
-                        if (typeof window.renderAll === 'function') {
-                            window.renderAll();
-                        }
-                        if (typeof window.updateDashboardStats === 'function') {
-                            window.updateDashboardStats();
-                        }
-                        alert('CSV import completed!\n\n' +
-                              'Characters: ' + newData.characters.length + '\n' +
-                              'Teams: ' + newData.teams.length + '\n' +
-                              'Tournaments: ' + newData.tournaments.length + '\n' +
-                              'Missions: ' + newData.missions.length + '\n\n' +
-                              'Note: CSV only imports basic character info, teams, tournaments, missions, and disciplines.\n' +
-                              'Use JSON for complete data restoration.');
-                    }).catch(function(err) {
-                        if (oldDataCopy) window.data = oldDataCopy;
-                        alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
-                    });
+                    if (window.saveData.length >= 1) {
+                        window.saveData(newData).then(function() {
+                            window.data = newData;
+                            onCSVImportSuccess(newData);
+                        }).catch(function(err) {
+                            utils.rollbackData(backup);
+                            alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
+                        });
+                    } else {
+                        window.data = newData;
+                        window.saveData().then(function() {
+                            onCSVImportSuccess(newData);
+                        }).catch(function(err) {
+                            utils.rollbackData(backup);
+                            alert('Failed to save data: ' + err.message + '\n\nData has been rolled back.');
+                        });
+                    }
                 } else {
-                    if (oldDataCopy) window.data = oldDataCopy;
-                    alert('Could not save imported data.');
+                    window.data = newData;
+                    onCSVImportSuccess(newData);
+                    alert('CSV imported into memory, but could not be saved to persistent storage.');
                 }
 
             } catch (err) {
@@ -304,7 +272,25 @@
         reader.readAsText(file);
     }
 
-    // Helper
+    function onCSVImportSuccess(data) {
+        if (typeof window.logActivity === 'function') {
+            window.logActivity('Imported data from CSV');
+        }
+        if (typeof window.renderAll === 'function') {
+            window.renderAll();
+        }
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
+        }
+        alert('CSV import completed!\n\n' +
+              'Characters: ' + data.characters.length + '\n' +
+              'Teams: ' + data.teams.length + '\n' +
+              'Tournaments: ' + data.tournaments.length + '\n' +
+              'Missions: ' + data.missions.length + '\n\n' +
+              'Note: CSV only imports basic character info, teams, tournaments, missions, and disciplines.\n' +
+              'Use JSON for complete data restoration.');
+    }
+
     function createEmptyData() {
         return {
             characters: [],
@@ -377,6 +363,5 @@
     // Expose
     window.exportCSV = exportCSV;
     window.importCSV = importCSV;
-    window.hasCSVExportableData = hasCSVExportableData;
 
 })();
