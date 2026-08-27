@@ -2,22 +2,49 @@
  * js/modules/curriculum/curriculum-main.js - Main Curriculum Module
  * Entry point for all curriculum features
  * Path: js/modules/curriculum/curriculum-main.js
+ * 
+ * This module is responsible for:
+ *   - Rendering the curriculum tab container
+ *   - Tab navigation with state persistence
+ *   - Delegating rendering to child modules
+ *   - Providing shared utility functions for child modules
+ * 
+ * IMPORTANT: 
+ *   - This module owns ONLY curriculum-level tab navigation state.
+ *   - Child modules own their own UI state.
+ *   - This module does NOT initialise child module events.
+ *   - Each child module is responsible for its own event lifecycle.
+ *   - Schema initialisation is delegated to ensureCurriculum().
+ * 
+ * LIFECYCLE:
+ *   TabManager registers 'curriculum' → renderCurriculum() → initCurriculumTabs()
+ *   Tab switching → renderTabContent() → child module render function
  */
 
 (function() {
     'use strict';
 
-    var state = {
-        currentGradeWeek: 1,
-        currentRankWeek: 1,
-        selectedGradeStudentId: null,
-        classView: { currentWeek: 1, filterDiscipline: 'all' },
-        instructorCalendar: { currentWeek: 1, selectedInstructorId: null, expandedGroups: {} },
-        studentSchedule: { currentWeek: 1, selectedStudentId: null },
-        classes: { selectedClassId: null, viewMode: 'roster', distributionWeek: 1, maxTeamSize: 4 }
+    // ============================================================
+    // STATE - Shared state root with tab persistence
+    // This module owns ONLY curriculum-level tab navigation state.
+    // Child modules own their own UI state.
+    // ============================================================
+
+    // Preserve existing child state if it exists
+    var state = window.curriculumState || {
+        currentTab: 'disciplines'
     };
 
-    var currentTab = 'disciplines';
+    // Ensure currentTab exists
+    if (!state.currentTab) {
+        state.currentTab = 'disciplines';
+    }
+
+    window.curriculumState = state;
+
+    // ============================================================
+    // RENDER CURRICULUM
+    // ============================================================
 
     function renderCurriculum(container) {
         if (!container) {
@@ -30,44 +57,31 @@
             return;
         }
 
-        if (!window.data.curriculum) {
-            window.data.curriculum = {
-                disciplines: [],
-                schedules: {},
-                restDays: {},
-                examDays: {},
-                grades: {},
-                rankings: {},
-                currentWeek: 1,
-                classInstructors: {},
-                classLabels: {},
-                classGroupLabels: {},
-                classDurations: {},
-                instructorClasses: {},
-                instructorTemplates: {},
-                instructorBlocks: {},
-                instructorGroups: {},
-                disciplineGroups: {},
-                autoGroups: {}
-            };
-        }
-        if (!window.data.classes) {
-            window.data.classes = [];
+        // Ensure curriculum schema exists (delegated to central module)
+        if (typeof window.ensureCurriculum !== 'function') {
+            console.error('[Curriculum] ensureCurriculum() is not available.');
+            container.innerHTML = '<p class="empty-state">Curriculum schema module not loaded. Please refresh the page.</p>';
+            return;
         }
 
+        window.ensureCurriculum();
+
+        // Build the UI - no hard-coded active classes; state determines active tab
         container.innerHTML = getCurriculumHTML();
         
-        setTimeout(function() {
-            initCurriculumTabs();
-            initCurriculumEvents();
-        }, 50);
+        // Initialise tabs with preserved state
+        initCurriculumTabs(container, state.currentTab);
     }
+
+    // ============================================================
+    // CURRICULUM HTML
+    // ============================================================
 
     function getCurriculumHTML() {
         return `
             <div class="tab-container">
                 <div class="tab-nav" id="curriculum-tab-nav">
-                    <button class="tab-btn active" data-tab="disciplines">Disciplines</button>
+                    <button class="tab-btn" data-tab="disciplines">Disciplines</button>
                     <button class="tab-btn" data-tab="groups">Auto-Groups</button>
                     <button class="tab-btn" data-tab="class-view">Class View</button>
                     <button class="tab-btn" data-tab="instructor-calendar">Instructor Calendar</button>
@@ -77,7 +91,7 @@
                     <button class="tab-btn" data-tab="classes">Classes</button>
                 </div>
                 <div class="tab-content" id="curriculum-tab-content">
-                    <div id="tab-disciplines" class="tab-panel active">
+                    <div id="tab-disciplines" class="tab-panel">
                         <div id="disciplines-content"></div>
                     </div>
                     <div id="tab-groups" class="tab-panel">
@@ -106,193 +120,194 @@
         `;
     }
 
-    function initCurriculumTabs() {
-        var tabContainer = document.getElementById('curriculum-tab-nav');
+    // ============================================================
+    // TAB INITIALISATION
+    // ============================================================
+
+    function initCurriculumTabs(rootContainer, initialTab) {
+        var tabContainer = rootContainer ? 
+            rootContainer.querySelector('#curriculum-tab-nav') : 
+            document.getElementById('curriculum-tab-nav');
+            
         if (!tabContainer) return;
 
-        var panels = document.querySelectorAll('#curriculum-tab-content .tab-panel');
+        // Find the curriculum root for scoped queries
+        var curriculumRoot = tabContainer.closest('.tab-container');
+        if (!curriculumRoot) return;
 
-        // Find the active tab button
-        var activeBtn = tabContainer.querySelector('.tab-btn.active');
+        var panels = curriculumRoot.querySelectorAll('.tab-panel');
+
+        // Determine active tab from state
+        var activeTabName = initialTab || 'disciplines';
+        
+        // Find the button for the active tab
+        var activeBtn = tabContainer.querySelector('.tab-btn[data-tab="' + activeTabName + '"]');
+        
+        // Fallback to first button if the tab doesn't exist
         if (!activeBtn) {
             activeBtn = tabContainer.querySelector('.tab-btn');
+            if (!activeBtn) return;
+            activeTabName = activeBtn.dataset.tab;
         }
-        if (!activeBtn) return;
 
-        var activeTabName = activeBtn.dataset.tab;
-        currentTab = activeTabName;
+        // Update state
+        state.currentTab = activeTabName;
 
-        // Hide all panels, then show the active one
+        // Update button active states
+        tabContainer.querySelectorAll('.tab-btn').forEach(function(btn) {
+            btn.classList.toggle('active', btn.dataset.tab === activeTabName);
+        });
+
+        // Show the active panel
+        showTab(activeTabName, panels, tabContainer, curriculumRoot);
+
+        // Tab switching - single listener (old listener dies with old DOM)
+        tabContainer.addEventListener('click', function(e) {
+            var tab = e.target.closest('.tab-btn');
+            if (!tab) return;
+            
+            // Prevent navigation if it's a link
+            e.preventDefault();
+            
+            var tabName = tab.dataset.tab;
+            if (!tabName) return;
+            
+            // Update state
+            state.currentTab = tabName;
+            
+            // Update active state on buttons
+            tabContainer.querySelectorAll('.tab-btn').forEach(function(t) {
+                t.classList.toggle('active', t.dataset.tab === tabName);
+            });
+            
+            showTab(tabName, panels, tabContainer, curriculumRoot);
+        });
+    }
+
+    // ============================================================
+    // SHOW TAB
+    // ============================================================
+
+    function showTab(tabName, panels, tabContainer, curriculumRoot) {
+        // Hide all panels
         panels.forEach(function(panel) {
             panel.style.display = 'none';
             panel.classList.remove('active');
         });
 
-        var activePanel = document.getElementById('tab-' + activeTabName);
+        // Show the active panel - scoped to curriculum root
+        var activePanel = curriculumRoot ? 
+            curriculumRoot.querySelector('#tab-' + tabName) : 
+            document.getElementById('tab-' + tabName);
+            
         if (activePanel) {
             activePanel.style.display = 'block';
             activePanel.classList.add('active');
         }
 
         // Ensure the active tab button is marked correctly
-        tabContainer.querySelectorAll('.tab-btn').forEach(function(btn) {
-            btn.classList.toggle('active', btn === activeBtn);
-        });
-
-        // Render the active tab content
-        renderTabContent(activeTabName);
-
-        // Tab switching
-        tabContainer.addEventListener('click', function(e) {
-            var tab = e.target.closest('.tab-btn');
-            if (!tab) return;
-            
-            e.preventDefault();
-            e.stopPropagation();
-            
-            var tabName = tab.dataset.tab;
-            if (!tabName) return;
-            
-            currentTab = tabName;
-            
-            tabContainer.querySelectorAll('.tab-btn').forEach(function(t) {
-                t.classList.toggle('active', t === tab);
+        if (tabContainer) {
+            tabContainer.querySelectorAll('.tab-btn').forEach(function(btn) {
+                btn.classList.toggle('active', btn.dataset.tab === tabName);
             });
-            
-            panels.forEach(function(panel) {
-                panel.style.display = 'none';
-                panel.classList.remove('active');
-            });
-            
-            var activePanel = document.getElementById('tab-' + tabName);
-            if (activePanel) {
-                activePanel.style.display = 'block';
-                activePanel.classList.add('active');
-            }
-            
-            renderTabContent(tabName);
-        });
+        }
+
+        // Render the tab content
+        renderTabContent(tabName, curriculumRoot);
     }
 
-    function renderTabContent(tabName) {
-        console.log('[Curriculum] Rendering tab:', tabName);
-        
+    // ============================================================
+    // RENDER TAB CONTENT
+    // ============================================================
+
+    function renderTabContent(tabName, curriculumRoot) {
+        var content = null;
+        var renderer = null;
+
+        // Helper to get content element scoped to curriculum root
+        function getContentElement(id) {
+            if (curriculumRoot) {
+                return curriculumRoot.querySelector('#' + id);
+            }
+            return document.getElementById(id);
+        }
+
+        switch (tabName) {
+            case 'disciplines':
+                content = getContentElement('disciplines-content');
+                renderer = window.renderDisciplinesView;
+                break;
+            case 'groups':
+                content = getContentElement('groups-content');
+                renderer = window.renderAutoGroupsView;
+                break;
+            case 'class-view':
+                content = getContentElement('class-view-content');
+                renderer = window.renderClassView;
+                break;
+            case 'instructor-calendar':
+                content = getContentElement('instructor-calendar-content');
+                renderer = window.renderInstructorCalendar;
+                break;
+            case 'schedule':
+                content = getContentElement('schedule-content');
+                // renderStudentScheduleView is the canonical schedule renderer
+                renderer = window.renderStudentScheduleView;
+                // Fallback for legacy naming
+                if (typeof renderer !== 'function') {
+                    renderer = window.renderScheduleView;
+                }
+                break;
+            case 'grades':
+                content = getContentElement('grades-content');
+                renderer = window.renderGradesView;
+                break;
+            case 'ranking':
+                content = getContentElement('ranking-content');
+                renderer = window.renderRankingView;
+                break;
+            case 'classes':
+                content = getContentElement('classes-content');
+                renderer = window.renderClassesView;
+                break;
+            default:
+                return;
+        }
+
+        if (!content) {
+            return;
+        }
+
+        if (typeof renderer !== 'function') {
+            content.innerHTML = '<p class="empty-state">Module not loaded. Please refresh the page.</p>';
+            return;
+        }
+
         try {
-            var content = null;
-            var renderer = null;
-            var rendererName = '';
-
-            switch (tabName) {
-                case 'disciplines':
-                    content = document.getElementById('disciplines-content');
-                    renderer = window.renderDisciplinesView;
-                    rendererName = 'renderDisciplinesView';
-                    break;
-                case 'groups':
-                    content = document.getElementById('groups-content');
-                    renderer = window.renderAutoGroupsView;
-                    rendererName = 'renderAutoGroupsView';
-                    break;
-                case 'class-view':
-                    content = document.getElementById('class-view-content');
-                    renderer = window.renderClassView;
-                    rendererName = 'renderClassView';
-                    break;
-                case 'instructor-calendar':
-                    content = document.getElementById('instructor-calendar-content');
-                    renderer = window.renderInstructorCalendar;
-                    rendererName = 'renderInstructorCalendar';
-                    break;
-                case 'schedule':
-                    content = document.getElementById('schedule-content');
-                    renderer = window.renderStudentScheduleView || window.renderScheduleView;
-                    rendererName = 'renderStudentScheduleView/renderScheduleView';
-                    break;
-                case 'grades':
-                    content = document.getElementById('grades-content');
-                    renderer = window.renderGradesView;
-                    rendererName = 'renderGradesView';
-                    break;
-                case 'ranking':
-                    content = document.getElementById('ranking-content');
-                    renderer = window.renderRankingView;
-                    rendererName = 'renderRankingView';
-                    break;
-                case 'classes':
-                    content = document.getElementById('classes-content');
-                    renderer = window.renderClassesView;
-                    rendererName = 'renderClassesView';
-                    break;
-                default:
-                    console.warn('[Curriculum] Unknown tab:', tabName);
-                    return;
-            }
-
-            if (!content) {
-                console.error('[Curriculum] Content element not found for:', tabName);
-                return;
-            }
-
-            if (typeof renderer !== 'function') {
-                console.error('[Curriculum] Renderer "' + rendererName + '" is not a function for tab:', tabName);
-                console.log('[Curriculum] Available renderers:', Object.keys(window).filter(function(k) { 
-                    return k.toLowerCase().indexOf('render') !== -1 && typeof window[k] === 'function'; 
-                }));
-                content.innerHTML = '<p class="empty-state">Module not loaded. Please refresh the page.</p>';
-                return;
-            }
-
             renderer(content);
-
-            console.log('[Curriculum] Successfully rendered:', tabName);
-            console.log('[Curriculum] Content HTML length:', content.innerHTML.length);
-            console.log('[Curriculum] Content children:', content.children.length);
-            if (content.innerHTML.length > 0) {
-                console.log('[Curriculum] Content HTML preview:', content.innerHTML.substring(0, 500));
-            }
-
         } catch (e) {
             console.error('[Curriculum] Error rendering tab "' + tabName + '":', e);
-            var content = document.getElementById(tabName + '-content') || 
-                          document.getElementById(tabName.replace('-', '') + '-content') ||
-                          document.getElementById('disciplines-content');
-            if (content) {
-                content.innerHTML = '<p class="empty-state">Error loading content: ' + e.message + '</p>';
-            }
+            content.innerHTML = '<p class="empty-state">Unable to load this section. Please try again.</p>';
         }
     }
 
-    function initCurriculumEvents() {
-        var initializers = [
-            ['disciplines', window.initDisciplineEvents],
-            ['groups', window.initAutoGroupsEvents],
-            ['class-view', window.initClassViewEvents],
-            ['instructor-calendar', window.initInstructorCalendarEvents],
-            ['schedule', window.initStudentScheduleEvents],
-            ['grades', window.initGradesEvents],
-            ['ranking', window.initRankingEvents],
-            ['classes', window.initClassEvents]
-        ];
+    // ============================================================
+    // SHARED UTILITY FUNCTIONS
+    // These are genuinely shared across multiple curriculum modules.
+    // ============================================================
 
-        initializers.forEach(function(item) {
-            var name = item[0];
-            var fn = item[1];
-
-            if (typeof fn === 'function') {
-                try {
-                    fn();
-                    console.log('[Curriculum] Event init success:', name);
-                } catch (e) {
-                    console.error('[Curriculum] Event init failed:', name, e);
-                }
-            } else {
-                console.warn('[Curriculum] Event initializer missing:', name);
-            }
-        });
-    }
-
-    function populateStudentSelector(id) {
-        var select = document.getElementById(id);
+    /**
+     * Populate a student selector dropdown with all students.
+     * Used by schedule and grades modules.
+     * 
+     * Note: This is a global document utility. If you need scoped
+     * lookup, pass a root container as an optional second argument.
+     */
+    function populateStudentSelector(id, rootContainer) {
+        var select = rootContainer ? 
+            rootContainer.querySelector('#' + id) : 
+            document.getElementById(id);
+            
         if (!select) return;
 
         var students = window.getStudents();
@@ -306,6 +321,10 @@
         });
     }
 
+    /**
+     * Get instructor names for a discipline.
+     * Used by disciplines, grades, and class-view modules.
+     */
     function getInstructorNames(discipline) {
         var names = [];
         if (discipline && discipline.instructorIds) {
@@ -319,16 +338,23 @@
         return names;
     }
 
+    /**
+     * Get all instructor templates for a given week.
+     * Used by instructor-calendar module.
+     * 
+     * NOTE: This is the SINGLE authoritative implementation.
+     * The instructor-calendar module should use this via window.
+     */
     function getAllInstructorTemplatesForWeek(week) {
         var results = {};
         var weekNum = parseInt(week) || 1;
         var data = window.data || {};
+        
         if (data.curriculum && data.curriculum.instructorTemplates) {
+            var suffix = '_' + weekNum;
             for (var templateKey in data.curriculum.instructorTemplates) {
-                var parts = templateKey.split('_');
-                var instructorId = parts[0];
-                var templateWeek = parseInt(parts[1]);
-                if (templateWeek === weekNum) {
+                if (templateKey.endsWith(suffix)) {
+                    var instructorId = templateKey.slice(0, templateKey.length - suffix.length);
                     results[instructorId] = data.curriculum.instructorTemplates[templateKey];
                 }
             }
@@ -336,10 +362,18 @@
         return results;
     }
 
+    /**
+     * Get instructor templates for a specific instructor and week.
+     * Used by instructor-calendar module.
+     * 
+     * NOTE: This is the SINGLE authoritative implementation.
+     * The instructor-calendar module should use this via window.
+     */
     function getInstructorTemplatesForWeek(instructorId, week) {
         var templateKey = instructorId + '_' + week;
         var data = window.data || {};
-        if (data.curriculum && data.curriculum.instructorTemplates && data.curriculum.instructorTemplates[templateKey]) {
+        if (data.curriculum && data.curriculum.instructorTemplates && 
+            data.curriculum.instructorTemplates[templateKey]) {
             return data.curriculum.instructorTemplates[templateKey];
         }
         return {};
@@ -353,38 +387,12 @@
         window.TabManager.register('curriculum', renderCurriculum);
     }
 
-    document.addEventListener('dataReady', function() {
-        var container = document.getElementById('tab-curriculum');
-        if (container && container.style.display !== 'none') {
-            renderCurriculum(container);
-        }
-    });
-
-    document.addEventListener('tabChanged', function(e) {
-        if (e.detail && e.detail.tab === 'curriculum') {
-            var container = document.getElementById('tab-curriculum');
-            if (container) {
-                renderCurriculum(container);
-            }
-        }
-    });
-
-    if (window.data) {
-        setTimeout(function() {
-            var container = document.getElementById('tab-curriculum');
-            if (container && container.style.display !== 'none') {
-                renderCurriculum(container);
-            }
-        }, 100);
-    }
-
     // ============================================================
     // EXPOSE FUNCTIONS
     // ============================================================
 
     window.renderCurriculum = renderCurriculum;
     window.initCurriculumTabs = initCurriculumTabs;
-    window.initCurriculumEvents = initCurriculumEvents;
     window.renderTabContent = renderTabContent;
     window.populateStudentSelector = populateStudentSelector;
     window.getInstructorNames = getInstructorNames;
