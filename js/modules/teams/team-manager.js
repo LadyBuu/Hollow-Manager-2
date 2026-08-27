@@ -11,11 +11,38 @@
  *   - Ranking management (delegates to TeamCore)
  *   - Modal management for members and rankings
  * 
- * IMPORTANT: Data operations are delegated to TeamCore.
- * This module does NOT mutate data directly.
+ * IMPORTANT: This module does NOT mutate window.data directly.
+ * All domain data mutations are delegated to TeamCore.
+ * UI state (teamState, form state, DOM state) is managed here.
  * All user-controlled data is escaped to prevent XSS.
  * 
- * DEPENDENCY: window.TeamCore is required.
+ * RENDERING PHILOSOPHY:
+ *   - UI refresh happens IMMEDIATELY after mutation, before persistence
+ *   - This ensures the UI reflects the authoritative in-memory state
+ *   - Persistence success/failure is reported separately
+ * 
+ * PERSISTENCE NOTE:
+ *   - Mutations are applied to window.data via TeamCore immediately
+ *   - saveData() is then called to persist
+ *   - If saveData() fails, the in-memory mutation has already occurred
+ *   - This is intentional: memory is authoritative, persistence is best-effort
+ *   - Users are notified of persistence failures but the UI already shows the change
+ *   - Modals close immediately after successful mutation, before persistence completes
+ * 
+ * DEPENDENCIES:
+ *   Required:
+ *     - window.TeamCore
+ *     - window.TeamFilters
+ *   Optional:
+ *     - window.TeamRankings (for ranking display)
+ *     - window.TeamMembers (for member status)
+ *     - window.getClasses
+ *     - window.getDisplayName
+ *     - window.getCharacterById
+ *     - window.getCurrentStatus
+ *     - window.updateDashboardStats
+ *     - window.saveData
+ *     - window.showToast
  */
 
 (function() {
@@ -33,6 +60,11 @@
 
     if (!window.TeamCore) {
         console.error('TeamManager: TeamCore is required but not loaded.');
+        return;
+    }
+
+    if (!window.TeamFilters) {
+        console.error('TeamManager: TeamFilters is required but not loaded.');
         return;
     }
 
@@ -54,9 +86,75 @@
     // ============================================================
 
     var teamState = {
-        currentTab: 'all',
-        expandedTeamId: null
+        currentTab: 'academic',
+        expandedTeamId: null,
+        filters: {
+            academic: { filterWeek: 1, filterStatus: 'active', filterClass: 'all' },
+            professional: { filterYear: '', filterStatus: 'active' },
+            temporary: { filterYear: '', filterStatus: 'active' },
+            civilian: { filterStatus: 'active' }
+        }
     };
+
+    // ============================================================
+    // NOTIFICATION
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+
+        if (typeof window.showToast === 'function') {
+            window.showToast(message, type);
+            return;
+        }
+
+        if (typeof window.setSession === 'function') {
+            window.setSession('toast', {
+                message: message,
+                type: type,
+                timestamp: Date.now()
+            });
+            if (typeof window.renderToast === 'function') {
+                window.renderToast();
+            }
+            return;
+        }
+
+        // Only use alert for errors and confirmations
+        if (type === 'error' || type === 'confirm') {
+            alert(message);
+        }
+    }
+
+    // ============================================================
+    // PERSISTENCE HELPER - Centralises save boilerplate
+    // ============================================================
+
+    function persistMutation(options) {
+        options = options || {};
+        var successMessage = options.successMessage || 'Operation completed successfully.';
+        var errorMessage = options.errorMessage || 'Failed to save changes to persistent storage. Your in-memory changes have been applied but may be lost if you refresh.';
+        var onSuccess = options.onSuccess || null;
+        var onError = options.onError || null;
+
+        if (typeof window.saveData !== 'function') {
+            console.error('Persistence unavailable.');
+            if (onError) onError();
+            showNotification('Changes were applied in memory, but persistent storage is unavailable.', 'error');
+            return;
+        }
+
+        window.saveData()
+            .then(function() {
+                if (onSuccess) onSuccess();
+                if (successMessage) showNotification(successMessage, 'success');
+            })
+            .catch(function(err) {
+                console.error('Persistence error:', err);
+                if (onError) onError();
+                showNotification(errorMessage, 'error');
+            });
+    }
 
     // ============================================================
     // SAFE HELPERS
@@ -69,6 +167,63 @@
         }
     }
 
+    function refreshTeamStats() {
+        var container = document.getElementById('tab-teams');
+        if (!container) return;
+
+        var allTeams = Array.isArray(window.data.teams)
+            ? window.data.teams
+            : [];
+
+        var visibleTeams = allTeams.filter(function(t) {
+            return t && t.status !== 'deleted';
+        });
+
+        var allAcad = visibleTeams.filter(function(t) {
+            return t.type === 'academic';
+        }).length;
+        var allProf = visibleTeams.filter(function(t) {
+            return t.type === 'professional' || t.type === 'internship';
+        }).length;
+        var allTemp = visibleTeams.filter(function(t) {
+            return t.type === 'temporary';
+        }).length;
+        var allCiv = visibleTeams.filter(function(t) {
+            return t.type === 'civilian';
+        }).length;
+
+        // Update tab button labels
+        var tabButtons = container.querySelectorAll('.tab-btn');
+        tabButtons.forEach(function(btn) {
+            var tab = btn.dataset.tab;
+            var count = 0;
+            if (tab === 'all') {
+                count = visibleTeams.length;
+            } else if (tab === 'academic') {
+                count = allAcad;
+            } else if (tab === 'professional') {
+                count = allProf;
+            } else if (tab === 'temporary') {
+                count = allTemp;
+            } else if (tab === 'civilian') {
+                count = allCiv;
+            }
+            // Update the label text - preserve the icon/name part
+            var label = btn.textContent.replace(/\(\d+\)$/, '').trim();
+            btn.textContent = label + ' (' + count + ')';
+        });
+
+        // Update stat cards
+        var statCards = container.querySelectorAll('.stat-card .stat-number');
+        // There are 4 stat cards in order: Academic, Professional, Temporary, Civilian
+        var counts = [allAcad, allProf, allTemp, allCiv];
+        statCards.forEach(function(el, index) {
+            if (index < counts.length) {
+                el.textContent = counts[index];
+            }
+        });
+    }
+
     function safeUpdateDashboardStats() {
         if (typeof window.updateDashboardStats === 'function') {
             window.updateDashboardStats();
@@ -77,6 +232,14 @@
 
     function getTeam(teamId) {
         return window.TeamCore.getTeam(teamId);
+    }
+
+    function getCurrentPeriodForType(teamType) {
+        if (teamType === 'academic') {
+            return teamState.filters.academic.filterWeek || 1;
+        }
+        var data = window.data || {};
+        return data.currentYear || new Date().getFullYear();
     }
 
     // ============================================================
@@ -107,14 +270,28 @@
         var allTeams = Array.isArray(window.data.teams)
             ? window.data.teams
             : [];
-        
-        var academicTeams = allTeams.filter(function(t) { return t.type === 'academic'; });
-        var professionalTeams = allTeams.filter(function(t) { return t.type === 'professional' || t.type === 'internship'; });
-        var temporaryTeams = allTeams.filter(function(t) { return t.type === 'temporary'; });
-        var civilianTeams = allTeams.filter(function(t) { return t.type === 'civilian'; });
+
+        // Exclude deleted teams from counts (they are hidden from UI)
+        var visibleTeams = allTeams.filter(function(t) {
+            return t && t.status !== 'deleted';
+        });
+
+        // Count visible teams by type
+        var allAcad = visibleTeams.filter(function(t) {
+            return t.type === 'academic';
+        }).length;
+        var allProf = visibleTeams.filter(function(t) {
+            return t.type === 'professional' || t.type === 'internship';
+        }).length;
+        var allTemp = visibleTeams.filter(function(t) {
+            return t.type === 'temporary';
+        }).length;
+        var allCiv = visibleTeams.filter(function(t) {
+            return t.type === 'civilian';
+        }).length;
 
         var html = '';
-        
+
         // Header
         html += '<div class="page-header">';
         html += '<h2>Team Manager</h2>';
@@ -123,19 +300,24 @@
 
         // Stats
         html += '<div class="stats-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;">';
-        html += '<div class="stat-card" style="background:var(--panel);padding:10px;border-radius:var(--radius);border:1px solid var(--border);text-align:center;"><h3 style="font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;margin:0;">Academic</h3><p class="stat-number" style="font-size:1.3rem;font-weight:700;color:var(--accent);margin:2px 0;">' + academicTeams.length + '</p></div>';
-        html += '<div class="stat-card" style="background:var(--panel);padding:10px;border-radius:var(--radius);border:1px solid var(--border);text-align:center;"><h3 style="font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;margin:0;">Professional</h3><p class="stat-number" style="font-size:1.3rem;font-weight:700;color:var(--info);margin:2px 0;">' + professionalTeams.length + '</p></div>';
-        html += '<div class="stat-card" style="background:var(--panel);padding:10px;border-radius:var(--radius);border:1px solid var(--border);text-align:center;"><h3 style="font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;margin:0;">Temporary</h3><p class="stat-number" style="font-size:1.3rem;font-weight:700;color:var(--warning);margin:2px 0;">' + temporaryTeams.length + '</p></div>';
-        html += '<div class="stat-card" style="background:var(--panel);padding:10px;border-radius:var(--radius);border:1px solid var(--border);text-align:center;"><h3 style="font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;margin:0;">Civilian</h3><p class="stat-number" style="font-size:1.3rem;font-weight:700;color:var(--text-dim);margin:2px 0;">' + civilianTeams.length + '</p></div>';
+        html += '<div class="stat-card" style="background:var(--panel);padding:10px;border-radius:var(--radius);border:1px solid var(--border);text-align:center;"><h3 style="font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;margin:0;">Academic</h3><p class="stat-number" style="font-size:1.3rem;font-weight:700;color:var(--accent);margin:2px 0;">' + allAcad + '</p></div>';
+        html += '<div class="stat-card" style="background:var(--panel);padding:10px;border-radius:var(--radius);border:1px solid var(--border);text-align:center;"><h3 style="font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;margin:0;">Professional</h3><p class="stat-number" style="font-size:1.3rem;font-weight:700;color:var(--info);margin:2px 0;">' + allProf + '</p></div>';
+        html += '<div class="stat-card" style="background:var(--panel);padding:10px;border-radius:var(--radius);border:1px solid var(--border);text-align:center;"><h3 style="font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;margin:0;">Temporary</h3><p class="stat-number" style="font-size:1.3rem;font-weight:700;color:var(--warning);margin:2px 0;">' + allTemp + '</p></div>';
+        html += '<div class="stat-card" style="background:var(--panel);padding:10px;border-radius:var(--radius);border:1px solid var(--border);text-align:center;"><h3 style="font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;margin:0;">Civilian</h3><p class="stat-number" style="font-size:1.3rem;font-weight:700;color:var(--text-dim);margin:2px 0;">' + allCiv + '</p></div>';
         html += '</div>';
 
         // Tab buttons
         html += '<div class="tab-nav" style="display:flex;gap:4px;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:12px;flex-wrap:wrap;">';
-        html += '<button class="tab-btn ' + (teamState.currentTab === 'all' ? 'active' : '') + '" data-tab="all" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'all' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'all' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">All Teams (' + allTeams.length + ')</button>';
-        html += '<button class="tab-btn ' + (teamState.currentTab === 'academic' ? 'active' : '') + '" data-tab="academic" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'academic' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'academic' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">Academic (' + academicTeams.length + ')</button>';
-        html += '<button class="tab-btn ' + (teamState.currentTab === 'professional' ? 'active' : '') + '" data-tab="professional" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'professional' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'professional' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">Professional (' + professionalTeams.length + ')</button>';
-        html += '<button class="tab-btn ' + (teamState.currentTab === 'temporary' ? 'active' : '') + '" data-tab="temporary" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'temporary' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'temporary' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">Temporary (' + temporaryTeams.length + ')</button>';
-        html += '<button class="tab-btn ' + (teamState.currentTab === 'civilian' ? 'active' : '') + '" data-tab="civilian" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'civilian' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'civilian' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">Civilian (' + civilianTeams.length + ')</button>';
+        html += '<button class="tab-btn ' + (teamState.currentTab === 'all' ? 'active' : '') + '" data-tab="all" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'all' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'all' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">All Teams (' + visibleTeams.length + ')</button>';
+        html += '<button class="tab-btn ' + (teamState.currentTab === 'academic' ? 'active' : '') + '" data-tab="academic" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'academic' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'academic' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">Academic (' + allAcad + ')</button>';
+        html += '<button class="tab-btn ' + (teamState.currentTab === 'professional' ? 'active' : '') + '" data-tab="professional" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'professional' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'professional' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">Professional (' + allProf + ')</button>';
+        html += '<button class="tab-btn ' + (teamState.currentTab === 'temporary' ? 'active' : '') + '" data-tab="temporary" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'temporary' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'temporary' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">Temporary (' + allTemp + ')</button>';
+        html += '<button class="tab-btn ' + (teamState.currentTab === 'civilian' ? 'active' : '') + '" data-tab="civilian" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'civilian' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'civilian' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">Civilian (' + allCiv + ')</button>';
+        html += '</div>';
+
+        // Filter section
+        html += '<div id="filter-container" style="margin-bottom:12px;">';
+        html += buildFilterHTML(teamState.currentTab);
         html += '</div>';
 
         // Team list container
@@ -146,9 +328,44 @@
 
         container.innerHTML = html;
 
-        // Render teams for current tab
-        var filteredTeams = getFilteredTeams(allTeams, teamState.currentTab);
+        // Render teams for current tab using TeamFilters
+        var filteredTeams = getFilteredTeamsForTab(teamState.currentTab);
         renderTeamList(filteredTeams, container);
+    }
+
+    // ============================================================
+    // BUILD FILTER HTML - Uses TeamFilters
+    // ============================================================
+
+    function buildFilterHTML(tab) {
+        var filter = teamState.filters[tab] || teamState.filters.academic;
+        var classes = typeof window.getClasses === 'function' ? window.getClasses() : [];
+
+        if (tab === 'all') {
+            return '<div class="filter-section"><span style="font-size:0.75rem;color:var(--text-dim);">All teams shown</span></div>';
+        }
+
+        if (tab === 'academic' || tab === 'professional' || tab === 'temporary' || tab === 'civilian') {
+            return window.TeamFilters.buildFilterHTML(tab, filter, classes);
+        }
+
+        return '';
+    }
+
+    // ============================================================
+    // GET FILTERED TEAMS - Uses TeamFilters
+    // ============================================================
+
+    function getFilteredTeamsForTab(tab) {
+        if (tab === 'all') {
+            var allTeams = window.data && Array.isArray(window.data.teams) ? window.data.teams : [];
+            return allTeams.filter(function(t) {
+                return t && t.status !== 'deleted';
+            });
+        }
+
+        var filter = teamState.filters[tab] || teamState.filters.academic;
+        return window.TeamFilters.filterTeams(tab, filter);
     }
 
     // ============================================================
@@ -163,11 +380,7 @@
 
         if (!window.data) return;
 
-        var allTeams = Array.isArray(window.data.teams)
-            ? window.data.teams
-            : [];
-
-        var filteredTeams = getFilteredTeams(allTeams, teamState.currentTab);
+        var filteredTeams = getFilteredTeamsForTab(teamState.currentTab);
 
         var listContainer = container.querySelector('#team-list-container');
         if (!listContainer) return;
@@ -176,8 +389,6 @@
         var tempContainer = document.createElement('div');
         renderTeamList(filteredTeams, tempContainer);
         listContainer.innerHTML = tempContainer.innerHTML;
-
-        // The click handler is on listContainer, which still exists, so no need to rebind.
     }
 
     // ============================================================
@@ -187,8 +398,6 @@
     function renderTeamList(teams, container) {
         var listContainer = container.querySelector('#team-list-container');
         if (!listContainer) {
-            // If called from renderFullManager, the container already has #team-list-container
-            // If not, create a temporary wrapper
             listContainer = container;
         }
 
@@ -198,60 +407,66 @@
         }
 
         var html = '';
+        // Header matches actual row data: Team Name | Period | Rank | Active | Actions
         html += '<div class="list-header team-header" style="display:grid;grid-template-columns:1.2fr 0.8fr 0.6fr 0.6fr 1fr;gap:8px;padding:8px 12px;background:var(--panel-alt);border-radius:6px 6px 0 0;border:1px solid var(--border);border-bottom:none;font-weight:600;font-size:0.7rem;color:var(--text-dim);">';
         html += '<span>Team Name</span>';
-        html += '<span>Type</span>';
         html += '<span>Period</span>';
-        html += '<span>Status</span>';
+        html += '<span>Rank</span>';
+        html += '<span>Active</span>';
         html += '<span>Actions</span>';
         html += '</div>';
 
         teams.forEach(function(team) {
-            var memberCount = team.members ? team.members.length : 0;
-            var typeLabel = window.TeamCore.getTypeLabel(team.type);
+            if (!team || typeof team !== 'object') return;
+
             var periodDisplay = window.TeamCore.getPeriodDisplay(team);
+
+            // Use team.type for period calculation, not the tab
+            var period = getCurrentPeriodForType(team.type);
+            var activeMembers = window.TeamCore.getActiveMembers(team, period);
+            // Show active member count, not total historical
+            var memberCount = activeMembers.length;
+
             var isExpanded = (teamState.expandedTeamId === team.id);
             var isInactive = team.status === 'deprecated' || team.status === 'inactive';
-            var style = isInactive ? 'opacity:0.6;background:var(--panel-alt);' : '';
+            var inactiveClass = isInactive ? 'inactive' : '';
 
-            // Get active members for expanded view - TeamCore handles period semantics
-            var activeMembers = [];
-            if (typeof window.TeamCore.getActiveMembers === 'function') {
-                var currentPeriod = window.currentWeek || 1;
-                activeMembers = window.TeamCore.getActiveMembers(team, currentPeriod);
+            var rankDisplay = '-';
+            if (window.TeamRankings && typeof window.TeamRankings.getCurrentRank === 'function') {
+                rankDisplay = window.TeamRankings.getCurrentRank(team) || '-';
+            } else if (team.currentRank) {
+                rankDisplay = team.currentRank;
             }
 
-            html += '<div class="list-item team-item" data-id="' + escapeHtml(team.id) + '" style="display:grid;grid-template-columns:1.2fr 0.8fr 0.6fr 0.6fr 1fr;gap:8px;padding:8px 12px;background:var(--panel);border:1px solid var(--border);border-top:none;' + style + '">';
-            html += '<span><strong>' + escapeHtml(team.name) + '</strong></span>';
-            html += '<span style="font-size:0.75rem;">' + escapeHtml(typeLabel) + '</span>';
-            html += '<span style="font-size:0.75rem;">' + escapeHtml(periodDisplay) + '</span>';
-            html += '<span style="font-size:0.75rem;color:' + (team.status === 'active' ? 'var(--accent)' : 'var(--text-dim)') + ';">' + escapeHtml(team.status || 'active') + '</span>';
-            html += '<span class="actions" style="display:flex;gap:4px;flex-wrap:wrap;">';
-            html += '<button class="small toggle-members" data-id="' + escapeHtml(team.id) + '" style="padding:2px 8px;font-size:0.65rem;">' + (isExpanded ? '▾' : '▸') + ' ' + memberCount + '</button>';
-            html += '<button class="small manage-members" data-id="' + escapeHtml(team.id) + '" style="padding:2px 8px;font-size:0.65rem;">Members</button>';
-            html += '<button class="small manage-rankings" data-id="' + escapeHtml(team.id) + '" style="padding:2px 8px;font-size:0.65rem;">Rankings</button>';
-            html += '<button class="small edit-team" data-id="' + escapeHtml(team.id) + '" style="padding:2px 8px;font-size:0.65rem;">Edit</button>';
-            html += '<button class="small danger delete-team" data-id="' + escapeHtml(team.id) + '" style="padding:2px 8px;font-size:0.65rem;">Delete</button>';
+            var classDisplay = '';
+            if (team.type === 'academic' && team.classId) {
+                var className = window.getClassDisplayName ? window.getClassDisplayName(team.classId) : null;
+                if (className && className !== 'Unassigned') {
+                    classDisplay = ' <span class="team-class">[' + escapeHtml(className) + ']</span>';
+                }
+            }
+
+            // Team row
+            html += '<div class="list-item team-item ' + inactiveClass + '" data-id="' + escapeHtml(team.id) + '" style="display:grid;grid-template-columns:1.2fr 0.8fr 0.6fr 0.6fr 1fr;">';
+            html += '<span><strong>' + escapeHtml(team.name) + '</strong>' + classDisplay;
+            if (isInactive) {
+                html += ' <span class="team-status-inactive">(Inactive)</span>';
+            }
             html += '</span>';
+            html += '<span class="team-period">' + escapeHtml(periodDisplay) + '</span>';
+            html += '<span class="team-rank">' + escapeHtml(rankDisplay) + '</span>';
+            html += '<span class="team-member-count">' + memberCount + '</span>';
+            html += '<span class="actions">' +
+                '<button class="small toggle-members" data-id="' + escapeHtml(team.id) + '">' + (isExpanded ? '▾' : '▸') + '</button>' +
+                '<button class="small manage-members" data-id="' + escapeHtml(team.id) + '">Members</button>' +
+                '<button class="small manage-rankings" data-id="' + escapeHtml(team.id) + '">Rankings</button>' +
+                '<button class="small edit-team" data-id="' + escapeHtml(team.id) + '">Edit</button>' +
+                '<button class="small danger delete-team" data-id="' + escapeHtml(team.id) + '">Delete</button>' +
+                '</span>';
             html += '</div>';
 
             if (isExpanded) {
-                html += '<div class="team-members-expanded" data-team-id="' + escapeHtml(team.id) + '" style="display:block;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;margin-bottom:4px;">';
-                if (activeMembers.length > 0) {
-                    html += '<div style="font-size:0.7rem;color:var(--text-dim);margin-bottom:4px;">Members (active):</div>';
-                    activeMembers.forEach(function(member) {
-                        var char = window.getCharacterById(member.characterId);
-                        var name = char ? window.getDisplayName(char) : 'Unknown';
-                        var deadMarker = char && char.deceased ? ' ✝' : '';
-                        html += '<div class="member-entry" style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid var(--border-soft);font-size:0.75rem;">';
-                        html += '<span>' + escapeHtml(name) + deadMarker + ' <span class="role" style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(member.role || 'Member') + ')</span></span>';
-                        html += '<span style="color:var(--text-dim);font-size:0.7rem;">Joined: ' + escapeHtml(member.joinPeriod || '?') + (member.leavePeriod ? ' → ' + escapeHtml(member.leavePeriod) : '') + '</span>';
-                        html += '</div>';
-                    });
-                } else {
-                    html += '<div class="member-entry empty" style="color:var(--text-dim);font-size:0.8rem;">No active members this period</div>';
-                }
-                html += '</div>';
+                html += renderExpandedMembers(team, period);
             }
         });
 
@@ -259,16 +474,53 @@
     }
 
     // ============================================================
-    // FILTER TEAMS
+    // RENDER EXPANDED MEMBERS
     // ============================================================
 
-    function getFilteredTeams(allTeams, tab) {
-        if (tab === 'all') return allTeams;
-        if (tab === 'academic') return allTeams.filter(function(t) { return t.type === 'academic'; });
-        if (tab === 'professional') return allTeams.filter(function(t) { return t.type === 'professional' || t.type === 'internship'; });
-        if (tab === 'temporary') return allTeams.filter(function(t) { return t.type === 'temporary'; });
-        if (tab === 'civilian') return allTeams.filter(function(t) { return t.type === 'civilian'; });
-        return allTeams;
+    function renderExpandedMembers(team, filterPeriod) {
+        if (!team || typeof team !== 'object') return '';
+
+        var periodNum = parseInt(filterPeriod, 10) || 1;
+        var activeMembers = window.TeamCore.getActiveMembers(team, periodNum);
+        var periodLabel = team.type === 'academic' ? 'Week' : 'Period';
+        var labelText = team.type === 'academic'
+            ? 'Active Members at Week ' + escapeHtml(String(periodNum)) + ':'
+            : 'Active Members in ' + escapeHtml(String(periodNum)) + ':';
+
+        var html = '<div class="team-members-expanded" data-team-id="' + escapeHtml(team.id) + '">';
+
+        if (activeMembers.length > 0) {
+            html += '<div class="members-expanded-header">' + labelText + '</div>';
+            activeMembers.forEach(function(member) {
+                if (!member || typeof member !== 'object') return;
+
+                var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
+                var name = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
+                var age = char ? (window.getCharacterAge ? window.getCharacterAge(char) : '-') : '-';
+                var deadMarker = char && char.deceased ? ' ✝' : '';
+
+                // Use TeamMembers for status if available
+                var status = 'active';
+                var statusInfo = { label: 'Active', color: 'var(--accent)' };
+                if (window.TeamMembers && typeof window.TeamMembers.getStatusAtPeriod === 'function') {
+                    status = window.TeamMembers.getStatusAtPeriod(member, periodNum, team.type);
+                    statusInfo = window.TeamCore.getMemberStatusInfo(status);
+                }
+
+                // Status label is internal, but escape it anyway for safety
+                var escapedStatusLabel = escapeHtml(statusInfo.label);
+
+                html += '<div class="member-entry" style="border-left:3px solid ' + statusInfo.color + ';padding-left:8px;">';
+                html += '<span>' + escapeHtml(name) + deadMarker + ' <span class="role">(' + escapeHtml(member.role || 'Member') + ')</span></span>';
+                html += '<span style="color:var(--text-dim);font-size:0.75rem;">Age: ' + escapeHtml(age) + ' | Joined: ' + escapeHtml(member.joinPeriod || '?') + (member.leavePeriod ? ' → ' + escapeHtml(member.leavePeriod) : '') + ' | <span style="color:' + statusInfo.color + ';">' + escapedStatusLabel + '</span></span>';
+                html += '</div>';
+            });
+        } else {
+            html += '<div class="member-entry empty">No active members this ' + periodLabel.toLowerCase() + '</div>';
+        }
+
+        html += '</div>';
+        return html;
     }
 
     // ============================================================
@@ -310,7 +562,8 @@
                                 </div>
                                 <div class="form-group">
                                     <label>Current Ranking</label>
-                                    <input type="number" id="team-ranking" placeholder="Rank" min="1">
+                                    <input type="text" id="team-ranking" readonly disabled>
+                                    <span style="font-size:0.55rem;color:var(--text-dim);">(Read-only; use Rankings tab to modify)</span>
                                 </div>
                                 <div class="form-group">
                                     <label>Status</label>
@@ -332,7 +585,7 @@
                                         <input type="text" id="team-number" placeholder="e.g., A, B, 1, 2...">
                                     </div>
                                 </div>
-                                <div class="form-group full-width" id="temporary-mission-field" style="display:none;">
+                                <div class="form-group full-width" id="associated-mission-field" style="display:none;">
                                     <label>Associated Mission</label>
                                     <select id="team-mission">
                                         <option value="">None</option>
@@ -426,11 +679,13 @@
                         <button class="close-modal">&times;</button>
                     </div>
                     <div class="modal-body">
-                        <div class="ranking-form" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center;">
-                            <input type="text" id="ranking-week" placeholder="Period" style="flex:1;min-width:100px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
-                            <input type="number" id="ranking-rank" placeholder="Rank" min="1" style="flex:1;min-width:80px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
-                            <button id="add-ranking-btn" class="primary small">Add Ranking</button>
-                        </div>
+                        <form id="ranking-form-inner">
+                            <div class="ranking-form" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center;">
+                                <input type="text" id="ranking-period" placeholder="Period" style="flex:1;min-width:100px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
+                                <input type="number" id="ranking-rank" placeholder="Rank" min="1" style="flex:1;min-width:80px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
+                                <button type="button" id="add-ranking-btn" class="primary small">Add Ranking</button>
+                            </div>
+                        </form>
                         <div id="ranking-list">
                             <p class="empty-state">No ranking history</p>
                         </div>
@@ -444,10 +699,10 @@
     // TEAM FORM HANDLING
     // ============================================================
 
-    function showTeamForm(editId, container) {
+    function showTeamForm(editId) {
         var modal = document.getElementById('team-form-modal');
         if (!modal) return;
-        
+
         var title = document.getElementById('team-form-title');
         var form = document.getElementById('team-form-inner');
 
@@ -466,8 +721,14 @@
                 document.getElementById('team-type').value = team.type || 'academic';
                 document.getElementById('team-start').value = team.startPeriod || '';
                 document.getElementById('team-end').value = team.endPeriod || '';
-                var rankValue = team.currentRank ? Number(team.currentRank) : '';
-                document.getElementById('team-ranking').value = rankValue;
+                // Ranking field is DISPLAY ONLY - disabled by HTML
+                var rankingInput = document.getElementById('team-ranking');
+                if (rankingInput) {
+                    var currentRank = window.TeamRankings && typeof window.TeamRankings.getCurrentRank === 'function'
+                        ? window.TeamRankings.getCurrentRank(team)
+                        : team.currentRank || '';
+                    rankingInput.value = currentRank;
+                }
                 document.getElementById('team-status').value = team.status || 'active';
                 if (team.temporaryMission) {
                     var missionSelect = document.getElementById('team-mission');
@@ -500,6 +761,8 @@
                 form.reset();
                 document.getElementById('team-type').value = 'academic';
                 document.getElementById('team-status').value = 'active';
+                var rankingInput = document.getElementById('team-ranking');
+                if (rankingInput) rankingInput.value = '';
                 delete form.dataset.editId;
             }
 
@@ -525,7 +788,7 @@
             var name = entry.querySelector('.name-history-name');
             var start = entry.querySelector('.name-history-start');
             var end = entry.querySelector('.name-history-end');
-            
+
             if (name && name.value.trim()) {
                 history.push({
                     name: name.value.trim(),
@@ -552,7 +815,7 @@
         container.appendChild(entry);
         entry.querySelector('.remove-name').onclick = function() {
             if (container.children.length > 1) entry.remove();
-            else alert('You need at least one name entry.');
+            else showNotification('You need at least one name entry.', 'error');
         };
     }
 
@@ -561,24 +824,31 @@
         var form = e.target;
         var editId = form.dataset.editId;
 
-        var rankingValue = document.getElementById('team-ranking').value;
-        var currentRank = rankingValue ? Number(rankingValue) : '';
+        var type = document.getElementById('team-type').value;
 
+        // Current rank is read-only; ignore the input value
         var teamData = {
             name: document.getElementById('team-name').value.trim(),
-            type: document.getElementById('team-type').value,
+            type: type,
             startPeriod: document.getElementById('team-start').value || '',
             endPeriod: document.getElementById('team-end').value || '',
-            currentRank: currentRank,
             status: document.getElementById('team-status').value || 'active',
-            classId: document.getElementById('team-class').value || null,
-            teamNumber: document.getElementById('team-number').value.trim() || '',
-            temporaryMission: document.getElementById('team-mission').value || null,
+            // Only include academic-specific fields if team is academic
+            classId: type === 'academic'
+                ? (document.getElementById('team-class').value || null)
+                : null,
+            teamNumber: type === 'academic'
+                ? (document.getElementById('team-number').value.trim() || '')
+                : '',
+            // Only include mission field if team is temporary or professional
+            temporaryMission: (type === 'temporary' || type === 'professional')
+                ? (document.getElementById('team-mission').value || null)
+                : null,
             nameHistory: collectNameHistory()
         };
 
         if (!teamData.name) {
-            alert('Team name is required.');
+            showNotification('Team name is required.', 'error');
             return;
         }
 
@@ -586,74 +856,85 @@
         if (editId) {
             result = window.TeamCore.updateTeam(editId, teamData);
             if (!result) {
-                alert('Failed to update team.');
+                showNotification('Failed to update team.', 'error');
                 return;
             }
         } else {
             result = window.TeamCore.createTeam(teamData);
             if (!result) {
-                alert('Failed to create team.');
+                showNotification('Failed to create team.', 'error');
                 return;
             }
         }
 
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    document.getElementById('team-form-modal').classList.add('hidden');
-                    refreshTeamList();
-                    safeUpdateDashboardStats();
-                    alert(editId ? 'Team updated successfully!' : 'Team created successfully!');
-                })
-                .catch(function(err) {
-                    console.error('Failed to save team:', err);
-                    alert('Failed to save team. Please try again.');
-                });
-        } else {
-            document.getElementById('team-form-modal').classList.add('hidden');
-            refreshTeamList();
-            safeUpdateDashboardStats();
-            alert(editId ? 'Team updated successfully!' : 'Team created successfully!');
+        // Close modal immediately (mutation succeeded)
+        var modal = document.getElementById('team-form-modal');
+        if (modal) {
+            modal.classList.add('hidden');
         }
+
+        // Refresh UI immediately to reflect in-memory change
+        refreshTeamList();
+        refreshTeamStats();
+        safeUpdateDashboardStats();
+
+        // Then persist (with no UI dependency)
+        persistMutation({
+            successMessage: editId ? 'Team updated successfully!' : 'Team created successfully!',
+            errorMessage: 'Failed to save team changes to persistent storage. Your changes have been applied in memory.',
+        });
     }
 
     function deleteTeam(id) {
-        if (!confirm('Delete this team permanently?')) return;
-
-        var result = window.TeamCore.deleteTeam(id);
-        if (!result) {
-            alert('Failed to delete team.');
+        var team = getTeam(id);
+        if (!team) {
+            showNotification('Team not found.', 'error');
             return;
         }
 
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    refreshTeamList();
-                    safeUpdateDashboardStats();
-                    alert('Team deleted successfully!');
-                })
-                .catch(function(err) {
-                    console.error('Failed to delete team:', err);
-                    alert('Failed to delete team. Please try again.');
-                });
-        } else {
-            refreshTeamList();
-            safeUpdateDashboardStats();
-            alert('Team deleted successfully!');
+        // Confirm before mutation
+        if (!confirm('Delete "' + team.name + '"? The team will be removed from the manager.')) {
+            return;
         }
+
+        // MUTATE: Actually delete the team
+        var result = window.TeamCore.deleteTeam(id);
+
+        if (!result) {
+            showNotification('Failed to delete team.', 'error');
+            return;
+        }
+
+        // Refresh UI immediately to reflect in-memory change
+        if (teamState.expandedTeamId === id) {
+            teamState.expandedTeamId = null;
+        }
+        refreshTeamList();
+        refreshTeamStats();
+        safeUpdateDashboardStats();
+
+        // Then persist
+        persistMutation({
+            successMessage: 'Team deleted successfully!',
+            errorMessage: 'Failed to save team deletion to persistent storage. The team has been removed from memory.',
+            onSuccess: function() {
+                refreshTeamList();
+                refreshTeamStats();
+                safeUpdateDashboardStats();
+            }
+        });
     }
 
     // ============================================================
-    // MEMBER MANAGEMENT - DELEGATES TO TeamCore
+    // MEMBER MANAGEMENT
     // ============================================================
 
-    function openMemberModal(teamId, container) {
-        var team = getTeam(teamId);
-        if (!team) return;
-
+    function openMemberModal(teamId) {
         var modal = document.getElementById('member-modal');
         if (!modal) return;
+
+        var team = getTeam(teamId);
+        if (!team) return;
 
         document.getElementById('modal-team-name').textContent = team.name + ' - Members';
 
@@ -697,20 +978,31 @@
     function renderMembers(team) {
         var container = document.getElementById('members-list');
         if (!container) return;
-        
+
         if (!team.members || team.members.length === 0) {
             container.innerHTML = '<p class="empty-state">No members in this team</p>';
             return;
         }
 
         var html = '';
+        var period = getCurrentPeriodForType(team.type);
+
         team.members.forEach(function(member, index) {
-            var char = window.getCharacterById(member.characterId);
-            var name = char ? window.getDisplayName(char) : 'Unknown';
+            var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
+            var name = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
             var deadMarker = char && char.deceased ? ' ✝' : '';
-            html += '<div class="member-entry" style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border-soft);">';
+
+            var status = 'unknown';
+            if (window.TeamMembers && typeof window.TeamMembers.getStatusAtPeriod === 'function') {
+                status = window.TeamMembers.getStatusAtPeriod(member, period, team.type);
+            }
+            var statusInfo = window.TeamCore.getMemberStatusInfo(status);
+            var escapedStatusLabel = escapeHtml(statusInfo.label);
+
+            html += '<div class="member-entry" style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border-soft);border-left:3px solid ' + statusInfo.color + ';padding-left:8px;">';
             html += '<span><strong>' + escapeHtml(name) + '</strong>' + deadMarker + ' <span class="role" style="color:var(--text-dim);font-size:0.75rem;">' + escapeHtml(member.role || 'Member') + '</span></span>';
             html += '<span style="color:var(--text-dim);font-size:0.7rem;">Joined: ' + escapeHtml(member.joinPeriod || '?') + (member.leavePeriod ? ' → ' + escapeHtml(member.leavePeriod) : '') + '</span>';
+            html += '<span style="color:' + statusInfo.color + ';font-size:0.65rem;font-weight:600;">' + escapedStatusLabel + '</span>';
             html += '<div class="member-actions" style="display:flex;gap:4px;">';
             html += '<button class="small edit-member" data-index="' + index + '" style="padding:2px 8px;font-size:0.65rem;">Edit</button>';
             html += '<button class="small danger remove-member" data-char="' + escapeHtml(member.characterId) + '" style="padding:2px 8px;font-size:0.65rem;">Remove</button>';
@@ -725,7 +1017,7 @@
         container.querySelectorAll('.edit-member').forEach(function(btn) {
             btn.addEventListener('click', function(e) {
                 e.stopPropagation();
-                var index = parseInt(this.dataset.index);
+                var index = parseInt(this.dataset.index, 10);
                 if (!isNaN(index)) {
                     openEditMemberModal(teamId, index);
                 }
@@ -735,9 +1027,7 @@
         container.querySelectorAll('.remove-member').forEach(function(btn) {
             btn.addEventListener('click', function(e) {
                 e.stopPropagation();
-                if (confirm('Remove this member from the team?')) {
-                    removeMember(teamId, this.dataset.char);
-                }
+                removeMember(teamId, this.dataset.char);
             });
         });
     }
@@ -753,7 +1043,7 @@
         var leavePeriod = document.getElementById('member-leave').value;
 
         if (!charId) {
-            alert('Please select a character.');
+            showNotification('Please select a character.', 'error');
             return;
         }
 
@@ -765,75 +1055,64 @@
         });
 
         if (!result) {
-            alert('Failed to add member. The character may already be in this team.');
+            showNotification('Failed to add member. The character may already be in this team.', 'error');
             return;
         }
 
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    var updatedTeam = getTeam(teamId);
-                    if (updatedTeam) {
-                        renderMembers(updatedTeam);
-                    }
-                    refreshTeamList();
-                    alert('Member added successfully!');
-                })
-                .catch(function(err) {
-                    console.error('Failed to add member:', err);
-                    alert('Failed to save member. Please try again.');
-                });
-        } else {
-            var updatedTeam = getTeam(teamId);
-            if (updatedTeam) {
-                renderMembers(updatedTeam);
-            }
-            refreshTeamList();
-            alert('Member added successfully!');
+        // Refresh UI immediately to reflect in-memory change
+        var updatedTeam = getTeam(teamId);
+        if (updatedTeam) {
+            renderMembers(updatedTeam);
         }
+        refreshTeamList();
+        refreshTeamStats();
+
+        // Clear form fields
+        document.getElementById('member-character').value = '';
+        document.getElementById('member-role').value = '';
+        document.getElementById('member-join').value = '';
+        document.getElementById('member-leave').value = '';
+        populateMemberCharacterSelect(teamId);
+
+        // Then persist
+        persistMutation({
+            successMessage: 'Member added successfully!',
+            errorMessage: 'Failed to save member addition to persistent storage. The member has been added in memory.',
+        });
     }
 
     function removeMember(teamId, charId) {
         var result = window.TeamCore.removeMember(teamId, charId);
         if (!result) {
-            alert('Failed to remove member.');
+            showNotification('Failed to remove member.', 'error');
             return;
         }
 
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    var updatedTeam = getTeam(teamId);
-                    if (updatedTeam) {
-                        renderMembers(updatedTeam);
-                    }
-                    refreshTeamList();
-                    alert('Member removed successfully!');
-                })
-                .catch(function(err) {
-                    console.error('Failed to remove member:', err);
-                    alert('Failed to save member removal. Please try again.');
-                });
-        } else {
-            var updatedTeam = getTeam(teamId);
-            if (updatedTeam) {
-                renderMembers(updatedTeam);
-            }
-            refreshTeamList();
-            alert('Member removed successfully!');
+        // Refresh UI immediately to reflect in-memory change
+        var updatedTeam = getTeam(teamId);
+        if (updatedTeam) {
+            renderMembers(updatedTeam);
         }
+        refreshTeamList();
+        refreshTeamStats();
+
+        // Then persist
+        persistMutation({
+            successMessage: 'Member removed successfully!',
+            errorMessage: 'Failed to save member removal to persistent storage. The member has been removed from memory.',
+        });
     }
 
     function openEditMemberModal(teamId, index) {
         var team = getTeam(teamId);
         if (!team || !team.members || !team.members[index]) {
-            alert('Member not found.');
+            showNotification('Member not found.', 'error');
             return;
         }
 
         var member = team.members[index];
-        var char = window.getCharacterById(member.characterId);
-        var name = char ? window.getDisplayName(char) : 'Unknown';
+        var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
+        var name = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
 
         document.getElementById('edit-member-name').textContent = name;
         document.getElementById('edit-member-role').value = member.role || '';
@@ -850,11 +1129,11 @@
         e.preventDefault();
         var modal = document.getElementById('edit-member-modal');
         var teamId = modal.dataset.teamId;
-        var index = parseInt(modal.dataset.index);
+        var index = parseInt(modal.dataset.index, 10);
 
         var team = getTeam(teamId);
         if (!team || !team.members || !team.members[index]) {
-            alert('Member not found.');
+            showNotification('Member not found.', 'error');
             return;
         }
 
@@ -867,41 +1146,33 @@
         });
 
         if (!result) {
-            alert('Failed to update member.');
+            showNotification('Failed to update member.', 'error');
             return;
         }
 
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    document.getElementById('edit-member-modal').classList.add('hidden');
-                    var updatedTeam = getTeam(teamId);
-                    if (updatedTeam) {
-                        renderMembers(updatedTeam);
-                    }
-                    refreshTeamList();
-                    alert('Member updated successfully!');
-                })
-                .catch(function(err) {
-                    console.error('Failed to update member:', err);
-                    alert('Failed to save member update. Please try again.');
-                });
-        } else {
-            document.getElementById('edit-member-modal').classList.add('hidden');
-            var updatedTeam = getTeam(teamId);
-            if (updatedTeam) {
-                renderMembers(updatedTeam);
-            }
-            refreshTeamList();
-            alert('Member updated successfully!');
+        // Refresh UI immediately to reflect in-memory change
+        var updatedTeam = getTeam(teamId);
+        if (updatedTeam) {
+            renderMembers(updatedTeam);
         }
+        refreshTeamList();
+        refreshTeamStats();
+
+        // Close modal immediately
+        document.getElementById('edit-member-modal').classList.add('hidden');
+
+        // Then persist
+        persistMutation({
+            successMessage: 'Member updated successfully!',
+            errorMessage: 'Failed to save member update to persistent storage. The member has been updated in memory.',
+        });
     }
 
     // ============================================================
-    // RANKING MANAGEMENT - DELEGATES TO TeamCore
+    // RANKING MANAGEMENT
     // ============================================================
 
-    function openRankingModal(teamId, container) {
+    function openRankingModal(teamId) {
         var team = getTeam(teamId);
         if (!team) return;
 
@@ -909,7 +1180,7 @@
         if (!modal) return;
 
         document.getElementById('ranking-modal-title').textContent = team.name + ' - Ranking History';
-        document.getElementById('ranking-week').value = '';
+        document.getElementById('ranking-period').value = '';
         document.getElementById('ranking-rank').value = '';
 
         modal.dataset.teamId = teamId;
@@ -920,9 +1191,11 @@
     function renderRankings(team) {
         var container = document.getElementById('ranking-list');
         if (!container) return;
-        
-        var rankings = window.TeamCore.getSortedRankings(team);
-        
+
+        var rankings = window.TeamRankings && typeof window.TeamRankings.getSortedHistory === 'function'
+            ? window.TeamRankings.getSortedHistory(team)
+            : team.rankingHistory || [];
+
         if (rankings.length === 0) {
             container.innerHTML = '<p class="empty-state">No ranking history</p>';
             return;
@@ -942,89 +1215,80 @@
 
         container.querySelectorAll('.remove-ranking').forEach(function(btn) {
             btn.addEventListener('click', function() {
-                if (confirm('Remove this ranking entry?')) {
-                    removeRanking(teamId, this.dataset.period);
-                }
+                removeRanking(teamId, this.dataset.period);
             });
         });
     }
 
-    function addRanking() {
+    function addRanking(e) {
+        // Prevent form submission if inside a form
+        if (e && e.preventDefault) {
+            e.preventDefault();
+        }
+
         var modal = document.getElementById('ranking-modal');
         var teamId = modal.dataset.teamId;
         if (!teamId) return;
 
-        var period = document.getElementById('ranking-week').value;
-        var rank = document.getElementById('ranking-rank').value;
+        var period = document.getElementById('ranking-period').value;
+        var rankInput = document.getElementById('ranking-rank');
+        var rank = parseInt(rankInput ? rankInput.value : '', 10);
 
         if (!period) {
-            alert('Please enter a period.');
+            showNotification('Please enter a period.', 'error');
             return;
         }
-        if (!rank) {
-            alert('Please enter a rank.');
+
+        if (!Number.isInteger(rank) || rank < 1) {
+            showNotification('Please enter a valid rank (positive integer).', 'error');
             return;
         }
 
         var result = window.TeamCore.addRanking(teamId, period, rank);
         if (!result) {
-            alert('Failed to add ranking.');
+            showNotification('Failed to add ranking.', 'error');
             return;
         }
 
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    var updatedTeam = getTeam(teamId);
-                    if (updatedTeam) {
-                        renderRankings(updatedTeam);
-                    }
-                    refreshTeamList();
-                    alert('Ranking added successfully!');
-                })
-                .catch(function(err) {
-                    console.error('Failed to add ranking:', err);
-                    alert('Failed to save ranking. Please try again.');
-                });
-        } else {
-            var updatedTeam = getTeam(teamId);
-            if (updatedTeam) {
-                renderRankings(updatedTeam);
-            }
-            refreshTeamList();
-            alert('Ranking added successfully!');
+        // Refresh UI immediately to reflect in-memory change
+        var updatedTeam = getTeam(teamId);
+        if (updatedTeam) {
+            renderRankings(updatedTeam);
         }
+        refreshTeamList();
+        refreshTeamStats();
+
+        // Clear form fields
+        document.getElementById('ranking-period').value = '';
+        if (rankInput) rankInput.value = '';
+
+        // Then persist
+        persistMutation({
+            successMessage: 'Ranking added successfully!',
+            errorMessage: 'Failed to save ranking to persistent storage. The ranking has been added in memory.',
+        });
     }
 
     function removeRanking(teamId, period) {
         var result = window.TeamCore.removeRanking(teamId, period);
         if (!result) {
-            alert('Failed to remove ranking.');
+            showNotification('Failed to remove ranking.', 'error');
             return;
         }
 
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    var updatedTeam = getTeam(teamId);
-                    if (updatedTeam) {
-                        renderRankings(updatedTeam);
-                    }
-                    refreshTeamList();
-                    alert('Ranking removed successfully!');
-                })
-                .catch(function(err) {
-                    console.error('Failed to remove ranking:', err);
-                    alert('Failed to save ranking removal. Please try again.');
-                });
-        } else {
-            var updatedTeam = getTeam(teamId);
-            if (updatedTeam) {
-                renderRankings(updatedTeam);
-            }
-            refreshTeamList();
-            alert('Ranking removed successfully!');
+        // Refresh UI immediately to reflect in-memory change
+        var updatedTeam = getTeam(teamId);
+        if (updatedTeam) {
+            renderRankings(updatedTeam);
         }
+        refreshTeamList();
+        refreshTeamStats();
+
+        // Then persist
+        persistMutation({
+            successMessage: 'Ranking removed successfully!',
+            errorMessage: 'Failed to save ranking removal to persistent storage. The ranking has been removed from memory.',
+        });
     }
 
     // ============================================================
@@ -1072,7 +1336,7 @@
     }
 
     function toggleMissionField(type) {
-        var field = document.getElementById('temporary-mission-field');
+        var field = document.getElementById('associated-mission-field');
         if (field) {
             field.style.display = (type === 'temporary' || type === 'professional') ? 'block' : 'none';
         }
@@ -1081,7 +1345,7 @@
     function updatePeriodLabels() {
         var typeSelect = document.getElementById('team-type');
         if (!typeSelect) return;
-        
+
         var type = typeSelect.value;
         var startLabel = document.getElementById('team-start-label');
         var endLabel = document.getElementById('team-end-label');
@@ -1129,8 +1393,28 @@
                 btn.style.color = 'var(--accent)';
                 btn.style.borderBottomColor = 'var(--accent)';
 
+                // Update filter section
+                var filterContainer = document.getElementById('filter-container');
+                if (filterContainer) {
+                    filterContainer.innerHTML = buildFilterHTML(tab);
+                    // Re-bind filter apply button if present
+                    var applyBtn = filterContainer.querySelector('#apply-filter-btn');
+                    if (applyBtn) {
+                        applyBtn.addEventListener('click', function() {
+                            applyFilters(tab);
+                        });
+                    }
+                    var inactiveCheck = filterContainer.querySelector('#academic-show-inactive, #professional-show-inactive');
+                    if (inactiveCheck) {
+                        inactiveCheck.addEventListener('change', function() {
+                            applyFilters(tab);
+                        });
+                    }
+                }
+
                 // Update team list
                 refreshTeamList();
+                refreshTeamStats();
             });
         }
 
@@ -1138,7 +1422,7 @@
         var addBtn = container.querySelector('#add-team-btn');
         if (addBtn) {
             addBtn.addEventListener('click', function() {
-                showTeamForm(null, container);
+                showTeamForm(null);
             });
         }
 
@@ -1163,24 +1447,25 @@
                         teamState.expandedTeamId = id;
                     }
                     refreshTeamList();
+                    refreshTeamStats();
                     return;
                 }
 
                 // Manage members
                 if (button.classList.contains('manage-members')) {
-                    openMemberModal(button.dataset.id, container);
+                    openMemberModal(button.dataset.id);
                     return;
                 }
 
                 // Manage rankings
                 if (button.classList.contains('manage-rankings')) {
-                    openRankingModal(button.dataset.id, container);
+                    openRankingModal(button.dataset.id);
                     return;
                 }
 
                 // Edit team
                 if (button.classList.contains('edit-team')) {
-                    showTeamForm(button.dataset.id, container);
+                    showTeamForm(button.dataset.id);
                     return;
                 }
 
@@ -1294,6 +1579,8 @@
         // Ranking modal
         var addRankBtn = document.getElementById('add-ranking-btn');
         if (addRankBtn) {
+            // Remove any existing listener and attach new one
+            addRankBtn.removeEventListener('click', addRanking);
             addRankBtn.addEventListener('click', addRanking);
         }
 
@@ -1312,6 +1599,78 @@
                 }
             });
         }
+
+        // Filter apply button (initial)
+        var applyBtn = document.getElementById('apply-filter-btn');
+        if (applyBtn) {
+            applyBtn.addEventListener('click', function() {
+                applyFilters(teamState.currentTab);
+            });
+        }
+
+        // Filter inactive checkboxes
+        var inactiveChecks = container.querySelectorAll('#academic-show-inactive, #professional-show-inactive');
+        inactiveChecks.forEach(function(check) {
+            check.addEventListener('change', function() {
+                applyFilters(teamState.currentTab);
+            });
+        });
+    }
+
+    // ============================================================
+    // APPLY FILTERS
+    // ============================================================
+
+    function applyFilters(tab) {
+        var filter = teamState.filters[tab] || teamState.filters.academic;
+
+        if (tab === 'academic') {
+            var weekInput = document.getElementById('team-filter-week');
+            var classFilter = document.getElementById('team-class-filter');
+            var inactiveCheck = document.getElementById('academic-show-inactive');
+
+            if (weekInput) {
+                var week = parseInt(weekInput.value, 10);
+                if (!isNaN(week) && week >= 1 && week <= 52) {
+                    filter.filterWeek = week;
+                }
+            }
+            if (classFilter) {
+                filter.filterClass = classFilter.value;
+            }
+            if (inactiveCheck) {
+                filter.filterStatus = inactiveCheck.checked ? 'inactive' : 'active';
+            }
+        } else if (tab === 'professional') {
+            var yearInput = document.getElementById('team-filter-year');
+            var profInactiveCheck = document.getElementById('professional-show-inactive');
+
+            if (yearInput) {
+                var year = parseInt(yearInput.value, 10);
+                if (!isNaN(year) && year >= 1900) {
+                    filter.filterYear = year;
+                } else {
+                    filter.filterYear = '';
+                }
+            }
+            if (profInactiveCheck) {
+                filter.filterStatus = profInactiveCheck.checked ? 'inactive' : 'active';
+            }
+        } else if (tab === 'temporary') {
+            var tempYearInput = document.getElementById('team-filter-year');
+
+            if (tempYearInput) {
+                var year = parseInt(tempYearInput.value, 10);
+                if (!isNaN(year) && year >= 1900) {
+                    filter.filterYear = year;
+                } else {
+                    filter.filterYear = '';
+                }
+            }
+        }
+
+        refreshTeamList();
+        refreshTeamStats();
     }
 
     // ============================================================
@@ -1347,6 +1706,13 @@
         }, 100);
     }
 
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
     window.renderTeamManager = renderTeamManager;
+    window.refreshTeamList = refreshTeamList;
+    window.refreshTeamStats = refreshTeamStats;
+    window.teamState = teamState;
 
 })();
