@@ -57,6 +57,14 @@
     var CALENDAR_END_HOUR = 23;
 
     // ============================================================
+    // GET SAFE DISPLAY NAME (dependency guaranteed)
+    // ============================================================
+
+    function getSafeDisplayName(char) {
+        return window.getDisplayName(char);
+    }
+
+    // ============================================================
     // RENDER LOCATION SCHEDULE - Public API (only this is exposed)
     // ============================================================
 
@@ -225,7 +233,6 @@
 
         // Auto-select first location if none selected and locations exist
         if (!state.selectedLocationId && select.options.length > 1) {
-            // Skip the first option which is the placeholder
             select.selectedIndex = 1;
             state.selectedLocationId = select.value;
         }
@@ -328,7 +335,11 @@
                     if (discipline) {
                         var duration = 1;
                         for (var h = hour + 1; h <= CALENDAR_END_HOUR; h++) {
-                            if (schedule[day] && schedule[day][h] === disciplineId) {
+                            // Normalise ID comparison for robustness
+                            if (
+                                schedule[day] &&
+                                String(schedule[day][h]) === String(disciplineId)
+                            ) {
                                 duration++;
                                 occupiedHours[h] = true;
                             } else {
@@ -349,12 +360,17 @@
                         var studentNames = [];
                         allStudents.forEach(function(student) {
                             var sched = studentSchedules[student.id];
-                            var assignedLocationId = window.getClassLocation(student.id, week, day, hour);
+                            var assignedLocationId = window.getClassLocation(
+                                student.id,
+                                week,
+                                day,
+                                hour
+                            );
 
                             if (assignedLocationId !== null && assignedLocationId !== undefined) {
                                 if (String(assignedLocationId) === String(locationId)) {
                                     if (sched[day] && String(sched[day][hour]) === String(disciplineId)) {
-                                        studentNames.push(window.getDisplayName(student));
+                                        studentNames.push(getSafeDisplayName(student));
                                     }
                                 }
                             }
@@ -448,7 +464,7 @@
                                     var instructorNames = d.instructorIds.map(function(id) {
                                         var inst = window.getCharacterById(id);
                                         if (inst) {
-                                            return escapeHtml(window.getDisplayName(inst));
+                                            return escapeHtml(getSafeDisplayName(inst));
                                         }
                                         return 'Unknown';
                                     });
