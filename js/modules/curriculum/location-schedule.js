@@ -1,18 +1,64 @@
 /**
- * js/modules/curriculum/location-schedule.js - Location Schedule
+ * js/modules/curriculum/location-schedule.js - Location Schedule Module
+ * Handles location scheduling with weekly view
  * Path: js/modules/curriculum/location-schedule.js
+ * 
+ * This module is responsible for:
+ *   - Rendering location schedule UI
+ *   - Displaying classes by location and time
+ *   - Assigning/removing classes from locations (delegates to core)
+ *   - Displaying which students are assigned to each location slot
+ * 
+ * IMPORTANT: 
+ *   - All application-data mutations are delegated to core functions.
+ *   - This module does NOT mutate window.data directly.
+ *   - UI state is managed locally.
+ *   - Persistence is coordinated through the central saveData() function.
+ *   - This module calls saveData() after successful mutations.
+ *   - Core functions do not perform persistence themselves.
+ *   - Student-location relationships are explicit (via getClassLocation).
+ *   - Student lookup is cached per render for performance.
+ * 
+ * LIFECYCLE:
+ *   This module is rendered by curriculum-main.js via TabManager.
+ *   It does not independently listen for lifecycle events.
+ * 
+ * PERSISTENCE CONTRACT:
+ *   UI → core mutation → window.data → saveData() → persistence
+ *   saveData() is guaranteed to return a Promise.
+ * 
+ * ARCHITECTURAL NOTE:
+ *   - Location schedules are stored as locationSchedules[locationId_week][day][hour] = disciplineId
+ *   - Student-location assignments are stored explicitly in classLocations
+ *   - The core represents multi-hour classes as repeated hourly entries.
+ *   - Student assignments are per-hour; a 3-hour block shows students assigned at the start hour.
+ *   - All core mutation functions return { success: boolean, message?: string, ... }
+ *   - getClassLocation() is a required core dependency for explicit student-location mapping.
  */
 
 (function() {
     'use strict';
 
-    if (window.__locationScheduleLoaded) return;
-    window.__locationScheduleLoaded = true;
+    // ============================================================
+    // STATE - Location schedule UI state
+    // ============================================================
 
     var state = {
         currentWeek: 1,
         selectedLocationId: null
     };
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var DAY_NAMES = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    var CALENDAR_START_HOUR = 5;
+    var CALENDAR_END_HOUR = 23;
+
+    // ============================================================
+    // RENDER LOCATION SCHEDULE - Public API (only this is exposed)
+    // ============================================================
 
     function renderLocationSchedule(container) {
         if (!container) {
@@ -25,11 +71,35 @@
             return;
         }
 
-        if (!window.data.locations) {
-            window.data.locations = [];
+        if (typeof window.ensureCurriculum !== 'function') {
+            console.error('[LocationSchedule] ensureCurriculum() is not available.');
+            container.innerHTML = '<p class="empty-state">Curriculum schema module not loaded. Please refresh the page.</p>';
+            return;
         }
-        if (!window.data.locationSchedules) {
-            window.data.locationSchedules = {};
+
+        window.ensureCurriculum();
+
+        // Verify all core dependencies
+        var requiredDeps = [
+            { name: 'getLocations', fn: window.getLocations },
+            { name: 'getLocationSchedule', fn: window.getLocationSchedule },
+            { name: 'setLocationClass', fn: window.setLocationClass },
+            { name: 'removeLocationClass', fn: window.removeLocationClass },
+            { name: 'clearLocationSchedule', fn: window.clearLocationSchedule },
+            { name: 'getAvailableDisciplines', fn: window.getAvailableDisciplines },
+            { name: 'getDiscipline', fn: window.getDiscipline },
+            { name: 'getStudents', fn: window.getStudents },
+            { name: 'getClassLocation', fn: window.getClassLocation },
+            { name: 'getDisplayName', fn: window.getDisplayName },
+            { name: 'getCharacterById', fn: window.getCharacterById }
+        ];
+
+        for (var i = 0; i < requiredDeps.length; i++) {
+            if (typeof requiredDeps[i].fn !== 'function') {
+                console.error('[LocationSchedule] ' + requiredDeps[i].name + '() is not available.');
+                container.innerHTML = '<p class="empty-state">Location schedule core module not loaded. Please refresh the page.</p>';
+                return;
+            }
         }
 
         container.innerHTML = getLocationScheduleHTML();
@@ -37,6 +107,23 @@
         renderScheduleData();
         initLocationScheduleEvents();
     }
+
+    // ============================================================
+    // HTML ESCAPING
+    // ============================================================
+
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    // ============================================================
+    // LOCATION SCHEDULE HTML
+    // ============================================================
 
     function getLocationScheduleHTML() {
         return `
@@ -98,41 +185,71 @@
         `;
     }
 
+    // ============================================================
+    // POPULATE LOCATION SELECTOR
+    // ============================================================
+
     function populateLocationSelector() {
         var select = document.getElementById('location-schedule-select');
         if (!select) return;
 
-        var locations = window.data.locations || [];
-        var currentValue = select.value;
-
-        select.innerHTML = '<option value="">Select a location...</option>';
-        locations.sort(function(a, b) {
+        var locations = window.getLocations();
+        var sortedLocations = locations.slice().sort(function(a, b) {
             return a.name.localeCompare(b.name);
         });
-        locations.forEach(function(loc) {
+
+        select.innerHTML = '<option value="">Select a location...</option>';
+        sortedLocations.forEach(function(loc) {
+            var typeLabel = getTypeLabel(loc.type);
             var option = document.createElement('option');
             option.value = loc.id;
-            var typeLabels = {
-                'indoor': 'Indoor',
-                'outdoor': 'Outdoor',
-                'pool': 'Pool',
-                'classroom': 'Classroom',
-                'lab': 'Lab',
-                'field': 'Field',
-                'other': 'Other'
-            };
-            var typeLabel = typeLabels[loc.type] || loc.type || 'Other';
             option.textContent = loc.name + ' (' + typeLabel + ')';
             select.appendChild(option);
         });
 
-        if (currentValue && select.querySelector('option[value="' + currentValue + '"]')) {
-            select.value = currentValue;
-        } else if (locations.length > 0) {
+        // Restore selection using state
+        if (state.selectedLocationId) {
+            var hasStoredValue = false;
+            for (var i = 0; i < select.options.length; i++) {
+                if (select.options[i].value === state.selectedLocationId) {
+                    hasStoredValue = true;
+                    break;
+                }
+            }
+            if (hasStoredValue) {
+                select.value = state.selectedLocationId;
+            } else {
+                state.selectedLocationId = null;
+            }
+        }
+
+        if (!state.selectedLocationId && select.options.length > 1) {
             select.selectedIndex = 1;
             state.selectedLocationId = select.value;
         }
     }
+
+    // ============================================================
+    // TYPE LABELS
+    // ============================================================
+
+    var TYPE_LABELS = {
+        'indoor': 'Indoor',
+        'outdoor': 'Outdoor',
+        'pool': 'Pool',
+        'classroom': 'Classroom',
+        'lab': 'Lab',
+        'field': 'Field',
+        'other': 'Other'
+    };
+
+    function getTypeLabel(type) {
+        return TYPE_LABELS[type] || type || 'Other';
+    }
+
+    // ============================================================
+    // RENDER SCHEDULE DATA
+    // ============================================================
 
     function renderScheduleData() {
         var grid = document.getElementById('location-grid');
@@ -159,16 +276,23 @@
 
         var week = state.currentWeek;
         var locationId = state.selectedLocationId;
-        var schedule = getLocationSchedule(locationId, week);
+
+        var schedule = window.getLocationSchedule(locationId, week) || {};
+
+        var allStudents = window.getStudents();
+        var studentSchedules = {};
+        allStudents.forEach(function(student) {
+            studentSchedules[student.id] = window.getStudentSchedule(student.id, week) || {};
+        });
 
         var hours = [];
-        for (var h = 5; h <= 23; h++) {
+        for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
             hours.push(h);
         }
 
         var dayColumns = grid.querySelectorAll('.day-column');
-        dayColumns.forEach(function(column, index) {
-            var day = index + 1;
+        dayColumns.forEach(function(column) {
+            var day = parseInt(column.dataset.day, 10);
             var slots = column.querySelector('.day-slots');
             if (!slots) return;
 
@@ -200,12 +324,8 @@
                 if (disciplineId) {
                     var discipline = window.getDiscipline(disciplineId);
                     if (discipline) {
-                        occupiedHours[hour] = true;
-
-                        // Check if there's a duration
                         var duration = 1;
-                        // Check if next hours have the same discipline
-                        for (var h = hour + 1; h <= 23; h++) {
+                        for (var h = hour + 1; h <= CALENDAR_END_HOUR; h++) {
                             if (schedule[day] && schedule[day][h] === disciplineId) {
                                 duration++;
                                 occupiedHours[h] = true;
@@ -223,17 +343,18 @@
 
                         var durationDisplay = duration > 1 ? ' (' + duration + 'h)' : '';
 
-                        // Find which students are in this class at this location
-                        var students = window.getStudents();
+                        // Get students explicitly assigned to this location at the start hour
+                        // Note: Student assignments are per-hour; a 3-hour block shows students
+                        // assigned at the start hour (duration is a visual grouping only)
                         var studentNames = [];
-                        students.forEach(function(student) {
-                            var sched = window.getStudentSchedule(student.id, week);
-                            // Check if this student has this class at this time and location
-                            for (var d in sched) {
-                                for (var h in sched[d]) {
-                                    if (String(sched[d][h]) === String(disciplineId) && parseInt(d) === day && parseInt(h) === hour) {
-                                        studentNames.push(window.getDisplayName(student));
-                                        break;
+                        allStudents.forEach(function(student) {
+                            var sched = studentSchedules[student.id];
+                            var assignedLocationId = window.getClassLocation(student.id, week, day, hour);
+
+                            if (assignedLocationId !== null && assignedLocationId !== undefined) {
+                                if (String(assignedLocationId) === String(locationId)) {
+                                    if (sched[day] && String(sched[day][hour]) === String(disciplineId)) {
+                                        studentNames.push(getSafeDisplayName(student));
                                     }
                                 }
                             }
@@ -241,7 +362,11 @@
 
                         var labelEl = document.createElement('span');
                         labelEl.className = 'slot-label';
-                        labelEl.textContent = discipline.name + durationDisplay + (studentNames.length > 0 ? ' - ' + studentNames.join(', ') : '');
+                        var labelText = discipline.name + durationDisplay;
+                        if (studentNames.length > 0) {
+                            labelText += ' - ' + studentNames.join(', ');
+                        }
+                        labelEl.textContent = labelText;
                         slot.appendChild(labelEl);
 
                         slot.addEventListener('click', function() {
@@ -279,43 +404,24 @@
         });
     }
 
-    function getLocationSchedule(locationId, week) {
-        var data = window.data || {};
-        if (!data.locationSchedules) {
-            data.locationSchedules = {};
+    // ============================================================
+    // GET SAFE DISPLAY NAME
+    // ============================================================
+
+    function getSafeDisplayName(char) {
+        if (typeof window.getDisplayName === 'function') {
+            return window.getDisplayName(char);
         }
-        var key = locationId + '_' + week;
-        if (!data.locationSchedules[key]) {
-            data.locationSchedules[key] = {};
-        }
-        return data.locationSchedules[key];
+        return char && char.name ? char.name : 'Unknown';
     }
 
-    function setLocationSchedule(locationId, week, day, hour, disciplineId) {
-        var data = window.data || {};
-        if (!data.locationSchedules) {
-            data.locationSchedules = {};
-        }
-        var key = locationId + '_' + week;
-        if (!data.locationSchedules[key]) {
-            data.locationSchedules[key] = {};
-        }
-        if (!data.locationSchedules[key][day]) {
-            data.locationSchedules[key][day] = {};
-        }
-        if (disciplineId) {
-            data.locationSchedules[key][day][hour] = disciplineId;
-        } else {
-            delete data.locationSchedules[key][day][hour];
-        }
-        if (typeof window.saveData === 'function') {
-            window.saveData().catch(function(err) { /* ignore */ });
-        }
-    }
+    // ============================================================
+    // SHOW ASSIGN CLASS MODAL
+    // ============================================================
 
     function showAssignClassModal(day, hour, existingDisciplineId) {
         if (!state.selectedLocationId) {
-            alert('Please select a location first.');
+            showNotification('Please select a location first.', 'error');
             return;
         }
 
@@ -324,11 +430,10 @@
         var disciplines = window.getAvailableDisciplines(week);
 
         if (disciplines.length === 0) {
-            alert('No disciplines available for week ' + week + '.');
+            showNotification('No disciplines available for week ' + week + '.', 'error');
             return;
         }
 
-        var dayNames = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
         var hourDisplay = hour > 12 ? hour - 12 : hour;
         var ampm = hour >= 12 ? 'PM' : 'AM';
         if (hour === 0) { hourDisplay = 12; ampm = 'AM'; }
@@ -339,7 +444,7 @@
         modal.innerHTML = `
             <div class="modal-content" style="max-width:450px;">
                 <div class="modal-header">
-                    <h3>${existingDisciplineId ? 'Change' : 'Assign'} Class - ${dayNames[day]} at ${hourDisplay}:00 ${ampm}</h3>
+                    <h3>${existingDisciplineId ? 'Change' : 'Assign'} Class - ${DAY_NAMES[day]} at ${hourDisplay}:00 ${ampm}</h3>
                     <button class="close-modal">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -349,7 +454,20 @@
                             <option value="">— None —</option>
                             ${disciplines.map(function(d) {
                                 var selected = (existingDisciplineId && String(d.id) === String(existingDisciplineId)) ? 'selected' : '';
-                                return '<option value="' + d.id + '" ' + selected + '>' + d.name + ' (' + (d.type || 'mandatory') + ')</option>';
+                                var instructorDisplay = '';
+                                if (d.instructorIds && d.instructorIds.length > 0) {
+                                    var instructorNames = d.instructorIds.map(function(id) {
+                                        var inst = window.getCharacterById(id);
+                                        if (inst) {
+                                            return escapeHtml(getSafeDisplayName(inst));
+                                        }
+                                        return 'Unknown';
+                                    });
+                                    instructorDisplay = ' (' + instructorNames.join(', ') + ')';
+                                }
+                                return '<option value="' + escapeHtml(d.id) + '" ' + selected + '>' +
+                                    escapeHtml(d.name) + instructorDisplay +
+                                '</option>';
                             }).join('')}
                         </select>
                     </div>
@@ -371,61 +489,103 @@
 
         modal.querySelector('#confirm-assign-class').onclick = function() {
             var disciplineId = document.getElementById('assign-class-select').value;
-            var schedule = getLocationSchedule(locationId, week);
-            
-            // If clearing
-            if (!disciplineId) {
-                if (schedule[day] && schedule[day][hour]) {
-                    delete schedule[day][hour];
+
+            var schedule = window.getLocationSchedule(locationId, week) || {};
+            if (schedule[day] && schedule[day][hour]) {
+                if (!confirm('This location already has a class at this time. Overwrite?')) {
+                    return;
                 }
-                modal.remove();
-                renderScheduleData();
+            }
+
+            if (!disciplineId) {
+                var clearResult = window.removeLocationClass(locationId, week, day, hour);
+                if (clearResult && clearResult.success) {
+                    modal.remove();
+                    renderScheduleData();
+                    if (typeof window.saveData === 'function') {
+                        window.saveData()
+                            .then(function() {
+                                showNotification('Class removed from location.', 'success');
+                            })
+                            .catch(function(err) {
+                                console.error('Failed to save location change:', err);
+                                showNotification('Class removed in memory, but persistence failed.', 'error');
+                            });
+                    } else {
+                        showNotification('Class removed from location.', 'success');
+                    }
+                } else {
+                    showNotification(clearResult && clearResult.message ? clearResult.message : 'Failed to remove class.', 'error');
+                }
                 return;
             }
 
-            // Check for conflicts
             var discipline = window.getDiscipline(disciplineId);
-            var schedule = getLocationSchedule(locationId, week);
-            var hasConflict = false;
-            var conflictingHour = null;
-
-            for (var h in schedule[day]) {
-                if (parseInt(h) !== hour && schedule[day][h] === disciplineId) {
-                    hasConflict = true;
-                    conflictingHour = h;
-                    break;
-                }
+            if (!discipline) {
+                showNotification('Discipline not found.', 'error');
+                return;
             }
 
-            if (hasConflict) {
-                if (!confirm('This discipline is already scheduled at ' + dayNames[day] + ' ' + conflictingHour + ':00 in this location.\n\nAssign it here anyway? (This will move the class to this time)')) {
-                    return;
-                }
-                // Remove from old time
-                delete schedule[day][conflictingHour];
+            var result = window.setLocationClass(locationId, week, day, hour, disciplineId);
+
+            if (!result || !result.success) {
+                showNotification(result && result.message ? result.message : 'Failed to assign class.', 'error');
+                return;
             }
 
-            setLocationSchedule(locationId, week, day, hour, disciplineId);
             modal.remove();
             renderScheduleData();
-            alert('Class assigned to location!');
+
+            if (typeof window.saveData === 'function') {
+                window.saveData()
+                    .then(function() {
+                        showNotification('Class assigned to location!', 'success');
+                    })
+                    .catch(function(err) {
+                        console.error('Failed to save location assignment:', err);
+                        showNotification('Class assigned in memory, but persistence failed.', 'error');
+                    });
+            } else {
+                showNotification('Class assigned to location!', 'success');
+            }
         };
     }
 
+    // ============================================================
+    // REMOVE CLASS FROM LOCATION
+    // ============================================================
+
     function removeClassFromLocation(locationId, week, day, hour) {
-        var schedule = getLocationSchedule(locationId, week);
-        if (schedule[day] && schedule[day][hour]) {
-            delete schedule[day][hour];
-            if (typeof window.saveData === 'function') {
-                window.saveData().catch(function(err) { /* ignore */ });
-            }
-            renderScheduleData();
+        var result = window.removeLocationClass(locationId, week, day, hour);
+
+        if (!result || !result.success) {
+            showNotification(result && result.message ? result.message : 'Failed to remove class.', 'error');
+            return;
+        }
+
+        renderScheduleData();
+
+        if (typeof window.saveData === 'function') {
+            window.saveData()
+                .then(function() {
+                    showNotification('Class removed from location.', 'success');
+                })
+                .catch(function(err) {
+                    console.error('Failed to save location removal:', err);
+                    showNotification('Class removed in memory, but persistence failed.', 'error');
+                });
+        } else {
+            showNotification('Class removed from location.', 'success');
         }
     }
 
+    // ============================================================
+    // CLEAR LOCATION SCHEDULE
+    // ============================================================
+
     function clearLocationSchedule() {
         if (!state.selectedLocationId) {
-            alert('Please select a location first.');
+            showNotification('Please select a location first.', 'error');
             return;
         }
 
@@ -433,20 +593,59 @@
 
         var locationId = state.selectedLocationId;
         var week = state.currentWeek;
-        var key = locationId + '_' + week;
-        var data = window.data || {};
-        if (data.locationSchedules) {
-            delete data.locationSchedules[key];
-            if (typeof window.saveData === 'function') {
-                window.saveData().catch(function(err) { /* ignore */ });
-            }
+
+        var result = window.clearLocationSchedule(locationId, week);
+
+        if (!result || !result.success) {
+            showNotification(result && result.message ? result.message : 'Failed to clear schedule.', 'error');
+            return;
         }
+
         renderScheduleData();
+
+        if (typeof window.saveData === 'function') {
+            window.saveData()
+                .then(function() {
+                    showNotification('Location schedule cleared!', 'success');
+                })
+                .catch(function(err) {
+                    console.error('Failed to save location clear:', err);
+                    showNotification('Location schedule cleared in memory, but persistence failed.', 'error');
+                });
+        } else {
+            showNotification('Location schedule cleared!', 'success');
+        }
     }
+
+    // ============================================================
+    // NOTIFICATION HELPER
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+        
+        if (typeof window.showToast === 'function') {
+            window.showToast(message, type);
+            return;
+        }
+        
+        if (type === 'error') {
+            alert('Error: ' + message);
+        } else if (type === 'success') {
+            alert(message);
+        } else {
+            console.log('[LocationSchedule]', message);
+        }
+    }
+
+    // ============================================================
+    // EVENT INITIALISATION
+    // ============================================================
 
     function initLocationScheduleEvents() {
         var select = document.getElementById('location-schedule-select');
         if (select) {
+            // No clone needed - the select was just created, no existing listeners
             select.addEventListener('change', function() {
                 state.selectedLocationId = this.value;
                 renderScheduleData();
@@ -478,12 +677,12 @@
             gotoBtn.addEventListener('click', function() {
                 var week = prompt('Enter week number (1-52):', state.currentWeek);
                 if (week) {
-                    var w = parseInt(week);
+                    var w = parseInt(week, 10);
                     if (!isNaN(w) && w >= 1 && w <= 52) {
                         state.currentWeek = w;
                         renderScheduleData();
                     } else {
-                        alert('Please enter a valid week (1-52).');
+                        showNotification('Please enter a valid week (1-52).', 'error');
                     }
                 }
             });
@@ -496,47 +695,12 @@
     }
 
     // ============================================================
-    // REGISTER WITH TABMANAGER
+    // REGISTER WITH CURRICULUM MAIN - NO INDEPENDENT LIFECYCLE
+    // This module is rendered by curriculum-main.js via TabManager.
+    // It does not independently listen for lifecycle events.
     // ============================================================
 
-    if (typeof window.TabManager !== 'undefined') {
-        window.TabManager.register('location-schedule', renderLocationSchedule);
-    }
-
-    document.addEventListener('dataReady', function() {
-        var container = document.getElementById('location-schedule-content');
-        if (container && container.style.display !== 'none') {
-            renderLocationSchedule(container);
-        }
-    });
-
-    document.addEventListener('tabChanged', function(e) {
-        if (e.detail && e.detail.tab === 'location-schedule') {
-            var container = document.getElementById('location-schedule-content');
-            if (container) {
-                renderLocationSchedule(container);
-            }
-        }
-    });
-
-    if (window.data) {
-        setTimeout(function() {
-            var container = document.getElementById('location-schedule-content');
-            if (container && container.style.display !== 'none') {
-                renderLocationSchedule(container);
-            }
-        }, 100);
-    }
-
+    // EXPOSE PUBLIC API
     window.renderLocationSchedule = renderLocationSchedule;
-    window.renderScheduleData = renderScheduleData;
-    window.getLocationSchedule = getLocationSchedule;
-    window.setLocationSchedule = setLocationSchedule;
-    window.showAssignClassModal = showAssignClassModal;
-    window.removeClassFromLocation = removeClassFromLocation;
-    window.clearLocationSchedule = clearLocationSchedule;
-    window.populateLocationSelector = populateLocationSelector;
-    window.initLocationScheduleEvents = initLocationScheduleEvents;
-    window.locationScheduleState = state;
 
 })();
