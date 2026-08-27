@@ -2,17 +2,125 @@
  * js/modules/teams/team-render.js - Team Rendering
  * Handles rendering team lists and team data
  * Path: js/modules/teams/team-render.js
+ * 
+ * This module is responsible for:
+ *   - Rendering a list of teams
+ *   - Rendering expanded member sections
+ *   - Rendering the team manager container
+ * 
+ * IMPORTANT: This module is PURE RENDERING.
+ * It does NOT mutate data, call saveData, or perform domain logic.
+ * All data operations are delegated to TeamCore, TeamMembers, TeamRankings.
+ * 
+ * SECURITY: All user-controlled values are escaped before HTML insertion.
+ * CSS values are controlled via CSS classes, not inline styles.
+ * 
+ * DEPENDENCIES (required):
+ *   - window.TeamCore
+ *   - window.TeamMembers
+ *   - window.TeamRankings (must have getCurrentRank)
+ *   - window.getDisplayName (from utils)
+ *   - window.getCharacterById (from utils)
+ *   - window.getCharacterAge (from utils)
+ *   - window.getClassDisplayName (from utils)
  */
 
 (function() {
     'use strict';
+
+    // Guard against duplicate script loading
+    if (window.__teamRenderLoaded) {
+        return;
+    }
+    window.__teamRenderLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY CHECK - Strict contract
+    // ============================================================
+
+    if (!window.TeamCore) {
+        console.error('TeamRender: TeamCore is required but not loaded.');
+        return;
+    }
+
+    if (!window.TeamMembers) {
+        console.error('TeamRender: TeamMembers is required but not loaded.');
+        return;
+    }
+
+    if (!window.TeamRankings) {
+        console.error('TeamRender: TeamRankings is required but not loaded.');
+        return;
+    }
+
+    if (typeof window.TeamRankings.getCurrentRank !== 'function') {
+        console.error('TeamRender: TeamRankings.getCurrentRank is required.');
+        return;
+    }
+
+    // ============================================================
+    // HTML ESCAPING - Prevents XSS
+    // ============================================================
+
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    // ============================================================
+    // PERIOD HELPERS
+    // ============================================================
+
+    function getPeriodLabel(teamType) {
+        return teamType === 'academic' ? 'Week' : 'Period';
+    }
+
+    function formatActiveMembersLabel(teamType, period) {
+        if (teamType === 'academic') {
+            return 'Active Members at Week ' + escapeHtml(String(period)) + ':';
+        }
+        return 'Active Members in ' + escapeHtml(String(period)) + ':';
+    }
+
+    // ============================================================
+    // RANKING HELPERS
+    // ============================================================
+
+    function getTeamRankDisplay(team) {
+        if (!team) return '-';
+        return window.TeamRankings.getCurrentRank(team) || '-';
+    }
+
+    // ============================================================
+    // STATUS CSS CLASSES
+    // ============================================================
+
+    function getStatusClass(status) {
+        var map = {
+            'active': 'status-active',
+            'left': 'status-left',
+            'deceased': 'status-deceased',
+            'eliminated': 'status-eliminated',
+            'future': 'status-future',
+            'unknown': 'status-unknown'
+        };
+        return map[status] || 'status-unknown';
+    }
+
+    // ============================================================
+    // TEAM LIST RENDERING
+    // ============================================================
 
     var TeamRender = {
         /**
          * Render a list of teams
          * @param {array} teams - Array of team objects
          * @param {string} type - Team type for labels
-         * @param {number} filterPeriod - Current period for member filtering
+         * @param {number|string} filterPeriod - Current period for member filtering
          * @param {string} expandedTeamId - ID of expanded team
          * @returns {string} HTML string
          */
@@ -29,7 +137,7 @@
 
             var html = '';
             var headerHtml = `
-                <div class="list-header team-header" style="grid-template-columns:1.2fr 0.8fr 0.6fr 0.6fr 1fr;">
+                <div class="list-header team-header">
                     <span>Team Name</span>
                     <span>Period</span>
                     <span>Rank</span>
@@ -39,52 +147,54 @@
             `;
             html += headerHtml;
 
-            var self = this;
+            var periodNum = parseInt(filterPeriod, 10) || 1;
 
             teams.forEach(function(team) {
+                if (!team || typeof team !== 'object') return;
+
                 var periodDisplay = window.TeamCore.getPeriodDisplay(team);
                 var typeLabel = window.TeamCore.getTypeLabel(team.type);
 
-                var filterPeriodNum = parseInt(filterPeriod) || 1;
-                var activeMembers = window.TeamCore.getActiveMembers(team, filterPeriodNum);
+                var activeMembers = window.TeamCore.getActiveMembers(team, periodNum);
                 var memberCount = activeMembers.length;
 
                 var isExpanded = (expandedTeamId === team.id);
                 var isInactive = team.status === 'deprecated' || team.status === 'inactive';
-                var inactiveStyle = isInactive ? 'opacity:0.6;background:var(--panel-alt);' : '';
+                var inactiveClass = isInactive ? 'inactive' : '';
 
-                var rankDisplay = team.currentRank || '-';
+                var rankDisplay = getTeamRankDisplay(team);
 
                 var classDisplay = '';
                 if (team.type === 'academic' && team.classId) {
-                    var className = window.getClassDisplayName(team.classId);
+                    var className = window.getClassDisplayName ? window.getClassDisplayName(team.classId) : null;
                     if (className && className !== 'Unassigned') {
-                        classDisplay = ' <span style="font-size:0.6rem;color:var(--accent);">[' + className + ']</span>';
+                        classDisplay = ' <span class="team-class">[' + escapeHtml(className) + ']</span>';
                     }
                 }
 
-                html += '<div class="list-item team-item" data-id="' + team.id + '" style="grid-template-columns:1.2fr 0.8fr 0.6fr 0.6fr 1fr;' + inactiveStyle + '">';
-                html += '<span><strong>' + team.name + '</strong>' + classDisplay + ' <span style="font-size:0.6rem;color:var(--text-dim);">' + typeLabel + '</span>';
+                // Team row - using CSS classes for styling
+                html += '<div class="list-item team-item ' + inactiveClass + '" data-id="' + escapeHtml(team.id) + '">';
+                html += '<span><strong>' + escapeHtml(team.name) + '</strong>' + classDisplay + ' <span class="team-type-label">' + escapeHtml(typeLabel) + '</span>';
                 if (isInactive) {
-                    html += ' <span style="color:var(--text-dim);font-size:0.6rem;">(Inactive)</span>';
+                    html += ' <span class="team-status-inactive">(Inactive)</span>';
                 }
                 html += '</span>';
-                html += '<span style="font-size:0.75rem;">' + periodDisplay + '</span>';
-                html += '<span style="font-size:0.75rem;">' + rankDisplay + '</span>';
-                html += '<span style="font-size:0.75rem;">' + memberCount + '</span>';
+                html += '<span class="team-period">' + escapeHtml(periodDisplay) + '</span>';
+                html += '<span class="team-rank">' + escapeHtml(rankDisplay) + '</span>';
+                html += '<span class="team-member-count">' + memberCount + '</span>';
                 html += '<span class="actions">' +
-                    '<button class="small toggle-members" data-id="' + team.id + '">' + (isExpanded ? '▾' : '▸') + '</button>' +
-                    '<button class="small manage-members" data-id="' + team.id + '">Members</button>' +
-                    '<button class="small manage-rankings" data-id="' + team.id + '">Rankings</button>' +
-                    '<button class="small edit-team" data-id="' + team.id + '">Edit</button>' +
-                    '<button class="small danger delete-team" data-id="' + team.id + '">Delete</button>' +
+                    '<button class="small toggle-members" data-id="' + escapeHtml(team.id) + '">' + (isExpanded ? '▾' : '▸') + '</button>' +
+                    '<button class="small manage-members" data-id="' + escapeHtml(team.id) + '">Members</button>' +
+                    '<button class="small manage-rankings" data-id="' + escapeHtml(team.id) + '">Rankings</button>' +
+                    '<button class="small edit-team" data-id="' + escapeHtml(team.id) + '">Edit</button>' +
+                    '<button class="small danger delete-team" data-id="' + escapeHtml(team.id) + '">Delete</button>' +
                     '</span>';
                 html += '</div>';
 
                 if (isExpanded) {
-                    html += self.renderExpandedMembers(team, filterPeriodNum);
+                    html += this.renderExpandedMembers(team, periodNum);
                 }
-            });
+            }, this);
 
             return html;
         },
@@ -92,33 +202,41 @@
         /**
          * Render expanded members section
          * @param {object} team - Team object
-         * @param {number} filterPeriod - Current period
+         * @param {number|string} filterPeriod - Current period
          * @returns {string} HTML string
          */
         renderExpandedMembers: function(team, filterPeriod) {
-            var activeMembers = window.TeamCore.getActiveMembers(team, filterPeriod);
-            var html = '<div class="team-members-expanded" data-team-id="' + team.id + '">';
+            if (!team || typeof team !== 'object') return '';
+
+            var periodNum = parseInt(filterPeriod, 10) || 1;
+            var activeMembers = window.TeamCore.getActiveMembers(team, periodNum);
+            var labelText = formatActiveMembersLabel(team.type, periodNum);
+
+            var html = '<div class="team-members-expanded" data-team-id="' + escapeHtml(team.id) + '">';
 
             if (activeMembers.length > 0) {
-                html += '<div style="font-size:0.7rem;color:var(--text-dim);margin-bottom:4px;">Current Active Members:</div>';
+                html += '<div class="members-expanded-header">' + labelText + '</div>';
                 activeMembers.forEach(function(member) {
-                    var char = window.getCharacterById(member.characterId);
-                    var name = char ? window.getDisplayName(char) : 'Unknown';
-                    var age = char ? window.getCharacterAge(char) : '-';
+                    if (!member || typeof member !== 'object') return;
+
+                    var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
+                    var name = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
+                    var age = char ? (window.getCharacterAge ? window.getCharacterAge(char) : '-') : '-';
                     var deadMarker = char && char.deceased ? ' ✝' : '';
 
-                    var status = team.type === 'academic' 
-                        ? window.TeamMembers.getStatusAtWeek(member, filterPeriod) 
-                        : window.TeamMembers.getStatusAtPeriod(member, filterPeriod, team.type);
+                    // Use TeamMembers for status (required dependency)
+                    var status = window.TeamMembers.getStatusAtPeriod(member, periodNum, team.type);
                     var statusInfo = window.TeamCore.getMemberStatusInfo(status);
+                    var statusClass = getStatusClass(status);
 
-                    html += '<div class="member-entry" style="border-left:3px solid ' + statusInfo.color + ';padding-left:8px;">' +
-                        '<span>' + name + deadMarker + ' <span class="role">(' + (member.role || 'Member') + ')</span></span>' +
-                        '<span style="color:var(--text-dim);font-size:0.75rem;">Age: ' + age + ' | Joined: ' + (member.joinPeriod || '?') + (member.leavePeriod ? ' → ' + member.leavePeriod : '') + ' | <span style="color:' + statusInfo.color + ';">' + statusInfo.label + '</span></span>' +
-                        '</div>';
+                    html += '<div class="member-entry ' + statusClass + '">';
+                    html += '<span>' + escapeHtml(name) + deadMarker + ' <span class="role">(' + escapeHtml(member.role || 'Member') + ')</span></span>';
+                    html += '<span class="member-details">Age: ' + escapeHtml(age) + ' | Joined: ' + escapeHtml(member.joinPeriod || '?') + (member.leavePeriod ? ' → ' + escapeHtml(member.leavePeriod) : '') + ' | <span class="member-status">' + escapeHtml(statusInfo.label) + '</span></span>';
+                    html += '</div>';
                 });
             } else {
-                html += '<div class="member-entry empty" style="color:var(--text-dim);font-size:0.8rem;">No active members this period</div>';
+                var periodLabel = getPeriodLabel(team.type);
+                html += '<div class="member-entry empty">No active members this ' + periodLabel.toLowerCase() + '</div>';
             }
 
             html += '</div>';
@@ -145,16 +263,16 @@
                         <button class="tab-btn ${activeTab === 'civilian' ? 'active' : ''}" data-tab="civilian">Civilian</button>
                     </div>
                     <div class="tab-content" id="team-tab-content">
-                        <div id="tab-academic" class="tab-panel ${activeTab === 'academic' ? 'active' : ''}" style="${activeTab === 'academic' ? 'display:block;' : 'display:none;'}">
+                        <div id="tab-academic" class="tab-panel ${activeTab === 'academic' ? 'active' : ''}">
                             <div id="academic-content"></div>
                         </div>
-                        <div id="tab-professional" class="tab-panel ${activeTab === 'professional' ? 'active' : ''}" style="${activeTab === 'professional' ? 'display:block;' : 'display:none;'}">
+                        <div id="tab-professional" class="tab-panel ${activeTab === 'professional' ? 'active' : ''}">
                             <div id="professional-content"></div>
                         </div>
-                        <div id="tab-temporary" class="tab-panel ${activeTab === 'temporary' ? 'active' : ''}" style="${activeTab === 'temporary' ? 'display:block;' : 'display:none;'}">
+                        <div id="tab-temporary" class="tab-panel ${activeTab === 'temporary' ? 'active' : ''}">
                             <div id="temporary-content"></div>
                         </div>
-                        <div id="tab-civilian" class="tab-panel ${activeTab === 'civilian' ? 'active' : ''}" style="${activeTab === 'civilian' ? 'display:block;' : 'display:none;'}">
+                        <div id="tab-civilian" class="tab-panel ${activeTab === 'civilian' ? 'active' : ''}">
                             <div id="civilian-content"></div>
                         </div>
                     </div>
@@ -162,6 +280,10 @@
             `;
         }
     };
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
 
     window.TeamRender = TeamRender;
 
