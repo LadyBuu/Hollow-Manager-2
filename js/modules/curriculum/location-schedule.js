@@ -33,7 +33,7 @@
  *   - The core represents multi-hour classes as repeated hourly entries.
  *   - Student assignments are per-hour; a 3-hour block shows students assigned at the start hour.
  *   - All core mutation functions return { success: boolean, message?: string, ... }
- *   - getClassLocation() is a required core dependency for explicit student-location mapping.
+ *   - getClassLocation() is a required core dependency.
  */
 
 (function() {
@@ -218,12 +218,14 @@
             }
             if (hasStoredValue) {
                 select.value = state.selectedLocationId;
-            } else {
-                state.selectedLocationId = null;
+                return;
             }
+            state.selectedLocationId = null;
         }
 
+        // Auto-select first location if none selected and locations exist
         if (!state.selectedLocationId && select.options.length > 1) {
+            // Skip the first option which is the placeholder
             select.selectedIndex = 1;
             state.selectedLocationId = select.value;
         }
@@ -344,8 +346,6 @@
                         var durationDisplay = duration > 1 ? ' (' + duration + 'h)' : '';
 
                         // Get students explicitly assigned to this location at the start hour
-                        // Note: Student assignments are per-hour; a 3-hour block shows students
-                        // assigned at the start hour (duration is a visual grouping only)
                         var studentNames = [];
                         allStudents.forEach(function(student) {
                             var sched = studentSchedules[student.id];
@@ -354,7 +354,7 @@
                             if (assignedLocationId !== null && assignedLocationId !== undefined) {
                                 if (String(assignedLocationId) === String(locationId)) {
                                     if (sched[day] && String(sched[day][hour]) === String(disciplineId)) {
-                                        studentNames.push(getSafeDisplayName(student));
+                                        studentNames.push(window.getDisplayName(student));
                                     }
                                 }
                             }
@@ -405,17 +405,6 @@
     }
 
     // ============================================================
-    // GET SAFE DISPLAY NAME
-    // ============================================================
-
-    function getSafeDisplayName(char) {
-        if (typeof window.getDisplayName === 'function') {
-            return window.getDisplayName(char);
-        }
-        return char && char.name ? char.name : 'Unknown';
-    }
-
-    // ============================================================
     // SHOW ASSIGN CLASS MODAL
     // ============================================================
 
@@ -459,7 +448,7 @@
                                     var instructorNames = d.instructorIds.map(function(id) {
                                         var inst = window.getCharacterById(id);
                                         if (inst) {
-                                            return escapeHtml(getSafeDisplayName(inst));
+                                            return escapeHtml(window.getDisplayName(inst));
                                         }
                                         return 'Unknown';
                                     });
@@ -645,7 +634,6 @@
     function initLocationScheduleEvents() {
         var select = document.getElementById('location-schedule-select');
         if (select) {
-            // No clone needed - the select was just created, no existing listeners
             select.addEventListener('change', function() {
                 state.selectedLocationId = this.value;
                 renderScheduleData();
