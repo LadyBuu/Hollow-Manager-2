@@ -6,7 +6,6 @@
  * This module is responsible for:
  *   - All curriculum data mutations (disciplines, classes, groups, schedules, rankings)
  *   - Validation of all inputs
- *   - Atomic operations (all or nothing)
  *   - Maintaining data integrity invariants
  *   - Activity logging
  * 
@@ -14,15 +13,16 @@
  *   - This module mutates window.data directly.
  *   - Callers are responsible for calling saveData() to persist changes.
  *   - All functions return { success: boolean, message?: string, data?: any }
- *   - Invalid inputs are REJECTED (operation returns null/false)
- *   - Mutations are ATOMIC: if any part is invalid, nothing changes
- *   - Malformed existing data is NOT silently repaired
+ *   - Invalid inputs are REJECTED (operation returns { success: false, message: ... })
+ *   - Validation occurs BEFORE mutation. After mutation begins, no rollback is provided.
  *   - This module does NOT call saveData() - callers own persistence
+ *   - This module does NOT show UI dialogs - caller handles UX
+ *   - Schema is assumed to exist (ensured by ensureCurriculum)
  * 
  * PERSISTENCE CONTRACT:
  *   - Mutations are applied to window.data in memory
  *   - Caller is responsible for saveData() persistence
- *   - Rollback is NOT performed by this module
+ *   - No rollback is provided after mutation begins
  * 
  * DATA STRUCTURE CONTRACT:
  *   - window.data must exist
@@ -30,6 +30,7 @@
  *   - window.data.teams must exist
  *   - window.data.characters must exist
  *   - window.data.classes must exist
+ *   - All top-level arrays/objects are guaranteed by ensureCurriculum
  */
 
 (function() {
@@ -73,14 +74,6 @@
             return null;
         }
         return window.data;
-    }
-
-    function ensureArray(value) {
-        return Array.isArray(value) ? value : [];
-    }
-
-    function ensureObject(value) {
-        return isObject(value) ? value : {};
     }
 
     function logActivity(message, type) {
@@ -136,7 +129,6 @@
         if (typeof window.getActiveTeamMembers === 'function') {
             return window.getActiveTeamMembers(team, period);
         }
-        // Fallback implementation
         if (!team || !Array.isArray(team.members)) return [];
         var periodNum = parsePositiveInteger(period);
         if (periodNum === null) return [];
@@ -147,6 +139,64 @@
             var leave = parsePositiveInteger(member.leavePeriod);
             return join <= periodNum && (leave === null || leave >= periodNum);
         });
+    }
+
+    // ============================================================
+    // SCHEDULE HELPER - Find class start
+    // ============================================================
+
+    /**
+     * Find the start hour of a class given any occupied hour.
+     * This handles multi-hour classes where duration is only stored at the start.
+     * 
+     * @param {object} store - Data store reference
+     * @param {string} studentId - Student ID
+     * @param {number} week - Week number
+     * @param {number} day - Day number (1-7)
+     * @param {number} hour - Hour (0-23)
+     * @returns {object|null} { startHour, duration, disciplineId } or null
+     */
+    function findClassStart(store, studentId, week, day, hour) {
+        if (!store || !store.curriculum || !store.curriculum.schedules) return null;
+        if (!store.curriculum.schedules[studentId]) return null;
+        if (!store.curriculum.schedules[studentId][week]) return null;
+        
+        var schedule = store.curriculum.schedules[studentId][week];
+        if (!schedule[day]) return null;
+
+        // Check if this hour has a discipline
+        var disciplineId = schedule[day][hour];
+        if (!disciplineId) return null;
+
+        // Look backward to find the start of this class
+        var startHour = hour;
+        while (startHour > 0) {
+            var prevHour = startHour - 1;
+            if (schedule[day][prevHour] === disciplineId) {
+                startHour = prevHour;
+            } else {
+                break;
+            }
+        }
+
+        // Get duration from metadata (stored at start hour)
+        var key = studentId + '_' + week + '_' + day + '_' + startHour;
+        var duration = store.curriculum.classDurations ? store.curriculum.classDurations[key] : null;
+        
+        if (!duration) {
+            // If no duration metadata, calculate from contiguous hours
+            var endHour = startHour;
+            while (endHour < 23 && schedule[day][endHour + 1] === disciplineId) {
+                endHour++;
+            }
+            duration = endHour - startHour + 1;
+        }
+
+        return {
+            startHour: startHour,
+            duration: duration,
+            disciplineId: disciplineId
+        };
     }
 
     // ============================================================
@@ -170,12 +220,15 @@
         if (system.length === 0) {
             return { valid: true };
         }
+
+        var normalized = [];
         for (var i = 0; i < system.length; i++) {
             var g = system[i];
             if (!g || typeof g !== 'object') {
                 return { valid: false, message: 'Invalid grade entry at index ' + i + '.' };
             }
-            if (!isNonEmptyString(g.letter)) {
+            var letter = String(g.letter || '').trim();
+            if (!letter) {
                 return { valid: false, message: 'Grade letter is required at index ' + i + '.' };
             }
             var min = Number(g.min);
@@ -183,78 +236,137 @@
             if (!isSafeInteger(min) || !isSafeInteger(max) || min < 0 || max > 100 || min > max) {
                 return { valid: false, message: 'Invalid grade range at index ' + i + '.' };
             }
-            for (var j = i + 1; j < system.length; j++) {
-                var other = system[j];
-                if (other && g.min <= other.max && other.min <= g.max) {
-                    return { valid: false, message: 'Grading ranges for "' + g.letter + '" and "' + other.letter + '" overlap.' };
+            normalized.push({ letter: letter, min: min, max: max });
+        }
+
+        for (var i = 0; i < normalized.length; i++) {
+            for (var j = i + 1; j < normalized.length; j++) {
+                var a = normalized[i];
+                var b = normalized[j];
+                if (a.min <= b.max && b.min <= a.max) {
+                    return { valid: false, message: 'Grading ranges for "' + a.letter + '" and "' + b.letter + '" overlap.' };
                 }
             }
             for (var j = 0; j < i; j++) {
-                var other = system[j];
-                if (other && g.letter.toUpperCase() === other.letter.toUpperCase()) {
-                    return { valid: false, message: 'Duplicate grade letter "' + g.letter + '".' };
+                var a = normalized[i];
+                var b = normalized[j];
+                if (a.letter.toUpperCase() === b.letter.toUpperCase()) {
+                    return { valid: false, message: 'Duplicate grade letter "' + a.letter + '".' };
                 }
             }
         }
+
         return { valid: true };
     }
 
-    function validateDiscipline(data) {
+    function validateDiscipline(data, isPartial) {
         if (!isObject(data)) {
             return { valid: false, message: 'Discipline data must be an object.' };
         }
-        if (!isNonEmptyString(data.name)) {
-            return { valid: false, message: 'Discipline name is required.' };
-        }
-        if (!data.type || (data.type !== 'mandatory' && data.type !== 'optional')) {
-            return { valid: false, message: 'Valid discipline type is required.' };
-        }
-        if (!Array.isArray(data.instructorIds) || data.instructorIds.length === 0) {
-            return { valid: false, message: 'At least one instructor is required.' };
-        }
-        if (data.startWeek !== '' && data.startWeek !== undefined && data.startWeek !== null) {
-            var start = validateWeek(data.startWeek);
-            if (start === null) {
-                return { valid: false, message: 'Start week must be between 1 and 52.' };
+
+        // For partial updates, only validate fields that are present
+        if (isPartial) {
+            if (data.name !== undefined && !isNonEmptyString(data.name)) {
+                return { valid: false, message: 'Discipline name cannot be empty.' };
+            }
+            if (data.type !== undefined && (data.type !== 'mandatory' && data.type !== 'optional')) {
+                return { valid: false, message: 'Valid discipline type is required.' };
+            }
+            if (data.instructorIds !== undefined && (!Array.isArray(data.instructorIds) || data.instructorIds.length === 0)) {
+                return { valid: false, message: 'At least one instructor is required.' };
+            }
+            if (data.startWeek !== undefined) {
+                var start = validateWeek(data.startWeek);
+                if (data.startWeek !== '' && data.startWeek !== null && data.startWeek !== undefined && start === null) {
+                    return { valid: false, message: 'Start week must be between 1 and 52.' };
+                }
+            }
+            if (data.endWeek !== undefined) {
+                var end = validateWeek(data.endWeek);
+                if (data.endWeek !== '' && data.endWeek !== null && data.endWeek !== undefined && end === null) {
+                    return { valid: false, message: 'End week must be between 1 and 52.' };
+                }
+            }
+            if (data.weeklyHours !== undefined && data.weeklyHours !== '' && data.weeklyHours !== null) {
+                var hours = Number(data.weeklyHours);
+                if (isNaN(hours) || hours < 0 || hours > 40) {
+                    return { valid: false, message: 'Weekly hours must be between 0 and 40.' };
+                }
+            }
+            if (data.maxStudents !== undefined && data.maxStudents !== '' && data.maxStudents !== null) {
+                var students = Number(data.maxStudents);
+                if (isNaN(students) || students < 0 || students > 100) {
+                    return { valid: false, message: 'Max students must be between 0 and 100.' };
+                }
+            }
+            if (data.weight !== undefined && data.weight !== '' && data.weight !== null) {
+                var weight = Number(data.weight);
+                if (isNaN(weight) || weight < 0.1 || weight > 10) {
+                    return { valid: false, message: 'Weight must be between 0.1 and 10.' };
+                }
+            }
+            if (data.gradingSystem !== undefined) {
+                var gradingValidation = validateGradingSystem(data.gradingSystem);
+                if (!gradingValidation.valid) {
+                    return gradingValidation;
+                }
+            }
+        } else {
+            // Full validation
+            if (!isNonEmptyString(data.name)) {
+                return { valid: false, message: 'Discipline name is required.' };
+            }
+            if (!data.type || (data.type !== 'mandatory' && data.type !== 'optional')) {
+                return { valid: false, message: 'Valid discipline type is required.' };
+            }
+            if (!Array.isArray(data.instructorIds) || data.instructorIds.length === 0) {
+                return { valid: false, message: 'At least one instructor is required.' };
+            }
+            if (data.startWeek !== '' && data.startWeek !== undefined && data.startWeek !== null) {
+                var start = validateWeek(data.startWeek);
+                if (start === null) {
+                    return { valid: false, message: 'Start week must be between 1 and 52.' };
+                }
+            }
+            if (data.endWeek !== '' && data.endWeek !== undefined && data.endWeek !== null) {
+                var end = validateWeek(data.endWeek);
+                if (end === null) {
+                    return { valid: false, message: 'End week must be between 1 and 52.' };
+                }
+            }
+            if (data.startWeek && data.endWeek) {
+                var start = parsePositiveInteger(data.startWeek);
+                var end = parsePositiveInteger(data.endWeek);
+                if (start !== null && end !== null && start > end) {
+                    return { valid: false, message: 'Start week must be before end week.' };
+                }
+            }
+            if (data.weeklyHours !== '' && data.weeklyHours !== undefined && data.weeklyHours !== null) {
+                var hours = Number(data.weeklyHours);
+                if (isNaN(hours) || hours < 0 || hours > 40) {
+                    return { valid: false, message: 'Weekly hours must be between 0 and 40.' };
+                }
+            }
+            if (data.maxStudents !== '' && data.maxStudents !== undefined && data.maxStudents !== null) {
+                var students = Number(data.maxStudents);
+                if (isNaN(students) || students < 0 || students > 100) {
+                    return { valid: false, message: 'Max students must be between 0 and 100.' };
+                }
+            }
+            if (data.weight !== '' && data.weight !== undefined && data.weight !== null) {
+                var weight = Number(data.weight);
+                if (isNaN(weight) || weight < 0.1 || weight > 10) {
+                    return { valid: false, message: 'Weight must be between 0.1 and 10.' };
+                }
+            }
+            if (data.gradingSystem) {
+                var gradingValidation = validateGradingSystem(data.gradingSystem);
+                if (!gradingValidation.valid) {
+                    return gradingValidation;
+                }
             }
         }
-        if (data.endWeek !== '' && data.endWeek !== undefined && data.endWeek !== null) {
-            var end = validateWeek(data.endWeek);
-            if (end === null) {
-                return { valid: false, message: 'End week must be between 1 and 52.' };
-            }
-        }
-        if (data.startWeek && data.endWeek) {
-            var start = parsePositiveInteger(data.startWeek);
-            var end = parsePositiveInteger(data.endWeek);
-            if (start !== null && end !== null && start > end) {
-                return { valid: false, message: 'Start week must be before end week.' };
-            }
-        }
-        if (data.weeklyHours !== '' && data.weeklyHours !== undefined && data.weeklyHours !== null) {
-            var hours = Number(data.weeklyHours);
-            if (isNaN(hours) || hours < 0 || hours > 40) {
-                return { valid: false, message: 'Weekly hours must be between 0 and 40.' };
-            }
-        }
-        if (data.maxStudents !== '' && data.maxStudents !== undefined && data.maxStudents !== null) {
-            var students = Number(data.maxStudents);
-            if (isNaN(students) || students < 0 || students > 100) {
-                return { valid: false, message: 'Max students must be between 0 and 100.' };
-            }
-        }
-        if (data.weight !== '' && data.weight !== undefined && data.weight !== null) {
-            var weight = Number(data.weight);
-            if (isNaN(weight) || weight < 0.1 || weight > 10) {
-                return { valid: false, message: 'Weight must be between 0.1 and 10.' };
-            }
-        }
-        if (data.gradingSystem) {
-            var gradingValidation = validateGradingSystem(data.gradingSystem);
-            if (!gradingValidation.valid) {
-                return gradingValidation;
-            }
-        }
+
         return { valid: true };
     }
 
@@ -294,11 +406,8 @@
             return { success: false, message: 'Class name is required.' };
         }
         var data = getDataStore();
-        if (!data) {
+        if (!data || !Array.isArray(data.classes)) {
             return { success: false, message: 'Data store is not available.' };
-        }
-        if (!Array.isArray(data.classes)) {
-            data.classes = [];
         }
         var existing = data.classes.find(function(c) {
             return c && String(c.name || '').toLowerCase() === String(name).toLowerCase();
@@ -321,10 +430,7 @@
             return { success: false, message: 'Class ID is required.' };
         }
         var data = getDataStore();
-        if (!data) {
-            return { success: false, message: 'Data store is not available.' };
-        }
-        if (!Array.isArray(data.classes)) {
+        if (!data || !Array.isArray(data.classes)) {
             return { success: false, message: 'No classes found.' };
         }
         var index = data.classes.findIndex(function(c) {
@@ -358,10 +464,7 @@
             return { success: false, message: 'Class ID is required.' };
         }
         var data = getDataStore();
-        if (!data) {
-            return { success: false, message: 'Data store is not available.' };
-        }
-        if (!Array.isArray(data.classes)) {
+        if (!data || !Array.isArray(data.classes)) {
             return { success: false, message: 'No classes found.' };
         }
         var index = data.classes.findIndex(function(c) {
@@ -413,7 +516,7 @@
             return { success: false, message: 'Character not found.' };
         }
         if (!Array.isArray(team.members)) {
-            team.members = [];
+            return { success: false, message: 'Team has no members array.' };
         }
         var existing = team.members.find(function(m) {
             return m && String(m.characterId) === String(memberData.characterId);
@@ -462,20 +565,26 @@
     // ============================================================
 
     function createDiscipline(data) {
-        var validation = validateDiscipline(data);
+        var validation = validateDiscipline(data, false);
         if (!validation.valid) {
             return { success: false, message: validation.message };
         }
         var store = getDataStore();
-        if (!store) {
+        if (!store || !store.curriculum || !Array.isArray(store.curriculum.disciplines)) {
             return { success: false, message: 'Data store is not available.' };
         }
-        if (!store.curriculum) {
-            store.curriculum = {};
+
+        // Validate instructor IDs exist
+        var invalidInstructors = [];
+        data.instructorIds.forEach(function(id) {
+            if (!getCharacterById(id)) {
+                invalidInstructors.push(id);
+            }
+        });
+        if (invalidInstructors.length > 0) {
+            return { success: false, message: 'Invalid instructor IDs: ' + invalidInstructors.join(', ') };
         }
-        if (!Array.isArray(store.curriculum.disciplines)) {
-            store.curriculum.disciplines = [];
-        }
+
         var existing = store.curriculum.disciplines.find(function(d) {
             return d && String(d.name || '').toLowerCase() === String(data.name).toLowerCase();
         });
@@ -505,7 +614,7 @@
         if (!isNonEmptyString(id)) {
             return { success: false, message: 'Discipline ID is required.' };
         }
-        var validation = validateDiscipline(data);
+        var validation = validateDiscipline(data, true);
         if (!validation.valid) {
             return { success: false, message: validation.message };
         }
@@ -520,6 +629,20 @@
             return { success: false, message: 'Discipline not found.' };
         }
         var discipline = store.curriculum.disciplines[index];
+
+        // Validate instructor IDs if provided
+        if (data.instructorIds !== undefined) {
+            var invalidInstructors = [];
+            data.instructorIds.forEach(function(instrId) {
+                if (!getCharacterById(instrId)) {
+                    invalidInstructors.push(instrId);
+                }
+            });
+            if (invalidInstructors.length > 0) {
+                return { success: false, message: 'Invalid instructor IDs: ' + invalidInstructors.join(', ') };
+            }
+        }
+
         if (data.name !== undefined) {
             var newName = String(data.name).trim();
             if (!newName) {
@@ -583,14 +706,31 @@
         var name = discipline.name;
 
         // Remove from schedules
-        if (store.curriculum.schedules) {
+        if (store.curriculum.schedules && isObject(store.curriculum.schedules)) {
             for (var studentId in store.curriculum.schedules) {
+                if (!isObject(store.curriculum.schedules[studentId])) continue;
                 for (var week in store.curriculum.schedules[studentId]) {
                     var schedule = store.curriculum.schedules[studentId][week];
+                    if (!isObject(schedule)) continue;
                     for (var day in schedule) {
+                        if (!isObject(schedule[day])) continue;
                         for (var hour in schedule[day]) {
                             if (String(schedule[day][hour]) === String(id)) {
                                 delete schedule[day][hour];
+                                // Clean up metadata for this slot
+                                var key = studentId + '_' + week + '_' + day + '_' + hour;
+                                if (store.curriculum.classInstructors) {
+                                    delete store.curriculum.classInstructors[key];
+                                }
+                                if (store.curriculum.classLabels) {
+                                    delete store.curriculum.classLabels[key];
+                                }
+                                if (store.curriculum.classGroupLabels) {
+                                    delete store.curriculum.classGroupLabels[key];
+                                }
+                                if (store.curriculum.classDurations) {
+                                    delete store.curriculum.classDurations[key];
+                                }
                             }
                         }
                     }
@@ -598,27 +738,23 @@
             }
         }
 
-        // Remove from class metadata
-        if (store.curriculum.classInstructors) {
-            for (var key in store.curriculum.classInstructors) {
-                // Keys are studentId_week_day_hour, don't contain discipline ID
-                // We need to check the schedule instead
-            }
-        }
-
         // Remove from grades
-        if (store.curriculum.grades) {
+        if (store.curriculum.grades && isObject(store.curriculum.grades)) {
             for (var studentId in store.curriculum.grades) {
+                if (!isObject(store.curriculum.grades[studentId])) continue;
                 for (var week in store.curriculum.grades[studentId]) {
-                    delete store.curriculum.grades[studentId][week][id];
+                    if (isObject(store.curriculum.grades[studentId][week])) {
+                        delete store.curriculum.grades[studentId][week][id];
+                    }
                 }
             }
         }
 
         // Remove from autoGroups
-        if (store.curriculum.autoGroups) {
+        if (store.curriculum.autoGroups && isObject(store.curriculum.autoGroups)) {
             for (var key in store.curriculum.autoGroups) {
-                if (String(store.curriculum.autoGroups[key].disciplineId) === String(id)) {
+                var group = store.curriculum.autoGroups[key];
+                if (group && String(group.disciplineId) === String(id)) {
                     delete store.curriculum.autoGroups[key];
                 }
             }
@@ -636,16 +772,13 @@
     }
 
     // ============================================================
-    // GROUP OPERATIONS
+    // GROUP OPERATIONS - READ-ONLY
     // ============================================================
 
     function getAllAutoGroups() {
         var store = getDataStore();
-        if (!store || !store.curriculum) {
+        if (!store || !store.curriculum || !isObject(store.curriculum.autoGroups)) {
             return {};
-        }
-        if (!store.curriculum.autoGroups) {
-            store.curriculum.autoGroups = {};
         }
         return store.curriculum.autoGroups;
     }
@@ -655,7 +788,12 @@
         return groups[key] || null;
     }
 
-    function addStudentToGroup(key, studentId) {
+    // ============================================================
+    // GROUP OPERATIONS - MUTATIONS (best-effort, no rollback)
+    // ============================================================
+
+    function addStudentToGroup(key, studentId, options) {
+        options = options || {};
         var groups = getAllAutoGroups();
         var group = groups[key];
         if (!group) {
@@ -672,10 +810,11 @@
             return { success: false, message: 'Student already in this group.' };
         }
 
-        var conflicts = [];
+        var conflictDetails = [];
         var conflictStudentNames = [];
         var charName = getDisplayName(char);
 
+        // Check for conflicts
         if (group.slots && group.slots.length > 0) {
             group.slots.forEach(function(slot) {
                 var schedule = window.getStudentSchedule ? window.getStudentSchedule(studentId, slot.week) : {};
@@ -687,7 +826,7 @@
                     }
                 }
                 if (hasConflict) {
-                    conflicts.push({
+                    conflictDetails.push({
                         week: slot.week,
                         day: slot.day,
                         hour: slot.hour
@@ -696,18 +835,28 @@
             });
         }
 
-        if (conflicts.length > 0) {
-            var conflictMsg = 'Student ' + charName + ' has schedule conflicts in ' + conflicts.length + ' slot(s).\n\n';
-            conflictMsg += 'Do you want to remove the student from their current classes in these slots and add them to this group?';
-            if (!confirm(conflictMsg)) {
-                return { success: false, message: 'Student not added to group due to conflicts.' };
-            }
-            // Remove conflicting classes
-            conflicts.forEach(function(c) {
+        // If there are conflicts and the caller hasn't confirmed, return conflict info
+        if (conflictDetails.length > 0 && !options.confirmed) {
+            return {
+                success: false,
+                message: 'Student has schedule conflicts.',
+                conflicts: conflictDetails,
+                requiresConfirmation: true
+            };
+        }
+
+        // Remove conflicting classes if confirmed
+        if (options.confirmed) {
+            conflictDetails.forEach(function(c) {
                 var schedule = window.getStudentSchedule ? window.getStudentSchedule(studentId, c.week) : {};
-                for (var h = c.hour; h < c.hour + (group.slots.find(function(s) { return s.week === c.week && s.day === c.day && s.hour === c.hour; })?.duration || 1) && h <= 23; h++) {
+                var slot = group.slots.find(function(s) {
+                    return s.week === c.week && s.day === c.day && s.hour === c.hour;
+                });
+                var duration = slot ? (slot.duration || 1) : 1;
+                for (var h = c.hour; h < c.hour + duration && h <= 23; h++) {
                     if (schedule[c.day] && schedule[c.day][h]) {
                         delete schedule[c.day][h];
+                        var key = studentId + '_' + c.week + '_' + c.day + '_' + h;
                         if (window.setClassInstructor) {
                             window.setClassInstructor(studentId, c.week, c.day, h, null);
                         }
@@ -723,28 +872,28 @@
                     }
                 }
             });
-            conflictStudentNames.push(charName);
         }
 
         // Add student to all slots
         if (group.slots && group.slots.length > 0) {
             group.slots.forEach(function(slot) {
                 var schedule = window.getStudentSchedule ? window.getStudentSchedule(studentId, slot.week) : {};
+                var key = studentId + '_' + slot.week + '_' + slot.day + '_' + slot.hour;
                 for (var h = slot.hour; h < slot.hour + (slot.duration || 1) && h <= 23; h++) {
                     if (!schedule[slot.day]) schedule[slot.day] = {};
                     schedule[slot.day][h] = group.disciplineId;
-                    if (group.instructorId && window.setClassInstructor) {
-                        window.setClassInstructor(studentId, slot.week, slot.day, h, group.instructorId);
-                    }
-                    if (slot.label && window.setClassLabel) {
-                        window.setClassLabel(studentId, slot.week, slot.day, h, slot.label);
-                    }
-                    if (window.setClassGroupLabel) {
-                        window.setClassGroupLabel(studentId, slot.week, slot.day, h, 'auto-group');
-                    }
-                    if (h === slot.hour && window.setClassDuration) {
-                        window.setClassDuration(studentId, slot.week, slot.day, h, slot.duration || 1);
-                    }
+                }
+                if (group.instructorId && window.setClassInstructor) {
+                    window.setClassInstructor(studentId, slot.week, slot.day, slot.hour, group.instructorId);
+                }
+                if (slot.label && window.setClassLabel) {
+                    window.setClassLabel(studentId, slot.week, slot.day, slot.hour, slot.label);
+                }
+                if (window.setClassGroupLabel) {
+                    window.setClassGroupLabel(studentId, slot.week, slot.day, slot.hour, 'auto-group');
+                }
+                if (window.setClassDuration) {
+                    window.setClassDuration(studentId, slot.week, slot.day, slot.hour, slot.duration || 1);
                 }
             });
         }
@@ -780,22 +929,23 @@
         if (group.slots && group.slots.length > 0) {
             group.slots.forEach(function(slot) {
                 var schedule = window.getStudentSchedule ? window.getStudentSchedule(studentId, slot.week) : {};
+                var key = studentId + '_' + slot.week + '_' + slot.day + '_' + slot.hour;
                 for (var h = slot.hour; h < slot.hour + (slot.duration || 1) && h <= 23; h++) {
                     if (schedule[slot.day] && schedule[slot.day][h] === group.disciplineId) {
                         delete schedule[slot.day][h];
-                        if (window.setClassInstructor) {
-                            window.setClassInstructor(studentId, slot.week, slot.day, h, null);
-                        }
-                        if (window.setClassLabel) {
-                            window.setClassLabel(studentId, slot.week, slot.day, h, null);
-                        }
-                        if (window.setClassGroupLabel) {
-                            window.setClassGroupLabel(studentId, slot.week, slot.day, h, null);
-                        }
-                        if (window.setClassDuration) {
-                            window.setClassDuration(studentId, slot.week, slot.day, h, null);
-                        }
                     }
+                }
+                if (window.setClassInstructor) {
+                    window.setClassInstructor(studentId, slot.week, slot.day, slot.hour, null);
+                }
+                if (window.setClassLabel) {
+                    window.setClassLabel(studentId, slot.week, slot.day, slot.hour, null);
+                }
+                if (window.setClassGroupLabel) {
+                    window.setClassGroupLabel(studentId, slot.week, slot.day, slot.hour, null);
+                }
+                if (window.setClassDuration) {
+                    window.setClassDuration(studentId, slot.week, slot.day, slot.hour, null);
                 }
             });
         }
@@ -804,8 +954,10 @@
             return String(id) !== String(studentId);
         });
 
-        // Clean up empty groups
-        if (group.students.length === 0 && group.slots.length === 0) {
+        // Clean up empty groups (with defensive checks)
+        var studentsExist = group.students && group.students.length > 0;
+        var slotsExist = group.slots && group.slots.length > 0;
+        if (!studentsExist && !slotsExist) {
             delete groups[key];
         }
 
@@ -813,7 +965,8 @@
         return { success: true };
     }
 
-    function addSlotToGroup(key, week, day, hour, duration, label) {
+    function addSlotToGroup(key, week, day, hour, duration, label, options) {
+        options = options || {};
         var groups = getAllAutoGroups();
         var group = groups[key];
         if (!group) {
@@ -832,6 +985,11 @@
         var durationNum = parsePositiveInteger(duration) || 1;
         if (durationNum < 1 || durationNum > 4) {
             return { success: false, message: 'Duration must be between 1 and 4 hours.' };
+        }
+
+        // Check if duration fits in the day
+        if (hour + durationNum > 24) {
+            return { success: false, message: 'Class duration extends beyond the end of the day.' };
         }
 
         var exists = group.slots && group.slots.some(function(s) {
@@ -875,18 +1033,18 @@
                     for (var h = hour; h < hour + durationNum && h <= 23; h++) {
                         if (!schedule[day]) schedule[day] = {};
                         schedule[day][h] = group.disciplineId;
-                        if (group.instructorId && window.setClassInstructor) {
-                            window.setClassInstructor(studentId, weekNum, day, h, group.instructorId);
-                        }
-                        if (label && window.setClassLabel) {
-                            window.setClassLabel(studentId, weekNum, day, h, label);
-                        }
-                        if (window.setClassGroupLabel) {
-                            window.setClassGroupLabel(studentId, weekNum, day, h, 'auto-group');
-                        }
-                        if (h === hour && window.setClassDuration) {
-                            window.setClassDuration(studentId, weekNum, day, h, durationNum);
-                        }
+                    }
+                    if (group.instructorId && window.setClassInstructor) {
+                        window.setClassInstructor(studentId, weekNum, day, hour, group.instructorId);
+                    }
+                    if (label && window.setClassLabel) {
+                        window.setClassLabel(studentId, weekNum, day, hour, label);
+                    }
+                    if (window.setClassGroupLabel) {
+                        window.setClassGroupLabel(studentId, weekNum, day, hour, 'auto-group');
+                    }
+                    if (window.setClassDuration) {
+                        window.setClassDuration(studentId, weekNum, day, hour, durationNum);
                     }
                     addedCount++;
                 }
@@ -931,37 +1089,41 @@
         }
 
         var slot = group.slots[slotIndex];
+        var studentCount = group.students ? group.students.length : 0;
+
         if (group.students && group.students.length > 0) {
             group.students.forEach(function(studentId) {
                 var schedule = window.getStudentSchedule ? window.getStudentSchedule(studentId, weekNum) : {};
                 for (var h = hour; h < hour + (slot.duration || 1) && h <= 23; h++) {
                     if (schedule[day] && schedule[day][h] === group.disciplineId) {
                         delete schedule[day][h];
-                        if (window.setClassInstructor) {
-                            window.setClassInstructor(studentId, weekNum, day, h, null);
-                        }
-                        if (window.setClassLabel) {
-                            window.setClassLabel(studentId, weekNum, day, h, null);
-                        }
-                        if (window.setClassGroupLabel) {
-                            window.setClassGroupLabel(studentId, weekNum, day, h, null);
-                        }
-                        if (window.setClassDuration) {
-                            window.setClassDuration(studentId, weekNum, day, h, null);
-                        }
                     }
+                }
+                if (window.setClassInstructor) {
+                    window.setClassInstructor(studentId, weekNum, day, hour, null);
+                }
+                if (window.setClassLabel) {
+                    window.setClassLabel(studentId, weekNum, day, hour, null);
+                }
+                if (window.setClassGroupLabel) {
+                    window.setClassGroupLabel(studentId, weekNum, day, hour, null);
+                }
+                if (window.setClassDuration) {
+                    window.setClassDuration(studentId, weekNum, day, hour, null);
                 }
             });
         }
 
         group.slots.splice(slotIndex, 1);
 
-        // Clean up empty groups
-        if (group.students.length === 0 && group.slots.length === 0) {
+        // Clean up empty groups (with defensive checks)
+        var studentsExist = group.students && group.students.length > 0;
+        var slotsExist = group.slots && group.slots.length > 0;
+        if (!studentsExist && !slotsExist) {
             delete groups[key];
         }
 
-        logActivity('Removed slot from group: ' + group.displayName);
+        logActivity('Removed slot from group: ' + group.displayName + ' (' + studentCount + ' students affected)');
         return { success: true };
     }
 
@@ -971,7 +1133,6 @@
             return { success: false, message: 'Data store not available.' };
         }
 
-        var existingGroups = store.curriculum.autoGroups || {};
         var newGroups = {};
         var count = 0;
 
@@ -981,33 +1142,47 @@
         students.forEach(function(student) {
             var studentId = student.id;
             var schedule = store.curriculum.schedules ? store.curriculum.schedules[studentId] : null;
-            if (!schedule) return;
+            if (!schedule || !isObject(schedule)) return;
 
             for (var week in schedule) {
                 var weekNum = parseInt(week, 10);
                 if (isNaN(weekNum)) continue;
 
-                for (var day in schedule[weekNum]) {
+                var weekSchedule = schedule[weekNum];
+                if (!isObject(weekSchedule)) continue;
+
+                for (var day in weekSchedule) {
                     var dayNum = parseInt(day, 10);
                     if (isNaN(dayNum)) continue;
 
-                    for (var hour in schedule[weekNum][dayNum]) {
+                    var daySchedule = weekSchedule[dayNum];
+                    if (!isObject(daySchedule)) continue;
+
+                    for (var hour in daySchedule) {
                         var hourNum = parseInt(hour, 10);
                         if (isNaN(hourNum)) continue;
 
-                        var disciplineId = schedule[weekNum][dayNum][hourNum];
+                        var disciplineId = daySchedule[hourNum];
                         if (!disciplineId) continue;
 
-                        // Check if this is a class start (has duration metadata)
-                        var duration = window.getClassDuration ? window.getClassDuration(studentId, weekNum, dayNum, hourNum) : null;
-                        if (!duration) continue;
+                        // Find class start (handles multi-hour classes)
+                        var classInfo = findClassStart(store, studentId, weekNum, dayNum, hourNum);
+                        if (!classInfo) continue;
+                        
+                        // Only process the start hour to avoid duplicates
+                        if (classInfo.startHour !== hourNum) continue;
 
-                        var instructorId = window.getClassInstructor ? window.getClassInstructor(studentId, weekNum, dayNum, hourNum) : null;
+                        var instructorId = null;
+                        var key = studentId + '_' + weekNum + '_' + dayNum + '_' + classInfo.startHour;
+                        if (store.curriculum.classInstructors) {
+                            instructorId = store.curriculum.classInstructors[key];
+                        }
+
                         if (!instructorId) continue;
 
-                        var key = disciplineId + '_' + instructorId;
+                        var groupKey = disciplineId + '_' + instructorId;
 
-                        if (!newGroups[key]) {
+                        if (!newGroups[groupKey]) {
                             var discipline = window.getDiscipline ? window.getDiscipline(disciplineId) : null;
                             var instructor = window.getCharacterById ? window.getCharacterById(instructorId) : null;
                             var disciplineName = discipline ? discipline.name : 'Unknown';
@@ -1020,8 +1195,8 @@
                                 }
                             }
 
-                            newGroups[key] = {
-                                id: key,
+                            newGroups[groupKey] = {
+                                id: groupKey,
                                 disciplineId: disciplineId,
                                 instructorId: instructorId,
                                 displayName: disciplineName + ' (' + shortInstructor + ')',
@@ -1032,7 +1207,7 @@
                             count++;
                         }
 
-                        var group = newGroups[key];
+                        var group = newGroups[groupKey];
 
                         if (group.students.indexOf(studentId) === -1) {
                             group.students.push(studentId);
@@ -1040,16 +1215,20 @@
                         }
 
                         var slotExists = group.slots.some(function(s) {
-                            return s.week === weekNum && s.day === dayNum && s.hour === hourNum;
+                            return s.week === weekNum && s.day === dayNum && s.hour === classInfo.startHour;
                         });
 
                         if (!slotExists) {
-                            var label = window.getClassLabel ? window.getClassLabel(studentId, weekNum, dayNum, hourNum) : '';
+                            var label = null;
+                            var labelKey = studentId + '_' + weekNum + '_' + dayNum + '_' + classInfo.startHour;
+                            if (store.curriculum.classLabels) {
+                                label = store.curriculum.classLabels[labelKey] || '';
+                            }
                             group.slots.push({
                                 week: weekNum,
                                 day: dayNum,
-                                hour: hourNum,
-                                duration: duration || 1,
+                                hour: classInfo.startHour,
+                                duration: classInfo.duration || 1,
                                 label: label || ''
                             });
                         }
@@ -1084,28 +1263,50 @@
         if (!isNonEmptyString(disciplineId)) {
             return { success: false, message: 'Discipline ID is required.' };
         }
+
+        // Validate discipline exists
+        var discipline = getDiscipline(disciplineId);
+        if (!discipline) {
+            return { success: false, message: 'Discipline not found.' };
+        }
+
         var durationNum = parsePositiveInteger(duration) || 1;
         if (durationNum < 1 || durationNum > 4) {
             return { success: false, message: 'Duration must be between 1 and 4 hours.' };
         }
 
+        // Check if duration fits in the day
+        if (hour + durationNum > 24) {
+            return { success: false, message: 'Class duration extends beyond the end of the day.' };
+        }
+
         var store = getDataStore();
-        if (!store) {
+        if (!store || !store.curriculum) {
             return { success: false, message: 'Data store is not available.' };
         }
-        if (!store.curriculum) store.curriculum = {};
-        if (!store.curriculum.schedules) store.curriculum.schedules = {};
-        if (!store.curriculum.schedules[studentId]) store.curriculum.schedules[studentId] = {};
-        if (!store.curriculum.schedules[studentId][weekNum]) store.curriculum.schedules[studentId][weekNum] = {};
+        if (!store.curriculum.schedules) {
+            return { success: false, message: 'Schedules are not available.' };
+        }
+        if (!store.curriculum.schedules[studentId]) {
+            store.curriculum.schedules[studentId] = {};
+        }
+        if (!store.curriculum.schedules[studentId][weekNum]) {
+            store.curriculum.schedules[studentId][weekNum] = {};
+        }
 
         var schedule = store.curriculum.schedules[studentId][weekNum];
-        if (schedule[day] && schedule[day][hour]) {
-            return { success: false, message: 'Student already has a class at this time.' };
+
+        // Check ALL hours before making any changes
+        for (var h = hour; h < hour + durationNum && h <= 23; h++) {
+            if (schedule[day] && schedule[day][h]) {
+                return { success: false, message: 'Student already has a class during this time.' };
+            }
         }
 
         // Check discipline hour limit
         var usedHours = {};
         for (var d in schedule) {
+            if (!isObject(schedule[d])) continue;
             for (var h in schedule[d]) {
                 var discId = schedule[d][h];
                 if (discId) {
@@ -1115,25 +1316,34 @@
             }
         }
         var usedCount = usedHours[disciplineId] || 0;
-        var discipline = getDiscipline(disciplineId);
-        var maxHours = discipline && discipline.weeklyHours ? Number(discipline.weeklyHours) : 1;
+        var maxHours = discipline.weeklyHours ? Number(discipline.weeklyHours) : 1;
         if (usedCount + durationNum > maxHours) {
             return { success: false, message: 'This would exceed the weekly hour limit (' + maxHours + 'h) for this discipline.' };
         }
 
+        // Validate instructor if provided
+        if (instructorId && !getCharacterById(instructorId)) {
+            return { success: false, message: 'Instructor not found.' };
+        }
+
+        // All checks passed - perform mutation
         if (!schedule[day]) schedule[day] = {};
         for (var h = hour; h < hour + durationNum && h <= 23; h++) {
             schedule[day][h] = disciplineId;
         }
 
-        if (instructorId && window.setClassInstructor) {
-            window.setClassInstructor(studentId, weekNum, day, hour, instructorId);
-        }
-        if (window.setClassDuration) {
-            window.setClassDuration(studentId, weekNum, day, hour, durationNum);
-        }
+        var key = studentId + '_' + weekNum + '_' + day + '_' + hour;
+        if (!store.curriculum.classInstructors) store.curriculum.classInstructors = {};
+        if (!store.curriculum.classDurations) store.curriculum.classDurations = {};
 
-        logActivity('Added class to schedule: ' + (discipline ? discipline.name : 'Unknown'));
+        if (instructorId) {
+            store.curriculum.classInstructors[key] = instructorId;
+        } else {
+            delete store.curriculum.classInstructors[key];
+        }
+        store.curriculum.classDurations[key] = durationNum;
+
+        logActivity('Added class to schedule: ' + discipline.name);
         return { success: true };
     }
 
@@ -1165,26 +1375,36 @@
             return { success: false, message: 'No class at this time.' };
         }
 
-        var duration = window.getClassDuration ? window.getClassDuration(studentId, weekNum, day, hour) || 1 : 1;
-        var disciplineId = schedule[day][hour];
+        // Find the class start
+        var classInfo = findClassStart(store, studentId, weekNum, day, hour);
+        if (!classInfo) {
+            return { success: false, message: 'Could not determine class structure.' };
+        }
 
-        for (var h = hour; h < hour + duration && h <= 23; h++) {
+        var startHour = classInfo.startHour;
+        var duration = classInfo.duration;
+        var disciplineId = classInfo.disciplineId;
+
+        // Remove all hours of the class
+        for (var h = startHour; h < startHour + duration && h <= 23; h++) {
             if (schedule[day] && schedule[day][h] === disciplineId) {
                 delete schedule[day][h];
             }
         }
 
-        if (window.setClassInstructor) {
-            window.setClassInstructor(studentId, weekNum, day, hour, null);
+        // Clean up metadata
+        var key = studentId + '_' + weekNum + '_' + day + '_' + startHour;
+        if (store.curriculum.classInstructors) {
+            delete store.curriculum.classInstructors[key];
         }
-        if (window.setClassLabel) {
-            window.setClassLabel(studentId, weekNum, day, hour, null);
+        if (store.curriculum.classLabels) {
+            delete store.curriculum.classLabels[key];
         }
-        if (window.setClassGroupLabel) {
-            window.setClassGroupLabel(studentId, weekNum, day, hour, null);
+        if (store.curriculum.classGroupLabels) {
+            delete store.curriculum.classGroupLabels[key];
         }
-        if (window.setClassDuration) {
-            window.setClassDuration(studentId, weekNum, day, hour, null);
+        if (store.curriculum.classDurations) {
+            delete store.curriculum.classDurations[key];
         }
 
         // Clean up empty day entries
@@ -1227,34 +1447,31 @@
                 delete destSchedule[day];
             }
             // Clear metadata for target week
+            var targetKeyPrefix = studentId + '_' + targetWeekNum + '_';
             if (store.curriculum.classInstructors) {
                 for (var key in store.curriculum.classInstructors) {
-                    var parts = key.split('_');
-                    if (parts[0] === studentId && parseInt(parts[1], 10) === targetWeekNum) {
+                    if (key.indexOf(targetKeyPrefix) === 0) {
                         delete store.curriculum.classInstructors[key];
                     }
                 }
             }
             if (store.curriculum.classLabels) {
                 for (var key in store.curriculum.classLabels) {
-                    var parts = key.split('_');
-                    if (parts[0] === studentId && parseInt(parts[1], 10) === targetWeekNum) {
+                    if (key.indexOf(targetKeyPrefix) === 0) {
                         delete store.curriculum.classLabels[key];
                     }
                 }
             }
             if (store.curriculum.classGroupLabels) {
                 for (var key in store.curriculum.classGroupLabels) {
-                    var parts = key.split('_');
-                    if (parts[0] === studentId && parseInt(parts[1], 10) === targetWeekNum) {
+                    if (key.indexOf(targetKeyPrefix) === 0) {
                         delete store.curriculum.classGroupLabels[key];
                     }
                 }
             }
             if (store.curriculum.classDurations) {
                 for (var key in store.curriculum.classDurations) {
-                    var parts = key.split('_');
-                    if (parts[0] === studentId && parseInt(parts[1], 10) === targetWeekNum) {
+                    if (key.indexOf(targetKeyPrefix) === 0) {
                         delete store.curriculum.classDurations[key];
                     }
                 }
@@ -1267,31 +1484,41 @@
         }
         var destScheduleRef = store.curriculum.schedules[studentId][targetWeekNum];
 
+        // Copy schedule entries, identifying class starts
         for (var day in sourceSchedule) {
+            if (!isObject(sourceSchedule[day])) continue;
             if (!destScheduleRef[day]) destScheduleRef[day] = {};
+
             for (var hour in sourceSchedule[day]) {
                 var hourNum = parseInt(hour, 10);
-                var duration = window.getClassDuration ? window.getClassDuration(studentId, sourceWeekNum, parseInt(day, 10), hourNum) : null;
+                var sourceKey = studentId + '_' + sourceWeekNum + '_' + day + '_' + hourNum;
+                var duration = store.curriculum.classDurations && store.curriculum.classDurations[sourceKey] 
+                    ? store.curriculum.classDurations[sourceKey] 
+                    : null;
                 if (!duration) continue;
 
                 if (!destScheduleRef[day][hour] || overwrite) {
-                    destScheduleRef[day][hour] = sourceSchedule[day][hour];
+                    // Copy all hours of the class
+                    var disciplineId = sourceSchedule[day][hour];
+                    for (var h = hourNum; h < hourNum + duration && h <= 23; h++) {
+                        destScheduleRef[day][h] = disciplineId;
+                    }
                     copiedCount++;
 
-                    var instructorId = window.getClassInstructor ? window.getClassInstructor(studentId, sourceWeekNum, parseInt(day, 10), hourNum) : null;
-                    if (instructorId && window.setClassInstructor) {
-                        window.setClassInstructor(studentId, targetWeekNum, parseInt(day, 10), hourNum, instructorId);
+                    var targetKey = studentId + '_' + targetWeekNum + '_' + day + '_' + hourNum;
+
+                    if (store.curriculum.classInstructors && store.curriculum.classInstructors[sourceKey]) {
+                        store.curriculum.classInstructors[targetKey] = store.curriculum.classInstructors[sourceKey];
                     }
-                    var label = window.getClassLabel ? window.getClassLabel(studentId, sourceWeekNum, parseInt(day, 10), hourNum) : null;
-                    if (label && window.setClassLabel) {
-                        window.setClassLabel(studentId, targetWeekNum, parseInt(day, 10), hourNum, label);
+                    if (store.curriculum.classLabels && store.curriculum.classLabels[sourceKey]) {
+                        store.curriculum.classLabels[targetKey] = store.curriculum.classLabels[sourceKey];
                     }
-                    var groupLabel = window.getClassGroupLabel ? window.getClassGroupLabel(studentId, sourceWeekNum, parseInt(day, 10), hourNum) : null;
-                    if (groupLabel && window.setClassGroupLabel) {
-                        window.setClassGroupLabel(studentId, targetWeekNum, parseInt(day, 10), hourNum, groupLabel);
+                    if (store.curriculum.classGroupLabels && store.curriculum.classGroupLabels[sourceKey]) {
+                        store.curriculum.classGroupLabels[targetKey] = store.curriculum.classGroupLabels[sourceKey];
                     }
-                    if (duration && window.setClassDuration) {
-                        window.setClassDuration(studentId, targetWeekNum, parseInt(day, 10), hourNum, duration);
+                    if (duration) {
+                        if (!store.curriculum.classDurations) store.curriculum.classDurations = {};
+                        store.curriculum.classDurations[targetKey] = duration;
                     }
                 }
             }
@@ -1335,34 +1562,31 @@
         }
 
         // Clear metadata for this week
+        var keyPrefix = studentId + '_' + weekNum + '_';
         if (store.curriculum.classInstructors) {
             for (var key in store.curriculum.classInstructors) {
-                var parts = key.split('_');
-                if (parts[0] === studentId && parseInt(parts[1], 10) === weekNum) {
+                if (key.indexOf(keyPrefix) === 0) {
                     delete store.curriculum.classInstructors[key];
                 }
             }
         }
         if (store.curriculum.classLabels) {
             for (var key in store.curriculum.classLabels) {
-                var parts = key.split('_');
-                if (parts[0] === studentId && parseInt(parts[1], 10) === weekNum) {
+                if (key.indexOf(keyPrefix) === 0) {
                     delete store.curriculum.classLabels[key];
                 }
             }
         }
         if (store.curriculum.classGroupLabels) {
             for (var key in store.curriculum.classGroupLabels) {
-                var parts = key.split('_');
-                if (parts[0] === studentId && parseInt(parts[1], 10) === weekNum) {
+                if (key.indexOf(keyPrefix) === 0) {
                     delete store.curriculum.classGroupLabels[key];
                 }
             }
         }
         if (store.curriculum.classDurations) {
             for (var key in store.curriculum.classDurations) {
-                var parts = key.split('_');
-                if (parts[0] === studentId && parseInt(parts[1], 10) === weekNum) {
+                if (key.indexOf(keyPrefix) === 0) {
                     delete store.curriculum.classDurations[key];
                 }
             }
@@ -1435,10 +1659,9 @@
         }
 
         var store = getDataStore();
-        if (!store || !store.curriculum) {
+        if (!store || !store.curriculum || !store.curriculum.rankings) {
             return { success: false, message: 'Data store is not available.' };
         }
-        if (!store.curriculum.rankings) store.curriculum.rankings = {};
 
         var validatedRankings = [];
         rankings.forEach(function(r) {
@@ -1450,7 +1673,6 @@
             }
         });
 
-        // Ensure contiguous ranks
         validatedRankings.sort(function(a, b) {
             return a.rank - b.rank;
         });
@@ -1477,10 +1699,9 @@
         }
 
         var store = getDataStore();
-        if (!store || !store.curriculum) {
+        if (!store || !store.curriculum || !store.curriculum.rankings) {
             return { success: false, message: 'Data store is not available.' };
         }
-        if (!store.curriculum.rankings) store.curriculum.rankings = {};
 
         var rankings = store.curriculum.rankings[weekNum] || [];
         var existing = rankings.find(function(r) {
@@ -1501,7 +1722,6 @@
         var oldRank = existing.rank;
         existing.rank = rankNum;
 
-        // Shift ranks
         rankings.forEach(function(r) {
             if (String(r.studentId) === String(studentId)) return;
             if (oldRank < rankNum && r.rank > oldRank && r.rank <= rankNum) {
@@ -1511,7 +1731,6 @@
             }
         });
 
-        // Normalise
         rankings.sort(function(a, b) {
             return a.rank - b.rank;
         });
@@ -1531,7 +1750,7 @@
         }
 
         var store = getDataStore();
-        if (!store || !store.curriculum) {
+        if (!store || !store.curriculum || !store.curriculum.rankings) {
             return { success: false, message: 'Data store is not available.' };
         }
 
@@ -1540,11 +1759,10 @@
             return { success: false, message: 'No students found.' };
         }
 
-        // Calculate grade summaries
         var rankings = [];
         students.forEach(function(student) {
-            var summary = calculateGradeSummary(student.id, weekNum);
-            if (summary.hasGrades) {
+            var summary = window.calculateGradeSummary ? window.calculateGradeSummary(student.id, weekNum) : null;
+            if (summary && summary.hasGrades) {
                 rankings.push({
                     studentId: student.id,
                     average: summary.average
@@ -1556,7 +1774,6 @@
             return { success: false, message: 'No students with grades found.' };
         }
 
-        // Sort by average (descending)
         rankings.sort(function(a, b) {
             if (b.average !== a.average) {
                 return b.average - a.average;
@@ -1568,7 +1785,6 @@
             return nameA.localeCompare(nameB);
         });
 
-        // Assign ranks
         var newRankings = [];
         rankings.forEach(function(r, index) {
             newRankings.push({
@@ -1577,17 +1793,6 @@
             });
         });
 
-        // Add ungraded students at the bottom
-        students.forEach(function(student) {
-            if (!newRankings.some(function(r) { return String(r.studentId) === String(student.id); })) {
-                newRankings.push({
-                    studentId: student.id,
-                    rank: newRankings.length + 1
-                });
-            }
-        });
-
-        if (!store.curriculum.rankings) store.curriculum.rankings = {};
         store.curriculum.rankings[weekNum] = newRankings;
 
         var gradedCount = rankings.length;
@@ -1598,7 +1803,7 @@
     function calculateGradeSummary(studentId, week) {
         var store = getDataStore();
         if (!store || !store.curriculum) {
-            return { average: 0, totalWeighted: 0, totalWeight: 0, count: 0, total: 0, mandatoryCount: 0, optionalCount: 0, hasGrades: false };
+            return null;
         }
 
         var grades = store.curriculum.grades && store.curriculum.grades[studentId] && store.curriculum.grades[studentId][week]
@@ -1774,14 +1979,12 @@
             disciplineId: data.disciplineId || null
         };
 
-        // Auto-assign students from group if groupLabel and disciplineId are provided
         var autoAssignedCount = 0;
         if (data.groupLabel && data.disciplineId) {
             var disciplineId = data.disciplineId;
             var groupLabel = data.groupLabel;
             var students = window.getStudents ? window.getStudents() : [];
             if (Array.isArray(students)) {
-                // Find students in this group
                 var groupStudents = [];
                 if (window.getDisciplineGroups) {
                     var groups = window.getDisciplineGroups(disciplineId);
@@ -1804,18 +2007,18 @@
                         for (var h = hour; h < hour + duration && h <= 23; h++) {
                             if (!schedule[day]) schedule[day] = {};
                             schedule[day][h] = disciplineId;
-                            if (window.setClassInstructor) {
-                                window.setClassInstructor(studentId, weekNum, day, h, instructorId);
-                            }
-                            if (data.label && window.setClassLabel) {
-                                window.setClassLabel(studentId, weekNum, day, h, data.label);
-                            }
-                            if (groupLabel && window.setClassGroupLabel) {
-                                window.setClassGroupLabel(studentId, weekNum, day, h, groupLabel);
-                            }
-                            if (h === hour && window.setClassDuration) {
-                                window.setClassDuration(studentId, weekNum, day, h, duration);
-                            }
+                        }
+                        if (window.setClassInstructor) {
+                            window.setClassInstructor(studentId, weekNum, day, hour, instructorId);
+                        }
+                        if (data.label && window.setClassLabel) {
+                            window.setClassLabel(studentId, weekNum, day, hour, data.label);
+                        }
+                        if (groupLabel && window.setClassGroupLabel) {
+                            window.setClassGroupLabel(studentId, weekNum, day, hour, groupLabel);
+                        }
+                        if (window.setClassDuration) {
+                            window.setClassDuration(studentId, weekNum, day, hour, duration);
                         }
                         autoAssignedCount++;
                     }
@@ -1852,7 +2055,6 @@
             return { success: false, message: 'No block at this time.' };
         }
 
-        // Check if there are student assignments from this block
         var blockData = store.curriculum.instructorBlocks[blockKey][day][hour];
         if (blockData && blockData.groupLabel && blockData.disciplineId) {
             var students = window.getStudents ? window.getStudents() : [];
@@ -1864,18 +2066,18 @@
                             var classInstructorId = window.getClassInstructor ? window.getClassInstructor(student.id, weekNum, day, h) : null;
                             if (classInstructorId && String(classInstructorId) === String(instructorId)) {
                                 delete schedule[day][h];
-                                if (window.setClassInstructor) {
-                                    window.setClassInstructor(student.id, weekNum, day, h, null);
-                                }
-                                if (window.setClassLabel) {
-                                    window.setClassLabel(student.id, weekNum, day, h, null);
-                                }
-                                if (window.setClassGroupLabel) {
-                                    window.setClassGroupLabel(student.id, weekNum, day, h, null);
-                                }
-                                if (window.setClassDuration) {
-                                    window.setClassDuration(student.id, weekNum, day, h, null);
-                                }
+                            }
+                            if (window.setClassInstructor) {
+                                window.setClassInstructor(student.id, weekNum, day, h, null);
+                            }
+                            if (window.setClassLabel) {
+                                window.setClassLabel(student.id, weekNum, day, h, null);
+                            }
+                            if (window.setClassGroupLabel) {
+                                window.setClassGroupLabel(student.id, weekNum, day, h, null);
+                            }
+                            if (window.setClassDuration) {
+                                window.setClassDuration(student.id, weekNum, day, h, null);
                             }
                         }
                     }
@@ -1913,9 +2115,11 @@
     window.updateDiscipline = updateDiscipline;
     window.deleteDiscipline = deleteDiscipline;
 
-    // Groups
+    // Groups - Read
     window.getAllAutoGroups = getAllAutoGroups;
     window.getGroupByKey = getGroupByKey;
+
+    // Groups - Mutations
     window.addStudentToGroup = addStudentToGroup;
     window.removeStudentFromGroup = removeStudentFromGroup;
     window.addSlotToGroup = addSlotToGroup;
