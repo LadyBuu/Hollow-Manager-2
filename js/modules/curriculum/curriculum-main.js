@@ -89,6 +89,9 @@
                     <button class="tab-btn" data-tab="grades">Grades</button>
                     <button class="tab-btn" data-tab="ranking">Ranking</button>
                     <button class="tab-btn" data-tab="classes">Classes</button>
+                    <button class="tab-btn" data-tab="locations">Locations</button>
+                    <button class="tab-btn" data-tab="location-schedule">Location Schedule</button>
+                    <button class="tab-btn" data-tab="calendar">Calendar</button>
                 </div>
                 <div class="tab-content" id="curriculum-tab-content">
                     <div id="tab-disciplines" class="tab-panel">
@@ -114,6 +117,15 @@
                     </div>
                     <div id="tab-classes" class="tab-panel">
                         <div id="classes-content"></div>
+                    </div>
+                    <div id="tab-locations" class="tab-panel">
+                        <div id="locations-content"></div>
+                    </div>
+                    <div id="tab-location-schedule" class="tab-panel">
+                        <div id="location-schedule-content"></div>
+                    </div>
+                    <div id="tab-calendar" class="tab-panel">
+                        <div id="calendar-content"></div>
                     </div>
                 </div>
             </div>
@@ -269,6 +281,18 @@
             case 'classes':
                 content = getContentElement('classes-content');
                 renderer = window.renderClassesView;
+                break;
+            case 'locations':
+                content = getContentElement('locations-content');
+                renderer = window.renderLocationsView;
+                break;
+            case 'location-schedule':
+                content = getContentElement('location-schedule-content');
+                renderer = window.renderLocationSchedule;
+                break;
+            case 'calendar':
+                content = getContentElement('calendar-content');
+                renderer = window.renderCalendar;
                 break;
             default:
                 return;
