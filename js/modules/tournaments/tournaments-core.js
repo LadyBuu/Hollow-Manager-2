@@ -218,6 +218,41 @@
         return id;
     }
 
+    /**
+     * Rebuild eliminated weeks from eliminations data.
+     * This ensures derived state remains consistent with source data.
+     */
+    function rebuildEliminatedWeeks(char) {
+        if (!char || typeof char !== 'object') {
+            return;
+        }
+
+        if (!Array.isArray(char.eliminations)) {
+            char.eliminatedWeeks = [];
+            return;
+        }
+
+        var weeks = [];
+        var seen = {};
+
+        for (var i = 0; i < char.eliminations.length; i++) {
+            var elim = char.eliminations[i];
+            if (!elim || typeof elim !== 'object') continue;
+
+            var week = parsePositiveInteger(elim.week);
+            if (week === null) continue;
+
+            var key = String(week);
+            if (!seen[key]) {
+                seen[key] = true;
+                weeks.push(week);
+            }
+        }
+
+        weeks.sort(function(a, b) { return a - b; });
+        char.eliminatedWeeks = weeks;
+    }
+
     // ============================================================
     // CORE API
     // ============================================================
@@ -685,8 +720,6 @@
             proposedTournament.eliminations.push(tournamentElimination);
 
             // Character elimination is a separate domain entity.
-            // We build the proposed character state but do NOT validate it here.
-            // Character validation is owned by the character subsystem.
             var charElimination = {
                 tournamentId: normaliseId(tournamentId),
                 week: weekNum,
@@ -706,14 +739,8 @@
             tournament.eliminations = proposedTournament.eliminations;
             char.eliminations = proposedCharEliminations;
 
-            // Rebuild derived state (failure is tolerated)
-            if (typeof window.rebuildEliminatedWeeks === 'function') {
-                try {
-                    window.rebuildEliminatedWeeks(char);
-                } catch (_) {
-                    // Continue - derived state may be stale but can be rebuilt later
-                }
-            }
+            // Rebuild derived state
+            rebuildEliminatedWeeks(char);
 
             if (typeof window.logActivity === 'function') {
                 window.logActivity('Eliminated character from tournament: ' + tournament.name);
@@ -756,8 +783,6 @@
                     return e && normaliseId(e.participantId) !== id;
                 });
 
-            // Character elimination is a separate domain entity.
-            // We build the proposed character state but do NOT validate it here.
             var proposedCharEliminations = char.eliminations.filter(function(e) {
                 return !(e && !e.standalone && normaliseId(e.tournamentId) === tournamentIdNormalised);
             });
@@ -770,13 +795,7 @@
             tournament.eliminations = proposedTournament.eliminations;
             char.eliminations = proposedCharEliminations;
 
-            if (typeof window.rebuildEliminatedWeeks === 'function') {
-                try {
-                    window.rebuildEliminatedWeeks(char);
-                } catch (_) {
-                    // Continue
-                }
-            }
+            rebuildEliminatedWeeks(char);
 
             if (typeof window.logActivity === 'function') {
                 window.logActivity('Restored character from tournament: ' + tournament.name);
