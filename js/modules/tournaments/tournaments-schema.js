@@ -34,6 +34,12 @@
  *   - Elimination participant exists in tournament with matching type
  *   - Winner exists in tournament with matching type
  *   - Winner is NOT eliminated
+ * 
+ * SCHEMA VERSIONING:
+ *   - SCHEMA_VERSION is the current version
+ *   - New tournaments get _schemaVersion set on creation
+ *   - Existing tournaments without _schemaVersion are assumed version 1
+ *   - Future migrations can use _schemaVersion to upgrade data
  */
 
 (function() {
@@ -46,6 +52,7 @@
     // CONSTANTS
     // ============================================================
 
+    var SCHEMA_VERSION = 1;
     var VALID_MODES = ['teams', 'individuals'];
     var VALID_STATUSES = ['draft', 'active', 'completed'];
     var VALID_PARTICIPANT_TYPES = ['character', 'team'];
@@ -166,6 +173,7 @@
 
     var TournamentSchema = {
         // Constants
+        SCHEMA_VERSION: SCHEMA_VERSION,
         VALID_MODES: VALID_MODES,
         VALID_STATUSES: VALID_STATUSES,
         VALID_PARTICIPANT_TYPES: VALID_PARTICIPANT_TYPES,
@@ -230,6 +238,15 @@
 
             if (!tournament || typeof tournament !== 'object') {
                 return { valid: false, errors: ['Tournament must be an object.'] };
+            }
+
+            // ---- SCHEMA VERSION CHECK ----
+            // If _schemaVersion exists and is greater than current, reject
+            if (tournament._schemaVersion !== undefined && tournament._schemaVersion !== null) {
+                var version = parsePositiveInteger(tournament._schemaVersion);
+                if (version !== null && version > SCHEMA_VERSION) {
+                    errors.push('Tournament schema version ' + version + ' is newer than supported version ' + SCHEMA_VERSION);
+                }
             }
 
             // ---- TOP-LEVEL FIELDS ----
@@ -526,7 +543,7 @@
             if (strict) {
                 var strictKnownKeys = [
                     'id', 'name', 'mode', 'startWeek', 'endWeek', 'totalRounds',
-                    'status', 'participants', 'rounds', 'eliminations', 'winner', 'createdAt'
+                    'status', 'participants', 'rounds', 'eliminations', 'winner', 'createdAt', '_schemaVersion'
                 ];
                 Object.keys(tournament).forEach(function(key) {
                     if (strictKnownKeys.indexOf(key) === -1) {
@@ -890,6 +907,9 @@
          * Check if a tournament is complete.
          * status: 'completed' is AUTHORITATIVE - trust the declared status.
          * This is a query, not a validator.
+         * 
+         * INVARIANT: A round with status 'completed' should have all its
+         * matches completed. This is enforced by the Core mutation layer.
          */
         isTournamentComplete: function(tournament) {
             if (!tournament || typeof tournament !== 'object') return false;
