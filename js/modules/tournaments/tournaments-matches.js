@@ -4,17 +4,35 @@
  * 
  * MATCH PHILOSOPHY:
  *   - All match mutations go through this API
- *   - Invalid inputs are REJECTED (operation returns null/false)
+ *   - Invalid inputs are REJECTED (not silently filtered)
  *   - Mutations are ATOMIC: if any part is invalid, nothing changes
+ *   - ALL validation is performed against a proposed state BEFORE any mutation
  *   - Caller is responsible for persistence (saveData)
- *   - Match history is preserved (no silent deletion of historical data)
+ *   - loser is DERIVED for 2-person standard matches, not independently mutable
+ *   - Public mutation methods return DEFENSIVE COPIES of the mutated object
+ *   - ALL mutations use the same build-validate-apply pipeline
  * 
  * PERSISTENCE CONTRACT:
  *   - This module does NOT call saveData()
  *   - Callers own persistence
  * 
+ * MUTATION PATTERN (applied to ALL mutations):
+ *   1. Retrieve existing data
+ *   2. Validate existing structure (via Schema)
+ *   3. Validate operation-specific inputs (REJECT invalid, don't filter)
+ *   4. Build complete proposed state via buildProposedMatch()
+ *   5. Validate proposed state
+ *   6. Apply COMPLETE proposed state (all fields)
+ *   7. Return a DEFENSIVE COPY of the result
+ * 
+ * SEMANTIC INVARIANTS ENFORCED:
+ *   - Group exams: winner and loser must be null
+ *   - Standard matches: if advancing is present, winner must be in advancing
+ *   - Two-person standard: loser is derived from winner
+ * 
  * DEPENDENCIES:
- *   - TournamentsCore for tournament lookup and validation helpers
+ *   - TournamentsCore for tournament lookup
+ *   - TournamentsSchema for shared validation
  */
 
 (function() {
@@ -28,188 +46,458 @@
         return;
     }
 
+    if (!window.TournamentsSchema) {
+        console.error('TournamentsMatches: TournamentsSchema required.');
+        return;
+    }
+
     var Core = window.TournamentsCore;
+    var Schema = window.TournamentsSchema;
 
     // ============================================================
-    // VALIDATION HELPERS
+    // VALIDATION HELPERS (from Schema)
     // ============================================================
 
-    function isObject(value) {
-        return value !== null && typeof value === 'object' && !Array.isArray(value);
-    }
+    var isObject = Schema.isObject;
+    var isValidMatchType = Schema.isValidMatchType;
+    var isValidMatchStatus = Schema.isValidMatchStatus;
+    var isValidGroupExamResult = Schema.isValidGroupExamResult;
+    var normaliseId = Schema.normaliseId;
+    var isValidParticipantType = Schema.isValidParticipantType;
 
-    function parsePositiveInteger(value) {
-        var num = Number(value);
-        return Number.isInteger(num) && num >= 1 ? num : null;
-    }
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
 
-    function normaliseId(id) {
-        return id !== undefined && id !== null ? String(id) : null;
-    }
+    var ALLOWED_UPDATE_KEYS = [
+        'participants',
+        'type',
+        'status',
+        'winner',
+        'loser',
+        'advancing',
+        'results'
+    ];
 
-    function isValidMatchType(type) {
-        return type === 'standard' || type === 'group_exam';
-    }
-
-    function isValidMatchStatus(status) {
-        return status === 'pending' || status === 'in_progress' || status === 'completed';
-    }
-
-    function isValidParticipantType(type) {
-        return type === 'character' || type === 'team';
-    }
-
-    function getDataStore() {
-        if (!window.data || typeof window.data !== 'object') return null;
-        if (!Array.isArray(window.data.tournaments)) return null;
-        return window.data;
-    }
+    var MATCH_KEYS = [
+        'participants',
+        'type',
+        'status',
+        'winner',
+        'loser',
+        'advancing',
+        'results'
+    ];
 
     // ============================================================
     // INTERNAL HELPERS
     // ============================================================
 
-    /**
-     * Get a tournament with validation.
-     */
     function getValidTournament(id) {
         var tournament = Core.getTournament(id);
-        if (!tournament) {
-            console.warn('TournamentsMatches: Tournament not found.');
-            return null;
-        }
-        if (!Array.isArray(tournament.rounds)) {
-            console.warn('TournamentsMatches: Malformed rounds data.');
-            return null;
-        }
+        if (!tournament) return null;
+        if (!Array.isArray(tournament.rounds)) return null;
         return tournament;
     }
 
-    /**
-     * Get a round with validation.
-     */
-    function getValidRound(tournament, roundIndex) {
-        if (roundIndex < 0 || roundIndex >= tournament.rounds.length) {
-            console.warn('TournamentsMatches: Invalid round index.');
-            return null;
-        }
+    function getRound(tournament, roundIndex) {
+        if (roundIndex < 0 || roundIndex >= tournament.rounds.length) return null;
         var round = tournament.rounds[roundIndex];
-        if (!round || typeof round !== 'object') {
-            console.warn('TournamentsMatches: Malformed round data.');
-            return null;
-        }
-        if (!Array.isArray(round.matches)) {
-            console.warn('TournamentsMatches: Malformed matches data.');
-            return null;
-        }
+        if (!round || typeof round !== 'object') return null;
+        if (!Array.isArray(round.matches)) return null;
         return round;
     }
 
-    /**
-     * Get a match with validation.
-     */
-    function getValidMatch(round, matchIndex) {
-        if (matchIndex < 0 || matchIndex >= round.matches.length) {
-            console.warn('TournamentsMatches: Invalid match index.');
-            return null;
-        }
+    function getMutableRound(tournament, roundIndex) {
+        var round = getRound(tournament, roundIndex);
+        if (!round) return null;
+        if (round.status === 'completed') return null;
+        return round;
+    }
+
+    function getMatch(round, matchIndex) {
+        if (matchIndex < 0 || matchIndex >= round.matches.length) return null;
         var match = round.matches[matchIndex];
-        if (!match || typeof match !== 'object') {
-            console.warn('TournamentsMatches: Malformed match data.');
-            return null;
-        }
+        if (!match || typeof match !== 'object') return null;
         return match;
     }
 
-    /**
-     * Validate that a participant exists and is in the tournament.
-     */
     function validateParticipant(tournament, participantId, expectedType) {
         var id = normaliseId(participantId);
-        if (id === null) {
-            console.warn('TournamentsMatches: Invalid participant ID.');
-            return false;
-        }
+        if (id === null) return false;
 
-        // Check if participant is in the tournament
         var isInTournament = Array.isArray(tournament.participants) &&
             tournament.participants.some(function(p) {
                 return p && normaliseId(p.id) === id;
             });
 
-        if (!isInTournament) {
-            console.warn('TournamentsMatches: Participant not in tournament.');
-            return false;
-        }
+        if (!isInTournament) return false;
 
-        // Check if participant is eliminated
         var isEliminated = Array.isArray(tournament.eliminations) &&
             tournament.eliminations.some(function(e) {
                 return e && normaliseId(e.participantId) === id;
             });
 
-        if (isEliminated) {
-            console.warn('TournamentsMatches: Participant is eliminated.');
-            return false;
-        }
+        if (isEliminated) return false;
 
-        // If expected type provided, verify it
         if (expectedType) {
             var participantRecord = tournament.participants.find(function(p) {
                 return p && normaliseId(p.id) === id;
             });
-            if (participantRecord && participantRecord.type !== expectedType) {
-                console.warn('TournamentsMatches: Participant type mismatch. Expected: ' + expectedType + ', got: ' + participantRecord.type);
-                return false;
-            }
+            if (participantRecord && participantRecord.type !== expectedType) return false;
         }
 
         return true;
     }
 
-    /**
-     * Validate that all participants in a match are valid.
-     */
     function validateMatchParticipants(tournament, participantIds, expectedType) {
-        if (!Array.isArray(participantIds) || participantIds.length < 2) {
-            console.warn('TournamentsMatches: Match must have at least 2 participants.');
-            return false;
-        }
+        if (!Array.isArray(participantIds) || participantIds.length < 2) return false;
 
         var seen = {};
         for (var i = 0; i < participantIds.length; i++) {
             var id = normaliseId(participantIds[i]);
-            if (id === null) {
-                console.warn('TournamentsMatches: Invalid participant ID at index ' + i);
-                return false;
-            }
-
-            // Check for duplicates
-            if (seen[id]) {
-                console.warn('TournamentsMatches: Duplicate participant: ' + id);
-                return false;
-            }
+            if (id === null) return false;
+            if (seen[id]) return false;
             seen[id] = true;
-
-            if (!validateParticipant(tournament, id, expectedType)) {
-                return false;
-            }
+            if (!validateParticipant(tournament, id, expectedType)) return false;
         }
 
         return true;
     }
 
-    /**
-     * Get the participant type for an ID from tournament data.
-     */
-    function getParticipantTypeFromTournament(tournament, id) {
+    function deriveLoser(participants, winner) {
+        if (!Array.isArray(participants) || participants.length !== 2) return null;
+        if (!winner) return null;
+        var winnerId = normaliseId(winner);
+        if (winnerId === null) return null;
+        var loser = participants.find(function(id) {
+            return normaliseId(id) !== winnerId;
+        });
+        return loser || null;
+    }
+
+    function normaliseReject(id) {
         var normalised = normaliseId(id);
         if (normalised === null) return null;
-        var record = Array.isArray(tournament.participants) ?
-            tournament.participants.find(function(p) {
-                return p && normaliseId(p.id) === normalised;
-            }) : null;
-        return record ? record.type : null;
+        return normalised;
+    }
+
+    function normaliseIdArrayStrict(ids) {
+        if (!Array.isArray(ids)) return null;
+        var result = [];
+        for (var i = 0; i < ids.length; i++) {
+            var normalised = normaliseReject(ids[i]);
+            if (normalised === null) return null;
+            result.push(normalised);
+        }
+        return result;
+    }
+
+    function normaliseResultsStrict(results) {
+        if (!isObject(results)) return null;
+        var normalised = {};
+        var keys = Object.keys(results);
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            var id = normaliseReject(key);
+            if (id === null) return null;
+            var value = results[key];
+            if (!isValidGroupExamResult(value)) return null;
+            normalised[id] = value;
+        }
+        return normalised;
+    }
+
+    function hasOnlyAllowedKeys(object, allowedKeys) {
+        var keys = Object.keys(object);
+        for (var i = 0; i < keys.length; i++) {
+            if (allowedKeys.indexOf(keys[i]) === -1) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Build a complete proposed match state.
+     * This is the SINGLE canonical match construction function.
+     * Used by ALL mutation operations.
+     */
+    function buildProposedMatch(base, updates, tournament, round) {
+        // ---- Reject unknown update keys ----
+        if (!hasOnlyAllowedKeys(updates, ALLOWED_UPDATE_KEYS)) {
+            return null;
+        }
+
+        // ---- Normalise updates (reject invalid) ----
+        var normalisedUpdates = {};
+
+        if (updates.participants !== undefined) {
+            var participants = normaliseIdArrayStrict(updates.participants);
+            if (participants === null) return null;
+            normalisedUpdates.participants = participants;
+        }
+
+        if (updates.type !== undefined) {
+            if (!isValidMatchType(updates.type)) return null;
+            normalisedUpdates.type = updates.type;
+        }
+
+        if (updates.status !== undefined) {
+            if (!isValidMatchStatus(updates.status)) return null;
+            normalisedUpdates.status = updates.status;
+        }
+
+        if (updates.winner !== undefined) {
+            if (updates.winner === null) {
+                normalisedUpdates.winner = null;
+            } else {
+                var winner = normaliseReject(updates.winner);
+                if (winner === null) return null;
+                normalisedUpdates.winner = winner;
+            }
+        }
+
+        if (updates.loser !== undefined) {
+            if (updates.loser !== null) {
+                return null;
+            }
+            normalisedUpdates.loser = null;
+        }
+
+        if (updates.advancing !== undefined) {
+            if (updates.advancing === null || updates.advancing === undefined) {
+                normalisedUpdates.advancing = [];
+            } else {
+                var advancing = normaliseIdArrayStrict(updates.advancing);
+                if (advancing === null) return null;
+                normalisedUpdates.advancing = advancing;
+            }
+        }
+
+        if (updates.results !== undefined) {
+            if (updates.results === null || updates.results === undefined) {
+                normalisedUpdates.results = {};
+            } else {
+                var results = normaliseResultsStrict(updates.results);
+                if (results === null) return null;
+                normalisedUpdates.results = results;
+            }
+        }
+
+        // ---- Build proposed state ----
+        var proposed = {
+            participants: normalisedUpdates.participants !== undefined
+                ? normalisedUpdates.participants
+                : (base.participants ? base.participants.slice() : []),
+            type: normalisedUpdates.type !== undefined
+                ? normalisedUpdates.type
+                : (base.type || round.matchType || 'standard'),
+            status: normalisedUpdates.status !== undefined
+                ? normalisedUpdates.status
+                : (base.status || 'pending'),
+            winner: normalisedUpdates.winner !== undefined
+                ? normalisedUpdates.winner
+                : base.winner,
+            loser: null,
+            advancing: normalisedUpdates.advancing !== undefined
+                ? normalisedUpdates.advancing
+                : (base.advancing ? base.advancing.slice() : []),
+            results: normalisedUpdates.results !== undefined
+                ? normalisedUpdates.results
+                : (base.results ? Object.assign({}, base.results) : {})
+        };
+
+        var matchSize = round.matchSize || 2;
+        if (proposed.participants.length !== matchSize) return null;
+
+        // ---- Type canonicalisation ----
+        if (proposed.type === 'group_exam') {
+            proposed.winner = null;
+            proposed.loser = null;
+        }
+
+        // ---- Derive loser for standard 2-person matches ----
+        if (proposed.type === 'standard' && proposed.participants.length === 2) {
+            if (proposed.winner) {
+                proposed.loser = deriveLoser(proposed.participants, proposed.winner);
+            } else {
+                proposed.loser = null;
+            }
+        }
+
+        return proposed;
+    }
+
+    /**
+     * Validate a complete proposed match state.
+     * Returns { valid: boolean, errors: array }
+     */
+    function validateProposedMatch(proposed, tournament, round, matchIndex) {
+        var errors = [];
+
+        // ---- TYPE ----
+        if (!isValidMatchType(proposed.type)) {
+            errors.push('Invalid match type. Must be "standard" or "group_exam".');
+        }
+
+        if (round.matchType && round.matchType !== proposed.type) {
+            errors.push('Match type "' + proposed.type + '" does not match round type "' + round.matchType + '".');
+        }
+
+        // ---- STATUS ----
+        if (!isValidMatchStatus(proposed.status)) {
+            errors.push('Invalid match status. Must be "pending", "in_progress", or "completed".');
+        }
+
+        // ---- PARTICIPANTS ----
+        var matchSize = round.matchSize || 2;
+        if (proposed.participants.length !== matchSize) {
+            errors.push('Match size mismatch. Expected: ' + matchSize + ', got: ' + proposed.participants.length);
+        }
+
+        var expectedType = tournament.mode === 'teams' ? 'team' : 'character';
+        if (!validateMatchParticipants(tournament, proposed.participants, expectedType)) {
+            errors.push('Invalid match participants.');
+        }
+
+        var seen = {};
+        for (var i = 0; i < proposed.participants.length; i++) {
+            var id = proposed.participants[i];
+            if (seen[id]) {
+                errors.push('Duplicate participant in match: "' + id + '"');
+            }
+            seen[id] = true;
+        }
+
+        // ---- WINNER ----
+        if (proposed.type === 'group_exam' && proposed.winner !== null) {
+            errors.push('Group exam matches do not have a winner field.');
+        }
+
+        if (proposed.winner !== null) {
+            var winnerId = normaliseId(proposed.winner);
+            if (winnerId === null) {
+                errors.push('Invalid winner ID.');
+            } else if (proposed.participants.indexOf(winnerId) === -1) {
+                errors.push('Winner must be a participant in the match.');
+            } else if (!validateParticipant(tournament, winnerId, expectedType)) {
+                errors.push('Winner is not a valid tournament participant.');
+            }
+        }
+
+        // ---- LOSER ----
+        if (proposed.loser !== null) {
+            if (proposed.type === 'group_exam') {
+                errors.push('Group exam matches do not have a loser field.');
+            } else {
+                var loserId = normaliseId(proposed.loser);
+                if (loserId === null) {
+                    errors.push('Invalid loser ID.');
+                } else if (proposed.participants.indexOf(loserId) === -1) {
+                    errors.push('Loser must be a participant in the match.');
+                } else if (proposed.winner && loserId === normaliseId(proposed.winner)) {
+                    errors.push('Loser cannot be the same as winner.');
+                }
+            }
+        }
+
+        // ---- ADVANCING ----
+        if (Array.isArray(proposed.advancing)) {
+            var advancingSeen = {};
+            for (var a = 0; a < proposed.advancing.length; a++) {
+                var advId = normaliseId(proposed.advancing[a]);
+                if (advId === null) {
+                    errors.push('Invalid advancing participant ID.');
+                    continue;
+                }
+                if (advancingSeen[advId]) {
+                    errors.push('Duplicate advancing participant: "' + advId + '"');
+                }
+                advancingSeen[advId] = true;
+                if (proposed.participants.indexOf(advId) === -1) {
+                    errors.push('Advancing participant must be in the match.');
+                }
+                if (!validateParticipant(tournament, advId, expectedType)) {
+                    errors.push('Advancing participant is not a valid tournament participant.');
+                }
+            }
+
+            // Winner must be in advancing for standard matches
+            if (proposed.type === 'standard' && proposed.winner && proposed.advancing.length > 0) {
+                if (proposed.advancing.indexOf(proposed.winner) === -1) {
+                    errors.push('Standard match winner must be included in advancing participants.');
+                }
+            }
+        }
+
+        // ---- RESULTS ----
+        if (Object.keys(proposed.results).length > 0) {
+            if (proposed.type !== 'group_exam') {
+                errors.push('Results are only valid for group_exam matches.');
+            } else {
+                var resultKeys = Object.keys(proposed.results);
+                for (var r = 0; r < resultKeys.length; r++) {
+                    var key = resultKeys[r];
+                    var id = normaliseId(key);
+                    if (id === null) {
+                        errors.push('Invalid result participant ID: "' + key + '"');
+                        continue;
+                    }
+                    if (proposed.participants.indexOf(id) === -1) {
+                        errors.push('Result participant "' + key + '" is not in the match.');
+                    }
+                    var value = proposed.results[key];
+                    if (!isValidGroupExamResult(value)) {
+                        errors.push('Result for participant "' + key + '" must be "pass" or "fail".');
+                    }
+                }
+            }
+        }
+
+        // ---- COMPLETED MATCH VALIDATION ----
+        if (proposed.status === 'completed') {
+            if (proposed.type === 'standard' && !proposed.winner) {
+                errors.push('Completed standard match must have a winner.');
+            }
+            if (proposed.type === 'group_exam') {
+                for (var m = 0; m < proposed.participants.length; m++) {
+                    var pid = proposed.participants[m];
+                    if (!proposed.results[pid] || !isValidGroupExamResult(proposed.results[pid])) {
+                        errors.push('Completed group exam must have results for all participants.');
+                        break;
+                    }
+                }
+            }
+        }
+
+        return { valid: errors.length === 0, errors: errors };
+    }
+
+    function cloneMatch(match) {
+        if (!match) return null;
+        return JSON.parse(JSON.stringify(match));
+    }
+
+    function cloneMatchesArray(matches) {
+        if (!Array.isArray(matches)) return [];
+        return matches.map(cloneMatch);
+    }
+
+    /**
+     * Apply the complete proposed state to a match.
+     * Used by ALL mutation operations.
+     */
+    function applyProposedMatch(match, proposed) {
+        var changed = false;
+        for (var k = 0; k < MATCH_KEYS.length; k++) {
+            var key = MATCH_KEYS[k];
+            if (JSON.stringify(match[key]) !== JSON.stringify(proposed[key])) {
+                match[key] = proposed[key];
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     // ============================================================
@@ -217,127 +505,59 @@
     // ============================================================
 
     var TournamentsMatches = {
-        /**
-         * Add a match to a round.
-         * Atomic: validates all inputs before mutating.
-         * 
-         * @param {string} tournamentId - Tournament ID
-         * @param {number} roundIndex - Round index (0-based)
-         * @param {object} matchData - Match data
-         * @param {array} matchData.participants - Array of participant IDs
-         * @param {string} [matchData.type] - 'standard' or 'group_exam' (default: 'standard')
-         * @param {string} [matchData.status] - 'pending', 'in_progress', 'completed' (default: 'pending')
-         * @returns {object|null} The new match object, or null on failure
-         */
         addMatch: function(tournamentId, roundIndex, matchData) {
-            if (!isObject(matchData)) {
-                console.warn('TournamentsMatches.addMatch: matchData must be an object.');
-                return null;
-            }
+            if (!isObject(matchData)) return null;
 
             var tournament = getValidTournament(tournamentId);
             if (!tournament) return null;
 
-            var round = getValidRound(tournament, roundIndex);
+            var round = getMutableRound(tournament, roundIndex);
             if (!round) return null;
 
-            // Check if round is completed
-            if (round.status === 'completed') {
-                console.warn('TournamentsMatches.addMatch: Cannot add match to completed round.');
-                return null;
-            }
+            var structureValidation = Schema.validateTournament(tournament, { strict: true });
+            if (!structureValidation.valid) return null;
 
-            // Validate match type
-            var type = matchData.type || 'standard';
-            if (!isValidMatchType(type)) {
-                console.warn('TournamentsMatches.addMatch: Invalid match type. Must be "standard" or "group_exam".');
-                return null;
-            }
-
-            // Validate match size against round matchSize
-            var participants = Array.isArray(matchData.participants) ? matchData.participants : [];
-            var matchSize = round.matchSize || 2;
-            if (participants.length !== matchSize) {
-                console.warn('TournamentsMatches.addMatch: Match size mismatch. Expected: ' + matchSize + ', got: ' + participants.length);
-                return null;
-            }
-
-            // Determine expected participant type from tournament mode
-            var expectedType = tournament.mode === 'teams' ? 'team' : 'character';
-
-            // Validate participants
-            if (!validateMatchParticipants(tournament, participants, expectedType)) {
-                return null;
-            }
-
-            // Validate status
-            var status = matchData.status || 'pending';
-            if (!isValidMatchStatus(status)) {
-                console.warn('TournamentsMatches.addMatch: Invalid status. Must be "pending", "in_progress", or "completed".');
-                return null;
-            }
-
-            // Build match object
-            var match = {
-                participants: participants.map(normaliseId),
-                type: type,
-                status: status,
+            // ---- Build base match ----
+            var base = {
+                participants: [],
+                type: round.matchType || 'standard',
+                status: 'pending',
                 winner: null,
                 loser: null,
                 advancing: [],
                 results: {}
             };
 
-            // If match is standard and has 2 participants, we can set winner/loser later
-            // If match is group_exam, results will be set separately
+            var proposed = buildProposedMatch(base, matchData, tournament, round);
+            if (proposed === null) return null;
 
-            round.matches.push(match);
+            var validation = validateProposedMatch(proposed, tournament, round, -1);
+            if (!validation.valid) return null;
 
-            // If status is completed, check if round should be completed
-            if (status === 'completed') {
-                // We don't auto-complete the round - that's a separate operation
-            }
+            round.matches.push(proposed);
 
             if (typeof window.logActivity === 'function') {
                 window.logActivity('Added match to round ' + (round.roundNumber || roundIndex + 1) + ' of tournament: ' + tournament.name);
             }
 
-            return match;
+            return cloneMatch(proposed);
         },
 
-        /**
-         * Remove a match from a round.
-         * Atomic: validates before mutating.
-         * Preserves historical data - match is removed but not hidden.
-         * 
-         * @param {string} tournamentId - Tournament ID
-         * @param {number} roundIndex - Round index (0-based)
-         * @param {number} matchIndex - Match index (0-based)
-         * @returns {boolean} Whether the operation succeeded
-         */
         removeMatch: function(tournamentId, roundIndex, matchIndex) {
             var tournament = getValidTournament(tournamentId);
             if (!tournament) return false;
 
-            var round = getValidRound(tournament, roundIndex);
+            var round = getMutableRound(tournament, roundIndex);
             if (!round) return false;
 
-            // Check if round is completed
-            if (round.status === 'completed') {
-                console.warn('TournamentsMatches.removeMatch: Cannot remove match from completed round.');
-                return false;
-            }
+            var structureValidation = Schema.validateTournament(tournament, { strict: true });
+            if (!structureValidation.valid) return false;
 
-            var match = getValidMatch(round, matchIndex);
+            var match = getMatch(round, matchIndex);
             if (!match) return false;
 
-            // Check if match is completed
-            if (match.status === 'completed') {
-                console.warn('TournamentsMatches.removeMatch: Cannot remove completed match.');
-                return false;
-            }
+            if (match.status === 'completed') return false;
 
-            // Remove the match
             round.matches.splice(matchIndex, 1);
 
             if (typeof window.logActivity === 'function') {
@@ -347,501 +567,213 @@
             return true;
         },
 
-        /**
-         * Update a match.
-         * Atomic: validates all inputs before mutating.
-         * 
-         * @param {string} tournamentId - Tournament ID
-         * @param {number} roundIndex - Round index (0-based)
-         * @param {number} matchIndex - Match index (0-based)
-         * @param {object} updates - Updates to apply
-         * @param {array} [updates.participants] - New participant IDs
-         * @param {string} [updates.type] - 'standard' or 'group_exam'
-         * @param {string} [updates.status] - 'pending', 'in_progress', 'completed'
-         * @param {string} [updates.winner] - Winner participant ID
-         * @param {string} [updates.loser] - Loser participant ID (standard matches only)
-         * @param {array} [updates.advancing] - Advancing participant IDs
-         * @param {object} [updates.results] - Results for group_exam matches
-         * @returns {object|null} The updated match, or null on failure
-         */
         updateMatch: function(tournamentId, roundIndex, matchIndex, updates) {
-            if (!isObject(updates)) {
-                console.warn('TournamentsMatches.updateMatch: updates must be an object.');
-                return null;
-            }
+            if (!isObject(updates)) return null;
 
             var tournament = getValidTournament(tournamentId);
             if (!tournament) return null;
 
-            var round = getValidRound(tournament, roundIndex);
+            var round = getMutableRound(tournament, roundIndex);
             if (!round) return null;
 
-            // Check if round is completed
-            if (round.status === 'completed') {
-                console.warn('TournamentsMatches.updateMatch: Cannot update match in completed round.');
-                return null;
-            }
+            var structureValidation = Schema.validateTournament(tournament, { strict: true });
+            if (!structureValidation.valid) return null;
 
-            var match = getValidMatch(round, matchIndex);
+            var match = getMatch(round, matchIndex);
             if (!match) return null;
 
-            // Determine expected participant type from tournament mode
-            var expectedType = tournament.mode === 'teams' ? 'team' : 'character';
+            if (match.status === 'completed') return null;
 
-            // Build proposed state
-            var proposed = {
-                participants: updates.participants !== undefined ? updates.participants : match.participants.slice(),
-                type: updates.type !== undefined ? updates.type : match.type,
-                status: updates.status !== undefined ? updates.status : match.status,
-                winner: updates.winner !== undefined ? updates.winner : match.winner,
-                loser: updates.loser !== undefined ? updates.loser : match.loser,
-                advancing: updates.advancing !== undefined ? updates.advancing : (match.advancing ? match.advancing.slice() : []),
-                results: updates.results !== undefined ? updates.results : (match.results ? Object.assign({}, match.results) : {})
-            };
+            var proposed = buildProposedMatch(match, updates, tournament, round);
+            if (proposed === null) return null;
 
-            // Validate type
-            if (!isValidMatchType(proposed.type)) {
-                console.warn('TournamentsMatches.updateMatch: Invalid match type.');
-                return null;
-            }
+            var validation = validateProposedMatch(proposed, tournament, round, matchIndex);
+            if (!validation.valid) return null;
 
-            // Validate status
-            if (!isValidMatchStatus(proposed.status)) {
-                console.warn('TournamentsMatches.updateMatch: Invalid match status.');
-                return null;
-            }
-
-            // If participants are changing, validate them
-            if (updates.participants !== undefined) {
-                var matchSize = round.matchSize || 2;
-                if (proposed.participants.length !== matchSize) {
-                    console.warn('TournamentsMatches.updateMatch: Match size mismatch. Expected: ' + matchSize + ', got: ' + proposed.participants.length);
-                    return null;
-                }
-                if (!validateMatchParticipants(tournament, proposed.participants, expectedType)) {
-                    return null;
-                }
-            }
-
-            // Validate winner
-            if (proposed.winner !== null) {
-                var winnerId = normaliseId(proposed.winner);
-                if (winnerId === null) {
-                    console.warn('TournamentsMatches.updateMatch: Invalid winner ID.');
-                    return null;
-                }
-                // Winner must be in participants
-                if (proposed.participants.indexOf(winnerId) === -1) {
-                    console.warn('TournamentsMatches.updateMatch: Winner must be a participant in the match.');
-                    return null;
-                }
-                if (!validateParticipant(tournament, winnerId, expectedType)) {
-                    return null;
-                }
-                proposed.winner = winnerId;
-            }
-
-            // Validate loser (standard matches only)
-            if (proposed.loser !== null && proposed.type === 'standard') {
-                var loserId = normaliseId(proposed.loser);
-                if (loserId === null) {
-                    console.warn('TournamentsMatches.updateMatch: Invalid loser ID.');
-                    return null;
-                }
-                if (proposed.participants.indexOf(loserId) === -1) {
-                    console.warn('TournamentsMatches.updateMatch: Loser must be a participant in the match.');
-                    return null;
-                }
-                if (!validateParticipant(tournament, loserId, expectedType)) {
-                    return null;
-                }
-                // Loser cannot be winner
-                if (proposed.winner && loserId === proposed.winner) {
-                    console.warn('TournamentsMatches.updateMatch: Loser cannot be the same as winner.');
-                    return null;
-                }
-                proposed.loser = loserId;
-            }
-
-            // Validate advancing
-            if (Array.isArray(proposed.advancing)) {
-                var validAdvancing = [];
-                for (var i = 0; i < proposed.advancing.length; i++) {
-                    var advId = normaliseId(proposed.advancing[i]);
-                    if (advId === null) continue;
-                    if (proposed.participants.indexOf(advId) === -1) {
-                        console.warn('TournamentsMatches.updateMatch: Advancing participant must be in the match.');
-                        return null;
-                    }
-                    if (!validateParticipant(tournament, advId, expectedType)) {
-                        return null;
-                    }
-                    validAdvancing.push(advId);
-                }
-                proposed.advancing = validAdvancing;
-            }
-
-            // Validate results (group_exam only)
-            if (proposed.type === 'group_exam' && updates.results !== undefined) {
-                if (!isObject(proposed.results)) {
-                    console.warn('TournamentsMatches.updateMatch: Results must be an object.');
-                    return null;
-                }
-                var validResults = {};
-                Object.keys(proposed.results).forEach(function(key) {
-                    var id = normaliseId(key);
-                    if (id === null) return;
-                    var value = proposed.results[key];
-                    if (value !== 'pass' && value !== 'fail') {
-                        console.warn('TournamentsMatches.updateMatch: Result must be "pass" or "fail".');
-                        return;
-                    }
-                    if (proposed.participants.indexOf(id) === -1) {
-                        console.warn('TournamentsMatches.updateMatch: Result participant must be in the match.');
-                        return;
-                    }
-                    validResults[id] = value;
-                });
-                proposed.results = validResults;
-            }
-
-            // Apply updates
-            var changed = false;
-            var keys = ['participants', 'type', 'status', 'winner', 'loser', 'advancing', 'results'];
-            keys.forEach(function(key) {
-                if (updates[key] !== undefined) {
-                    var oldValue = match[key];
-                    var newValue = proposed[key];
-                    // Compare (handle arrays and objects)
-                    var changedValue;
-                    if (Array.isArray(oldValue) && Array.isArray(newValue)) {
-                        changedValue = oldValue.length !== newValue.length ||
-                            oldValue.some(function(v, idx) { return newValue[idx] !== v; });
-                    } else if (typeof oldValue === 'object' && typeof newValue === 'object' && oldValue !== null && newValue !== null) {
-                        changedValue = JSON.stringify(oldValue) !== JSON.stringify(newValue);
-                    } else {
-                        changedValue = oldValue !== newValue;
-                    }
-                    if (changedValue) {
-                        match[key] = newValue;
-                        changed = true;
-                    }
-                }
-            });
-
-            // If status changed to completed, ensure winner is set for standard matches
-            if (match.status === 'completed' && match.type === 'standard' && !match.winner) {
-                console.warn('TournamentsMatches.updateMatch: Completed standard match must have a winner.');
-                // Roll back status change
-                if (updates.status !== undefined) {
-                    match.status = updates.status !== undefined ? match.status : 'pending';
-                }
-                return null;
-            }
+            var changed = applyProposedMatch(match, proposed);
 
             if (changed && typeof window.logActivity === 'function') {
                 window.logActivity('Updated match in round ' + (round.roundNumber || roundIndex + 1) + ' of tournament: ' + tournament.name);
             }
 
-            return match;
+            return cloneMatch(match);
         },
 
-        /**
-         * Complete a match.
-         * Convenience function that sets status to 'completed' and validates winner.
-         * 
-         * @param {string} tournamentId - Tournament ID
-         * @param {number} roundIndex - Round index (0-based)
-         * @param {number} matchIndex - Match index (0-based)
-         * @param {string} winnerId - Winner participant ID
-         * @returns {object|null} The completed match, or null on failure
-         */
-        completeMatch: function(tournamentId, roundIndex, matchIndex, winnerId) {
-            if (!winnerId) {
-                console.warn('TournamentsMatches.completeMatch: Winner ID required.');
-                return null;
-            }
-
+        completeMatch: function(tournamentId, roundIndex, matchIndex, winnerId, results) {
             var tournament = getValidTournament(tournamentId);
             if (!tournament) return null;
 
-            var round = getValidRound(tournament, roundIndex);
+            var round = getMutableRound(tournament, roundIndex);
             if (!round) return null;
 
-            if (round.status === 'completed') {
-                console.warn('TournamentsMatches.completeMatch: Cannot complete match in completed round.');
-                return null;
-            }
+            var structureValidation = Schema.validateTournament(tournament, { strict: true });
+            if (!structureValidation.valid) return null;
 
-            var match = getValidMatch(round, matchIndex);
+            var match = getMatch(round, matchIndex);
             if (!match) return null;
 
-            if (match.status === 'completed') {
-                console.warn('TournamentsMatches.completeMatch: Match already completed.');
-                return null;
+            if (match.status === 'completed') return null;
+
+            var updates = { status: 'completed' };
+
+            if (match.type === 'standard') {
+                var winnerNormalised = normaliseReject(winnerId);
+                if (winnerNormalised === null) return null;
+                if (match.participants.indexOf(winnerNormalised) === -1) return null;
+                updates.winner = winnerNormalised;
             }
 
-            var winnerIdNormalised = normaliseId(winnerId);
-            if (winnerIdNormalised === null) {
-                console.warn('TournamentsMatches.completeMatch: Invalid winner ID.');
-                return null;
-            }
-
-            // Winner must be in participants
-            if (match.participants.indexOf(winnerIdNormalised) === -1) {
-                console.warn('TournamentsMatches.completeMatch: Winner must be a participant in the match.');
-                return null;
-            }
-
-            // Determine expected participant type
-            var expectedType = tournament.mode === 'teams' ? 'team' : 'character';
-            if (!validateParticipant(tournament, winnerIdNormalised, expectedType)) {
-                return null;
-            }
-
-            // Update match
-            match.status = 'completed';
-            match.winner = winnerIdNormalised;
-
-            // For standard matches, set loser
-            if (match.type === 'standard' && match.participants.length === 2) {
-                var loserId = match.participants.find(function(id) {
-                    return id !== winnerIdNormalised;
-                });
-                if (loserId) {
-                    match.loser = loserId;
-                }
-            }
-
-            // For group_exam, ensure all participants have results
             if (match.type === 'group_exam') {
-                // Results should have been set via updateMatch
-                // If not, set default 'fail' for all without results
-                match.participants.forEach(function(id) {
-                    if (!match.results || match.results[id] === undefined) {
-                        if (!match.results) match.results = {};
-                        match.results[id] = (id === winnerIdNormalised) ? 'pass' : 'fail';
-                    }
-                });
+                if (!results || !isObject(results) || Object.keys(results).length === 0) return null;
+                var normalisedResults = normaliseResultsStrict(results);
+                if (normalisedResults === null) return null;
+                for (var i = 0; i < match.participants.length; i++) {
+                    if (!normalisedResults[match.participants[i]]) return null;
+                }
+                updates.results = normalisedResults;
             }
+
+            var proposed = buildProposedMatch(match, updates, tournament, round);
+            if (proposed === null) return null;
+
+            var validation = validateProposedMatch(proposed, tournament, round, matchIndex);
+            if (!validation.valid) return null;
+
+            applyProposedMatch(match, proposed);
 
             if (typeof window.logActivity === 'function') {
                 window.logActivity('Completed match in round ' + (round.roundNumber || roundIndex + 1) + ' of tournament: ' + tournament.name);
             }
 
-            return match;
+            return cloneMatch(match);
         },
 
-        /**
-         * Set a group exam result for a participant.
-         * 
-         * @param {string} tournamentId - Tournament ID
-         * @param {number} roundIndex - Round index (0-based)
-         * @param {number} matchIndex - Match index (0-based)
-         * @param {string} participantId - Participant ID
-         * @param {string} result - 'pass' or 'fail'
-         * @returns {object|null} The updated match, or null on failure
-         */
         setGroupExamResult: function(tournamentId, roundIndex, matchIndex, participantId, result) {
-            if (!participantId || !result) {
-                console.warn('TournamentsMatches.setGroupExamResult: Participant ID and result required.');
-                return null;
-            }
+            var participantNormalised = normaliseReject(participantId);
+            if (participantNormalised === null) return null;
 
-            if (result !== 'pass' && result !== 'fail') {
-                console.warn('TournamentsMatches.setGroupExamResult: Result must be "pass" or "fail".');
-                return null;
-            }
+            if (!result) return null;
+            if (result !== 'pass' && result !== 'fail') return null;
 
             var tournament = getValidTournament(tournamentId);
             if (!tournament) return null;
 
-            var round = getValidRound(tournament, roundIndex);
+            var round = getMutableRound(tournament, roundIndex);
             if (!round) return null;
 
-            if (round.status === 'completed') {
-                console.warn('TournamentsMatches.setGroupExamResult: Cannot modify completed round.');
-                return null;
-            }
+            var structureValidation = Schema.validateTournament(tournament, { strict: true });
+            if (!structureValidation.valid) return null;
 
-            var match = getValidMatch(round, matchIndex);
+            var match = getMatch(round, matchIndex);
             if (!match) return null;
 
-            if (match.type !== 'group_exam') {
-                console.warn('TournamentsMatches.setGroupExamResult: Match is not a group exam.');
-                return null;
-            }
+            if (match.type !== 'group_exam') return null;
+            if (match.status === 'completed') return null;
 
-            if (match.status === 'completed') {
-                console.warn('TournamentsMatches.setGroupExamResult: Cannot modify completed match.');
-                return null;
-            }
+            if (match.participants.indexOf(participantNormalised) === -1) return null;
 
-            var participantIdNormalised = normaliseId(participantId);
-            if (participantIdNormalised === null) {
-                console.warn('TournamentsMatches.setGroupExamResult: Invalid participant ID.');
-                return null;
-            }
+            var expectedType = tournament.mode === 'teams' ? 'team' : 'character';
+            if (!validateParticipant(tournament, participantNormalised, expectedType)) return null;
 
-            if (match.participants.indexOf(participantIdNormalised) === -1) {
-                console.warn('TournamentsMatches.setGroupExamResult: Participant not in match.');
-                return null;
-            }
+            var updates = {
+                results: Object.assign({}, match.results || {})
+            };
+            updates.results[participantNormalised] = result;
 
-            if (!validateParticipant(tournament, participantIdNormalised)) {
-                return null;
-            }
+            var proposed = buildProposedMatch(match, updates, tournament, round);
+            if (proposed === null) return null;
 
-            if (!match.results) match.results = {};
-            match.results[participantIdNormalised] = result;
+            var validation = validateProposedMatch(proposed, tournament, round, matchIndex);
+            if (!validation.valid) return null;
+
+            applyProposedMatch(match, proposed);
 
             if (typeof window.logActivity === 'function') {
                 window.logActivity('Set group exam result for participant in tournament: ' + tournament.name);
             }
 
-            return match;
+            return cloneMatch(match);
         },
 
-        /**
-         * Set match winner (standard matches only).
-         * 
-         * @param {string} tournamentId - Tournament ID
-         * @param {number} roundIndex - Round index (0-based)
-         * @param {number} matchIndex - Match index (0-based)
-         * @param {string} winnerId - Winner participant ID
-         * @returns {object|null} The updated match, or null on failure
-         */
         setMatchWinner: function(tournamentId, roundIndex, matchIndex, winnerId) {
+            var winnerNormalised = normaliseReject(winnerId);
+            if (winnerNormalised === null) return null;
+
             var tournament = getValidTournament(tournamentId);
             if (!tournament) return null;
 
-            var round = getValidRound(tournament, roundIndex);
+            var round = getMutableRound(tournament, roundIndex);
             if (!round) return null;
 
-            if (round.status === 'completed') {
-                console.warn('TournamentsMatches.setMatchWinner: Cannot modify completed round.');
-                return null;
-            }
+            var structureValidation = Schema.validateTournament(tournament, { strict: true });
+            if (!structureValidation.valid) return null;
 
-            var match = getValidMatch(round, matchIndex);
+            var match = getMatch(round, matchIndex);
             if (!match) return null;
 
-            if (match.type === 'group_exam') {
-                console.warn('TournamentsMatches.setMatchWinner: Use setGroupExamResult for group exams.');
-                return null;
-            }
+            if (match.type === 'group_exam') return null;
+            if (match.status === 'completed') return null;
 
-            if (match.status === 'completed') {
-                console.warn('TournamentsMatches.setMatchWinner: Cannot modify completed match.');
-                return null;
-            }
-
-            var winnerIdNormalised = normaliseId(winnerId);
-            if (winnerIdNormalised === null) {
-                console.warn('TournamentsMatches.setMatchWinner: Invalid winner ID.');
-                return null;
-            }
-
-            if (match.participants.indexOf(winnerIdNormalised) === -1) {
-                console.warn('TournamentsMatches.setMatchWinner: Winner must be a participant in the match.');
-                return null;
-            }
+            if (match.participants.indexOf(winnerNormalised) === -1) return null;
 
             var expectedType = tournament.mode === 'teams' ? 'team' : 'character';
-            if (!validateParticipant(tournament, winnerIdNormalised, expectedType)) {
-                return null;
-            }
+            if (!validateParticipant(tournament, winnerNormalised, expectedType)) return null;
 
-            match.winner = winnerIdNormalised;
+            var updates = { winner: winnerNormalised };
+            var proposed = buildProposedMatch(match, updates, tournament, round);
+            if (proposed === null) return null;
 
-            // Set loser if standard and has 2 participants
-            if (match.type === 'standard' && match.participants.length === 2) {
-                var loserId = match.participants.find(function(id) {
-                    return id !== winnerIdNormalised;
-                });
-                if (loserId) {
-                    match.loser = loserId;
-                }
-            }
+            var validation = validateProposedMatch(proposed, tournament, round, matchIndex);
+            if (!validation.valid) return null;
+
+            applyProposedMatch(match, proposed);
 
             if (typeof window.logActivity === 'function') {
                 window.logActivity('Set match winner in tournament: ' + tournament.name);
             }
 
-            return match;
+            return cloneMatch(match);
         },
 
-        /**
-         * Get all matches in a round.
-         * 
-         * @param {string} tournamentId - Tournament ID
-         * @param {number} roundIndex - Round index (0-based)
-         * @returns {array} Array of matches (live references)
-         */
+        // ============================================================
+        // READ OPERATIONS - Defensive copies
+        // ============================================================
+
         getRoundMatches: function(tournamentId, roundIndex) {
             var tournament = getValidTournament(tournamentId);
             if (!tournament) return [];
 
-            var round = getValidRound(tournament, roundIndex);
+            var round = getRound(tournament, roundIndex);
             if (!round) return [];
 
-            return round.matches.slice();
+            return cloneMatchesArray(round.matches);
         },
 
-        /**
-         * Get a match by ID (if matches have IDs).
-         * 
-         * @param {string} tournamentId - Tournament ID
-         * @param {number} roundIndex - Round index (0-based)
-         * @param {number} matchIndex - Match index (0-based)
-         * @returns {object|null} The match, or null if not found
-         */
         getMatch: function(tournamentId, roundIndex, matchIndex) {
             var tournament = getValidTournament(tournamentId);
             if (!tournament) return null;
 
-            var round = getValidRound(tournament, roundIndex);
+            var round = getRound(tournament, roundIndex);
             if (!round) return null;
 
-            return getValidMatch(round, matchIndex);
+            var match = getMatch(round, matchIndex);
+            if (!match) return null;
+
+            return cloneMatch(match);
         },
 
-        /**
-         * Check if a match is complete.
-         * 
-         * @param {string} tournamentId - Tournament ID
-         * @param {number} roundIndex - Round index (0-based)
-         * @param {number} matchIndex - Match index (0-based)
-         * @returns {boolean} Whether the match is complete
-         */
         isMatchComplete: function(tournamentId, roundIndex, matchIndex) {
             var match = this.getMatch(tournamentId, roundIndex, matchIndex);
             if (!match) return false;
             return match.status === 'completed';
         },
 
-        /**
-         * Get match winner.
-         * 
-         * @param {string} tournamentId - Tournament ID
-         * @param {number} roundIndex - Round index (0-based)
-         * @param {number} matchIndex - Match index (0-based)
-         * @returns {string|null} Winner ID, or null if none
-         */
         getMatchWinner: function(tournamentId, roundIndex, matchIndex) {
             var match = this.getMatch(tournamentId, roundIndex, matchIndex);
             if (!match) return null;
             return match.winner || null;
         },
 
-        /**
-         * Get match losers (standard matches only).
-         * 
-         * @param {string} tournamentId - Tournament ID
-         * @param {number} roundIndex - Round index (0-based)
-         * @param {number} matchIndex - Match index (0-based)
-         * @returns {array} Array of loser IDs
-         */
         getMatchLosers: function(tournamentId, roundIndex, matchIndex) {
             var match = this.getMatch(tournamentId, roundIndex, matchIndex);
             if (!match) return [];
@@ -849,14 +781,6 @@
             return [];
         },
 
-        /**
-         * Get participants that are advancing from a match.
-         * 
-         * @param {string} tournamentId - Tournament ID
-         * @param {number} roundIndex - Round index (0-based)
-         * @param {number} matchIndex - Match index (0-based)
-         * @returns {array} Array of advancing participant IDs
-         */
         getMatchAdvancing: function(tournamentId, roundIndex, matchIndex) {
             var match = this.getMatch(tournamentId, roundIndex, matchIndex);
             if (!match) return [];
@@ -865,12 +789,10 @@
                 return match.advancing.slice();
             }
 
-            // If no advancing set, winner advances (standard matches)
             if (match.type === 'standard' && match.winner) {
                 return [match.winner];
             }
 
-            // For group_exam, passing participants advance
             if (match.type === 'group_exam' && match.results) {
                 var advancing = [];
                 match.participants.forEach(function(id) {
@@ -891,7 +813,6 @@
 
     window.TournamentsMatches = TournamentsMatches;
 
-    // Also add to TournamentsCore for backward compatibility
     if (window.TournamentsCore) {
         window.TournamentsCore.addMatch = TournamentsMatches.addMatch;
         window.TournamentsCore.removeMatch = TournamentsMatches.removeMatch;
