@@ -111,8 +111,11 @@
      * This is OPTIMISTIC persistence: memory mutation happens immediately,
      * persistence happens asynchronously. If persistence fails, the user
      * is notified but the UI remains consistent with the in-memory state.
+     * 
+     * onMutationSuccess runs after the in-memory mutation succeeds,
+     * NOT after persistence completes.
      */
-    function persistOperation(operationName, operation, onSuccess, onError) {
+    function persistOperation(operationName, operation, onMutationSuccess, onError) {
         try {
             var result = operation();
 
@@ -137,8 +140,8 @@
                     }
                 });
 
-            if (typeof onSuccess === 'function') {
-                onSuccess();
+            if (typeof onMutationSuccess === 'function') {
+                onMutationSuccess();
             }
 
             return true;
@@ -273,16 +276,6 @@
 
         if (content._detailEventsAttached) return;
         content._detailEventsAttached = true;
-
-        // Populate participant select when rendered
-        var select = content.querySelector('.participant-select');
-        if (select) {
-            var tournamentId = modal.dataset.tournamentId;
-            var tournament = Core.getTournament(tournamentId);
-            if (tournament) {
-                populateParticipantSelect(select, tournament);
-            }
-        }
 
         // Event delegation - resolve tournament from modal dataset each time
         content.addEventListener('click', function(e) {
@@ -622,6 +615,7 @@
 
         attachDetailEvents(modal);
 
+        // Populate participant select - this is the single source of truth
         var select = content.querySelector('.participant-select');
         if (select) {
             populateParticipantSelect(select, tournament);
@@ -819,6 +813,19 @@
         attachMatchFormEvents(modal, tournament, roundIndex, matchIndex);
     }
 
+    function getUniqueParticipantIds(ids) {
+        var seen = {};
+        var result = [];
+        for (var i = 0; i < ids.length; i++) {
+            var id = ids[i];
+            if (id && !seen[id]) {
+                seen[id] = true;
+                result.push(id);
+            }
+        }
+        return result;
+    }
+
     function attachMatchFormEvents(modal, tournament, roundIndex, matchIndex) {
         var form = modal.querySelector('#match-form');
         if (!form) return;
@@ -858,6 +865,13 @@
                     participantIds.push(input.value);
                 }
             });
+
+            // Check for duplicate participants
+            var uniqueIds = getUniqueParticipantIds(participantIds);
+            if (uniqueIds.length !== participantIds.length) {
+                showNotification('A participant cannot appear more than once in a match.', 'warning');
+                return;
+            }
 
             var round = tournament.rounds && tournament.rounds[roundIndex];
             var requiredSize = round && round.matchSize ? round.matchSize : 2;
