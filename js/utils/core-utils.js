@@ -1021,4 +1021,413 @@
         return { success: true, changed: true };
     }
 
-    function getClassLabel(studentId, week, day, hour)c
+    function getClassLabel(studentId, week, day, hour) {
+        if (!window.data || !window.data.curriculum || !window.data.curriculum.classLabels) return null;
+        var key = getScheduleKey(studentId, week, day, hour);
+        var value = window.data.curriculum.classLabels[key];
+        return value !== undefined ? value : null;
+    }
+
+    function setClassLabel(studentId, week, day, hour, label) {
+        var validation = validateScheduleSlot(studentId, week, day, hour);
+        if (!validation.success) {
+            return { success: false, changed: false, message: validation.message };
+        }
+        
+        var data = ensureCurriculumStructure();
+        var key = getScheduleKey(
+            validation.studentId,
+            validation.week,
+            validation.day,
+            validation.hour
+        );
+        
+        var existing = data.curriculum.classLabels[key];
+        var newValue = (label !== undefined && label !== null && String(label).trim() !== '')
+            ? String(label)
+            : null;
+        
+        if (existing === newValue) {
+            return { success: true, changed: false };
+        }
+        
+        if (newValue !== null) {
+            data.curriculum.classLabels[key] = newValue;
+        } else {
+            delete data.curriculum.classLabels[key];
+        }
+        
+        window.data = data;
+        return { success: true, changed: true };
+    }
+
+    function getClassGroupLabel(studentId, week, day, hour) {
+        if (!window.data || !window.data.curriculum || !window.data.curriculum.classGroupLabels) return null;
+        var key = getScheduleKey(studentId, week, day, hour);
+        var value = window.data.curriculum.classGroupLabels[key];
+        return value !== undefined ? value : null;
+    }
+
+    function setClassGroupLabel(studentId, week, day, hour, groupLabel) {
+        var validation = validateScheduleSlot(studentId, week, day, hour);
+        if (!validation.success) {
+            return { success: false, changed: false, message: validation.message };
+        }
+        
+        var data = ensureCurriculumStructure();
+        var key = getScheduleKey(
+            validation.studentId,
+            validation.week,
+            validation.day,
+            validation.hour
+        );
+        
+        var existing = data.curriculum.classGroupLabels[key];
+        var newValue = (groupLabel !== undefined && groupLabel !== null && String(groupLabel).trim() !== '')
+            ? String(groupLabel)
+            : null;
+        
+        if (existing === newValue) {
+            return { success: true, changed: false };
+        }
+        
+        if (newValue !== null) {
+            data.curriculum.classGroupLabels[key] = newValue;
+        } else {
+            delete data.curriculum.classGroupLabels[key];
+        }
+        
+        window.data = data;
+        return { success: true, changed: true };
+    }
+
+    function getClassDuration(studentId, week, day, hour) {
+        if (!window.data || !window.data.curriculum || !window.data.curriculum.classDurations) return null;
+        var key = getScheduleKey(studentId, week, day, hour);
+        var value = window.data.curriculum.classDurations[key];
+        return value !== undefined ? value : null;
+    }
+
+    function setClassDuration(studentId, week, day, hour, duration) {
+        var validation = validateScheduleSlot(studentId, week, day, hour);
+        if (!validation.success) {
+            return { success: false, changed: false, message: validation.message };
+        }
+        
+        var numDuration;
+        var hasValue = duration !== undefined && duration !== null && String(duration).trim() !== '';
+        
+        if (hasValue) {
+            numDuration = Number(duration);
+            
+            if (!Number.isFinite(numDuration) || numDuration <= 0) {
+                return {
+                    success: false,
+                    changed: false,
+                    message: 'Duration must be a positive number.'
+                };
+            }
+        }
+        
+        var data = ensureCurriculumStructure();
+        var key = getScheduleKey(
+            validation.studentId,
+            validation.week,
+            validation.day,
+            validation.hour
+        );
+        
+        var existing = data.curriculum.classDurations[key];
+        var newValue = hasValue && numDuration > 0 ? numDuration : null;
+        
+        if (existing === newValue) {
+            return { success: true, changed: false };
+        }
+        
+        if (newValue !== null) {
+            data.curriculum.classDurations[key] = newValue;
+        } else {
+            delete data.curriculum.classDurations[key];
+        }
+        
+        window.data = data;
+        return { success: true, changed: true };
+    }
+
+    // ============================================================
+    // CURRICULUM STRUCTURE INITIALISATION
+    // ============================================================
+
+    function ensureCurriculumStructure() {
+        var data = window.data || {};
+        
+        if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
+            data.curriculum = {};
+        }
+        
+        if (!data.curriculum.classInstructors ||
+            typeof data.curriculum.classInstructors !== 'object' ||
+            Array.isArray(data.curriculum.classInstructors)) {
+            data.curriculum.classInstructors = Object.create(null);
+        }
+        
+        if (!data.curriculum.classLabels ||
+            typeof data.curriculum.classLabels !== 'object' ||
+            Array.isArray(data.curriculum.classLabels)) {
+            data.curriculum.classLabels = Object.create(null);
+        }
+        
+        if (!data.curriculum.classGroupLabels ||
+            typeof data.curriculum.classGroupLabels !== 'object' ||
+            Array.isArray(data.curriculum.classGroupLabels)) {
+            data.curriculum.classGroupLabels = Object.create(null);
+        }
+        
+        if (!data.curriculum.classDurations ||
+            typeof data.curriculum.classDurations !== 'object' ||
+            Array.isArray(data.curriculum.classDurations)) {
+            data.curriculum.classDurations = Object.create(null);
+        }
+        
+        if (!data.curriculum.schedules ||
+            typeof data.curriculum.schedules !== 'object' ||
+            Array.isArray(data.curriculum.schedules)) {
+            data.curriculum.schedules = {};
+        }
+        
+        window.data = data;
+        return data;
+    }
+
+    // ============================================================
+    // RANDOM GENERATORS
+    // ============================================================
+
+    function generateRandomStats() {
+        return {
+            str: Math.floor(Math.random() * 13) + 6,
+            dex: Math.floor(Math.random() * 13) + 6,
+            con: Math.floor(Math.random() * 13) + 6,
+            int: Math.floor(Math.random() * 13) + 6,
+            wis: Math.floor(Math.random() * 13) + 6,
+            cha: Math.floor(Math.random() * 13) + 6
+        };
+    }
+
+    function generateRandomMagic() {
+        var magic = {};
+        var types = ['earth','water','fire','air','metal','wood',
+                     'blood','bone','mind','morphic','life','death',
+                     'space','time','dimension','void','reality','transference'];
+        types.forEach(function(key) {
+            var roll = Math.random();
+            if (roll < 0.4) {
+                magic[key] = 0;
+            } else if (roll < 0.7) {
+                magic[key] = Math.floor(Math.random() * 4) + 1;
+            } else if (roll < 0.9) {
+                magic[key] = Math.floor(Math.random() * 4) + 5;
+            } else {
+                magic[key] = Math.floor(Math.random() * 3) + 9;
+            }
+        });
+        return magic;
+    }
+
+    // ============================================================
+    // FORMATTING HELPERS
+    // ============================================================
+
+    function formatDate(dateString) {
+        if (!dateString) return 'N/A';
+        
+        var date = new Date(dateString);
+        if (isNaN(date.getTime())) {
+            return 'N/A';
+        }
+        
+        return date.toLocaleDateString();
+    }
+
+    function truncateString(str, length) {
+        if (str === undefined || str === null) return '';
+        
+        str = String(str);
+        
+        if (!Number.isFinite(length) || length < 0) {
+            return str;
+        }
+        
+        if (str.length <= length) return str;
+        
+        return str.substring(0, length) + '...';
+    }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
+    window.CoreUtils = {
+        // Type helpers
+        isObject: isObject,
+        isSafeInteger: isSafeInteger,
+        isPositiveInteger: isPositiveInteger,
+
+        // Period parsing
+        parseOptionalPeriod: parseOptionalPeriod,
+        parsePositivePeriod: parsePositivePeriod,
+        parseStrictPositivePeriod: parseStrictPositivePeriod,
+        hasPeriodValue: hasPeriodValue,
+        getPeriodInfo: getPeriodInfo,
+
+        // ID generation
+        generateId: generateId,
+
+        // Team predicates
+        isTeamOperational: isTeamOperational,
+        isTeamActiveCompat: isTeamActiveCompat,
+        isTeamStatusActive: isTeamStatusActive,
+        isValidTeamStatus: isValidTeamStatus,
+        filterOperationalTeams: filterOperationalTeams,
+
+        // Activity logging
+        _logActivity: _logActivity,
+        recordActivity: recordActivity,
+
+        // Character queries
+        calculateAge: calculateAge,
+        getCharacterAge: getCharacterAge,
+        getDisplayName: getDisplayName,
+        getFullName: getFullName,
+        getNicknameOrFirstName: getNicknameOrFirstName,
+        getCurrentStatus: getCurrentStatus,
+        getCharacterTeamCount: getCharacterTeamCount,
+        getCharacterNameById: getCharacterNameById,
+        getCharacterById: getCharacterById,
+
+        // Team queries
+        getTeamById: getTeamById,
+        getTeamName: getTeamName,
+        getTeams: getTeams,
+        getActiveTeamsForWeek: getActiveTeamsForWeek,
+        getAllOperationalTeams: getAllOperationalTeams,
+        getAllActiveTeams: getAllActiveTeams,
+        getActiveTeamMembers: getActiveTeamMembers,
+        getActiveTeamMemberCount: getActiveTeamMemberCount,
+
+        // Student/Instructor queries
+        getStudents: getStudents,
+        getInstructors: getInstructors,
+        getNonCivilianCharacters: getNonCivilianCharacters,
+
+        // Discipline queries
+        getDiscipline: getDiscipline,
+        getAvailableDisciplines: getAvailableDisciplines,
+
+        // Class functions
+        getClasses: getClasses,
+        getClass: getClass,
+        getClassByName: getClassByName,
+        getCharactersByClass: getCharactersByClass,
+        getTeamsByClass: getTeamsByClass,
+        getAvailableStudentsForClass: getAvailableStudentsForClass,
+        getClassOptions: getClassOptions,
+        getClassDisplayName: getClassDisplayName,
+        getCharacterClasses: getCharacterClasses,
+        getCharacterClassNames: getCharacterClassNames,
+
+        // Class mutations
+        createClass: createClass,
+        deleteClass: deleteClass,
+        addCharacterToClass: addCharacterToClass,
+        removeCharacterFromClass: removeCharacterFromClass,
+
+        // Class schedule
+        getClassInstructor: getClassInstructor,
+        setClassInstructor: setClassInstructor,
+        getClassLabel: getClassLabel,
+        setClassLabel: setClassLabel,
+        getClassGroupLabel: getClassGroupLabel,
+        setClassGroupLabel: setClassGroupLabel,
+        getClassDuration: getClassDuration,
+        setClassDuration: setClassDuration,
+
+        // Random generators
+        generateRandomStats: generateRandomStats,
+        generateRandomMagic: generateRandomMagic,
+
+        // Formatting
+        formatDate: formatDate,
+        truncateString: truncateString,
+
+        // Internal helpers
+        ensureCurriculumStructure: ensureCurriculumStructure
+    };
+
+    // Legacy global exports for backward compatibility
+    window.isObject = isObject;
+    window.isSafeInteger = isSafeInteger;
+    window.isPositiveInteger = isPositiveInteger;
+    window.generateId = generateId;
+    window.parseOptionalPeriod = parseOptionalPeriod;
+    window.parsePositivePeriod = parsePositivePeriod;
+    window.parseStrictPositivePeriod = parseStrictPositivePeriod;
+    window.hasPeriodValue = hasPeriodValue;
+    window.getPeriodInfo = getPeriodInfo;
+    window._logActivity = _logActivity;
+    window.recordActivity = recordActivity;
+    window.calculateAge = calculateAge;
+    window.getCharacterAge = getCharacterAge;
+    window.getDisplayName = getDisplayName;
+    window.getFullName = getFullName;
+    window.getNicknameOrFirstName = getNicknameOrFirstName;
+    window.getCurrentStatus = getCurrentStatus;
+    window.getCharacterTeamCount = getCharacterTeamCount;
+    window.getCharacterNameById = getCharacterNameById;
+    window.getCharacterById = getCharacterById;
+    window.getTeamById = getTeamById;
+    window.getTeamName = getTeamName;
+    window.getTeams = getTeams;
+    window.getActiveTeamsForWeek = getActiveTeamsForWeek;
+    window.getAllOperationalTeams = getAllOperationalTeams;
+    window.getAllActiveTeams = getAllActiveTeams;
+    window.getActiveTeamMembers = getActiveTeamMembers;
+    window.getActiveTeamMemberCount = getActiveTeamMemberCount;
+    window.getStudents = getStudents;
+    window.getInstructors = getInstructors;
+    window.getNonCivilianCharacters = getNonCivilianCharacters;
+    window.getDiscipline = getDiscipline;
+    window.getAvailableDisciplines = getAvailableDisciplines;
+    window.getClasses = getClasses;
+    window.getClass = getClass;
+    window.getClassByName = getClassByName;
+    window.getCharactersByClass = getCharactersByClass;
+    window.getTeamsByClass = getTeamsByClass;
+    window.getAvailableStudentsForClass = getAvailableStudentsForClass;
+    window.getClassOptions = getClassOptions;
+    window.getClassDisplayName = getClassDisplayName;
+    window.getCharacterClasses = getCharacterClasses;
+    window.getCharacterClassNames = getCharacterClassNames;
+    window.createClass = createClass;
+    window.deleteClass = deleteClass;
+    window.addCharacterToClass = addCharacterToClass;
+    window.removeCharacterFromClass = removeCharacterFromClass;
+    window.getClassInstructor = getClassInstructor;
+    window.setClassInstructor = setClassInstructor;
+    window.getClassLabel = getClassLabel;
+    window.setClassLabel = setClassLabel;
+    window.getClassGroupLabel = getClassGroupLabel;
+    window.setClassGroupLabel = setClassGroupLabel;
+    window.getClassDuration = getClassDuration;
+    window.setClassDuration = setClassDuration;
+    window.isTeamOperational = isTeamOperational;
+    window.isTeamActiveCompat = isTeamActiveCompat;
+    window.isTeamStatusActive = isTeamStatusActive;
+    window.isValidTeamStatus = isValidTeamStatus;
+    window.filterOperationalTeams = filterOperationalTeams;
+    window.generateRandomStats = generateRandomStats;
+    window.generateRandomMagic = generateRandomMagic;
+    window.formatDate = formatDate;
+    window.truncateString = truncateString;
+
+})();
