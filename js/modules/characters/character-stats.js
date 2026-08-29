@@ -7,19 +7,26 @@
  *   - getCharacterStats() and getCharacterMagic() are PURE getters.
  *   - They do NOT mutate characters. Default values are provided on read.
  *   - Migration/repair should happen at the data layer, not here.
- *   - All user-controlled data in special moves must be escaped.
+ *   - All user-controlled data in special moves is inserted via textContent.
  *   - Class/magic suggestions are read-only - persistence handled by parent form.
  *   - Magic scale: 0-10, where 9-10 is Master.
- *   - Stats scale: 1-30.
+ *   - Stats scale: 1-50.
  * 
  * DATA ACCESS:
  *   - Stats/magic getters are pure and never mutate characters.
  *   - Special move add/remove functions intentionally mutate the character.
+ *   - All mutation functions are synchronous (in-memory only).
  *   - Persistence is handled by the parent form/data layer.
  * 
+ * MAGIC CLASS SEMANTICS:
+ *   - "Magic Class" is a broad magical discipline (Elementalist, Body Mage, Aether Mage)
+ *   - "Magic Specialisation" is a specific type within that discipline (Pyromancer, Necromancer, etc.)
+ *   - The suggestion system recommends a specific specialisation based on proficiency.
+ *   - The manual selector allows choosing a broad class family.
+ *   - Ties resolve according to MAGIC_TYPES declaration order (intentional and deterministic).
+ * 
  * DEPENDENCIES:
- *   - window.data (global state)
- *   - No external module dependencies
+ *   - No external module dependencies (pure calculations + DOM rendering)
  */
 
 (function() {
@@ -37,19 +44,48 @@
 
     var MAGIC_MAX = 10;
     var STAT_MIN = 1;
-    var STAT_MAX = 30;
+    var STAT_MAX = 50;
+    var MAX_MOVE_NAME_LENGTH = 100;
+    var MAX_MOVE_DESCRIPTION_LENGTH = 500;
+    var MAX_SPECIAL_MOVES = 20;
+    var BALANCED_MAGE_THRESHOLD = 3;
 
     // ============================================================
-    // HTML ESCAPING - Prevents XSS in special moves
+    // NOTIFICATION
     // ============================================================
 
-    function escapeHtml(value) {
-        return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+    function showNotification(message, type) {
+        type = type || 'info';
+
+        if (typeof window.AppUI !== 'undefined' &&
+            window.AppUI &&
+            typeof window.AppUI.notify === 'function') {
+            window.AppUI.notify(message, type);
+            return;
+        }
+
+        if (typeof window.showToast === 'function') {
+            window.showToast(message, type);
+            return;
+        }
+
+        if (typeof window.setSession === 'function') {
+            window.setSession('toast', {
+                message: message,
+                type: type,
+                timestamp: Date.now()
+            });
+            if (typeof window.renderToast === 'function') {
+                window.renderToast();
+            }
+            return;
+        }
+
+        if (type === 'error') {
+            alert('Error: ' + message);
+        } else {
+            alert(message);
+        }
     }
 
     // ============================================================
@@ -72,8 +108,8 @@
             icon: '⚔', 
             primaryStats: ['str', 'con'], 
             secondaryStats: ['dex'], 
-            statWeights: { str: 0.4, con: 0.3, dex: 0.2, wis: 0.1 }, 
-            minStats: { str: 13, con: 12 }, 
+            statWeights: { str: 0.5, con: 0.3, dex: 0.15, wis: 0.05 }, 
+            minStats: { str: 14, con: 12 }, 
             priority: 5,
             description: 'Masters of combat who rely on strength and endurance to overpower their foes.' 
         },
@@ -83,8 +119,8 @@
             icon: '🏹', 
             primaryStats: ['dex', 'wis'], 
             secondaryStats: ['con', 'str'], 
-            statWeights: { dex: 0.35, wis: 0.25, con: 0.2, str: 0.15, int: 0.05 }, 
-            minStats: { dex: 13, wis: 12 }, 
+            statWeights: { dex: 0.45, wis: 0.25, con: 0.15, str: 0.1, int: 0.05 }, 
+            minStats: { dex: 14, wis: 12 }, 
             priority: 4,
             description: 'Agile fighters who excel at ranged combat and hit-and-run tactics.' 
         },
@@ -94,8 +130,8 @@
             icon: '🛡', 
             primaryStats: ['str', 'con'], 
             secondaryStats: ['wis', 'cha'], 
-            statWeights: { str: 0.3, con: 0.3, wis: 0.2, cha: 0.15, dex: 0.05 }, 
-            minStats: { str: 13, con: 12 }, 
+            statWeights: { str: 0.35, con: 0.35, wis: 0.15, cha: 0.1, dex: 0.05 }, 
+            minStats: { str: 14, con: 14 }, 
             priority: 4,
             description: 'Defenders who shield others from harm and stand firm against any threat.' 
         },
@@ -105,8 +141,8 @@
             icon: '📚', 
             primaryStats: ['int', 'wis'], 
             secondaryStats: ['con', 'dex'], 
-            statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, 
-            minStats: { int: 13, wis: 12 }, 
+            statWeights: { int: 0.4, wis: 0.3, con: 0.15, dex: 0.1, cha: 0.05 }, 
+            minStats: { int: 14, wis: 12 }, 
             priority: 4,
             description: 'Scholars and keepers of ancient knowledge who wield intellect as their weapon.' 
         },
@@ -116,8 +152,8 @@
             icon: '✦', 
             primaryStats: ['wis', 'cha'], 
             secondaryStats: ['con', 'int'], 
-            statWeights: { wis: 0.35, cha: 0.25, con: 0.2, int: 0.15, dex: 0.05 }, 
-            minStats: { wis: 13, cha: 12 }, 
+            statWeights: { wis: 0.4, cha: 0.3, con: 0.15, int: 0.1, dex: 0.05 }, 
+            minStats: { wis: 14, cha: 12 }, 
             priority: 4,
             description: 'Channelers of spiritual and arcane forces who draw power from within.' 
         },
@@ -127,8 +163,8 @@
             icon: '🗡', 
             primaryStats: ['dex', 'int'], 
             secondaryStats: ['cha', 'wis'], 
-            statWeights: { dex: 0.35, int: 0.25, cha: 0.2, wis: 0.15, str: 0.05 }, 
-            minStats: { dex: 13, int: 12 }, 
+            statWeights: { dex: 0.4, int: 0.25, cha: 0.2, wis: 0.1, str: 0.05 }, 
+            minStats: { dex: 14, int: 12 }, 
             priority: 4,
             description: 'Masters of stealth and subterfuge who strike from the shadows.' 
         },
@@ -138,8 +174,8 @@
             icon: '⚡', 
             primaryStats: ['str', 'int'], 
             secondaryStats: ['dex', 'con'], 
-            statWeights: { str: 0.3, int: 0.3, dex: 0.2, con: 0.15, wis: 0.05 }, 
-            minStats: { str: 13, int: 12 }, 
+            statWeights: { str: 0.35, int: 0.35, dex: 0.15, con: 0.1, wis: 0.05 }, 
+            minStats: { str: 13, int: 13 }, 
             priority: 4,
             description: 'Warriors who weave magic into combat, blending steel and sorcery.' 
         },
@@ -149,8 +185,8 @@
             icon: '✦', 
             primaryStats: ['cha', 'con'], 
             secondaryStats: ['dex', 'int'], 
-            statWeights: { cha: 0.35, con: 0.25, dex: 0.2, int: 0.15, wis: 0.05 }, 
-            minStats: { cha: 13, con: 12 }, 
+            statWeights: { cha: 0.4, con: 0.25, dex: 0.2, int: 0.1, wis: 0.05 }, 
+            minStats: { cha: 14, con: 12 }, 
             priority: 4,
             description: 'Mages who channel raw magical energy through force of personality.' 
         },
@@ -160,8 +196,8 @@
             icon: '⚔', 
             primaryStats: ['str', 'wis'], 
             secondaryStats: ['con', 'dex'], 
-            statWeights: { str: 0.3, wis: 0.25, con: 0.2, dex: 0.2, cha: 0.05 }, 
-            minStats: { str: 13, wis: 12 }, 
+            statWeights: { str: 0.35, wis: 0.3, con: 0.2, dex: 0.1, cha: 0.05 }, 
+            minStats: { str: 13, wis: 13 }, 
             priority: 4,
             description: 'Guardians of nature and natural order who protect the wild places.' 
         },
@@ -171,9 +207,9 @@
             icon: '✦', 
             primaryStats: ['dex', 'wis'], 
             secondaryStats: ['con', 'str'], 
-            statWeights: { dex: 0.3, wis: 0.3, con: 0.2, str: 0.15, int: 0.05 }, 
-            minStats: { dex: 13, wis: 13 }, 
-            priority: 4,
+            statWeights: { dex: 0.4, wis: 0.35, con: 0.15, str: 0.1, int: 0.05 }, 
+            minStats: { dex: 14, wis: 14 }, 
+            priority: 5,
             description: 'Masters of mind-body discipline who achieve perfection through training.' 
         },
         { 
@@ -182,8 +218,8 @@
             icon: '⚙', 
             primaryStats: ['int', 'dex'], 
             secondaryStats: ['con', 'wis'], 
-            statWeights: { int: 0.35, dex: 0.25, con: 0.2, wis: 0.15, cha: 0.05 }, 
-            minStats: { int: 13, dex: 12 }, 
+            statWeights: { int: 0.4, dex: 0.25, con: 0.2, wis: 0.1, cha: 0.05 }, 
+            minStats: { int: 14, dex: 12 }, 
             priority: 4,
             description: 'Inventors and creators of wondrous devices who blend magic with craft.' 
         },
@@ -193,9 +229,9 @@
             icon: '✦', 
             primaryStats: ['int', 'cha'], 
             secondaryStats: ['con', 'dex'], 
-            statWeights: { int: 0.3, cha: 0.3, con: 0.2, dex: 0.15, wis: 0.05 }, 
-            minStats: { int: 13, cha: 13 }, 
-            priority: 4,
+            statWeights: { int: 0.35, cha: 0.35, con: 0.15, dex: 0.1, wis: 0.05 }, 
+            minStats: { int: 14, cha: 14 }, 
+            priority: 5,
             description: 'Seekers of forbidden and hidden knowledge who bargain with dark powers.' 
         },
         { 
@@ -204,8 +240,8 @@
             icon: '🗡', 
             primaryStats: ['dex', 'cha'], 
             secondaryStats: ['str', 'con'], 
-            statWeights: { dex: 0.35, cha: 0.25, str: 0.2, con: 0.15, wis: 0.05 }, 
-            minStats: { dex: 13, cha: 12 }, 
+            statWeights: { dex: 0.4, cha: 0.3, str: 0.15, con: 0.1, wis: 0.05 }, 
+            minStats: { dex: 14, cha: 12 }, 
             priority: 4,
             description: 'Graceful warriors who move like the wind, turning combat into art.' 
         },
@@ -215,8 +251,8 @@
             icon: '✦', 
             primaryStats: ['int', 'wis'], 
             secondaryStats: ['con', 'dex'], 
-            statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, 
-            minStats: { int: 13, wis: 12 }, 
+            statWeights: { int: 0.45, wis: 0.25, con: 0.15, dex: 0.1, cha: 0.05 }, 
+            minStats: { int: 14, wis: 12 }, 
             priority: 4,
             description: 'Masters of the primal elements who command fire, water, earth, and air.' 
         },
@@ -226,9 +262,9 @@
             icon: '🛡', 
             primaryStats: ['str', 'con'], 
             secondaryStats: ['wis', 'dex'], 
-            statWeights: { str: 0.3, con: 0.3, wis: 0.2, dex: 0.15, cha: 0.05 }, 
-            minStats: { str: 13, con: 12 }, 
-            priority: 4,
+            statWeights: { str: 0.3, con: 0.35, wis: 0.2, dex: 0.1, cha: 0.05 }, 
+            minStats: { str: 14, con: 14 }, 
+            priority: 5,
             description: 'Unyielding guardians and protectors who never retreat from their duty.' 
         }
     ];
@@ -237,6 +273,7 @@
     // MAGIC DEFINITIONS
     // ============================================================
 
+    // Ties intentionally resolve according to MAGIC_TYPES declaration order.
     var MAGIC_TYPES = {
         earth: { id: 'earth', label: 'Earth Magic', category: 'elemental', color: '#8B7355' },
         water: { id: 'water', label: 'Water Magic', category: 'elemental', color: '#4A9BC7' },
@@ -273,8 +310,10 @@
     }
 
     function getMagicCategoryTypes(category) {
+        var keys = Object.keys(MAGIC_TYPES);
         var result = [];
-        for (var key in MAGIC_TYPES) {
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
             if (MAGIC_TYPES[key].category === category) {
                 result.push(key);
             }
@@ -292,7 +331,7 @@
 
     function clampStat(value) {
         var num = Number(value);
-        if (isNaN(num)) return 10;
+        if (isNaN(num) || !isFinite(num)) return 10;
         return Math.max(STAT_MIN, Math.min(STAT_MAX, Math.round(num)));
     }
 
@@ -318,8 +357,7 @@
     }
 
     function getAbilityModifier(score) {
-        var value = parseInt(score);
-        if (isNaN(value)) value = 10;
+        var value = clampStat(score);
         return Math.floor((value - 10) / 2);
     }
 
@@ -340,23 +378,44 @@
     }
 
     // ============================================================
-    // CLASS SUGGESTION - With explicit priority
+    // HELPER: Get DOM stat values using clampStat
+    // ============================================================
+
+    function getStatFromDOM(id) {
+        var el = document.getElementById(id);
+        if (!el) return 10;
+        return clampStat(el.value);
+    }
+
+    // ============================================================
+    // HELPER: Get DOM magic values using clampMagic
+    // ============================================================
+
+    function getMagicFromDOM(id) {
+        var el = document.getElementById(id);
+        if (!el) return 0;
+        return clampMagic(el.value);
+    }
+
+    // ============================================================
+    // CLASS SUGGESTION - With explicit priority tie-breaker
     // ============================================================
 
     function suggestClass(stats) {
         if (!stats) return null;
 
         var scores = {
-            str: parseInt(stats.str) || 10,
-            dex: parseInt(stats.dex) || 10,
-            con: parseInt(stats.con) || 10,
-            int: parseInt(stats.int) || 10,
-            wis: parseInt(stats.wis) || 10,
-            cha: parseInt(stats.cha) || 10
+            str: clampStat(stats.str),
+            dex: clampStat(stats.dex),
+            con: clampStat(stats.con),
+            int: clampStat(stats.int),
+            wis: clampStat(stats.wis),
+            cha: clampStat(stats.cha)
         };
 
         var bestClass = null;
         var bestScore = -Infinity;
+        var bestPriority = -Infinity;
 
         CLASS_DEFINITIONS.forEach(function(cls) {
             var meetsMin = true;
@@ -390,10 +449,11 @@
 
             // Use priority as tie-breaker
             var priority = cls.priority || 0;
-            var tieBreaker = priority / 1000;
 
-            if (finalScore + tieBreaker > bestScore) {
-                bestScore = finalScore + tieBreaker;
+            if (finalScore > bestScore ||
+                (finalScore === bestScore && priority > bestPriority)) {
+                bestScore = finalScore;
+                bestPriority = priority;
                 bestClass = cls;
             }
         });
@@ -402,14 +462,15 @@
     }
 
     function updateClassSuggestion() {
-        var str = parseInt(document.getElementById('char-str') ? document.getElementById('char-str').value : 10) || 10;
-        var dex = parseInt(document.getElementById('char-dex') ? document.getElementById('char-dex').value : 10) || 10;
-        var con = parseInt(document.getElementById('char-con') ? document.getElementById('char-con').value : 10) || 10;
-        var int = parseInt(document.getElementById('char-int') ? document.getElementById('char-int').value : 10) || 10;
-        var wis = parseInt(document.getElementById('char-wis') ? document.getElementById('char-wis').value : 10) || 10;
-        var cha = parseInt(document.getElementById('char-cha') ? document.getElementById('char-cha').value : 10) || 10;
+        var stats = {
+            str: getStatFromDOM('char-str'),
+            dex: getStatFromDOM('char-dex'),
+            con: getStatFromDOM('char-con'),
+            int: getStatFromDOM('char-int'),
+            wis: getStatFromDOM('char-wis'),
+            cha: getStatFromDOM('char-cha')
+        };
 
-        var stats = { str: str, dex: dex, con: con, int: int, wis: wis, cha: cha };
         var suggested = suggestClass(stats);
         var display = document.getElementById('suggested-class');
         var descDisplay = document.getElementById('class-description-display');
@@ -454,7 +515,7 @@
 
     function clampMagic(value) {
         var num = Number(value);
-        if (isNaN(num)) return 0;
+        if (isNaN(num) || !isFinite(num)) return 0;
         return Math.max(0, Math.min(MAGIC_MAX, Math.round(num)));
     }
 
@@ -513,18 +574,30 @@
         var magic = {};
         var keys = getMagicTypeKeys();
         keys.forEach(function(key) {
-            var input = document.getElementById('magic-' + key);
-            if (input) {
-                var val = parseInt(input.value);
-                magic[key] = isNaN(val) ? 0 : Math.min(Math.max(val, 0), MAGIC_MAX);
-            } else {
-                magic[key] = 0;
-            }
+            magic[key] = getMagicFromDOM('magic-' + key);
         });
 
         var tempChar = { magic: magic };
         el.textContent = getMagicPowerDisplay(tempChar);
     }
+
+    // ============================================================
+    // CHECK IF A CATEGORY IS BALANCED
+    // ============================================================
+
+    function isBalancedCategory(magic, category) {
+        var types = getMagicCategoryTypes(category);
+        for (var i = 0; i < types.length; i++) {
+            if ((magic[types[i]] || 0) < BALANCED_MAGE_THRESHOLD) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // ============================================================
+    // MAGIC CLASS SUGGESTION
+    // ============================================================
 
     function suggestMagicClass(char) {
         var magic = getCharacterMagic(char);
@@ -548,6 +621,35 @@
             }
         }
 
+        // Check for Balanced Mage first - requires proficiency in every type of at least two categories
+        var balancedCategories = [];
+        for (var cat in MAGIC_CATEGORIES) {
+            if (isBalancedCategory(magic, cat)) {
+                balancedCategories.push(cat);
+            }
+        }
+
+        if (balancedCategories.length >= 2) {
+            // Find the highest score among balanced categories
+            var maxBalancedScore = 0;
+            for (var i = 0; i < balancedCategories.length; i++) {
+                var score = categoryScores[balancedCategories[i]] || 0;
+                if (score > maxBalancedScore) {
+                    maxBalancedScore = score;
+                }
+            }
+            return {
+                name: 'Balanced Mage',
+                category: null,
+                categoryLabel: null,
+                primaryType: null,
+                primaryLabel: null,
+                score: maxBalancedScore,
+                isBalanced: true
+            };
+        }
+
+        // Find highest category (ties resolve in MAGIC_CATEGORIES order: elemental, body, aether)
         var highestCategory = 'elemental';
         var highestScore = -1;
         for (var cat in categoryScores) {
@@ -557,24 +659,7 @@
             }
         }
 
-        var tiedCategories = [];
-        for (var cat in categoryScores) {
-            if (categoryScores[cat] === highestScore && highestScore > 0) {
-                tiedCategories.push(cat);
-            }
-        }
-
-        if (tiedCategories.length > 1 && highestScore >= 18) {
-            return {
-                name: 'Balanced Mage',
-                category: null,
-                categoryLabel: null,
-                primaryType: null,
-                primaryLabel: null,
-                score: highestScore
-            };
-        }
-
+        // Find highest type within that category (ties resolve in MAGIC_TYPES order)
         var highestType = null;
         var highestTypeScore = -1;
         for (var key in magic) {
@@ -629,7 +714,8 @@
             categoryLabel: MAGIC_CATEGORIES[highestCategory] ? MAGIC_CATEGORIES[highestCategory].label : highestCategory,
             primaryType: highestType,
             primaryLabel: highestType ? MAGIC_TYPES[highestType] ? MAGIC_TYPES[highestType].label : null : null,
-            score: highestTypeScore
+            score: highestTypeScore,
+            isBalanced: false
         };
     }
 
@@ -637,13 +723,7 @@
         var magic = {};
         var keys = getMagicTypeKeys();
         keys.forEach(function(key) {
-            var input = document.getElementById('magic-' + key);
-            if (input) {
-                var val = parseInt(input.value);
-                magic[key] = isNaN(val) ? 0 : Math.min(Math.max(val, 0), MAGIC_MAX);
-            } else {
-                magic[key] = 0;
-            }
+            magic[key] = getMagicFromDOM('magic-' + key);
         });
 
         var tempChar = { magic: magic };
@@ -684,6 +764,9 @@
     }
 
     function generateRandomMagicCategory(category) {
+        if (!MAGIC_CATEGORIES[category]) {
+            return {};
+        }
         var categoryTypes = getMagicCategoryTypes(category);
         var magic = {};
         // Random generation intentionally excludes 10 (Master).
@@ -712,10 +795,24 @@
         if (!char.specialMoves || typeof char.specialMoves !== 'object') {
             return { physical: [], magical: [] };
         }
-        return {
-            physical: Array.isArray(char.specialMoves.physical) ? char.specialMoves.physical.slice() : [],
-            magical: Array.isArray(char.specialMoves.magical) ? char.specialMoves.magical.slice() : []
-        };
+        // Deep copy to prevent external mutation
+        var physical = Array.isArray(char.specialMoves.physical)
+            ? char.specialMoves.physical.map(function(move) {
+                return {
+                    name: move && typeof move.name === 'string' ? move.name : '',
+                    description: move && typeof move.description === 'string' ? move.description : ''
+                };
+            })
+            : [];
+        var magical = Array.isArray(char.specialMoves.magical)
+            ? char.specialMoves.magical.map(function(move) {
+                return {
+                    name: move && typeof move.name === 'string' ? move.name : '',
+                    description: move && typeof move.description === 'string' ? move.description : ''
+                };
+            })
+            : [];
+        return { physical: physical, magical: magical };
     }
 
     function addSpecialMove(char, type, name, description) {
@@ -723,7 +820,18 @@
         if (type !== 'physical' && type !== 'magical') return false;
         if (!name || typeof name !== 'string' || name.trim() === '') return false;
 
-        // Normalise the specialMoves structure
+        // Check capacity first
+        if (!char.specialMoves || typeof char.specialMoves !== 'object' || Array.isArray(char.specialMoves)) {
+            // Will be normalised below
+        } else {
+            var currentTypeArray = char.specialMoves[type];
+            if (Array.isArray(currentTypeArray) && currentTypeArray.length >= MAX_SPECIAL_MOVES) {
+                showNotification('Maximum of ' + MAX_SPECIAL_MOVES + ' ' + type + ' moves reached.', 'error');
+                return false;
+            }
+        }
+
+        // Normalise structure
         if (!char.specialMoves || typeof char.specialMoves !== 'object' || Array.isArray(char.specialMoves)) {
             char.specialMoves = { physical: [], magical: [] };
         }
@@ -736,9 +844,20 @@
             char.specialMoves.magical = [];
         }
 
+        // Check capacity again after normalisation
+        if (char.specialMoves[type].length >= MAX_SPECIAL_MOVES) {
+            showNotification('Maximum of ' + MAX_SPECIAL_MOVES + ' ' + type + ' moves reached.', 'error');
+            return false;
+        }
+
+        var nameTruncated = name.trim().slice(0, MAX_MOVE_NAME_LENGTH);
+        var descTruncated = typeof description === 'string'
+            ? description.trim().slice(0, MAX_MOVE_DESCRIPTION_LENGTH)
+            : '';
+
         char.specialMoves[type].push({
-            name: name.trim(),
-            description: typeof description === 'string' ? description.trim() : ''
+            name: nameTruncated,
+            description: descTruncated
         });
 
         return true;
@@ -760,11 +879,13 @@
             return false;
         }
 
-        if (index < 0 || index >= char.specialMoves[type].length) {
+        var idx = Number(index);
+        if (!Number.isInteger(idx)) return false;
+        if (idx < 0 || idx >= char.specialMoves[type].length) {
             return false;
         }
 
-        char.specialMoves[type].splice(index, 1);
+        char.specialMoves[type].splice(idx, 1);
         return true;
     }
 
@@ -773,19 +894,56 @@
         if (!container) return;
 
         if (!moves || moves.length === 0) {
-            container.innerHTML = '<p class="empty-state" style="padding:4px;font-size:0.7rem;">None</p>';
+            container.textContent = '';
+            var empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.style.cssText = 'padding:4px;font-size:0.7rem;';
+            empty.textContent = 'None';
+            container.appendChild(empty);
             return;
         }
 
+        container.textContent = '';
         var color = type === 'physical' ? 'var(--accent)' : 'var(--info)';
-        var html = '';
+
         moves.forEach(function(move, index) {
-            html += '<div class="special-move-entry" style="display:flex;justify-content:space-between;align-items:center;padding:2px 4px;border-left:2px solid ' + color + ';background:var(--bg);border-radius:3px;margin-bottom:2px;font-size:0.65rem;">';
-            html += '<div><span class="move-name" style="font-weight:600;">' + escapeHtml(move.name) + '</span> <span class="move-desc" style="color:var(--text-dim);font-size:0.55rem;">' + escapeHtml(move.description || '') + '</span></div>';
-            html += '<button class="remove-special-move small" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;" data-type="' + type + '" data-index="' + index + '">✕</button>';
-            html += '</div>';
+            // Defensive: handle malformed move entries
+            move = move || {};
+            if (typeof move !== 'object' || Array.isArray(move)) {
+                move = { name: 'Invalid Move', description: '' };
+            }
+
+            var div = document.createElement('div');
+            div.className = 'special-move-entry';
+            div.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:2px 4px;border-left:2px solid ' + color + ';background:var(--bg);border-radius:3px;margin-bottom:2px;font-size:0.65rem;';
+
+            var leftSpan = document.createElement('div');
+            var nameSpan = document.createElement('span');
+            nameSpan.className = 'move-name';
+            nameSpan.style.cssText = 'font-weight:600;';
+            nameSpan.textContent = typeof move.name === 'string' ? move.name : '';
+            leftSpan.appendChild(nameSpan);
+
+            if (move.description) {
+                var descSpan = document.createElement('span');
+                descSpan.className = 'move-desc';
+                descSpan.style.cssText = 'color:var(--text-dim);font-size:0.55rem;';
+                descSpan.textContent = ' ' + (typeof move.description === 'string' ? move.description : '');
+                leftSpan.appendChild(descSpan);
+            }
+
+            div.appendChild(leftSpan);
+
+            var button = document.createElement('button');
+            button.className = 'remove-special-move small';
+            button.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;';
+            button.dataset.type = type;
+            button.dataset.index = index;
+            button.textContent = '✕';
+
+            div.appendChild(button);
+            container.appendChild(div);
         });
-        container.innerHTML = html;
 
         // Event listeners are bound via delegation in character-events.js
     }
@@ -914,15 +1072,15 @@
     // ============================================================
 
     function initStatsEvents() {
-        console.debug('CharacterStats.initStatsEvents: Events are now handled by character-events.js');
+        // Events are now handled by character-events.js
     }
 
     function initMagicEvents() {
-        console.debug('CharacterStats.initMagicEvents: Events are now handled by character-events.js');
+        // Events are now handled by character-events.js
     }
 
     function initSpecialMovesEvents() {
-        console.debug('CharacterStats.initSpecialMovesEvents: Events are now handled by character-events.js');
+        // Events are now handled by character-events.js
     }
 
     function populateClassSelect() {
@@ -975,6 +1133,7 @@
         MAGIC_MAX: MAGIC_MAX,
         STAT_MIN: STAT_MIN,
         STAT_MAX: STAT_MAX,
+        BALANCED_MAGE_THRESHOLD: BALANCED_MAGE_THRESHOLD,
 
         // Magic helpers
         getMagicTypeKeys: getMagicTypeKeys,
