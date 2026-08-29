@@ -3,32 +3,35 @@
  * Path: js/modules/characters/character-crud.js
  * 
  * This module handles all character CRUD operations with:
- * - Clean persistence boundary (mutates window.data, caller saves)
+ * - Clean persistence boundary (mutates window.data, then saves)
  * - Proper rollback on save failure
- * - Consistent state management via AppState as single source of truth
+ * - Consistent state management via getCurrentEditId/setCurrentEditId
  * - Defensive cloning for backups using database module's clone
  * - Explicit notification rendering
  * - Returns Promises for composition
  * 
  * PERSISTENCE CONTRACT:
  * - All mutations are applied to window.data in memory
- * - Caller is responsible for saveData() persistence
+ * - This module owns persistence via saveData()
  * - Rollback restores window.data on failure
- * - UI state is managed via AppState, not DOM attributes
+ * - UI state is managed via getCurrentEditId/setCurrentEditId
  * - All mutation functions return Promises for async composition
+ * - No mutation occurs without a successful backup
  * 
  * MUTATION FLOW:
- *   VALIDATE INPUT → BUILD/NORMALISE → SNAPSHOT → MUTATE → LOG → SAVE → COMMIT
- *                                             ↓
- *                                         failure
- *                                             ↓
- *                                         ROLLBACK
+ *   VALIDATE INPUT → BUILD/NORMALISE → SNAPSHOT (required) → MUTATE → PERSIST
+ *                                      ↓
+ *                                  failure
+ *                                      ↓
+ *                                  ROLLBACK
+ * 
+ *   Then on success:
+ *     LOG (failure-safe) → UI COMMIT
  * 
  * STATE SOURCE OF TRUTH:
- *   - AppState.characters.formEditId is the canonical edit state.
- *   - Access it exclusively through getCurrentEditId/setCurrentEditId.
- *   - DOM is rendered from state, not the other way around.
- *   - The form DOM is the temporary source of user-entered values during save.
+ *   - getCurrentEditId/setCurrentEditId is the canonical edit state.
+ *   - window.data is the source of truth for persisted application data.
+ *   - DOM is the temporary source of form input values during save.
  *   - Persisted character data remains in window.data.
  * 
  * DEPENDENCIES:
@@ -37,8 +40,9 @@
  *   - window.getCharacterById (from core-utils.js)
  *   - window.getDisplayName (from core-utils.js)
  *   - window.saveData (from database.js)
- *   - window.logActivity (from core-utils.js)
  *   - window.db.createSafeCopy (from database.js)
+ *   - window.CharacterStats (for magic schema, optional but recommended)
+ *   - window.logActivity (optional, for activity logging)
  */
 
 (function() {
@@ -51,6 +55,13 @@
     window.__characterCrudLoaded = true;
 
     // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var MIN_WEEK = 1;
+    var MAX_WEEK = 52;
+
+    // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
 
@@ -60,19 +71,14 @@
             'setCurrentEditId',
             'getCharacterById',
             'getDisplayName',
-            'saveData',
-            'logActivity'
+            'saveData'
         ];
 
         var missing = [];
         required.forEach(function(name) {
             if (name === 'saveData' && typeof window.saveData !== 'function') {
                 missing.push('saveData');
-            } else if (name === 'logActivity' && typeof window.logActivity !== 'function') {
-                missing.push('logActivity');
-            } else if (typeof window[name] !== 'function' && 
-                       name !== 'saveData' && 
-                       name !== 'logActivity') {
+            } else if (typeof window[name] !== 'function') {
                 missing.push(name);
             }
         });
@@ -236,17 +242,42 @@
         return statuses;
     }
 
-    function getMagic() {
-        var magic = {};
-        var magicTypes = [
+    function getMagicTypeKeys() {
+        if (window.CharacterStats &&
+            typeof window.CharacterStats.getMagicTypeKeys === 'function') {
+            var keys = window.CharacterStats.getMagicTypeKeys();
+            if (Array.isArray(keys) && keys.length > 0) {
+                return keys;
+            }
+            console.warn('CharacterCRUD: CharacterStats returned invalid magic type keys.');
+        }
+
+        // Fallback for when CharacterStats isn't available
+        return [
             'earth', 'water', 'fire', 'air', 'metal', 'wood',
             'blood', 'bone', 'mind', 'morphic', 'life', 'death',
             'space', 'time', 'dimension', 'void', 'reality', 'transference'
         ];
-        magicTypes.forEach(function(key) {
+    }
+
+    function getMagicMax() {
+        if (window.CharacterStats &&
+            typeof window.CharacterStats.MAGIC_MAX !== 'undefined' &&
+            typeof window.CharacterStats.MAGIC_MAX === 'number') {
+            return window.CharacterStats.MAGIC_MAX;
+        }
+        return 10;
+    }
+
+    function getMagic() {
+        var magic = {};
+        var types = getMagicTypeKeys();
+        var magicMax = getMagicMax();
+
+        types.forEach(function(key) {
             var input = document.getElementById('magic-' + key);
             var val = input ? parseInt(input.value, 10) : 0;
-            magic[key] = isNaN(val) ? 0 : Math.max(0, Math.min(10, val));
+            magic[key] = isNaN(val) ? 0 : Math.max(0, Math.min(magicMax, val));
         });
         return magic;
     }
@@ -274,9 +305,14 @@
         return moves;
     }
 
+    function validateWeek(week) {
+        var num = Number(week);
+        return Number.isInteger(num) && num >= MIN_WEEK && num <= MAX_WEEK;
+    }
+
     function buildCharacterData(
         classIds, careerStatus, magic, physicalMoves, magicalMoves,
-        isDeceased, deathYear, deathCause, deathAge
+        isDeceased, deathYear, deathCause, deathAge, deathWeek
     ) {
         var getVal = function(id, fallback) {
             var el = document.getElementById(id);
@@ -293,7 +329,7 @@
         var finalDeathYear = isDeceased ? deathYear : '';
         var finalDeathCause = isDeceased ? deathCause : '';
         var finalDeathAge = isDeceased ? deathAge : '';
-        var finalDeathWeek = isDeceased ? deathYear : ''; // deathWeek uses deathYear if provided
+        var finalDeathWeek = isDeceased ? deathWeek : '';
 
         return {
             firstName: getVal('char-firstname', ''),
@@ -358,27 +394,38 @@
         if (!charData.lastName) {
             return { valid: false, message: 'Last name is required.' };
         }
-        if (charData.deceased && !charData.deathYear && !charData.deathAge) {
-            return { valid: false, message: 'Please enter either Death Year or Death Age for deceased characters.' };
+        if (charData.deceased) {
+            var hasDeathInfo = charData.deathYear || charData.deathAge || charData.deathWeek;
+            if (!hasDeathInfo) {
+                return { valid: false, message: 'Please enter Death Year, Death Age, or Death Week for deceased characters.' };
+            }
+            if (charData.deathWeek && !validateWeek(charData.deathWeek)) {
+                return { valid: false, message: 'Death Week must be between 1 and 52.' };
+            }
         }
         return { valid: true };
     }
 
     function updateExistingCharacter(existing, charData, data) {
-        var updatedCharacter = Object.assign({}, existing, charData, {
-            id: existing.id,
-            createdAt: existing.createdAt,
-            eliminations: Array.isArray(existing.eliminations) ? existing.eliminations : [],
-            eliminatedWeeks: Array.isArray(existing.eliminatedWeeks) ? existing.eliminatedWeeks : []
-        });
-
         var index = data.characters.findIndex(function(c) {
             return c && String(c.id) === String(existing.id);
         });
-        if (index !== -1) {
-            data.characters[index] = updatedCharacter;
+
+        if (index === -1) {
+            return false;
         }
+
+        var current = data.characters[index];
+
+        data.characters[index] = Object.assign({}, current, charData, {
+            id: current.id,
+            createdAt: current.createdAt,
+            eliminations: Array.isArray(current.eliminations) ? current.eliminations : [],
+            eliminatedWeeks: Array.isArray(current.eliminatedWeeks) ? current.eliminatedWeeks : []
+        });
+
         window.data = data;
+        return true;
     }
 
     function createNewCharacter(charData, data) {
@@ -410,8 +457,10 @@
 
         var data = window.data || {};
 
+        // Validate data structure - fail closed
         if (!validateDataArray(data, 'characters')) {
-            data.characters = [];
+            showNotification('Character data is corrupted. Please reload.', 'error');
+            return Promise.resolve(false);
         }
 
         var editId = getCurrentEditId();
@@ -426,6 +475,7 @@
         var deathYear = document.getElementById('char-death-year') ? document.getElementById('char-death-year').value.trim() : '';
         var deathCause = document.getElementById('char-death-cause') ? document.getElementById('char-death-cause').value.trim() : '';
         var deathAge = document.getElementById('char-death-age') ? document.getElementById('char-death-age').value.trim() : '';
+        var deathWeek = document.getElementById('char-death-week') ? document.getElementById('char-death-week').value.trim() : '';
 
         var classIds = getClassIds();
         var careerStatus = getCareerStatus();
@@ -435,7 +485,7 @@
 
         var charData = buildCharacterData(
             classIds, careerStatus, magic, physicalMoves, magicalMoves,
-            isDeceased, deathYear, deathCause, deathAge
+            isDeceased, deathYear, deathCause, deathAge, deathWeek
         );
 
         var validation = validateCharacter(charData);
@@ -462,61 +512,75 @@
                 : existingChar.firstName + ' ' + existingChar.lastName;
         }
 
-        // SNAPSHOT
+        // SNAPSHOT - Required, abort if fails
         var backup = createSafeBackup(data);
+        if (!backup) {
+            console.error('CharacterCRUD: Could not create rollback backup.');
+            showNotification('Unable to safely save character. Please try again.', 'error');
+            return Promise.resolve(false);
+        }
 
         // MUTATE
         if (isEditing) {
-            updateExistingCharacter(existingChar, charData, data);
+            var updated = updateExistingCharacter(existingChar, charData, data);
+            if (!updated) {
+                showNotification('Failed to update character. Please try again.', 'error');
+                return Promise.resolve(false);
+            }
             newId = editId;
         } else {
             newId = createNewCharacter(charData, data);
             name = charData.firstName + ' ' + charData.lastName;
         }
 
-        // LOG
-        if (typeof window.logActivity === 'function') {
-            window.logActivity(
-                isEditing ? 'Updated character: ' + name : 'Created character: ' + name
-            );
-        }
-
-        // SAVE
+        // PERSIST
         if (typeof window.saveData === 'function') {
             return window.saveData()
                 .then(function() {
+                    // POST-PERSIST SIDE EFFECTS - failure-safe
+                    try {
+                        if (typeof window.logActivity === 'function') {
+                            window.logActivity(
+                                isEditing
+                                    ? 'Updated character: ' + name
+                                    : 'Created character: ' + name
+                            );
+                        }
+                    } catch (logErr) {
+                        console.warn('CharacterCRUD: Activity logging failed:', logErr);
+                        // Do NOT rollback - persistence already succeeded
+                    }
+
+                    // UI COMMIT
                     onSaveSuccess(newId, isEditing);
                     return true;
                 })
                 .catch(function(err) {
                     console.error('Failed to save character:', err);
-                    if (backup) {
-                        // ROLLBACK
-                        window.data = backup;
-                        safeRenderCharacterList();
+                    // ROLLBACK
+                    window.data = backup;
+                    safeRenderCharacterList();
 
-                        if (isEditing) {
-                            setCurrentEditId(editId);
-                            safeShowCharacterForm(editId);
-                        } else {
-                            setCurrentEditId(null);
-                            safeShowCharacterForm(null);
-                        }
+                    if (isEditing) {
+                        setCurrentEditId(editId);
+                        safeShowCharacterForm(editId);
+                    } else {
+                        setCurrentEditId(null);
+                        safeShowCharacterForm(null);
                     }
+
                     showNotification('Failed to save character. Please try again.', 'error');
                     return false;
                 });
         } else {
+            // This should be unreachable because checkDependencies requires saveData
             onSaveSuccess(newId, isEditing);
             return Promise.resolve(true);
         }
     }
 
     function onSaveSuccess(id, isEditing) {
-        if (typeof window.updateDashboardStats === 'function') {
-            window.updateDashboardStats();
-        }
-
+        safeUpdateDashboardStats();
         safeShowCharacterForm(id);
         showNotification(isEditing ? 'Character saved successfully!' : 'Character created successfully!', 'success');
     }
@@ -538,6 +602,7 @@
 
         var data = window.data || {};
 
+        // Validate data structure - fail closed
         if (!validateDataArray(data, 'characters') || !validateDataArray(data, 'teams')) {
             showNotification('Data structure is corrupted. Please reload.', 'error');
             return Promise.resolve(false);
@@ -557,15 +622,20 @@
             return Promise.resolve(false);
         }
 
-        // SNAPSHOT
+        // SNAPSHOT - Required, abort if fails
         var backup = createSafeBackup(data);
+        if (!backup) {
+            console.error('CharacterCRUD: Could not create rollback backup for deletion.');
+            showNotification('Unable to safely delete character. Please try again.', 'error');
+            return Promise.resolve(false);
+        }
 
         // MUTATE - Clean team memberships
         if (Array.isArray(data.teams)) {
             data.teams.forEach(function(team) {
                 if (Array.isArray(team.members)) {
                     team.members = team.members.filter(function(m) {
-                        return m && String(m.characterId) !== String(id);
+                        return !m || String(m.characterId) !== String(id);
                     });
                 }
             });
@@ -576,31 +646,36 @@
             return c && String(c.id) !== String(id);
         });
 
-        // LOG
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Deleted character: ' + name);
-        }
-
-        // SAVE
+        // PERSIST
         if (typeof window.saveData === 'function') {
             return window.saveData()
                 .then(function() {
+                    // POST-PERSIST SIDE EFFECTS - failure-safe
+                    try {
+                        if (typeof window.logActivity === 'function') {
+                            window.logActivity('Deleted character: ' + name);
+                        }
+                    } catch (logErr) {
+                        console.warn('CharacterCRUD: Activity logging failed:', logErr);
+                        // Do NOT rollback - persistence already succeeded
+                    }
+
+                    // UI COMMIT
                     onDeleteSuccess();
                     return true;
                 })
                 .catch(function(err) {
                     console.error('Failed to delete character:', err);
-                    if (backup) {
-                        // ROLLBACK
-                        window.data = backup;
-                        safeRenderCharacterList();
-                        setCurrentEditId(id);
-                        safeShowCharacterForm(id);
-                    }
+                    // ROLLBACK
+                    window.data = backup;
+                    safeRenderCharacterList();
+                    setCurrentEditId(id);
+                    safeShowCharacterForm(id);
                     showNotification('Failed to delete character. Please try again.', 'error');
                     return false;
                 });
         } else {
+            // This should be unreachable because checkDependencies requires saveData
             onDeleteSuccess();
             return Promise.resolve(true);
         }
@@ -608,9 +683,7 @@
 
     function onDeleteSuccess() {
         setCurrentEditId(null);
-        if (typeof window.updateDashboardStats === 'function') {
-            window.updateDashboardStats();
-        }
+        safeUpdateDashboardStats();
         safeShowCharacterForm(null);
         showNotification('Character deleted successfully!', 'success');
     }
