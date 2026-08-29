@@ -3,12 +3,18 @@
  * Handles physical stats, magic proficiencies, class suggestions, special moves
  * Path: js/modules/characters/character-stats.js
  * 
- * IMPORTANT: getCharacterStats() and getCharacterMagic() are PURE getters.
- * They do NOT mutate characters. Default values are provided on read.
- * Migration/repair should happen at the data layer, not here.
+ * IMPORTANT:
+ *   - getCharacterStats() and getCharacterMagic() are PURE getters.
+ *   - They do NOT mutate characters. Default values are provided on read.
+ *   - Migration/repair should happen at the data layer, not here.
+ *   - All user-controlled data in special moves must be escaped.
+ *   - Class/magic suggestions are read-only - persistence handled by parent form.
+ *   - Magic scale: 0-10, where 9-10 is Master.
+ *   - Stats scale: 1-30.
  * 
- * All user-controlled data in special moves must be escaped.
- * Class/magic suggestions are read-only - persistence handled by parent form.
+ * DEPENDENCIES:
+ *   - window.data (global state)
+ *   - No external module dependencies
  */
 
 (function() {
@@ -19,6 +25,15 @@
         return;
     }
     window.__characterStatsLoaded = true;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var MAGIC_MAX = 10;
+    var STAT_MIN = 1;
+    var STAT_MAX = 30;
+    var DOT_THRESHOLDS = [0, 20, 40, 60, 80, 100]; // 0-20%, 21-40%, etc.
 
     // ============================================================
     // HTML ESCAPING - Prevents XSS in special moves
@@ -55,6 +70,7 @@
             secondaryStats: ['dex'], 
             statWeights: { str: 0.4, con: 0.3, dex: 0.2, wis: 0.1 }, 
             minStats: { str: 13, con: 12 }, 
+            priority: 5,
             description: 'Masters of combat who rely on strength and endurance to overpower their foes.' 
         },
         { 
@@ -65,6 +81,7 @@
             secondaryStats: ['con', 'str'], 
             statWeights: { dex: 0.35, wis: 0.25, con: 0.2, str: 0.15, int: 0.05 }, 
             minStats: { dex: 13, wis: 12 }, 
+            priority: 4,
             description: 'Agile fighters who excel at ranged combat and hit-and-run tactics.' 
         },
         { 
@@ -75,6 +92,7 @@
             secondaryStats: ['wis', 'cha'], 
             statWeights: { str: 0.3, con: 0.3, wis: 0.2, cha: 0.15, dex: 0.05 }, 
             minStats: { str: 13, con: 12 }, 
+            priority: 4,
             description: 'Defenders who shield others from harm and stand firm against any threat.' 
         },
         { 
@@ -85,6 +103,7 @@
             secondaryStats: ['con', 'dex'], 
             statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, 
             minStats: { int: 13, wis: 12 }, 
+            priority: 4,
             description: 'Scholars and keepers of ancient knowledge who wield intellect as their weapon.' 
         },
         { 
@@ -95,6 +114,7 @@
             secondaryStats: ['con', 'int'], 
             statWeights: { wis: 0.35, cha: 0.25, con: 0.2, int: 0.15, dex: 0.05 }, 
             minStats: { wis: 13, cha: 12 }, 
+            priority: 4,
             description: 'Channelers of spiritual and arcane forces who draw power from within.' 
         },
         { 
@@ -105,6 +125,7 @@
             secondaryStats: ['cha', 'wis'], 
             statWeights: { dex: 0.35, int: 0.25, cha: 0.2, wis: 0.15, str: 0.05 }, 
             minStats: { dex: 13, int: 12 }, 
+            priority: 4,
             description: 'Masters of stealth and subterfuge who strike from the shadows.' 
         },
         { 
@@ -115,6 +136,7 @@
             secondaryStats: ['dex', 'con'], 
             statWeights: { str: 0.3, int: 0.3, dex: 0.2, con: 0.15, wis: 0.05 }, 
             minStats: { str: 13, int: 12 }, 
+            priority: 4,
             description: 'Warriors who weave magic into combat, blending steel and sorcery.' 
         },
         { 
@@ -125,6 +147,7 @@
             secondaryStats: ['dex', 'int'], 
             statWeights: { cha: 0.35, con: 0.25, dex: 0.2, int: 0.15, wis: 0.05 }, 
             minStats: { cha: 13, con: 12 }, 
+            priority: 4,
             description: 'Mages who channel raw magical energy through force of personality.' 
         },
         { 
@@ -135,6 +158,7 @@
             secondaryStats: ['con', 'dex'], 
             statWeights: { str: 0.3, wis: 0.25, con: 0.2, dex: 0.2, cha: 0.05 }, 
             minStats: { str: 13, wis: 12 }, 
+            priority: 4,
             description: 'Guardians of nature and natural order who protect the wild places.' 
         },
         { 
@@ -145,6 +169,7 @@
             secondaryStats: ['con', 'str'], 
             statWeights: { dex: 0.3, wis: 0.3, con: 0.2, str: 0.15, int: 0.05 }, 
             minStats: { dex: 13, wis: 13 }, 
+            priority: 4,
             description: 'Masters of mind-body discipline who achieve perfection through training.' 
         },
         { 
@@ -155,6 +180,7 @@
             secondaryStats: ['con', 'wis'], 
             statWeights: { int: 0.35, dex: 0.25, con: 0.2, wis: 0.15, cha: 0.05 }, 
             minStats: { int: 13, dex: 12 }, 
+            priority: 4,
             description: 'Inventors and creators of wondrous devices who blend magic with craft.' 
         },
         { 
@@ -165,6 +191,7 @@
             secondaryStats: ['con', 'dex'], 
             statWeights: { int: 0.3, cha: 0.3, con: 0.2, dex: 0.15, wis: 0.05 }, 
             minStats: { int: 13, cha: 13 }, 
+            priority: 4,
             description: 'Seekers of forbidden and hidden knowledge who bargain with dark powers.' 
         },
         { 
@@ -175,6 +202,7 @@
             secondaryStats: ['str', 'con'], 
             statWeights: { dex: 0.35, cha: 0.25, str: 0.2, con: 0.15, wis: 0.05 }, 
             minStats: { dex: 13, cha: 12 }, 
+            priority: 4,
             description: 'Graceful warriors who move like the wind, turning combat into art.' 
         },
         { 
@@ -185,6 +213,7 @@
             secondaryStats: ['con', 'dex'], 
             statWeights: { int: 0.35, wis: 0.25, con: 0.2, dex: 0.15, cha: 0.05 }, 
             minStats: { int: 13, wis: 12 }, 
+            priority: 4,
             description: 'Masters of the primal elements who command fire, water, earth, and air.' 
         },
         { 
@@ -195,6 +224,7 @@
             secondaryStats: ['wis', 'dex'], 
             statWeights: { str: 0.3, con: 0.3, wis: 0.2, dex: 0.15, cha: 0.05 }, 
             minStats: { str: 13, con: 12 }, 
+            priority: 4,
             description: 'Unyielding guardians and protectors who never retreat from their duty.' 
         }
     ];
@@ -230,9 +260,6 @@
         aether: { label: 'Aether Magic', color: '#4a9bc7' }
     };
 
-    // Magic scale: 0-10, where 9-10 is Master
-    var MAGIC_MAX = 10;
-
     // ============================================================
     // MAGIC TYPE HELPERS
     // ============================================================
@@ -259,6 +286,12 @@
         return { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
     }
 
+    function clampStat(value) {
+        var num = Number(value);
+        if (isNaN(num)) return 10;
+        return Math.max(STAT_MIN, Math.min(STAT_MAX, Math.round(num)));
+    }
+
     function getCharacterStats(char) {
         if (!char) return getDefaultStats();
         if (!char.stats || typeof char.stats !== 'object') {
@@ -270,7 +303,12 @@
         for (var i = 0; i < statKeys.length; i++) {
             var key = statKeys[i];
             var val = stats[key];
-            result[key] = (val !== undefined && val !== null && typeof val === 'number') ? val : 10;
+            // Only accept valid numbers, otherwise use default
+            if (typeof val === 'number' && !isNaN(val) && isFinite(val)) {
+                result[key] = clampStat(val);
+            } else {
+                result[key] = 10;
+            }
         }
         return result;
     }
@@ -298,7 +336,7 @@
     }
 
     // ============================================================
-    // CLASS SUGGESTION
+    // CLASS SUGGESTION - With explicit priority
     // ============================================================
 
     function suggestClass(stats) {
@@ -338,6 +376,7 @@
 
             var normalized = totalWeight > 0 ? total / totalWeight : 0;
 
+            // Primary stats get a bonus (makes them more important)
             var primaryBonus = 0;
             cls.primaryStats.forEach(function(stat) {
                 primaryBonus += (scores[stat] - 10) * 0.1;
@@ -345,13 +384,16 @@
 
             var finalScore = normalized + primaryBonus;
 
-            if (finalScore > bestScore) {
-                bestScore = finalScore;
+            // Use priority as tie-breaker
+            var priority = cls.priority || 0;
+            var tieBreaker = priority / 1000;
+
+            if (finalScore + tieBreaker > bestScore) {
+                bestScore = finalScore + tieBreaker;
                 bestClass = cls;
             }
         });
 
-        // No fallback - if no class qualifies, return null
         return bestClass;
     }
 
@@ -406,6 +448,12 @@
         return proficiencies;
     }
 
+    function clampMagic(value) {
+        var num = Number(value);
+        if (isNaN(num)) return 0;
+        return Math.max(0, Math.min(MAGIC_MAX, Math.round(num)));
+    }
+
     function getCharacterMagic(char) {
         if (!char) return getDefaultMagicProficiencies();
         if (!char.magic || typeof char.magic !== 'object') {
@@ -417,7 +465,11 @@
         for (var i = 0; i < keys.length; i++) {
             var key = keys[i];
             var val = magic[key];
-            result[key] = (val !== undefined && val !== null && typeof val === 'number') ? val : 0;
+            if (typeof val === 'number' && !isNaN(val) && isFinite(val)) {
+                result[key] = clampMagic(val);
+            } else {
+                result[key] = 0;
+            }
         }
         return result;
     }
@@ -436,9 +488,11 @@
         var power = calculateMagicPower(char);
         var maxPower = getMagicTypeKeys().length * MAGIC_MAX;
         var percentage = Math.min(100, Math.round((power / maxPower) * 100));
-        // Use floor for thresholds - 0% = 0 dots, 1-19% = 1 dot, 20-39% = 2 dots, etc.
-        var filledCount = Math.floor(percentage / 20);
-        if (filledCount > 5) filledCount = 5;
+        
+        // 0% = 0 dots, 1-20% = 1 dot, 21-40% = 2 dots, etc.
+        var filledCount = percentage === 0 
+            ? 0 
+            : Math.ceil(percentage / 20);
 
         var display = '';
         for (var i = 0; i < 5; i++) {
@@ -470,14 +524,10 @@
 
     function suggestMagicClass(char) {
         var magic = getCharacterMagic(char);
-        if (!magic) return null;
-
-        var scores = {};
         var keys = getMagicTypeKeys();
         var totalPower = 0;
         keys.forEach(function(key) {
-            scores[key] = magic[key] || 0;
-            totalPower += scores[key];
+            totalPower += magic[key] || 0;
         });
 
         // If no magic power at all, return null
@@ -486,14 +536,12 @@
         }
 
         var categoryScores = { elemental: 0, body: 0, aether: 0 };
-        var categoryCounts = { elemental: 0, body: 0, aether: 0 };
 
         for (var key in MAGIC_TYPES) {
             var type = MAGIC_TYPES[key];
-            var score = scores[key] || 0;
+            var score = magic[key] || 0;
             if (categoryScores[type.category] !== undefined) {
                 categoryScores[type.category] += score;
-                categoryCounts[type.category]++;
             }
         }
 
@@ -530,15 +578,14 @@
         // Find highest type WITHIN the winning category
         var highestType = null;
         var highestTypeScore = -1;
-        for (var key in scores) {
+        for (var key in magic) {
             if (MAGIC_TYPES[key].category !== highestCategory) continue;
-            if (scores[key] > highestTypeScore) {
-                highestTypeScore = scores[key];
+            if (magic[key] > highestTypeScore) {
+                highestTypeScore = magic[key];
                 highestType = key;
             }
         }
 
-        // If tied within category, use first one (deterministic)
         var classMap = {
             elemental: {
                 earth: 'Geomancer',
@@ -672,19 +719,26 @@
 
     function addSpecialMove(char, type, name, description) {
         if (!char) return false;
+        if (type !== 'physical' && type !== 'magical') return false;
+        if (!name || typeof name !== 'string' || name.trim() === '') return false;
+        
         if (!char.specialMoves) char.specialMoves = { physical: [], magical: [] };
         if (!char.specialMoves[type]) char.specialMoves[type] = [];
+        
         char.specialMoves[type].push({
-            name: name || 'Unnamed Move',
-            description: description || ''
+            name: name.trim(),
+            description: (description || '').trim()
         });
         return true;
     }
 
     function removeSpecialMove(char, type, index) {
         if (!char) return false;
-        var moves = getSpecialMoves(char);
-        if (!moves[type] || index < 0 || index >= moves[type].length) return false;
+        if (type !== 'physical' && type !== 'magical') return false;
+        if (!char.specialMoves || !char.specialMoves[type]) return false;
+        if (!Array.isArray(char.specialMoves[type])) return false;
+        if (index < 0 || index >= char.specialMoves[type].length) return false;
+        
         char.specialMoves[type].splice(index, 1);
         return true;
     }
@@ -708,29 +762,7 @@
         });
         container.innerHTML = html;
 
-        container.querySelectorAll('.remove-special-move').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                var form = document.getElementById('char-form');
-                var editId = form ? form.dataset.editId : null;
-                if (!editId) {
-                    alert('Please save the character first.');
-                    return;
-                }
-                var char = window.getCharacterById(editId);
-                if (!char) return;
-                var type = this.dataset.type;
-                var index = parseInt(this.dataset.index);
-                removeSpecialMove(char, type, index);
-                var moves = getSpecialMoves(char);
-                renderSpecialMoves('physical-moves-list', moves.physical, 'physical');
-                renderSpecialMoves('magical-moves-list', moves.magical, 'magical');
-                if (typeof window.saveData === 'function') {
-                    window.saveData().catch(function(err) {
-                        console.error('Failed to save special move:', err);
-                    });
-                }
-            });
-        });
+        // Event listeners are bound via delegation in character-events.js
     }
 
     // ============================================================
@@ -744,7 +776,7 @@
                     return `
                         <div class="form-group">
                             <label style="font-size:0.55rem;text-align:center;display:block;">${stat.toUpperCase()}</label>
-                            <input type="number" id="char-${stat}" min="1" max="30" value="10" 
+                            <input type="number" id="char-${stat}" min="${STAT_MIN}" max="${STAT_MAX}" value="10" 
                                    style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" />
                         </div>
                     `;
@@ -852,82 +884,25 @@
     }
 
     // ============================================================
-    // EVENT INITIALIZATION
+    // EVENT INITIALIZATION - Now called from character-events.js
     // ============================================================
 
     function initStatsEvents() {
-        var statInputs = ['char-str', 'char-dex', 'char-con', 'char-int', 'char-wis', 'char-cha'];
-        statInputs.forEach(function(id) {
-            var el = document.getElementById(id);
-            if (el) {
-                // Use blur for sanitization, not input - allows editing
-                el.addEventListener('blur', function() {
-                    var val = parseInt(this.value);
-                    if (isNaN(val)) {
-                        this.value = 10;
-                    } else if (val < 1) {
-                        this.value = 1;
-                    } else if (val > 30) {
-                        this.value = 30;
-                    }
-                    updateClassSuggestion();
-                });
-                // Also update on change
-                el.addEventListener('change', function() {
-                    updateClassSuggestion();
-                });
-            }
-        });
+        // Stats events are now handled by character-events.js
+        // This function is kept for compatibility but does nothing
+        console.debug('CharacterStats.initStatsEvents: Events are now handled by character-events.js');
+    }
 
-        var classSelect = document.getElementById('manual-class-select');
-        if (classSelect) {
-            populateClassSelect();
-            classSelect.addEventListener('change', function() {
-                var display = document.getElementById('suggested-class');
-                var descDisplay = document.getElementById('class-description-display');
-                
-                if (this.value) {
-                    var selected = CLASS_DEFINITIONS.find(function(c) { return c.id === this.value; }.bind(this));
-                    if (selected) {
-                        display.textContent = (selected.icon || '') + ' ' + (selected.label || '');
-                        display.style.color = 'var(--accent)';
-                        display.style.background = 'var(--accent-soft)';
-                        display.style.borderColor = 'var(--accent)';
-                        if (descDisplay) {
-                            descDisplay.textContent = selected.description || 'No description available.';
-                            descDisplay.style.borderLeftColor = 'var(--accent)';
-                            descDisplay.style.color = 'var(--text)';
-                        }
-                    }
-                } else {
-                    updateClassSuggestion();
-                    if (descDisplay) {
-                        descDisplay.textContent = 'Select a class to see its description here.';
-                        descDisplay.style.borderLeftColor = 'var(--accent)';
-                        descDisplay.style.color = 'var(--text-dim)';
-                    }
-                }
-            });
-        }
+    function initMagicEvents() {
+        // Magic events are now handled by character-events.js
+        // This function is kept for compatibility but does nothing
+        console.debug('CharacterStats.initMagicEvents: Events are now handled by character-events.js');
+    }
 
-        var recalcBtn = document.getElementById('recalculate-class-btn');
-        if (recalcBtn) {
-            recalcBtn.addEventListener('click', updateClassSuggestion);
-        }
-
-        var randomBtn = document.getElementById('random-stats-btn');
-        if (randomBtn) {
-            randomBtn.addEventListener('click', function() {
-                var stats = generateRandomStats();
-                document.getElementById('char-str').value = stats.str;
-                document.getElementById('char-dex').value = stats.dex;
-                document.getElementById('char-con').value = stats.con;
-                document.getElementById('char-int').value = stats.int;
-                document.getElementById('char-wis').value = stats.wis;
-                document.getElementById('char-cha').value = stats.cha;
-                updateClassSuggestion();
-            });
-        }
+    function initSpecialMovesEvents() {
+        // Special moves events are now handled by character-events.js
+        // This function is kept for compatibility but does nothing
+        console.debug('CharacterStats.initSpecialMovesEvents: Events are now handled by character-events.js');
     }
 
     function populateClassSelect() {
@@ -937,7 +912,14 @@
         var currentValue = select.value || '';
         select.innerHTML = '<option value="">Auto-suggest</option>';
         
-        CLASS_DEFINITIONS.forEach(function(cls) {
+        // Sort classes by priority (higher first) then by label
+        var sorted = CLASS_DEFINITIONS.slice().sort(function(a, b) {
+            var priorityDiff = (b.priority || 0) - (a.priority || 0);
+            if (priorityDiff !== 0) return priorityDiff;
+            return (a.label || '').localeCompare(b.label || '');
+        });
+        
+        sorted.forEach(function(cls) {
             if (cls && cls.id) {
                 var option = document.createElement('option');
                 option.value = cls.id;
@@ -960,177 +942,6 @@
         }
     }
 
-    function initMagicEvents() {
-        var magicInputs = getMagicTypeKeys();
-        magicInputs.forEach(function(key) {
-            var id = 'magic-' + key;
-            var el = document.getElementById(id);
-            if (el) {
-                // Use blur for sanitization, not input - allows editing
-                el.addEventListener('blur', function() {
-                    var val = parseInt(this.value);
-                    if (isNaN(val)) {
-                        this.value = 0;
-                    } else if (val < 0) {
-                        this.value = 0;
-                    } else if (val > MAGIC_MAX) {
-                        this.value = MAGIC_MAX;
-                    }
-                    updateMagicClassSuggestion();
-                    updateMagicPowerDisplay();
-                });
-                // Also update on change
-                el.addEventListener('change', function() {
-                    updateMagicClassSuggestion();
-                    updateMagicPowerDisplay();
-                });
-            }
-        });
-
-        var magicClassSelect = document.getElementById('manual-magic-class-select');
-        if (magicClassSelect) {
-            var magicOptions = [
-                { value: '', label: 'Auto-suggest' },
-                { value: 'elementalist', label: 'Elementalist' },
-                { value: 'body_mage', label: 'Body Mage' },
-                { value: 'aether_mage', label: 'Aether Mage' }
-            ];
-            magicClassSelect.innerHTML = '';
-            magicOptions.forEach(function(opt) {
-                var option = document.createElement('option');
-                option.value = opt.value;
-                option.textContent = opt.label;
-                magicClassSelect.appendChild(option);
-            });
-            magicClassSelect.addEventListener('change', function() {
-                var display = document.getElementById('suggested-magic-class');
-                if (this.value) {
-                    var selected = magicOptions.find(function(o) { return o.value === this.value; }.bind(this));
-                    if (selected) {
-                        display.textContent = selected.label;
-                        display.style.color = 'var(--info)';
-                        display.style.background = 'var(--info-soft)';
-                        display.style.borderColor = 'var(--info)';
-                    }
-                } else {
-                    updateMagicClassSuggestion();
-                }
-            });
-        }
-
-        var recalcMagicBtn = document.getElementById('recalculate-magic-class-btn');
-        if (recalcMagicBtn) {
-            recalcMagicBtn.addEventListener('click', function() {
-                updateMagicClassSuggestion();
-                updateMagicPowerDisplay();
-            });
-        }
-
-        var randomElementalBtn = document.getElementById('random-elemental-btn');
-        if (randomElementalBtn) {
-            randomElementalBtn.addEventListener('click', function() {
-                var magic = generateRandomMagicCategory('elemental');
-                var types = getMagicCategoryTypes('elemental');
-                types.forEach(function(key) {
-                    var input = document.getElementById('magic-' + key);
-                    if (input && magic[key] !== undefined) {
-                        input.value = magic[key];
-                    }
-                });
-                updateMagicClassSuggestion();
-                updateMagicPowerDisplay();
-            });
-        }
-
-        var randomBodyBtn = document.getElementById('random-body-btn');
-        if (randomBodyBtn) {
-            randomBodyBtn.addEventListener('click', function() {
-                var magic = generateRandomMagicCategory('body');
-                var types = getMagicCategoryTypes('body');
-                types.forEach(function(key) {
-                    var input = document.getElementById('magic-' + key);
-                    if (input && magic[key] !== undefined) {
-                        input.value = magic[key];
-                    }
-                });
-                updateMagicClassSuggestion();
-                updateMagicPowerDisplay();
-            });
-        }
-
-        var randomAetherBtn = document.getElementById('random-aether-btn');
-        if (randomAetherBtn) {
-            randomAetherBtn.addEventListener('click', function() {
-                var magic = generateRandomMagicCategory('aether');
-                var types = getMagicCategoryTypes('aether');
-                types.forEach(function(key) {
-                    var input = document.getElementById('magic-' + key);
-                    if (input && magic[key] !== undefined) {
-                        input.value = magic[key];
-                    }
-                });
-                updateMagicClassSuggestion();
-                updateMagicPowerDisplay();
-            });
-        }
-    }
-
-    function initSpecialMovesEvents() {
-        var addPhysicalBtn = document.getElementById('add-physical-move-btn');
-        if (addPhysicalBtn) {
-            addPhysicalBtn.addEventListener('click', function() {
-                var form = document.getElementById('char-form');
-                var editId = form ? form.dataset.editId : null;
-                if (!editId) {
-                    alert('Please save the character first.');
-                    return;
-                }
-                var char = window.getCharacterById(editId);
-                if (!char) return;
-                var name = document.getElementById('physical-move-name').value.trim();
-                var desc = document.getElementById('physical-move-desc').value.trim();
-                if (!name) { alert('Please enter a move name.'); return; }
-                addSpecialMove(char, 'physical', name, desc);
-                var moves = getSpecialMoves(char);
-                renderSpecialMoves('physical-moves-list', moves.physical, 'physical');
-                document.getElementById('physical-move-name').value = '';
-                document.getElementById('physical-move-desc').value = '';
-                if (typeof window.saveData === 'function') {
-                    window.saveData().catch(function(err) {
-                        console.error('Failed to save physical move:', err);
-                    });
-                }
-            });
-        }
-
-        var addMagicalBtn = document.getElementById('add-magical-move-btn');
-        if (addMagicalBtn) {
-            addMagicalBtn.addEventListener('click', function() {
-                var form = document.getElementById('char-form');
-                var editId = form ? form.dataset.editId : null;
-                if (!editId) {
-                    alert('Please save the character first.');
-                    return;
-                }
-                var char = window.getCharacterById(editId);
-                if (!char) return;
-                var name = document.getElementById('magical-move-name').value.trim();
-                var desc = document.getElementById('magical-move-desc').value.trim();
-                if (!name) { alert('Please enter a move name.'); return; }
-                addSpecialMove(char, 'magical', name, desc);
-                var moves = getSpecialMoves(char);
-                renderSpecialMoves('magical-moves-list', moves.magical, 'magical');
-                document.getElementById('magical-move-name').value = '';
-                document.getElementById('magical-move-desc').value = '';
-                if (typeof window.saveData === 'function') {
-                    window.saveData().catch(function(err) {
-                        console.error('Failed to save magical move:', err);
-                    });
-                }
-            });
-        }
-    }
-
     // ============================================================
     // EXPOSE
     // ============================================================
@@ -1142,6 +953,8 @@
         MAGIC_TYPES: MAGIC_TYPES,
         MAGIC_CATEGORIES: MAGIC_CATEGORIES,
         MAGIC_MAX: MAGIC_MAX,
+        STAT_MIN: STAT_MIN,
+        STAT_MAX: STAT_MAX,
 
         // Magic helpers
         getMagicTypeKeys: getMagicTypeKeys,
@@ -1181,10 +994,11 @@
         getMagicTabHTML: getMagicTabHTML,
         getSpecialMovesHTML: getSpecialMovesHTML,
 
-        // Event initialization
+        // Event initialization (now just compatibility stubs)
         initStatsEvents: initStatsEvents,
         initMagicEvents: initMagicEvents,
         initSpecialMovesEvents: initSpecialMovesEvents,
+        
         populateClassSelect: populateClassSelect
     };
 
