@@ -10,10 +10,11 @@
  *   - Populating the class filter dropdown
  * 
  * IMPORTANT:
+ *   - This module is for RENDERING only - all event binding is in character-events.js
  *   - All user-controlled data is escaped to prevent XSS.
- *   - Search input is debounced to prevent excessive re-renders.
  *   - Filters are applied in a pure function for testability.
  *   - The list is re-rendered when data changes.
+ *   - No event listeners are bound here - they are delegated in character-events.js
  * 
  * DEPENDENCIES:
  *   - window.getCharacterById (from core-utils.js)
@@ -21,7 +22,7 @@
  *   - window.getFullName (from core-utils.js)
  *   - window.getCurrentStatus (from core-utils.js)
  *   - window.getClasses (from core-utils.js)
- *   - window.currentEditId (from index.js)
+ *   - window.getCurrentEditId (from index.js)
  *   - window.showCharacterForm (from index.js)
  *   - window.toggleCharacterList (from index.js)
  */
@@ -52,31 +53,35 @@
             'getFullName',
             'getCurrentStatus',
             'getClasses',
-            'currentEditId',
-            'showCharacterForm',
-            'toggleCharacterList'
+            'getCurrentEditId'
         ];
 
         var missing = [];
         required.forEach(function(name) {
-            if (name === 'currentEditId' && typeof window.currentEditId !== 'function') {
-                missing.push('currentEditId');
-            } else if (name === 'showCharacterForm' && typeof window.showCharacterForm !== 'function') {
-                missing.push('showCharacterForm');
-            } else if (name === 'toggleCharacterList' && typeof window.toggleCharacterList !== 'function') {
-                missing.push('toggleCharacterList');
-            } else if (typeof window[name] !== 'function' && 
-                       name !== 'currentEditId' &&
-                       name !== 'showCharacterForm' &&
-                       name !== 'toggleCharacterList') {
+            if (typeof window[name] !== 'function') {
                 missing.push(name);
             }
         });
 
+        // Optional but recommended for full functionality
+        var optional = ['showCharacterForm', 'toggleCharacterList'];
+        var missingOptional = [];
+        optional.forEach(function(name) {
+            if (typeof window[name] !== 'function') {
+                missingOptional.push(name);
+            }
+        });
+
         if (missing.length > 0) {
-            console.warn('CharacterList: Missing dependencies:', missing.join(', '));
+            console.warn('CharacterList: Missing required dependencies:', missing.join(', '));
             return false;
         }
+
+        if (missingOptional.length > 0) {
+            console.warn('CharacterList: Missing optional dependencies:', missingOptional.join(', '));
+            // Don't fail - some features may be degraded
+        }
+
         return true;
     }
 
@@ -94,7 +99,7 @@
     }
 
     // ============================================================
-    // STATUS HELPERS
+    // STATUS HELPERS - Pure functions
     // ============================================================
 
     function getStatusIndicator(status) {
@@ -220,7 +225,7 @@
     }
 
     // ============================================================
-    // RENDER CHARACTER LIST
+    // RENDER CHARACTER LIST - NO EVENT BINDING
     // ============================================================
 
     function render() {
@@ -254,6 +259,7 @@
             return;
         }
 
+        // Filter and sort characters
         var filteredChars = data.characters
             .filter(function(char) {
                 return applyFilters(char, nameFilter, statusFilter, classFilter);
@@ -273,8 +279,8 @@
             return;
         }
 
-        var currentId = typeof window.currentEditId === 'function'
-            ? window.currentEditId()
+        var currentId = typeof window.getCurrentEditId === 'function'
+            ? window.getCurrentEditId()
             : null;
 
         var html = '';
@@ -304,21 +310,9 @@
 
         listContainer.innerHTML = html;
 
-        // Attach click listeners to list items
-        listContainer.querySelectorAll('.char-list-item').forEach(function(el) {
-            el.addEventListener('click', function() {
-                var id = this.dataset.id;
-                if (typeof window.showCharacterForm === 'function') {
-                    window.showCharacterForm(id);
-                }
-                // Close list on mobile
-                if (window.innerWidth < 768) {
-                    if (typeof window.toggleCharacterList === 'function') {
-                        window.toggleCharacterList(false);
-                    }
-                }
-            });
-        });
+        // NOTE: Event listeners are NOT bound here.
+        // They are bound via event delegation in character-events.js
+        // See bindCharacterList() in character-events.js
     }
 
     // ============================================================
