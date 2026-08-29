@@ -15,6 +15,11 @@
  *   - CharacterForm.show() is the only way to display a character
  *   - Events are bound by CharacterEvents after rendering
  *   - The list open state is preserved across re-renders
+ *   - Can be destroyed and re-initialized for lifecycle management
+ * 
+ * LIFECYCLE:
+ *   - renderCharacters(container) - Renders the module
+ *   - destroy() - Removes all listeners and cleans up
  * 
  * DEPENDENCIES (must be loaded before this file):
  *   - window.CharacterList (from character-list.js)
@@ -47,7 +52,6 @@
 
     var _currentEditId = null;
     var _characterListOpen = false;
-    var _initialized = false;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -75,14 +79,19 @@
             }
         });
 
-        // Optional but recommended
-        var optional = ['CharacterStats', 'CharacterCRUD', 'CharacterViews', 
-                       'CharacterClasses', 'CharacterEliminations'];
-        var missingOptional = [];
-        optional.forEach(function(name) {
-            if (typeof window[name] === 'undefined' || 
-                (typeof window[name] === 'object' && window[name] === null)) {
-                missingOptional.push(name);
+        // Feature modules - required for their respective features
+        var featureModules = [
+            'CharacterStats',
+            'CharacterCRUD',
+            'CharacterViews',
+            'CharacterClasses',
+            'CharacterEliminations'
+        ];
+
+        var missingFeatures = [];
+        featureModules.forEach(function(name) {
+            if (typeof window[name] === 'undefined' || window[name] === null) {
+                missingFeatures.push(name);
             }
         });
 
@@ -91,9 +100,9 @@
             return false;
         }
 
-        if (missingOptional.length > 0) {
-            console.warn('Characters Index: Missing optional dependencies:', missingOptional.join(', '));
-            // Don't fail - some features may be degraded
+        if (missingFeatures.length > 0) {
+            console.warn('Characters Index: Missing feature dependencies:', missingFeatures.join(', '));
+            // Don't fail - features will be degraded
         }
 
         return true;
@@ -166,7 +175,6 @@
         var openClass = _characterListOpen ? ' open' : '';
         var toggleOpenClass = _characterListOpen ? ' open' : '';
 
-        // Get tab HTML from the form module
         var tabsHTML = '';
         if (window.CharacterForm && typeof window.CharacterForm.getTabsHTML === 'function') {
             tabsHTML = window.CharacterForm.getTabsHTML();
@@ -205,7 +213,7 @@
                     </div>
                 </div>
 
-                <div id="character-form" class="form-container">
+                <div id="character-form-container" class="form-container">
                     <h3 id="form-title">Select a character</h3>
                     <form id="character-form">
                         ${tabsHTML}
@@ -242,7 +250,6 @@
             return;
         }
 
-        // Check data
         if (!window.data) {
             console.warn('No data available for characters, waiting for dataReady event');
             container.innerHTML = '<p class="empty-state">Loading data...</p>';
@@ -285,11 +292,12 @@
 
     function selectCurrentCharacter() {
         var data = window.data || {};
+        
         if (!data.characters || data.characters.length === 0) {
+            setCurrentEditId(null);
             return;
         }
 
-        // Try to keep the currently selected character
         var charToShow = null;
         
         if (_currentEditId) {
@@ -298,7 +306,6 @@
                 : null;
         }
         
-        // If current selection is gone, fall back to first character
         if (!charToShow) {
             charToShow = data.characters[0];
             if (charToShow) {
@@ -306,7 +313,6 @@
             }
         }
         
-        // Show the character using the centralized show function
         if (charToShow) {
             showCharacterForm(charToShow.id);
         }
@@ -320,7 +326,26 @@
         if (window.CharacterEvents && typeof window.CharacterEvents.destroy === 'function') {
             window.CharacterEvents.destroy();
         }
-        _initialized = false;
+    }
+
+    // ============================================================
+    // EVENT HANDLERS - With cleanup support
+    // ============================================================
+
+    function handleDataReady() {
+        var container = document.getElementById('tab-characters');
+        if (container && container.style.display !== 'none') {
+            renderCharacters(container);
+        }
+    }
+
+    function handleTabChanged(e) {
+        if (e.detail && e.detail.tab === 'characters') {
+            var container = document.getElementById('tab-characters');
+            if (container) {
+                renderCharacters(container);
+            }
+        }
     }
 
     // ============================================================
@@ -332,26 +357,16 @@
     }
 
     // ============================================================
-    // EVENT LISTENERS
+    // BIND GLOBAL EVENT LISTENERS
     // ============================================================
 
-    document.addEventListener('dataReady', function() {
-        var container = document.getElementById('tab-characters');
-        if (container && container.style.display !== 'none') {
-            renderCharacters(container);
-        }
-    });
+    document.addEventListener('dataReady', handleDataReady);
+    document.addEventListener('tabChanged', handleTabChanged);
 
-    document.addEventListener('tabChanged', function(e) {
-        if (e.detail && e.detail.tab === 'characters') {
-            var container = document.getElementById('tab-characters');
-            if (container) {
-                renderCharacters(container);
-            }
-        }
-    });
+    // ============================================================
+    // INITIAL RENDER - If data already loaded
+    // ============================================================
 
-    // If data already loaded, render
     if (window.data) {
         setTimeout(function() {
             var container = document.getElementById('tab-characters');
