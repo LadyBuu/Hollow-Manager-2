@@ -7,13 +7,14 @@
  *   - Rendering instructor calendar grid
  *   - Displaying instructor's class templates and blocks
  *   - Showing which students are assigned to each class
- *   - Managing student assignments
+ *   - Managing student assignments (delegated to core)
  * 
  * IMPORTANT:
- *   - This module uses core functions for all mutations
- *   - No direct window.data mutations
- *   - Student schedules are the canonical source of truth
- *   - Instructor templates are metadata, not authoritative for assignments
+ *   - This module uses core functions for ALL mutations
+ *   - NO direct window.data mutations
+ *   - Student schedules are the canonical source of truth for assignments
+ *   - Instructor templates define the instructor's scheduled teaching slots
+ *   - All assignment changes go through updateInstructorClassAssignments()
  */
 
 (function() {
@@ -53,6 +54,7 @@
     function checkDependencies() {
         var missing = [];
 
+        // Query functions
         if (typeof window.getInstructors !== 'function') {
             missing.push('getInstructors');
         }
@@ -93,32 +95,30 @@
             missing.push('getClassGroupLabel');
         }
 
-        if (typeof window.getClassLocation !== 'function') {
-            missing.push('getClassLocation');
+        if (typeof window.getStudents !== 'function') {
+            missing.push('getStudents');
         }
 
-        if (typeof window.setClassInstructor !== 'function') {
-            missing.push('setClassInstructor');
-        }
-
-        if (typeof window.setClassLabel !== 'function') {
-            missing.push('setClassLabel');
-        }
-
-        if (typeof window.setClassGroupLabel !== 'function') {
-            missing.push('setClassGroupLabel');
-        }
-
-        if (typeof window.setClassDuration !== 'function') {
-            missing.push('setClassDuration');
-        }
-
+        // Persistence
         if (typeof window.saveData !== 'function') {
             missing.push('saveData');
         }
 
-        if (typeof window.getStudents !== 'function') {
-            missing.push('getStudents');
+        // Core mutation functions
+        if (typeof window.addInstructorClassTemplate !== 'function') {
+            missing.push('addInstructorClassTemplate');
+        }
+
+        if (typeof window.removeInstructorClassTemplate !== 'function') {
+            missing.push('removeInstructorClassTemplate');
+        }
+
+        if (typeof window.removeInstructorBlock !== 'function') {
+            missing.push('removeInstructorBlock');
+        }
+
+        if (typeof window.updateInstructorClassAssignments !== 'function') {
+            missing.push('updateInstructorClassAssignments');
         }
 
         if (missing.length > 0) {
@@ -144,7 +144,9 @@
             var instructorId = state.selectedId;
             var week = state.week;
 
-            // Get instructor templates (metadata only)
+            // Get instructor class templates.
+            // Templates define the instructor's scheduled teaching slots.
+            // Student schedules remain authoritative for actual assignments.
             if (data.curriculum && data.curriculum.instructorTemplates) {
                 var templateKey = instructorId + '_' + week;
                 var templates = data.curriculum.instructorTemplates[templateKey] || {};
@@ -525,7 +527,6 @@
                 return;
             }
 
-            // Use core function to add template
             if (typeof window.addInstructorClassTemplate === 'function') {
                 var result = window.addInstructorClassTemplate(instructorId, week, day, hour, {
                     disciplineId: disciplineId,
@@ -640,7 +641,7 @@
     }
 
     // ============================================================
-    // MANAGE STUDENTS MODAL
+    // MANAGE STUDENTS MODAL - Uses Core Function
     // ============================================================
 
     function showManageStudentsModal(instructorId, week, day, hour, container) {
@@ -660,8 +661,6 @@
                 assignedStudentIds.push(slotData.students[i].studentId);
             }
         }
-        var duration = slotData.duration || 1;
-        var disciplineId = slotData.disciplineId;
 
         var modal = document.createElement('div');
         modal.className = 'modal';
@@ -724,143 +723,54 @@
                 selectedStudents.push(checkboxes[c].value);
             }
 
-            // Update template metadata
-            var data = window.data || {};
-            if (!data.curriculum) data.curriculum = {};
-            if (!data.curriculum.instructorTemplates) data.curriculum.instructorTemplates = {};
+            if (typeof window.updateInstructorClassAssignments === 'function') {
+                var result = window.updateInstructorClassAssignments(
+                    instructorId,
+                    week,
+                    day,
+                    hour,
+                    selectedStudents
+                );
 
-            var templateKey = instructorId + '_' + week;
-            var classKey = day + '_' + hour;
-
-            if (data.curriculum.instructorTemplates[templateKey] &&
-                data.curriculum.instructorTemplates[templateKey][classKey]) {
-                data.curriculum.instructorTemplates[templateKey][classKey].assignedStudents = selectedStudents;
+                if (result && result.success) {
+                    modal.remove();
+                    window.saveData()
+                        .then(function() {
+                            var msg = 'Student assignments updated.';
+                            if (result.added && result.added > 0) {
+                                msg += ' Added ' + result.added + ' student(s).';
+                            }
+                            if (result.removed && result.removed > 0) {
+                                msg += ' Removed ' + result.removed + ' student(s).';
+                            }
+                            if (result.conflicts && result.conflicts.length > 0) {
+                                msg += ' Conflicts: ' + result.conflicts.join(', ');
+                            }
+                            showNotification(msg, 'success');
+                            render(container, { selectedId: instructorId, week: week });
+                        })
+                        .catch(function() {
+                            showNotification('Assignments updated in memory, but persistence failed.', 'error');
+                            render(container, { selectedId: instructorId, week: week });
+                        });
+                } else {
+                    showNotification(result && result.message ? result.message : 'Failed to update assignments.', 'error');
+                }
+            } else {
+                showNotification('updateInstructorClassAssignments not available.', 'error');
             }
-
-            // Update student schedules using core functions
-            var allStudentsList = window.getStudents() || [];
-            for (var s2 = 0; s2 < allStudentsList.length; s2++) {
-                var student = allStudentsList[s2];
-                var isAssigned = false;
-                for (var s3 = 0; s3 < selectedStudents.length; s3++) {
-                    if (String(selectedStudents[s3]) === String(student.id)) {
-                        isAssigned = true;
-                        break;
-                    }
-                }
-                var wasAssigned = false;
-                for (var s4 = 0; s4 < assignedStudentIds.length; s4++) {
-                    if (String(assignedStudentIds[s4]) === String(student.id)) {
-                        wasAssigned = true;
-                        break;
-                    }
-                }
-
-                var studentSchedule = window.getStudentSchedule(student.id, week) || {};
-
-                if (isAssigned && !wasAssigned) {
-                    // Add student to class using core functions
-                    for (var h = hour; h < hour + duration && h <= CALENDAR_END_HOUR; h++) {
-                        if (!studentSchedule[day]) studentSchedule[day] = {};
-                        studentSchedule[day][h] = disciplineId;
-                    }
-                    if (typeof window.setClassInstructor === 'function') {
-                        window.setClassInstructor(student.id, week, day, hour, instructorId);
-                    }
-                    if (slotData.label && typeof window.setClassLabel === 'function') {
-                        window.setClassLabel(student.id, week, day, hour, slotData.label);
-                    }
-                    if (slotData.groupLabel && typeof window.setClassGroupLabel === 'function') {
-                        window.setClassGroupLabel(student.id, week, day, hour, slotData.groupLabel);
-                    }
-                    if (typeof window.setClassDuration === 'function') {
-                        window.setClassDuration(student.id, week, day, hour, duration);
-                    }
-                } else if (!isAssigned && wasAssigned) {
-                    // Remove student from class using core functions
-                    for (var h2 = hour; h2 < hour + duration && h2 <= CALENDAR_END_HOUR; h2++) {
-                        if (studentSchedule[day] && String(studentSchedule[day][h2]) === String(disciplineId)) {
-                            delete studentSchedule[day][h2];
-                        }
-                    }
-                    if (typeof window.setClassInstructor === 'function') {
-                        window.setClassInstructor(student.id, week, day, hour, null);
-                    }
-                    if (typeof window.setClassLabel === 'function') {
-                        window.setClassLabel(student.id, week, day, hour, null);
-                    }
-                    if (typeof window.setClassGroupLabel === 'function') {
-                        window.setClassGroupLabel(student.id, week, day, hour, null);
-                    }
-                    if (typeof window.setClassDuration === 'function') {
-                        window.setClassDuration(student.id, week, day, hour, null);
-                    }
-                }
-            }
-
-            modal.remove();
-            window.saveData()
-                .then(function() {
-                    showNotification('Student assignments updated.', 'success');
-                    render(container, { selectedId: instructorId, week: week });
-                })
-                .catch(function() {
-                    showNotification('Assignments updated in memory, but persistence failed.', 'error');
-                    render(container, { selectedId: instructorId, week: week });
-                });
         };
     }
 
     // ============================================================
-    // REMOVE CLASS
+    // REMOVE CLASS - Uses Core Function
     // ============================================================
 
     function removeInstructorClass(instructorId, week, day, hour, container) {
-        // Use core function to remove template
         if (typeof window.removeInstructorClassTemplate === 'function') {
-            // First, get the template to find assigned students
-            var data = window.data || {};
-            var templateKey = instructorId + '_' + week;
-            var classKey = day + '_' + hour;
-            var template = null;
-            if (data.curriculum && data.curriculum.instructorTemplates &&
-                data.curriculum.instructorTemplates[templateKey] &&
-                data.curriculum.instructorTemplates[templateKey][classKey]) {
-                template = data.curriculum.instructorTemplates[templateKey][classKey];
-            }
-
             var result = window.removeInstructorClassTemplate(instructorId, week, day, hour);
 
             if (result && result.success) {
-                // If template had assigned students, clean them up
-                if (template && template.assignedStudents && template.assignedStudents.length > 0) {
-                    var assignedStudents = template.assignedStudents || [];
-                    var duration = template.duration || 1;
-                    var disciplineId = template.disciplineId;
-
-                    for (var i = 0; i < assignedStudents.length; i++) {
-                        var studentId = assignedStudents[i];
-                        var studentSchedule = window.getStudentSchedule(studentId, week) || {};
-                        for (var h = hour; h < hour + duration && h <= CALENDAR_END_HOUR; h++) {
-                            if (studentSchedule[day] && String(studentSchedule[day][h]) === String(disciplineId)) {
-                                delete studentSchedule[day][h];
-                            }
-                        }
-                        if (typeof window.setClassInstructor === 'function') {
-                            window.setClassInstructor(studentId, week, day, hour, null);
-                        }
-                        if (typeof window.setClassLabel === 'function') {
-                            window.setClassLabel(studentId, week, day, hour, null);
-                        }
-                        if (typeof window.setClassGroupLabel === 'function') {
-                            window.setClassGroupLabel(studentId, week, day, hour, null);
-                        }
-                        if (typeof window.setClassDuration === 'function') {
-                            window.setClassDuration(studentId, week, day, hour, null);
-                        }
-                    }
-                }
-
                 window.saveData()
                     .then(function() {
                         showNotification('Class removed.', 'success');
@@ -939,7 +849,6 @@
     }
 
     function removeBlockedTime(instructorId, week, day, hour, container) {
-        // Use core function to remove block
         if (typeof window.removeInstructorBlock === 'function') {
             var result = window.removeInstructorBlock(instructorId, week, day, hour);
 
@@ -998,6 +907,7 @@
     if (window.CalendarModes && typeof window.CalendarModes.registerMode === 'function') {
         window.CalendarModes.registerMode('instructor', {
             label: 'Instructor',
+            hint: 'Click a slot to add class | Right-click to remove | Click class to manage students',
             render: render,
             getEntities: getInstructors,
             getEntityDisplayName: function(entity) {
