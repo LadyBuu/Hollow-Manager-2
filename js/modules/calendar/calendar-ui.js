@@ -9,6 +9,11 @@
  *   - Switching between modes (student/instructor/location)
  *   - Handling navigation
  *   - Coordinating with mode-specific renderers
+ * 
+ * IMPORTANT:
+ *   - This module depends ONLY on CalendarModes registry
+ *   - It does not know about students, instructors, or locations directly
+ *   - All entity-specific logic is delegated to the registered modes
  */
 
 (function() {
@@ -17,10 +22,6 @@
     // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
-
-    if (!window.CalendarUtils) {
-        return;
-    }
 
     if (!window.CalendarModes) {
         return;
@@ -39,7 +40,6 @@
     // CONSTANTS
     // ============================================================
 
-    var CalendarUtils = window.CalendarUtils;
     var CalendarModes = window.CalendarModes;
 
     // ============================================================
@@ -49,32 +49,18 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!CalendarModes || typeof CalendarModes.getMode !== 'function') {
-            missing.push('CalendarModes.getMode');
-        }
-
-        if (!CalendarModes || typeof CalendarModes.getModeOptions !== 'function') {
-            missing.push('CalendarModes.getModeOptions');
-        }
-
-        if (!CalendarModes || typeof CalendarModes.hasMode !== 'function') {
-            missing.push('CalendarModes.hasMode');
-        }
-
-        if (typeof window.getStudents !== 'function') {
-            missing.push('getStudents');
-        }
-
-        if (typeof window.getInstructors !== 'function') {
-            missing.push('getInstructors');
-        }
-
-        if (typeof window.getLocations !== 'function') {
-            missing.push('getLocations');
-        }
-
-        if (typeof window.getDisplayName !== 'function') {
-            missing.push('getDisplayName');
+        if (!CalendarModes) {
+            missing.push('CalendarModes');
+        } else {
+            if (typeof CalendarModes.getMode !== 'function') {
+                missing.push('CalendarModes.getMode');
+            }
+            if (typeof CalendarModes.getModeOptions !== 'function') {
+                missing.push('CalendarModes.getModeOptions');
+            }
+            if (typeof CalendarModes.hasMode !== 'function') {
+                missing.push('CalendarModes.hasMode');
+            }
         }
 
         if (missing.length > 0) {
@@ -91,9 +77,7 @@
     var _state = {
         mode: 'student',
         week: 1,
-        selectedId: null,
-        entityList: [],
-        expandedGroups: {}
+        selectedId: null
     };
 
     var _container = null;
@@ -152,12 +136,41 @@
             return;
         }
 
+        // Ensure selection is valid before rendering
+        ensureValidSelection();
+
         _container.innerHTML = getCalendarUIHTML();
 
         populateModeSelector();
         populateEntitySelector();
         renderCalendarGrid();
         bindEvents();
+    }
+
+    // ============================================================
+    // STATE VALIDATION
+    // ============================================================
+
+    function ensureValidSelection() {
+        var mode = CalendarModes.getMode(_state.mode);
+        if (!mode || typeof mode.getEntities !== 'function') {
+            _state.selectedId = null;
+            return;
+        }
+
+        var entities = mode.getEntities() || [];
+        var exists = false;
+
+        for (var i = 0; i < entities.length; i++) {
+            if (String(entities[i].id) === String(_state.selectedId)) {
+                exists = true;
+                break;
+            }
+        }
+
+        if (!exists) {
+            _state.selectedId = entities.length > 0 ? entities[0].id : null;
+        }
     }
 
     // ============================================================
@@ -182,7 +195,7 @@
                         '</select>' +
                     '</div>' +
                     '<div class="entity-selector">' +
-                        '<label for="calendar-entity-select" id="calendar-entity-label">Student:</label>' +
+                        '<label for="calendar-entity-select" id="calendar-entity-label">Entity:</label>' +
                         '<select id="calendar-entity-select">' +
                             '<option value="">Select...</option>' +
                         '</select>' +
@@ -232,17 +245,16 @@
         );
     }
 
+    // ============================================================
+    // MODE HINT - Dynamic from registry
+    // ============================================================
+
     function getModeHint() {
-        switch (_state.mode) {
-            case 'student':
-                return 'Click a slot to add class  |  Right-click to remove  |  Rest days are user-configurable';
-            case 'instructor':
-                return 'Click a slot to add class  |  Right-click to remove  |  Click class to manage students';
-            case 'location':
-                return 'Click a slot to assign a class  |  Right-click to remove';
-            default:
-                return 'Select a view to begin';
+        var mode = CalendarModes.getMode(_state.mode);
+        if (mode && mode.hint) {
+            return mode.hint;
         }
+        return 'Select a view to begin';
     }
 
     // ============================================================
@@ -301,6 +313,10 @@
         if (!selectionExists && entities.length > 0) {
             _state.selectedId = entities[0].id;
             select.value = String(_state.selectedId);
+            // Notify state change after auto-heal
+            if (_onStateChange) {
+                _onStateChange(getState());
+            }
         } else if (!selectionExists) {
             _state.selectedId = null;
         }
@@ -385,9 +401,6 @@
         if (modeSelect) {
             modeSelect.addEventListener('change', function() {
                 setState({ mode: this.value });
-                if (_onStateChange) {
-                    _onStateChange(getState());
-                }
             });
         }
 
@@ -395,9 +408,6 @@
         if (entitySelect) {
             entitySelect.addEventListener('change', function() {
                 setState({ selectedId: this.value });
-                if (_onStateChange) {
-                    _onStateChange(getState());
-                }
             });
         }
 
@@ -406,9 +416,6 @@
             prevBtn.addEventListener('click', function() {
                 if (_state.week > 1) {
                     setState({ week: _state.week - 1 });
-                    if (_onStateChange) {
-                        _onStateChange(getState());
-                    }
                 }
             });
         }
@@ -418,9 +425,6 @@
             nextBtn.addEventListener('click', function() {
                 if (_state.week < 52) {
                     setState({ week: _state.week + 1 });
-                    if (_onStateChange) {
-                        _onStateChange(getState());
-                    }
                 }
             });
         }
