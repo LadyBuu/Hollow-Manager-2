@@ -9,6 +9,8 @@
  *   - Time slot utilities
  *   - Date comparison helpers
  *   - Schedule validation helpers
+ *   - Schedule key generation
+ *   - Ranking block calculations
  * 
  * IMPORTANT:
  *   - All functions are PURE: no side effects, no data mutation
@@ -30,6 +32,17 @@
  *   - undefined, null, or '' = empty/unoccupied
  *   - Any other value (including 0, false, "0") = occupied
  *   - This applies to all schedule-related functions
+ * 
+ * SCHEDULE KEY GENERATION:
+ *   - getScheduleKey() generates a deterministic key for schedule entries
+ *   - All parameters are stringified to avoid type-based collisions
+ *   - Returns a JSON-stringified array: [studentId, week, day, hour]
+ *   - This is the SINGLE SOURCE OF TRUTH for schedule key generation
+ * 
+ * RANKING BLOCK:
+ *   - getRankingBlock() returns the block number for a period
+ *   - Blocks are pairs of weeks: weeks 1-2 = block 1, weeks 3-4 = block 2, etc.
+ *   - This is used for UI grouping of ranking periods
  * 
  * NOTE: Period parsing functions (parseOptionalPeriod, parsePositivePeriod,
  * parseStrictPositivePeriod, hasPeriodValue, getPeriodInfo) have been moved
@@ -356,6 +369,15 @@
     }
 
     /**
+     * Get the ranking block for a period.
+     * Alias for getWeekBlock for ranking-specific contexts.
+     * Returns null for invalid periods.
+     */
+    function getRankingBlock(period) {
+        return getWeekBlock(period);
+    }
+
+    /**
      * Get the week number from a date.
      * Uses calendar day-of-year (UTC-based) to avoid DST issues.
      * 
@@ -446,6 +468,107 @@
             hasPrev: current > 1,
             hasNext: current < maxWeek,
             maxWeek: maxWeek
+        };
+    }
+
+    // ============================================================
+    // SCHEDULE KEY GENERATION - SINGLE SOURCE OF TRUTH
+    // ============================================================
+
+    /**
+     * Generate a deterministic key for schedule entries.
+     * All parameters are stringified to avoid type-based collisions.
+     * This function does NOT validate inputs; validation occurs at the setter boundary.
+     * 
+     * @param {string} studentId - The student's ID
+     * @param {number|string} week - The week number
+     * @param {number|string} day - The day number (1-7)
+     * @param {number|string} hour - The hour number (0-23)
+     * @returns {string} A JSON-stringified array key
+     */
+    function getScheduleKey(studentId, week, day, hour) {
+        return JSON.stringify([
+            String(studentId),
+            String(week),
+            String(day),
+            String(hour)
+        ]);
+    }
+
+    // ============================================================
+    // SCHEDULE SLOT VALIDATION - Shared setter validation
+    // ============================================================
+
+    /**
+     * Validate a schedule slot for setters.
+     * Returns normalised, validated values on success.
+     * 
+     * @param {string} studentId - The student's ID
+     * @param {number|string} week - The week number (must be 1-52)
+     * @param {number|string} day - The day number (must be 1-7)
+     * @param {number|string} hour - The hour number (must be 0-23)
+     * @returns {object} 
+     *   Success: { success: true, studentId: string, week: number, day: string, hour: string }
+     *   Failure: { success: false, message: string }
+     */
+    function validateScheduleSlot(studentId, week, day, hour) {
+        // This function depends on CoreUtils.parseStrictPositivePeriod
+        // If CoreUtils is not available, use internal parse
+        var parseStrict;
+        if (window.CoreUtils && typeof window.CoreUtils.parseStrictPositivePeriod === 'function') {
+            parseStrict = window.CoreUtils.parseStrictPositivePeriod;
+        } else {
+            // Fallback internal parser
+            parseStrict = function(value) {
+                if (value === undefined || value === null || value === '') {
+                    return null;
+                }
+                var str = String(value).trim();
+                if (!/^\d+$/.test(str)) {
+                    return null;
+                }
+                var parsed = Number(str);
+                if (!Number.isSafeInteger(parsed) || parsed < 1) {
+                    return null;
+                }
+                return parsed;
+            };
+        }
+
+        if (studentId === undefined || studentId === null || String(studentId).trim() === '') {
+            return { success: false, message: 'Student ID is required.' };
+        }
+        var normalisedStudentId = String(studentId).trim();
+        
+        var weekNum = parseStrict(week);
+        if (weekNum === null || weekNum < 1 || weekNum > 52) {
+            return { success: false, message: 'Valid week is required (1-52).' };
+        }
+        
+        if (day === undefined || day === null || String(day).trim() === '') {
+            return { success: false, message: 'Day is required.' };
+        }
+        var dayNum = Number(day);
+        if (!Number.isInteger(dayNum) || dayNum < 1 || dayNum > 7) {
+            return { success: false, message: 'Valid day is required (1-7).' };
+        }
+        var normalisedDay = String(dayNum);
+        
+        if (hour === undefined || hour === null || String(hour).trim() === '') {
+            return { success: false, message: 'Hour is required.' };
+        }
+        var hourNum = Number(hour);
+        if (!Number.isInteger(hourNum) || hourNum < 0 || hourNum > 23) {
+            return { success: false, message: 'Valid hour is required (0-23).' };
+        }
+        var normalisedHour = String(hourNum);
+        
+        return {
+            success: true,
+            studentId: normalisedStudentId,
+            week: weekNum,
+            day: normalisedDay,
+            hour: normalisedHour
         };
     }
 
@@ -753,7 +876,6 @@
         var end = validateWeek(endWeek);
         if (start === null || end === null || start > end) return false;
 
-        // Check against actual year bounds if year is provided
         if (year !== undefined && year !== null) {
             var maxWeek = getWeeksInYear(year);
             return end <= maxWeek;
@@ -845,12 +967,19 @@
         getWeekLabel: getWeekLabel,
         getWeekRange: getWeekRange,
         getWeekBlock: getWeekBlock,
+        getRankingBlock: getRankingBlock,
         getWeekFromDate: getWeekFromDate,
         getWeekStartDate: getWeekStartDate,
         getWeekDisplay: getWeekDisplay,
         getWeekNavigation: getWeekNavigation,
         getDaysInYear: getDaysInYear,
         getWeeksInYear: getWeeksInYear,
+
+        // Schedule key generation
+        getScheduleKey: getScheduleKey,
+
+        // Schedule slot validation
+        validateScheduleSlot: validateScheduleSlot,
 
         // Time slot helpers
         getSlotKey: getSlotKey,
