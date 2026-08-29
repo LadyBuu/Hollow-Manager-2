@@ -8,10 +8,17 @@
  *   - Rendering the calendar container
  *   - Initializing the CalendarUI controller
  *   - Managing calendar lifecycle
+ *   - Restoring state from sessionStorage and URL hash
  * 
  * LIFECYCLE:
  *   TabManager registers 'calendar' → renderCalendar() → CalendarUI.init()
  *   Tab switching → renderCalendar() → CalendarUI.render()
+ * 
+ * IMPORTANT:
+ *   - This module is the only external entry point for calendar
+ *   - All calendar logic lives in calendar/ subdirectory
+ *   - This module does NOT implement calendar logic directly
+ *   - It uses CalendarModes registry for ALL mode validation
  */
 
 (function() {
@@ -37,6 +44,13 @@
         return;
     }
     window.__calendarModuleLoaded = true;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var CalendarUI = window.CalendarUI;
+    var CalendarModes = window.CalendarModes;
 
     // ============================================================
     // STATE
@@ -115,16 +129,16 @@
             var saved = sessionStorage.getItem('calendar_state');
             if (saved) {
                 var parsed = JSON.parse(saved);
-                if (parsed.mode && hasValidMode(parsed.mode)) {
+                if (parsed.mode && isValidMode(parsed.mode)) {
                     options.mode = parsed.mode;
                 }
-                if (parsed.week) {
+                if (parsed.week !== undefined && parsed.week !== null) {
                     var week = parseInt(parsed.week, 10);
                     if (!isNaN(week) && week >= 1 && week <= 52) {
                         options.week = week;
                     }
                 }
-                if (parsed.selectedId) {
+                if (parsed.selectedId !== undefined && parsed.selectedId !== null) {
                     options.selectedId = parsed.selectedId;
                 }
             }
@@ -133,35 +147,41 @@
         }
 
         // Priority 2: URL hash (overrides session)
-        var hash = window.location.hash;
-        if (hash) {
-            var params = hash.split('?');
-            if (params.length > 1) {
-                var query = params[1];
-                var pairs = query.split('&');
-                for (var i = 0; i < pairs.length; i++) {
-                    var pair = pairs[i];
-                    var separator = pair.indexOf('=');
-                    if (separator === -1) continue;
-                    var key = pair.substring(0, separator);
-                    var value = decodeURIComponent(pair.substring(separator + 1));
-                    if (key === 'mode' && hasValidMode(value)) {
-                        options.mode = value;
+        try {
+            var hash = window.location.hash;
+            if (hash) {
+                var queryIndex = hash.indexOf('?');
+                if (queryIndex !== -1) {
+                    var params = new URLSearchParams(hash.substring(queryIndex + 1));
+                    var modeParam = params.get('mode');
+                    if (modeParam && isValidMode(modeParam)) {
+                        options.mode = modeParam;
                     }
-                    if (key === 'week') {
-                        var week = parseInt(value, 10);
+                    var weekParam = params.get('week');
+                    if (weekParam !== null) {
+                        var week = parseInt(weekParam, 10);
                         if (!isNaN(week) && week >= 1 && week <= 52) {
                             options.week = week;
                         }
                     }
-                    if (key === 'id') {
-                        options.selectedId = value;
+                    var idParam = params.get('id');
+                    if (idParam !== null) {
+                        options.selectedId = idParam;
                     }
                 }
             }
+        } catch (_) {
+            // Ignore URL parsing errors
         }
 
-        // Priority 3: auto-select first available
+        // Priority 3: validate selectedId against current mode
+        if (options.selectedId !== null && options.selectedId !== undefined) {
+            if (!isValidSelectedId(options.mode, options.selectedId)) {
+                options.selectedId = null;
+            }
+        }
+
+        // Priority 4: auto-select first available
         if (!options.selectedId) {
             var firstId = getFirstAvailableId(options.mode);
             if (firstId) {
@@ -172,56 +192,64 @@
         return options;
     }
 
-    function hasValidMode(mode) {
-        if (!window.CalendarModes) return false;
-        if (typeof window.CalendarModes.hasMode === 'function') {
-            return window.CalendarModes.hasMode(mode);
-        }
-        return mode === 'student' || mode === 'instructor' || mode === 'location';
-    }
+    // ============================================================
+    // MODE VALIDATION - REGISTRY IS THE SOURCE OF TRUTH
+    // ============================================================
 
-    function getFirstAvailableId(mode) {
-        switch (mode) {
-            case 'student': {
-                var students = getStudents();
-                return students.length > 0 ? students[0].id : null;
-            }
-            case 'instructor': {
-                var instructors = getInstructors();
-                return instructors.length > 0 ? instructors[0].id : null;
-            }
-            case 'location': {
-                var locations = getLocations();
-                return locations.length > 0 ? locations[0].id : null;
-            }
-            default:
-                return null;
+    function isValidMode(mode) {
+        if (!CalendarModes) {
+            return false;
         }
+        if (typeof CalendarModes.hasMode === 'function') {
+            return CalendarModes.hasMode(mode);
+        }
+        return false;
     }
 
     // ============================================================
-    // DATA ACCESS
+    // SELECTED ID VALIDATION
     // ============================================================
 
-    function getStudents() {
-        if (typeof window.getStudents === 'function') {
-            return window.getStudents();
+    function isValidSelectedId(modeName, id) {
+        if (id === null || id === undefined) {
+            return false;
         }
-        return [];
+
+        if (!CalendarModes) {
+            return false;
+        }
+
+        var mode = CalendarModes.getMode(modeName);
+        if (!mode || typeof mode.getEntities !== 'function') {
+            return false;
+        }
+
+        var entities = mode.getEntities() || [];
+        for (var i = 0; i < entities.length; i++) {
+            if (String(entities[i].id) === String(id)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
-    function getInstructors() {
-        if (typeof window.getInstructors === 'function') {
-            return window.getInstructors();
-        }
-        return [];
-    }
+    // ============================================================
+    // GET FIRST AVAILABLE ID
+    // ============================================================
 
-    function getLocations() {
-        if (typeof window.getLocations === 'function') {
-            return window.getLocations();
+    function getFirstAvailableId(modeName) {
+        if (!CalendarModes) {
+            return null;
         }
-        return [];
+
+        var mode = CalendarModes.getMode(modeName);
+        if (!mode || typeof mode.getEntities !== 'function') {
+            return null;
+        }
+
+        var entities = mode.getEntities() || [];
+        return entities.length > 0 ? entities[0].id : null;
     }
 
     // ============================================================
@@ -229,11 +257,11 @@
     // ============================================================
 
     function saveState() {
-        if (!window.CalendarUI || typeof window.CalendarUI.getState !== 'function') {
+        if (!CalendarUI || typeof CalendarUI.getState !== 'function') {
             return;
         }
 
-        var state = window.CalendarUI.getState();
+        var state = CalendarUI.getState();
 
         try {
             sessionStorage.setItem('calendar_state', JSON.stringify(state));
@@ -242,16 +270,21 @@
         }
 
         try {
-            var base = window.location.hash.split('?')[0];
+            var hash = window.location.hash || '';
+            var base = hash.split('?')[0];
             if (base.charAt(0) === '#') {
                 base = base.substring(1);
             }
+
             var query = 'mode=' + encodeURIComponent(state.mode) +
                         '&week=' + encodeURIComponent(state.week);
+
             if (state.selectedId) {
                 query += '&id=' + encodeURIComponent(state.selectedId);
             }
+
             var newHash = '#' + base + '?' + query;
+
             if (window.location.hash !== newHash) {
                 window.history.replaceState(null, '', newHash);
             }
@@ -280,18 +313,24 @@
     });
 
     document.addEventListener('tabChanged', function(e) {
-        if (e.detail && e.detail.tab === 'calendar') {
+        if (!e || !e.detail) {
+            return;
+        }
+
+        if (e.detail.tab === 'calendar') {
             var container = document.getElementById('tab-calendar');
             if (container) {
                 renderCalendar(container);
             }
-        } else {
+        } else if (_initialized) {
             saveState();
         }
     });
 
     window.addEventListener('beforeunload', function() {
-        saveState();
+        if (_initialized) {
+            saveState();
+        }
     });
 
     if (window.data) {
