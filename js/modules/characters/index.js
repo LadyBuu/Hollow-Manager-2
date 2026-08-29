@@ -7,19 +7,29 @@
  *   - Orchestrates child modules (list, form, events)
  *   - Manages current character selection persistence
  *   - Registers with TabManager
+ *   - Owns the selection state (getCurrentEditId / setCurrentEditId)
+ * 
+ * IMPORTANT:
+ *   - This module owns selection state via getCurrentEditId() / setCurrentEditId()
+ *   - All character selection changes MUST go through setCurrentEditId()
+ *   - CharacterForm.show() is the only way to display a character
+ *   - Events are bound by CharacterEvents after rendering
+ *   - The list open state is preserved across re-renders
  * 
  * DEPENDENCIES (must be loaded before this file):
- *   - window.CharacterList
- *   - window.CharacterForm
- *   - window.CharacterEvents
- *   - window.CharacterStats
- *   - window.CharacterCRUD
- *   - window.CharacterViews
- *   - window.CharacterClasses
- *   - window.CharacterEliminations
- *   - window.getCharacterById (from utils)
+ *   - window.CharacterList (from character-list.js)
+ *   - window.CharacterForm (from character-form.js)
+ *   - window.CharacterEvents (from character-events.js)
+ *   - window.CharacterStats (from character-stats.js)
+ *   - window.CharacterCRUD (from character-crud.js)
+ *   - window.CharacterViews (from character-views.js)
+ *   - window.CharacterClasses (from character-classes.js)
+ *   - window.CharacterEliminations (from character-eliminations.js)
+ *   - window.getCharacterById (from core-utils.js)
+ *   - window.getDisplayName (from core-utils.js)
+ *   - window.getCurrentEditId (from this module)
  *   - window.setCurrentEditId (from this module)
- *   - window.currentEditId (from this module)
+ *   - window.TabManager (from tab-manager.js)
  */
 
 (function() {
@@ -35,26 +45,78 @@
     // STATE
     // ============================================================
 
-    var currentEditId = null;
-    var characterListOpen = false;
+    var _currentEditId = null;
+    var _characterListOpen = false;
+    var _initialized = false;
 
     // ============================================================
-    // EXPOSE STATE ACCESSORS
+    // DEPENDENCY CHECK
+    // ============================================================
+
+    function checkDependencies() {
+        var required = [
+            'getCharacterById',
+            'getDisplayName',
+            'CharacterList',
+            'CharacterForm',
+            'CharacterEvents',
+            'TabManager'
+        ];
+
+        var missing = [];
+        required.forEach(function(name) {
+            if (name === 'CharacterList' || name === 'CharacterForm' || 
+                name === 'CharacterEvents' || name === 'TabManager') {
+                if (typeof window[name] === 'undefined' || window[name] === null) {
+                    missing.push(name);
+                }
+            } else if (typeof window[name] !== 'function') {
+                missing.push(name);
+            }
+        });
+
+        // Optional but recommended
+        var optional = ['CharacterStats', 'CharacterCRUD', 'CharacterViews', 
+                       'CharacterClasses', 'CharacterEliminations'];
+        var missingOptional = [];
+        optional.forEach(function(name) {
+            if (typeof window[name] === 'undefined' || 
+                (typeof window[name] === 'object' && window[name] === null)) {
+                missingOptional.push(name);
+            }
+        });
+
+        if (missing.length > 0) {
+            console.warn('Characters Index: Missing required dependencies:', missing.join(', '));
+            return false;
+        }
+
+        if (missingOptional.length > 0) {
+            console.warn('Characters Index: Missing optional dependencies:', missingOptional.join(', '));
+            // Don't fail - some features may be degraded
+        }
+
+        return true;
+    }
+
+    // ============================================================
+    // STATE ACCESSORS - Single source of truth for selection
     // ============================================================
 
     function getCurrentEditId() {
-        return currentEditId;
+        return _currentEditId;
     }
 
     function setCurrentEditId(id) {
-        currentEditId = id;
+        _currentEditId = id;
     }
 
-    window.currentEditId = getCurrentEditId;
+    // Expose state accessors
+    window.getCurrentEditId = getCurrentEditId;
     window.setCurrentEditId = setCurrentEditId;
 
     // ============================================================
-    // TOGGLE CHARACTER LIST
+    // TOGGLE CHARACTER LIST - Preserves state
     // ============================================================
 
     function toggleCharacterList(open) {
@@ -63,14 +125,14 @@
         if (!panel) return;
         
         if (open === undefined) {
-            characterListOpen = !characterListOpen;
+            _characterListOpen = !_characterListOpen;
         } else {
-            characterListOpen = open;
+            _characterListOpen = open;
         }
         
-        panel.classList.toggle('open', characterListOpen);
+        panel.classList.toggle('open', _characterListOpen);
         if (toggle) {
-            toggle.classList.toggle('open', characterListOpen);
+            toggle.classList.toggle('open', _characterListOpen);
         }
     }
 
@@ -78,7 +140,7 @@
     window.toggleCharacterList = toggleCharacterList;
 
     // ============================================================
-    // SHOW CHARACTER FORM
+    // SHOW CHARACTER FORM - Centralized selection
     // ============================================================
 
     function showCharacterForm(editId) {
@@ -97,93 +159,13 @@
     window.showCharacterForm = showCharacterForm;
 
     // ============================================================
-    // RENDER CHARACTERS
-    // ============================================================
-
-    function renderCharacters(container) {
-        if (!container) {
-            container = document.getElementById('tab-characters');
-        }
-        if (!container) return;
-
-        // Check dependencies
-        if (!window.CharacterList || !window.CharacterForm || !window.CharacterEvents) {
-            console.warn('Character module dependencies not loaded yet');
-            container.innerHTML = '<p class="empty-state">Loading character module...</p>';
-            return;
-        }
-
-        // Check data
-        if (!window.data) {
-            console.warn('No data available for characters, waiting for dataReady event');
-            container.innerHTML = '<p class="empty-state">Loading data...</p>';
-            return;
-        }
-
-        // Ensure data structures
-        if (!window.data.characters) {
-            window.data.characters = [];
-        }
-        if (!window.data.classes) {
-            window.data.classes = [];
-        }
-
-        // Build the container HTML
-        container.innerHTML = getCharactersHTML();
-        
-        // Render the character list
-        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-            window.CharacterList.render();
-        }
-        
-        // Initialize form and events
-        if (window.CharacterForm && typeof window.CharacterForm.init === 'function') {
-            window.CharacterForm.init(container);
-        }
-        
-        if (window.CharacterEvents && typeof window.CharacterEvents.init === 'function') {
-            window.CharacterEvents.init(container);
-        }
-        
-        // Select the current character, preserving selection
-        selectCurrentCharacter();
-    }
-
-    // ============================================================
-    // SELECT CURRENT CHARACTER - PRESERVES SELECTION
-    // ============================================================
-
-    function selectCurrentCharacter() {
-        var data = window.data || {};
-        if (!data.characters || data.characters.length === 0) {
-            return;
-        }
-
-        // Try to keep the currently selected character
-        var charToShow = null;
-        
-        if (currentEditId) {
-            charToShow = window.getCharacterById ? window.getCharacterById(currentEditId) : null;
-        }
-        
-        // If current selection is gone, fall back to first character
-        if (!charToShow) {
-            charToShow = data.characters[0];
-            if (charToShow) {
-                setCurrentEditId(charToShow.id);
-            }
-        }
-        
-        if (charToShow && window.CharacterForm && typeof window.CharacterForm.show === 'function') {
-            window.CharacterForm.show(charToShow.id);
-        }
-    }
-
-    // ============================================================
-    // CHARACTERS HTML
+    // GET CHARACTERS HTML - Renders the container
     // ============================================================
 
     function getCharactersHTML() {
+        var openClass = _characterListOpen ? ' open' : '';
+        var toggleOpenClass = _characterListOpen ? ' open' : '';
+
         // Get tab HTML from the form module
         var tabsHTML = '';
         if (window.CharacterForm && typeof window.CharacterForm.getTabsHTML === 'function') {
@@ -193,12 +175,12 @@
         return `
             <div class="character-manager">
                 <div class="char-list-toggle">
-                    <button id="toggle-char-list" class="primary small">☰ Characters</button>
+                    <button id="toggle-char-list" class="primary small${toggleOpenClass}">☰ Characters</button>
                     <button id="add-character-btn" class="primary small">+ New</button>
                     <span id="current-char-name" style="font-weight:600;color:var(--accent);margin-left:8px;"></span>
                 </div>
 
-                <div id="char-list-panel" class="char-list-panel">
+                <div id="char-list-panel" class="char-list-panel${openClass}">
                     <div class="filter-section compact">
                         <input type="text" id="char-name-filter" placeholder="Search..." style="width:120px;padding:3px 6px;font-size:0.7rem;" />
                         <select id="char-status-filter" style="padding:3px 6px;font-size:0.7rem;width:100px;">
@@ -225,7 +207,7 @@
 
                 <div id="character-form" class="form-container">
                     <h3 id="form-title">Select a character</h3>
-                    <form id="char-form">
+                    <form id="character-form">
                         ${tabsHTML}
                         <div class="form-actions" style="margin-top:12px;border-top:1px solid var(--border-soft);padding-top:12px;">
                             <button type="button" id="delete-char-btn" class="danger">Delete</button>
@@ -238,10 +220,114 @@
     }
 
     // ============================================================
+    // RENDER CHARACTERS - Main render function
+    // ============================================================
+
+    function renderCharacters(container) {
+        if (!checkDependencies()) {
+            if (!container) {
+                container = document.getElementById('tab-characters');
+            }
+            if (container) {
+                container.innerHTML = '<p class="empty-state">Dependencies not loaded. Please refresh the page.</p>';
+            }
+            return;
+        }
+
+        if (!container) {
+            container = document.getElementById('tab-characters');
+        }
+        if (!container) {
+            console.warn('Characters: Container #tab-characters not found');
+            return;
+        }
+
+        // Check data
+        if (!window.data) {
+            console.warn('No data available for characters, waiting for dataReady event');
+            container.innerHTML = '<p class="empty-state">Loading data...</p>';
+            return;
+        }
+
+        // Ensure data structures (but don't mutate if not needed)
+        if (!window.data.characters) {
+            window.data.characters = [];
+        }
+        if (!window.data.classes) {
+            window.data.classes = [];
+        }
+
+        // Build the container HTML
+        container.innerHTML = getCharactersHTML();
+        
+        // Render the character list
+        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+            window.CharacterList.render();
+        }
+        
+        // Initialize form (rendering only, no events)
+        if (window.CharacterForm && typeof window.CharacterForm.init === 'function') {
+            window.CharacterForm.init(container);
+        }
+        
+        // Initialize events - this will remove any old listeners and bind new ones
+        if (window.CharacterEvents && typeof window.CharacterEvents.init === 'function') {
+            window.CharacterEvents.init(container);
+        }
+        
+        // Select the current character, preserving selection
+        selectCurrentCharacter();
+    }
+
+    // ============================================================
+    // SELECT CURRENT CHARACTER - Preserves selection
+    // ============================================================
+
+    function selectCurrentCharacter() {
+        var data = window.data || {};
+        if (!data.characters || data.characters.length === 0) {
+            return;
+        }
+
+        // Try to keep the currently selected character
+        var charToShow = null;
+        
+        if (_currentEditId) {
+            charToShow = typeof window.getCharacterById === 'function' 
+                ? window.getCharacterById(_currentEditId) 
+                : null;
+        }
+        
+        // If current selection is gone, fall back to first character
+        if (!charToShow) {
+            charToShow = data.characters[0];
+            if (charToShow) {
+                setCurrentEditId(charToShow.id);
+            }
+        }
+        
+        // Show the character using the centralized show function
+        if (charToShow) {
+            showCharacterForm(charToShow.id);
+        }
+    }
+
+    // ============================================================
+    // DESTROY - Clean up for re-rendering
+    // ============================================================
+
+    function destroy() {
+        if (window.CharacterEvents && typeof window.CharacterEvents.destroy === 'function') {
+            window.CharacterEvents.destroy();
+        }
+        _initialized = false;
+    }
+
+    // ============================================================
     // REGISTER WITH TABMANAGER
     // ============================================================
 
-    if (typeof window.TabManager !== 'undefined') {
+    if (typeof window.TabManager !== 'undefined' && window.TabManager.register) {
         window.TabManager.register('characters', renderCharacters);
     }
 
@@ -276,15 +362,14 @@
     }
 
     // ============================================================
-    // EXPOSE FUNCTIONS
+    // EXPOSE PUBLIC API
     // ============================================================
 
     window.renderCharacters = renderCharacters;
     window.showCharacterForm = showCharacterForm;
     window.toggleCharacterList = toggleCharacterList;
-    window.currentEditId = getCurrentEditId;
+    window.getCurrentEditId = getCurrentEditId;
     window.setCurrentEditId = setCurrentEditId;
-
-    console.log('characters/index.js loaded');
+    window.destroyCharacters = destroy;
 
 })();
