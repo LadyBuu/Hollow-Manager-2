@@ -316,11 +316,11 @@
     }
 
     // ============================================================
-    // FORM SUBMIT
+    // FORM SUBMIT - Fixed ID to match index.js
     // ============================================================
 
     function bindFormSubmit(container) {
-        var form = document.getElementById('char-form');
+        var form = document.getElementById('character-form');
         if (form) {
             addSafeEventListener(form, 'submit', function(e) {
                 e.preventDefault();
@@ -329,7 +329,7 @@
                 }
             });
         } else {
-            console.warn('CharacterEvents: Form #char-form not found');
+            console.warn('CharacterEvents: Form #character-form not found');
         }
     }
 
@@ -498,7 +498,7 @@
     }
 
     // ============================================================
-    // CLASS TAG INPUT - Add class by name
+    // CLASS TAG INPUT - Add class by name with feedback
     // ============================================================
 
     function bindClassTagInput(container) {
@@ -511,11 +511,23 @@
                     if (!name) return;
 
                     if (window.CharacterClasses && typeof window.CharacterClasses.addClassByName === 'function') {
-                        window.CharacterClasses.addClassByName(name);
+                        var result = window.CharacterClasses.addClassByName(name);
+                        // Only clear on successful mutation
+                        if (result && typeof result.then === 'function') {
+                            result.then(function(success) {
+                                if (success && classInput) {
+                                    classInput.value = '';
+                                }
+                            }).catch(function() {
+                                // Don't clear on failure - user can retry
+                            });
+                        } else {
+                            // Synchronous success - clear
+                            if (classInput) classInput.value = '';
+                        }
                     } else {
                         showNotification('Class functionality is not available.', 'error');
                     }
-                    this.value = '';
                 }
             });
         }
@@ -919,7 +931,7 @@
     }
 
     // ============================================================
-    // SPECIAL MOVES - Shared Handlers
+    // SPECIAL MOVES - Shared Handlers with Promise support
     // ============================================================
 
     function handleAddSpecialMove(type) {
@@ -943,13 +955,12 @@
             return;
         }
 
-        // Delegate to CharacterStats - it owns mutation + save + render
         if (window.CharacterStats && typeof window.CharacterStats.addSpecialMove === 'function') {
             var result = window.CharacterStats.addSpecialMove(char, type, moveName, moveDesc);
 
-            // Only clear inputs if the mutation succeeded or is async
+            // Handle both synchronous and Promise-based returns
             if (result && typeof result.then === 'function') {
-                // Async - clear on success only
+                // Async - clear only on success
                 result.then(function(success) {
                     if (success !== false) {
                         if (nameInput) nameInput.value = '';
@@ -958,8 +969,8 @@
                 }).catch(function() {
                     // Don't clear on failure - user can retry
                 });
-            } else {
-                // Sync - assume success
+            } else if (result !== false) {
+                // Synchronous success
                 if (nameInput) nameInput.value = '';
                 if (descInput) descInput.value = '';
             }
