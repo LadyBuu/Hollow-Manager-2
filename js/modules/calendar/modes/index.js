@@ -9,22 +9,13 @@
  *   - Validating mode existence
  * 
  * IMPORTANT:
- *   - This module only creates the registry
- *   - Individual mode modules (student.js, instructor.js, location.js)
- *     register themselves with this registry
- *   - No mode implementations are defined here
+ *   - This module has NO dependencies on CalendarUI or any other module
+ *   - It should load before anything else in the calendar system
+ *   - Individual mode modules register themselves with this registry
  */
 
 (function() {
     'use strict';
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    if (!window.CalendarUI) {
-        return;
-    }
 
     // ============================================================
     // GUARD AGAINST DUPLICATE LOADING
@@ -39,13 +30,15 @@
     // MODE REGISTRY
     // ============================================================
 
-    var modes = {};
+    // Use Object.create(null) to avoid prototype pollution
+    var modes = Object.create(null);
 
     /**
      * Register a calendar mode
      * @param {string} name - Unique mode identifier
      * @param {object} mode - Mode implementation
      * @param {string} mode.label - Display label for the mode
+     * @param {string} [mode.hint] - User hint for the mode
      * @param {function} mode.render - Render function (container, state) => void
      * @param {function} mode.getEntities - Get list of entities for this mode
      * @param {function} mode.getEntityDisplayName - Get display name for an entity
@@ -78,8 +71,15 @@
         }
 
         var key = name.trim();
+
+        // Enforce uniqueness
+        if (modes[key]) {
+            return false;
+        }
+
         modes[key] = {
             label: mode.label || key.charAt(0).toUpperCase() + key.slice(1),
+            hint: mode.hint || null,
             render: mode.render,
             getEntities: mode.getEntities,
             getEntityDisplayName: mode.getEntityDisplayName,
@@ -98,7 +98,8 @@
         if (!name || typeof name !== 'string') {
             return null;
         }
-        return modes[name.trim()] || null;
+        var key = name.trim();
+        return modes[key] || null;
     }
 
     /**
@@ -135,7 +136,8 @@
         if (!name || typeof name !== 'string') {
             return false;
         }
-        return !!modes[name.trim()];
+        var key = name.trim();
+        return !!modes[key];
     }
 
     /**
@@ -146,12 +148,30 @@
         return Object.keys(modes).length;
     }
 
+    /**
+     * Unregister a mode (useful for testing or hot-reload)
+     * @param {string} name - Mode identifier
+     * @returns {boolean} - True if the mode was removed
+     */
+    function unregisterMode(name) {
+        if (!name || typeof name !== 'string') {
+            return false;
+        }
+        var key = name.trim();
+        if (!modes[key]) {
+            return false;
+        }
+        delete modes[key];
+        return true;
+    }
+
     // ============================================================
     // EXPOSE
     // ============================================================
 
     window.CalendarModes = {
         registerMode: registerMode,
+        unregisterMode: unregisterMode,
         getMode: getMode,
         getModeNames: getModeNames,
         getModeOptions: getModeOptions,
