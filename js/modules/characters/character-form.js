@@ -15,7 +15,7 @@
  *   - State is managed via window.getCurrentEditId() and window.setCurrentEditId()
  *   - All user-controlled data is inserted using safe DOM APIs (textContent, value)
  *   - DOM operations are safe and defensive
- *   - This module can be re-initialized after DOM replacement
+ *   - Re-initialization is supported after DOM replacement
  * 
  * DEPENDENCIES:
  *   - window.CharacterViews
@@ -43,7 +43,6 @@
     // ============================================================
 
     var currentTab = 'name';
-    var _initialized = false;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -64,26 +63,38 @@
             }
         });
 
-        // Optional but recommended
-        var optional = ['CharacterViews', 'CharacterCRUD', 'CharacterEliminations', 
-                       'CharacterClasses', 'CharacterStats', 'CharacterList'];
+        // Feature modules - required for their respective features
+        var featureModules = {
+            'CharacterViews': ['renderAcademic', 'renderProfessional', 'renderSocial', 'addCareerStatusEntry'],
+            'CharacterCRUD': ['save'],
+            'CharacterEliminations': ['renderTournament', 'renderStandalone'],
+            'CharacterClasses': ['populateClassTags', 'clearClassTags', 'populateAcademicClassSelector', 'updateCurrentClassesDisplay'],
+            'CharacterStats': ['getCharacterStats', 'getCharacterMagic', 'updateClassSuggestion', 'updateMagicClassSuggestion', 'updateMagicPowerDisplay', 'getSpecialMoves', 'renderSpecialMoves'],
+            'CharacterList': ['render']
+        };
 
-        var missingOptional = [];
-        optional.forEach(function(name) {
-            if (typeof window[name] === 'undefined' || 
-                (typeof window[name] === 'object' && window[name] === null)) {
-                missingOptional.push(name);
+        var missingFeatures = [];
+        for (var moduleName in featureModules) {
+            if (typeof window[moduleName] === 'undefined' || window[moduleName] === null) {
+                missingFeatures.push(moduleName + ' (module missing)');
+                continue;
             }
-        });
+            var methods = featureModules[moduleName];
+            for (var i = 0; i < methods.length; i++) {
+                if (typeof window[moduleName][methods[i]] !== 'function') {
+                    missingFeatures.push(moduleName + '.' + methods[i]);
+                }
+            }
+        }
 
         if (missing.length > 0) {
             console.warn('CharacterForm: Missing required dependencies:', missing.join(', '));
             return false;
         }
 
-        if (missingOptional.length > 0) {
-            console.warn('CharacterForm: Missing optional dependencies:', missingOptional.join(', '));
-            // Don't fail - some features may be degraded
+        if (missingFeatures.length > 0) {
+            console.warn('CharacterForm: Missing feature dependencies:', missingFeatures.join(', '));
+            // Don't fail - features will be degraded
         }
 
         return true;
@@ -101,14 +112,8 @@
         }
         if (!container) return;
 
-        // Only initialize once per module load
-        if (_initialized) return;
-        _initialized = true;
-
-        // Get current edit ID
         var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
 
-        // If we have a character, show it
         if (editId) {
             var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(editId) : null;
             if (char) {
@@ -124,19 +129,18 @@
     function switchTab(tab) {
         currentTab = tab;
 
-        // Update tab buttons
-        document.querySelectorAll('.char-tab-btn').forEach(function(btn) {
+        var tabBtns = document.querySelectorAll('.char-tab-btn');
+        tabBtns.forEach(function(btn) {
             btn.classList.toggle('active', btn.dataset.tab === tab);
         });
 
-        // Update tab panels
-        document.querySelectorAll('.char-tab-panel').forEach(function(panel) {
+        var panels = document.querySelectorAll('.char-tab-panel');
+        panels.forEach(function(panel) {
             var panelId = panel.id.replace('char-tab-', '');
             panel.style.display = panelId === tab ? 'block' : 'none';
             panel.classList.toggle('active', panelId === tab);
         });
 
-        // Refresh views when switching to certain tabs
         var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
         if (id) {
             var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(id) : null;
@@ -159,12 +163,16 @@
     function show(editId) {
         if (!checkDependencies()) return;
 
-        var data = window.data || {};
         var form = document.getElementById('character-form');
         var title = document.getElementById('form-title');
         var nameDisplay = document.getElementById('current-char-name');
 
-        // Reset to first tab
+        // Bail early if form doesn't exist
+        if (!form) {
+            console.warn('CharacterForm: Form #character-form not found');
+            return;
+        }
+
         switchTab('name');
 
         if (editId !== null && editId !== undefined && editId !== '') {
@@ -173,11 +181,11 @@
                 : null;
             
             if (!char) {
-                title.textContent = 'Character not found';
+                if (title) title.textContent = 'Character not found';
                 return;
             }
 
-            title.textContent = 'Edit Character';
+            if (title) title.textContent = 'Edit Character';
             if (nameDisplay) {
                 nameDisplay.textContent = typeof window.getDisplayName === 'function'
                     ? window.getDisplayName(char)
@@ -200,7 +208,7 @@
                 window.CharacterList.render();
             }
         } else {
-            title.textContent = 'New Character';
+            if (title) title.textContent = 'New Character';
             if (nameDisplay) nameDisplay.textContent = 'New Character';
 
             resetFormFields();
@@ -210,10 +218,8 @@
             }
         }
 
-        if (form) {
-            form.style.display = 'block';
-            form.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
+        form.style.display = 'block';
+        form.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     // ============================================================
@@ -237,7 +243,6 @@
         setFieldValue('char-death-cause', char.deathCause || '');
         setFieldValue('char-death-age', char.deathAge || '');
 
-        // Show/hide death fields
         var deathFields = document.getElementById('death-fields');
         if (deathFields) {
             deathFields.style.display = char.deceased ? 'block' : 'none';
@@ -270,12 +275,12 @@
         var stats = window.CharacterStats && typeof window.CharacterStats.getCharacterStats === 'function' 
             ? window.CharacterStats.getCharacterStats(char) 
             : char.stats || {};
-        setFieldValue('char-str', stats.str || 10);
-        setFieldValue('char-dex', stats.dex || 10);
-        setFieldValue('char-con', stats.con || 10);
-        setFieldValue('char-int', stats.int || 10);
-        setFieldValue('char-wis', stats.wis || 10);
-        setFieldValue('char-cha', stats.cha || 10);
+        setFieldValue('char-str', stats.str !== undefined ? stats.str : 10);
+        setFieldValue('char-dex', stats.dex !== undefined ? stats.dex : 10);
+        setFieldValue('char-con', stats.con !== undefined ? stats.con : 10);
+        setFieldValue('char-int', stats.int !== undefined ? stats.int : 10);
+        setFieldValue('char-wis', stats.wis !== undefined ? stats.wis : 10);
+        setFieldValue('char-cha', stats.cha !== undefined ? stats.cha : 10);
 
         // Magic stats
         var magic = window.CharacterStats && typeof window.CharacterStats.getCharacterMagic === 'function'
@@ -381,6 +386,12 @@
                 input.value = '';
             }
         });
+
+        // Explicitly restore name format default
+        var nameFormat = document.getElementById('char-name-format');
+        if (nameFormat) {
+            nameFormat.value = 'firstlast';
+        }
 
         // Reset magic inputs to 0
         var magicTypes = ['earth', 'water', 'fire', 'air', 'metal', 'wood',
@@ -591,7 +602,7 @@
                     </div>
                     <div class="form-group">
                         <label>Height</label>
-                        <input type="text" id="char-height" placeholder='e.g., 5'"10"' />
+                        <input type="text" id="char-height" placeholder="e.g., 5'10&quot;" />
                     </div>
                     <div class="form-group">
                         <label>Weight</label>
