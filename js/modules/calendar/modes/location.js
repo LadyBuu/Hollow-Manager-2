@@ -5,13 +5,17 @@
  * 
  * This module is responsible for:
  *   - Rendering location schedule grid
- *   - Assigning/removing classes from locations
+ *   - Assigning classes to locations
  *   - Displaying which students are assigned to each location
  * 
  * IMPORTANT:
- *   - This module uses core functions for all mutations
- *   - No direct window.data mutations
- *   - Duration is retrieved from metadata, not inferred from repeated IDs
+ *   - This module uses core functions for ALL mutations
+ *   - NO direct window.data mutations
+ *   - Duration is retrieved from metadata when available
+ *   - Duration inference is ONLY used as a fallback when metadata is missing
+ *   - The core is authoritative for all data mutations
+ *   - Removal is handled via right-click or details modal, not the assignment modal
+ *   - getCharacterById is optional; instructor names degrade gracefully
  */
 
 (function() {
@@ -83,10 +87,6 @@
             missing.push('getDisplayName');
         }
 
-        if (typeof window.getCharacterById !== 'function') {
-            missing.push('getCharacterById');
-        }
-
         if (typeof window.setLocationClass !== 'function') {
             missing.push('setLocationClass');
         }
@@ -106,6 +106,14 @@
         if (typeof window.getLocation !== 'function') {
             missing.push('getLocation');
         }
+
+        // Duration metadata function (preferred)
+        if (typeof window.getLocationClassDuration !== 'function') {
+            missing.push('getLocationClassDuration');
+        }
+
+        // getCharacterById is optional - used for instructor names in dropdown
+        // The module degrades gracefully if not available
 
         if (missing.length > 0) {
             return false;
@@ -153,15 +161,48 @@
         if (typeof window.getLocation === 'function') {
             return window.getLocation(id);
         }
-        var data = window.data || {};
-        if (data.locations && Array.isArray(data.locations)) {
-            for (var i = 0; i < data.locations.length; i++) {
-                if (String(data.locations[i].id) === String(id)) {
-                    return data.locations[i];
-                }
+        return null;
+    }
+
+    // ============================================================
+    // DURATION HELPERS
+    // ============================================================
+
+    /**
+     * Get the display duration of a class at a location slot.
+     * Prefers metadata from getLocationClassDuration().
+     * Falls back to inference ONLY if metadata is missing.
+     * 
+     * This is a UI display helper. The core is authoritative for duration.
+     * The name reflects that this is for display purposes only.
+     */
+    function getLocationDisplayDuration(locationId, week, day, hour, schedule) {
+        // Try metadata first
+        if (typeof window.getLocationClassDuration === 'function') {
+            var duration = window.getLocationClassDuration(locationId, week, day, hour);
+            if (duration !== null && duration !== undefined && duration >= 1) {
+                return duration;
             }
         }
-        return null;
+
+        // Fallback: infer from contiguous schedule entries
+        // This is ONLY used when metadata is missing (legacy data or migration)
+        if (schedule && schedule[day]) {
+            var disciplineId = schedule[day][hour];
+            if (disciplineId) {
+                var inferred = 1;
+                for (var h = hour + 1; h <= CALENDAR_END_HOUR; h++) {
+                    if (schedule[day] && String(schedule[day][h]) === String(disciplineId)) {
+                        inferred++;
+                    } else {
+                        break;
+                    }
+                }
+                return inferred;
+            }
+        }
+
+        return 1;
     }
 
     // ============================================================
@@ -222,33 +263,19 @@
                 if (disciplineId) {
                     var discipline = window.getDiscipline(disciplineId);
 
-                    // Get duration - prefer metadata, fallback to inference
-                    var duration = 1;
-                    if (typeof window.getLocationClassDuration === 'function') {
-                        var metaDuration = window.getLocationClassDuration(locationId, week, day, hour);
-                        if (metaDuration !== null && metaDuration !== undefined) {
-                            duration = metaDuration;
-                        }
+                    // Get duration using the display helper (metadata first, inference fallback)
+                    var duration = getLocationDisplayDuration(locationId, week, day, hour, schedule);
+
+                    // Mark occupied hours based on duration
+                    for (var h = hour; h < hour + duration && h <= CALENDAR_END_HOUR; h++) {
+                        occupiedHours[h] = true;
                     }
 
-                    // If no metadata, infer from contiguous schedule entries
-                    if (duration === 1) {
-                        for (var h2 = hour + 1; h2 <= CALENDAR_END_HOUR; h2++) {
-                            if (schedule[day] && String(schedule[day][h2]) === String(disciplineId)) {
-                                duration++;
-                                occupiedHours[h2] = true;
-                            } else {
-                                break;
-                            }
-                        }
-                    } else {
-                        // Mark occupied hours based on metadata duration
-                        for (var h3 = hour + 1; h3 < hour + duration && h3 <= CALENDAR_END_HOUR; h3++) {
-                            occupiedHours[h3] = true;
-                        }
-                    }
-
-                    // Find students assigned to this location
+                    // Find students assigned to this location.
+                    // Students are matched by:
+                    // 1. Having a class at this location (via getClassLocation)
+                    // 2. Having the same discipline at the same start hour
+                    // This assumes both location and student schedules use start-hour-only representation
                     var studentNames = [];
                     for (var s = 0; s < allStudents.length; s++) {
                         var student = allStudents[s];
@@ -350,14 +377,17 @@
         var modal = document.createElement('div');
         modal.className = 'modal';
 
-        var optionsHTML = '<option value="">-- None --</option>';
+        var optionsHTML = '';
         for (var i = 0; i < disciplines.length; i++) {
             var d = disciplines[i];
             var instructorDisplay = '';
             if (d.instructorIds && d.instructorIds.length > 0) {
                 var instructorNames = [];
                 for (var j = 0; j < d.instructorIds.length; j++) {
-                    var inst = window.getCharacterById(d.instructorIds[j]);
+                    // getCharacterById is optional; degrade gracefully if not available
+                    var inst = typeof window.getCharacterById === 'function'
+                        ? window.getCharacterById(d.instructorIds[j])
+                        : null;
                     if (inst) {
                         instructorNames.push(window.getDisplayName(inst));
                     }
@@ -406,21 +436,18 @@
             var disciplineId = select ? select.value : null;
 
             if (!disciplineId) {
-                var removeResult = window.removeLocationClass(locationId, week, day, hour);
-                if (removeResult && removeResult.success) {
-                    modal.remove();
-                    window.saveData()
-                        .then(function() {
-                            showNotification('Class removed from location.', 'success');
-                            render(container, { selectedId: locationId, week: week });
-                        })
-                        .catch(function() {
-                            showNotification('Class removed in memory, but persistence failed.', 'error');
-                            render(container, { selectedId: locationId, week: week });
-                        });
-                } else {
-                    showNotification(removeResult && removeResult.message ? removeResult.message : 'Failed to remove class.', 'error');
-                }
+                showNotification('Please select a discipline.', 'error');
+                return;
+            }
+
+            // Re-read schedule at commit time (defensive)
+            var currentSchedule = window.getLocationSchedule(locationId, week) || {};
+
+            // Check if slot is still empty (defensive)
+            if (currentSchedule[day] && currentSchedule[day][hour]) {
+                showNotification('This slot is no longer available.', 'error');
+                modal.remove();
+                render(container, { selectedId: locationId, week: week });
                 return;
             }
 
@@ -460,27 +487,14 @@
         var discipline = window.getDiscipline(disciplineId);
         var hourDisplay = CalendarUtils.formatHour(hour);
 
-        // Get duration - prefer metadata, fallback to inference
-        var duration = 1;
-        if (typeof window.getLocationClassDuration === 'function') {
-            var metaDuration = window.getLocationClassDuration(locationId, week, day, hour);
-            if (metaDuration !== null && metaDuration !== undefined) {
-                duration = metaDuration;
-            }
-        }
+        // Get duration using the display helper (metadata first, inference fallback)
+        var duration = getLocationDisplayDuration(locationId, week, day, hour, schedule);
 
-        // If no metadata, infer from contiguous schedule entries
-        if (duration === 1) {
-            for (var h = hour + 1; h <= CALENDAR_END_HOUR; h++) {
-                if (schedule[day] && String(schedule[day][h]) === String(disciplineId)) {
-                    duration++;
-                } else {
-                    break;
-                }
-            }
-        }
-
-        // Find students
+        // Find students assigned to this location.
+        // Students are matched by:
+        // 1. Having a class at this location (via getClassLocation)
+        // 2. Having the same discipline at the same start hour
+        // This assumes both location and student schedules use start-hour-only representation
         var allStudents = window.getStudents() || [];
         var studentNames = [];
         for (var s = 0; s < allStudents.length; s++) {
@@ -618,6 +632,7 @@
     if (window.CalendarModes && typeof window.CalendarModes.registerMode === 'function') {
         window.CalendarModes.registerMode('location', {
             label: 'Location',
+            hint: 'Click a slot to assign a class | Right-click to remove',
             render: render,
             getEntities: getLocations,
             getEntityDisplayName: function(entity) {
