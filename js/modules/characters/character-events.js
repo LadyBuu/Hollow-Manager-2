@@ -2,8 +2,8 @@
  * js/modules/characters/character-events.js - Character Events
  * Path: js/modules/characters/character-events.js
  * 
- * This module is responsible for ALL event binding for the character module.
- * All event listeners are centralized here to prevent duplication.
+ * This module is responsible for UI event binding for the character module.
+ * Feature-specific internal events may be delegated to their owning feature module.
  * 
  * IMPORTANT:
  *   - This module binds events AFTER the DOM is rendered
@@ -12,6 +12,7 @@
  *   - Safe event binding with proper cleanup
  *   - No inline event handlers in HTML
  *   - Can be re-initialized after DOM replacement
+ *   - Mutation modules own their own persistence lifecycle
  * 
  * LIFECYCLE:
  *   - init(container) - Binds events to the current DOM
@@ -48,7 +49,7 @@
 
     var _initialized = false;
     var _eventListeners = [];
-    var _debounceTimers = [];
+    var _filterDebounceTimer = null;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -71,26 +72,36 @@
             }
         });
 
-        // Optional but recommended
-        var optional = ['saveData', 'CharacterCRUD', 'CharacterClasses', 
-                       'CharacterEliminations', 'CharacterStats', 'CharacterViews'];
+        // Feature modules - required for their respective features
+        var featureModules = {
+            'CharacterCRUD': ['save'],
+            'CharacterClasses': ['removeClassById', 'addClassTag'],
+            'CharacterEliminations': ['addStandalone', 'removeStandalone'],
+            'CharacterStats': ['addSpecialMove', 'removeSpecialMove', 'renderSpecialMoves']
+        };
 
-        var missingOptional = [];
-        optional.forEach(function(name) {
-            if (typeof window[name] === 'undefined' || 
-                (typeof window[name] === 'object' && window[name] === null)) {
-                missingOptional.push(name);
+        var missingFeatures = [];
+        for (var moduleName in featureModules) {
+            if (typeof window[moduleName] === 'undefined' || window[moduleName] === null) {
+                missingFeatures.push(moduleName + ' (module missing)');
+                continue;
             }
-        });
+            var methods = featureModules[moduleName];
+            for (var i = 0; i < methods.length; i++) {
+                if (typeof window[moduleName][methods[i]] !== 'function') {
+                    missingFeatures.push(moduleName + '.' + methods[i]);
+                }
+            }
+        }
 
         if (missing.length > 0) {
             console.warn('CharacterEvents: Missing required dependencies:', missing.join(', '));
             return false;
         }
 
-        if (missingOptional.length > 0) {
-            console.warn('CharacterEvents: Missing optional dependencies:', missingOptional.join(', '));
-            // Don't fail - some features may be degraded
+        if (missingFeatures.length > 0) {
+            console.warn('CharacterEvents: Missing feature dependencies:', missingFeatures.join(', '));
+            // Don't fail - features will be degraded
         }
 
         return true;
@@ -121,11 +132,8 @@
         });
         _eventListeners = [];
 
-        // Clear any pending debounce timers
-        _debounceTimers.forEach(function(timer) {
-            clearTimeout(timer);
-        });
-        _debounceTimers = [];
+        clearTimeout(_filterDebounceTimer);
+        _filterDebounceTimer = null;
     }
 
     // ============================================================
@@ -255,7 +263,7 @@
     // ============================================================
 
     function bindFormSubmit(container) {
-        var form = document.getElementById('character-form');
+        var form = document.getElementById('char-form');
         if (form) {
             addSafeEventListener(form, 'submit', function(e) {
                 e.preventDefault();
@@ -264,7 +272,7 @@
                 }
             });
         } else {
-            console.warn('CharacterEvents: Form #character-form not found');
+            console.warn('CharacterEvents: Form #char-form not found');
         }
     }
 
@@ -300,21 +308,19 @@
     }
 
     // ============================================================
-    // FILTERS - With debouncing
+    // FILTERS - With single debounce timer
     // ============================================================
 
     function bindFilters(container) {
         var nameFilter = document.getElementById('char-name-filter');
         if (nameFilter) {
-            var debounceTimer = null;
             addSafeEventListener(nameFilter, 'input', function() {
-                clearTimeout(debounceTimer);
-                debounceTimer = setTimeout(function() {
+                clearTimeout(_filterDebounceTimer);
+                _filterDebounceTimer = setTimeout(function() {
                     if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                         window.CharacterList.render();
                     }
                 }, 300);
-                _debounceTimers.push(debounceTimer);
             });
         }
 
@@ -362,14 +368,13 @@
         var addStatusBtn = document.getElementById('add-status-btn');
         if (addStatusBtn) {
             addSafeEventListener(addStatusBtn, 'click', function() {
-                var container = document.getElementById('career-status-container');
+                var statusContainer = document.getElementById('career-status-container');
                 if (window.CharacterViews && typeof window.CharacterViews.addCareerStatusEntry === 'function') {
-                    window.CharacterViews.addCareerStatusEntry(container);
+                    window.CharacterViews.addCareerStatusEntry(statusContainer);
                 }
             });
         }
 
-        // Event delegation for remove status buttons
         var statusContainer = document.getElementById('career-status-container');
         if (statusContainer) {
             addSafeEventListener(statusContainer, 'click', function(e) {
@@ -417,7 +422,6 @@
             });
         }
 
-        // Event delegation for remove standalone elimination buttons
         var standaloneContainer = document.getElementById('standalone-eliminations-container');
         if (standaloneContainer) {
             addSafeEventListener(standaloneContainer, 'click', function(e) {
@@ -449,43 +453,19 @@
                     var name = this.value.trim();
                     if (!name) return;
 
-                    // Delegate to CharacterClasses to handle class lookup/creation
                     if (window.CharacterClasses && typeof window.CharacterClasses.addClassByName === 'function') {
                         window.CharacterClasses.addClassByName(name);
                     } else {
-                        // Fallback: direct class creation
-                        var cls = typeof window.getClassByName === 'function' ? window.getClassByName(name) : null;
-                        if (!cls) {
-                            var result = typeof window.createClass === 'function' ? window.createClass(name) : null;
-                            if (result && result.success) {
-                                cls = result.class;
-                            } else {
-                                showNotification(result ? result.message : 'Failed to create class.', 'error');
-                                return;
-                            }
-                        }
-
-                        var container = document.getElementById('class-tag-container');
-                        if (container) {
-                            var existing = container.querySelector('[data-class-id="' + cls.id + '"]');
-                            if (existing) {
-                                showNotification('This class is already assigned.', 'error');
-                                return;
-                            }
-                        }
-
-                        if (window.CharacterClasses && typeof window.CharacterClasses.addClassTag === 'function') {
-                            window.CharacterClasses.addClassTag(cls.id, cls.name);
-                        }
-                        this.value = '';
+                        showNotification('Class functionality is not available.', 'error');
                     }
+                    this.value = '';
                 }
             });
         }
     }
 
     // ============================================================
-    // CLASS TAG REMOVAL - Proper mutation through CharacterClasses
+    // CLASS TAG REMOVAL - Delegate to CharacterClasses (no DOM fallback)
     // ============================================================
 
     function bindClassTagRemoval(container) {
@@ -505,16 +485,10 @@
                     return;
                 }
 
-                // Delegate to CharacterClasses for proper mutation
                 if (window.CharacterClasses && typeof window.CharacterClasses.removeClassById === 'function') {
                     window.CharacterClasses.removeClassById(charId, classId);
                 } else {
-                    // Fallback: just remove the tag from DOM (less ideal)
-                    var tag = tagContainer.querySelector('[data-class-id="' + classId + '"]');
-                    if (tag) tag.remove();
-                    if (tagContainer.children.length === 0) {
-                        tagContainer.innerHTML = '<span style="color:var(--text-dim);font-size:0.7rem;padding:4px;">No classes assigned</span>';
-                    }
+                    showNotification('Character class functionality is not available.', 'error');
                 }
             });
         }
@@ -608,7 +582,6 @@
                 window.showCharacterForm(id);
             }
 
-            // Close list on mobile
             if (window.innerWidth < 768 && typeof window.toggleCharacterList === 'function') {
                 window.toggleCharacterList(false);
             }
@@ -616,16 +589,12 @@
     }
 
     // ============================================================
-    // STATS EVENTS
+    // STATS EVENTS - Delegate to CharacterStats for calculations
     // ============================================================
 
     function bindStatsEvents(container) {
-        // Let CharacterStats own its internal event binding
-        if (window.CharacterStats && typeof window.CharacterStats.initStatsEvents === 'function') {
-            window.CharacterStats.initStatsEvents();
-        }
+        // Stats events are handled here - CharacterStats provides calculations only
 
-        // Additional stats events that need to interact with character state
         var statInputs = ['char-str', 'char-dex', 'char-con', 'char-int', 'char-wis', 'char-cha'];
         statInputs.forEach(function(id) {
             var el = document.getElementById(id);
@@ -651,7 +620,6 @@
             }
         });
 
-        // Manual class select
         var classSelect = document.getElementById('manual-class-select');
         if (classSelect) {
             if (window.CharacterStats && typeof window.CharacterStats.populateClassSelect === 'function') {
@@ -721,16 +689,10 @@
     }
 
     // ============================================================
-    // MAGIC EVENTS
+    // MAGIC EVENTS - Delegate to CharacterStats for calculations
     // ============================================================
 
     function bindMagicEvents(container) {
-        // Let CharacterStats own its internal magic event binding
-        if (window.CharacterStats && typeof window.CharacterStats.initMagicEvents === 'function') {
-            window.CharacterStats.initMagicEvents();
-        }
-
-        // Additional magic events
         var magicTypes = ['earth', 'water', 'fire', 'air', 'metal', 'wood',
             'blood', 'bone', 'mind', 'morphic', 'life', 'death',
             'space', 'time', 'dimension', 'void', 'reality', 'transference'];
@@ -802,7 +764,6 @@
             });
         }
 
-        // Random category buttons
         var randomElementalBtn = document.getElementById('random-elemental-btn');
         if (randomElementalBtn) {
             addSafeEventListener(randomElementalBtn, 'click', function() {
@@ -877,16 +838,10 @@
     }
 
     // ============================================================
-    // SPECIAL MOVES EVENTS - DRY with shared handler
+    // SPECIAL MOVES EVENTS - Delegate to CharacterStats
     // ============================================================
 
     function bindSpecialMovesEvents(container) {
-        // Let CharacterStats own its internal special moves event binding
-        if (window.CharacterStats && typeof window.CharacterStats.initSpecialMovesEvents === 'function') {
-            window.CharacterStats.initSpecialMovesEvents();
-        }
-
-        // Add physical move button
         var addPhysicalBtn = document.getElementById('add-physical-move-btn');
         if (addPhysicalBtn) {
             addSafeEventListener(addPhysicalBtn, 'click', function() {
@@ -894,7 +849,6 @@
             });
         }
 
-        // Add magical move button
         var addMagicalBtn = document.getElementById('add-magical-move-btn');
         if (addMagicalBtn) {
             addSafeEventListener(addMagicalBtn, 'click', function() {
@@ -902,7 +856,6 @@
             });
         }
 
-        // Shared event delegation for remove special move buttons
         var physicalList = document.getElementById('physical-moves-list');
         if (physicalList) {
             addSafeEventListener(physicalList, 'click', function(e) {
@@ -919,7 +872,7 @@
     }
 
     // ============================================================
-    // SPECIAL MOVES - Shared Handlers
+    // SPECIAL MOVES - Shared Handlers (delegates to CharacterStats)
     // ============================================================
 
     function handleAddSpecialMove(type) {
@@ -943,31 +896,16 @@
             return;
         }
 
-        // Mutate through CharacterStats
+        // Delegate to CharacterStats - it owns mutation + save + render
         if (window.CharacterStats && typeof window.CharacterStats.addSpecialMove === 'function') {
             window.CharacterStats.addSpecialMove(char, type, moveName, moveDesc);
+        } else {
+            showNotification('Special move functionality is not available.', 'error');
+            return;
         }
 
-        // Re-render moves
-        var moves = window.CharacterStats && typeof window.CharacterStats.getSpecialMoves === 'function'
-            ? window.CharacterStats.getSpecialMoves(char)
-            : { physical: [], magical: [] };
-
-        if (window.CharacterStats && typeof window.CharacterStats.renderSpecialMoves === 'function') {
-            window.CharacterStats.renderSpecialMoves('physical-moves-list', moves.physical || [], 'physical');
-            window.CharacterStats.renderSpecialMoves('magical-moves-list', moves.magical || [], 'magical');
-        }
-
-        // Clear inputs
         if (nameInput) nameInput.value = '';
         if (descInput) descInput.value = '';
-
-        // Save - CharacterStats should ideally own this, but for now we save here
-        if (typeof window.saveData === 'function') {
-            window.saveData().catch(function(err) {
-                console.error('Failed to save ' + type + ' move:', err);
-            });
-        }
     }
 
     function handleRemoveSpecialMove(e, defaultType) {
@@ -990,26 +928,12 @@
         var index = parseInt(target.dataset.index);
         if (isNaN(index)) return;
 
-        // Mutate through CharacterStats
+        // Delegate to CharacterStats - it owns mutation + save + render
         if (window.CharacterStats && typeof window.CharacterStats.removeSpecialMove === 'function') {
             window.CharacterStats.removeSpecialMove(char, type, index);
-        }
-
-        // Re-render moves
-        var moves = window.CharacterStats && typeof window.CharacterStats.getSpecialMoves === 'function'
-            ? window.CharacterStats.getSpecialMoves(char)
-            : { physical: [], magical: [] };
-
-        if (window.CharacterStats && typeof window.CharacterStats.renderSpecialMoves === 'function') {
-            window.CharacterStats.renderSpecialMoves('physical-moves-list', moves.physical || [], 'physical');
-            window.CharacterStats.renderSpecialMoves('magical-moves-list', moves.magical || [], 'magical');
-        }
-
-        // Save - CharacterStats should ideally own this, but for now we save here
-        if (typeof window.saveData === 'function') {
-            window.saveData().catch(function(err) {
-                console.error('Failed to save special move removal:', err);
-            });
+        } else {
+            showNotification('Special move functionality is not available.', 'error');
+            return;
         }
     }
 
