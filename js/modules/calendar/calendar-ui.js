@@ -14,36 +14,73 @@
 (function() {
     'use strict';
 
-    // Prevent duplicate loading
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
+
+    if (!window.CalendarUtils) {
+        return;
+    }
+
+    if (!window.CalendarModes) {
+        return;
+    }
+
+    // ============================================================
+    // GUARD AGAINST DUPLICATE LOADING
+    // ============================================================
+
     if (window.__calendarUILoaded) {
         return;
     }
     window.__calendarUILoaded = true;
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // CONSTANTS
+    // ============================================================
+
+    var CalendarUtils = window.CalendarUtils;
+    var CalendarModes = window.CalendarModes;
+
+    // ============================================================
+    // DEPENDENCY VALIDATION
     // ============================================================
 
     function checkDependencies() {
-        var required = [
-            { name: 'CalendarModes', fn: window.CalendarModes },
-            { name: 'getStudents', fn: window.getStudents },
-            { name: 'getInstructors', fn: window.getInstructors },
-            { name: 'getLocations', fn: window.getLocations },
-            { name: 'getDisplayName', fn: window.getDisplayName }
-        ];
-
         var missing = [];
-        for (var i = 0; i < required.length; i++) {
-            if (typeof required[i].fn !== 'function' && typeof required[i].fn !== 'object') {
-                missing.push(required[i].name);
-            }
+
+        if (!CalendarModes || typeof CalendarModes.getMode !== 'function') {
+            missing.push('CalendarModes.getMode');
+        }
+
+        if (!CalendarModes || typeof CalendarModes.getModeOptions !== 'function') {
+            missing.push('CalendarModes.getModeOptions');
+        }
+
+        if (!CalendarModes || typeof CalendarModes.hasMode !== 'function') {
+            missing.push('CalendarModes.hasMode');
+        }
+
+        if (typeof window.getStudents !== 'function') {
+            missing.push('getStudents');
+        }
+
+        if (typeof window.getInstructors !== 'function') {
+            missing.push('getInstructors');
+        }
+
+        if (typeof window.getLocations !== 'function') {
+            missing.push('getLocations');
+        }
+
+        if (typeof window.getDisplayName !== 'function') {
+            missing.push('getDisplayName');
         }
 
         if (missing.length > 0) {
-            console.warn('[CalendarUI] Missing dependencies:', missing.join(', '));
             return false;
         }
+
         return true;
     }
 
@@ -69,17 +106,23 @@
 
     function init(container, options, callbacks) {
         if (!checkDependencies()) {
+            if (container) {
+                container.innerHTML = '<p class="empty-state">Calendar dependencies not loaded.</p>';
+            }
             return;
         }
 
         _container = container;
 
         if (options) {
-            if (options.mode && window.CalendarModes.getMode(options.mode)) {
+            if (options.mode && CalendarModes.hasMode(options.mode)) {
                 _state.mode = options.mode;
             }
             if (options.week) {
-                _state.week = options.week;
+                var week = parseInt(options.week, 10);
+                if (!isNaN(week) && week >= 1 && week <= 52) {
+                    _state.week = week;
+                }
             }
             if (options.selectedId) {
                 _state.selectedId = options.selectedId;
@@ -101,7 +144,6 @@
 
     function render() {
         if (!_container) {
-            console.warn('[CalendarUI] No container set.');
             return;
         }
 
@@ -110,19 +152,11 @@
             return;
         }
 
-        // Build the UI
         _container.innerHTML = getCalendarUIHTML();
 
-        // Populate mode selector
         populateModeSelector();
-
-        // Populate entity selector
         populateEntitySelector();
-
-        // Render the calendar grid
         renderCalendarGrid();
-
-        // Bind events
         bindEvents();
     }
 
@@ -131,76 +165,81 @@
     // ============================================================
 
     function getCalendarUIHTML() {
-        return `
-            <div class="calendar-ui">
-                <div class="calendar-controls">
-                    <div class="mode-selector">
-                        <label for="calendar-mode-select">View:</label>
-                        <select id="calendar-mode-select">
-                            ${window.CalendarModes.getModeOptions().map(function(opt) {
-                                return '<option value="' + opt.value + '">' + opt.label + '</option>';
-                            }).join('')}
-                        </select>
-                    </div>
-                    <div class="entity-selector">
-                        <label for="calendar-entity-select" id="calendar-entity-label">Student:</label>
-                        <select id="calendar-entity-select">
-                            <option value="">Select...</option>
-                        </select>
-                    </div>
-                    <div class="week-nav">
-                        <button id="calendar-prev-week" class="small">← Prev</button>
-                        <span id="calendar-week-display" style="font-weight:600;min-width:80px;text-align:center;">Week 1</span>
-                        <button id="calendar-next-week" class="small">Next →</button>
-                    </div>
-                </div>
-                <div class="schedule-grid-wrapper" id="calendar-grid-wrapper">
-                    <div class="schedule-grid" id="calendar-grid">
-                        <div class="day-column" data-day="1">
-                            <div class="day-header">Monday</div>
-                            <div class="day-slots"></div>
-                        </div>
-                        <div class="day-column" data-day="2">
-                            <div class="day-header">Tuesday</div>
-                            <div class="day-slots"></div>
-                        </div>
-                        <div class="day-column" data-day="3">
-                            <div class="day-header">Wednesday</div>
-                            <div class="day-slots"></div>
-                        </div>
-                        <div class="day-column" data-day="4">
-                            <div class="day-header">Thursday</div>
-                            <div class="day-slots"></div>
-                        </div>
-                        <div class="day-column" data-day="5">
-                            <div class="day-header">Friday</div>
-                            <div class="day-slots"></div>
-                        </div>
-                        <div class="day-column" data-day="6">
-                            <div class="day-header">Saturday</div>
-                            <div class="day-slots"></div>
-                        </div>
-                        <div class="day-column" data-day="7">
-                            <div class="day-header">Sunday</div>
-                            <div class="day-slots"></div>
-                        </div>
-                    </div>
-                </div>
-                <div style="margin-top:8px;font-size:0.7rem;color:var(--text-dim);text-align:center;">
-                    ${getModeHint()}
-                </div>
-            </div>
-        `;
+        var options = CalendarModes.getModeOptions();
+        var optionsHTML = '';
+        for (var i = 0; i < options.length; i++) {
+            var opt = options[i];
+            optionsHTML += '<option value="' + opt.value + '">' + opt.label + '</option>';
+        }
+
+        return (
+            '<div class="calendar-ui">' +
+                '<div class="calendar-controls">' +
+                    '<div class="mode-selector">' +
+                        '<label for="calendar-mode-select">View:</label>' +
+                        '<select id="calendar-mode-select">' +
+                            optionsHTML +
+                        '</select>' +
+                    '</div>' +
+                    '<div class="entity-selector">' +
+                        '<label for="calendar-entity-select" id="calendar-entity-label">Student:</label>' +
+                        '<select id="calendar-entity-select">' +
+                            '<option value="">Select...</option>' +
+                        '</select>' +
+                    '</div>' +
+                    '<div class="week-nav">' +
+                        '<button id="calendar-prev-week" class="small">[<]</button>' +
+                        '<span id="calendar-week-display" style="font-weight:600;min-width:80px;text-align:center;">Week 1</span>' +
+                        '<button id="calendar-next-week" class="small">[>]</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="schedule-grid-wrapper" id="calendar-grid-wrapper">' +
+                    '<div class="schedule-grid" id="calendar-grid">' +
+                        '<div class="day-column" data-day="1">' +
+                            '<div class="day-header">Monday</div>' +
+                            '<div class="day-slots"></div>' +
+                        '</div>' +
+                        '<div class="day-column" data-day="2">' +
+                            '<div class="day-header">Tuesday</div>' +
+                            '<div class="day-slots"></div>' +
+                        '</div>' +
+                        '<div class="day-column" data-day="3">' +
+                            '<div class="day-header">Wednesday</div>' +
+                            '<div class="day-slots"></div>' +
+                        '</div>' +
+                        '<div class="day-column" data-day="4">' +
+                            '<div class="day-header">Thursday</div>' +
+                            '<div class="day-slots"></div>' +
+                        '</div>' +
+                        '<div class="day-column" data-day="5">' +
+                            '<div class="day-header">Friday</div>' +
+                            '<div class="day-slots"></div>' +
+                        '</div>' +
+                        '<div class="day-column" data-day="6">' +
+                            '<div class="day-header">Saturday</div>' +
+                            '<div class="day-slots"></div>' +
+                        '</div>' +
+                        '<div class="day-column" data-day="7">' +
+                            '<div class="day-header">Sunday</div>' +
+                            '<div class="day-slots"></div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+                '<div style="margin-top:8px;font-size:0.7rem;color:var(--text-dim);text-align:center;">' +
+                    getModeHint() +
+                '</div>' +
+            '</div>'
+        );
     }
 
     function getModeHint() {
         switch (_state.mode) {
             case 'student':
-                return 'Click a slot to add class • Right-click to remove • Rest days are user-configurable';
+                return 'Click a slot to add class  |  Right-click to remove  |  Rest days are user-configurable';
             case 'instructor':
-                return 'Click a slot to add class • Right-click to remove • Click class to manage students';
+                return 'Click a slot to add class  |  Right-click to remove  |  Click class to manage students';
             case 'location':
-                return 'Click a slot to assign a class • Right-click to remove';
+                return 'Click a slot to assign a class  |  Right-click to remove';
             default:
                 return 'Select a view to begin';
         }
@@ -212,7 +251,9 @@
 
     function populateModeSelector() {
         var select = document.getElementById('calendar-mode-select');
-        if (!select) return;
+        if (!select) {
+            return;
+        }
 
         select.value = _state.mode;
     }
@@ -220,9 +261,11 @@
     function populateEntitySelector() {
         var select = document.getElementById('calendar-entity-select');
         var label = document.getElementById('calendar-entity-label');
-        if (!select) return;
+        if (!select) {
+            return;
+        }
 
-        var mode = window.CalendarModes.getMode(_state.mode);
+        var mode = CalendarModes.getMode(_state.mode);
         if (!mode) {
             select.innerHTML = '<option value="">No mode available</option>';
             return;
@@ -237,21 +280,29 @@
 
         select.innerHTML = '<option value="">Select ' + modeLabel.toLowerCase() + '...</option>';
 
-        entities.forEach(function(entity) {
+        var selectionExists = false;
+
+        for (var i = 0; i < entities.length; i++) {
+            var entity = entities[i];
             var name = mode.getEntityDisplayName(entity);
             var option = document.createElement('option');
             option.value = entity.id;
             option.textContent = name;
+
             if (String(entity.id) === String(_state.selectedId)) {
                 option.selected = true;
+                selectionExists = true;
             }
-            select.appendChild(option);
-        });
 
-        // If no selection and we have entities, select the first
-        if (!_state.selectedId && entities.length > 0) {
-            select.selectedIndex = 1;
+            select.appendChild(option);
+        }
+
+        // Auto-heal: if selection doesn't exist, select first entity
+        if (!selectionExists && entities.length > 0) {
             _state.selectedId = entities[0].id;
+            select.value = String(_state.selectedId);
+        } else if (!selectionExists) {
+            _state.selectedId = null;
         }
     }
 
@@ -260,7 +311,7 @@
     // ============================================================
 
     function renderCalendarGrid() {
-        var mode = window.CalendarModes.getMode(_state.mode);
+        var mode = CalendarModes.getMode(_state.mode);
         if (!mode) {
             var grid = document.getElementById('calendar-grid');
             if (grid) {
@@ -269,13 +320,11 @@
             return;
         }
 
-        // Delegate to mode-specific renderer
         var container = document.getElementById('calendar-grid');
         if (container) {
             mode.render(container, _state);
         }
 
-        // Update week display
         var weekDisplay = document.getElementById('calendar-week-display');
         if (weekDisplay) {
             weekDisplay.textContent = 'Week ' + _state.week;
@@ -298,15 +347,20 @@
         var changed = false;
 
         if (newState.mode !== undefined && newState.mode !== _state.mode) {
+            if (!CalendarModes.hasMode(newState.mode)) {
+                return;
+            }
             _state.mode = newState.mode;
             changed = true;
-            // Reset selection when mode changes
             _state.selectedId = null;
         }
 
         if (newState.week !== undefined && newState.week !== _state.week) {
-            _state.week = newState.week;
-            changed = true;
+            var week = parseInt(newState.week, 10);
+            if (!isNaN(week) && week >= 1 && week <= 52) {
+                _state.week = week;
+                changed = true;
+            }
         }
 
         if (newState.selectedId !== undefined && newState.selectedId !== _state.selectedId) {
@@ -327,28 +381,34 @@
     // ============================================================
 
     function bindEvents() {
-        // Mode selector
         var modeSelect = document.getElementById('calendar-mode-select');
         if (modeSelect) {
             modeSelect.addEventListener('change', function() {
                 setState({ mode: this.value });
+                if (_onStateChange) {
+                    _onStateChange(getState());
+                }
             });
         }
 
-        // Entity selector
         var entitySelect = document.getElementById('calendar-entity-select');
         if (entitySelect) {
             entitySelect.addEventListener('change', function() {
                 setState({ selectedId: this.value });
+                if (_onStateChange) {
+                    _onStateChange(getState());
+                }
             });
         }
 
-        // Week navigation
         var prevBtn = document.getElementById('calendar-prev-week');
         if (prevBtn) {
             prevBtn.addEventListener('click', function() {
                 if (_state.week > 1) {
                     setState({ week: _state.week - 1 });
+                    if (_onStateChange) {
+                        _onStateChange(getState());
+                    }
                 }
             });
         }
@@ -358,6 +418,9 @@
             nextBtn.addEventListener('click', function() {
                 if (_state.week < 52) {
                     setState({ week: _state.week + 1 });
+                    if (_onStateChange) {
+                        _onStateChange(getState());
+                    }
                 }
             });
         }
