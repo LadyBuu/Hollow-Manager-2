@@ -12,9 +12,10 @@
  * 
  * IMPORTANT:
  *   - This module is for RENDERING only - all event binding is in character-events.js
- *   - State is managed via window.currentEditId() and window.setCurrentEditId()
- *   - All user-controlled data is escaped before being inserted into HTML
+ *   - State is managed via window.getCurrentEditId() and window.setCurrentEditId()
+ *   - All user-controlled data is inserted using safe DOM APIs (textContent, value)
  *   - DOM operations are safe and defensive
+ *   - This module can be re-initialized after DOM replacement
  * 
  * DEPENDENCIES:
  *   - window.CharacterViews
@@ -24,7 +25,7 @@
  *   - window.CharacterStats
  *   - window.getCharacterById (from core-utils.js)
  *   - window.getDisplayName (from core-utils.js)
- *   - window.currentEditId (from index.js)
+ *   - window.getCurrentEditId (from index.js)
  *   - window.setCurrentEditId (from index.js)
  */
 
@@ -45,19 +46,6 @@
     var _initialized = false;
 
     // ============================================================
-    // HTML ESCAPING - Prevents XSS
-    // ============================================================
-
-    function escapeHtml(value) {
-        return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
-
-    // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
 
@@ -65,32 +53,39 @@
         var required = [
             'getCharacterById',
             'getDisplayName',
-            'getClasses',
-            'getClassByName',
-            'createClass',
-            'getClassDisplayName',
-            'getDiscipline',
-            'currentEditId',
+            'getCurrentEditId',
             'setCurrentEditId'
         ];
 
         var missing = [];
         required.forEach(function(name) {
-            if (typeof window[name] !== 'function' && name !== 'currentEditId' && name !== 'setCurrentEditId') {
+            if (typeof window[name] !== 'function') {
                 missing.push(name);
             }
-            if (name === 'currentEditId' && typeof window.currentEditId !== 'function') {
-                missing.push('currentEditId');
-            }
-            if (name === 'setCurrentEditId' && typeof window.setCurrentEditId !== 'function') {
-                missing.push('setCurrentEditId');
+        });
+
+        // Optional but recommended
+        var optional = ['CharacterViews', 'CharacterCRUD', 'CharacterEliminations', 
+                       'CharacterClasses', 'CharacterStats', 'CharacterList'];
+
+        var missingOptional = [];
+        optional.forEach(function(name) {
+            if (typeof window[name] === 'undefined' || 
+                (typeof window[name] === 'object' && window[name] === null)) {
+                missingOptional.push(name);
             }
         });
 
         if (missing.length > 0) {
-            console.warn('CharacterForm: Missing dependencies:', missing.join(', '));
+            console.warn('CharacterForm: Missing required dependencies:', missing.join(', '));
             return false;
         }
+
+        if (missingOptional.length > 0) {
+            console.warn('CharacterForm: Missing optional dependencies:', missingOptional.join(', '));
+            // Don't fail - some features may be degraded
+        }
+
         return true;
     }
 
@@ -99,7 +94,6 @@
     // ============================================================
 
     function init(container) {
-        if (_initialized) return;
         if (!checkDependencies()) return;
 
         if (!container) {
@@ -107,11 +101,12 @@
         }
         if (!container) return;
 
-        // Only initialize once
+        // Only initialize once per module load
+        if (_initialized) return;
         _initialized = true;
 
         // Get current edit ID
-        var editId = typeof window.currentEditId === 'function' ? window.currentEditId() : null;
+        var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
 
         // If we have a character, show it
         if (editId) {
@@ -142,7 +137,7 @@
         });
 
         // Refresh views when switching to certain tabs
-        var id = typeof window.currentEditId === 'function' ? window.currentEditId() : null;
+        var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
         if (id) {
             var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(id) : null;
             if (char) {
@@ -173,10 +168,10 @@
         switchTab('name');
 
         if (editId !== null && editId !== undefined && editId !== '') {
-            var char = data.characters ? data.characters.find(function(c) {
-                return String(c.id) === String(editId);
-            }) : null;
-
+            var char = typeof window.getCharacterById === 'function' 
+                ? window.getCharacterById(editId) 
+                : null;
+            
             if (!char) {
                 title.textContent = 'Character not found';
                 return;
@@ -272,8 +267,8 @@
         setFieldValue('char-goals', p.goals || '');
 
         // Stats tab
-        var stats = window.CharacterStats && typeof window.CharacterStats.getCharacterStats === 'function'
-            ? window.CharacterStats.getCharacterStats(char)
+        var stats = window.CharacterStats && typeof window.CharacterStats.getCharacterStats === 'function' 
+            ? window.CharacterStats.getCharacterStats(char) 
             : char.stats || {};
         setFieldValue('char-str', stats.str || 10);
         setFieldValue('char-dex', stats.dex || 10);
@@ -311,7 +306,7 @@
         var moves = window.CharacterStats && typeof window.CharacterStats.getSpecialMoves === 'function'
             ? window.CharacterStats.getSpecialMoves(char)
             : char.specialMoves || { physical: [], magical: [] };
-
+        
         if (window.CharacterStats && typeof window.CharacterStats.renderSpecialMoves === 'function') {
             window.CharacterStats.renderSpecialMoves('physical-moves-list', moves.physical || [], 'physical');
             window.CharacterStats.renderSpecialMoves('magical-moves-list', moves.magical || [], 'magical');
@@ -325,9 +320,9 @@
                 char.careerStatus.forEach(function(status) {
                     if (window.CharacterViews && typeof window.CharacterViews.addCareerStatusEntry === 'function') {
                         window.CharacterViews.addCareerStatusEntry(
-                            statusContainer,
-                            status.status,
-                            status.startYear,
+                            statusContainer, 
+                            status.status, 
+                            status.startYear, 
                             status.endYear
                         );
                     }
@@ -373,13 +368,13 @@
 
     function resetFormFields() {
         // Reset all inputs to default values
-        var inputs = document.querySelectorAll('#char-form input, #char-form textarea, #char-form select');
+        var inputs = document.querySelectorAll('#character-form input, #character-form textarea, #character-form select');
         inputs.forEach(function(input) {
             if (input.type === 'checkbox') {
                 input.checked = false;
             } else if (input.type === 'number') {
-                var defaultVal = input.id === 'char-str' || input.id === 'char-dex' ||
-                                 input.id === 'char-con' || input.id === 'char-int' ||
+                var defaultVal = input.id === 'char-str' || input.id === 'char-dex' || 
+                                 input.id === 'char-con' || input.id === 'char-int' || 
                                  input.id === 'char-wis' || input.id === 'char-cha' ? 10 : '';
                 input.value = defaultVal;
             } else {
