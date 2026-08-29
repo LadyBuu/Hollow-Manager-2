@@ -6,31 +6,36 @@
  * This module is responsible for:
  *   - Rendering tournament eliminations
  *   - Rendering standalone eliminations
- *   - Adding standalone eliminations (with MUTATE → LOG → SAVE)
- *   - Removing standalone eliminations (with MUTATE → LOG → SAVE)
+ *   - Adding standalone eliminations (with SNAPSHOT → VALIDATE → MUTATE → LOG → SAVE)
+ *   - Removing standalone eliminations (with SNAPSHOT → VALIDATE → MUTATE → LOG → SAVE)
  *   - Marking/unmarking tournament eliminations (programmatic)
  *   - Querying elimination status
  * 
  * IMPORTANT: All mutations follow the correct pattern:
- *   MUTATE → LOG → SAVE
+ *   SNAPSHOT → VALIDATE → MUTATE → LOG → SAVE → ROLLBACK on failure
  *   All user-controlled data is escaped to prevent XSS.
  *   eliminatedWeeks is derived from eliminations to maintain consistency.
- *   All mutations use candidate-based validation with rollback on failure.
+ *   Death handling: deceased characters are eliminated from the timeline.
+ *   Death and elimination records are combined for availability checks.
  * 
  * ELIMINATION SOURCES OF TRUTH:
  *   1. eliminations array - explicit elimination records (tournament or standalone)
  *   2. deceased + deathWeek - character death as a timeline boundary
+ *   - BOTH are checked in isCharacterEliminatedByWeek()
+ *   - eliminatedWeeks is DERIVED, never the source of truth
  * 
  * DECEASED HANDLING:
  *   - If a character has a deathWeek, they are eliminated from that week onward.
  *   - If a character is deceased but has no deathWeek, they are considered
  *     eliminated for all timeline weeks (week 1 onward).
  *   - This is a deliberate data policy: deceased without deathWeek = permanently unavailable.
+ *   - Death has priority: if deceased, explicit eliminations are still tracked but death
+ *     determines availability from its week onward.
  * 
  * DEPENDENCIES:
  *   - window.getCharacterById (from core-utils.js)
  *   - window.getDisplayName (from core-utils.js)
- *   - window.currentEditId (from index.js)
+ *   - window.getCurrentEditId (from index.js)
  *   - window.saveData (from database.js)
  *   - window.logActivity (from core-utils.js)
  *   - window.db.createSafeCopy (from database.js)
@@ -60,22 +65,19 @@
         var required = [
             'getCharacterById',
             'getDisplayName',
-            'currentEditId',
+            'getCurrentEditId',
             'saveData',
             'logActivity'
         ];
 
         var missing = [];
         required.forEach(function(name) {
-            if (name === 'currentEditId' && typeof window.currentEditId !== 'function') {
-                missing.push('currentEditId');
-            } else if (name === 'saveData' && typeof window.saveData !== 'function') {
+            if (name === 'saveData' && typeof window.saveData !== 'function') {
                 missing.push('saveData');
             } else if (name === 'logActivity' && typeof window.logActivity !== 'function') {
                 missing.push('logActivity');
             } else if (typeof window[name] !== 'function' && 
-                       name !== 'currentEditId' &&
-                       name !== 'saveData' &&
+                       name !== 'saveData' && 
                        name !== 'logActivity') {
                 missing.push(name);
             }
@@ -181,8 +183,8 @@
     }
 
     function getCurrentEditId() {
-        if (typeof window.currentEditId === 'function') {
-            return window.currentEditId();
+        if (typeof window.getCurrentEditId === 'function') {
+            return window.getCurrentEditId();
         }
         return null;
     }
@@ -192,6 +194,9 @@
     // ============================================================
 
     function generateEliminationId() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            return 'elim_' + window.crypto.randomUUID();
+        }
         return 'elim_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
     }
 
@@ -211,8 +216,11 @@
 
         char.eliminations.forEach(function(e) {
             var week = Number(e.week);
-            if (Number.isInteger(week) && char.eliminatedWeeks.indexOf(week) === -1) {
-                char.eliminatedWeeks.push(week);
+            // Only include valid weeks within range
+            if (Number.isInteger(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
+                if (char.eliminatedWeeks.indexOf(week) === -1) {
+                    char.eliminatedWeeks.push(week);
+                }
             }
         });
 
@@ -231,6 +239,7 @@
     // ============================================================
     // IS CHARACTER ELIMINATED BY WEEK
     // Combines explicit elimination records with death timeline data.
+    // Death has priority: if deceased, death determines availability.
     // ============================================================
 
     function isCharacterEliminatedByWeek(char, week) {
@@ -241,7 +250,17 @@
             return false;
         }
 
-        // DECEASED HANDLING
+        // Check explicit elimination records FIRST
+        if (char.eliminations) {
+            for (var i = 0; i < char.eliminations.length; i++) {
+                var elimWeek = Number(char.eliminations[i].week);
+                if (Number.isInteger(elimWeek) && elimWeek <= weekNum) {
+                    return true;
+                }
+            }
+        }
+
+        // Then check death timeline
         if (char.deceased) {
             // If deathWeek is stored, use it as the timeline boundary
             if (
@@ -259,19 +278,9 @@
 
             // If a deceased character has no death-week information,
             // assume they are unavailable for all timeline weeks.
-            // This is a deliberate data policy choice.
             return true;
         }
 
-        // Check elimination records (source of truth for explicit eliminations)
-        if (char.eliminations) {
-            for (var i = 0; i < char.eliminations.length; i++) {
-                var elimWeek = Number(char.eliminations[i].week);
-                if (Number.isInteger(elimWeek) && elimWeek <= weekNum) {
-                    return true;
-                }
-            }
-        }
         return false;
     }
 
