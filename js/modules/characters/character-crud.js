@@ -18,17 +18,18 @@
  * - All mutation functions return Promises for async composition
  * 
  * MUTATION FLOW:
- *   SNAPSHOT → VALIDATE → NORMALISE → MUTATE → LOG → SAVE → COMMIT
- *                                    ↓
- *                                failure
- *                                    ↓
- *                                ROLLBACK
+ *   VALIDATE INPUT → BUILD/NORMALISE → SNAPSHOT → MUTATE → LOG → SAVE → COMMIT
+ *                                             ↓
+ *                                         failure
+ *                                             ↓
+ *                                         ROLLBACK
  * 
  * STATE SOURCE OF TRUTH:
- *   - AppState.characters.formEditId is the canonical edit state
- *   - DOM is rendered from state, not the other way around
- *   - showCharacterForm() should read from AppState
- *   - CRUD module reads from AppState, not dataset.editId
+ *   - AppState.characters.formEditId is the canonical edit state.
+ *   - Access it exclusively through getCurrentEditId/setCurrentEditId.
+ *   - DOM is rendered from state, not the other way around.
+ *   - The form DOM is the temporary source of user-entered values during save.
+ *   - Persisted character data remains in window.data.
  * 
  * DEPENDENCIES:
  *   - window.getCurrentEditId (from index.js)
@@ -165,7 +166,6 @@
             if (typeof structuredClone === 'function') {
                 return structuredClone(data);
             }
-            // Fallback - may fail for complex objects
             try {
                 return JSON.parse(JSON.stringify(data));
             } catch (e) {
@@ -197,14 +197,6 @@
         if (!data) return false;
         if (!Array.isArray(data[key])) {
             return false;
-        }
-        return true;
-    }
-
-    function ensureDataArray(data, key) {
-        if (!data) return false;
-        if (!Array.isArray(data[key])) {
-            data[key] = [];
         }
         return true;
     }
@@ -298,10 +290,10 @@
             return isNaN(val) ? fallback : Math.max(1, Math.min(30, val));
         };
 
-        // Clear death fields if not deceased
         var finalDeathYear = isDeceased ? deathYear : '';
         var finalDeathCause = isDeceased ? deathCause : '';
         var finalDeathAge = isDeceased ? deathAge : '';
+        var finalDeathWeek = isDeceased ? deathYear : ''; // deathWeek uses deathYear if provided
 
         return {
             firstName: getVal('char-firstname', ''),
@@ -327,6 +319,7 @@
             deathYear: finalDeathYear,
             deathCause: finalDeathCause,
             deathAge: finalDeathAge,
+            deathWeek: finalDeathWeek,
             careerStatus: careerStatus,
             specialty: getVal('char-specialty', ''),
             classIds: classIds,
@@ -372,13 +365,11 @@
     }
 
     function updateExistingCharacter(existing, charData, data) {
-        // Preserve immutable fields and merge with new data
         var updatedCharacter = Object.assign({}, existing, charData, {
             id: existing.id,
             createdAt: existing.createdAt,
-            // Preserve any fields not in charData (e.g., eliminations, eliminatedWeeks)
-            eliminations: existing.eliminations || [],
-            eliminatedWeeks: existing.eliminatedWeeks || []
+            eliminations: Array.isArray(existing.eliminations) ? existing.eliminations : [],
+            eliminatedWeeks: Array.isArray(existing.eliminatedWeeks) ? existing.eliminatedWeeks : []
         });
 
         var index = data.characters.findIndex(function(c) {
@@ -393,7 +384,6 @@
     function createNewCharacter(charData, data) {
         var id = generateCharacterId();
 
-        // Generated fields win (prevent charData from overwriting them)
         var newChar = Object.assign({}, charData, {
             id: id,
             eliminations: [],
@@ -420,12 +410,8 @@
 
         var data = window.data || {};
 
-        // Validate data structure
         if (!validateDataArray(data, 'characters')) {
-            if (!ensureDataArray(data, 'characters')) {
-                showNotification('Data structure is corrupted. Please reload.', 'error');
-                return Promise.resolve(false);
-            }
+            data.characters = [];
         }
 
         var editId = getCurrentEditId();
@@ -476,10 +462,10 @@
                 : existingChar.firstName + ' ' + existingChar.lastName;
         }
 
-        // Save a backup for rollback if needed
+        // SNAPSHOT
         var backup = createSafeBackup(data);
 
-        // 1. MUTATE
+        // MUTATE
         if (isEditing) {
             updateExistingCharacter(existingChar, charData, data);
             newId = editId;
@@ -488,14 +474,14 @@
             name = charData.firstName + ' ' + charData.lastName;
         }
 
-        // 2. LOG (logActivity should NOT call saveData)
+        // LOG
         if (typeof window.logActivity === 'function') {
             window.logActivity(
                 isEditing ? 'Updated character: ' + name : 'Created character: ' + name
             );
         }
 
-        // 3. PERSIST - Return the promise for composition
+        // SAVE
         if (typeof window.saveData === 'function') {
             return window.saveData()
                 .then(function() {
@@ -504,17 +490,15 @@
                 })
                 .catch(function(err) {
                     console.error('Failed to save character:', err);
-                    // Rollback memory if backup exists
                     if (backup) {
+                        // ROLLBACK
                         window.data = backup;
                         safeRenderCharacterList();
 
                         if (isEditing) {
-                            // For editing, show the original character
                             setCurrentEditId(editId);
                             safeShowCharacterForm(editId);
                         } else {
-                            // For new character, reset to empty form
                             setCurrentEditId(null);
                             safeShowCharacterForm(null);
                         }
@@ -569,16 +553,14 @@
             ? window.getDisplayName(char) 
             : char.firstName + ' ' + char.lastName;
 
-        // Single confirmation - this is the only one
         if (!confirm('Delete "' + name + '" permanently? This will also remove them from all teams.')) {
             return Promise.resolve(false);
         }
 
-        // Save a backup for rollback if needed
+        // SNAPSHOT
         var backup = createSafeBackup(data);
 
-        // 1. MUTATE
-        // Clean team memberships
+        // MUTATE - Clean team memberships
         if (Array.isArray(data.teams)) {
             data.teams.forEach(function(team) {
                 if (Array.isArray(team.members)) {
@@ -594,12 +576,12 @@
             return c && String(c.id) !== String(id);
         });
 
-        // 2. LOG
+        // LOG
         if (typeof window.logActivity === 'function') {
             window.logActivity('Deleted character: ' + name);
         }
 
-        // 3. PERSIST - Return the promise for composition
+        // SAVE
         if (typeof window.saveData === 'function') {
             return window.saveData()
                 .then(function() {
@@ -608,12 +590,10 @@
                 })
                 .catch(function(err) {
                     console.error('Failed to delete character:', err);
-                    // Rollback memory if backup exists
                     if (backup) {
+                        // ROLLBACK
                         window.data = backup;
                         safeRenderCharacterList();
-
-                        // Restore the deleted character in the form
                         setCurrentEditId(id);
                         safeShowCharacterForm(id);
                     }
