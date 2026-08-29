@@ -43,6 +43,23 @@
     var CalendarModes = window.CalendarModes;
 
     // ============================================================
+    // HTML ESCAPING
+    // ============================================================
+
+    function escapeHtml(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+        var str = String(value);
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    // ============================================================
     // DEPENDENCY VALIDATION
     // ============================================================
 
@@ -170,6 +187,10 @@
 
         if (!exists) {
             _state.selectedId = entities.length > 0 ? entities[0].id : null;
+            // Notify state change after healing
+            if (_onStateChange) {
+                _onStateChange(getState());
+            }
         }
     }
 
@@ -182,7 +203,7 @@
         var optionsHTML = '';
         for (var i = 0; i < options.length; i++) {
             var opt = options[i];
-            optionsHTML += '<option value="' + opt.value + '">' + opt.label + '</option>';
+            optionsHTML += '<option value="' + escapeHtml(opt.value) + '">' + escapeHtml(opt.label) + '</option>';
         }
 
         return (
@@ -201,42 +222,13 @@
                         '</select>' +
                     '</div>' +
                     '<div class="week-nav">' +
-                        '<button id="calendar-prev-week" class="small">[<]</button>' +
+                        '<button id="calendar-prev-week" class="small">‹</button>' +
                         '<span id="calendar-week-display" style="font-weight:600;min-width:80px;text-align:center;">Week 1</span>' +
-                        '<button id="calendar-next-week" class="small">[>]</button>' +
+                        '<button id="calendar-next-week" class="small">›</button>' +
                     '</div>' +
                 '</div>' +
                 '<div class="schedule-grid-wrapper" id="calendar-grid-wrapper">' +
-                    '<div class="schedule-grid" id="calendar-grid">' +
-                        '<div class="day-column" data-day="1">' +
-                            '<div class="day-header">Monday</div>' +
-                            '<div class="day-slots"></div>' +
-                        '</div>' +
-                        '<div class="day-column" data-day="2">' +
-                            '<div class="day-header">Tuesday</div>' +
-                            '<div class="day-slots"></div>' +
-                        '</div>' +
-                        '<div class="day-column" data-day="3">' +
-                            '<div class="day-header">Wednesday</div>' +
-                            '<div class="day-slots"></div>' +
-                        '</div>' +
-                        '<div class="day-column" data-day="4">' +
-                            '<div class="day-header">Thursday</div>' +
-                            '<div class="day-slots"></div>' +
-                        '</div>' +
-                        '<div class="day-column" data-day="5">' +
-                            '<div class="day-header">Friday</div>' +
-                            '<div class="day-slots"></div>' +
-                        '</div>' +
-                        '<div class="day-column" data-day="6">' +
-                            '<div class="day-header">Saturday</div>' +
-                            '<div class="day-slots"></div>' +
-                        '</div>' +
-                        '<div class="day-column" data-day="7">' +
-                            '<div class="day-header">Sunday</div>' +
-                            '<div class="day-slots"></div>' +
-                        '</div>' +
-                    '</div>' +
+                    '<div id="calendar-grid"></div>' +
                 '</div>' +
                 '<div style="margin-top:8px;font-size:0.7rem;color:var(--text-dim);text-align:center;">' +
                     getModeHint() +
@@ -309,13 +301,17 @@
             select.appendChild(option);
         }
 
-        // Auto-heal: if selection doesn't exist, select first entity
+        // If selection doesn't exist, ensure state is healed
+        // (ensureValidSelection already handles this, but this is a safety net)
         if (!selectionExists && entities.length > 0) {
-            _state.selectedId = entities[0].id;
-            select.value = String(_state.selectedId);
-            // Notify state change after auto-heal
-            if (_onStateChange) {
-                _onStateChange(getState());
+            // ensureValidSelection should have fixed this already
+            // If not, heal now but this should be unreachable
+            if (String(_state.selectedId) !== String(entities[0].id)) {
+                _state.selectedId = entities[0].id;
+                select.value = String(_state.selectedId);
+                if (_onStateChange) {
+                    _onStateChange(getState());
+                }
             }
         } else if (!selectionExists) {
             _state.selectedId = null;
@@ -360,6 +356,10 @@
     }
 
     function setState(newState) {
+        if (!newState || typeof newState !== 'object') {
+            return;
+        }
+
         var changed = false;
 
         if (newState.mode !== undefined && newState.mode !== _state.mode) {
