@@ -6,17 +6,18 @@
  * This module is responsible for:
  *   - Rendering tournament eliminations
  *   - Rendering standalone eliminations
- *   - Adding standalone eliminations (with SNAPSHOT → VALIDATE → MUTATE → LOG → SAVE)
- *   - Removing standalone eliminations (with SNAPSHOT → VALIDATE → MUTATE → LOG → SAVE)
+ *   - Adding standalone eliminations (with VALIDATE → SNAPSHOT → MUTATE → LOG → SAVE)
+ *   - Removing standalone eliminations (with VALIDATE → SNAPSHOT → MUTATE → LOG → SAVE)
  *   - Marking/unmarking tournament eliminations (programmatic)
  *   - Querying elimination status
  * 
  * IMPORTANT: All mutations follow the correct pattern:
- *   SNAPSHOT → VALIDATE → MUTATE → LOG → SAVE → ROLLBACK on failure
+ *   VALIDATE → SNAPSHOT → MUTATE → LOG → SAVE → ROLLBACK on failure
  *   All user-controlled data is escaped to prevent XSS.
  *   eliminatedWeeks is derived from eliminations to maintain consistency.
  *   Death handling: deceased characters are eliminated from the timeline.
  *   Death and elimination records are combined for availability checks.
+ *   Death with invalid deathWeek = unavailable entirely (fail-closed).
  * 
  * ELIMINATION SOURCES OF TRUTH:
  *   1. eliminations array - explicit elimination records (tournament or standalone)
@@ -25,10 +26,12 @@
  *   - eliminatedWeeks is DERIVED, never the source of truth
  * 
  * DECEASED HANDLING:
- *   - If a character has a deathWeek, they are eliminated from that week onward.
+ *   - If a character has a valid deathWeek, they are eliminated from that week onward.
  *   - If a character is deceased but has no deathWeek, they are considered
  *     eliminated for all timeline weeks (week 1 onward).
- *   - This is a deliberate data policy: deceased without deathWeek = permanently unavailable.
+ *   - If a character is deceased with invalid deathWeek, they are considered
+ *     eliminated for all timeline weeks (fail-closed).
+ *   - This is a deliberate data policy: deceased without valid deathWeek = permanently unavailable.
  *   - Death has priority: if deceased, explicit eliminations are still tracked but death
  *     determines availability from its week onward.
  * 
@@ -127,7 +130,6 @@
             return;
         }
 
-        // Ultimate fallback - only use alert for errors
         if (type === 'error') {
             alert('Error: ' + message);
         } else {
@@ -147,7 +149,6 @@
             if (typeof structuredClone === 'function') {
                 return structuredClone(data);
             }
-            // Fallback - may fail for complex objects but better than nothing
             try {
                 return JSON.parse(JSON.stringify(data));
             } catch (e) {
@@ -239,7 +240,7 @@
     // ============================================================
     // IS CHARACTER ELIMINATED BY WEEK
     // Combines explicit elimination records with death timeline data.
-    // Death has priority: if deceased, death determines availability.
+    // Death with invalid deathWeek = unavailable entirely (fail-closed).
     // ============================================================
 
     function isCharacterEliminatedByWeek(char, week) {
@@ -262,22 +263,18 @@
 
         // Then check death timeline
         if (char.deceased) {
-            // If deathWeek is stored, use it as the timeline boundary
-            if (
+            var hasValidDeathWeek = (
                 char.deathWeek !== undefined &&
                 char.deathWeek !== null &&
-                char.deathWeek !== ''
-            ) {
-                var deathWeek = Number(char.deathWeek);
-                if (Number.isInteger(deathWeek) && deathWeek <= weekNum) {
-                    return true;
-                }
-                // Death occurs in the future relative to this week
-                return false;
+                char.deathWeek !== '' &&
+                Number.isInteger(Number(char.deathWeek))
+            );
+
+            if (hasValidDeathWeek) {
+                return Number(char.deathWeek) <= weekNum;
             }
 
-            // If a deceased character has no death-week information,
-            // assume they are unavailable for all timeline weeks.
+            // Deceased with missing or invalid deathWeek = unavailable entirely
             return true;
         }
 
@@ -414,6 +411,7 @@
             return;
         }
 
+        // Validate character exists
         var data = window.data || {};
         if (!data.characters) {
             showNotification('Character data not found.', 'error');
@@ -438,9 +436,10 @@
             return;
         }
 
+        // SNAPSHOT
         var backup = createSafeBackup(data);
 
-        // 1. MUTATE
+        // MUTATE
         if (!char.eliminations) char.eliminations = [];
         if (!char.eliminatedWeeks) char.eliminatedWeeks = [];
 
@@ -456,12 +455,12 @@
 
         rebuildEliminatedWeeks(char);
 
-        // 2. LOG
+        // LOG
         if (typeof window.logActivity === 'function') {
             window.logActivity('Eliminated ' + name + ' (standalone, week ' + week + '): ' + reason);
         }
 
-        // 3. SAVE
+        // SAVE
         if (typeof window.saveData === 'function') {
             window.saveData()
                 .then(function() {
@@ -527,21 +526,22 @@
             return;
         }
 
+        // SNAPSHOT
         var backup = createSafeBackup(data);
 
-        // 1. MUTATE - filter by ID
+        // MUTATE - filter by ID
         char.eliminations = char.eliminations.filter(function(e) {
             return !(e.standalone && String(e.id) === String(eliminationId));
         });
         rebuildEliminatedWeeks(char);
 
-        // 2. LOG
+        // LOG
         var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
         if (typeof window.logActivity === 'function') {
             window.logActivity('Removed standalone elimination for ' + name + ' (week ' + elim.week + ')');
         }
 
-        // 3. SAVE
+        // SAVE
         if (typeof window.saveData === 'function') {
             window.saveData()
                 .then(function() {
@@ -578,13 +578,11 @@
             return Promise.resolve(false);
         }
 
-        // Validate tournament ID
         if (tournamentId === null || tournamentId === undefined || tournamentId === '') {
             console.warn('markCharacterEliminated: Missing tournament ID');
             return Promise.resolve(false);
         }
 
-        // Validate week - abort on invalid
         if (!validateWeek(week)) {
             console.warn('markCharacterEliminated: Invalid week "' + week + '" - aborting');
             return Promise.resolve(false);
@@ -602,13 +600,11 @@
 
         var weekNum = Number(week);
 
-        // Check if already eliminated at or before this week
         if (isCharacterEliminatedByWeek(char, weekNum)) {
             console.log('markCharacterEliminated: Character already eliminated by week ' + weekNum);
             return Promise.resolve(false);
         }
 
-        // Check if this specific tournament already has an elimination
         var alreadyExists = char.eliminations && char.eliminations.some(function(e) {
             return !e.standalone && String(e.tournamentId) === String(tournamentId);
         });
@@ -618,9 +614,10 @@
             return Promise.resolve(false);
         }
 
+        // SNAPSHOT
         var backup = createSafeBackup(data);
 
-        // 1. MUTATE
+        // MUTATE
         if (!char.eliminations) char.eliminations = [];
         if (!char.eliminatedWeeks) char.eliminatedWeeks = [];
 
@@ -635,7 +632,7 @@
 
         rebuildEliminatedWeeks(char);
 
-        // 2. LOG
+        // LOG
         var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
         if (typeof window.logActivity === 'function') {
             var tournName = 'Unknown Tournament';
@@ -648,7 +645,7 @@
             window.logActivity(name + ' eliminated from ' + tournName + ' (week ' + weekNum + ')');
         }
 
-        // 3. SAVE
+        // SAVE
         if (typeof window.saveData === 'function') {
             return window.saveData()
                 .then(function() {
@@ -678,7 +675,6 @@
             return Promise.resolve(false);
         }
 
-        // Validate tournament ID
         if (tournamentId === null || tournamentId === undefined || tournamentId === '') {
             console.warn('unmarkCharacterEliminated: Missing tournament ID');
             return Promise.resolve(false);
@@ -694,7 +690,6 @@
             return Promise.resolve(false);
         }
 
-        // Check if anything will be removed
         var hasMatchingElimination = char.eliminations && char.eliminations.some(function(e) {
             return String(e.tournamentId) === String(tournamentId) && !e.standalone;
         });
@@ -704,9 +699,10 @@
             return Promise.resolve(false);
         }
 
+        // SNAPSHOT
         var backup = createSafeBackup(data);
 
-        // 1. MUTATE
+        // MUTATE
         if (char.eliminations) {
             char.eliminations = char.eliminations.filter(function(e) {
                 return !(String(e.tournamentId) === String(tournamentId) && !e.standalone);
@@ -715,7 +711,7 @@
 
         rebuildEliminatedWeeks(char);
 
-        // 2. LOG
+        // LOG
         var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
         if (typeof window.logActivity === 'function') {
             var tournName = 'Unknown Tournament';
@@ -728,7 +724,7 @@
             window.logActivity('Restored ' + name + ' from ' + tournName);
         }
 
-        // 3. SAVE
+        // SAVE
         if (typeof window.saveData === 'function') {
             return window.saveData()
                 .then(function() {
