@@ -12,6 +12,11 @@
  *   - Magic scale: 0-10, where 9-10 is Master.
  *   - Stats scale: 1-30.
  * 
+ * DATA ACCESS:
+ *   - Stats/magic getters are pure and never mutate characters.
+ *   - Special move add/remove functions intentionally mutate the character.
+ *   - Persistence is handled by the parent form/data layer.
+ * 
  * DEPENDENCIES:
  *   - window.data (global state)
  *   - No external module dependencies
@@ -33,7 +38,6 @@
     var MAGIC_MAX = 10;
     var STAT_MIN = 1;
     var STAT_MAX = 30;
-    var DOT_THRESHOLDS = [0, 20, 40, 60, 80, 100]; // 0-20%, 21-40%, etc.
 
     // ============================================================
     // HTML ESCAPING - Prevents XSS in special moves
@@ -530,7 +534,6 @@
             totalPower += magic[key] || 0;
         });
 
-        // If no magic power at all, return null
         if (totalPower <= 0) {
             return null;
         }
@@ -545,7 +548,6 @@
             }
         }
 
-        // Find winning category by total (all categories have same number of types)
         var highestCategory = 'elemental';
         var highestScore = -1;
         for (var cat in categoryScores) {
@@ -555,7 +557,6 @@
             }
         }
 
-        // Check if there's a tie for highest category
         var tiedCategories = [];
         for (var cat in categoryScores) {
             if (categoryScores[cat] === highestScore && highestScore > 0) {
@@ -563,7 +564,6 @@
             }
         }
 
-        // If tied and high enough, return "Balanced Mage"
         if (tiedCategories.length > 1 && highestScore >= 18) {
             return {
                 name: 'Balanced Mage',
@@ -575,7 +575,6 @@
             };
         }
 
-        // Find highest type WITHIN the winning category
         var highestType = null;
         var highestTypeScore = -1;
         for (var key in magic) {
@@ -687,6 +686,8 @@
     function generateRandomMagicCategory(category) {
         var categoryTypes = getMagicCategoryTypes(category);
         var magic = {};
+        // Random generation intentionally excludes 10 (Master).
+        // Master proficiency is reserved for manual assignment / progression.
         categoryTypes.forEach(function(key) {
             var roll = Math.random();
             if (roll < 0.3) {
@@ -721,24 +722,48 @@
         if (!char) return false;
         if (type !== 'physical' && type !== 'magical') return false;
         if (!name || typeof name !== 'string' || name.trim() === '') return false;
-        
-        if (!char.specialMoves) char.specialMoves = { physical: [], magical: [] };
-        if (!char.specialMoves[type]) char.specialMoves[type] = [];
-        
+
+        // Normalise the specialMoves structure
+        if (!char.specialMoves || typeof char.specialMoves !== 'object' || Array.isArray(char.specialMoves)) {
+            char.specialMoves = { physical: [], magical: [] };
+        }
+
+        if (!Array.isArray(char.specialMoves.physical)) {
+            char.specialMoves.physical = [];
+        }
+
+        if (!Array.isArray(char.specialMoves.magical)) {
+            char.specialMoves.magical = [];
+        }
+
         char.specialMoves[type].push({
             name: name.trim(),
-            description: (description || '').trim()
+            description: typeof description === 'string' ? description.trim() : ''
         });
+
         return true;
     }
 
     function removeSpecialMove(char, type, index) {
         if (!char) return false;
         if (type !== 'physical' && type !== 'magical') return false;
-        if (!char.specialMoves || !char.specialMoves[type]) return false;
-        if (!Array.isArray(char.specialMoves[type])) return false;
-        if (index < 0 || index >= char.specialMoves[type].length) return false;
-        
+
+        if (!char.specialMoves || typeof char.specialMoves !== 'object' || Array.isArray(char.specialMoves)) {
+            return false;
+        }
+
+        if (!Array.isArray(char.specialMoves.physical) || !Array.isArray(char.specialMoves.magical)) {
+            return false;
+        }
+
+        if (!char.specialMoves[type] || !Array.isArray(char.specialMoves[type])) {
+            return false;
+        }
+
+        if (index < 0 || index >= char.specialMoves[type].length) {
+            return false;
+        }
+
         char.specialMoves[type].splice(index, 1);
         return true;
     }
@@ -884,24 +909,19 @@
     }
 
     // ============================================================
-    // EVENT INITIALIZATION - Now called from character-events.js
+    // EVENT COMPATIBILITY STUBS
+    // Event ownership belongs exclusively to character-events.js.
     // ============================================================
 
     function initStatsEvents() {
-        // Stats events are now handled by character-events.js
-        // This function is kept for compatibility but does nothing
         console.debug('CharacterStats.initStatsEvents: Events are now handled by character-events.js');
     }
 
     function initMagicEvents() {
-        // Magic events are now handled by character-events.js
-        // This function is kept for compatibility but does nothing
         console.debug('CharacterStats.initMagicEvents: Events are now handled by character-events.js');
     }
 
     function initSpecialMovesEvents() {
-        // Special moves events are now handled by character-events.js
-        // This function is kept for compatibility but does nothing
         console.debug('CharacterStats.initSpecialMovesEvents: Events are now handled by character-events.js');
     }
 
@@ -994,7 +1014,7 @@
         getMagicTabHTML: getMagicTabHTML,
         getSpecialMovesHTML: getSpecialMovesHTML,
 
-        // Event initialization (now just compatibility stubs)
+        // Event compatibility stubs
         initStatsEvents: initStatsEvents,
         initMagicEvents: initMagicEvents,
         initSpecialMovesEvents: initSpecialMovesEvents,
