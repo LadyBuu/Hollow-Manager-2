@@ -4,22 +4,22 @@
  * Path: js/modules/characters/character-classes.js
  * 
  * This module is responsible for:
- *   - Adding characters to classes (with MUTATE → LOG → SAVE)
- *   - Removing characters from classes (with MUTATE → LOG → SAVE)
+ *   - Adding characters to classes (with VALIDATE → SNAPSHOT → MUTATE → LOG → SAVE)
+ *   - Removing characters from classes (with VALIDATE → SNAPSHOT → MUTATE → LOG → SAVE)
  *   - Rendering class tags in the form
  *   - Populating class selectors
  *   - Querying character-class relationships
  * 
  * IMPORTANT: All mutations follow the correct pattern:
- *   SNAPSHOT → VALIDATE → MUTATE → LOG → SAVE
+ *   VALIDATE → SNAPSHOT → MUTATE → LOG → SAVE
  *   User-controlled text is inserted using safe DOM APIs/textContent
  *   rather than raw HTML, preventing XSS.
  *   Rollback is performed on save failure.
- *   Normalisation occurs AFTER backup, not before.
+ *   Normalisation occurs AFTER snapshot, not before validation.
  * 
  * MUTATION CONTRACT:
- *   1. Create backup of current state
- *   2. Validate inputs
+ *   1. Validate inputs (no mutation)
+ *   2. Create backup of current state
  *   3. Normalise data structures
  *   4. Apply mutation
  *   5. Log activity
@@ -111,7 +111,6 @@
             if (typeof structuredClone === 'function') {
                 return structuredClone(data);
             }
-            // Fallback - may fail for complex objects but better than nothing
             try {
                 return JSON.parse(JSON.stringify(data));
             } catch (e) {
@@ -161,7 +160,6 @@
             return;
         }
 
-        // Ultimate fallback - only use alert for errors
         if (type === 'error') {
             alert('Error: ' + message);
         } else {
@@ -170,21 +168,40 @@
     }
 
     // ============================================================
-    // NORMALISE CLASS IDS - Defensive, should be called after backup
+    // NORMALISE CLASS IDS - Called AFTER snapshot
     // ============================================================
 
     function normaliseClassIds(char) {
         if (!char) return;
         if (!Array.isArray(char.classIds)) {
             char.classIds = [];
+            return;
         }
-        // Remove duplicates and null/undefined values
-        var seen = {};
+
+        var seen = new Set();
         char.classIds = char.classIds.filter(function(id) {
             if (id === undefined || id === null || id === '') return false;
             var key = String(id);
-            if (seen[key]) return false;
-            seen[key] = true;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
+
+    // ============================================================
+    // GET NORMALISED CLASS IDS - Pure function for validation
+    // ============================================================
+
+    function getNormalisedClassIds(char) {
+        if (!char) return [];
+        if (!Array.isArray(char.classIds)) return [];
+
+        var seen = new Set();
+        return char.classIds.filter(function(id) {
+            if (id === undefined || id === null || id === '') return false;
+            var key = String(id);
+            if (seen.has(key)) return false;
+            seen.add(key);
             return true;
         });
     }
@@ -237,42 +254,41 @@
             return Promise.resolve(false);
         }
 
-        // Normalise AFTER we have the character, but BEFORE backup
-        // Actually, we need to backup first, THEN normalise if needed
-        var data = window.data || {};
-        var backup = createSafeBackup(data);
-
-        // Now normalise (this mutates, but we have backup)
-        normaliseClassIds(char);
-
         var cls = typeof window.getClass === 'function' ? window.getClass(classId) : null;
         if (!cls) {
             showNotification('Class not found.', 'error');
             return Promise.resolve(false);
         }
 
-        if (!char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+        // Use pure function for validation - no mutation
+        var classIds = getNormalisedClassIds(char);
+
+        if (!classIds.some(function(cid) { return String(cid) === String(classId); })) {
             showNotification('Character is not in this class.', 'error');
             return Promise.resolve(false);
         }
 
-        // Centralised confirmation
         var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
         if (!confirm('Remove ' + name + ' from class "' + cls.name + '"?')) {
             return Promise.resolve(false);
         }
 
-        // 1. MUTATE
+        // SNAPSHOT - Only after confirmation
+        var data = window.data || {};
+        var backup = createSafeBackup(data);
+
+        // NORMALISE and MUTATE
+        normaliseClassIds(char);
         char.classIds = char.classIds.filter(function(cid) {
             return String(cid) !== String(classId);
         });
 
-        // 2. LOG
+        // LOG
         if (typeof window.logActivity === 'function') {
             window.logActivity('Removed ' + name + ' from class: ' + cls.name);
         }
 
-        // 3. SAVE
+        // SAVE
         if (typeof window.saveData === 'function') {
             return window.saveData()
                 .then(function() {
@@ -337,35 +353,35 @@
             return Promise.resolve(false);
         }
 
-        // Backup BEFORE normalisation
-        var data = window.data || {};
-        var backup = createSafeBackup(data);
-
-        // Now normalise
-        normaliseClassIds(char);
-
         var cls = typeof window.getClass === 'function' ? window.getClass(classId) : null;
         if (!cls) {
             showNotification('Class not found.', 'error');
             return Promise.resolve(false);
         }
 
-        // Check if already in class
-        if (char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+        // Use pure function for validation - no mutation
+        var classIds = getNormalisedClassIds(char);
+
+        if (classIds.some(function(cid) { return String(cid) === String(classId); })) {
             showNotification('Character is already in this class.', 'error');
             return Promise.resolve(false);
         }
 
-        // 1. MUTATE
+        // SNAPSHOT - Only after validation
+        var data = window.data || {};
+        var backup = createSafeBackup(data);
+
+        // NORMALISE and MUTATE
+        normaliseClassIds(char);
         char.classIds.push(classId);
 
-        // 2. LOG
+        // LOG
         var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
         if (typeof window.logActivity === 'function') {
             window.logActivity('Added ' + name + ' to class: ' + cls.name);
         }
 
-        // 3. SAVE
+        // SAVE
         if (typeof window.saveData === 'function') {
             return window.saveData()
                 .then(function() {
@@ -397,7 +413,7 @@
     }
 
     // ============================================================
-    // ADD CLASS BY NAME - Convenience function
+    // ADD CLASS BY NAME - Now properly persists the assignment
     // ============================================================
 
     function addClassByName(name) {
@@ -437,18 +453,52 @@
             }
         }
 
-        // Check if already assigned
-        var container = document.getElementById('class-tag-container');
-        if (container) {
-            var existing = container.querySelector('[data-class-id="' + cls.id + '"]');
-            if (existing) {
-                showNotification('This class is already assigned.', 'error');
-                return;
-            }
+        // Use pure function for validation - no mutation
+        var classIds = getNormalisedClassIds(char);
+
+        if (classIds.some(function(cid) { return String(cid) === String(cls.id); })) {
+            showNotification('Character is already in this class.', 'error');
+            return;
         }
 
-        // Add the class tag
-        addClassTag(cls.id, cls.name);
+        // SNAPSHOT
+        var data = window.data || {};
+        var backup = createSafeBackup(data);
+
+        // NORMALISE and MUTATE
+        normaliseClassIds(char);
+        char.classIds.push(cls.id);
+
+        // LOG
+        var charName = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
+        if (typeof window.logActivity === 'function') {
+            window.logActivity('Added ' + charName + ' to class: ' + cls.name);
+        }
+
+        // SAVE
+        if (typeof window.saveData === 'function') {
+            window.saveData()
+                .then(function() {
+                    addClassTag(cls.id, cls.name);
+                    var savedChar = typeof window.getCharacterById === 'function' 
+                        ? window.getCharacterById(charId) 
+                        : null;
+                    safeRefreshUI(savedChar);
+                    showNotification('Character added to class successfully!', 'success');
+                })
+                .catch(function(err) {
+                    console.error('Failed to add character to class:', err);
+                    if (backup) {
+                        window.data = backup;
+                        safeRefreshUI(char);
+                    }
+                    showNotification('Failed to add character to class. Please try again.', 'error');
+                });
+        } else {
+            addClassTag(cls.id, cls.name);
+            safeRefreshUI(char);
+            showNotification('Character added to class successfully!', 'success');
+        }
     }
 
     // ============================================================
@@ -473,16 +523,17 @@
             return Promise.resolve(false);
         }
 
-        normaliseClassIds(char);
+        // Use pure function for validation - no mutation
+        var classIds = getNormalisedClassIds(char);
 
-        if (char.classIds.length === 0) {
+        if (classIds.length === 0) {
             showNotification('Character is not in any classes.', 'error');
             return Promise.resolve(false);
         }
 
         // Get currently assigned classes with display names
         var classes = typeof window.getClasses === 'function' ? window.getClasses() : [];
-        var assignedClasses = char.classIds.map(function(cid) {
+        var assignedClasses = classIds.map(function(cid) {
             var cls = classes.find(function(c) { return String(c.id) === String(cid); });
             return cls ? { id: cls.id, name: cls.name } : null;
         }).filter(function(c) { return c; });
@@ -497,7 +548,6 @@
         modal.className = 'modal';
         modal.style.display = 'flex';
 
-        // Create header
         var header = document.createElement('div');
         header.className = 'modal-header';
 
@@ -511,7 +561,6 @@
         closeBtn.textContent = '×';
         header.appendChild(closeBtn);
 
-        // Create body
         var body = document.createElement('div');
         body.className = 'modal-body';
 
@@ -557,7 +606,6 @@
 
         body.appendChild(actions);
 
-        // Assemble modal
         var content = document.createElement('div');
         content.className = 'modal-content small';
         content.appendChild(header);
@@ -605,24 +653,21 @@
     }
 
     // ============================================================
-    // ADD CLASS TAG - IDEMPOTENT, XSS-SAFE
+    // ADD CLASS TAG - IDEMPOTENT, XSS-SAFE, NO EVENT BINDING
     // ============================================================
 
     function addClassTag(classId, className) {
         var container = document.getElementById('class-tag-container');
         if (!container) return;
 
-        // Remove empty message if present
         var emptyMsg = container.querySelector('span[style*="text-dim"]');
         if (emptyMsg) emptyMsg.remove();
 
-        // Check if tag already exists (idempotent) - safe selector
         var existing = Array.from(container.querySelectorAll('[data-class-id]')).find(function(tag) {
             return String(tag.dataset.classId) === String(classId);
         });
         if (existing) return;
 
-        // Build DOM elements safely - no innerHTML for user data
         var tag = document.createElement('span');
         tag.style.cssText = 'background:var(--accent-soft);padding:2px 8px;border-radius:10px;font-size:0.7rem;border:1px solid var(--accent);display:inline-flex;align-items:center;gap:4px;';
         tag.dataset.classId = classId;
@@ -641,23 +686,7 @@
         tag.appendChild(button);
         container.appendChild(tag);
 
-        // removeClassById handles confirmation internally
-        button.addEventListener('click', function() {
-            var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-            var classId = this.dataset.id;
-
-            if (!charId) {
-                showNotification('No character selected.', 'error');
-                return;
-            }
-
-            if (!classId) {
-                showNotification('Class not found.', 'error');
-                return;
-            }
-
-            removeClassById(charId, classId);
-        });
+        // NO event listener - handled by delegation in character-events.js
     }
 
     // ============================================================
@@ -677,9 +706,13 @@
 
     function clearClassTags() {
         var container = document.getElementById('class-tag-container');
-        if (container) {
-            container.innerHTML = '<span style="color:var(--text-dim);font-size:0.7rem;padding:4px;">No classes assigned</span>';
-        }
+        if (!container) return;
+
+        container.textContent = '';
+        var empty = document.createElement('span');
+        empty.style.cssText = 'color:var(--text-dim);font-size:0.7rem;padding:4px;';
+        empty.textContent = 'No classes assigned';
+        container.appendChild(empty);
     }
 
     function populateClassTags(classIds) {
@@ -705,7 +738,6 @@
 
         var classes = typeof window.getClasses === 'function' ? window.getClasses() : [];
 
-        // Reset select - this is an "add class" selector
         select.innerHTML = '<option value="">Select a class...</option>';
 
         var existingClassIds = (char && Array.isArray(char.classIds)) ? char.classIds : [];
@@ -722,7 +754,6 @@
             }
         });
 
-        // Always reset to empty - current value may no longer be valid
         select.value = '';
     }
 
@@ -786,16 +817,12 @@
         var classChars = getCharactersByClass(classId);
 
         var available = classChars.filter(function(char) {
-            // Check elimination status using the authoritative elimination module
-            if (
-                window.CharacterEliminations &&
+            if (window.CharacterEliminations &&
                 typeof window.CharacterEliminations.isCharacterEliminatedByWeek === 'function' &&
-                window.CharacterEliminations.isCharacterEliminatedByWeek(char, weekNum)
-            ) {
+                window.CharacterEliminations.isCharacterEliminatedByWeek(char, weekNum)) {
                 return false;
             }
 
-            // Check if already in a team
             if (data.teams && Array.isArray(data.teams)) {
                 for (var i = 0; i < data.teams.length; i++) {
                     var team = data.teams[i];
@@ -811,8 +838,10 @@
                             if (String(member.characterId) === String(char.id)) {
                                 var join = parseInt(member.joinPeriod);
                                 var leave = parseInt(member.leavePeriod);
-                                // If join is invalid, treat as not active (available)
-                                if (isNaN(join)) continue;
+                                // Invalid join means we can't determine availability - exclude
+                                if (isNaN(join)) {
+                                    return false;
+                                }
                                 if (join <= weekNum && (isNaN(leave) || leave >= weekNum)) {
                                     return false;
                                 }
