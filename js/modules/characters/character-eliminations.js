@@ -6,14 +6,14 @@
  * This module is responsible for:
  *   - Rendering tournament eliminations
  *   - Rendering standalone eliminations
- *   - Adding standalone eliminations (with VALIDATE → SNAPSHOT → MUTATE → LOG → SAVE)
- *   - Removing standalone eliminations (with VALIDATE → SNAPSHOT → MUTATE → LOG → SAVE)
+ *   - Adding standalone eliminations (with VALIDATE → SNAPSHOT → MUTATE → SAVE → LOG → UI COMMIT)
+ *   - Removing standalone eliminations (with VALIDATE → SNAPSHOT → MUTATE → SAVE → LOG → UI COMMIT)
  *   - Marking/unmarking tournament eliminations (programmatic)
  *   - Querying elimination status
  * 
  * IMPORTANT: All mutations follow the correct pattern:
- *   VALIDATE → SNAPSHOT → MUTATE → LOG → SAVE → ROLLBACK on failure
- *   All user-controlled data is escaped to prevent XSS.
+ *   VALIDATE → SNAPSHOT → MUTATE → SAVE → LOG (failure-safe) → UI COMMIT
+ *   All user-controlled data is inserted using DOM APIs (textContent).
  *   eliminatedWeeks is derived from eliminations to maintain consistency.
  *   Death handling: deceased characters are eliminated from the timeline.
  *   Death and elimination records are combined for availability checks.
@@ -26,7 +26,7 @@
  *   - eliminatedWeeks is DERIVED, never the source of truth
  * 
  * DECEASED HANDLING:
- *   - If a character has a valid deathWeek, they are eliminated from that week onward.
+ *   - If a character has a valid deathWeek (1-52), they are eliminated from that week onward.
  *   - If a character is deceased but has no deathWeek, they are considered
  *     eliminated for all timeline weeks (week 1 onward).
  *   - If a character is deceased with invalid deathWeek, they are considered
@@ -40,8 +40,8 @@
  *   - window.getDisplayName (from core-utils.js)
  *   - window.getCurrentEditId (from index.js)
  *   - window.saveData (from database.js)
- *   - window.logActivity (from core-utils.js)
  *   - window.db.createSafeCopy (from database.js)
+ *   - window.logActivity (optional, for activity logging)
  */
 
 (function() {
@@ -69,19 +69,14 @@
             'getCharacterById',
             'getDisplayName',
             'getCurrentEditId',
-            'saveData',
-            'logActivity'
+            'saveData'
         ];
 
         var missing = [];
         required.forEach(function(name) {
             if (name === 'saveData' && typeof window.saveData !== 'function') {
                 missing.push('saveData');
-            } else if (name === 'logActivity' && typeof window.logActivity !== 'function') {
-                missing.push('logActivity');
-            } else if (typeof window[name] !== 'function' && 
-                       name !== 'saveData' && 
-                       name !== 'logActivity') {
+            } else if (typeof window[name] !== 'function') {
                 missing.push(name);
             }
         });
@@ -94,24 +89,18 @@
     }
 
     // ============================================================
-    // HTML ESCAPING - Prevents XSS
-    // ============================================================
-
-    function escapeHtml(value) {
-        return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
-
-    // ============================================================
     // NOTIFICATION SYSTEM
     // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
+
+        if (typeof window.AppUI !== 'undefined' &&
+            window.AppUI &&
+            typeof window.AppUI.notify === 'function') {
+            window.AppUI.notify(message, type);
+            return;
+        }
 
         if (typeof window.showToast === 'function') {
             window.showToast(message, type);
@@ -208,12 +197,11 @@
     function rebuildEliminatedWeeks(char) {
         if (!char) return;
 
-        char.eliminatedWeeks = [];
-
-        if (!char.eliminations) {
+        if (!Array.isArray(char.eliminations)) {
             char.eliminations = [];
-            return;
         }
+
+        char.eliminatedWeeks = [];
 
         char.eliminations.forEach(function(e) {
             var week = Number(e.week);
@@ -241,6 +229,7 @@
     // IS CHARACTER ELIMINATED BY WEEK
     // Combines explicit elimination records with death timeline data.
     // Death with invalid deathWeek = unavailable entirely (fail-closed).
+    // Accepts future weeks for timeline queries.
     // ============================================================
 
     function isCharacterEliminatedByWeek(char, week) {
@@ -251,11 +240,14 @@
             return false;
         }
 
-        // Check explicit elimination records FIRST
+        // Check explicit elimination records FIRST - only valid weeks
         if (char.eliminations) {
             for (var i = 0; i < char.eliminations.length; i++) {
                 var elimWeek = Number(char.eliminations[i].week);
-                if (Number.isInteger(elimWeek) && elimWeek <= weekNum) {
+                if (Number.isInteger(elimWeek) &&
+                    elimWeek >= MIN_WEEK &&
+                    elimWeek <= MAX_WEEK &&
+                    elimWeek <= weekNum) {
                     return true;
                 }
             }
@@ -263,15 +255,18 @@
 
         // Then check death timeline
         if (char.deceased) {
+            var deathWeekNum = Number(char.deathWeek);
             var hasValidDeathWeek = (
                 char.deathWeek !== undefined &&
                 char.deathWeek !== null &&
                 char.deathWeek !== '' &&
-                Number.isInteger(Number(char.deathWeek))
+                Number.isInteger(deathWeekNum) &&
+                deathWeekNum >= MIN_WEEK &&
+                deathWeekNum <= MAX_WEEK
             );
 
             if (hasValidDeathWeek) {
-                return Number(char.deathWeek) <= weekNum;
+                return deathWeekNum <= weekNum;
             }
 
             // Deceased with missing or invalid deathWeek = unavailable entirely
@@ -304,7 +299,7 @@
     }
 
     // ============================================================
-    // TOURNAMENT ELIMINATIONS - RENDER
+    // RENDER ELIMINATIONS - DOM-based for safety
     // ============================================================
 
     function renderTournamentEliminations(char) {
@@ -316,13 +311,19 @@
             tournElims = char.eliminations.filter(function(e) { return !e.standalone; });
         }
 
+        container.textContent = '';
+
         if (tournElims.length === 0) {
-            container.innerHTML = '<p class="empty-state" style="padding:6px;font-size:0.75rem;">No tournament eliminations recorded.</p>';
+            var empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.style.cssText = 'padding:6px;font-size:0.75rem;';
+            empty.textContent = 'No tournament eliminations recorded.';
+            container.appendChild(empty);
             return;
         }
 
-        var html = '';
         var data = window.data || {};
+
         tournElims.forEach(function(elim) {
             var tournName = 'Unknown Tournament';
             if (elim.tournamentId && data.tournaments) {
@@ -331,16 +332,27 @@
                 });
                 if (tourn) tournName = tourn.name;
             }
-            html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--info-soft);border-radius:4px;margin-bottom:2px;border-left:3px solid var(--info);">';
-            html += '<span style="font-size:0.75rem;"><strong>' + escapeHtml(tournName) + '</strong> - Week ' + escapeHtml(elim.week) + (elim.reason ? ' (' + escapeHtml(elim.reason) + ')' : '') + '</span>';
-            html += '</div>';
-        });
-        container.innerHTML = html;
-    }
 
-    // ============================================================
-    // STANDALONE ELIMINATIONS - RENDER
-    // ============================================================
+            var div = document.createElement('div');
+            div.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--info-soft);border-radius:4px;margin-bottom:2px;border-left:3px solid var(--info);';
+
+            var span = document.createElement('span');
+            span.style.cssText = 'font-size:0.75rem;';
+            var strong = document.createElement('strong');
+            strong.textContent = tournName;
+            span.appendChild(strong);
+            var textNode = document.createTextNode(' - Week ' + elim.week);
+            span.appendChild(textNode);
+            if (elim.reason) {
+                var reasonSpan = document.createElement('span');
+                reasonSpan.textContent = ' (' + elim.reason + ')';
+                span.appendChild(reasonSpan);
+            }
+
+            div.appendChild(span);
+            container.appendChild(div);
+        });
+    }
 
     function renderStandaloneEliminations(char) {
         var container = document.getElementById('standalone-eliminations-container');
@@ -358,22 +370,46 @@
             });
         }
 
+        container.textContent = '';
+
         if (standaloneItems.length === 0) {
-            container.innerHTML = '<p class="empty-state" style="padding:6px;font-size:0.75rem;">No standalone eliminations recorded.</p>';
+            var empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.style.cssText = 'padding:6px;font-size:0.75rem;';
+            empty.textContent = 'No standalone eliminations recorded.';
+            container.appendChild(empty);
             return;
         }
 
-        var html = '';
         standaloneItems.forEach(function(item) {
             var elim = item.elimination;
             var id = item.id;
 
-            html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--warning-soft);border-radius:4px;margin-bottom:2px;border-left:3px solid var(--warning);">';
-            html += '<span style="font-size:0.75rem;">Week ' + escapeHtml(elim.week) + (elim.reason ? ' - ' + escapeHtml(elim.reason) : '') + ' <span style="color:var(--warning);font-size:0.6rem;">[Standalone]</span></span>';
-            html += '<button class="remove-standalone-elim small" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 4px;" data-id="' + escapeHtml(id) + '">✕</button>';
-            html += '</div>';
+            var div = document.createElement('div');
+            div.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--warning-soft);border-radius:4px;margin-bottom:2px;border-left:3px solid var(--warning);';
+
+            var span = document.createElement('span');
+            span.style.cssText = 'font-size:0.75rem;';
+            span.textContent = 'Week ' + elim.week;
+            if (elim.reason) {
+                var reasonSpan = document.createTextNode(' - ' + elim.reason);
+                span.appendChild(reasonSpan);
+            }
+            var standaloneLabel = document.createElement('span');
+            standaloneLabel.style.cssText = 'color:var(--warning);font-size:0.6rem;margin-left:4px;';
+            standaloneLabel.textContent = '[Standalone]';
+            span.appendChild(standaloneLabel);
+
+            var button = document.createElement('button');
+            button.className = 'remove-standalone-elim small';
+            button.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 4px;';
+            button.dataset.id = id;
+            button.textContent = '✕';
+
+            div.appendChild(span);
+            div.appendChild(button);
+            container.appendChild(div);
         });
-        container.innerHTML = html;
 
         // Event listeners are bound via event delegation in character-events.js
     }
@@ -405,13 +441,11 @@
         var week = Number(weekInput.value);
         var reason = reasonInput ? reasonInput.value.trim() || 'Dropped out' : 'Dropped out';
 
-        // Validate week - strict
         if (!validateWeek(week)) {
             showNotification('Please enter a valid week (1-52).', 'error');
             return;
         }
 
-        // Validate character exists
         var data = window.data || {};
         if (!data.characters) {
             showNotification('Character data not found.', 'error');
@@ -424,20 +458,23 @@
             return;
         }
 
-        // Check if already eliminated at or before this week
         if (isCharacterEliminatedByWeek(char, week)) {
             showNotification('This character is already eliminated at or before week ' + week + '.', 'error');
             return;
         }
 
-        // Confirmation
         var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
         if (!confirm('Eliminate ' + name + ' at week ' + week + '?\nReason: ' + reason)) {
             return;
         }
 
-        // SNAPSHOT
+        // SNAPSHOT - Required, abort if fails
         var backup = createSafeBackup(data);
+        if (!backup) {
+            console.error('CharacterEliminations: Could not create rollback backup.');
+            showNotification('Unable to safely eliminate character. Please try again.', 'error');
+            return;
+        }
 
         // MUTATE
         if (!char.eliminations) char.eliminations = [];
@@ -455,29 +492,34 @@
 
         rebuildEliminatedWeeks(char);
 
-        // LOG
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Eliminated ' + name + ' (standalone, week ' + week + '): ' + reason);
-        }
-
-        // SAVE
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    onAddSuccess(charId);
-                })
-                .catch(function(err) {
-                    console.error('Failed to add elimination:', err);
-                    if (backup) {
-                        window.data = backup;
-                        safeRenderCharacterList();
-                        safeShowCharacterForm(charId);
+        // SAVE - saveData is guaranteed by checkDependencies
+        Promise.resolve()
+            .then(function() {
+                return window.saveData();
+            })
+            .then(function() {
+                // LOG - failure-safe, persistence already succeeded
+                try {
+                    if (typeof window.logActivity === 'function') {
+                        window.logActivity('Eliminated ' + name + ' (standalone, week ' + week + '): ' + reason);
                     }
-                    showNotification('Failed to add elimination. Please try again.', 'error');
-                });
-        } else {
-            onAddSuccess(charId);
-        }
+                } catch (logErr) {
+                    console.warn('CharacterEliminations: Activity logging failed:', logErr);
+                }
+
+                // UI COMMIT
+                onAddSuccess(charId);
+            })
+            .catch(function(err) {
+                console.error('Failed to add elimination:', err);
+                // ROLLBACK
+                if (backup) {
+                    window.data = backup;
+                    safeRenderCharacterList();
+                    safeShowCharacterForm(charId);
+                }
+                showNotification('Failed to add elimination. Please try again.', 'error');
+            });
     }
 
     function onAddSuccess(charId) {
@@ -516,7 +558,6 @@
             return;
         }
 
-        // Find elimination by ID
         var elim = char.eliminations.find(function(e) {
             return e.standalone && String(e.id) === String(eliminationId);
         });
@@ -526,8 +567,13 @@
             return;
         }
 
-        // SNAPSHOT
+        // SNAPSHOT - Required, abort if fails
         var backup = createSafeBackup(data);
+        if (!backup) {
+            console.error('CharacterEliminations: Could not create rollback backup.');
+            showNotification('Unable to safely remove elimination. Please try again.', 'error');
+            return;
+        }
 
         // MUTATE - filter by ID
         char.eliminations = char.eliminations.filter(function(e) {
@@ -535,30 +581,35 @@
         });
         rebuildEliminatedWeeks(char);
 
-        // LOG
+        // SAVE - saveData is guaranteed by checkDependencies
         var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Removed standalone elimination for ' + name + ' (week ' + elim.week + ')');
-        }
-
-        // SAVE
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    onRemoveSuccess(charId);
-                })
-                .catch(function(err) {
-                    console.error('Failed to remove elimination:', err);
-                    if (backup) {
-                        window.data = backup;
-                        safeRenderCharacterList();
-                        safeShowCharacterForm(charId);
+        Promise.resolve()
+            .then(function() {
+                return window.saveData();
+            })
+            .then(function() {
+                // LOG - failure-safe, persistence already succeeded
+                try {
+                    if (typeof window.logActivity === 'function') {
+                        window.logActivity('Removed standalone elimination for ' + name + ' (week ' + elim.week + ')');
                     }
-                    showNotification('Failed to remove elimination. Please try again.', 'error');
-                });
-        } else {
-            onRemoveSuccess(charId);
-        }
+                } catch (logErr) {
+                    console.warn('CharacterEliminations: Activity logging failed:', logErr);
+                }
+
+                // UI COMMIT
+                onRemoveSuccess(charId);
+            })
+            .catch(function(err) {
+                console.error('Failed to remove elimination:', err);
+                // ROLLBACK
+                if (backup) {
+                    window.data = backup;
+                    safeRenderCharacterList();
+                    safeShowCharacterForm(charId);
+                }
+                showNotification('Failed to remove elimination. Please try again.', 'error');
+            });
     }
 
     function onRemoveSuccess(charId) {
@@ -614,8 +665,13 @@
             return Promise.resolve(false);
         }
 
-        // SNAPSHOT
+        // SNAPSHOT - Required, abort if fails
         var backup = createSafeBackup(data);
+        if (!backup) {
+            console.error('CharacterEliminations: Could not create rollback backup.');
+            showNotification('Unable to safely mark character eliminated. Please try again.', 'error');
+            return Promise.resolve(false);
+        }
 
         // MUTATE
         if (!char.eliminations) char.eliminations = [];
@@ -632,41 +688,44 @@
 
         rebuildEliminatedWeeks(char);
 
-        // LOG
+        // SAVE - saveData is guaranteed by checkDependencies
         var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
-        if (typeof window.logActivity === 'function') {
-            var tournName = 'Unknown Tournament';
-            if (tournamentId && data.tournaments) {
-                var tourn = data.tournaments.find(function(t) {
-                    return t && String(t.id) === String(tournamentId);
-                });
-                if (tourn) tournName = tourn.name;
-            }
-            window.logActivity(name + ' eliminated from ' + tournName + ' (week ' + weekNum + ')');
-        }
-
-        // SAVE
-        if (typeof window.saveData === 'function') {
-            return window.saveData()
-                .then(function() {
-                    safeRenderCharacterList();
-                    safeUpdateDashboardStats();
-                    return true;
-                })
-                .catch(function(err) {
-                    console.error('Failed to mark character eliminated:', err);
-                    if (backup) {
-                        window.data = backup;
-                        safeRenderCharacterList();
+        return Promise.resolve()
+            .then(function() {
+                return window.saveData();
+            })
+            .then(function() {
+                // LOG - failure-safe, persistence already succeeded
+                try {
+                    if (typeof window.logActivity === 'function') {
+                        var tournName = 'Unknown Tournament';
+                        if (tournamentId && data.tournaments) {
+                            var tourn = data.tournaments.find(function(t) {
+                                return t && String(t.id) === String(tournamentId);
+                            });
+                            if (tourn) tournName = tourn.name;
+                        }
+                        window.logActivity(name + ' eliminated from ' + tournName + ' (week ' + weekNum + ')');
                     }
-                    showNotification('Failed to mark character eliminated. Please try again.', 'error');
-                    return false;
-                });
-        } else {
-            safeRenderCharacterList();
-            safeUpdateDashboardStats();
-            return Promise.resolve(true);
-        }
+                } catch (logErr) {
+                    console.warn('CharacterEliminations: Activity logging failed:', logErr);
+                }
+
+                // UI COMMIT
+                safeRenderCharacterList();
+                safeUpdateDashboardStats();
+                return true;
+            })
+            .catch(function(err) {
+                console.error('Failed to mark character eliminated:', err);
+                // ROLLBACK
+                if (backup) {
+                    window.data = backup;
+                    safeRenderCharacterList();
+                }
+                showNotification('Failed to mark character eliminated. Please try again.', 'error');
+                return false;
+            });
     }
 
     function unmarkCharacterEliminated(charId, tournamentId) {
@@ -699,8 +758,13 @@
             return Promise.resolve(false);
         }
 
-        // SNAPSHOT
+        // SNAPSHOT - Required, abort if fails
         var backup = createSafeBackup(data);
+        if (!backup) {
+            console.error('CharacterEliminations: Could not create rollback backup.');
+            showNotification('Unable to safely unmark character eliminated. Please try again.', 'error');
+            return Promise.resolve(false);
+        }
 
         // MUTATE
         if (char.eliminations) {
@@ -711,41 +775,44 @@
 
         rebuildEliminatedWeeks(char);
 
-        // LOG
+        // SAVE - saveData is guaranteed by checkDependencies
         var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
-        if (typeof window.logActivity === 'function') {
-            var tournName = 'Unknown Tournament';
-            if (tournamentId && data.tournaments) {
-                var tourn = data.tournaments.find(function(t) {
-                    return t && String(t.id) === String(tournamentId);
-                });
-                if (tourn) tournName = tourn.name;
-            }
-            window.logActivity('Restored ' + name + ' from ' + tournName);
-        }
-
-        // SAVE
-        if (typeof window.saveData === 'function') {
-            return window.saveData()
-                .then(function() {
-                    safeRenderCharacterList();
-                    safeUpdateDashboardStats();
-                    return true;
-                })
-                .catch(function(err) {
-                    console.error('Failed to unmark character eliminated:', err);
-                    if (backup) {
-                        window.data = backup;
-                        safeRenderCharacterList();
+        return Promise.resolve()
+            .then(function() {
+                return window.saveData();
+            })
+            .then(function() {
+                // LOG - failure-safe, persistence already succeeded
+                try {
+                    if (typeof window.logActivity === 'function') {
+                        var tournName = 'Unknown Tournament';
+                        if (tournamentId && data.tournaments) {
+                            var tourn = data.tournaments.find(function(t) {
+                                return t && String(t.id) === String(tournamentId);
+                            });
+                            if (tourn) tournName = tourn.name;
+                        }
+                        window.logActivity('Restored ' + name + ' from ' + tournName);
                     }
-                    showNotification('Failed to unmark character eliminated. Please try again.', 'error');
-                    return false;
-                });
-        } else {
-            safeRenderCharacterList();
-            safeUpdateDashboardStats();
-            return Promise.resolve(true);
-        }
+                } catch (logErr) {
+                    console.warn('CharacterEliminations: Activity logging failed:', logErr);
+                }
+
+                // UI COMMIT
+                safeRenderCharacterList();
+                safeUpdateDashboardStats();
+                return true;
+            })
+            .catch(function(err) {
+                console.error('Failed to unmark character eliminated:', err);
+                // ROLLBACK
+                if (backup) {
+                    window.data = backup;
+                    safeRenderCharacterList();
+                }
+                showNotification('Failed to unmark character eliminated. Please try again.', 'error');
+                return false;
+            });
     }
 
     // ============================================================
