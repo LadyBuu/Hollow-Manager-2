@@ -13,6 +13,7 @@
  *   - No inline event handlers in HTML
  *   - Can be re-initialized after DOM replacement
  *   - Mutation modules own their own persistence lifecycle
+ *   - No direct mutation of window.data
  * 
  * LIFECYCLE:
  *   - init(container) - Binds events to the current DOM
@@ -23,7 +24,7 @@
  *   - window.CharacterCRUD
  *   - window.CharacterClasses
  *   - window.CharacterEliminations
- *   - window.CharacterStats
+ *   - window.CharacterStats (owns magic schema definitions)
  *   - window.CharacterViews
  *   - window.getCharacterById (from core-utils.js)
  *   - window.getDisplayName (from core-utils.js)
@@ -31,7 +32,10 @@
  *   - window.setCurrentEditId (from index.js)
  *   - window.showCharacterForm (from index.js)
  *   - window.toggleCharacterList (from index.js)
- *   - window.saveData (from database.js)
+ *   - window.AppUI.notify (optional, for notifications)
+ * 
+ * NOTE: CharacterStats owns magic schema definitions. This module
+ *       consumes them rather than duplicating them.
  */
 
 (function() {
@@ -50,6 +54,7 @@
     var _initialized = false;
     var _eventListeners = [];
     var _filterDebounceTimer = null;
+    var _mutationInProgress = false;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -75,9 +80,23 @@
         // Feature modules - required for their respective features
         var featureModules = {
             'CharacterCRUD': ['save'],
-            'CharacterClasses': ['removeClassById', 'addClassTag'],
+            'CharacterClasses': [
+                'addClassByName',
+                'removeClassById',
+                'addToClass',
+                'removeFromClass'
+            ],
             'CharacterEliminations': ['addStandalone', 'removeStandalone'],
-            'CharacterStats': ['addSpecialMove', 'removeSpecialMove', 'renderSpecialMoves']
+            'CharacterStats': [
+                'addSpecialMove',
+                'removeSpecialMove',
+                'updateClassSuggestion',
+                'updateMagicClassSuggestion',
+                'updateMagicPowerDisplay',
+                'generateRandomStats',
+                'generateRandomMagicCategory',
+                'getMagicTypeKeys'
+            ]
         };
 
         var missingFeatures = [];
@@ -105,6 +124,37 @@
         }
 
         return true;
+    }
+
+    // ============================================================
+    // MAGIC TYPE HELPERS - Delegate to CharacterStats
+    // ============================================================
+
+    function getMagicTypeKeys() {
+        if (window.CharacterStats &&
+            typeof window.CharacterStats.getMagicTypeKeys === 'function') {
+            return window.CharacterStats.getMagicTypeKeys();
+        }
+        // Fallback for when CharacterStats isn't available
+        return [
+            'earth', 'water', 'fire', 'air', 'metal', 'wood',
+            'blood', 'bone', 'mind', 'morphic', 'life', 'death',
+            'space', 'time', 'dimension', 'void', 'reality', 'transference'
+        ];
+    }
+
+    function getMagicCategoryTypes(category) {
+        if (window.CharacterStats &&
+            typeof window.CharacterStats.getMagicCategoryTypes === 'function') {
+            return window.CharacterStats.getMagicCategoryTypes(category);
+        }
+        // Fallback for when CharacterStats isn't available
+        var categoryMap = {
+            'elemental': ['earth', 'water', 'fire', 'air', 'metal', 'wood'],
+            'body': ['blood', 'bone', 'mind', 'morphic', 'life', 'death'],
+            'aether': ['space', 'time', 'dimension', 'void', 'reality', 'transference']
+        };
+        return categoryMap[category] || [];
     }
 
     // ============================================================
@@ -143,6 +193,13 @@
     function showNotification(message, type) {
         type = type || 'info';
 
+        if (typeof window.AppUI !== 'undefined' &&
+            window.AppUI &&
+            typeof window.AppUI.notify === 'function') {
+            window.AppUI.notify(message, type);
+            return;
+        }
+
         if (typeof window.showToast === 'function') {
             window.showToast(message, type);
             return;
@@ -160,7 +217,6 @@
             return;
         }
 
-        // Ultimate fallback - only use alert for errors
         if (type === 'error') {
             alert('Error: ' + message);
         } else {
@@ -219,6 +275,7 @@
     function destroy() {
         removeAllEventListeners();
         _initialized = false;
+        _mutationInProgress = false;
     }
 
     // ============================================================
@@ -259,7 +316,7 @@
     }
 
     // ============================================================
-    // FORM SUBMIT - Fixed ID
+    // FORM SUBMIT
     // ============================================================
 
     function bindFormSubmit(container) {
@@ -447,7 +504,7 @@
     function bindClassTagInput(container) {
         var classInput = document.getElementById('class-tag-input');
         if (classInput) {
-            addSafeEventListener(classInput, 'keypress', function(e) {
+            addSafeEventListener(classInput, 'keydown', function(e) {
                 if (e.key === 'Enter') {
                     e.preventDefault();
                     var name = this.value.trim();
@@ -465,7 +522,7 @@
     }
 
     // ============================================================
-    // CLASS TAG REMOVAL - Delegate to CharacterClasses (no DOM fallback)
+    // CLASS TAG REMOVAL - Delegate to CharacterClasses
     // ============================================================
 
     function bindClassTagRemoval(container) {
@@ -563,7 +620,7 @@
     }
 
     // ============================================================
-    // CHARACTER LIST - Event delegation (moved from character-list.js)
+    // CHARACTER LIST - Event delegation
     // ============================================================
 
     function bindCharacterList(container) {
@@ -593,8 +650,6 @@
     // ============================================================
 
     function bindStatsEvents(container) {
-        // Stats events are handled here - CharacterStats provides calculations only
-
         var statInputs = ['char-str', 'char-dex', 'char-con', 'char-int', 'char-wis', 'char-cha'];
         statInputs.forEach(function(id) {
             var el = document.getElementById(id);
@@ -635,7 +690,7 @@
                         ? window.CharacterStats.CLASS_DEFINITIONS
                         : [];
                     var selected = classes.find(function(c) { return c.id === this.value; }.bind(this));
-                    if (selected) {
+                    if (selected && display) {
                         display.textContent = (selected.icon || '') + ' ' + (selected.label || '');
                         display.style.color = 'var(--accent)';
                         display.style.background = 'var(--accent-soft)';
@@ -689,13 +744,11 @@
     }
 
     // ============================================================
-    // MAGIC EVENTS - Delegate to CharacterStats for calculations
+    // MAGIC EVENTS - Delegate to CharacterStats
     // ============================================================
 
     function bindMagicEvents(container) {
-        var magicTypes = ['earth', 'water', 'fire', 'air', 'metal', 'wood',
-            'blood', 'bone', 'mind', 'morphic', 'life', 'death',
-            'space', 'time', 'dimension', 'void', 'reality', 'transference'];
+        var magicTypes = getMagicTypeKeys();
 
         magicTypes.forEach(function(key) {
             var el = document.getElementById('magic-' + key);
@@ -734,7 +787,7 @@
         if (magicClassSelect) {
             addSafeEventListener(magicClassSelect, 'change', function() {
                 var display = document.getElementById('suggested-magic-class');
-                if (this.value) {
+                if (this.value && display) {
                     var labels = {
                         'elementalist': 'Elementalist',
                         'body_mage': 'Body Mage',
@@ -769,9 +822,7 @@
             addSafeEventListener(randomElementalBtn, 'click', function() {
                 if (window.CharacterStats && typeof window.CharacterStats.generateRandomMagicCategory === 'function') {
                     var magic = window.CharacterStats.generateRandomMagicCategory('elemental');
-                    var types = window.CharacterStats.getMagicCategoryTypes
-                        ? window.CharacterStats.getMagicCategoryTypes('elemental')
-                        : ['earth', 'water', 'fire', 'air', 'metal', 'wood'];
+                    var types = getMagicCategoryTypes('elemental');
                     types.forEach(function(key) {
                         var input = document.getElementById('magic-' + key);
                         if (input && magic[key] !== undefined) {
@@ -793,9 +844,7 @@
             addSafeEventListener(randomBodyBtn, 'click', function() {
                 if (window.CharacterStats && typeof window.CharacterStats.generateRandomMagicCategory === 'function') {
                     var magic = window.CharacterStats.generateRandomMagicCategory('body');
-                    var types = window.CharacterStats.getMagicCategoryTypes
-                        ? window.CharacterStats.getMagicCategoryTypes('body')
-                        : ['blood', 'bone', 'mind', 'morphic', 'life', 'death'];
+                    var types = getMagicCategoryTypes('body');
                     types.forEach(function(key) {
                         var input = document.getElementById('magic-' + key);
                         if (input && magic[key] !== undefined) {
@@ -817,9 +866,7 @@
             addSafeEventListener(randomAetherBtn, 'click', function() {
                 if (window.CharacterStats && typeof window.CharacterStats.generateRandomMagicCategory === 'function') {
                     var magic = window.CharacterStats.generateRandomMagicCategory('aether');
-                    var types = window.CharacterStats.getMagicCategoryTypes
-                        ? window.CharacterStats.getMagicCategoryTypes('aether')
-                        : ['space', 'time', 'dimension', 'void', 'reality', 'transference'];
+                    var types = getMagicCategoryTypes('aether');
                     types.forEach(function(key) {
                         var input = document.getElementById('magic-' + key);
                         if (input && magic[key] !== undefined) {
@@ -872,7 +919,7 @@
     }
 
     // ============================================================
-    // SPECIAL MOVES - Shared Handlers (delegates to CharacterStats)
+    // SPECIAL MOVES - Shared Handlers
     // ============================================================
 
     function handleAddSpecialMove(type) {
@@ -898,14 +945,28 @@
 
         // Delegate to CharacterStats - it owns mutation + save + render
         if (window.CharacterStats && typeof window.CharacterStats.addSpecialMove === 'function') {
-            window.CharacterStats.addSpecialMove(char, type, moveName, moveDesc);
+            var result = window.CharacterStats.addSpecialMove(char, type, moveName, moveDesc);
+
+            // Only clear inputs if the mutation succeeded or is async
+            if (result && typeof result.then === 'function') {
+                // Async - clear on success only
+                result.then(function(success) {
+                    if (success !== false) {
+                        if (nameInput) nameInput.value = '';
+                        if (descInput) descInput.value = '';
+                    }
+                }).catch(function() {
+                    // Don't clear on failure - user can retry
+                });
+            } else {
+                // Sync - assume success
+                if (nameInput) nameInput.value = '';
+                if (descInput) descInput.value = '';
+            }
         } else {
             showNotification('Special move functionality is not available.', 'error');
             return;
         }
-
-        if (nameInput) nameInput.value = '';
-        if (descInput) descInput.value = '';
     }
 
     function handleRemoveSpecialMove(e, defaultType) {
@@ -928,7 +989,6 @@
         var index = parseInt(target.dataset.index);
         if (isNaN(index)) return;
 
-        // Delegate to CharacterStats - it owns mutation + save + render
         if (window.CharacterStats && typeof window.CharacterStats.removeSpecialMove === 'function') {
             window.CharacterStats.removeSpecialMove(char, type, index);
         } else {
