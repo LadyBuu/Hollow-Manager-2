@@ -21,20 +21,20 @@
  *   - renderCharacters(container) - Renders the module
  *   - destroy() - Removes all listeners and cleans up
  * 
- * DEPENDENCIES (must be loaded before this file):
+ * REQUIRED DEPENDENCIES:
  *   - window.CharacterList (from character-list.js)
  *   - window.CharacterForm (from character-form.js)
  *   - window.CharacterEvents (from character-events.js)
- *   - window.CharacterStats (from character-stats.js)
- *   - window.CharacterCRUD (from character-crud.js)
- *   - window.CharacterViews (from character-views.js)
- *   - window.CharacterClasses (from character-classes.js)
- *   - window.CharacterEliminations (from character-eliminations.js)
+ *   - window.TabManager (from tab-manager.js)
  *   - window.getCharacterById (from core-utils.js)
  *   - window.getDisplayName (from core-utils.js)
- *   - window.getCurrentEditId (from this module)
- *   - window.setCurrentEditId (from this module)
- *   - window.TabManager (from tab-manager.js)
+ * 
+ * OPTIONAL FEATURE MODULES:
+ *   - window.CharacterStats
+ *   - window.CharacterCRUD
+ *   - window.CharacterViews
+ *   - window.CharacterClasses
+ *   - window.CharacterEliminations
  */
 
 (function() {
@@ -52,10 +52,21 @@
 
     var _currentEditId = null;
     var _characterListOpen = false;
+    var _listenersBound = false;
 
     // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
+
+    function hasMethods(obj, methods) {
+        if (!obj || typeof obj !== 'object') return false;
+        for (var i = 0; i < methods.length; i++) {
+            if (typeof obj[methods[i]] !== 'function') {
+                return false;
+            }
+        }
+        return true;
+    }
 
     function checkDependencies() {
         var required = [
@@ -79,32 +90,24 @@
             }
         });
 
-        // Feature modules - required for their respective features
-        var featureModules = [
-            'CharacterStats',
-            'CharacterCRUD',
-            'CharacterViews',
-            'CharacterClasses',
-            'CharacterEliminations'
-        ];
-
-        var missingFeatures = [];
-        featureModules.forEach(function(name) {
-            if (typeof window[name] === 'undefined' || window[name] === null) {
-                missingFeatures.push(name);
-            }
-        });
+        // Verify required module APIs
+        if (window.CharacterList && !hasMethods(window.CharacterList, ['render'])) {
+            missing.push('CharacterList.render');
+        }
+        if (window.CharacterForm && !hasMethods(window.CharacterForm, ['show', 'init', 'getTabsHTML'])) {
+            missing.push('CharacterForm (missing required methods)');
+        }
+        if (window.CharacterEvents && !hasMethods(window.CharacterEvents, ['init', 'destroy'])) {
+            missing.push('CharacterEvents (missing required methods)');
+        }
+        if (window.TabManager && !hasMethods(window.TabManager, ['register'])) {
+            missing.push('TabManager.register');
+        }
 
         if (missing.length > 0) {
             console.warn('Characters Index: Missing required dependencies:', missing.join(', '));
             return false;
         }
-
-        if (missingFeatures.length > 0) {
-            console.warn('Characters Index: Missing feature dependencies:', missingFeatures.join(', '));
-            // Don't fail - features will be degraded
-        }
-
         return true;
     }
 
@@ -256,12 +259,17 @@
             return;
         }
 
-        // Ensure data structures (but don't mutate if not needed)
-        if (!window.data.characters) {
-            window.data.characters = [];
+        // Validate data structures - fail closed
+        if (!Array.isArray(window.data.characters)) {
+            console.warn('Characters: Invalid characters data structure');
+            container.innerHTML = '<p class="empty-state">Character data is corrupted. Please reload.</p>';
+            return;
         }
-        if (!window.data.classes) {
-            window.data.classes = [];
+
+        if (!Array.isArray(window.data.classes)) {
+            console.warn('Characters: Invalid classes data structure');
+            container.innerHTML = '<p class="empty-state">Class data is corrupted. Please reload.</p>';
+            return;
         }
 
         // Build the container HTML
@@ -284,6 +292,9 @@
         
         // Select the current character, preserving selection
         selectCurrentCharacter();
+
+        // Bind global listeners if not already bound
+        bindGlobalListeners();
     }
 
     // ============================================================
@@ -319,18 +330,22 @@
     }
 
     // ============================================================
-    // DESTROY - Clean up for re-rendering
+    // GLOBAL LISTENERS - With proper lifecycle management
     // ============================================================
 
-    function destroy() {
-        if (window.CharacterEvents && typeof window.CharacterEvents.destroy === 'function') {
-            window.CharacterEvents.destroy();
-        }
+    function bindGlobalListeners() {
+        if (_listenersBound) return;
+        document.addEventListener('dataReady', handleDataReady);
+        document.addEventListener('tabChanged', handleTabChanged);
+        _listenersBound = true;
     }
 
-    // ============================================================
-    // EVENT HANDLERS - With cleanup support
-    // ============================================================
+    function unbindGlobalListeners() {
+        if (!_listenersBound) return;
+        document.removeEventListener('dataReady', handleDataReady);
+        document.removeEventListener('tabChanged', handleTabChanged);
+        _listenersBound = false;
+    }
 
     function handleDataReady() {
         var container = document.getElementById('tab-characters');
@@ -349,19 +364,23 @@
     }
 
     // ============================================================
+    // DESTROY - Clean up for re-rendering
+    // ============================================================
+
+    function destroy() {
+        if (window.CharacterEvents && typeof window.CharacterEvents.destroy === 'function') {
+            window.CharacterEvents.destroy();
+        }
+        unbindGlobalListeners();
+    }
+
+    // ============================================================
     // REGISTER WITH TABMANAGER
     // ============================================================
 
     if (typeof window.TabManager !== 'undefined' && window.TabManager.register) {
         window.TabManager.register('characters', renderCharacters);
     }
-
-    // ============================================================
-    // BIND GLOBAL EVENT LISTENERS
-    // ============================================================
-
-    document.addEventListener('dataReady', handleDataReady);
-    document.addEventListener('tabChanged', handleTabChanged);
 
     // ============================================================
     // INITIAL RENDER - If data already loaded
