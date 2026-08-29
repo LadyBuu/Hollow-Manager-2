@@ -9,12 +9,16 @@
  *   - Type checking
  *   - Activity logging
  *   - Random generation
+ *   - Elimination tracking
+ *   - Tournament helpers
  * 
  * IMPORTANT:
  *   - All functions are PURE where possible
  *   - No DOM manipulation
  *   - No UI logic
  *   - Query results are DEEP CLONED to prevent external mutation
+ *   - This is the SINGLE SOURCE OF TRUTH for domain utilities
+ *   - Core modules (ClassCore, ScheduleCore, etc.) should be used for mutations
  */
 
 (function() {
@@ -443,6 +447,43 @@
     }
 
     // ============================================================
+    // ELIMINATION QUERIES
+    // ============================================================
+
+    function isCharacterEliminated(charId, week) {
+        var char = getCharacterById(charId);
+        if (!char) return false;
+        if (char.deceased) return true;
+        
+        if (char.eliminatedWeeks && Array.isArray(char.eliminatedWeeks) && char.eliminatedWeeks.length > 0) {
+            var weekNum = parseStrictPositivePeriod(week);
+            if (weekNum === null) return false;
+            for (var i = 0; i < char.eliminatedWeeks.length; i++) {
+                var elimWeek = parseStrictPositivePeriod(char.eliminatedWeeks[i]);
+                if (elimWeek !== null && elimWeek <= weekNum) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    function getEliminatedCharacters(week) {
+        var weekNum = parseStrictPositivePeriod(week);
+        if (weekNum === null) return [];
+        
+        var result = [];
+        var chars = window.data ? window.data.characters : [];
+        if (!Array.isArray(chars)) return result;
+        chars.forEach(function(char) {
+            if (isCharacterEliminated(char.id, weekNum)) {
+                result.push(char.id);
+            }
+        });
+        return result;
+    }
+
+    // ============================================================
     // TEAM QUERIES
     // ============================================================
 
@@ -517,6 +558,22 @@
 
     function getAllActiveTeams() {
         return getAllOperationalTeams();
+    }
+
+    function getTeamsByType(type, status) {
+        if (status === 'active') {
+            return getTeams(type, 'operational', false);
+        }
+        
+        if (status === undefined || status === null || status === '') {
+            return getTeams(type, 'all', false);
+        }
+        
+        if (status === 'operational' || status === 'all') {
+            return getTeams(type, status, false);
+        }
+        
+        return [];
     }
 
     function getActiveTeamMembers(team, period) {
@@ -630,7 +687,35 @@
     }
 
     // ============================================================
-    // CLASS FUNCTIONS (Queries only - mutations in ClassCore)
+    // SCHEDULE QUERIES
+    // ============================================================
+
+    function getStudentSchedule(studentId, week) {
+        var weekNum = parseStrictPositivePeriod(week);
+        if (weekNum === null) {
+            return {};
+        }
+        
+        var data = window.data || {};
+        if (!data.curriculum || !data.curriculum.schedules) {
+            return {};
+        }
+        
+        var studentSchedule = data.curriculum.schedules[studentId];
+        if (!studentSchedule) {
+            return {};
+        }
+        
+        var weekSchedule = studentSchedule[weekNum];
+        if (!weekSchedule) {
+            return {};
+        }
+        
+        return weekSchedule;
+    }
+
+    // ============================================================
+    // CLASS QUERIES (Queries only - mutations in ClassCore)
     // ============================================================
 
     function getClasses() {
@@ -717,6 +802,10 @@
             if (!char || typeof char !== 'object') return false;
             if (char.deceased) return false;
             
+            if (isCharacterEliminated(char.id, weekNum)) {
+                return false;
+            }
+            
             if (data.teams && Array.isArray(data.teams)) {
                 var occupied = data.teams.some(function(team) {
                     if (!team || typeof team !== 'object') return false;
@@ -769,6 +858,36 @@
     function getCharacterClassNames(char) {
         var classes = getCharacterClasses(char);
         return classes.map(function(c) { return c.name; });
+    }
+
+    // ============================================================
+    // TOURNAMENT HELPERS
+    // ============================================================
+
+    function getParticipantName(participant) {
+        if (!participant) return 'Unknown';
+
+        if (typeof participant === 'string') {
+            var team = getTeamById(participant);
+            if (team) return team.name;
+
+            var char = getCharacterById(participant);
+            if (char) return getDisplayName(char);
+
+            return participant;
+        }
+
+        if (participant.type === 'char' || participant.type === 'character') {
+            var char = getCharacterById(participant.id);
+            return char ? getDisplayName(char) : 'Unknown Character';
+        }
+
+        if (participant.type === 'team') {
+            var team = getTeamById(participant.id);
+            return team ? team.name : 'Unknown Team';
+        }
+
+        return 'Unknown';
     }
 
     // ============================================================
@@ -880,6 +999,10 @@
         getCharacterNameById: getCharacterNameById,
         getCharacterById: getCharacterById,
 
+        // Elimination queries
+        isCharacterEliminated: isCharacterEliminated,
+        getEliminatedCharacters: getEliminatedCharacters,
+
         // Team queries
         getTeamById: getTeamById,
         getTeamName: getTeamName,
@@ -887,6 +1010,7 @@
         getActiveTeamsForWeek: getActiveTeamsForWeek,
         getAllOperationalTeams: getAllOperationalTeams,
         getAllActiveTeams: getAllActiveTeams,
+        getTeamsByType: getTeamsByType,
         getActiveTeamMembers: getActiveTeamMembers,
         getActiveTeamMemberCount: getActiveTeamMemberCount,
 
@@ -899,6 +1023,9 @@
         getDiscipline: getDiscipline,
         getAvailableDisciplines: getAvailableDisciplines,
 
+        // Schedule queries
+        getStudentSchedule: getStudentSchedule,
+
         // Class queries
         getClasses: getClasses,
         getClass: getClass,
@@ -910,6 +1037,9 @@
         getClassDisplayName: getClassDisplayName,
         getCharacterClasses: getCharacterClasses,
         getCharacterClassNames: getCharacterClassNames,
+
+        // Tournament helpers
+        getParticipantName: getParticipantName,
 
         // Random generators
         generateRandomStats: generateRandomStats,
@@ -964,6 +1094,10 @@
     window.getCharacterNameById = getCharacterNameById;
     window.getCharacterById = getCharacterById;
 
+    // Elimination queries
+    window.isCharacterEliminated = isCharacterEliminated;
+    window.getEliminatedCharacters = getEliminatedCharacters;
+
     // Team queries
     window.getTeamById = getTeamById;
     window.getTeamName = getTeamName;
@@ -971,6 +1105,7 @@
     window.getActiveTeamsForWeek = getActiveTeamsForWeek;
     window.getAllOperationalTeams = getAllOperationalTeams;
     window.getAllActiveTeams = getAllActiveTeams;
+    window.getTeamsByType = getTeamsByType;
     window.getActiveTeamMembers = getActiveTeamMembers;
     window.getActiveTeamMemberCount = getActiveTeamMemberCount;
 
@@ -983,6 +1118,9 @@
     window.getDiscipline = getDiscipline;
     window.getAvailableDisciplines = getAvailableDisciplines;
 
+    // Schedule queries
+    window.getStudentSchedule = getStudentSchedule;
+
     // Class queries
     window.getClasses = getClasses;
     window.getClass = getClass;
@@ -994,6 +1132,9 @@
     window.getClassDisplayName = getClassDisplayName;
     window.getCharacterClasses = getCharacterClasses;
     window.getCharacterClassNames = getCharacterClassNames;
+
+    // Tournament helpers
+    window.getParticipantName = getParticipantName;
 
     // Random generators
     window.generateRandomStats = generateRandomStats;
