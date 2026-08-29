@@ -92,7 +92,7 @@
     };
 
     function getSafeRelationshipColor(typeId) {
-        var color = getRelationshipTypeColor(typeId);
+        var color = getRelationshipTypeRawColor(typeId);
 
         if (!color || typeof color !== 'string') {
             return '#7f8c8d';
@@ -110,22 +110,31 @@
     // RELATIONSHIP TYPE HELPERS
     // ============================================================
 
-    function getRelationshipTypeLabel(typeId) {
-        var data = window.data || {};
-        if (!data.social || !data.social.relationshipTypes) return typeId || 'Other';
-        var type = data.social.relationshipTypes.find(function(t) {
-            return t && String(t.id) === String(typeId);
-        });
-        return type ? type.label : typeId || 'Other';
-    }
-
-    function getRelationshipTypeColor(typeId) {
+    function getRelationshipTypeRawColor(typeId) {
         var data = window.data || {};
         if (!data.social || !data.social.relationshipTypes) return '#7f8c8d';
         var type = data.social.relationshipTypes.find(function(t) {
             return t && String(t.id) === String(typeId);
         });
         return type ? type.color : '#7f8c8d';
+    }
+
+    function getRelationshipTypeLabel(typeId) {
+        var data = window.data || {};
+
+        if (!data.social || !Array.isArray(data.social.relationshipTypes)) {
+            return typeId != null ? String(typeId) : 'Other';
+        }
+
+        var type = data.social.relationshipTypes.find(function(t) {
+            return t && String(t.id) === String(typeId);
+        });
+
+        if (type && type.label != null) {
+            return String(type.label);
+        }
+
+        return typeId != null ? String(typeId) : 'Other';
     }
 
     // ============================================================
@@ -189,6 +198,21 @@
     }
 
     // ============================================================
+    // MEMBERSHIP PERIOD FORMATTER
+    // ============================================================
+
+    function formatMembershipPeriod(join, leave, prefix) {
+        prefix = prefix || '';
+        var joinStr = (join !== undefined && join !== null && join !== '') ? String(join) : '';
+        var leaveStr = (leave !== undefined && leave !== null && leave !== '') ? String(leave) : '';
+
+        if (joinStr && leaveStr) return prefix + joinStr + ' → ' + prefix + leaveStr;
+        if (joinStr) return prefix + joinStr + ' → Present';
+        if (leaveStr) return prefix + leaveStr;
+        return prefix + '?';
+    }
+
+    // ============================================================
     // ACADEMIC VIEW
     // ============================================================
 
@@ -227,10 +251,13 @@
         var grades = curriculum.grades && curriculum.grades[char.id] ? curriculum.grades[char.id] : {};
         var classCount = 0;
 
+        // Count grades defensively
         for (var week in grades) {
             if (!Object.prototype.hasOwnProperty.call(grades, week)) continue;
-            for (var discId in grades[week]) {
-                if (!Object.prototype.hasOwnProperty.call(grades[week], discId)) continue;
+            var weekGrades = grades[week];
+            if (!weekGrades || typeof weekGrades !== 'object') continue;
+            for (var discId in weekGrades) {
+                if (!Object.prototype.hasOwnProperty.call(weekGrades, discId)) continue;
                 classCount++;
             }
         }
@@ -243,12 +270,14 @@
             });
             weeks.forEach(function(week) {
                 if (!Object.prototype.hasOwnProperty.call(grades, week)) return;
+                var weekGrades = grades[week];
+                if (!weekGrades || typeof weekGrades !== 'object') return;
                 // Sort disciplines alphabetically
-                var discIds = Object.keys(grades[week]).sort();
+                var discIds = Object.keys(weekGrades).sort();
                 discIds.forEach(function(discId) {
-                    if (!Object.prototype.hasOwnProperty.call(grades[week], discId)) return;
+                    if (!Object.prototype.hasOwnProperty.call(weekGrades, discId)) return;
                     var disc = typeof window.getDiscipline === 'function' ? window.getDiscipline(discId) : null;
-                    var score = grades[week][discId];
+                    var score = weekGrades[discId];
                     var discName = disc ? disc.name : 'Unknown';
                     html += '<div style="padding:2px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;display:flex;justify-content:space-between;">';
                     html += '<span>' + escapeHtml(discName) + ' (Wk ' + escapeHtml(week) + ')</span>';
@@ -354,8 +383,14 @@
 
         if (missions.length > 0) {
             missions.forEach(function(m) {
-                var statusColor = m.status === 'completed' ? 'var(--accent)' :
-                                 m.status === 'cancelled' ? 'var(--danger)' : 'var(--warning)';
+                var statusColor;
+                if (m.status === 'completed') {
+                    statusColor = 'var(--accent)';
+                } else if (m.status === 'cancelled') {
+                    statusColor = 'var(--danger)';
+                } else {
+                    statusColor = 'var(--warning)';
+                }
                 var teamName = typeof window.getTeamName === 'function' 
                     ? window.getTeamName(m.assignedTeamId) 
                     : 'Unknown Team';
@@ -407,7 +442,6 @@
             var typeLabel = getRelationshipTypeLabel(rel.typeId);
             var typeColor = getSafeRelationshipColor(rel.typeId);
             
-            // Format period
             var period = '';
             if (rel.startYear && rel.endYear) {
                 period = rel.startYear + ' → ' + rel.endYear;
@@ -427,21 +461,6 @@
     }
 
     // ============================================================
-    // MEMBERSHIP PERIOD FORMATTER
-    // ============================================================
-
-    function formatMembershipPeriod(join, leave, prefix) {
-        prefix = prefix || '';
-        var joinStr = (join !== undefined && join !== null && join !== '') ? String(join) : '';
-        var leaveStr = (leave !== undefined && leave !== null && leave !== '') ? String(leave) : '';
-
-        if (joinStr && leaveStr) return prefix + joinStr + ' → ' + prefix + leaveStr;
-        if (joinStr) return prefix + joinStr + ' → Present';
-        if (leaveStr) return prefix + leaveStr;
-        return prefix + '?';
-    }
-
-    // ============================================================
     // CAREER STATUS HELPERS - DOM-BASED FOR SAFETY
     // ============================================================
 
@@ -451,7 +470,6 @@
         var entry = document.createElement('div');
         entry.className = 'career-status-entry';
 
-        // Create select with DOM API
         var select = document.createElement('select');
         select.className = 'career-status-select';
         var statusOptions = [
@@ -474,7 +492,6 @@
             select.appendChild(option);
         });
 
-        // Create input fields
         var startInput = document.createElement('input');
         startInput.type = 'number';
         startInput.className = 'career-start-year';
@@ -491,7 +508,6 @@
             endInput.value = endYear;
         }
 
-        // Create remove button
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'small danger remove-status';
@@ -606,7 +622,7 @@
         // Query helpers
         getTeamsByTypeAndCharacter: getTeamsByTypeAndCharacter,
         getRelationshipTypeLabel: getRelationshipTypeLabel,
-        getRelationshipTypeColor: getRelationshipTypeColor,
+        getRelationshipTypeColor: getSafeRelationshipColor,
         getScheduleCount: getScheduleCount,
 
         // HTML generators
