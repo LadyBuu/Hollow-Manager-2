@@ -51,19 +51,19 @@
     // REGISTER MODES
     // ============================================================
 
-    // Student mode (from schedule.js)
+    // Student mode
     registerMode('student', {
         label: 'Student',
         render: function(container, state) {
-            if (window.StudentCalendarMode && typeof window.StudentCalendarMode.render === 'function') {
-                window.StudentCalendarMode.render(container, state);
+            if (window.StudentMode && typeof window.StudentMode.render === 'function') {
+                window.StudentMode.render(container, state);
             } else {
                 container.innerHTML = '<p class="empty-state">Student calendar mode not loaded.</p>';
             }
         },
         getEntities: function() {
-            if (window.StudentCalendarMode && typeof window.StudentCalendarMode.getStudents === 'function') {
-                return window.StudentCalendarMode.getStudents();
+            if (window.StudentMode && typeof window.StudentMode.getStudents === 'function') {
+                return window.StudentMode.getStudents();
             }
             return typeof window.getStudents === 'function' ? window.getStudents() : [];
         },
@@ -71,8 +71,8 @@
             return typeof window.getDisplayName === 'function' ? window.getDisplayName(entity) : (entity.name || 'Unknown');
         },
         getData: function(state) {
-            if (window.StudentCalendarMode && typeof window.StudentCalendarMode.getSchedule === 'function') {
-                return window.StudentCalendarMode.getSchedule(state);
+            if (window.StudentMode && typeof window.StudentMode.getSchedule === 'function') {
+                return window.StudentMode.getSchedule(state);
             }
             return typeof window.getStudentSchedule === 'function'
                 ? window.getStudentSchedule(state.selectedId, state.week)
@@ -80,19 +80,19 @@
         }
     });
 
-    // Instructor mode (from instructor-calendar.js)
+    // Instructor mode
     registerMode('instructor', {
         label: 'Instructor',
         render: function(container, state) {
-            if (window.InstructorCalendarMode && typeof window.InstructorCalendarMode.render === 'function') {
-                window.InstructorCalendarMode.render(container, state);
+            if (window.InstructorMode && typeof window.InstructorMode.render === 'function') {
+                window.InstructorMode.render(container, state);
             } else {
                 container.innerHTML = '<p class="empty-state">Instructor calendar mode not loaded.</p>';
             }
         },
         getEntities: function() {
-            if (window.InstructorCalendarMode && typeof window.InstructorCalendarMode.getInstructors === 'function') {
-                return window.InstructorCalendarMode.getInstructors();
+            if (window.InstructorMode && typeof window.InstructorMode.getInstructors === 'function') {
+                return window.InstructorMode.getInstructors();
             }
             return typeof window.getInstructors === 'function' ? window.getInstructors() : [];
         },
@@ -100,26 +100,26 @@
             return typeof window.getDisplayName === 'function' ? window.getDisplayName(entity) : (entity.name || 'Unknown');
         },
         getData: function(state) {
-            if (window.InstructorCalendarMode && typeof window.InstructorCalendarMode.getSchedule === 'function') {
-                return window.InstructorCalendarMode.getSchedule(state);
+            if (window.InstructorMode && typeof window.InstructorMode.getSchedule === 'function') {
+                return window.InstructorMode.getSchedule(state);
             }
             return {};
         }
     });
 
-    // Location mode (from location-schedule.js)
+    // Location mode
     registerMode('location', {
         label: 'Location',
         render: function(container, state) {
-            if (window.LocationCalendarMode && typeof window.LocationCalendarMode.render === 'function') {
-                window.LocationCalendarMode.render(container, state);
+            if (window.LocationMode && typeof window.LocationMode.render === 'function') {
+                window.LocationMode.render(container, state);
             } else {
                 container.innerHTML = '<p class="empty-state">Location calendar mode not loaded.</p>';
             }
         },
         getEntities: function() {
-            if (window.LocationCalendarMode && typeof window.LocationCalendarMode.getLocations === 'function') {
-                return window.LocationCalendarMode.getLocations();
+            if (window.LocationMode && typeof window.LocationMode.getLocations === 'function') {
+                return window.LocationMode.getLocations();
             }
             return typeof window.getLocations === 'function' ? window.getLocations() : [];
         },
@@ -127,8 +127,8 @@
             return entity.name || 'Unknown';
         },
         getData: function(state) {
-            if (window.LocationCalendarMode && typeof window.LocationCalendarMode.getSchedule === 'function') {
-                return window.LocationCalendarMode.getSchedule(state);
+            if (window.LocationMode && typeof window.LocationMode.getSchedule === 'function') {
+                return window.LocationMode.getSchedule(state);
             }
             return typeof window.getLocationSchedule === 'function'
                 ? window.getLocationSchedule(state.selectedId, state.week)

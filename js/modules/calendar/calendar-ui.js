@@ -196,7 +196,7 @@
     function getModeHint() {
         switch (_state.mode) {
             case 'student':
-                return 'Click a slot to add class • Right-click to remove';
+                return 'Click a slot to add class • Right-click to remove • Rest days are user-configurable';
             case 'instructor':
                 return 'Click a slot to add class • Right-click to remove • Click class to manage students';
             case 'location':
@@ -215,8 +215,6 @@
         if (!select) return;
 
         select.value = _state.mode;
-
-        // Event listener is bound in bindEvents()
     }
 
     function populateEntitySelector() {
