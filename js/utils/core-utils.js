@@ -14,6 +14,7 @@
  *   - All functions are PURE where possible
  *   - No DOM manipulation
  *   - No UI logic
+ *   - Query results are DEEP CLONED to prevent external mutation
  */
 
 (function() {
@@ -106,6 +107,32 @@
         return prefix + '_' +
                Date.now() + '_' +
                Math.random().toString(36).slice(2, 10);
+    }
+
+    // ============================================================
+    // DEEP CLONE
+    // ============================================================
+
+    function deepClone(value) {
+        if (value === null || typeof value !== 'object') {
+            return value;
+        }
+
+        if (typeof structuredClone === 'function') {
+            try {
+                return structuredClone(value);
+            } catch (e) {
+                console.error('CoreUtils: structuredClone failed:', e);
+                return null;
+            }
+        }
+
+        try {
+            return JSON.parse(JSON.stringify(value));
+        } catch (e) {
+            console.error('CoreUtils: JSON clone failed:', e);
+            return null;
+        }
     }
 
     // ============================================================
@@ -603,7 +630,7 @@
     }
 
     // ============================================================
-    // CLASS FUNCTIONS
+    // CLASS FUNCTIONS (Queries only - mutations in ClassCore)
     // ============================================================
 
     function getClasses() {
@@ -745,461 +772,6 @@
     }
 
     // ============================================================
-    // CLASS MUTATIONS
-    // ============================================================
-
-    function createClass(name) {
-        if (name === undefined || name === null || String(name).trim() === '') {
-            return { success: false, changed: false, message: 'Class name is required.' };
-        }
-        var target = String(name).trim();
-        
-        var data = window.data || {};
-        if (!data.classes) data.classes = [];
-        if (!Array.isArray(data.classes)) {
-            return { success: false, changed: false, message: 'Classes data is corrupted.' };
-        }
-        
-        var existing = data.classes.find(function(c) {
-            if (!c || typeof c !== 'object') return false;
-            var className = String(c.name || '');
-            return className.toLowerCase() === target.toLowerCase();
-        });
-        if (existing) {
-            return { success: false, changed: false, message: 'A class with this name already exists.' };
-        }
-        
-        var newClass = {
-            id: generateId('class'),
-            name: target,
-            createdAt: new Date().toISOString()
-        };
-        
-        data.classes.push(newClass);
-        window.data = data;
-        
-        recordActivity('Created class: ' + newClass.name);
-        
-        return { success: true, changed: true, class: newClass };
-    }
-
-    function deleteClass(id, confirmed) {
-        confirmed = confirmed === true;
-        
-        if (!id) return { 
-            success: false, 
-            changed: false,
-            message: 'Class ID is required.',
-            affectedCharacters: [],
-            affectedTeams: [],
-            needsConfirmation: false
-        };
-        
-        var data = window.data || {};
-        if (!data.classes) return { 
-            success: false, 
-            changed: false,
-            message: 'No classes found.',
-            affectedCharacters: [],
-            affectedTeams: [],
-            needsConfirmation: false
-        };
-        if (!Array.isArray(data.classes)) {
-            return { 
-                success: false, 
-                changed: false,
-                message: 'Classes data is corrupted.',
-                affectedCharacters: [],
-                affectedTeams: [],
-                needsConfirmation: false
-            };
-        }
-        
-        var target = String(id);
-        var cls = data.classes.find(function(c) {
-            return c && typeof c === 'object' && String(c.id) === target;
-        });
-        if (!cls) {
-            return { 
-                success: false, 
-                changed: false,
-                message: 'Class not found.',
-                affectedCharacters: [],
-                affectedTeams: [],
-                needsConfirmation: false
-            };
-        }
-        
-        var affectedCharacters = data.characters && Array.isArray(data.characters) 
-            ? data.characters.filter(function(c) {
-                return c &&
-                       typeof c === 'object' &&
-                       Array.isArray(c.classIds) &&
-                       c.classIds.some(function(cid) { return String(cid) === target; });
-            }).map(function(c) {
-                return { id: c.id, name: getDisplayName(c) };
-            })
-            : [];
-        
-        var affectedTeams = data.teams && Array.isArray(data.teams) 
-            ? data.teams.filter(function(t) {
-                return t &&
-                       typeof t === 'object' &&
-                       t.type === 'academic' &&
-                       String(t.classId) === target;
-            }).map(function(t) {
-                return { id: t.id, name: t.name || 'Unknown' };
-            })
-            : [];
-        
-        var hasAffectedEntities = affectedCharacters.length > 0 || affectedTeams.length > 0;
-        
-        if (hasAffectedEntities && !confirmed) {
-            return {
-                success: false,
-                changed: false,
-                message: 'Confirmation required. This class has ' + 
-                         affectedCharacters.length + ' characters and ' + 
-                         affectedTeams.length + ' teams assigned.',
-                affectedCharacters: affectedCharacters,
-                affectedTeams: affectedTeams,
-                needsConfirmation: true
-            };
-        }
-        
-        affectedCharacters.forEach(function(char) {
-            var fullChar = data.characters.find(function(c) {
-                return c &&
-                       typeof c === 'object' &&
-                       String(c.id) === String(char.id);
-            });
-            if (fullChar) {
-                fullChar.classIds = fullChar.classIds.filter(function(cid) { return String(cid) !== target; });
-            }
-        });
-        
-        affectedTeams.forEach(function(team) {
-            var fullTeam = data.teams.find(function(t) {
-                return t &&
-                       typeof t === 'object' &&
-                       String(t.id) === String(team.id);
-            });
-            if (fullTeam) {
-                fullTeam.classId = null;
-            }
-        });
-        
-        data.classes = data.classes.filter(function(c) {
-            return !c || String(c.id) !== target;
-        });
-        window.data = data;
-        
-        recordActivity('Deleted class: ' + cls.name);
-        
-        return {
-            success: true,
-            changed: true,
-            message: 'Class deleted successfully.',
-            affectedCharacters: affectedCharacters,
-            affectedTeams: affectedTeams,
-            needsConfirmation: false
-        };
-    }
-
-    function addCharacterToClass(charId, classId) {
-        if (!charId || !classId) return { success: false, changed: false, message: 'Character and class are required.' };
-        
-        var data = window.data || {};
-        if (!data.characters || !Array.isArray(data.characters)) {
-            return { success: false, changed: false, message: 'No characters found.' };
-        }
-        
-        var char = data.characters.find(function(c) {
-            return c && typeof c === 'object' && String(c.id) === String(charId);
-        });
-        if (!char) {
-            return { success: false, changed: false, message: 'Character not found.' };
-        }
-        
-        var cls = getClass(classId);
-        if (!cls) {
-            return { success: false, changed: false, message: 'Class not found.' };
-        }
-        
-        if (char.classIds === undefined || char.classIds === null) {
-            char.classIds = [];
-        } else if (!Array.isArray(char.classIds)) {
-            return { success: false, changed: false, message: 'Character class data is corrupted.' };
-        }
-        
-        if (char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
-            return { success: false, changed: false, message: 'Character is already in this class.' };
-        }
-        
-        char.classIds.push(classId);
-        window.data = data;
-        
-        recordActivity('Added ' + getDisplayName(char) + ' to class: ' + cls.name);
-        
-        return { success: true, changed: true, message: 'Character added to class.' };
-    }
-
-    function removeCharacterFromClass(charId, classId) {
-        if (!charId || !classId) return { success: false, changed: false, message: 'Character and class are required.' };
-        
-        var data = window.data || {};
-        if (!data.characters || !Array.isArray(data.characters)) {
-            return { success: false, changed: false, message: 'No characters found.' };
-        }
-        
-        var char = data.characters.find(function(c) {
-            return c && typeof c === 'object' && String(c.id) === String(charId);
-        });
-        if (!char) {
-            return { success: false, changed: false, message: 'Character not found.' };
-        }
-        
-        if (char.classIds === undefined || char.classIds === null) {
-            return { success: false, changed: false, message: 'Character is not in this class.' };
-        }
-        
-        if (!Array.isArray(char.classIds)) {
-            return { success: false, changed: false, message: 'Character class data is corrupted.' };
-        }
-        
-        if (!char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
-            return { success: false, changed: false, message: 'Character is not in this class.' };
-        }
-        
-        char.classIds = char.classIds.filter(function(cid) { return String(cid) !== String(classId); });
-        window.data = data;
-        
-        recordActivity('Removed ' + getDisplayName(char) + ' from class: ' + getClassDisplayName(classId));
-        
-        return { success: true, changed: true, message: 'Character removed from class.' };
-    }
-
-    // ============================================================
-    // CLASS SCHEDULE HELPERS
-    // ============================================================
-
-    function getClassInstructor(studentId, week, day, hour) {
-        if (!window.data || !window.data.curriculum || !window.data.curriculum.classInstructors) return null;
-        var key = getScheduleKey(studentId, week, day, hour);
-        var value = window.data.curriculum.classInstructors[key];
-        return value !== undefined ? value : null;
-    }
-
-    function setClassInstructor(studentId, week, day, hour, instructorId) {
-        var validation = validateScheduleSlot(studentId, week, day, hour);
-        if (!validation.success) {
-            return { success: false, changed: false, message: validation.message };
-        }
-        
-        var data = ensureCurriculumStructure();
-        var key = getScheduleKey(
-            validation.studentId,
-            validation.week,
-            validation.day,
-            validation.hour
-        );
-        
-        var existing = data.curriculum.classInstructors[key];
-        var newValue = instructorId || null;
-        
-        if (existing === newValue) {
-            return { success: true, changed: false };
-        }
-        
-        if (newValue) {
-            data.curriculum.classInstructors[key] = newValue;
-        } else {
-            delete data.curriculum.classInstructors[key];
-        }
-        
-        window.data = data;
-        return { success: true, changed: true };
-    }
-
-    function getClassLabel(studentId, week, day, hour) {
-        if (!window.data || !window.data.curriculum || !window.data.curriculum.classLabels) return null;
-        var key = getScheduleKey(studentId, week, day, hour);
-        var value = window.data.curriculum.classLabels[key];
-        return value !== undefined ? value : null;
-    }
-
-    function setClassLabel(studentId, week, day, hour, label) {
-        var validation = validateScheduleSlot(studentId, week, day, hour);
-        if (!validation.success) {
-            return { success: false, changed: false, message: validation.message };
-        }
-        
-        var data = ensureCurriculumStructure();
-        var key = getScheduleKey(
-            validation.studentId,
-            validation.week,
-            validation.day,
-            validation.hour
-        );
-        
-        var existing = data.curriculum.classLabels[key];
-        var newValue = (label !== undefined && label !== null && String(label).trim() !== '')
-            ? String(label)
-            : null;
-        
-        if (existing === newValue) {
-            return { success: true, changed: false };
-        }
-        
-        if (newValue !== null) {
-            data.curriculum.classLabels[key] = newValue;
-        } else {
-            delete data.curriculum.classLabels[key];
-        }
-        
-        window.data = data;
-        return { success: true, changed: true };
-    }
-
-    function getClassGroupLabel(studentId, week, day, hour) {
-        if (!window.data || !window.data.curriculum || !window.data.curriculum.classGroupLabels) return null;
-        var key = getScheduleKey(studentId, week, day, hour);
-        var value = window.data.curriculum.classGroupLabels[key];
-        return value !== undefined ? value : null;
-    }
-
-    function setClassGroupLabel(studentId, week, day, hour, groupLabel) {
-        var validation = validateScheduleSlot(studentId, week, day, hour);
-        if (!validation.success) {
-            return { success: false, changed: false, message: validation.message };
-        }
-        
-        var data = ensureCurriculumStructure();
-        var key = getScheduleKey(
-            validation.studentId,
-            validation.week,
-            validation.day,
-            validation.hour
-        );
-        
-        var existing = data.curriculum.classGroupLabels[key];
-        var newValue = (groupLabel !== undefined && groupLabel !== null && String(groupLabel).trim() !== '')
-            ? String(groupLabel)
-            : null;
-        
-        if (existing === newValue) {
-            return { success: true, changed: false };
-        }
-        
-        if (newValue !== null) {
-            data.curriculum.classGroupLabels[key] = newValue;
-        } else {
-            delete data.curriculum.classGroupLabels[key];
-        }
-        
-        window.data = data;
-        return { success: true, changed: true };
-    }
-
-    function getClassDuration(studentId, week, day, hour) {
-        if (!window.data || !window.data.curriculum || !window.data.curriculum.classDurations) return null;
-        var key = getScheduleKey(studentId, week, day, hour);
-        var value = window.data.curriculum.classDurations[key];
-        return value !== undefined ? value : null;
-    }
-
-    function setClassDuration(studentId, week, day, hour, duration) {
-        var validation = validateScheduleSlot(studentId, week, day, hour);
-        if (!validation.success) {
-            return { success: false, changed: false, message: validation.message };
-        }
-        
-        var numDuration;
-        var hasValue = duration !== undefined && duration !== null && String(duration).trim() !== '';
-        
-        if (hasValue) {
-            numDuration = Number(duration);
-            
-            if (!Number.isFinite(numDuration) || numDuration <= 0) {
-                return {
-                    success: false,
-                    changed: false,
-                    message: 'Duration must be a positive number.'
-                };
-            }
-        }
-        
-        var data = ensureCurriculumStructure();
-        var key = getScheduleKey(
-            validation.studentId,
-            validation.week,
-            validation.day,
-            validation.hour
-        );
-        
-        var existing = data.curriculum.classDurations[key];
-        var newValue = hasValue && numDuration > 0 ? numDuration : null;
-        
-        if (existing === newValue) {
-            return { success: true, changed: false };
-        }
-        
-        if (newValue !== null) {
-            data.curriculum.classDurations[key] = newValue;
-        } else {
-            delete data.curriculum.classDurations[key];
-        }
-        
-        window.data = data;
-        return { success: true, changed: true };
-    }
-
-    // ============================================================
-    // CURRICULUM STRUCTURE INITIALISATION
-    // ============================================================
-
-    function ensureCurriculumStructure() {
-        var data = window.data || {};
-        
-        if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
-            data.curriculum = {};
-        }
-        
-        if (!data.curriculum.classInstructors ||
-            typeof data.curriculum.classInstructors !== 'object' ||
-            Array.isArray(data.curriculum.classInstructors)) {
-            data.curriculum.classInstructors = Object.create(null);
-        }
-        
-        if (!data.curriculum.classLabels ||
-            typeof data.curriculum.classLabels !== 'object' ||
-            Array.isArray(data.curriculum.classLabels)) {
-            data.curriculum.classLabels = Object.create(null);
-        }
-        
-        if (!data.curriculum.classGroupLabels ||
-            typeof data.curriculum.classGroupLabels !== 'object' ||
-            Array.isArray(data.curriculum.classGroupLabels)) {
-            data.curriculum.classGroupLabels = Object.create(null);
-        }
-        
-        if (!data.curriculum.classDurations ||
-            typeof data.curriculum.classDurations !== 'object' ||
-            Array.isArray(data.curriculum.classDurations)) {
-            data.curriculum.classDurations = Object.create(null);
-        }
-        
-        if (!data.curriculum.schedules ||
-            typeof data.curriculum.schedules !== 'object' ||
-            Array.isArray(data.curriculum.schedules)) {
-            data.curriculum.schedules = {};
-        }
-        
-        window.data = data;
-        return data;
-    }
-
-    // ============================================================
     // RANDOM GENERATORS
     // ============================================================
 
@@ -1283,6 +855,9 @@
         // ID generation
         generateId: generateId,
 
+        // Deep clone
+        deepClone: deepClone,
+
         // Team predicates
         isTeamOperational: isTeamOperational,
         isTeamActiveCompat: isTeamActiveCompat,
@@ -1324,7 +899,7 @@
         getDiscipline: getDiscipline,
         getAvailableDisciplines: getAvailableDisciplines,
 
-        // Class functions
+        // Class queries
         getClasses: getClasses,
         getClass: getClass,
         getClassByName: getClassByName,
@@ -1336,46 +911,49 @@
         getCharacterClasses: getCharacterClasses,
         getCharacterClassNames: getCharacterClassNames,
 
-        // Class mutations
-        createClass: createClass,
-        deleteClass: deleteClass,
-        addCharacterToClass: addCharacterToClass,
-        removeCharacterFromClass: removeCharacterFromClass,
-
-        // Class schedule
-        getClassInstructor: getClassInstructor,
-        setClassInstructor: setClassInstructor,
-        getClassLabel: getClassLabel,
-        setClassLabel: setClassLabel,
-        getClassGroupLabel: getClassGroupLabel,
-        setClassGroupLabel: setClassGroupLabel,
-        getClassDuration: getClassDuration,
-        setClassDuration: setClassDuration,
-
         // Random generators
         generateRandomStats: generateRandomStats,
         generateRandomMagic: generateRandomMagic,
 
         // Formatting
         formatDate: formatDate,
-        truncateString: truncateString,
-
-        // Internal helpers
-        ensureCurriculumStructure: ensureCurriculumStructure
+        truncateString: truncateString
     };
 
-    // Legacy global exports for backward compatibility
+    // ============================================================
+    // LEGACY GLOBAL EXPORTS (Backward Compatibility)
+    // ============================================================
+
+    // Type helpers
     window.isObject = isObject;
     window.isSafeInteger = isSafeInteger;
     window.isPositiveInteger = isPositiveInteger;
-    window.generateId = generateId;
+
+    // Period parsing
     window.parseOptionalPeriod = parseOptionalPeriod;
     window.parsePositivePeriod = parsePositivePeriod;
     window.parseStrictPositivePeriod = parseStrictPositivePeriod;
     window.hasPeriodValue = hasPeriodValue;
     window.getPeriodInfo = getPeriodInfo;
+
+    // ID generation
+    window.generateId = generateId;
+
+    // Deep clone
+    window.deepClone = deepClone;
+
+    // Team predicates
+    window.isTeamOperational = isTeamOperational;
+    window.isTeamActiveCompat = isTeamActiveCompat;
+    window.isTeamStatusActive = isTeamStatusActive;
+    window.isValidTeamStatus = isValidTeamStatus;
+    window.filterOperationalTeams = filterOperationalTeams;
+
+    // Activity logging
     window._logActivity = _logActivity;
     window.recordActivity = recordActivity;
+
+    // Character queries
     window.calculateAge = calculateAge;
     window.getCharacterAge = getCharacterAge;
     window.getDisplayName = getDisplayName;
@@ -1385,6 +963,8 @@
     window.getCharacterTeamCount = getCharacterTeamCount;
     window.getCharacterNameById = getCharacterNameById;
     window.getCharacterById = getCharacterById;
+
+    // Team queries
     window.getTeamById = getTeamById;
     window.getTeamName = getTeamName;
     window.getTeams = getTeams;
@@ -1393,11 +973,17 @@
     window.getAllActiveTeams = getAllActiveTeams;
     window.getActiveTeamMembers = getActiveTeamMembers;
     window.getActiveTeamMemberCount = getActiveTeamMemberCount;
+
+    // Student/Instructor queries
     window.getStudents = getStudents;
     window.getInstructors = getInstructors;
     window.getNonCivilianCharacters = getNonCivilianCharacters;
+
+    // Discipline queries
     window.getDiscipline = getDiscipline;
     window.getAvailableDisciplines = getAvailableDisciplines;
+
+    // Class queries
     window.getClasses = getClasses;
     window.getClass = getClass;
     window.getClassByName = getClassByName;
@@ -1408,25 +994,12 @@
     window.getClassDisplayName = getClassDisplayName;
     window.getCharacterClasses = getCharacterClasses;
     window.getCharacterClassNames = getCharacterClassNames;
-    window.createClass = createClass;
-    window.deleteClass = deleteClass;
-    window.addCharacterToClass = addCharacterToClass;
-    window.removeCharacterFromClass = removeCharacterFromClass;
-    window.getClassInstructor = getClassInstructor;
-    window.setClassInstructor = setClassInstructor;
-    window.getClassLabel = getClassLabel;
-    window.setClassLabel = setClassLabel;
-    window.getClassGroupLabel = getClassGroupLabel;
-    window.setClassGroupLabel = setClassGroupLabel;
-    window.getClassDuration = getClassDuration;
-    window.setClassDuration = setClassDuration;
-    window.isTeamOperational = isTeamOperational;
-    window.isTeamActiveCompat = isTeamActiveCompat;
-    window.isTeamStatusActive = isTeamStatusActive;
-    window.isValidTeamStatus = isValidTeamStatus;
-    window.filterOperationalTeams = filterOperationalTeams;
+
+    // Random generators
     window.generateRandomStats = generateRandomStats;
     window.generateRandomMagic = generateRandomMagic;
+
+    // Formatting
     window.formatDate = formatDate;
     window.truncateString = truncateString;
 
