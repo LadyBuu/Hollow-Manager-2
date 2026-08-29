@@ -17,25 +17,26 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
-    if (window.__calendarModuleLoaded) {
-        return;
-    }
-    window.__calendarModuleLoaded = true;
-
     // ============================================================
-    // DEPENDENCIES
+    // DEPENDENCIES (MUST BE CHECKED FIRST)
     // ============================================================
 
     if (!window.CalendarUI) {
-        console.error('Calendar module: CalendarUI is not available.');
         return;
     }
 
     if (typeof window.TabManager === 'undefined') {
-        console.error('Calendar module: TabManager is not available.');
         return;
     }
+
+    // ============================================================
+    // GUARD AGAINST DUPLICATE LOADING (AFTER DEPENDENCIES)
+    // ============================================================
+
+    if (window.__calendarModuleLoaded) {
+        return;
+    }
+    window.__calendarModuleLoaded = true;
 
     // ============================================================
     // STATE
@@ -54,34 +55,32 @@
         }
 
         if (!container) {
-            console.error('Calendar: No container found.');
             return;
         }
 
-        // Check data
         if (!window.data) {
             container.innerHTML = '<p class="empty-state">Loading calendar data...</p>';
             return;
         }
 
-        // Ensure curriculum structure exists
         if (typeof window.ensureCurriculum === 'function') {
             window.ensureCurriculum();
         }
 
-        // Check if we need to reinitialize or just re-render
         if (!_initialized || _container !== container) {
             _container = container;
             _initialized = true;
 
-            // Build container HTML
             container.innerHTML = getCalendarContainerHTML();
 
-            // Initialize CalendarUI
             var options = getInitialOptions();
-            CalendarUI.init(container, options);
+
+            CalendarUI.init(container, options, {
+                onStateChange: function() {
+                    saveState();
+                }
+            });
         } else {
-            // Just re-render
             CalendarUI.render();
         }
     }
@@ -91,13 +90,13 @@
     // ============================================================
 
     function getCalendarContainerHTML() {
-        return `
-            <div class="calendar-container">
-                <div id="calendar-content">
-                    <p class="empty-state">Loading calendar...</p>
-                </div>
-            </div>
-        `;
+        return (
+            '<div class="calendar-container">' +
+                '<div id="calendar-content">' +
+                    '<p class="empty-state">Loading calendar...</p>' +
+                '</div>' +
+            '</div>'
+        );
     }
 
     // ============================================================
@@ -111,45 +110,16 @@
             selectedId: null
         };
 
-        // Try to restore from URL hash
-        var hash = window.location.hash;
-        if (hash) {
-            var params = hash.split('?');
-            if (params.length > 1) {
-                var query = params[1];
-                var pairs = query.split('&');
-                pairs.forEach(function(pair) {
-                    var parts = pair.split('=');
-                    if (parts.length === 2) {
-                        var key = parts[0];
-                        var value = decodeURIComponent(parts[1]);
-                        if (key === 'mode' && ['student', 'instructor', 'location'].indexOf(value) !== -1) {
-                            options.mode = value;
-                        }
-                        if (key === 'week') {
-                            var week = parseInt(value);
-                            if (!isNaN(week) && week >= 1 && week <= 52) {
-                                options.week = week;
-                            }
-                        }
-                        if (key === 'id') {
-                            options.selectedId = value;
-                        }
-                    }
-                });
-            }
-        }
-
-        // Try to restore from session storage
+        // Priority 1: sessionStorage (user's last session)
         try {
             var saved = sessionStorage.getItem('calendar_state');
             if (saved) {
                 var parsed = JSON.parse(saved);
-                if (parsed.mode && ['student', 'instructor', 'location'].indexOf(parsed.mode) !== -1) {
+                if (parsed.mode && hasValidMode(parsed.mode)) {
                     options.mode = parsed.mode;
                 }
                 if (parsed.week) {
-                    var week = parseInt(parsed.week);
+                    var week = parseInt(parsed.week, 10);
                     if (!isNaN(week) && week >= 1 && week <= 52) {
                         options.week = week;
                     }
@@ -158,11 +128,40 @@
                     options.selectedId = parsed.selectedId;
                 }
             }
-        } catch (e) {
-            // Ignore
+        } catch (_) {
+            // Ignore storage errors
         }
 
-        // Auto-select first available item if no ID
+        // Priority 2: URL hash (overrides session)
+        var hash = window.location.hash;
+        if (hash) {
+            var params = hash.split('?');
+            if (params.length > 1) {
+                var query = params[1];
+                var pairs = query.split('&');
+                for (var i = 0; i < pairs.length; i++) {
+                    var pair = pairs[i];
+                    var separator = pair.indexOf('=');
+                    if (separator === -1) continue;
+                    var key = pair.substring(0, separator);
+                    var value = decodeURIComponent(pair.substring(separator + 1));
+                    if (key === 'mode' && hasValidMode(value)) {
+                        options.mode = value;
+                    }
+                    if (key === 'week') {
+                        var week = parseInt(value, 10);
+                        if (!isNaN(week) && week >= 1 && week <= 52) {
+                            options.week = week;
+                        }
+                    }
+                    if (key === 'id') {
+                        options.selectedId = value;
+                    }
+                }
+            }
+        }
+
+        // Priority 3: auto-select first available
         if (!options.selectedId) {
             var firstId = getFirstAvailableId(options.mode);
             if (firstId) {
@@ -171,6 +170,14 @@
         }
 
         return options;
+    }
+
+    function hasValidMode(mode) {
+        if (!window.CalendarModes) return false;
+        if (typeof window.CalendarModes.hasMode === 'function') {
+            return window.CalendarModes.hasMode(mode);
+        }
+        return mode === 'student' || mode === 'instructor' || mode === 'location';
     }
 
     function getFirstAvailableId(mode) {
@@ -222,30 +229,34 @@
     // ============================================================
 
     function saveState() {
-        if (!CalendarUI || typeof CalendarUI.getState !== 'function') {
+        if (!window.CalendarUI || typeof window.CalendarUI.getState !== 'function') {
             return;
         }
 
-        var state = CalendarUI.getState();
+        var state = window.CalendarUI.getState();
+
         try {
             sessionStorage.setItem('calendar_state', JSON.stringify(state));
-        } catch (e) {
-            // Ignore
+        } catch (_) {
+            // Ignore storage errors
         }
 
-        // Update URL hash
         try {
             var base = window.location.hash.split('?')[0];
-            var query = 'mode=' + state.mode + '&week=' + state.week;
+            if (base.charAt(0) === '#') {
+                base = base.substring(1);
+            }
+            var query = 'mode=' + encodeURIComponent(state.mode) +
+                        '&week=' + encodeURIComponent(state.week);
             if (state.selectedId) {
                 query += '&id=' + encodeURIComponent(state.selectedId);
             }
-            var newHash = base + '?' + query;
+            var newHash = '#' + base + '?' + query;
             if (window.location.hash !== newHash) {
-                window.history.replaceState(null, '', '#' + newHash);
+                window.history.replaceState(null, '', newHash);
             }
-        } catch (e) {
-            // Ignore
+        } catch (_) {
+            // Ignore history errors
         }
     }
 
@@ -279,12 +290,10 @@
         }
     });
 
-    // Save state on page unload
     window.addEventListener('beforeunload', function() {
         saveState();
     });
 
-    // Auto-render if data already loaded
     if (window.data) {
         setTimeout(function() {
             var container = document.getElementById('tab-calendar');
@@ -299,6 +308,5 @@
     // ============================================================
 
     window.renderCalendar = renderCalendar;
-
 
 })();
