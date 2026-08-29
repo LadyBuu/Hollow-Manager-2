@@ -14,6 +14,18 @@
 (function() {
     'use strict';
 
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
+
+    if (!window.CalendarUtils) {
+        return;
+    }
+
+    // ============================================================
+    // GUARD AGAINST DUPLICATE LOADING
+    // ============================================================
+
     if (window.__studentModeLoaded) {
         return;
     }
@@ -23,43 +35,83 @@
     // CONSTANTS
     // ============================================================
 
+    var CalendarUtils = window.CalendarUtils;
+
     var DAY_NAMES = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-    var CALENDAR_START_HOUR = 5;
-    var CALENDAR_END_HOUR = 23;
+    var CALENDAR_START_HOUR = CalendarUtils.CALENDAR_START_HOUR;
+    var CALENDAR_END_HOUR = CalendarUtils.CALENDAR_END_HOUR;
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // DEPENDENCY VALIDATION
     // ============================================================
 
     function checkDependencies() {
-        var required = [
-            { name: 'getStudentSchedule', fn: window.getStudentSchedule },
-            { name: 'getStudents', fn: window.getStudents },
-            { name: 'getDisplayName', fn: window.getDisplayName },
-            { name: 'getAvailableDisciplines', fn: window.getAvailableDisciplines },
-            { name: 'getDiscipline', fn: window.getDiscipline },
-            { name: 'getStudentRestDays', fn: window.getStudentRestDays },
-            { name: 'setStudentRestDays', fn: window.setStudentRestDays },
-            { name: 'addStudentScheduleClass', fn: window.addStudentScheduleClass },
-            { name: 'removeStudentScheduleClass', fn: window.removeStudentScheduleClass },
-            { name: 'getClassInstructor', fn: window.getClassInstructor },
-            { name: 'getClassDuration', fn: window.getClassDuration },
-            { name: 'getClassLabel', fn: window.getClassLabel },
-            { name: 'getClassGroupLabel', fn: window.getClassGroupLabel },
-            { name: 'saveData', fn: window.saveData }
-        ];
-
         var missing = [];
-        for (var i = 0; i < required.length; i++) {
-            if (typeof required[i].fn !== 'function') {
-                missing.push(required[i].name);
-            }
+
+        if (typeof window.getStudentSchedule !== 'function') {
+            missing.push('getStudentSchedule');
+        }
+
+        if (typeof window.getStudents !== 'function') {
+            missing.push('getStudents');
+        }
+
+        if (typeof window.getDisplayName !== 'function') {
+            missing.push('getDisplayName');
+        }
+
+        if (typeof window.getAvailableDisciplines !== 'function') {
+            missing.push('getAvailableDisciplines');
+        }
+
+        if (typeof window.getDiscipline !== 'function') {
+            missing.push('getDiscipline');
+        }
+
+        if (typeof window.getStudentRestDays !== 'function') {
+            missing.push('getStudentRestDays');
+        }
+
+        if (typeof window.setStudentRestDays !== 'function') {
+            missing.push('setStudentRestDays');
+        }
+
+        if (typeof window.addStudentScheduleClass !== 'function') {
+            missing.push('addStudentScheduleClass');
+        }
+
+        if (typeof window.removeStudentScheduleClass !== 'function') {
+            missing.push('removeStudentScheduleClass');
+        }
+
+        if (typeof window.getClassInstructor !== 'function') {
+            missing.push('getClassInstructor');
+        }
+
+        if (typeof window.getClassDuration !== 'function') {
+            missing.push('getClassDuration');
+        }
+
+        if (typeof window.getClassLabel !== 'function') {
+            missing.push('getClassLabel');
+        }
+
+        if (typeof window.getClassGroupLabel !== 'function') {
+            missing.push('getClassGroupLabel');
+        }
+
+        if (typeof window.saveData !== 'function') {
+            missing.push('saveData');
+        }
+
+        if (typeof window.getCharacterById !== 'function') {
+            missing.push('getCharacterById');
         }
 
         if (missing.length > 0) {
-            console.warn('[StudentMode] Missing dependencies:', missing.join(', '));
             return false;
         }
+
         return true;
     }
 
@@ -86,7 +138,11 @@
             return;
         }
 
-        // Render the student schedule
+        if (!state || !state.selectedId) {
+            container.innerHTML = '<div class="empty-state">Select a student to view their schedule</div>';
+            return;
+        }
+
         renderStudentSchedule(container, state);
     }
 
@@ -95,22 +151,16 @@
     // ============================================================
 
     function renderStudentSchedule(container, state) {
-        if (!state || !state.selectedId) {
-            container.innerHTML = '<div class="empty-state">Select a student to view their schedule</div>';
-            return;
-        }
-
         var studentId = state.selectedId;
         var week = state.week;
 
-        var schedule = window.getStudentSchedule(studentId, week);
+        var schedule = window.getStudentSchedule(studentId, week) || {};
         var restDays = window.getStudentRestDays(studentId, week) || [];
-        var availableDisciplines = window.getAvailableDisciplines(week);
+        var availableDisciplines = window.getAvailableDisciplines(week) || [];
 
         var html = getScheduleGridHTML(schedule, restDays, studentId, week, availableDisciplines);
         container.innerHTML = html;
 
-        // Bind events
         bindStudentEvents(container, studentId, week);
     }
 
@@ -126,21 +176,27 @@
 
         var html = '<div class="schedule-grid">';
 
-        // Day columns
         for (var day = 1; day <= 7; day++) {
             var isRestDay = restDays.indexOf(day) !== -1;
             var dayName = DAY_NAMES[day];
 
             html += '<div class="day-column' + (isRestDay ? ' rest-day' : '') + '" data-day="' + day + '">';
-            html += '<div class="day-header">' + dayName + (isRestDay ? ' 🛑' : '') + '</div>';
+            html += '<div class="day-header">' + dayName + (isRestDay ? ' [R]' : '') + '</div>';
             html += '<div class="day-slots">';
 
             var occupiedHours = {};
 
-            hours.forEach(function(hour) {
-                if (occupiedHours[hour]) return;
+            for (var i = 0; i < hours.length; i++) {
+                var hour = hours[i];
 
-                var disciplineId = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
+                if (occupiedHours[hour]) {
+                    continue;
+                }
+
+                var disciplineId = null;
+                if (schedule[day] && schedule[day][hour]) {
+                    disciplineId = schedule[day][hour];
+                }
 
                 if (disciplineId) {
                     var discipline = window.getDiscipline(disciplineId);
@@ -149,7 +205,6 @@
                     var label = window.getClassLabel(studentId, week, day, hour);
                     var groupLabel = window.getClassGroupLabel(studentId, week, day, hour);
 
-                    // Mark occupied hours
                     for (var h = hour; h < hour + duration && h <= CALENDAR_END_HOUR; h++) {
                         occupiedHours[h] = true;
                     }
@@ -162,28 +217,28 @@
                         }
                     }
 
-                    var labelDisplay = label ? ' [' + label + ']' : '';
-                    var groupDisplay = groupLabel ? ' (G' + groupLabel + ')' : '';
+                    var labelDisplay = label ? ' [' + escapeHtml(label) + ']' : '';
+                    var groupDisplay = groupLabel ? ' (G' + escapeHtml(groupLabel) + ')' : '';
                     var durationDisplay = duration > 1 ? ' (' + duration + 'h)' : '';
+                    var disciplineName = discipline ? escapeHtml(discipline.name) : 'Unknown';
 
                     html += '<div class="time-slot occupied" data-day="' + day + '" data-hour="' + hour + '" data-duration="' + duration + '" style="min-height:' + (30 * duration) + 'px;height:' + (30 * duration) + 'px;">';
-                    html += '<span class="slot-time">' + formatHour(hour) + '</span>';
-                    html += '<span class="slot-label">' + (discipline ? discipline.name : 'Unknown') + labelDisplay + groupDisplay + durationDisplay + (instructorName ? ' (' + instructorName + ')' : '') + '</span>';
+                    html += '<span class="slot-time">' + CalendarUtils.formatHour(hour) + '</span>';
+                    html += '<span class="slot-label">' + disciplineName + labelDisplay + groupDisplay + durationDisplay + (instructorName ? ' (' + escapeHtml(instructorName) + ')' : '') + '</span>';
                     html += '</div>';
 
                 } else if (isRestDay) {
-                    // Rest day - skip empty slots
                     html += '<div class="time-slot empty rest-slot" data-day="' + day + '" data-hour="' + hour + '">';
-                    html += '<span class="slot-time">' + formatHour(hour) + '</span>';
+                    html += '<span class="slot-time">' + CalendarUtils.formatHour(hour) + '</span>';
                     html += '</div>';
 
                 } else {
                     html += '<div class="time-slot empty" data-day="' + day + '" data-hour="' + hour + '">';
-                    html += '<span class="slot-time">' + formatHour(hour) + '</span>';
+                    html += '<span class="slot-time">' + CalendarUtils.formatHour(hour) + '</span>';
                     html += '<span class="slot-label">+</span>';
                     html += '</div>';
                 }
-            });
+            }
 
             html += '</div>';
             html += '</div>';
@@ -191,7 +246,6 @@
 
         html += '</div>';
 
-        // Sidebar with controls
         html += getSidebarHTML(schedule, restDays, studentId, week, availableDisciplines);
 
         return html;
@@ -204,7 +258,6 @@
     function getSidebarHTML(schedule, restDays, studentId, week, availableDisciplines) {
         var html = '<div class="schedule-sidebar">';
 
-        // Rest days
         html += '<div class="sidebar-section">';
         html += '<h4>Rest Days</h4>';
         html += '<div class="rest-day-controls">';
@@ -216,16 +269,16 @@
         html += '<button id="save-rest-days-btn" class="small primary">Save Rest Days</button>';
         html += '</div>';
 
-        // Available disciplines
         html += '<div class="sidebar-section">';
         html += '<h4>Available Disciplines</h4>';
         html += '<div id="available-disciplines">';
         if (availableDisciplines.length === 0) {
             html += '<p class="empty-state">No disciplines available</p>';
         } else {
-            availableDisciplines.forEach(function(d) {
-                html += '<div class="available-discipline" data-discipline="' + d.id + '">' + d.name + '</div>';
-            });
+            for (var i = 0; i < availableDisciplines.length; i++) {
+                var d = availableDisciplines[i];
+                html += '<div class="available-discipline" data-discipline="' + escapeHtml(d.id) + '">' + escapeHtml(d.name) + '</div>';
+            }
         }
         html += '</div>';
         html += '</div>';
@@ -239,34 +292,35 @@
     // ============================================================
 
     function bindStudentEvents(container, studentId, week) {
-        // Empty slots - click to add class
-        container.querySelectorAll('.time-slot.empty:not(.rest-slot)').forEach(function(slot) {
+        var emptySlots = container.querySelectorAll('.time-slot.empty:not(.rest-slot)');
+        for (var i = 0; i < emptySlots.length; i++) {
+            var slot = emptySlots[i];
             slot.addEventListener('click', function() {
-                var day = parseInt(this.dataset.day);
-                var hour = parseInt(this.dataset.hour);
+                var day = parseInt(this.dataset.day, 10);
+                var hour = parseInt(this.dataset.hour, 10);
                 showAddClassModal(studentId, week, day, hour, container);
             });
-        });
+        }
 
-        // Occupied slots - click for details, right-click to remove
-        container.querySelectorAll('.time-slot.occupied').forEach(function(slot) {
-            slot.addEventListener('click', function() {
-                var day = parseInt(this.dataset.day);
-                var hour = parseInt(this.dataset.hour);
+        var occupiedSlots = container.querySelectorAll('.time-slot.occupied');
+        for (var j = 0; j < occupiedSlots.length; j++) {
+            var occSlot = occupiedSlots[j];
+            occSlot.addEventListener('click', function() {
+                var day = parseInt(this.dataset.day, 10);
+                var hour = parseInt(this.dataset.hour, 10);
                 showClassDetailsModal(studentId, week, day, hour, container);
             });
 
-            slot.addEventListener('contextmenu', function(e) {
+            occSlot.addEventListener('contextmenu', function(e) {
                 e.preventDefault();
-                var day = parseInt(this.dataset.day);
-                var hour = parseInt(this.dataset.hour);
+                var day = parseInt(this.dataset.day, 10);
+                var hour = parseInt(this.dataset.hour, 10);
                 if (confirm('Remove this class from the schedule?')) {
                     removeClass(studentId, week, day, hour, container);
                 }
             });
-        });
+        }
 
-        // Rest days
         var saveRestBtn = container.querySelector('#save-rest-days-btn');
         if (saveRestBtn) {
             saveRestBtn.addEventListener('click', function() {
@@ -274,13 +328,14 @@
             });
         }
 
-        // Available disciplines - click to add
-        container.querySelectorAll('.available-discipline').forEach(function(el) {
+        var availDisciplines = container.querySelectorAll('.available-discipline');
+        for (var k = 0; k < availDisciplines.length; k++) {
+            var el = availDisciplines[k];
             el.addEventListener('click', function() {
                 var disciplineId = this.dataset.discipline;
                 showTimeSlotsModal(studentId, week, disciplineId, container);
             });
-        });
+        }
     }
 
     // ============================================================
@@ -290,21 +345,21 @@
     function saveRestDays(container, studentId, week) {
         var checkboxes = container.querySelectorAll('.rest-day-check');
         var days = [];
-        checkboxes.forEach(function(cb) {
+        for (var i = 0; i < checkboxes.length; i++) {
+            var cb = checkboxes[i];
             if (cb.checked) {
-                days.push(parseInt(cb.dataset.day));
+                days.push(parseInt(cb.dataset.day, 10));
             }
-        });
+        }
 
         var result = window.setStudentRestDays(studentId, week, days);
         if (result && result.success) {
             window.saveData()
                 .then(function() {
-                    showNotification('Rest days saved!', 'success');
+                    showNotification('Rest days saved.', 'success');
                     render(container, { selectedId: studentId, week: week });
                 })
-                .catch(function(err) {
-                    console.error('Failed to save rest days:', err);
+                .catch(function() {
                     showNotification('Rest days saved in memory, but persistence failed.', 'error');
                 });
         } else {
@@ -324,59 +379,61 @@
             return;
         }
 
-        var hourDisplay = formatHour(hour);
+        var hourDisplay = CalendarUtils.formatHour(hour);
 
         var modal = document.createElement('div');
         modal.className = 'modal';
-        modal.innerHTML = `
-            <div class="modal-content" style="max-width:500px;">
-                <div class="modal-header">
-                    <h3>Add Class - ${DAY_NAMES[day]} at ${hourDisplay}</h3>
-                    <button class="close-modal">&times;</button>
-                </div>
-                <div class="modal-body">
-                    <div class="form-group">
-                        <label>Select Discipline:</label>
-                        <select id="add-class-select" style="width:100%;padding:8px;margin-bottom:8px;">
-                            ${available.map(function(item) {
-                                var d = item.discipline;
-                                return '<option value="' + d.id + '">' + d.name + '</option>';
-                            }).join('')}
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Duration (hours):</label>
-                        <select id="add-class-duration" style="width:100%;padding:8px;">
-                            <option value="1">1 hour</option>
-                            <option value="2">2 hours</option>
-                            <option value="3">3 hours</option>
-                            <option value="4">4 hours</option>
-                        </select>
-                    </div>
-                    <div class="form-actions" style="margin-top:16px;">
-                        <button type="button" id="cancel-add-class" class="secondary">Cancel</button>
-                        <button type="button" id="confirm-add-class" class="primary">Add Class</button>
-                    </div>
-                </div>
-            </div>
-        `;
+        modal.innerHTML = (
+            '<div class="modal-content" style="max-width:500px;">' +
+                '<div class="modal-header">' +
+                    '<h3>Add Class - ' + DAY_NAMES[day] + ' at ' + hourDisplay + '</h3>' +
+                    '<button class="close-modal">&times;</button>' +
+                '</div>' +
+                '<div class="modal-body">' +
+                    '<div class="form-group">' +
+                        '<label>Select Discipline:</label>' +
+                        '<select id="add-class-select" style="width:100%;padding:8px;margin-bottom:8px;">' +
+                            getAvailableOptionsHTML(available) +
+                        '</select>' +
+                    '</div>' +
+                    '<div class="form-group">' +
+                        '<label>Duration (hours):</label>' +
+                        '<select id="add-class-duration" style="width:100%;padding:8px;">' +
+                            '<option value="1">1 hour</option>' +
+                            '<option value="2">2 hours</option>' +
+                            '<option value="3">3 hours</option>' +
+                            '<option value="4">4 hours</option>' +
+                        '</select>' +
+                    '</div>' +
+                    '<div class="form-actions" style="margin-top:16px;">' +
+                        '<button type="button" id="cancel-add-class" class="secondary">Cancel</button>' +
+                        '<button type="button" id="confirm-add-class" class="primary">Add Class</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>'
+        );
 
         document.body.appendChild(modal);
 
-        modal.querySelector('.close-modal').onclick = function() { modal.remove(); };
-        modal.querySelector('#cancel-add-class').onclick = function() { modal.remove(); };
+        var closeModal = function() { modal.remove(); };
+        modal.querySelector('.close-modal').onclick = closeModal;
+        modal.querySelector('#cancel-add-class').onclick = closeModal;
         modal.addEventListener('click', function(e) {
-            if (e.target === modal) modal.remove();
+            if (e.target === modal) {
+                modal.remove();
+            }
         });
 
         modal.querySelector('#confirm-add-class').onclick = function() {
-            var disciplineId = document.getElementById('add-class-select').value;
+            var select = document.getElementById('add-class-select');
+            var disciplineId = select ? select.value : null;
             if (!disciplineId) {
                 showNotification('Please select a discipline.', 'error');
                 return;
             }
 
-            var duration = parseInt(document.getElementById('add-class-duration').value) || 1;
+            var durationEl = document.getElementById('add-class-duration');
+            var duration = parseInt(durationEl ? durationEl.value : 1, 10) || 1;
 
             var discipline = window.getDiscipline(disciplineId);
             var instructorId = discipline && discipline.instructorIds && discipline.instructorIds.length > 0
@@ -401,15 +458,24 @@
             modal.remove();
             window.saveData()
                 .then(function() {
-                    showNotification('Class added successfully!', 'success');
+                    showNotification('Class added successfully.', 'success');
                     render(container, { selectedId: studentId, week: week });
                 })
-                .catch(function(err) {
-                    console.error('Failed to save class:', err);
+                .catch(function() {
                     showNotification('Class added in memory, but persistence failed.', 'error');
                     render(container, { selectedId: studentId, week: week });
                 });
         };
+    }
+
+    function getAvailableOptionsHTML(available) {
+        var html = '';
+        for (var i = 0; i < available.length; i++) {
+            var item = available[i];
+            var d = item.discipline;
+            html += '<option value="' + escapeHtml(d.id) + '">' + escapeHtml(d.name) + '</option>';
+        }
+        return html;
     }
 
     // ============================================================
@@ -417,9 +483,20 @@
     // ============================================================
 
     function showClassDetailsModal(studentId, week, day, hour, container) {
-        var disciplineId = window.getStudentSchedule(studentId, week)[day][hour];
+        var schedule = window.getStudentSchedule(studentId, week) || {};
+        var daySchedule = schedule[day] || {};
+        var disciplineId = daySchedule[hour];
+
+        if (!disciplineId) {
+            showNotification('Class not found.', 'error');
+            return;
+        }
+
         var discipline = window.getDiscipline(disciplineId);
-        if (!discipline) return;
+        if (!discipline) {
+            showNotification('Discipline not found.', 'error');
+            return;
+        }
 
         var instructorId = window.getClassInstructor(studentId, week, day, hour);
         var duration = window.getClassDuration(studentId, week, day, hour) || 1;
@@ -434,36 +511,39 @@
             }
         }
 
-        var hourDisplay = formatHour(hour);
+        var hourDisplay = CalendarUtils.formatHour(hour);
 
         var modal = document.createElement('div');
         modal.className = 'modal';
-        modal.innerHTML = `
-            <div class="modal-content" style="max-width:450px;">
-                <div class="modal-header">
-                    <h3>${discipline.name} ${label ? '[' + label + ']' : ''} ${groupLabel ? '(G' + groupLabel + ')' : ''}</h3>
-                    <button class="close-modal">&times;</button>
-                </div>
-                <div class="modal-body">
-                    <div class="detail-row"><span class="label">Instructor:</span> <span><strong>${instructorName}</strong></span></div>
-                    <div class="detail-row"><span class="label">Day/Time:</span> <span>${DAY_NAMES[day]} at ${hourDisplay}</span></div>
-                    <div class="detail-row"><span class="label">Duration:</span> <span><strong>${duration} hour${duration > 1 ? 's' : ''}</strong></span></div>
-                    <div class="detail-row"><span class="label">Group:</span> <span><strong>${groupLabel || 'None'}</strong></span></div>
-                    <div class="detail-row"><span class="label">Week:</span> <span>${week}</span></div>
-                    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
-                        <button type="button" id="remove-class-detail" class="danger small">✕ Remove from Schedule</button>
-                        <button type="button" id="close-detail" class="secondary small">Close</button>
-                    </div>
-                </div>
-            </div>
-        `;
+        modal.innerHTML = (
+            '<div class="modal-content" style="max-width:450px;">' +
+                '<div class="modal-header">' +
+                    '<h3>' + escapeHtml(discipline.name) + (label ? ' [' + escapeHtml(label) + ']' : '') + (groupLabel ? ' (G' + escapeHtml(groupLabel) + ')' : '') + '</h3>' +
+                    '<button class="close-modal">&times;</button>' +
+                '</div>' +
+                '<div class="modal-body">' +
+                    '<div class="detail-row"><span class="label">Instructor:</span> <span><strong>' + escapeHtml(instructorName) + '</strong></span></div>' +
+                    '<div class="detail-row"><span class="label">Day/Time:</span> <span>' + escapeHtml(DAY_NAMES[day]) + ' at ' + escapeHtml(hourDisplay) + '</span></div>' +
+                    '<div class="detail-row"><span class="label">Duration:</span> <span><strong>' + duration + ' hour' + (duration > 1 ? 's' : '') + '</strong></span></div>' +
+                    '<div class="detail-row"><span class="label">Group:</span> <span><strong>' + (groupLabel ? escapeHtml(groupLabel) : 'None') + '</strong></span></div>' +
+                    '<div class="detail-row"><span class="label">Week:</span> <span>' + week + '</span></div>' +
+                    '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">' +
+                        '<button type="button" id="remove-class-detail" class="danger small">Remove from Schedule</button>' +
+                        '<button type="button" id="close-detail" class="secondary small">Close</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>'
+        );
 
         document.body.appendChild(modal);
 
-        modal.querySelector('.close-modal').onclick = function() { modal.remove(); };
-        modal.querySelector('#close-detail').onclick = function() { modal.remove(); };
+        var closeModal = function() { modal.remove(); };
+        modal.querySelector('.close-modal').onclick = closeModal;
+        modal.querySelector('#close-detail').onclick = closeModal;
         modal.addEventListener('click', function(e) {
-            if (e.target === modal) modal.remove();
+            if (e.target === modal) {
+                modal.remove();
+            }
         });
 
         modal.querySelector('#remove-class-detail').onclick = function() {
@@ -491,8 +571,7 @@
                 showNotification('Class removed from schedule.', 'success');
                 render(container, { selectedId: studentId, week: week });
             })
-            .catch(function(err) {
-                console.error('Failed to save class removal:', err);
+            .catch(function() {
                 showNotification('Class removed in memory, but persistence failed.', 'error');
                 render(container, { selectedId: studentId, week: week });
             });
@@ -509,43 +588,48 @@
             return;
         }
 
-        var schedule = window.getStudentSchedule(studentId, week);
+        var schedule = window.getStudentSchedule(studentId, week) || {};
         var restDays = window.getStudentRestDays(studentId, week) || [];
 
         var modal = document.createElement('div');
         modal.className = 'modal';
-        modal.innerHTML = `
-            <div class="modal-content" style="max-width:400px;">
-                <div class="modal-header">
-                    <h3>${discipline.name} - Available Slots</h3>
-                    <button class="close-modal">&times;</button>
-                </div>
-                <div class="modal-body">
-                    <p style="color:var(--text-dim);font-size:0.8rem;margin-bottom:12px;">
-                        Click on a time slot to add a <strong>1-hour</strong> class.
-                    </p>
-                    <div style="max-height:300px;overflow-y:auto;" id="time-slots-list">
-                        ${getTimeSlotsListHTML(schedule, restDays)}
-                    </div>
-                    <div class="form-actions" style="margin-top:12px;">
-                        <button type="button" id="close-slots-modal" class="secondary">Close</button>
-                    </div>
-                </div>
-            </div>
-        `;
+        modal.innerHTML = (
+            '<div class="modal-content" style="max-width:400px;">' +
+                '<div class="modal-header">' +
+                    '<h3>' + escapeHtml(discipline.name) + ' - Available Slots</h3>' +
+                    '<button class="close-modal">&times;</button>' +
+                '</div>' +
+                '<div class="modal-body">' +
+                    '<p style="color:var(--text-dim);font-size:0.8rem;margin-bottom:12px;">' +
+                        'Click on a time slot to add a 1-hour class.' +
+                    '</p>' +
+                    '<div style="max-height:300px;overflow-y:auto;" id="time-slots-list">' +
+                        getTimeSlotsListHTML(schedule, restDays) +
+                    '</div>' +
+                    '<div class="form-actions" style="margin-top:12px;">' +
+                        '<button type="button" id="close-slots-modal" class="secondary">Close</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>'
+        );
 
         document.body.appendChild(modal);
 
-        modal.querySelector('.close-modal').onclick = function() { modal.remove(); };
-        modal.querySelector('#close-slots-modal').onclick = function() { modal.remove(); };
+        var closeModal = function() { modal.remove(); };
+        modal.querySelector('.close-modal').onclick = closeModal;
+        modal.querySelector('#close-slots-modal').onclick = closeModal;
         modal.addEventListener('click', function(e) {
-            if (e.target === modal) modal.remove();
+            if (e.target === modal) {
+                modal.remove();
+            }
         });
 
-        modal.querySelectorAll('.add-to-slot-btn').forEach(function(btn) {
+        var slotButtons = modal.querySelectorAll('.add-to-slot-btn');
+        for (var i = 0; i < slotButtons.length; i++) {
+            var btn = slotButtons[i];
             btn.addEventListener('click', function() {
-                var day = parseInt(this.dataset.day);
-                var hour = parseInt(this.dataset.hour);
+                var day = parseInt(this.dataset.day, 10);
+                var hour = parseInt(this.dataset.hour, 10);
 
                 var instructorId = discipline.instructorIds && discipline.instructorIds.length > 0
                     ? discipline.instructorIds[0]
@@ -569,33 +653,39 @@
                 modal.remove();
                 window.saveData()
                     .then(function() {
-                        showNotification('Class added successfully!', 'success');
+                        showNotification('Class added successfully.', 'success');
                         render(container, { selectedId: studentId, week: week });
                     })
-                    .catch(function(err) {
-                        console.error('Failed to save class:', err);
+                    .catch(function() {
                         showNotification('Class added in memory, but persistence failed.', 'error');
                         render(container, { selectedId: studentId, week: week });
                     });
             });
-        });
+        }
     }
 
     function getTimeSlotsListHTML(schedule, restDays) {
         var html = '';
         var foundSlots = false;
+        var selectionHours = CalendarUtils.getSelectionHours();
 
         for (var day = 1; day <= 7; day++) {
-            if (restDays.indexOf(day) !== -1) continue;
+            if (restDays.indexOf(day) !== -1) {
+                continue;
+            }
 
-            for (var hour = 8; hour <= 20; hour++) {
+            for (var i = 0; i < selectionHours.length; i++) {
+                var hour = selectionHours[i];
                 var hasClass = schedule[day] && schedule[day][hour];
+
                 if (!hasClass) {
                     foundSlots = true;
-                    html += '<div style="padding:6px 10px;border-bottom:1px solid var(--border-soft);display:flex;justify-content:space-between;align-items:center;">';
-                    html += '<span>' + DAY_NAMES[day] + ' at ' + formatHour(hour) + '</span>';
-                    html += '<button class="add-to-slot-btn primary small" data-day="' + day + '" data-hour="' + hour + '">Add 1h</button>';
-                    html += '</div>';
+                    html += (
+                        '<div style="padding:6px 10px;border-bottom:1px solid var(--border-soft);display:flex;justify-content:space-between;align-items:center;">' +
+                            '<span>' + DAY_NAMES[day] + ' at ' + CalendarUtils.formatHour(hour) + '</span>' +
+                            '<button class="add-to-slot-btn primary small" data-day="' + day + '" data-hour="' + hour + '">Add 1h</button>' +
+                        '</div>'
+                    );
                 }
             }
         }
@@ -611,23 +701,19 @@
     // HELPERS
     // ============================================================
 
-    function formatHour(hour) {
-        if (hour === undefined || hour === null || hour < 0 || hour > 23) {
-            return '?';
-        }
-        var h = hour % 12 || 12;
-        var ampm = hour >= 12 ? 'PM' : 'AM';
-        return h + ':00 ' + ampm;
-    }
-
     function getAvailableDisciplinesForStudent(studentId, week) {
-        var allDisciplines = window.getAvailableDisciplines(week);
-        var schedule = window.getStudentSchedule(studentId, week);
+        var allDisciplines = window.getAvailableDisciplines(week) || [];
+        var schedule = window.getStudentSchedule(studentId, week) || {};
         var usedHours = {};
 
         for (var day in schedule) {
-            for (var hour in schedule[day]) {
-                var discId = schedule[day][hour];
+            if (!Object.prototype.hasOwnProperty.call(schedule, day)) continue;
+            var daySchedule = schedule[day];
+            if (!daySchedule || typeof daySchedule !== 'object') continue;
+
+            for (var hour in daySchedule) {
+                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
+                var discId = daySchedule[hour];
                 if (discId) {
                     if (!usedHours[discId]) usedHours[discId] = 0;
                     usedHours[discId]++;
@@ -636,15 +722,29 @@
         }
 
         var available = [];
-        allDisciplines.forEach(function(d) {
+        for (var i = 0; i < allDisciplines.length; i++) {
+            var d = allDisciplines[i];
             var usedCount = usedHours[d.id] || 0;
             var maxHours = d.weeklyHours || 1;
             if (usedCount < maxHours) {
                 available.push({ discipline: d, used: usedCount, maxHours: maxHours });
             }
-        });
+        }
 
         return available;
+    }
+
+    function escapeHtml(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+        var str = String(value);
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     function showNotification(message, type) {
@@ -657,8 +757,6 @@
             alert('Error: ' + message);
         } else if (type === 'success') {
             alert(message);
-        } else {
-            console.log('[StudentMode]', message);
         }
     }
 
@@ -679,15 +777,5 @@
             getData: getSchedule
         });
     }
-
-    // ============================================================
-    // EXPOSE
-    // ============================================================
-
-    window.StudentMode = {
-        render: render,
-        getStudents: getStudents,
-        getSchedule: getSchedule
-    };
 
 })();
