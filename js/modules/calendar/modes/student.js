@@ -9,6 +9,13 @@
  *   - Managing rest days (user-configurable per student/week)
  *   - Displaying available disciplines
  *   - Showing class details
+ * 
+ * IMPORTANT:
+ *   - This module uses core functions for ALL mutations
+ *   - NO direct window.data mutations
+ *   - Duration metadata is respected for availability calculations
+ *   - Student schedules are the canonical source of truth
+ *   - UI-level overlap detection is a guardrail; core is authoritative
  */
 
 (function() {
@@ -116,6 +123,78 @@
     }
 
     // ============================================================
+    // RANGE OVERLAP DETECTION - UI-Level Guardrail
+    // ============================================================
+
+    /**
+     * Check if a requested time range overlaps with any existing class.
+     * Uses duration metadata to determine class boundaries.
+     * 
+     * This is a UI-level guardrail. Core mutation functions remain
+     * the authoritative source of truth for validation.
+     * 
+     * @param {object} schedule - Student schedule for the week
+     * @param {string} studentId - Student ID
+     * @param {number} week - Week number
+     * @param {number} day - Day number (1-7)
+     * @param {number} startHour - Requested start hour
+     * @param {number} duration - Requested duration in hours
+     * @returns {boolean} True if there is an overlap
+     */
+    function hasRangeOverlap(schedule, studentId, week, day, startHour, duration) {
+        var daySchedule = schedule[day] || {};
+
+        for (var existingHour in daySchedule) {
+            if (!Object.prototype.hasOwnProperty.call(daySchedule, existingHour)) {
+                continue;
+            }
+
+            var disciplineId = daySchedule[existingHour];
+            if (!disciplineId) {
+                continue;
+            }
+
+            var existingStart = parseInt(existingHour, 10);
+            var existingDuration = window.getClassDuration(studentId, week, day, existingStart) || 1;
+            var existingEnd = existingStart + existingDuration;
+            var requestedEnd = startHour + duration;
+
+            // Range overlap check: [start, end) interval model
+            if (startHour < existingEnd && requestedEnd > existingStart) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Build a map of occupied hours for a schedule.
+     * Used for availability checks in the time-slot modal.
+     */
+    function buildOccupiedMap(schedule, studentId, week) {
+        var occupied = {};
+
+        for (var day = 1; day <= 7; day++) {
+            if (!schedule[day]) continue;
+
+            for (var hour in schedule[day]) {
+                if (!schedule[day][hour]) continue;
+
+                var startHour = parseInt(hour, 10);
+                var duration = window.getClassDuration(studentId, week, day, startHour) || 1;
+
+                for (var h = startHour; h < startHour + duration && h <= CALENDAR_END_HOUR; h++) {
+                    if (!occupied[day]) occupied[day] = {};
+                    occupied[day][h] = true;
+                }
+            }
+        }
+
+        return occupied;
+    }
+
+    // ============================================================
     // PUBLIC API
     // ============================================================
 
@@ -156,7 +235,9 @@
 
         var schedule = window.getStudentSchedule(studentId, week) || {};
         var restDays = window.getStudentRestDays(studentId, week) || [];
-        var availableDisciplines = window.getAvailableDisciplines(week) || [];
+
+        // Student-specific availability for the sidebar
+        var availableDisciplines = getAvailableDisciplinesForStudent(studentId, week);
 
         var html = getScheduleGridHTML(schedule, restDays, studentId, week, availableDisciplines);
         container.innerHTML = html;
@@ -273,11 +354,15 @@
         html += '<h4>Available Disciplines</h4>';
         html += '<div id="available-disciplines">';
         if (availableDisciplines.length === 0) {
-            html += '<p class="empty-state">No disciplines available</p>';
+            html += '<p class="empty-state">No disciplines available for this student</p>';
         } else {
             for (var i = 0; i < availableDisciplines.length; i++) {
-                var d = availableDisciplines[i];
-                html += '<div class="available-discipline" data-discipline="' + escapeHtml(d.id) + '">' + escapeHtml(d.name) + '</div>';
+                var item = availableDisciplines[i];
+                var d = item.discipline;
+                var remaining = item.maxHours - item.used;
+                html += '<div class="available-discipline" data-discipline="' + escapeHtml(d.id) + '">' +
+                    escapeHtml(d.name) + ' <span style="font-size:0.6rem;color:var(--text-dim);">(' + remaining + 'h remaining)</span>' +
+                '</div>';
             }
         }
         html += '</div>';
@@ -435,6 +520,45 @@
             var durationEl = document.getElementById('add-class-duration');
             var duration = parseInt(durationEl ? durationEl.value : 1, 10) || 1;
 
+            // Validate calendar boundary
+            if (hour + duration > CALENDAR_END_HOUR + 1) {
+                showNotification('Class extends beyond the calendar boundary.', 'error');
+                return;
+            }
+
+            // Re-read schedule at commit time (defensive)
+            var currentSchedule = window.getStudentSchedule(studentId, week) || {};
+
+            // UI-level range overlap check (guardrail)
+            if (hasRangeOverlap(currentSchedule, studentId, week, day, hour, duration)) {
+                showNotification('This would overlap with an existing class.', 'error');
+                return;
+            }
+
+            // Validate remaining weekly hours
+            var availableItem = null;
+            for (var i = 0; i < available.length; i++) {
+                if (available[i].discipline.id === disciplineId) {
+                    availableItem = available[i];
+                    break;
+                }
+            }
+
+            if (!availableItem) {
+                showNotification('This discipline is no longer available.', 'error');
+                return;
+            }
+
+            var remainingHours = availableItem.maxHours - availableItem.used;
+
+            if (duration > remainingHours) {
+                showNotification(
+                    'This class would exceed the remaining weekly hours for this discipline.',
+                    'error'
+                );
+                return;
+            }
+
             var discipline = window.getDiscipline(disciplineId);
             var instructorId = discipline && discipline.instructorIds && discipline.instructorIds.length > 0
                 ? discipline.instructorIds[0]
@@ -578,7 +702,7 @@
     }
 
     // ============================================================
-    // TIME SLOTS MODAL
+    // TIME SLOTS MODAL - Duration-Aware
     // ============================================================
 
     function showTimeSlotsModal(studentId, week, disciplineId, container) {
@@ -604,7 +728,7 @@
                         'Click on a time slot to add a 1-hour class.' +
                     '</p>' +
                     '<div style="max-height:300px;overflow-y:auto;" id="time-slots-list">' +
-                        getTimeSlotsListHTML(schedule, restDays) +
+                        getTimeSlotsListHTML(schedule, restDays, studentId, week) +
                     '</div>' +
                     '<div class="form-actions" style="margin-top:12px;">' +
                         '<button type="button" id="close-slots-modal" class="secondary">Close</button>' +
@@ -630,6 +754,17 @@
             btn.addEventListener('click', function() {
                 var day = parseInt(this.dataset.day, 10);
                 var hour = parseInt(this.dataset.hour, 10);
+
+                // Re-read schedule at commit time (defensive)
+                var currentSchedule = window.getStudentSchedule(studentId, week) || {};
+
+                // UI-level range overlap check (guardrail)
+                if (hasRangeOverlap(currentSchedule, studentId, week, day, hour, 1)) {
+                    showNotification('This slot is no longer available.', 'error');
+                    modal.remove();
+                    render(container, { selectedId: studentId, week: week });
+                    return;
+                }
 
                 var instructorId = discipline.instructorIds && discipline.instructorIds.length > 0
                     ? discipline.instructorIds[0]
@@ -664,10 +799,13 @@
         }
     }
 
-    function getTimeSlotsListHTML(schedule, restDays) {
+    function getTimeSlotsListHTML(schedule, restDays, studentId, week) {
         var html = '';
         var foundSlots = false;
         var selectionHours = CalendarUtils.getSelectionHours();
+
+        // Build occupied map using the shared helper
+        var occupiedMap = buildOccupiedMap(schedule, studentId, week);
 
         for (var day = 1; day <= 7; day++) {
             if (restDays.indexOf(day) !== -1) {
@@ -676,9 +814,9 @@
 
             for (var i = 0; i < selectionHours.length; i++) {
                 var hour = selectionHours[i];
-                var hasClass = schedule[day] && schedule[day][hour];
+                var isOccupied = occupiedMap[day] && occupiedMap[day][hour];
 
-                if (!hasClass) {
+                if (!isOccupied) {
                     foundSlots = true;
                     html += (
                         '<div style="padding:6px 10px;border-bottom:1px solid var(--border-soft);display:flex;justify-content:space-between;align-items:center;">' +
@@ -715,8 +853,9 @@
                 if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
                 var discId = daySchedule[hour];
                 if (discId) {
+                    var duration = window.getClassDuration(studentId, week, parseInt(day, 10), parseInt(hour, 10)) || 1;
                     if (!usedHours[discId]) usedHours[discId] = 0;
-                    usedHours[discId]++;
+                    usedHours[discId] += duration;
                 }
             }
         }
@@ -767,6 +906,7 @@
     if (window.CalendarModes && typeof window.CalendarModes.registerMode === 'function') {
         window.CalendarModes.registerMode('student', {
             label: 'Student',
+            hint: 'Click a slot to add class | Right-click to remove | Rest days are user-configurable',
             render: render,
             getEntities: getStudents,
             getEntityDisplayName: function(entity) {
