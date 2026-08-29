@@ -5,34 +5,54 @@
  * 
  * This module handles:
  *   - Student schedule CRUD (get, set, remove, clear)
- *   - Schedule duplication between weeks
+ *   - Schedule duplication between weeks (TRANSACTIONAL)
  *   - Rest days management
  *   - Schedule conflict detection
  *   - Weekly hour limit enforcement
+ *   - Class metadata (instructor, label, duration, location)
  * 
  * IMPORTANT:
- *   - All functions return { success: boolean, message?: string, data?: any }
+ *   - All MUTATION operations return an object with { success: boolean }.
+ *   - Failure results include { message: string }.
+ *   - Successful operations may include operation-specific result fields.
+ *   - Query/helper functions return their documented value types
  *   - Invalid inputs are REJECTED (operation returns { success: false })
- *   - Validation occurs BEFORE mutation
+ *   - Validation occurs BEFORE mutation (candidate-based approach)
  *   - This module does NOT call saveData() - callers own persistence
  *   - This module does NOT show UI - caller handles UX
+ *   - Query results are DEEP CLONED to prevent external mutation
  * 
- * PERSISTENCE CONTRACT:
- *   - Mutations are applied to window.data in memory
- *   - Caller is responsible for saveData() persistence
- *   - No rollback is provided after mutation begins
+ * MUTATION INVARIANT (CANDIDATE-BASED COMMIT):
+ *   - All mutations build candidates BEFORE touching any live state
+ *   - 1. Validate inputs
+ *   - 2. Validate live state structure exists (read-only)
+ *   - 3. Build candidate (deep clone)
+ *   - 4. Apply validated changes to candidate
+ *   - 5. Pre-clone result data (safe)
+ *   - 6. COMMIT candidate to data store
+ *   - 7. If any step before commit fails, return error WITHOUT mutating
+ *   - No mutation of live state occurs before all validation completes
+ *   - This is a candidate-based commit, not a database transaction
  * 
  * SCHEDULE SEMANTICS:
  *   - Schedules are stored as: schedules[studentId][week][day][hour] = disciplineId
  *   - Multi-hour classes occupy every hour in the array
- *   - Class metadata (instructor, label, duration) is stored separately
+ *   - Class metadata (instructor, label, duration) is stored at the START hour only
+ *   - Metadata key format: studentId_week_day_startHour
  *   - Rest days are stored as: restDays[studentId][week] = [days]
  *   - Weekly hour limits are enforced per discipline
- *   - scheduleKey = studentId + '_' + week + '_' + day + '_' + hour
+ *   - Duplication is transactional: validates source before clearing target
+ *   - setClassDuration() validates class exists before setting metadata
  */
 
 (function() {
     'use strict';
+
+    // Guard against duplicate loading
+    if (window.__scheduleCoreLoaded) {
+        return;
+    }
+    window.__scheduleCoreLoaded = true;
 
     // ============================================================
     // PRIVATE HELPERS
@@ -51,6 +71,9 @@
     }
 
     function parsePositiveInteger(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
         var num = Number(value);
         return Number.isInteger(num) && num >= 1 ? num : null;
     }
@@ -64,8 +87,15 @@
 
     function logActivity(message, type) {
         type = type || 'info';
-        if (typeof window.logActivity === 'function') {
+
+        if (typeof window.logActivity !== 'function') {
+            return;
+        }
+
+        try {
             window.logActivity(message, type);
+        } catch (e) {
+            console.error('ScheduleCore: activity logging failed:', e);
         }
     }
 
@@ -96,49 +126,6 @@
     function getScheduleKey(studentId, week, day, hour) {
         return String(studentId) + '_' + String(week) + '_' + String(day) + '_' + String(hour);
     }
-
-    function ensureScheduleStructure() {
-        var data = getDataStore();
-        if (!data) return null;
-
-        if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
-            data.curriculum = {};
-        }
-
-        if (!data.curriculum.schedules || typeof data.curriculum.schedules !== 'object') {
-            data.curriculum.schedules = {};
-        }
-
-        if (!data.curriculum.restDays || typeof data.curriculum.restDays !== 'object') {
-            data.curriculum.restDays = {};
-        }
-
-        if (!data.curriculum.classInstructors || typeof data.curriculum.classInstructors !== 'object') {
-            data.curriculum.classInstructors = {};
-        }
-
-        if (!data.curriculum.classLabels || typeof data.curriculum.classLabels !== 'object') {
-            data.curriculum.classLabels = {};
-        }
-
-        if (!data.curriculum.classGroupLabels || typeof data.curriculum.classGroupLabels !== 'object') {
-            data.curriculum.classGroupLabels = {};
-        }
-
-        if (!data.curriculum.classDurations || typeof data.curriculum.classDurations !== 'object') {
-            data.curriculum.classDurations = {};
-        }
-
-        if (!data.curriculum.classLocations || typeof data.curriculum.classLocations !== 'object') {
-            data.curriculum.classLocations = {};
-        }
-
-        return data;
-    }
-
-    // ============================================================
-    // VALIDATION HELPERS
-    // ============================================================
 
     function validateWeek(value) {
         var num = parsePositiveInteger(value);
@@ -179,8 +166,72 @@
         return { valid: true, weekNum: weekNum };
     }
 
+    function deepClone(value) {
+        if (value === null || typeof value !== 'object') {
+            return value;
+        }
+
+        if (typeof structuredClone === 'function') {
+            try {
+                return structuredClone(value);
+            } catch (e) {
+                console.error('ScheduleCore: structuredClone failed:', e);
+                return null;
+            }
+        }
+
+        try {
+            return JSON.parse(JSON.stringify(value));
+        } catch (e) {
+            console.error('ScheduleCore: JSON clone failed:', e);
+            return null;
+        }
+    }
+
+    function getScheduleStore() {
+        var data = getDataStore();
+        if (!data) return null;
+
+        if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
+            return null;
+        }
+
+        return data;
+    }
+
     // ============================================================
-    // SCHEDULE QUERIES
+    // RESULT HELPERS
+    // ============================================================
+
+    function failure(message) {
+        return {
+            success: false,
+            message: message
+        };
+    }
+
+    function success(data) {
+        return {
+            success: true,
+            data: data
+        };
+    }
+
+    function successWithSchedule(schedule, operationType, count) {
+        var cloned = deepClone(schedule);
+        if (cloned === null) {
+            return failure('Failed to clone schedule data.');
+        }
+        return {
+            success: true,
+            schedule: cloned,
+            operation: operationType || 'updated',
+            count: count || 0
+        };
+    }
+
+    // ============================================================
+    // SCHEDULE QUERIES (with cloning for safety)
     // ============================================================
 
     function getStudentSchedule(studentId, week) {
@@ -189,8 +240,12 @@
             return {};
         }
 
-        var data = getDataStore();
-        if (!data || !data.curriculum || !data.curriculum.schedules) {
+        var data = getScheduleStore();
+        if (!data) {
+            return {};
+        }
+
+        if (!data.curriculum.schedules || typeof data.curriculum.schedules !== 'object') {
             return {};
         }
 
@@ -199,7 +254,20 @@
             return {};
         }
 
-        return studentSchedule[weekNum];
+        // Clone to prevent external mutation
+        var weekSchedule = studentSchedule[weekNum];
+        var result = {};
+        for (var day in weekSchedule) {
+            if (!Object.prototype.hasOwnProperty.call(weekSchedule, day)) continue;
+            var daySchedule = weekSchedule[day];
+            if (!daySchedule || typeof daySchedule !== 'object') continue;
+            result[day] = {};
+            for (var hour in daySchedule) {
+                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
+                result[day][hour] = daySchedule[hour];
+            }
+        }
+        return result;
     }
 
     function getStudentScheduleWeek(studentId, week) {
@@ -226,8 +294,12 @@
             return [];
         }
 
-        var data = getDataStore();
-        if (!data || !data.curriculum || !data.curriculum.restDays) {
+        var data = getScheduleStore();
+        if (!data) {
+            return [];
+        }
+
+        if (!data.curriculum.restDays || typeof data.curriculum.restDays !== 'object') {
             return [];
         }
 
@@ -235,7 +307,7 @@
             return [];
         }
 
-        return data.curriculum.restDays[studentId][weekNum];
+        return data.curriculum.restDays[studentId][weekNum].slice();
     }
 
     function getStudentDisciplineHourUsage(studentId, week) {
@@ -244,9 +316,12 @@
 
         for (var day in schedule) {
             if (!Object.prototype.hasOwnProperty.call(schedule, day)) continue;
-            for (var hour in schedule[day]) {
-                if (!Object.prototype.hasOwnProperty.call(schedule[day], hour)) continue;
-                var discId = schedule[day][hour];
+            var daySchedule = schedule[day];
+            if (!daySchedule || typeof daySchedule !== 'object') continue;
+
+            for (var hour in daySchedule) {
+                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
+                var discId = daySchedule[hour];
                 if (discId) {
                     if (!disciplineHours[discId]) disciplineHours[discId] = 0;
                     disciplineHours[discId]++;
@@ -258,18 +333,12 @@
     }
 
     function getStudentScheduleCount(studentId) {
-        var data = getDataStore();
-        if (!data || !data.curriculum || !data.curriculum.schedules) {
-            return 0;
-        }
-
-        var studentSchedule = data.curriculum.schedules[studentId];
-        if (!studentSchedule) return 0;
-
+        var schedule = getStudentSchedule(studentId, 1);
         var count = 0;
-        for (var week in studentSchedule) {
-            if (!Object.prototype.hasOwnProperty.call(studentSchedule, week)) continue;
-            var weekData = studentSchedule[week];
+
+        for (var week in schedule) {
+            if (!Object.prototype.hasOwnProperty.call(schedule, week)) continue;
+            var weekData = schedule[week];
             if (!weekData || typeof weekData !== 'object') continue;
 
             for (var day in weekData) {
@@ -301,134 +370,17 @@
     }
 
     // ============================================================
-    // SCHEDULE MUTATIONS
+    // FIND CLASS START - Helper for metadata operations
     // ============================================================
 
-    function setStudentScheduleClass(studentId, week, day, hour, disciplineId, duration, instructorId) {
-        // ---- PHASE 1: VALIDATE ----
-        var validation = validateScheduleSlot(studentId, week, day, hour);
-        if (!validation.valid) {
-            return { success: false, message: validation.message };
+    function findClassStart(schedule, day, hour) {
+        if (!schedule || !schedule[day] || !schedule[day][hour]) {
+            return null;
         }
 
-        var weekNum = validation.weekNum;
-
-        if (!isNonEmptyString(disciplineId)) {
-            return { success: false, message: 'Discipline ID is required.' };
-        }
-
-        var discipline = getDiscipline(disciplineId);
-        if (!discipline) {
-            return { success: false, message: 'Discipline not found.' };
-        }
-
-        var durationNum = validateDuration(duration);
-        if (durationNum === null) {
-            return { success: false, message: 'Duration must be between 1 and 4 hours.' };
-        }
-
-        if (hour + durationNum > 24) {
-            return { success: false, message: 'Class duration extends beyond the end of the day.' };
-        }
-
-        if (instructorId && !getCharacterById(instructorId)) {
-            return { success: false, message: 'Instructor not found.' };
-        }
-
-        // ---- PHASE 2: CHECK CONFLICTS ----
-        var store = ensureScheduleStructure();
-        if (!store) {
-            return { success: false, message: 'Data store is not available.' };
-        }
-
-        if (!store.curriculum.schedules[studentId]) {
-            store.curriculum.schedules[studentId] = {};
-        }
-
-        if (!store.curriculum.schedules[studentId][weekNum]) {
-            store.curriculum.schedules[studentId][weekNum] = {};
-        }
-
-        var schedule = store.curriculum.schedules[studentId][weekNum];
-
-        // Check for conflicts
-        for (var h = hour; h < hour + durationNum && h <= 23; h++) {
-            if (schedule[day] && schedule[day][h]) {
-                var existingDiscipline = getDiscipline(schedule[day][h]);
-                var existingName = existingDiscipline ? existingDiscipline.name : 'Unknown';
-                return {
-                    success: false,
-                    message: 'Student already has a class during this time: ' + existingName
-                };
-            }
-        }
-
-        // Check rest days
-        var restDays = getStudentRestDays(studentId, weekNum);
-        if (restDays.indexOf(day) !== -1) {
-            return { success: false, message: 'This is a rest day for this student.' };
-        }
-
-        // Check weekly hour limit
-        var usedHours = getStudentDisciplineHourUsage(studentId, weekNum);
-        var usedCount = usedHours[disciplineId] || 0;
-        var maxHours = discipline.weeklyHours ? Number(discipline.weeklyHours) : 1;
-
-        if (usedCount + durationNum > maxHours) {
-            return {
-                success: false,
-                message: 'This would exceed the weekly hour limit (' + maxHours + 'h) for this discipline.'
-            };
-        }
-
-        // ---- PHASE 3: APPLY ----
-        if (!schedule[day]) schedule[day] = {};
-
-        var key = getScheduleKey(studentId, weekNum, day, hour);
-
-        for (var h = hour; h < hour + durationNum && h <= 23; h++) {
-            schedule[day][h] = disciplineId;
-        }
-
-        if (instructorId) {
-            store.curriculum.classInstructors[key] = instructorId;
-        } else {
-            delete store.curriculum.classInstructors[key];
-        }
-
-        store.curriculum.classDurations[key] = durationNum;
-
-        logActivity('Added class to schedule: ' + discipline.name);
-        return { success: true };
-    }
-
-    function removeStudentScheduleClass(studentId, week, day, hour) {
-        // ---- PHASE 1: VALIDATE ----
-        var validation = validateScheduleSlot(studentId, week, day, hour);
-        if (!validation.valid) {
-            return { success: false, message: validation.message };
-        }
-
-        var weekNum = validation.weekNum;
-
-        // ---- PHASE 2: RETRIEVE ----
-        var store = getDataStore();
-        if (!store || !store.curriculum || !store.curriculum.schedules) {
-            return { success: false, message: 'Schedule not found.' };
-        }
-
-        if (!store.curriculum.schedules[studentId] || !store.curriculum.schedules[studentId][weekNum]) {
-            return { success: false, message: 'No schedule for this student and week.' };
-        }
-
-        var schedule = store.curriculum.schedules[studentId][weekNum];
-        if (!schedule[day] || !schedule[day][hour]) {
-            return { success: false, message: 'No class at this time.' };
-        }
-
-        // ---- PHASE 3: FIND CLASS BOUNDARIES ----
         var disciplineId = schedule[day][hour];
         var startHour = hour;
+
         while (startHour > 0 && schedule[day][startHour - 1] === disciplineId) {
             startHour--;
         }
@@ -438,259 +390,579 @@
             endHour++;
         }
 
-        var duration = endHour - startHour + 1;
+        return {
+            disciplineId: disciplineId,
+            startHour: startHour,
+            endHour: endHour,
+            duration: endHour - startHour + 1
+        };
+    }
 
-        // ---- PHASE 4: APPLY ----
-        for (var h = startHour; h <= endHour; h++) {
-            delete schedule[day][h];
+    // ============================================================
+    // SCHEDULE MUTATIONS (candidate-based, NO live mutation)
+    // ============================================================
+
+    function setStudentScheduleClass(studentId, week, day, hour, disciplineId, duration, instructorId) {
+        // ---- PHASE 1: VALIDATE ----
+        var validation = validateScheduleSlot(studentId, week, day, hour);
+        if (!validation.valid) {
+            return failure(validation.message);
         }
 
-        var key = getScheduleKey(studentId, weekNum, day, startHour);
+        var weekNum = validation.weekNum;
 
-        delete store.curriculum.classInstructors[key];
-        delete store.curriculum.classLabels[key];
-        delete store.curriculum.classGroupLabels[key];
-        delete store.curriculum.classDurations[key];
-        delete store.curriculum.classLocations[key];
+        if (!isNonEmptyString(disciplineId)) {
+            return failure('Discipline ID is required.');
+        }
+
+        var discipline = getDiscipline(disciplineId);
+        if (!discipline) {
+            return failure('Discipline not found.');
+        }
+
+        var durationNum = validateDuration(duration);
+        if (durationNum === null) {
+            return failure('Duration must be between 1 and 4 hours.');
+        }
+
+        if (hour + durationNum > 24) {
+            return failure('Class duration extends beyond the end of the day.');
+        }
+
+        if (instructorId && !getCharacterById(instructorId)) {
+            return failure('Instructor not found.');
+        }
+
+        // ---- PHASE 2: GET CURRENT STATE (read-only) ----
+        var store = getScheduleStore();
+        if (!store) {
+            return failure('Data store is not available.');
+        }
+
+        // ---- PHASE 3: BUILD CANDIDATES ----
+        var candidateSchedules = deepClone(store.curriculum.schedules || {});
+        if (candidateSchedules === null) {
+            return failure('Failed to prepare schedule data.');
+        }
+
+        var candidateInstructors = deepClone(store.curriculum.classInstructors || {});
+        if (candidateInstructors === null) {
+            return failure('Failed to prepare instructor data.');
+        }
+
+        var candidateDurations = deepClone(store.curriculum.classDurations || {});
+        if (candidateDurations === null) {
+            return failure('Failed to prepare duration data.');
+        }
+
+        // ---- PHASE 4: CHECK CONFLICTS ----
+        if (!candidateSchedules[studentId]) {
+            candidateSchedules[studentId] = {};
+        }
+
+        if (!candidateSchedules[studentId][weekNum]) {
+            candidateSchedules[studentId][weekNum] = {};
+        }
+
+        var schedule = candidateSchedules[studentId][weekNum];
+
+        // Check for conflicts
+        for (var h = hour; h < hour + durationNum && h <= 23; h++) {
+            if (schedule[day] && schedule[day][h]) {
+                var existingDiscipline = getDiscipline(schedule[day][h]);
+                var existingName = existingDiscipline ? existingDiscipline.name : 'Unknown';
+                return failure('Student already has a class during this time: ' + existingName);
+            }
+        }
+
+        // Check rest days
+        var restDays = getStudentRestDays(studentId, weekNum);
+        if (restDays.indexOf(day) !== -1) {
+            return failure('This is a rest day for this student.');
+        }
+
+        // Check weekly hour limit
+        var usedHours = getStudentDisciplineHourUsage(studentId, weekNum);
+        var usedCount = usedHours[disciplineId] || 0;
+        var maxHours = discipline.weeklyHours ? Number(discipline.weeklyHours) : 1;
+
+        if (usedCount + durationNum > maxHours) {
+            return failure('This would exceed the weekly hour limit (' + maxHours + 'h) for this discipline.');
+        }
+
+        // ---- PHASE 5: APPLY CHANGES TO CANDIDATES ----
+        if (!schedule[day]) schedule[day] = {};
+
+        var key = getScheduleKey(studentId, weekNum, day, hour);
+
+        for (var h = hour; h < hour + durationNum && h <= 23; h++) {
+            schedule[day][h] = disciplineId;
+        }
+
+        if (instructorId) {
+            candidateInstructors[key] = instructorId;
+        } else {
+            delete candidateInstructors[key];
+        }
+
+        candidateDurations[key] = durationNum;
+
+        // ---- PHASE 6: COMMIT ----
+        store.curriculum.schedules = candidateSchedules;
+        store.curriculum.classInstructors = candidateInstructors;
+        store.curriculum.classDurations = candidateDurations;
+
+        logActivity('Added class to schedule: ' + discipline.name);
+        return successWithSchedule(schedule, 'added');
+    }
+
+    function removeStudentScheduleClass(studentId, week, day, hour) {
+        // ---- PHASE 1: VALIDATE ----
+        var validation = validateScheduleSlot(studentId, week, day, hour);
+        if (!validation.valid) {
+            return failure(validation.message);
+        }
+
+        var weekNum = validation.weekNum;
+
+        // ---- PHASE 2: GET CURRENT STATE (read-only) ----
+        var store = getScheduleStore();
+        if (!store) {
+            return failure('Data store is not available.');
+        }
+
+        if (!store.curriculum.schedules ||
+            !store.curriculum.schedules[studentId] ||
+            !store.curriculum.schedules[studentId][weekNum]) {
+            return failure('No schedule for this student and week.');
+        }
+
+        var schedule = store.curriculum.schedules[studentId][weekNum];
+        if (!schedule[day] || !schedule[day][hour]) {
+            return failure('No class at this time.');
+        }
+
+        // ---- PHASE 3: FIND CLASS BOUNDARIES ----
+        var classInfo = findClassStart(schedule, day, hour);
+        if (!classInfo) {
+            return failure('Could not determine class structure.');
+        }
+
+        var disciplineId = classInfo.disciplineId;
+        var startHour = classInfo.startHour;
+        var duration = classInfo.duration;
+
+        // ---- PHASE 4: BUILD CANDIDATES ----
+        var candidateSchedules = deepClone(store.curriculum.schedules);
+        if (candidateSchedules === null) {
+            return failure('Failed to prepare schedule data.');
+        }
+
+        var candidateInstructors = deepClone(store.curriculum.classInstructors || {});
+        if (candidateInstructors === null) {
+            return failure('Failed to prepare instructor data.');
+        }
+
+        var candidateLabels = deepClone(store.curriculum.classLabels || {});
+        if (candidateLabels === null) {
+            return failure('Failed to prepare label data.');
+        }
+
+        var candidateGroupLabels = deepClone(store.curriculum.classGroupLabels || {});
+        if (candidateGroupLabels === null) {
+            return failure('Failed to prepare group label data.');
+        }
+
+        var candidateDurations = deepClone(store.curriculum.classDurations || {});
+        if (candidateDurations === null) {
+            return failure('Failed to prepare duration data.');
+        }
+
+        var candidateLocations = deepClone(store.curriculum.classLocations || {});
+        if (candidateLocations === null) {
+            return failure('Failed to prepare location data.');
+        }
+
+        var candidateSchedule = candidateSchedules[studentId][weekNum];
+
+        // ---- PHASE 5: REMOVE CLASS FROM CANDIDATES ----
+        for (var h = startHour; h < startHour + duration && h <= 23; h++) {
+            delete candidateSchedule[day][h];
+        }
 
         // Clean up empty day
-        if (schedule[day] && Object.keys(schedule[day]).length === 0) {
-            delete schedule[day];
+        if (candidateSchedule[day] && Object.keys(candidateSchedule[day]).length === 0) {
+            delete candidateSchedule[day];
         }
 
+        // Delete metadata at start hour only
+        var key = getScheduleKey(studentId, weekNum, day, startHour);
+        delete candidateInstructors[key];
+        delete candidateLabels[key];
+        delete candidateGroupLabels[key];
+        delete candidateDurations[key];
+        delete candidateLocations[key];
+
+        // ---- PHASE 6: COMMIT ----
+        store.curriculum.schedules = candidateSchedules;
+        store.curriculum.classInstructors = candidateInstructors;
+        store.curriculum.classLabels = candidateLabels;
+        store.curriculum.classGroupLabels = candidateGroupLabels;
+        store.curriculum.classDurations = candidateDurations;
+        store.curriculum.classLocations = candidateLocations;
+
         logActivity('Removed class from schedule');
-        return { success: true };
+        return success({ deleted: true });
     }
 
     function clearStudentSchedule(studentId, week) {
         // ---- PHASE 1: VALIDATE ----
         if (!isNonEmptyString(studentId)) {
-            return { success: false, message: 'Student ID is required.' };
+            return failure('Student ID is required.');
         }
 
         var weekNum = validateWeek(week);
         if (weekNum === null) {
-            return { success: false, message: 'Valid week is required (1-52).' };
+            return failure('Valid week is required (1-52).');
         }
 
-        // ---- PHASE 2: CLEAR ----
-        var data = getDataStore();
-        if (!data || !data.curriculum || !data.curriculum.schedules) {
-            return { success: true };
+        // ---- PHASE 2: GET CURRENT STATE (read-only) ----
+        var store = getScheduleStore();
+        if (!store) {
+            return failure('Data store is not available.');
         }
 
-        var schedule = data.curriculum.schedules[studentId];
-        if (!schedule || !schedule[weekNum]) {
-            return { success: true };
+        if (!store.curriculum.schedules ||
+            !store.curriculum.schedules[studentId] ||
+            !store.curriculum.schedules[studentId][weekNum]) {
+            return success({ cleared: false, message: 'No schedule found for this student and week.' });
         }
 
-        var weekSchedule = schedule[weekNum];
+        // ---- PHASE 3: BUILD CANDIDATES ----
+        var candidateSchedules = deepClone(store.curriculum.schedules);
+        if (candidateSchedules === null) {
+            return failure('Failed to prepare schedule data.');
+        }
+
+        var candidateInstructors = deepClone(store.curriculum.classInstructors || {});
+        if (candidateInstructors === null) {
+            return failure('Failed to prepare instructor data.');
+        }
+
+        var candidateLabels = deepClone(store.curriculum.classLabels || {});
+        if (candidateLabels === null) {
+            return failure('Failed to prepare label data.');
+        }
+
+        var candidateGroupLabels = deepClone(store.curriculum.classGroupLabels || {});
+        if (candidateGroupLabels === null) {
+            return failure('Failed to prepare group label data.');
+        }
+
+        var candidateDurations = deepClone(store.curriculum.classDurations || {});
+        if (candidateDurations === null) {
+            return failure('Failed to prepare duration data.');
+        }
+
+        var candidateLocations = deepClone(store.curriculum.classLocations || {});
+        if (candidateLocations === null) {
+            return failure('Failed to prepare location data.');
+        }
+
+        // ---- PHASE 4: CLEAR FROM CANDIDATES ----
         var keyPrefix = studentId + '_' + weekNum + '_';
+        var weekSchedule = candidateSchedules[studentId][weekNum];
 
         // Clear schedule entries
         for (var day in weekSchedule) {
             delete weekSchedule[day];
         }
-        delete schedule[weekNum];
+        delete candidateSchedules[studentId][weekNum];
 
         // Clear metadata
-        if (data.curriculum.classInstructors) {
-            for (var key in data.curriculum.classInstructors) {
-                if (key.indexOf(keyPrefix) === 0) {
-                    delete data.curriculum.classInstructors[key];
-                }
+        for (var key in candidateInstructors) {
+            if (key.indexOf(keyPrefix) === 0) {
+                delete candidateInstructors[key];
             }
         }
 
-        if (data.curriculum.classLabels) {
-            for (var key in data.curriculum.classLabels) {
-                if (key.indexOf(keyPrefix) === 0) {
-                    delete data.curriculum.classLabels[key];
-                }
+        for (var key in candidateLabels) {
+            if (key.indexOf(keyPrefix) === 0) {
+                delete candidateLabels[key];
             }
         }
 
-        if (data.curriculum.classGroupLabels) {
-            for (var key in data.curriculum.classGroupLabels) {
-                if (key.indexOf(keyPrefix) === 0) {
-                    delete data.curriculum.classGroupLabels[key];
-                }
+        for (var key in candidateGroupLabels) {
+            if (key.indexOf(keyPrefix) === 0) {
+                delete candidateGroupLabels[key];
             }
         }
 
-        if (data.curriculum.classDurations) {
-            for (var key in data.curriculum.classDurations) {
-                if (key.indexOf(keyPrefix) === 0) {
-                    delete data.curriculum.classDurations[key];
-                }
+        for (var key in candidateDurations) {
+            if (key.indexOf(keyPrefix) === 0) {
+                delete candidateDurations[key];
             }
         }
 
-        if (data.curriculum.classLocations) {
-            for (var key in data.curriculum.classLocations) {
-                if (key.indexOf(keyPrefix) === 0) {
-                    delete data.curriculum.classLocations[key];
-                }
+        for (var key in candidateLocations) {
+            if (key.indexOf(keyPrefix) === 0) {
+                delete candidateLocations[key];
             }
         }
+
+        // ---- PHASE 5: COMMIT ----
+        store.curriculum.schedules = candidateSchedules;
+        store.curriculum.classInstructors = candidateInstructors;
+        store.curriculum.classLabels = candidateLabels;
+        store.curriculum.classGroupLabels = candidateGroupLabels;
+        store.curriculum.classDurations = candidateDurations;
+        store.curriculum.classLocations = candidateLocations;
 
         logActivity('Cleared schedule for week ' + weekNum);
-        return { success: true };
+        return success({ cleared: true });
     }
 
     // ============================================================
-    // SCHEDULE DUPLICATION
+    // SCHEDULE DUPLICATION - TRANSACTIONAL
     // ============================================================
 
     function duplicateStudentSchedule(studentId, sourceWeek, targetWeek, overwrite) {
         // ---- PHASE 1: VALIDATE ----
         if (!isNonEmptyString(studentId)) {
-            return { success: false, message: 'Student ID is required.' };
+            return failure('Student ID is required.');
         }
 
         var sourceWeekNum = validateWeek(sourceWeek);
         if (sourceWeekNum === null) {
-            return { success: false, message: 'Valid source week is required (1-52).' };
+            return failure('Valid source week is required (1-52).');
         }
 
         var targetWeekNum = validateWeek(targetWeek);
         if (targetWeekNum === null) {
-            return { success: false, message: 'Valid target week is required (1-52).' };
+            return failure('Valid target week is required (1-52).');
         }
 
         if (sourceWeekNum === targetWeekNum) {
-            return { success: false, message: 'Source and target weeks must be different.' };
+            return failure('Source and target weeks must be different.');
         }
 
-        // ---- PHASE 2: RETRIEVE ----
-        var store = ensureScheduleStructure();
+        // ---- PHASE 2: GET CURRENT STATE (read-only) ----
+        var store = getScheduleStore();
         if (!store) {
-            return { success: false, message: 'Data store is not available.' };
+            return failure('Data store is not available.');
+        }
+
+        if (!store.curriculum.schedules) {
+            return failure('No schedules found.');
         }
 
         if (!store.curriculum.schedules[studentId]) {
-            store.curriculum.schedules[studentId] = {};
+            return failure('No schedule found for this student.');
         }
 
-        var sourceSchedule = store.curriculum.schedules[studentId][sourceWeekNum] || {};
-        var destSchedule = store.curriculum.schedules[studentId][targetWeekNum] || {};
-
-        // ---- PHASE 3: CLEAR TARGET (if overwrite) ----
-        if (overwrite) {
-            var targetKeyPrefix = studentId + '_' + targetWeekNum + '_';
-
-            for (var day in destSchedule) {
-                delete destSchedule[day];
-            }
-            delete store.curriculum.schedules[studentId][targetWeekNum];
-            store.curriculum.schedules[studentId][targetWeekNum] = {};
-
-            if (store.curriculum.classInstructors) {
-                for (var key in store.curriculum.classInstructors) {
-                    if (key.indexOf(targetKeyPrefix) === 0) {
-                        delete store.curriculum.classInstructors[key];
-                    }
-                }
-            }
-
-            if (store.curriculum.classLabels) {
-                for (var key in store.curriculum.classLabels) {
-                    if (key.indexOf(targetKeyPrefix) === 0) {
-                        delete store.curriculum.classLabels[key];
-                    }
-                }
-            }
-
-            if (store.curriculum.classGroupLabels) {
-                for (var key in store.curriculum.classGroupLabels) {
-                    if (key.indexOf(targetKeyPrefix) === 0) {
-                        delete store.curriculum.classGroupLabels[key];
-                    }
-                }
-            }
-
-            if (store.curriculum.classDurations) {
-                for (var key in store.curriculum.classDurations) {
-                    if (key.indexOf(targetKeyPrefix) === 0) {
-                        delete store.curriculum.classDurations[key];
-                    }
-                }
-            }
-
-            if (store.curriculum.classLocations) {
-                for (var key in store.curriculum.classLocations) {
-                    if (key.indexOf(targetKeyPrefix) === 0) {
-                        delete store.curriculum.classLocations[key];
-                    }
-                }
-            }
+        var sourceSchedule = store.curriculum.schedules[studentId][sourceWeekNum];
+        if (!sourceSchedule || typeof sourceSchedule !== 'object') {
+            return failure('No schedule found for source week.');
         }
 
-        // ---- PHASE 4: COPY ----
-        var copiedCount = 0;
-        var destScheduleRef = store.curriculum.schedules[studentId][targetWeekNum];
+        // ---- PHASE 3: BUILD COPY PLAN (read-only validation) ----
+        var copyPlan = [];
+        var sourceKeys = [];
 
         for (var day in sourceSchedule) {
-            if (!isObject(sourceSchedule[day])) continue;
-            if (!destScheduleRef[day]) destScheduleRef[day] = {};
+            if (!Object.prototype.hasOwnProperty.call(sourceSchedule, day)) continue;
+            var daySchedule = sourceSchedule[day];
+            if (!daySchedule || typeof daySchedule !== 'object') continue;
 
-            for (var hour in sourceSchedule[day]) {
+            for (var hour in daySchedule) {
+                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
                 var hourNum = parseInt(hour, 10);
-                var sourceKey = studentId + '_' + sourceWeekNum + '_' + day + '_' + hourNum;
+                var disciplineId = daySchedule[hour];
+
+                var sourceKey = getScheduleKey(studentId, sourceWeekNum, day, hourNum);
                 var duration = store.curriculum.classDurations && store.curriculum.classDurations[sourceKey]
                     ? store.curriculum.classDurations[sourceKey]
                     : null;
 
                 if (!duration) continue;
 
-                if (!destScheduleRef[day][hour] || overwrite) {
-                    var disciplineId = sourceSchedule[day][hour];
+                // Only process start hours
+                var classInfo = findClassStart(sourceSchedule, parseInt(day), hourNum);
+                if (!classInfo || classInfo.startHour !== hourNum) continue;
 
-                    for (var h = hourNum; h < hourNum + duration && h <= 23; h++) {
-                        destScheduleRef[day][h] = disciplineId;
-                    }
+                copyPlan.push({
+                    day: parseInt(day),
+                    hour: hourNum,
+                    disciplineId: disciplineId,
+                    duration: duration,
+                    instructorId: store.curriculum.classInstructors ? store.curriculum.classInstructors[sourceKey] : null,
+                    label: store.curriculum.classLabels ? store.curriculum.classLabels[sourceKey] : null,
+                    groupLabel: store.curriculum.classGroupLabels ? store.curriculum.classGroupLabels[sourceKey] : null,
+                    locationId: store.curriculum.classLocations ? store.curriculum.classLocations[sourceKey] : null,
+                    sourceKey: sourceKey
+                });
 
-                    copiedCount++;
+                // Mark this key as processed (to avoid duplicates)
+                sourceKeys.push(sourceKey);
+            }
+        }
 
-                    var targetKey = studentId + '_' + targetWeekNum + '_' + day + '_' + hourNum;
+        if (copyPlan.length === 0) {
+            return success({ copied: false, count: 0, message: 'No classes to copy.' });
+        }
 
-                    if (store.curriculum.classInstructors && store.curriculum.classInstructors[sourceKey]) {
-                        store.curriculum.classInstructors[targetKey] = store.curriculum.classInstructors[sourceKey];
-                    }
+        // ---- PHASE 4: BUILD CANDIDATES ----
+        var candidateSchedules = deepClone(store.curriculum.schedules);
+        if (candidateSchedules === null) {
+            return failure('Failed to prepare schedule data.');
+        }
 
-                    if (store.curriculum.classLabels && store.curriculum.classLabels[sourceKey]) {
-                        store.curriculum.classLabels[targetKey] = store.curriculum.classLabels[sourceKey];
-                    }
+        var candidateInstructors = deepClone(store.curriculum.classInstructors || {});
+        if (candidateInstructors === null) {
+            return failure('Failed to prepare instructor data.');
+        }
 
-                    if (store.curriculum.classGroupLabels && store.curriculum.classGroupLabels[sourceKey]) {
-                        store.curriculum.classGroupLabels[targetKey] = store.curriculum.classGroupLabels[sourceKey];
-                    }
+        var candidateLabels = deepClone(store.curriculum.classLabels || {});
+        if (candidateLabels === null) {
+            return failure('Failed to prepare label data.');
+        }
 
-                    if (duration) {
-                        if (!store.curriculum.classDurations) store.curriculum.classDurations = {};
-                        store.curriculum.classDurations[targetKey] = duration;
-                    }
+        var candidateGroupLabels = deepClone(store.curriculum.classGroupLabels || {});
+        if (candidateGroupLabels === null) {
+            return failure('Failed to prepare group label data.');
+        }
 
-                    if (store.curriculum.classLocations && store.curriculum.classLocations[sourceKey]) {
-                        store.curriculum.classLocations[targetKey] = store.curriculum.classLocations[sourceKey];
-                    }
+        var candidateDurations = deepClone(store.curriculum.classDurations || {});
+        if (candidateDurations === null) {
+            return failure('Failed to prepare duration data.');
+        }
+
+        var candidateLocations = deepClone(store.curriculum.classLocations || {});
+        if (candidateLocations === null) {
+            return failure('Failed to prepare location data.');
+        }
+
+        var targetKeyPrefix = studentId + '_' + targetWeekNum + '_';
+
+        // ---- PHASE 5: CLEAR TARGET (if overwrite) ----
+        if (overwrite) {
+            // Clear schedule
+            if (candidateSchedules[studentId] && candidateSchedules[studentId][targetWeekNum]) {
+                delete candidateSchedules[studentId][targetWeekNum];
+            }
+
+            // Clear metadata
+            for (var key in candidateInstructors) {
+                if (key.indexOf(targetKeyPrefix) === 0) {
+                    delete candidateInstructors[key];
+                }
+            }
+
+            for (var key in candidateLabels) {
+                if (key.indexOf(targetKeyPrefix) === 0) {
+                    delete candidateLabels[key];
+                }
+            }
+
+            for (var key in candidateGroupLabels) {
+                if (key.indexOf(targetKeyPrefix) === 0) {
+                    delete candidateGroupLabels[key];
+                }
+            }
+
+            for (var key in candidateDurations) {
+                if (key.indexOf(targetKeyPrefix) === 0) {
+                    delete candidateDurations[key];
+                }
+            }
+
+            for (var key in candidateLocations) {
+                if (key.indexOf(targetKeyPrefix) === 0) {
+                    delete candidateLocations[key];
                 }
             }
         }
+
+        // ---- PHASE 6: APPLY COPY PLAN TO CANDIDATES ----
+        if (!candidateSchedules[studentId]) {
+            candidateSchedules[studentId] = {};
+        }
+
+        if (!candidateSchedules[studentId][targetWeekNum]) {
+            candidateSchedules[studentId][targetWeekNum] = {};
+        }
+
+        var targetSchedule = candidateSchedules[studentId][targetWeekNum];
+        var copiedCount = 0;
+
+        copyPlan.forEach(function(item) {
+            var day = item.day;
+            var hour = item.hour;
+            var duration = item.duration;
+            var disciplineId = item.disciplineId;
+
+            // Check for conflicts
+            if (!overwrite) {
+                for (var h = hour; h < hour + duration && h <= 23; h++) {
+                    if (targetSchedule[day] && targetSchedule[day][h]) {
+                        return; // Skip this class
+                    }
+                }
+            }
+
+            // Copy schedule
+            if (!targetSchedule[day]) targetSchedule[day] = {};
+
+            for (var h = hour; h < hour + duration && h <= 23; h++) {
+                targetSchedule[day][h] = disciplineId;
+            }
+
+            // Copy metadata at start hour
+            var targetKey = getScheduleKey(studentId, targetWeekNum, day, hour);
+
+            if (item.instructorId) {
+                candidateInstructors[targetKey] = item.instructorId;
+            }
+
+            if (item.label) {
+                candidateLabels[targetKey] = item.label;
+            }
+
+            if (item.groupLabel) {
+                candidateGroupLabels[targetKey] = item.groupLabel;
+            }
+
+            candidateDurations[targetKey] = duration;
+
+            if (item.locationId) {
+                candidateLocations[targetKey] = item.locationId;
+            }
+
+            copiedCount++;
+        });
 
         // Copy rest days
-        if (store.curriculum.restDays && store.curriculum.restDays[studentId]) {
-            var sourceRestDays = store.curriculum.restDays[studentId][sourceWeekNum];
-            if (sourceRestDays && sourceRestDays.length > 0) {
-                if (!store.curriculum.restDays[studentId]) {
-                    store.curriculum.restDays[studentId] = {};
-                }
-                store.curriculum.restDays[studentId][targetWeekNum] = sourceRestDays.slice();
+        var restDays = getStudentRestDays(studentId, sourceWeekNum);
+        if (restDays && restDays.length > 0) {
+            if (!candidateSchedules.restDays) {
+                candidateSchedules.restDays = {};
             }
+            if (!candidateSchedules.restDays[studentId]) {
+                candidateSchedules.restDays[studentId] = {};
+            }
+            candidateSchedules.restDays[studentId][targetWeekNum] = restDays.slice();
         }
 
-        logActivity('Duplicated schedule from week ' + sourceWeekNum + ' to ' + targetWeekNum);
-        return { success: true, copiedCount: copiedCount };
+        // ---- PHASE 7: COMMIT ----
+        store.curriculum.schedules = candidateSchedules;
+        store.curriculum.classInstructors = candidateInstructors;
+        store.curriculum.classLabels = candidateLabels;
+        store.curriculum.classGroupLabels = candidateGroupLabels;
+        store.curriculum.classDurations = candidateDurations;
+        store.curriculum.classLocations = candidateLocations;
+
+        logActivity('Duplicated schedule from week ' + sourceWeekNum + ' to ' + targetWeekNum + ' (' + copiedCount + ' classes)');
+        return success({ copied: true, count: copiedCount });
     }
 
     // ============================================================
@@ -700,57 +972,102 @@
     function setStudentRestDays(studentId, week, days) {
         // ---- PHASE 1: VALIDATE ----
         if (!isNonEmptyString(studentId)) {
-            return { success: false, message: 'Student ID is required.' };
+            return failure('Student ID is required.');
         }
 
         var weekNum = validateWeek(week);
         if (weekNum === null) {
-            return { success: false, message: 'Valid week is required (1-52).' };
+            return failure('Valid week is required (1-52).');
         }
 
         if (!Array.isArray(days)) {
-            return { success: false, message: 'Rest days must be an array.' };
+            return failure('Rest days must be an array.');
         }
 
-        // ---- PHASE 2: APPLY ----
-        var store = ensureScheduleStructure();
+        // ---- PHASE 2: GET CURRENT STATE (read-only) ----
+        var store = getScheduleStore();
         if (!store) {
-            return { success: false, message: 'Data store is not available.' };
+            return failure('Data store is not available.');
         }
 
-        if (!store.curriculum.restDays[studentId]) {
-            store.curriculum.restDays[studentId] = {};
+        // ---- PHASE 3: BUILD CANDIDATES ----
+        var candidateRestDays = deepClone(store.curriculum.restDays || {});
+        if (candidateRestDays === null) {
+            return failure('Failed to prepare rest day data.');
+        }
+
+        var candidateSchedules = deepClone(store.curriculum.schedules || {});
+        if (candidateSchedules === null) {
+            return failure('Failed to prepare schedule data.');
+        }
+
+        var candidateInstructors = deepClone(store.curriculum.classInstructors || {});
+        if (candidateInstructors === null) {
+            return failure('Failed to prepare instructor data.');
+        }
+
+        var candidateLabels = deepClone(store.curriculum.classLabels || {});
+        if (candidateLabels === null) {
+            return failure('Failed to prepare label data.');
+        }
+
+        var candidateGroupLabels = deepClone(store.curriculum.classGroupLabels || {});
+        if (candidateGroupLabels === null) {
+            return failure('Failed to prepare group label data.');
+        }
+
+        var candidateDurations = deepClone(store.curriculum.classDurations || {});
+        if (candidateDurations === null) {
+            return failure('Failed to prepare duration data.');
+        }
+
+        var candidateLocations = deepClone(store.curriculum.classLocations || {});
+        if (candidateLocations === null) {
+            return failure('Failed to prepare location data.');
+        }
+
+        // ---- PHASE 4: APPLY TO CANDIDATES ----
+        if (!candidateRestDays[studentId]) {
+            candidateRestDays[studentId] = {};
         }
 
         var validDays = days.filter(function(d) {
             return isSafeInteger(d) && d >= 1 && d <= 7;
         });
 
-        store.curriculum.restDays[studentId][weekNum] = validDays;
+        candidateRestDays[studentId][weekNum] = validDays;
 
         // Remove classes on rest days
-        if (store.curriculum.schedules && store.curriculum.schedules[studentId] &&
-            store.curriculum.schedules[studentId][weekNum]) {
-            var schedule = store.curriculum.schedules[studentId][weekNum];
+        if (candidateSchedules[studentId] && candidateSchedules[studentId][weekNum]) {
+            var schedule = candidateSchedules[studentId][weekNum];
             var keyPrefix = studentId + '_' + weekNum + '_';
 
             validDays.forEach(function(day) {
                 if (schedule[day]) {
                     for (var hour in schedule[day]) {
                         var key = keyPrefix + day + '_' + hour;
-                        delete store.curriculum.classInstructors[key];
-                        delete store.curriculum.classLabels[key];
-                        delete store.curriculum.classGroupLabels[key];
-                        delete store.curriculum.classDurations[key];
-                        delete store.curriculum.classLocations[key];
+                        delete candidateInstructors[key];
+                        delete candidateLabels[key];
+                        delete candidateGroupLabels[key];
+                        delete candidateDurations[key];
+                        delete candidateLocations[key];
                     }
                     delete schedule[day];
                 }
             });
         }
 
+        // ---- PHASE 5: COMMIT ----
+        store.curriculum.restDays = candidateRestDays;
+        store.curriculum.schedules = candidateSchedules;
+        store.curriculum.classInstructors = candidateInstructors;
+        store.curriculum.classLabels = candidateLabels;
+        store.curriculum.classGroupLabels = candidateGroupLabels;
+        store.curriculum.classDurations = candidateDurations;
+        store.curriculum.classLocations = candidateLocations;
+
         logActivity('Set rest days for student week ' + weekNum);
-        return { success: true };
+        return success({ days: validDays });
     }
 
     // ============================================================
@@ -764,9 +1081,18 @@
         }
 
         var weekNum = validation.weekNum;
-        var key = getScheduleKey(studentId, weekNum, day, hour);
 
-        var data = getDataStore();
+        // Find the class start hour
+        var schedule = getStudentSchedule(studentId, weekNum);
+        var classInfo = findClassStart(schedule, day, hour);
+        if (!classInfo) {
+            return null;
+        }
+
+        var startHour = classInfo.startHour;
+        var key = getScheduleKey(studentId, weekNum, day, startHour);
+
+        var data = getScheduleStore();
         if (!data || !data.curriculum) {
             return null;
         }
@@ -775,7 +1101,7 @@
             instructorId: data.curriculum.classInstructors ? data.curriculum.classInstructors[key] || null : null,
             label: data.curriculum.classLabels ? data.curriculum.classLabels[key] || null : null,
             groupLabel: data.curriculum.classGroupLabels ? data.curriculum.classGroupLabels[key] || null : null,
-            duration: data.curriculum.classDurations ? data.curriculum.classDurations[key] || 1 : 1,
+            duration: data.curriculum.classDurations ? data.curriculum.classDurations[key] || classInfo.duration : classInfo.duration,
             locationId: data.curriculum.classLocations ? data.curriculum.classLocations[key] || null : null
         };
     }
@@ -806,126 +1132,228 @@
     }
 
     function setClassInstructor(studentId, week, day, hour, instructorId) {
+        // ---- PHASE 1: VALIDATE ----
         var validation = validateScheduleSlot(studentId, week, day, hour);
         if (!validation.valid) {
-            return { success: false, message: validation.message };
+            return failure(validation.message);
         }
 
         var weekNum = validation.weekNum;
-        var key = getScheduleKey(studentId, weekNum, day, hour);
-
-        var store = ensureScheduleStructure();
-        if (!store) {
-            return { success: false, message: 'Data store is not available.' };
-        }
 
         if (instructorId && !getCharacterById(instructorId)) {
-            return { success: false, message: 'Instructor not found.' };
+            return failure('Instructor not found.');
         }
 
+        // ---- PHASE 2: GET CURRENT STATE AND VALIDATE CLASS EXISTS ----
+        var schedule = getStudentSchedule(studentId, weekNum);
+        var classInfo = findClassStart(schedule, day, hour);
+        if (!classInfo) {
+            return failure('No class exists at this time.');
+        }
+
+        var startHour = classInfo.startHour;
+        var key = getScheduleKey(studentId, weekNum, day, startHour);
+
+        // ---- PHASE 3: BUILD CANDIDATE ----
+        var store = getScheduleStore();
+        if (!store) {
+            return failure('Data store is not available.');
+        }
+
+        var candidateInstructors = deepClone(store.curriculum.classInstructors || {});
+        if (candidateInstructors === null) {
+            return failure('Failed to prepare instructor data.');
+        }
+
+        // ---- PHASE 4: APPLY TO CANDIDATE ----
         if (instructorId) {
-            store.curriculum.classInstructors[key] = instructorId;
+            candidateInstructors[key] = instructorId;
         } else {
-            delete store.curriculum.classInstructors[key];
+            delete candidateInstructors[key];
         }
 
-        return { success: true };
+        // ---- PHASE 5: COMMIT ----
+        store.curriculum.classInstructors = candidateInstructors;
+
+        return success({ instructorId: instructorId });
     }
 
     function setClassLabel(studentId, week, day, hour, label) {
+        // ---- PHASE 1: VALIDATE ----
         var validation = validateScheduleSlot(studentId, week, day, hour);
         if (!validation.valid) {
-            return { success: false, message: validation.message };
+            return failure(validation.message);
         }
 
         var weekNum = validation.weekNum;
-        var key = getScheduleKey(studentId, weekNum, day, hour);
 
-        var store = ensureScheduleStructure();
+        // ---- PHASE 2: GET CURRENT STATE AND VALIDATE CLASS EXISTS ----
+        var schedule = getStudentSchedule(studentId, weekNum);
+        var classInfo = findClassStart(schedule, day, hour);
+        if (!classInfo) {
+            return failure('No class exists at this time.');
+        }
+
+        var startHour = classInfo.startHour;
+        var key = getScheduleKey(studentId, weekNum, day, startHour);
+
+        // ---- PHASE 3: BUILD CANDIDATE ----
+        var store = getScheduleStore();
         if (!store) {
-            return { success: false, message: 'Data store is not available.' };
+            return failure('Data store is not available.');
         }
 
+        var candidateLabels = deepClone(store.curriculum.classLabels || {});
+        if (candidateLabels === null) {
+            return failure('Failed to prepare label data.');
+        }
+
+        // ---- PHASE 4: APPLY TO CANDIDATE ----
         if (label !== undefined && label !== null && String(label).trim() !== '') {
-            store.curriculum.classLabels[key] = String(label).trim();
+            candidateLabels[key] = String(label).trim();
         } else {
-            delete store.curriculum.classLabels[key];
+            delete candidateLabels[key];
         }
 
-        return { success: true };
+        // ---- PHASE 5: COMMIT ----
+        store.curriculum.classLabels = candidateLabels;
+
+        return success({ label: label });
     }
 
     function setClassGroupLabel(studentId, week, day, hour, groupLabel) {
+        // ---- PHASE 1: VALIDATE ----
         var validation = validateScheduleSlot(studentId, week, day, hour);
         if (!validation.valid) {
-            return { success: false, message: validation.message };
+            return failure(validation.message);
         }
 
         var weekNum = validation.weekNum;
-        var key = getScheduleKey(studentId, weekNum, day, hour);
 
-        var store = ensureScheduleStructure();
+        // ---- PHASE 2: GET CURRENT STATE AND VALIDATE CLASS EXISTS ----
+        var schedule = getStudentSchedule(studentId, weekNum);
+        var classInfo = findClassStart(schedule, day, hour);
+        if (!classInfo) {
+            return failure('No class exists at this time.');
+        }
+
+        var startHour = classInfo.startHour;
+        var key = getScheduleKey(studentId, weekNum, day, startHour);
+
+        // ---- PHASE 3: BUILD CANDIDATE ----
+        var store = getScheduleStore();
         if (!store) {
-            return { success: false, message: 'Data store is not available.' };
+            return failure('Data store is not available.');
         }
 
+        var candidateGroupLabels = deepClone(store.curriculum.classGroupLabels || {});
+        if (candidateGroupLabels === null) {
+            return failure('Failed to prepare group label data.');
+        }
+
+        // ---- PHASE 4: APPLY TO CANDIDATE ----
         if (groupLabel !== undefined && groupLabel !== null && String(groupLabel).trim() !== '') {
-            store.curriculum.classGroupLabels[key] = String(groupLabel).trim();
+            candidateGroupLabels[key] = String(groupLabel).trim();
         } else {
-            delete store.curriculum.classGroupLabels[key];
+            delete candidateGroupLabels[key];
         }
 
-        return { success: true };
+        // ---- PHASE 5: COMMIT ----
+        store.curriculum.classGroupLabels = candidateGroupLabels;
+
+        return success({ groupLabel: groupLabel });
     }
 
     function setClassDuration(studentId, week, day, hour, duration) {
+        // ---- PHASE 1: VALIDATE ----
         var validation = validateScheduleSlot(studentId, week, day, hour);
         if (!validation.valid) {
-            return { success: false, message: validation.message };
+            return failure(validation.message);
         }
 
         var weekNum = validation.weekNum;
-        var key = getScheduleKey(studentId, weekNum, day, hour);
-
-        var store = ensureScheduleStructure();
-        if (!store) {
-            return { success: false, message: 'Data store is not available.' };
-        }
 
         var durationNum = validateDuration(duration);
         if (durationNum === null) {
-            return { success: false, message: 'Duration must be between 1 and 4 hours.' };
+            return failure('Duration must be between 1 and 4 hours.');
         }
 
-        store.curriculum.classDurations[key] = durationNum;
-        return { success: true };
+        // ---- PHASE 2: GET CURRENT STATE AND VALIDATE CLASS EXISTS ----
+        var schedule = getStudentSchedule(studentId, weekNum);
+        var classInfo = findClassStart(schedule, day, hour);
+        if (!classInfo) {
+            return failure('No class exists at this time.');
+        }
+
+        var startHour = classInfo.startHour;
+        var key = getScheduleKey(studentId, weekNum, day, startHour);
+
+        // ---- PHASE 3: BUILD CANDIDATE ----
+        var store = getScheduleStore();
+        if (!store) {
+            return failure('Data store is not available.');
+        }
+
+        var candidateDurations = deepClone(store.curriculum.classDurations || {});
+        if (candidateDurations === null) {
+            return failure('Failed to prepare duration data.');
+        }
+
+        // ---- PHASE 4: APPLY TO CANDIDATE ----
+        candidateDurations[key] = durationNum;
+
+        // ---- PHASE 5: COMMIT ----
+        store.curriculum.classDurations = candidateDurations;
+
+        logActivity('Set duration for class: ' + durationNum + 'h');
+        return success({ duration: durationNum });
     }
 
     function setClassLocation(studentId, week, day, hour, locationId) {
+        // ---- PHASE 1: VALIDATE ----
         var validation = validateScheduleSlot(studentId, week, day, hour);
         if (!validation.valid) {
-            return { success: false, message: validation.message };
+            return failure(validation.message);
         }
 
         var weekNum = validation.weekNum;
-        var key = getScheduleKey(studentId, weekNum, day, hour);
-
-        var store = ensureScheduleStructure();
-        if (!store) {
-            return { success: false, message: 'Data store is not available.' };
-        }
 
         if (locationId && !isNonEmptyString(locationId)) {
-            return { success: false, message: 'Valid location ID is required.' };
+            return failure('Valid location ID is required.');
         }
 
+        // ---- PHASE 2: GET CURRENT STATE AND VALIDATE CLASS EXISTS ----
+        var schedule = getStudentSchedule(studentId, weekNum);
+        var classInfo = findClassStart(schedule, day, hour);
+        if (!classInfo) {
+            return failure('No class exists at this time.');
+        }
+
+        var startHour = classInfo.startHour;
+        var key = getScheduleKey(studentId, weekNum, day, startHour);
+
+        // ---- PHASE 3: BUILD CANDIDATE ----
+        var store = getScheduleStore();
+        if (!store) {
+            return failure('Data store is not available.');
+        }
+
+        var candidateLocations = deepClone(store.curriculum.classLocations || {});
+        if (candidateLocations === null) {
+            return failure('Failed to prepare location data.');
+        }
+
+        // ---- PHASE 4: APPLY TO CANDIDATE ----
         if (locationId) {
-            store.curriculum.classLocations[key] = locationId;
+            candidateLocations[key] = locationId;
         } else {
-            delete store.curriculum.classLocations[key];
+            delete candidateLocations[key];
         }
 
-        return { success: true };
+        // ---- PHASE 5: COMMIT ----
+        store.curriculum.classLocations = candidateLocations;
+
+        return success({ locationId: locationId });
     }
 
     // ============================================================
@@ -967,7 +1395,8 @@
         validateWeek: validateWeek,
         validateDay: validateDay,
         validateHour: validateHour,
-        validateDuration: validateDuration
+        validateDuration: validateDuration,
+        findClassStart: findClassStart
     };
 
 })();

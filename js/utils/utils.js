@@ -110,32 +110,6 @@
     }
 
     // ============================================================
-    // DEEP CLONE
-    // ============================================================
-
-    function deepClone(value) {
-        if (value === null || typeof value !== 'object') {
-            return value;
-        }
-
-        if (typeof structuredClone === 'function') {
-            try {
-                return structuredClone(value);
-            } catch (e) {
-                console.error('CoreUtils: structuredClone failed:', e);
-                return null;
-            }
-        }
-
-        try {
-            return JSON.parse(JSON.stringify(value));
-        } catch (e) {
-            console.error('CoreUtils: JSON clone failed:', e);
-            return null;
-        }
-    }
-
-    // ============================================================
     // OPERATIONAL TEAM PREDICATES
     // ============================================================
 
@@ -855,9 +829,6 @@
         // ID generation
         generateId: generateId,
 
-        // Deep clone
-        deepClone: deepClone,
-
         // Team predicates
         isTeamOperational: isTeamOperational,
         isTeamActiveCompat: isTeamActiveCompat,
@@ -938,9 +909,6 @@
 
     // ID generation
     window.generateId = generateId;
-
-    // Deep clone
-    window.deepClone = deepClone;
 
     // Team predicates
     window.isTeamOperational = isTeamOperational;

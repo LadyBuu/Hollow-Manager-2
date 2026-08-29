@@ -219,6 +219,35 @@
     }
 
     /**
+     * Normalise an ID to a string. Returns null if invalid.
+     */
+    function normaliseId(value) {
+        if (value === undefined || value === null) {
+            return null;
+        }
+        var str = String(value).trim();
+        return str !== '' ? str : null;
+    }
+
+    /**
+     * Normalise an array of IDs to strings.
+     * Filters out invalid entries.
+     */
+    function normaliseIdArray(arr) {
+        if (!Array.isArray(arr)) {
+            return [];
+        }
+        var result = [];
+        for (var i = 0; i < arr.length; i++) {
+            var id = normaliseId(arr[i]);
+            if (id !== null && result.indexOf(id) === -1) {
+                result.push(id);
+            }
+        }
+        return result;
+    }
+
+    /**
      * Get class metadata for a specific hour.
      * Returns null if the hour is not a class start (no duration metadata).
      * Validates duration is between 1 and 4.
@@ -295,6 +324,38 @@
     }
 
     /**
+     * Clear metadata for a given prefix.
+     * Used for bulk cleanup operations.
+     */
+    function clearMetadataForPrefix(metadataCandidates, prefix) {
+        for (var i = 0; i < METADATA_KEYS.length; i++) {
+            var storeKey = METADATA_KEYS[i];
+            var store = metadataCandidates[storeKey];
+            if (!store) continue;
+
+            for (var metadataKey in store) {
+                if (Object.prototype.hasOwnProperty.call(store, metadataKey) &&
+                    metadataKey.indexOf(prefix) === 0) {
+                    delete store[metadataKey];
+                }
+            }
+        }
+    }
+
+    /**
+     * Delete all metadata for a specific class key.
+     */
+    function deleteClassMetadata(metadataCandidates, key) {
+        for (var i = 0; i < METADATA_KEYS.length; i++) {
+            var storeKey = METADATA_KEYS[i];
+            var store = metadataCandidates[storeKey];
+            if (store && store[key] !== undefined) {
+                delete store[key];
+            }
+        }
+    }
+
+    /**
      * Validate curriculum structure.
      */
     function validateCurriculumStructure(data) {
@@ -361,13 +422,18 @@
         // First, check if this hour itself has metadata (is a start)
         var meta = getClassMetadata(metadata, studentId, week, day, hour);
         if (meta) {
-            return {
-                startHour: hour,
-                duration: meta.duration,
-                disciplineId: disciplineId,
-                key: meta.key,
-                instructorId: meta.instructorId
-            };
+            // Validate that the duration matches the actual occupied cells
+            var expectedDuration = validateOccupiedDuration(schedule, day, hour, disciplineId);
+            if (expectedDuration !== null && meta.duration === expectedDuration) {
+                return {
+                    startHour: hour,
+                    duration: meta.duration,
+                    disciplineId: disciplineId,
+                    key: meta.key,
+                    instructorId: meta.instructorId
+                };
+            }
+            // If durations don't match, the data is inconsistent - fall through to search
         }
 
         // Search backwards for a metadata-defined class start
@@ -378,15 +444,19 @@
 
             var candidateMeta = getClassMetadata(metadata, studentId, week, day, candidate);
             if (candidateMeta) {
-                // Check if the class covers this hour
-                if (hour < candidate + candidateMeta.duration) {
-                    return {
-                        startHour: candidate,
-                        duration: candidateMeta.duration,
-                        disciplineId: disciplineId,
-                        key: candidateMeta.key,
-                        instructorId: candidateMeta.instructorId
-                    };
+                // Validate that the duration matches the actual occupied cells
+                var expectedDuration = validateOccupiedDuration(schedule, day, candidate, disciplineId);
+                if (expectedDuration !== null && candidateMeta.duration === expectedDuration) {
+                    // Check if the class covers this hour
+                    if (hour < candidate + candidateMeta.duration) {
+                        return {
+                            startHour: candidate,
+                            duration: candidateMeta.duration,
+                            disciplineId: disciplineId,
+                            key: candidateMeta.key,
+                            instructorId: candidateMeta.instructorId
+                        };
+                    }
                 }
                 break;
             }
@@ -396,6 +466,33 @@
         return null;
     }
 
+    /**
+     * Validate that occupied hours match the expected duration.
+     * Returns the actual duration if consistent, null otherwise.
+     */
+    function validateOccupiedDuration(schedule, day, startHour, disciplineId) {
+        var duration = 0;
+        var maxHour = 23;
+
+        for (var h = startHour; h <= maxHour; h++) {
+            if (String(schedule[day][h]) === String(disciplineId)) {
+                duration++;
+            } else {
+                break;
+            }
+        }
+
+        // Check that the class is contiguous - no gaps
+        for (var h = startHour + duration; h <= Math.min(startHour + duration + 4, maxHour); h++) {
+            if (String(schedule[day][h]) === String(disciplineId)) {
+                // There's a gap - this is invalid
+                return null;
+            }
+        }
+
+        return duration;
+    }
+
     // ============================================================
     // DURATION-AWARE OVERLAP HELPERS
     // ============================================================
@@ -403,6 +500,7 @@
     /**
      * Check if a new duration-based entry overlaps with existing entries.
      * Entries are stored as { hour: { duration: N } }.
+     * Treats malformed existing entries as OCCUPIED to prevent overwriting garbage.
      */
     function hasDurationOverlap(entries, day, hour, duration) {
         if (!entries || !entries[day]) {
@@ -423,7 +521,17 @@
 
             var entry = dayEntries[existingHour];
             var existingDuration = validateDuration(entry && entry.duration);
+
+            // If the existing entry is malformed, treat it as occupied
+            // This prevents overwriting corrupted data
             if (existingDuration === null) {
+                // Check if the malformed entry overlaps in hour space
+                var existingEnd = existingStart + 1;
+                var newEnd = hour + duration;
+
+                if (hour < existingEnd && existingStart < newEnd) {
+                    return true;
+                }
                 continue;
             }
 
@@ -531,20 +639,8 @@
             return {};
         }
 
-        // Clone to prevent external mutation
-        var weekSchedule = studentSchedule[weekNum];
-        var result = {};
-        for (var day in weekSchedule) {
-            if (!Object.prototype.hasOwnProperty.call(weekSchedule, day)) continue;
-            var daySchedule = weekSchedule[day];
-            if (!isObject(daySchedule)) continue;
-            result[day] = {};
-            for (var hour in daySchedule) {
-                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
-                result[day][hour] = daySchedule[hour];
-            }
-        }
-        return result;
+        // Deep clone to prevent external mutation
+        return deepClone(studentSchedule[weekNum]) || {};
     }
 
     /**
@@ -561,11 +657,12 @@
 
         var validated = slotValidation.data;
 
-        if (!isNonEmptyString(disciplineId)) {
+        var normalisedDisciplineId = normaliseId(disciplineId);
+        if (normalisedDisciplineId === null) {
             return failure('Discipline ID is required.');
         }
 
-        var discipline = getDiscipline(disciplineId);
+        var discipline = getDiscipline(normalisedDisciplineId);
         if (!discipline) {
             return failure('Discipline not found.');
         }
@@ -579,7 +676,8 @@
             return failure('Class duration extends beyond the end of the day.');
         }
 
-        if (instructorId && !getCharacterById(instructorId)) {
+        var normalisedInstructorId = normaliseId(instructorId);
+        if (normalisedInstructorId && !getCharacterById(normalisedInstructorId)) {
             return failure('Instructor not found.');
         }
 
@@ -652,7 +750,7 @@
             }
         }
 
-        var usedCount = usedHours[disciplineId] || 0;
+        var usedCount = usedHours[normalisedDisciplineId] || 0;
         var maxHours = discipline.weeklyHours ? Number(discipline.weeklyHours) : 1;
         if (usedCount + durationNum > maxHours) {
             return failure('This would exceed the weekly hour limit (' + maxHours + 'h) for this discipline.');
@@ -664,16 +762,14 @@
         var key = getScheduleKey(validated.studentId, validated.week, day, hour);
 
         for (var h = hour; h < hour + durationNum && h <= 23; h++) {
-            weekSchedule[day][h] = disciplineId;
+            weekSchedule[day][h] = normalisedDisciplineId;
         }
 
         // Set metadata - clean stale metadata first
-        delete metadataCandidates.classLabels[key];
-        delete metadataCandidates.classGroupLabels[key];
-        delete metadataCandidates.classLocations[key];
+        deleteClassMetadata(metadataCandidates, key);
 
-        if (instructorId) {
-            metadataCandidates.classInstructors[key] = instructorId;
+        if (normalisedInstructorId) {
+            metadataCandidates.classInstructors[key] = normalisedInstructorId;
         } else {
             delete metadataCandidates.classInstructors[key];
         }
@@ -781,11 +877,7 @@
 
         // Delete metadata from start hour only
         var key = getScheduleKey(validated.studentId, validated.week, day, startHour);
-        delete metadataCandidates.classInstructors[key];
-        delete metadataCandidates.classLabels[key];
-        delete metadataCandidates.classGroupLabels[key];
-        delete metadataCandidates.classDurations[key];
-        delete metadataCandidates.classLocations[key];
+        deleteClassMetadata(metadataCandidates, key);
 
         // Clean up empty day
         if (weekScheduleClone[day] && Object.keys(weekScheduleClone[day]).length === 0) {
@@ -805,7 +897,7 @@
      * Duplicate a student's schedule from one week to another.
      * Candidate-based: validates, clones, modifies, commits.
      * Checks entire duration before copying.
-     * Handles rest days: only copies rest days if target day is empty.
+     * Handles rest days: copies each rest day individually if the target day is empty.
      */
     function duplicateStudentSchedule(studentId, sourceWeek, targetWeek, overwrite) {
         // ---- PHASE 1: VALIDATE ----
@@ -873,31 +965,7 @@
             }
 
             // Clear metadata
-            for (var key in metadataCandidates.classInstructors) {
-                if (key.indexOf(targetKeyPrefix) === 0) {
-                    delete metadataCandidates.classInstructors[key];
-                }
-            }
-            for (var key in metadataCandidates.classLabels) {
-                if (key.indexOf(targetKeyPrefix) === 0) {
-                    delete metadataCandidates.classLabels[key];
-                }
-            }
-            for (var key in metadataCandidates.classGroupLabels) {
-                if (key.indexOf(targetKeyPrefix) === 0) {
-                    delete metadataCandidates.classGroupLabels[key];
-                }
-            }
-            for (var key in metadataCandidates.classDurations) {
-                if (key.indexOf(targetKeyPrefix) === 0) {
-                    delete metadataCandidates.classDurations[key];
-                }
-            }
-            for (var key in metadataCandidates.classLocations) {
-                if (key.indexOf(targetKeyPrefix) === 0) {
-                    delete metadataCandidates.classLocations[key];
-                }
-            }
+            clearMetadataForPrefix(metadataCandidates, targetKeyPrefix);
 
             // Clear rest days
             if (candidateRestDays[studentId]) {
@@ -913,6 +981,7 @@
 
         // ---- PHASE 5: COPY WITH DURATION-AWARE CONFLICT CHECK ----
         var copiedCount = 0;
+        var skippedCount = 0;
 
         for (var day in sourceSchedule) {
             if (!isObject(sourceSchedule[day])) continue;
@@ -924,10 +993,21 @@
                 // Check if this hour has metadata (is a class start)
                 var duration = getValidClassDuration(metadataCandidates, sourceKey);
                 if (duration === null) {
+                    // This is a data integrity issue - skip this class rather than silently dropping it
+                    // but we should at least log it
+                    skippedCount++;
                     continue;
                 }
 
                 var disciplineId = String(sourceSchedule[day][hour]);
+
+                // Validate the source class integrity
+                var actualDuration = validateOccupiedDuration(sourceSchedule, day, hourNum, disciplineId);
+                if (actualDuration === null || actualDuration !== duration) {
+                    // Source data is inconsistent - skip to prevent corruption
+                    skippedCount++;
+                    continue;
+                }
 
                 // Check if the entire duration can be copied
                 var canCopy = true;
@@ -973,35 +1053,50 @@
             }
         }
 
-        // ---- PHASE 6: COPY REST DAYS (only if target day is empty) ----
+        // ---- PHASE 6: COPY REST DAYS (individual day-by-day) ----
         var sourceRestDays = candidateRestDays[studentId] && candidateRestDays[studentId][sourceWeekNum]
             ? candidateRestDays[studentId][sourceWeekNum]
             : [];
 
+        var copiedRestDays = [];
+
         if (sourceRestDays.length > 0) {
-            var targetRestDays = candidateRestDays[studentId] && candidateRestDays[studentId][targetWeekNum]
-                ? candidateRestDays[studentId][targetWeekNum]
-                : [];
+            for (var i = 0; i < sourceRestDays.length; i++) {
+                var day = sourceRestDays[i];
 
-            // Only copy rest days that are not already occupied by classes
-            var canCopyRestDays = true;
-
-            if (!overwrite && targetScheduleRef) {
-                for (var i = 0; i < sourceRestDays.length; i++) {
-                    var day = sourceRestDays[i];
+                if (overwrite) {
+                    copiedRestDays.push(day);
+                } else {
                     // Check if this day has any classes
-                    if (targetScheduleRef[day] && Object.keys(targetScheduleRef[day]).length > 0) {
-                        canCopyRestDays = false;
-                        break;
+                    var hasClasses = targetScheduleRef[day] && Object.keys(targetScheduleRef[day]).length > 0;
+                    if (!hasClasses) {
+                        copiedRestDays.push(day);
                     }
                 }
             }
 
-            if (canCopyRestDays) {
-                if (!candidateRestDays[studentId]) {
-                    candidateRestDays[studentId] = {};
+            if (copiedRestDays.length > 0) {
+                // Preserve existing target rest days if not overwriting
+                var targetRestDays = [];
+                if (!overwrite && candidateRestDays[studentId] && candidateRestDays[studentId][targetWeekNum]) {
+                    targetRestDays = candidateRestDays[studentId][targetWeekNum];
                 }
-                candidateRestDays[studentId][targetWeekNum] = sourceRestDays.slice();
+
+                // Merge: add copied rest days that aren't already present
+                var allRestDays = targetRestDays.slice();
+                for (var i = 0; i < copiedRestDays.length; i++) {
+                    var day = copiedRestDays[i];
+                    if (allRestDays.indexOf(day) === -1) {
+                        allRestDays.push(day);
+                    }
+                }
+
+                if (allRestDays.length > 0) {
+                    if (!candidateRestDays[studentId]) {
+                        candidateRestDays[studentId] = {};
+                    }
+                    candidateRestDays[studentId][targetWeekNum] = allRestDays;
+                }
             }
         }
 
@@ -1010,8 +1105,19 @@
         data.curriculum.restDays = candidateRestDays;
         commitMetadataCandidates(data.curriculum, metadataCandidates);
 
-        logActivity('Duplicated schedule from week ' + sourceWeekNum + ' to ' + targetWeekNum);
-        return success({ copiedCount: copiedCount });
+        var logMsg = 'Duplicated schedule from week ' + sourceWeekNum + ' to ' + targetWeekNum;
+        logMsg += ' (' + copiedCount + ' classes';
+        if (skippedCount > 0) {
+            logMsg += ', ' + skippedCount + ' skipped due to data integrity issues';
+        }
+        logMsg += ')';
+        logActivity(logMsg);
+
+        return success({ 
+            copiedCount: copiedCount, 
+            skippedCount: skippedCount,
+            restDaysCopied: copiedRestDays.length
+        });
     }
 
     /**
@@ -1077,31 +1183,7 @@
         }
 
         // Clear metadata
-        for (var key in metadataCandidates.classInstructors) {
-            if (key.indexOf(keyPrefix) === 0) {
-                delete metadataCandidates.classInstructors[key];
-            }
-        }
-        for (var key in metadataCandidates.classLabels) {
-            if (key.indexOf(keyPrefix) === 0) {
-                delete metadataCandidates.classLabels[key];
-            }
-        }
-        for (var key in metadataCandidates.classGroupLabels) {
-            if (key.indexOf(keyPrefix) === 0) {
-                delete metadataCandidates.classGroupLabels[key];
-            }
-        }
-        for (var key in metadataCandidates.classDurations) {
-            if (key.indexOf(keyPrefix) === 0) {
-                delete metadataCandidates.classDurations[key];
-            }
-        }
-        for (var key in metadataCandidates.classLocations) {
-            if (key.indexOf(keyPrefix) === 0) {
-                delete metadataCandidates.classLocations[key];
-            }
-        }
+        clearMetadataForPrefix(metadataCandidates, keyPrefix);
 
         // ---- PHASE 5: COMMIT ----
         data.curriculum.schedules = candidateSchedules;
@@ -1154,9 +1236,9 @@
         var seen = {};
 
         for (var i = 0; i < days.length; i++) {
-            var day = days[i];
-
-            if (!isSafeInteger(day) || day < 1 || day > 7) {
+            // Accept both numbers and numeric strings
+            var day = parseSafeInteger(days[i]);
+            if (day === null || day < 1 || day > 7) {
                 return failure('All rest days must be valid days (1-7).');
             }
 
@@ -1215,11 +1297,7 @@
                         var key = getScheduleKey(studentId, weekNum, day, hourNum);
                         // Check if this hour has metadata (is a class start)
                         if (getValidClassDuration(metadataCandidates, key) !== null) {
-                            delete metadataCandidates.classInstructors[key];
-                            delete metadataCandidates.classLabels[key];
-                            delete metadataCandidates.classGroupLabels[key];
-                            delete metadataCandidates.classDurations[key];
-                            delete metadataCandidates.classLocations[key];
+                            deleteClassMetadata(metadataCandidates, key);
                         }
                     }
                     delete weekSchedule[day];
@@ -1265,7 +1343,8 @@
 
     function setInstructorTemplate(instructorId, week, day, hour, data) {
         // ---- PHASE 1: VALIDATE ----
-        if (!isNonEmptyString(instructorId)) {
+        var normalisedInstructorId = normaliseId(instructorId);
+        if (normalisedInstructorId === null) {
             return failure('Instructor ID is required.');
         }
 
@@ -1288,7 +1367,12 @@
             return failure('Discipline ID is required.');
         }
 
-        var discipline = getDiscipline(data.disciplineId);
+        var normalisedDisciplineId = normaliseId(data.disciplineId);
+        if (normalisedDisciplineId === null) {
+            return failure('Discipline ID is required.');
+        }
+
+        var discipline = getDiscipline(normalisedDisciplineId);
         if (!discipline) {
             return failure('Discipline not found.');
         }
@@ -1302,9 +1386,18 @@
             return failure('Class duration extends beyond the end of the day.');
         }
 
-        var instructor = getCharacterById(instructorId);
+        var instructor = getCharacterById(normalisedInstructorId);
         if (!instructor) {
             return failure('Instructor not found.');
+        }
+
+        // Validate assigned students
+        var assignedStudents = normaliseIdArray(data.assignedStudents);
+        for (var i = 0; i < assignedStudents.length; i++) {
+            var student = getCharacterById(assignedStudents[i]);
+            if (!student) {
+                return failure('Student not found: ' + assignedStudents[i]);
+            }
         }
 
         // ---- PHASE 2: VALIDATE CURRICULUM STRUCTURE ----
@@ -1324,7 +1417,7 @@
             return failure('Failed to prepare template data.');
         }
 
-        var templateKey = instructorId + '_' + weekNum;
+        var templateKey = normalisedInstructorId + '_' + weekNum;
         if (!candidateTemplates[templateKey]) {
             candidateTemplates[templateKey] = {};
         }
@@ -1337,11 +1430,11 @@
         var classKey = dayNum + '_' + hourNum;
 
         candidateTemplates[templateKey][classKey] = {
-            disciplineId: String(data.disciplineId),
+            disciplineId: normalisedDisciplineId,
             label: data.label || '',
             groupLabel: data.groupLabel || '',
             duration: durationNum,
-            assignedStudents: Array.isArray(data.assignedStudents) ? data.assignedStudents.slice() : []
+            assignedStudents: assignedStudents
         };
 
         // ---- PHASE 4: COMMIT ----
@@ -1353,7 +1446,8 @@
 
     function removeInstructorTemplate(instructorId, week, day, hour) {
         // ---- PHASE 1: VALIDATE ----
-        if (!isNonEmptyString(instructorId)) {
+        var normalisedInstructorId = normaliseId(instructorId);
+        if (normalisedInstructorId === null) {
             return failure('Instructor ID is required.');
         }
 
@@ -1389,7 +1483,7 @@
             return failure('Failed to prepare template data.');
         }
 
-        var templateKey = instructorId + '_' + weekNum;
+        var templateKey = normalisedInstructorId + '_' + weekNum;
         if (!candidateTemplates[templateKey]) {
             return failure('No template for this instructor and week.');
         }
@@ -1423,7 +1517,7 @@
             return {};
         }
 
-        var blockKey = instructorId + '_' + weekNum;
+        var blockKey = normaliseId(instructorId) + '_' + weekNum;
         var blocks = data.curriculum.instructorBlocks[blockKey] || {};
 
         // Clone to prevent external mutation
@@ -1441,7 +1535,8 @@
 
     function setInstructorBlock(instructorId, week, day, hour, data) {
         // ---- PHASE 1: VALIDATE ----
-        if (!isNonEmptyString(instructorId)) {
+        var normalisedInstructorId = normaliseId(instructorId);
+        if (normalisedInstructorId === null) {
             return failure('Instructor ID is required.');
         }
 
@@ -1473,9 +1568,20 @@
             return failure('Block duration extends beyond the end of the day.');
         }
 
-        var instructor = getCharacterById(instructorId);
+        var instructor = getCharacterById(normalisedInstructorId);
         if (!instructor) {
             return failure('Instructor not found.');
+        }
+
+        // Validate discipline ID if provided
+        if (data.disciplineId) {
+            var normalisedDisciplineId = normaliseId(data.disciplineId);
+            if (normalisedDisciplineId !== null) {
+                var discipline = getDiscipline(normalisedDisciplineId);
+                if (!discipline) {
+                    return failure('Discipline not found: ' + data.disciplineId);
+                }
+            }
         }
 
         // ---- PHASE 2: VALIDATE CURRICULUM STRUCTURE ----
@@ -1495,7 +1601,7 @@
             return failure('Failed to prepare block data.');
         }
 
-        var blockKey = instructorId + '_' + weekNum;
+        var blockKey = normalisedInstructorId + '_' + weekNum;
         if (!candidateBlocks[blockKey]) {
             candidateBlocks[blockKey] = {};
         }
@@ -1508,12 +1614,20 @@
             return failure('Time slot already has a block.');
         }
 
-        candidateBlocks[blockKey][dayNum][hourNum] = {
+        var blockData = {
             label: data.label || 'Blocked Time',
             groupLabel: data.groupLabel || null,
-            duration: durationNum,
-            disciplineId: data.disciplineId || null
+            duration: durationNum
         };
+
+        if (data.disciplineId) {
+            var normDiscId = normaliseId(data.disciplineId);
+            if (normDiscId !== null) {
+                blockData.disciplineId = normDiscId;
+            }
+        }
+
+        candidateBlocks[blockKey][dayNum][hourNum] = blockData;
 
         // ---- PHASE 4: AUTO-ASSIGN STUDENTS IF GROUP LABEL PROVIDED ----
         var autoAssignedCount = 0;
@@ -1532,7 +1646,8 @@
 
     function removeInstructorBlock(instructorId, week, day, hour) {
         // ---- PHASE 1: VALIDATE ----
-        if (!isNonEmptyString(instructorId)) {
+        var normalisedInstructorId = normaliseId(instructorId);
+        if (normalisedInstructorId === null) {
             return failure('Instructor ID is required.');
         }
 
@@ -1568,7 +1683,7 @@
             return failure('Failed to prepare block data.');
         }
 
-        var blockKey = instructorId + '_' + weekNum;
+        var blockKey = normalisedInstructorId + '_' + weekNum;
         if (!candidateBlocks[blockKey] ||
             !candidateBlocks[blockKey][dayNum] ||
             !candidateBlocks[blockKey][dayNum][hourNum]) {
@@ -1609,25 +1724,16 @@
 
         var key = locationId + '_' + weekNum;
         if (data.locationSchedules[key]) {
-            // Clone to prevent external mutation
-            var schedule = data.locationSchedules[key];
-            var result = {};
-            for (var day in schedule) {
-                if (!Object.prototype.hasOwnProperty.call(schedule, day)) continue;
-                result[day] = {};
-                for (var hour in schedule[day]) {
-                    if (!Object.prototype.hasOwnProperty.call(schedule[day], hour)) continue;
-                    result[day][hour] = schedule[day][hour];
-                }
-            }
-            return result;
+            // Deep clone to prevent external mutation
+            return deepClone(data.locationSchedules[key]) || {};
         }
         return {};
     }
 
     function setLocationClass(locationId, week, day, hour, disciplineId) {
         // ---- PHASE 1: VALIDATE ----
-        if (!isNonEmptyString(locationId)) {
+        var normalisedLocationId = normaliseId(locationId);
+        if (normalisedLocationId === null) {
             return failure('Location ID is required.');
         }
 
@@ -1650,12 +1756,17 @@
             return failure('Discipline ID is required.');
         }
 
-        var discipline = getDiscipline(disciplineId);
+        var normalisedDisciplineId = normaliseId(disciplineId);
+        if (normalisedDisciplineId === null) {
+            return failure('Discipline ID is required.');
+        }
+
+        var discipline = getDiscipline(normalisedDisciplineId);
         if (!discipline) {
             return failure('Discipline not found.');
         }
 
-        var location = getLocationById(locationId);
+        var location = getLocationById(normalisedLocationId);
         if (!location) {
             return failure('Location not found.');
         }
@@ -1677,7 +1788,7 @@
             return failure('Failed to prepare schedule data.');
         }
 
-        var key = locationId + '_' + weekNum;
+        var key = normalisedLocationId + '_' + weekNum;
         if (!candidateSchedules[key]) {
             candidateSchedules[key] = {};
         }
@@ -1686,7 +1797,7 @@
         }
 
         // Overwrite without conflict detection (location assignment is replacement)
-        candidateSchedules[key][dayNum][hourNum] = disciplineId;
+        candidateSchedules[key][dayNum][hourNum] = normalisedDisciplineId;
 
         // ---- PHASE 4: COMMIT ----
         data.locationSchedules = candidateSchedules;
@@ -1697,7 +1808,8 @@
 
     function removeLocationClass(locationId, week, day, hour) {
         // ---- PHASE 1: VALIDATE ----
-        if (!isNonEmptyString(locationId)) {
+        var normalisedLocationId = normaliseId(locationId);
+        if (normalisedLocationId === null) {
             return failure('Location ID is required.');
         }
 
@@ -1731,7 +1843,7 @@
             return failure('No location schedules found.');
         }
 
-        var key = locationId + '_' + weekNum;
+        var key = normalisedLocationId + '_' + weekNum;
         if (!data.locationSchedules[key] || !data.locationSchedules[key][dayNum]) {
             return failure('No schedule for this day.');
         }
@@ -1765,7 +1877,8 @@
 
     function clearLocationSchedule(locationId, week) {
         // ---- PHASE 1: VALIDATE ----
-        if (!isNonEmptyString(locationId)) {
+        var normalisedLocationId = normaliseId(locationId);
+        if (normalisedLocationId === null) {
             return failure('Location ID is required.');
         }
 
@@ -1789,7 +1902,7 @@
             return success({ cleared: false, message: 'No location schedules found.' });
         }
 
-        var key = locationId + '_' + weekNum;
+        var key = normalisedLocationId + '_' + weekNum;
         if (!data.locationSchedules[key]) {
             return success({ cleared: false, message: 'No schedule for this week.' });
         }
@@ -1848,11 +1961,14 @@
             return null;
         }
 
-        // Find the class start hour
-        var metadata = buildMetadataCandidates(data.curriculum);
-        if (metadata === null) {
-            return null;
-        }
+        // Build metadata object for reading - no deep clone needed for queries
+        var metadata = {
+            classDurations: data.curriculum.classDurations || {},
+            classInstructors: data.curriculum.classInstructors || {},
+            classLabels: data.curriculum.classLabels || {},
+            classGroupLabels: data.curriculum.classGroupLabels || {},
+            classLocations: data.curriculum.classLocations || {}
+        };
 
         var classStart = findClassStartHour(weekSchedule, metadata, studentId, weekNum, dayNum, hourNum);
         if (!classStart) {
@@ -1877,11 +1993,8 @@
 
         var validated = slotValidation.data;
 
-        if (locationId && !isNonEmptyString(locationId)) {
-            return failure('Valid location ID is required.');
-        }
-
-        if (locationId && !getLocationById(locationId)) {
+        var normalisedLocationId = normaliseId(locationId);
+        if (normalisedLocationId && !getLocationById(normalisedLocationId)) {
             return failure('Location not found.');
         }
 
@@ -1909,10 +2022,13 @@
         }
 
         // ---- PHASE 4: FIND CLASS START ----
-        var metadata = buildMetadataCandidates(data.curriculum);
-        if (metadata === null) {
-            return failure('Failed to prepare metadata data.');
-        }
+        var metadata = {
+            classDurations: data.curriculum.classDurations || {},
+            classInstructors: data.curriculum.classInstructors || {},
+            classLabels: data.curriculum.classLabels || {},
+            classGroupLabels: data.curriculum.classGroupLabels || {},
+            classLocations: data.curriculum.classLocations || {}
+        };
 
         var classStart = findClassStartHour(weekSchedule, metadata, validated.studentId, validated.week, validated.day, validated.hour);
         if (!classStart) {
@@ -1927,8 +2043,8 @@
 
         var key = getScheduleKey(validated.studentId, validated.week, validated.day, classStart.startHour);
 
-        if (locationId) {
-            metadataCandidates.classLocations[key] = locationId;
+        if (normalisedLocationId) {
+            metadataCandidates.classLocations[key] = normalisedLocationId;
         } else {
             delete metadataCandidates.classLocations[key];
         }
@@ -2004,7 +2120,8 @@
                             key: classStart.key
                         };
                     } else {
-                        // No metadata found - fallback
+                        // No metadata found - this indicates data corruption
+                        // Create a fallback entry but mark it as corrupted
                         grid[day][hour] = {
                             occupied: true,
                             disciplineId: disciplineId,
@@ -2015,7 +2132,8 @@
                             instructorId: null,
                             isContinuation: false,
                             startHour: hour,
-                            key: null
+                            key: null,
+                            isCorrupted: true
                         };
                     }
                 } else {
@@ -2120,6 +2238,142 @@
     }
 
     // ============================================================
+    // INTEGRITY VALIDATION
+    // ============================================================
+
+    /**
+     * Validate the integrity of a schedule.
+     * Checks:
+     * - All class starts have valid duration metadata
+     * - All occupied hours belong to a valid class
+     * - No overlapping classes
+     * - All metadata keys correspond to actual classes
+     */
+    function validateScheduleIntegrity(studentId, week) {
+        var results = {
+            valid: true,
+            issues: [],
+            warnings: []
+        };
+
+        var data = getDataStore();
+        if (!data || !data.curriculum) {
+            results.valid = false;
+            results.issues.push('Data store not available');
+            return results;
+        }
+
+        var schedules = data.curriculum.schedules || {};
+        var studentSchedule = schedules[studentId];
+        if (!studentSchedule || !studentSchedule[week]) {
+            results.valid = false;
+            results.issues.push('No schedule for this student and week');
+            return results;
+        }
+
+        var weekSchedule = studentSchedule[week];
+        var metadata = {
+            classDurations: data.curriculum.classDurations || {},
+            classInstructors: data.curriculum.classInstructors || {},
+            classLabels: data.curriculum.classLabels || {},
+            classGroupLabels: data.curriculum.classGroupLabels || {},
+            classLocations: data.curriculum.classLocations || {}
+        };
+
+        // Find all class starts
+        var classStarts = [];
+        var seenHours = {};
+
+        for (var day in weekSchedule) {
+            if (!isObject(weekSchedule[day])) continue;
+
+            for (var hour in weekSchedule[day]) {
+                if (!Object.prototype.hasOwnProperty.call(weekSchedule[day], hour)) continue;
+                var hourNum = parseInt(hour, 10);
+                if (isNaN(hourNum)) continue;
+
+                var disciplineId = weekSchedule[day][hour];
+                if (!disciplineId) continue;
+
+                var key = getScheduleKey(studentId, week, day, hourNum);
+
+                // Check if this hour has valid duration metadata
+                var duration = getValidClassDuration(metadata, key);
+                if (duration !== null) {
+                    // This is a class start
+                    var actualDuration = validateOccupiedDuration(weekSchedule, day, hourNum, disciplineId);
+                    if (actualDuration === null || actualDuration !== duration) {
+                        results.issues.push('Class at ' + getDayName(day) + ' ' + hourNum + ': Duration mismatch (metadata: ' + duration + ', actual: ' + (actualDuration || 'inconsistent') + ')');
+                        results.valid = false;
+                    }
+                    classStarts.push({
+                        day: parseInt(day, 10),
+                        hour: hourNum,
+                        duration: duration,
+                        disciplineId: disciplineId,
+                        key: key
+                    });
+                }
+            }
+        }
+
+        // Check for overlapping classes
+        for (var i = 0; i < classStarts.length; i++) {
+            for (var j = i + 1; j < classStarts.length; j++) {
+                var a = classStarts[i];
+                var b = classStarts[j];
+                if (a.day !== b.day) continue;
+
+                var aStart = a.hour;
+                var aEnd = a.hour + a.duration;
+                var bStart = b.hour;
+                var bEnd = b.hour + b.duration;
+
+                if (aStart < bEnd && bStart < aEnd) {
+                    results.issues.push('Overlapping classes on ' + getDayName(a.day) + ': ' + a.hour + '-' + aEnd + ' and ' + b.hour + '-' + bEnd);
+                    results.valid = false;
+                }
+            }
+        }
+
+        // Check that all metadata keys correspond to actual classes
+        var prefix = studentId + '_' + week + '_';
+        for (var storeKey in metadata) {
+            var store = metadata[storeKey];
+            if (!store) continue;
+
+            for (var metaKey in store) {
+                if (!Object.prototype.hasOwnProperty.call(store, metaKey)) continue;
+                if (metaKey.indexOf(prefix) !== 0) continue;
+
+                var parts = metaKey.split('_');
+                if (parts.length !== 4) {
+                    results.warnings.push('Malformed metadata key: ' + metaKey);
+                    continue;
+                }
+
+                var dayKey = parseInt(parts[2], 10);
+                var hourKey = parseInt(parts[3], 10);
+                if (isNaN(dayKey) || isNaN(hourKey)) {
+                    results.warnings.push('Invalid metadata key format: ' + metaKey);
+                    continue;
+                }
+
+                if (!weekSchedule[dayKey] || !weekSchedule[dayKey][hourKey]) {
+                    results.warnings.push('Orphan metadata at ' + getDayName(dayKey) + ' ' + hourKey + ' (no class)');
+                }
+            }
+        }
+
+        return results;
+    }
+
+    function getDayName(day) {
+        var names = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+        return names[day] || 'Unknown';
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -2169,13 +2423,23 @@
         getValidClassDuration: getValidClassDuration,
         buildMetadataCandidates: buildMetadataCandidates,
         commitMetadataCandidates: commitMetadataCandidates,
+        clearMetadataForPrefix: clearMetadataForPrefix,
+        deleteClassMetadata: deleteClassMetadata,
 
         // Class Start Helpers
         findClassStartHour: findClassStartHour,
+        validateOccupiedDuration: validateOccupiedDuration,
 
         // Overlap Helpers
         hasDurationOverlap: hasDurationOverlap,
-        hasStudentScheduleConflict: hasStudentScheduleConflict
+        hasStudentScheduleConflict: hasStudentScheduleConflict,
+
+        // Integrity Validation
+        validateScheduleIntegrity: validateScheduleIntegrity,
+
+        // ID Normalisation
+        normaliseId: normaliseId,
+        normaliseIdArray: normaliseIdArray
     };
 
 })();
