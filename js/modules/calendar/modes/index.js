@@ -2,12 +2,34 @@
  * js/modules/calendar/modes/index.js - Calendar Mode Registry
  * Registers all calendar modes and provides factory functions
  * Path: js/modules/calendar/modes/index.js
+ * 
+ * This module is responsible for:
+ *   - Maintaining the calendar mode registry
+ *   - Providing lookup functions for modes
+ *   - Validating mode existence
+ * 
+ * IMPORTANT:
+ *   - This module only creates the registry
+ *   - Individual mode modules (student.js, instructor.js, location.js)
+ *     register themselves with this registry
+ *   - No mode implementations are defined here
  */
 
 (function() {
     'use strict';
 
-    // Prevent duplicate loading
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
+
+    if (!window.CalendarUI) {
+        return;
+    }
+
+    // ============================================================
+    // GUARD AGAINST DUPLICATE LOADING
+    // ============================================================
+
     if (window.__calendarModesLoaded) {
         return;
     }
@@ -19,122 +41,110 @@
 
     var modes = {};
 
+    /**
+     * Register a calendar mode
+     * @param {string} name - Unique mode identifier
+     * @param {object} mode - Mode implementation
+     * @param {string} mode.label - Display label for the mode
+     * @param {function} mode.render - Render function (container, state) => void
+     * @param {function} mode.getEntities - Get list of entities for this mode
+     * @param {function} mode.getEntityDisplayName - Get display name for an entity
+     * @param {function} mode.getData - Get schedule data for the current state
+     * @returns {boolean} - True if registration succeeded
+     */
     function registerMode(name, mode) {
-        if (modes[name]) {
-            console.warn('[CalendarModes] Mode "' + name + '" already registered. Overwriting.');
+        if (!name || typeof name !== 'string' || name.trim() === '') {
+            return false;
         }
-        modes[name] = mode;
+
+        if (!mode || typeof mode !== 'object') {
+            return false;
+        }
+
+        if (typeof mode.render !== 'function') {
+            return false;
+        }
+
+        if (typeof mode.getEntities !== 'function') {
+            return false;
+        }
+
+        if (typeof mode.getEntityDisplayName !== 'function') {
+            return false;
+        }
+
+        if (typeof mode.getData !== 'function') {
+            return false;
+        }
+
+        var key = name.trim();
+        modes[key] = {
+            label: mode.label || key.charAt(0).toUpperCase() + key.slice(1),
+            render: mode.render,
+            getEntities: mode.getEntities,
+            getEntityDisplayName: mode.getEntityDisplayName,
+            getData: mode.getData
+        };
+
+        return true;
     }
 
+    /**
+     * Get a registered mode by name
+     * @param {string} name - Mode identifier
+     * @returns {object|null} - The mode implementation or null
+     */
     function getMode(name) {
-        return modes[name] || null;
+        if (!name || typeof name !== 'string') {
+            return null;
+        }
+        return modes[name.trim()] || null;
     }
 
+    /**
+     * Get all registered mode names
+     * @returns {string[]} - Array of mode names
+     */
     function getModeNames() {
         return Object.keys(modes);
     }
 
+    /**
+     * Get mode options for UI selectors
+     * @returns {Array<{value: string, label: string}>} - Mode options
+     */
     function getModeOptions() {
-        var options = [];
-        for (var name in modes) {
-            if (Object.prototype.hasOwnProperty.call(modes, name)) {
-                options.push({
-                    value: name,
-                    label: modes[name].label || name.charAt(0).toUpperCase() + name.slice(1)
-                });
-            }
+        var result = [];
+        var names = Object.keys(modes);
+        for (var i = 0; i < names.length; i++) {
+            var name = names[i];
+            result.push({
+                value: name,
+                label: modes[name].label || name.charAt(0).toUpperCase() + name.slice(1)
+            });
         }
-        return options;
+        return result;
     }
 
-    // ============================================================
-    // REGISTER MODES
-    // ============================================================
-
-    // Student mode
-    registerMode('student', {
-        label: 'Student',
-        render: function(container, state) {
-            if (window.StudentMode && typeof window.StudentMode.render === 'function') {
-                window.StudentMode.render(container, state);
-            } else {
-                container.innerHTML = '<p class="empty-state">Student calendar mode not loaded.</p>';
-            }
-        },
-        getEntities: function() {
-            if (window.StudentMode && typeof window.StudentMode.getStudents === 'function') {
-                return window.StudentMode.getStudents();
-            }
-            return typeof window.getStudents === 'function' ? window.getStudents() : [];
-        },
-        getEntityDisplayName: function(entity) {
-            return typeof window.getDisplayName === 'function' ? window.getDisplayName(entity) : (entity.name || 'Unknown');
-        },
-        getData: function(state) {
-            if (window.StudentMode && typeof window.StudentMode.getSchedule === 'function') {
-                return window.StudentMode.getSchedule(state);
-            }
-            return typeof window.getStudentSchedule === 'function'
-                ? window.getStudentSchedule(state.selectedId, state.week)
-                : {};
+    /**
+     * Check if a mode is registered
+     * @param {string} name - Mode identifier
+     * @returns {boolean} - True if the mode exists
+     */
+    function hasMode(name) {
+        if (!name || typeof name !== 'string') {
+            return false;
         }
-    });
+        return !!modes[name.trim()];
+    }
 
-    // Instructor mode
-    registerMode('instructor', {
-        label: 'Instructor',
-        render: function(container, state) {
-            if (window.InstructorMode && typeof window.InstructorMode.render === 'function') {
-                window.InstructorMode.render(container, state);
-            } else {
-                container.innerHTML = '<p class="empty-state">Instructor calendar mode not loaded.</p>';
-            }
-        },
-        getEntities: function() {
-            if (window.InstructorMode && typeof window.InstructorMode.getInstructors === 'function') {
-                return window.InstructorMode.getInstructors();
-            }
-            return typeof window.getInstructors === 'function' ? window.getInstructors() : [];
-        },
-        getEntityDisplayName: function(entity) {
-            return typeof window.getDisplayName === 'function' ? window.getDisplayName(entity) : (entity.name || 'Unknown');
-        },
-        getData: function(state) {
-            if (window.InstructorMode && typeof window.InstructorMode.getSchedule === 'function') {
-                return window.InstructorMode.getSchedule(state);
-            }
-            return {};
-        }
-    });
-
-    // Location mode
-    registerMode('location', {
-        label: 'Location',
-        render: function(container, state) {
-            if (window.LocationMode && typeof window.LocationMode.render === 'function') {
-                window.LocationMode.render(container, state);
-            } else {
-                container.innerHTML = '<p class="empty-state">Location calendar mode not loaded.</p>';
-            }
-        },
-        getEntities: function() {
-            if (window.LocationMode && typeof window.LocationMode.getLocations === 'function') {
-                return window.LocationMode.getLocations();
-            }
-            return typeof window.getLocations === 'function' ? window.getLocations() : [];
-        },
-        getEntityDisplayName: function(entity) {
-            return entity.name || 'Unknown';
-        },
-        getData: function(state) {
-            if (window.LocationMode && typeof window.LocationMode.getSchedule === 'function') {
-                return window.LocationMode.getSchedule(state);
-            }
-            return typeof window.getLocationSchedule === 'function'
-                ? window.getLocationSchedule(state.selectedId, state.week)
-                : {};
-        }
-    });
+    /**
+     * Get the count of registered modes
+     * @returns {number} - Number of registered modes
+     */
+    function getModeCount() {
+        return Object.keys(modes).length;
+    }
 
     // ============================================================
     // EXPOSE
@@ -144,7 +154,9 @@
         registerMode: registerMode,
         getMode: getMode,
         getModeNames: getModeNames,
-        getModeOptions: getModeOptions
+        getModeOptions: getModeOptions,
+        hasMode: hasMode,
+        getModeCount: getModeCount
     };
 
 })();
