@@ -8,22 +8,80 @@
  * - Consistent state management via AppState as single source of truth
  * - Defensive cloning for backups using database module's clone
  * - Explicit notification rendering
+ * - Returns Promises for composition
  * 
  * PERSISTENCE CONTRACT:
  * - All mutations are applied to window.data in memory
  * - Caller is responsible for saveData() persistence
  * - Rollback restores window.data on failure
  * - UI state is managed via AppState, not DOM attributes
+ * - All mutation functions return Promises for async composition
+ * 
+ * MUTATION FLOW:
+ *   SNAPSHOT → VALIDATE → NORMALISE → MUTATE → LOG → SAVE → COMMIT
+ *                                    ↓
+ *                                failure
+ *                                    ↓
+ *                                ROLLBACK
  * 
  * STATE SOURCE OF TRUTH:
- * - AppState.characters.formEditId is the canonical edit state
- * - DOM is rendered from state, not the other way around
- * - showCharacterForm() should read from AppState
- * - CRUD module reads from AppState, not dataset.editId
+ *   - AppState.characters.formEditId is the canonical edit state
+ *   - DOM is rendered from state, not the other way around
+ *   - showCharacterForm() should read from AppState
+ *   - CRUD module reads from AppState, not dataset.editId
+ * 
+ * DEPENDENCIES:
+ *   - window.getCurrentEditId (from index.js)
+ *   - window.setCurrentEditId (from index.js)
+ *   - window.getCharacterById (from core-utils.js)
+ *   - window.getDisplayName (from core-utils.js)
+ *   - window.saveData (from database.js)
+ *   - window.logActivity (from core-utils.js)
+ *   - window.db.createSafeCopy (from database.js)
  */
 
 (function() {
     'use strict';
+
+    // Guard against duplicate script loading
+    if (window.__characterCrudLoaded) {
+        return;
+    }
+    window.__characterCrudLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
+
+    function checkDependencies() {
+        var required = [
+            'getCurrentEditId',
+            'setCurrentEditId',
+            'getCharacterById',
+            'getDisplayName',
+            'saveData',
+            'logActivity'
+        ];
+
+        var missing = [];
+        required.forEach(function(name) {
+            if (name === 'saveData' && typeof window.saveData !== 'function') {
+                missing.push('saveData');
+            } else if (name === 'logActivity' && typeof window.logActivity !== 'function') {
+                missing.push('logActivity');
+            } else if (typeof window[name] !== 'function' && 
+                       name !== 'saveData' && 
+                       name !== 'logActivity') {
+                missing.push(name);
+            }
+        });
+
+        if (missing.length > 0) {
+            console.warn('CharacterCRUD: Missing dependencies:', missing.join(', '));
+            return false;
+        }
+        return true;
+    }
 
     // ============================================================
     // SAFE RENDER HELPERS
@@ -52,15 +110,15 @@
     // ============================================================
 
     function getCurrentEditId() {
-        if (typeof window.getState === 'function') {
-            return window.getState('characters', 'formEditId');
+        if (typeof window.getCurrentEditId === 'function') {
+            return window.getCurrentEditId();
         }
         return null;
     }
 
     function setCurrentEditId(id) {
-        if (typeof window.setState === 'function') {
-            window.setState('characters', 'formEditId', id);
+        if (typeof window.setCurrentEditId === 'function') {
+            window.setCurrentEditId(id);
         }
     }
 
@@ -71,29 +129,28 @@
     function showNotification(message, type) {
         type = type || 'info';
 
-        // Use explicit notification API if available
         if (typeof window.showToast === 'function') {
             window.showToast(message, type);
             return;
         }
 
-        // Fallback: update SessionState and trigger render
         if (typeof window.setSession === 'function') {
             window.setSession('toast', {
                 message: message,
                 type: type,
                 timestamp: Date.now()
             });
-
-            // Trigger toast render if available
             if (typeof window.renderToast === 'function') {
                 window.renderToast();
             }
             return;
         }
 
-        // Ultimate fallback
-        alert(type === 'error' ? 'Error: ' + message : message);
+        if (type === 'error') {
+            alert('Error: ' + message);
+        } else {
+            alert(message);
+        }
     }
 
     // ============================================================
@@ -108,10 +165,15 @@
             if (typeof structuredClone === 'function') {
                 return structuredClone(data);
             }
-            // No safe cloning available - return null (rollback disabled)
-            return null;
+            // Fallback - may fail for complex objects
+            try {
+                return JSON.parse(JSON.stringify(data));
+            } catch (e) {
+                console.warn('CharacterCRUD: Failed to create backup:', e);
+                return null;
+            }
         } catch (err) {
-            // If cloning fails, return null (no rollback available)
+            console.warn('CharacterCRUD: Failed to create backup:', err);
             return null;
         }
     }
@@ -191,7 +253,8 @@
         ];
         magicTypes.forEach(function(key) {
             var input = document.getElementById('magic-' + key);
-            magic[key] = input ? (parseInt(input.value, 10) || 0) : 0;
+            var val = input ? parseInt(input.value, 10) : 0;
+            magic[key] = isNaN(val) ? 0 : Math.max(0, Math.min(10, val));
         });
         return magic;
     }
@@ -205,8 +268,8 @@
                 var nameEl = el.querySelector('.move-name');
                 var descEl = el.querySelector('.move-desc');
                 if (nameEl) {
-                    var name = nameEl.value !== undefined ? nameEl.value.trim() : nameEl.textContent.trim();
-                    var desc = descEl ? (descEl.value !== undefined ? descEl.value.trim() : descEl.textContent.trim()) : '';
+                    var name = nameEl.textContent ? nameEl.textContent.trim() : '';
+                    var desc = descEl ? descEl.textContent.trim() : '';
                     if (name) {
                         moves.push({
                             name: name,
@@ -232,7 +295,7 @@
             var el = document.getElementById(id);
             if (!el) return fallback;
             var val = parseInt(el.value, 10);
-            return isNaN(val) ? fallback : val;
+            return isNaN(val) ? fallback : Math.max(1, Math.min(30, val));
         };
 
         // Clear death fields if not deceased
@@ -309,13 +372,17 @@
     }
 
     function updateExistingCharacter(existing, charData, data) {
+        // Preserve immutable fields and merge with new data
         var updatedCharacter = Object.assign({}, existing, charData, {
             id: existing.id,
-            createdAt: existing.createdAt
+            createdAt: existing.createdAt,
+            // Preserve any fields not in charData (e.g., eliminations, eliminatedWeeks)
+            eliminations: existing.eliminations || [],
+            eliminatedWeeks: existing.eliminatedWeeks || []
         });
 
         var index = data.characters.findIndex(function(c) {
-            return String(c.id) === String(existing.id);
+            return c && String(c.id) === String(existing.id);
         });
         if (index !== -1) {
             data.characters[index] = updatedCharacter;
@@ -342,17 +409,22 @@
     }
 
     // ============================================================
-    // SAVE CHARACTER
+    // SAVE CHARACTER - Returns Promise
     // ============================================================
 
     function save() {
+        if (!checkDependencies()) {
+            showNotification('Dependencies not loaded. Please refresh the page.', 'error');
+            return Promise.resolve(false);
+        }
+
         var data = window.data || {};
 
         // Validate data structure
         if (!validateDataArray(data, 'characters')) {
             if (!ensureDataArray(data, 'characters')) {
                 showNotification('Data structure is corrupted. Please reload.', 'error');
-                return;
+                return Promise.resolve(false);
             }
         }
 
@@ -361,7 +433,7 @@
         var deceasedEl = document.getElementById('char-deceased');
         if (!deceasedEl) {
             showNotification('Form error: Missing required fields. Please refresh the page.', 'error');
-            return;
+            return Promise.resolve(false);
         }
 
         var isDeceased = deceasedEl.checked;
@@ -383,7 +455,7 @@
         var validation = validateCharacter(charData);
         if (!validation.valid) {
             showNotification(validation.message, 'error');
-            return;
+            return Promise.resolve(false);
         }
 
         var isEditing = editId !== null && editId !== undefined && editId !== '';
@@ -392,14 +464,16 @@
         var newId = null;
 
         if (isEditing) {
-            existingChar = data.characters.find(function(c) {
-                return String(c.id) === String(editId);
-            });
+            existingChar = typeof window.getCharacterById === 'function' 
+                ? window.getCharacterById(editId) 
+                : null;
             if (!existingChar) {
                 showNotification('Character not found.', 'error');
-                return;
+                return Promise.resolve(false);
             }
-            name = window.getDisplayName ? window.getDisplayName(existingChar) : existingChar.firstName + ' ' + existingChar.lastName;
+            name = typeof window.getDisplayName === 'function' 
+                ? window.getDisplayName(existingChar) 
+                : existingChar.firstName + ' ' + existingChar.lastName;
         }
 
         // Save a backup for rollback if needed
@@ -421,13 +495,15 @@
             );
         }
 
-        // 3. PERSIST
+        // 3. PERSIST - Return the promise for composition
         if (typeof window.saveData === 'function') {
-            window.saveData()
+            return window.saveData()
                 .then(function() {
                     onSaveSuccess(newId, isEditing);
+                    return true;
                 })
                 .catch(function(err) {
+                    console.error('Failed to save character:', err);
                     // Rollback memory if backup exists
                     if (backup) {
                         window.data = backup;
@@ -443,11 +519,12 @@
                             safeShowCharacterForm(null);
                         }
                     }
-
                     showNotification('Failed to save character. Please try again.', 'error');
+                    return false;
                 });
         } else {
             onSaveSuccess(newId, isEditing);
+            return Promise.resolve(true);
         }
     }
 
@@ -461,45 +538,52 @@
     }
 
     // ============================================================
-    // DELETE CHARACTER
+    // DELETE CHARACTER - Returns Promise
     // ============================================================
 
     function deleteCharacter(id) {
+        if (!checkDependencies()) {
+            showNotification('Dependencies not loaded. Please refresh the page.', 'error');
+            return Promise.resolve(false);
+        }
+
         if (!id) {
             showNotification('No character selected.', 'error');
-            return;
+            return Promise.resolve(false);
         }
 
         var data = window.data || {};
 
         if (!validateDataArray(data, 'characters') || !validateDataArray(data, 'teams')) {
             showNotification('Data structure is corrupted. Please reload.', 'error');
-            return;
+            return Promise.resolve(false);
         }
 
-        var char = data.characters.find(function(c) { return String(c.id) === String(id); });
+        var char = data.characters.find(function(c) { return c && String(c.id) === String(id); });
         if (!char) {
             showNotification('Character not found.', 'error');
-            return;
+            return Promise.resolve(false);
         }
 
-        var name = window.getDisplayName ? window.getDisplayName(char) : char.firstName + ' ' + char.lastName;
+        var name = typeof window.getDisplayName === 'function' 
+            ? window.getDisplayName(char) 
+            : char.firstName + ' ' + char.lastName;
 
         // Single confirmation - this is the only one
         if (!confirm('Delete "' + name + '" permanently? This will also remove them from all teams.')) {
-            return;
+            return Promise.resolve(false);
         }
 
         // Save a backup for rollback if needed
         var backup = createSafeBackup(data);
 
-        // MUTATE
+        // 1. MUTATE
         // Clean team memberships
         if (Array.isArray(data.teams)) {
             data.teams.forEach(function(team) {
                 if (Array.isArray(team.members)) {
                     team.members = team.members.filter(function(m) {
-                        return String(m.characterId) !== String(id);
+                        return m && String(m.characterId) !== String(id);
                     });
                 }
             });
@@ -507,21 +591,23 @@
 
         // Remove character
         data.characters = data.characters.filter(function(c) {
-            return String(c.id) !== String(id);
+            return c && String(c.id) !== String(id);
         });
 
-        // LOG
+        // 2. LOG
         if (typeof window.logActivity === 'function') {
             window.logActivity('Deleted character: ' + name);
         }
 
-        // PERSIST
+        // 3. PERSIST - Return the promise for composition
         if (typeof window.saveData === 'function') {
-            window.saveData()
+            return window.saveData()
                 .then(function() {
                     onDeleteSuccess();
+                    return true;
                 })
                 .catch(function(err) {
+                    console.error('Failed to delete character:', err);
                     // Rollback memory if backup exists
                     if (backup) {
                         window.data = backup;
@@ -531,11 +617,12 @@
                         setCurrentEditId(id);
                         safeShowCharacterForm(id);
                     }
-
                     showNotification('Failed to delete character. Please try again.', 'error');
+                    return false;
                 });
         } else {
             onDeleteSuccess();
+            return Promise.resolve(true);
         }
     }
 
