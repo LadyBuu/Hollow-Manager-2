@@ -1,5 +1,5 @@
 /**
- * js/modules/curriculum/class-view.js - Class View Module
+ * js/modules/curriculum/class-view.js - Class Schedule View
  * Shows classes grouped by discipline and instructor
  * Path: js/modules/curriculum/class-view.js
  * 
@@ -23,16 +23,12 @@
  * ARCHITECTURAL NOTE:
  *   - Classes are inferred from student schedules.
  *   - A class is defined as: discipline + instructor + day + hour + duration.
- *   - Duration is included in grouping to distinguish different class lengths.
  *   - Students with the same discipline, instructor, day, hour, and duration
  *     are grouped into one class.
  *   - Deceased students are displayed with reduced opacity.
- *   - A class with no students is not displayed (class view shows enrolled classes).
  *   - Only the starting hour of a multi-hour class is used for grouping.
- *   - Class start detection is based on duration metadata (not discipline continuity).
- *   - Duration metadata is stored only at class starts, so it's the authoritative source.
- *   - The discipline filter properly filters which disciplines are included.
- *   - Schedule positions (day/hour) are validated before processing.
+ *   - Class start detection is based on duration metadata.
+ *   - Duration metadata is stored only at class starts.
  */
 
 (function() {
@@ -45,7 +41,7 @@
     if (!window.curriculumState) {
         window.curriculumState = {};
     }
-    
+
     if (!window.curriculumState.classView) {
         window.curriculumState.classView = {
             currentWeek: 1,
@@ -62,52 +58,93 @@
     var DAY_NAMES = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
     // ============================================================
-    // RENDER CLASS VIEW - Public API (only this is exposed)
+    // DEPENDENCY VALIDATION
+    // ============================================================
+
+    function validateDependencies(container) {
+        var missing = [];
+
+        if (typeof window.getStudents !== 'function') {
+            missing.push('getStudents');
+        }
+
+        if (typeof window.getAvailableDisciplines !== 'function') {
+            missing.push('getAvailableDisciplines');
+        }
+
+        if (typeof window.getDiscipline !== 'function') {
+            missing.push('getDiscipline');
+        }
+
+        if (typeof window.getDisplayName !== 'function') {
+            missing.push('getDisplayName');
+        }
+
+        if (typeof window.getCharacterById !== 'function') {
+            missing.push('getCharacterById');
+        }
+
+        if (typeof window.getStudentSchedule !== 'function') {
+            missing.push('getStudentSchedule');
+        }
+
+        if (typeof window.getClassInstructor !== 'function') {
+            missing.push('getClassInstructor');
+        }
+
+        if (typeof window.getClassDuration !== 'function') {
+            missing.push('getClassDuration');
+        }
+
+        if (typeof window.getCurrentStatus !== 'function') {
+            missing.push('getCurrentStatus');
+        }
+
+        if (typeof window.ensureCurriculum !== 'function') {
+            missing.push('ensureCurriculum');
+        }
+
+        if (typeof window.getCharacterById !== 'function') {
+            missing.push('getCharacterById');
+        }
+
+        if (missing.length > 0) {
+            if (container) {
+                container.innerHTML = '<p class="empty-state">Class view dependencies not loaded. Please refresh the page.</p>';
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    // ============================================================
+    // RENDER CLASS VIEW - Public API
     // ============================================================
 
     function renderClassView(container) {
         if (!container) {
             container = document.getElementById('class-view-content');
         }
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         if (!window.data) {
             container.innerHTML = '<p class="empty-state">Loading class view data...</p>';
             return;
         }
 
-        if (typeof window.ensureCurriculum !== 'function') {
-            console.error('[ClassView] ensureCurriculum() is not available.');
-            container.innerHTML = '<p class="empty-state">Curriculum schema module not loaded. Please refresh the page.</p>';
+        window.ensureCurriculum();
+
+        if (!validateDependencies(container)) {
             return;
         }
 
-        window.ensureCurriculum();
-
-        // Verify all core dependencies
-        var requiredDeps = [
-            { name: 'getStudents', fn: window.getStudents },
-            { name: 'getAvailableDisciplines', fn: window.getAvailableDisciplines },
-            { name: 'getDiscipline', fn: window.getDiscipline },
-            { name: 'getDisplayName', fn: window.getDisplayName },
-            { name: 'getCharacterById', fn: window.getCharacterById },
-            { name: 'getStudentSchedule', fn: window.getStudentSchedule },
-            { name: 'getClassInstructor', fn: window.getClassInstructor },
-            { name: 'getClassDuration', fn: window.getClassDuration }
-        ];
-
-        for (var i = 0; i < requiredDeps.length; i++) {
-            if (typeof requiredDeps[i].fn !== 'function') {
-                console.error('[ClassView] ' + requiredDeps[i].name + '() is not available.');
-                container.innerHTML = '<p class="empty-state">Class view core module not loaded. Please refresh the page.</p>';
-                return;
-            }
-        }
-
         container.innerHTML = getClassViewHTML();
-        populateClassFilter();
-        renderClassData();
-        initClassViewEvents();
+        populateClassFilter(container);
+        renderClassData(container);
+        initClassViewEvents(container);
     }
 
     // ============================================================
@@ -115,7 +152,11 @@
     // ============================================================
 
     function escapeHtml(value) {
-        return String(value == null ? '' : value)
+        if (value === undefined || value === null) {
+            return '';
+        }
+        var str = String(value);
+        return str
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
@@ -131,7 +172,7 @@
         if (typeof window.getDisplayName === 'function') {
             return window.getDisplayName(char);
         }
-        return char && char.name ? char.name : 'Unknown';
+        return (char && char.name) ? char.name : 'Unknown';
     }
 
     // ============================================================
@@ -139,152 +180,161 @@
     // ============================================================
 
     function getClassViewHTML() {
-        return `
-            <div class="page-header">
-                <h2>Class View</h2>
-                <div class="header-actions">
-                    <button id="export-class-view-btn" class="small primary">↓ Export</button>
-                </div>
-            </div>
-            <div class="calendar-controls">
-                <div class="week-nav">
-                    <button id="prev-class-week" class="small">← Prev</button>
-                    <span id="class-week-display" style="font-weight:600;min-width:80px;text-align:center;">Week 1</span>
-                    <button id="next-class-week" class="small">Next →</button>
-                    <button id="goto-class-week" class="small primary">Go to Week</button>
-                </div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-                    <label for="class-discipline-filter" style="font-size:0.75rem;color:var(--text-dim);">Filter:</label>
-                    <select id="class-discipline-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
-                        <option value="all">All Disciplines</option>
-                        <option value="mandatory">■ Mandatory Only</option>
-                        <option value="optional">□ Optional Only</option>
-                    </select>
-                </div>
-            </div>
-            <div id="class-view-container">
-                <p class="empty-state">Loading class data...</p>
-            </div>
-        `;
+        return (
+            '<div class="page-header">' +
+                '<h2>Class View</h2>' +
+                '<div class="header-actions">' +
+                    '<button id="export-class-view-btn" class="small primary">[Export]</button>' +
+                '</div>' +
+            '</div>' +
+            '<div class="calendar-controls">' +
+                '<div class="week-nav">' +
+                    '<button id="prev-class-week" class="small">[<]</button>' +
+                    '<span id="class-week-display" style="font-weight:600;min-width:80px;text-align:center;">Week 1</span>' +
+                    '<button id="next-class-week" class="small">[>]</button>' +
+                    '<button id="goto-class-week" class="small primary">Go to Week</button>' +
+                '</div>' +
+                '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">' +
+                    '<label for="class-discipline-filter" style="font-size:0.75rem;color:var(--text-dim);">Filter:</label>' +
+                    '<select id="class-discipline-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">' +
+                        '<option value="all">All Disciplines</option>' +
+                        '<option value="mandatory">Mandatory Only</option>' +
+                        '<option value="optional">Optional Only</option>' +
+                    '</select>' +
+                '</div>' +
+            '</div>' +
+            '<div id="class-view-container">' +
+                '<p class="empty-state">Loading class data...</p>' +
+            '</div>'
+        );
     }
 
     // ============================================================
     // POPULATE CLASS FILTER
     // ============================================================
 
-    function populateClassFilter() {
-        var select = document.getElementById('class-discipline-filter');
-        if (!select) return;
+    function populateClassFilter(container) {
+        var select = container ? container.querySelector('#class-discipline-filter') : document.getElementById('class-discipline-filter');
+        if (!select) {
+            return;
+        }
 
         var valueToSet = state.filterDiscipline || 'all';
 
-        // Normalise invalid filter values
         if (valueToSet !== 'all' && valueToSet !== 'mandatory' && valueToSet !== 'optional') {
             valueToSet = 'all';
             state.filterDiscipline = 'all';
         }
 
-        select.innerHTML = `
-            <option value="all" ${valueToSet === 'all' ? 'selected' : ''}>All Disciplines</option>
-            <option value="mandatory" ${valueToSet === 'mandatory' ? 'selected' : ''}>■ Mandatory Only</option>
-            <option value="optional" ${valueToSet === 'optional' ? 'selected' : ''}>□ Optional Only</option>
-        `;
+        select.innerHTML =
+            '<option value="all"' + (valueToSet === 'all' ? ' selected' : '') + '>All Disciplines</option>' +
+            '<option value="mandatory"' + (valueToSet === 'mandatory' ? ' selected' : '') + '>Mandatory Only</option>' +
+            '<option value="optional"' + (valueToSet === 'optional' ? ' selected' : '') + '>Optional Only</option>';
     }
 
     // ============================================================
     // RENDER CLASS DATA - Read-only
     // ============================================================
 
-    function renderClassData() {
-        var container = document.getElementById('class-view-container');
-        if (!container) return;
+    function renderClassData(container) {
+        var viewContainer = container ? container.querySelector('#class-view-container') : document.getElementById('class-view-container');
+        if (!viewContainer) {
+            return;
+        }
 
-        var weekDisplay = document.getElementById('class-week-display');
-        if (weekDisplay) weekDisplay.textContent = 'Week ' + state.currentWeek;
+        var weekDisplay = container ? container.querySelector('#class-week-display') : document.getElementById('class-week-display');
+        if (weekDisplay) {
+            weekDisplay.textContent = 'Week ' + state.currentWeek;
+        }
 
         var students = window.getStudents();
+
         if (students.length === 0) {
-            container.innerHTML = '<p class="empty-state">No students found. Add some students first.</p>';
+            viewContainer.innerHTML = '<p class="empty-state">No students found. Add some students first.</p>';
             return;
         }
 
         var allDisciplines = window.getAvailableDisciplines(state.currentWeek);
+
         if (allDisciplines.length === 0) {
-            container.innerHTML = '<p class="empty-state">No disciplines available for week ' + state.currentWeek + '. Add some disciplines first.</p>';
+            viewContainer.innerHTML = '<p class="empty-state">No disciplines available for week ' + state.currentWeek + '. Add some disciplines first.</p>';
             return;
         }
 
-        var filterType = document.getElementById('class-discipline-filter') ? 
-            document.getElementById('class-discipline-filter').value : 'all';
+        var filterSelect = container ? container.querySelector('#class-discipline-filter') : document.getElementById('class-discipline-filter');
+        var filterType = filterSelect ? filterSelect.value : 'all';
 
-        // Filter disciplines based on selection
         var disciplines = allDisciplines;
+
         if (filterType === 'mandatory') {
-            disciplines = disciplines.filter(function(d) { return d.type === 'mandatory'; });
+            disciplines = disciplines.filter(function(d) {
+                return d.type === 'mandatory';
+            });
         } else if (filterType === 'optional') {
-            disciplines = disciplines.filter(function(d) { return d.type === 'optional'; });
+            disciplines = disciplines.filter(function(d) {
+                return d.type === 'optional';
+            });
         }
 
         if (disciplines.length === 0) {
-            container.innerHTML = '<p class="empty-state">No ' + filterType + ' disciplines available for week ' + state.currentWeek + '</p>';
+            viewContainer.innerHTML = '<p class="empty-state">No ' + filterType + ' disciplines available for week ' + state.currentWeek + '</p>';
             return;
         }
 
-        // Build discipline map for fast lookup
         var disciplineMap = {};
-        disciplines.forEach(function(discipline) {
-            disciplineMap[String(discipline.id)] = true;
-        });
 
-        // Build class index from student schedules
+        for (var i = 0; i < disciplines.length; i++) {
+            var d = disciplines[i];
+            disciplineMap[String(d.id)] = true;
+        }
+
         var classIndex = {};
 
-        students.forEach(function(student) {
+        for (var i = 0; i < students.length; i++) {
+            var student = students[i];
             var schedule = window.getStudentSchedule(student.id, state.currentWeek);
-            if (!schedule || typeof schedule !== 'object') return;
+
+            if (!schedule || typeof schedule !== 'object') {
+                continue;
+            }
 
             for (var day in schedule) {
-                if (!Object.prototype.hasOwnProperty.call(schedule, day)) continue;
+                if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
+                    continue;
+                }
                 var daySchedule = schedule[day];
-                if (!daySchedule || typeof daySchedule !== 'object') continue;
+                if (!daySchedule || typeof daySchedule !== 'object') {
+                    continue;
+                }
 
                 for (var hour in daySchedule) {
-                    if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
+                    if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
+                        continue;
+                    }
                     var disciplineId = daySchedule[hour];
-                    if (!disciplineId) continue;
+                    if (!disciplineId) {
+                        continue;
+                    }
 
-                    // Validate schedule position
                     var hourNum = parseInt(hour, 10);
                     var dayNum = parseInt(day, 10);
 
                     if (!Number.isInteger(hourNum) || !Number.isInteger(dayNum)) {
-                        console.warn('[ClassView] Invalid schedule position:', {
-                            studentId: student.id,
-                            week: state.currentWeek,
-                            day: day,
-                            hour: hour
-                        });
                         continue;
                     }
 
-                    // Apply discipline filter
                     if (!disciplineMap[String(disciplineId)]) {
                         continue;
                     }
 
-                    // Check if this is a class start by looking for duration metadata
-                    // (duration metadata is only stored at class starts)
                     var duration = window.getClassDuration(student.id, state.currentWeek, dayNum, hourNum);
 
                     if (!Number.isInteger(duration) || duration < 1) {
-                        // Not a class start, or invalid data
                         continue;
                     }
 
-                    // Get instructor for this class
                     var instructorId = window.getClassInstructor(student.id, state.currentWeek, dayNum, hourNum);
 
-                    // Key: discipline_instructor_day_hour_duration
                     var key = disciplineId + '|' + (instructorId || 'unassigned') + '|' + dayNum + '|' + hourNum + '|' + duration;
 
                     if (!classIndex[key]) {
@@ -303,26 +353,29 @@
                         };
                     }
 
-                    // Check if student already in this class
-                    var alreadyInClass = classIndex[key].students.some(function(s) {
-                        return String(s.id) === String(student.id);
-                    });
+                    var alreadyInClass = false;
+
+                    for (var j = 0; j < classIndex[key].students.length; j++) {
+                        if (String(classIndex[key].students[j].id) === String(student.id)) {
+                            alreadyInClass = true;
+                            break;
+                        }
+                    }
 
                     if (!alreadyInClass) {
                         classIndex[key].students.push(student);
                     }
                 }
             }
-        });
+        }
 
         var classKeys = Object.keys(classIndex);
 
         if (classKeys.length === 0) {
-            container.innerHTML = '<p class="empty-state">No classes scheduled for week ' + state.currentWeek + '</p>';
+            viewContainer.innerHTML = '<p class="empty-state">No classes scheduled for week ' + state.currentWeek + '</p>';
             return;
         }
 
-        // Sort classes by discipline name
         classKeys.sort(function(a, b) {
             var aDisc = classIndex[a].discipline;
             var bDisc = classIndex[b].discipline;
@@ -335,9 +388,13 @@
         var currentDisciplineId = null;
         var disciplineClasses = [];
 
-        classKeys.forEach(function(key) {
+        for (var i = 0; i < classKeys.length; i++) {
+            var key = classKeys[i];
             var cls = classIndex[key];
-            if (!cls || !cls.discipline) return;
+
+            if (!cls || !cls.discipline) {
+                continue;
+            }
 
             var discId = cls.disciplineId;
 
@@ -350,16 +407,16 @@
             }
 
             disciplineClasses.push(cls);
-        });
+        }
 
         if (disciplineClasses.length > 0) {
             html += renderDisciplineGroup(currentDisciplineId, disciplineClasses);
         }
 
         if (html === '') {
-            container.innerHTML = '<p class="empty-state">No classes scheduled for week ' + state.currentWeek + '</p>';
+            viewContainer.innerHTML = '<p class="empty-state">No classes scheduled for week ' + state.currentWeek + '</p>';
         } else {
-            container.innerHTML = html;
+            viewContainer.innerHTML = html;
         }
     }
 
@@ -370,14 +427,14 @@
     function renderDisciplineGroup(disciplineId, classes) {
         var firstClass = classes[0];
         var discipline = firstClass.discipline;
-        if (!discipline) return '';
 
-        var typeLabel = discipline.type === 'mandatory' ? '■ Mandatory' : '□ Optional';
+        if (!discipline) {
+            return '';
+        }
+
+        var typeLabel = discipline.type === 'mandatory' ? 'Mandatory' : 'Optional';
         var typeColor = discipline.type === 'mandatory' ? 'var(--accent)' : 'var(--warning)';
-
         var safeDisciplineName = escapeHtml(discipline.name);
-
-        // Build CSS classes for the badge to avoid invalid inline CSS
         var typeClass = discipline.type === 'mandatory' ? 'mandatory' : 'optional';
 
         var html = '';
@@ -388,8 +445,11 @@
         html += '</div>';
 
         var instructorGroups = {};
-        classes.forEach(function(cls) {
+
+        for (var i = 0; i < classes.length; i++) {
+            var cls = classes[i];
             var instructorKey = cls.instructorId || 'unassigned';
+
             if (!instructorGroups[instructorKey]) {
                 instructorGroups[instructorKey] = {
                     instructorId: cls.instructorId,
@@ -397,23 +457,36 @@
                     classes: []
                 };
             }
-            instructorGroups[instructorKey].classes.push(cls);
-        });
 
-        var instructorKeys = Object.keys(instructorGroups).sort(function(a, b) {
-            if (a === 'unassigned') return 1;
-            if (b === 'unassigned') return -1;
-            if (a === b) return 0;
+            instructorGroups[instructorKey].classes.push(cls);
+        }
+
+        var instructorKeys = Object.keys(instructorGroups);
+
+        instructorKeys.sort(function(a, b) {
+            if (a === 'unassigned') {
+                return 1;
+            }
+            if (b === 'unassigned') {
+                return -1;
+            }
+            if (a === b) {
+                return 0;
+            }
+
             var aInstructor = instructorGroups[a].instructor;
             var bInstructor = instructorGroups[b].instructor;
             var aName = aInstructor ? getSafeDisplayName(aInstructor) : '';
             var bName = bInstructor ? getSafeDisplayName(bInstructor) : '';
+
             return aName.localeCompare(bName);
         });
 
-        instructorKeys.forEach(function(key) {
+        for (var k = 0; k < instructorKeys.length; k++) {
+            var key = instructorKeys[k];
             var group = instructorGroups[key];
             var instructorName = 'Not assigned';
+
             if (group.instructorId) {
                 var instructor = group.instructor;
                 if (instructor) {
@@ -424,24 +497,35 @@
             var safeInstructorName = escapeHtml(instructorName);
 
             html += '<div style="background:var(--bg);border-radius:6px;padding:10px 12px;margin-bottom:8px;border-left:3px solid var(--accent);">';
-            html += '<div style="font-weight:600;color:var(--accent);font-size:0.85rem;margin-bottom:6px;">◊ ' + safeInstructorName + '</div>';
+            html += '<div style="font-weight:600;color:var(--accent);font-size:0.85rem;margin-bottom:6px;">- ' + safeInstructorName + '</div>';
 
-            var sortedClasses = group.classes.slice().sort(function(a, b) {
-                if (a.day !== b.day) return a.day - b.day;
+            var sortedClasses = group.classes.slice();
+
+            sortedClasses.sort(function(a, b) {
+                if (a.day !== b.day) {
+                    return a.day - b.day;
+                }
                 return a.hour - b.hour;
             });
 
-            sortedClasses.forEach(function(cls) {
+            for (var c = 0; c < sortedClasses.length; c++) {
+                var cls = sortedClasses[c];
                 var hourDisplay = cls.hour > 12 ? cls.hour - 12 : cls.hour;
                 var ampm = cls.hour >= 12 ? 'PM' : 'AM';
-                if (cls.hour === 0) { hourDisplay = 12; ampm = 'AM'; }
-                if (cls.hour === 12) { ampm = 'PM'; }
+
+                if (cls.hour === 0) {
+                    hourDisplay = 12;
+                    ampm = 'AM';
+                }
+                if (cls.hour === 12) {
+                    ampm = 'PM';
+                }
 
                 var hasMaxStudents = discipline.maxStudents !== null &&
-                                      discipline.maxStudents !== undefined &&
-                                      discipline.maxStudents !== '';
-                var isFull = hasMaxStudents &&
-                             cls.students.length >= Number(discipline.maxStudents);
+                    discipline.maxStudents !== undefined &&
+                    discipline.maxStudents !== '';
+
+                var isFull = hasMaxStudents && cls.students.length >= Number(discipline.maxStudents);
 
                 var safeDayName = escapeHtml(DAY_NAMES[cls.day]);
                 var safeHourDisplay = escapeHtml(hourDisplay + ':00 ' + ampm);
@@ -454,30 +538,34 @@
                 html += '</div>';
                 html += '<div style="display:flex;flex-wrap:wrap;gap:4px;">';
 
-                var sortedStudents = cls.students.slice().sort(function(a, b) {
+                var sortedStudents = cls.students.slice();
+
+                sortedStudents.sort(function(a, b) {
                     return getSafeDisplayName(a).localeCompare(getSafeDisplayName(b));
                 });
 
-                sortedStudents.forEach(function(student) {
+                for (var s = 0; s < sortedStudents.length; s++) {
+                    var student = sortedStudents[s];
                     var name = getSafeDisplayName(student);
-                    var status = window.getCurrentStatus ? window.getCurrentStatus(student) : '';
+                    var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(student) : '';
                     var isDeceased = student.deceased || false;
                     var safeName = escapeHtml(name);
                     var safeStatus = escapeHtml(status);
 
-                    html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;' + 
-                        (isDeceased ? 'opacity:0.4;text-decoration:line-through;' : '') + '">' + 
+                    html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;' +
+                        (isDeceased ? 'opacity:0.4;text-decoration:line-through;' : '') + '">' +
                         safeName + ' <span style="color:var(--text-dim);font-size:0.6rem;">(' + safeStatus + ')</span></span>';
-                });
+                }
 
                 html += '</div>';
                 html += '</div>';
-            });
+            }
 
             html += '</div>';
-        });
+        }
 
         html += '</div>';
+
         return html;
     }
 
@@ -485,9 +573,11 @@
     // EXPORT CLASS VIEW
     // ============================================================
 
-    function exportClassView() {
-        var container = document.getElementById('class-view-container');
-        if (!container) return;
+    function exportClassView(container) {
+        var viewContainer = container ? container.querySelector('#class-view-container') : document.getElementById('class-view-container');
+        if (!viewContainer) {
+            return;
+        }
 
         var week = state.currentWeek;
 
@@ -517,7 +607,7 @@
         win.document.write('<p>Generated: ' + new Date().toLocaleString() + '</p>');
         win.document.write('<hr>');
 
-        var cloneContainer = container.cloneNode(true);
+        var cloneContainer = viewContainer.cloneNode(true);
         win.document.write(cloneContainer.innerHTML);
 
         win.document.write('</body></html>');
@@ -531,18 +621,16 @@
 
     function showNotification(message, type) {
         type = type || 'info';
-        
+
         if (typeof window.showToast === 'function') {
             window.showToast(message, type);
             return;
         }
-        
+
         if (type === 'error') {
             alert('Error: ' + message);
         } else if (type === 'success') {
             alert(message);
-        } else {
-            console.log('[ClassView]', message);
         }
     }
 
@@ -550,36 +638,41 @@
     // EVENT INITIALISATION
     // ============================================================
 
-    function initClassViewEvents() {
-        var prevBtn = document.getElementById('prev-class-week');
+    function initClassViewEvents(container) {
+        var prevBtn = container ? container.querySelector('#prev-class-week') : document.getElementById('prev-class-week');
+
         if (prevBtn) {
             prevBtn.addEventListener('click', function() {
                 if (state.currentWeek > 1) {
                     state.currentWeek--;
-                    renderClassData();
+                    renderClassData(container);
                 }
             });
         }
 
-        var nextBtn = document.getElementById('next-class-week');
+        var nextBtn = container ? container.querySelector('#next-class-week') : document.getElementById('next-class-week');
+
         if (nextBtn) {
             nextBtn.addEventListener('click', function() {
                 if (state.currentWeek < 52) {
                     state.currentWeek++;
-                    renderClassData();
+                    renderClassData(container);
                 }
             });
         }
 
-        var gotoBtn = document.getElementById('goto-class-week');
+        var gotoBtn = container ? container.querySelector('#goto-class-week') : document.getElementById('goto-class-week');
+
         if (gotoBtn) {
             gotoBtn.addEventListener('click', function() {
-                var week = prompt('Enter week number (1-52):', state.currentWeek);
+                var week = prompt('Enter week number (1-52):', String(state.currentWeek));
+
                 if (week) {
                     var w = parseInt(week, 10);
+
                     if (!isNaN(w) && w >= 1 && w <= 52) {
                         state.currentWeek = w;
-                        renderClassData();
+                        renderClassData(container);
                     } else {
                         showNotification('Please enter a valid week (1-52).', 'error');
                     }
@@ -587,17 +680,21 @@
             });
         }
 
-        var filterSelect = document.getElementById('class-discipline-filter');
+        var filterSelect = container ? container.querySelector('#class-discipline-filter') : document.getElementById('class-discipline-filter');
+
         if (filterSelect) {
             filterSelect.addEventListener('change', function() {
                 state.filterDiscipline = this.value;
-                renderClassData();
+                renderClassData(container);
             });
         }
 
-        var exportBtn = document.getElementById('export-class-view-btn');
+        var exportBtn = container ? container.querySelector('#export-class-view-btn') : document.getElementById('export-class-view-btn');
+
         if (exportBtn) {
-            exportBtn.addEventListener('click', exportClassView);
+            exportBtn.addEventListener('click', function() {
+                exportClassView(container);
+            });
         }
     }
 
@@ -605,12 +702,15 @@
     // REGISTER WITH CURRICULUM MAIN
     // ============================================================
 
-    window.curriculumState.classView = state;
+    if (typeof window.curriculumState !== 'undefined') {
+        window.curriculumState.classView = state;
+    }
 
     // ============================================================
     // EXPOSE FUNCTIONS - Minimal public API
     // ============================================================
 
     window.renderClassView = renderClassView;
+    window.classViewState = state;
 
 })();
