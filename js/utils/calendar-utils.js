@@ -1,7 +1,7 @@
 /**
  * utils/calendar-utils.js - Calendar Utility Functions
  * Shared helper functions for calendar operations
- * Path: js/utils/calendar-utils.js
+ * Path: utils/calendar-utils.js
  * 
  * This module provides:
  *   - Day and hour formatting
@@ -30,6 +30,10 @@
  *   - undefined, null, or '' = empty/unoccupied
  *   - Any other value (including 0, false, "0") = occupied
  *   - This applies to all schedule-related functions
+ * 
+ * NOTE: Period parsing functions (parseOptionalPeriod, parsePositivePeriod,
+ * parseStrictPositivePeriod, hasPeriodValue, getPeriodInfo) have been moved
+ * to core-utils.js. Use CoreUtils.* for those.
  */
 
 (function() {
@@ -705,17 +709,8 @@
     }
 
     // ============================================================
-    // PERIOD HELPERS
+    // PERIOD HELPERS (Calendar-specific period functions)
     // ============================================================
-
-    function parsePeriod(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-
-        var num = Number(value);
-        return Number.isInteger(num) && num >= 1 ? num : null;
-    }
 
     function formatPeriod(start, end, prefix) {
         prefix = prefix || '';
@@ -731,15 +726,6 @@
         if (s !== '?') return prefix + s + ' → Present';
         if (e) return prefix + e;
         return '?';
-    }
-
-    function getPeriodInfo(value) {
-        var parsed = parsePeriod(value);
-        return {
-            present: value !== undefined && value !== null && String(value).trim() !== '',
-            valid: parsed !== null,
-            value: parsed
-        };
     }
 
     // ============================================================
@@ -782,8 +768,8 @@
     }
 
     function validateDuration(value) {
-        var num = parsePeriod(value);
-        return num !== null && num >= 1 && num <= 4 ? num : null;
+        var num = Number(value);
+        return Number.isInteger(num) && num >= 1 && num <= 4 ? num : null;
     }
 
     function isSlotEmpty(value) {
@@ -884,10 +870,8 @@
         getDateTimeDisplay: getDateTimeDisplay,
         getRelativeTime: getRelativeTime,
 
-        // Period helpers
-        parsePeriod: parsePeriod,
+        // Period helpers (calendar-specific)
         formatPeriod: formatPeriod,
-        getPeriodInfo: getPeriodInfo,
 
         // Validation
         isValidDay: isValidDay,
