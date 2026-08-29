@@ -1,0 +1,879 @@
+================================================================================
+                    CHARACTER MODULE DOCUMENTATION
+                    Hollow Blades Application
+================================================================================
+
+TABLE OF CONTENTS
+-----------------
+1. Overview
+2. Architecture Diagram
+3. File: characters/index.js
+4. File: character-list.js
+5. File: character-form.js
+6. File: character-events.js
+7. File: character-crud.js
+8. File: character-stats.js
+9. File: character-classes.js
+10. File: character-eliminations.js
+11. File: character-views.js
+12. File: character-detail.js
+13. Core Utilities Reference
+14. Data Flow Summary
+15. Mutation Contract
+16. Security Contract
+
+
+================================================================================
+1. OVERVIEW
+================================================================================
+
+The Character Module is a comprehensive system for managing characters in the
+Hollow Blades application. It handles character CRUD operations, statistics,
+magic, classes, eliminations, and social relationships through a modular
+architecture with clear separation of concerns.
+
+Key Principles:
+- Single Responsibility: Each module has one clear job
+- Separation of Concerns: Rendering, events, and data are separate
+- Immutable Getters: Query functions never mutate data
+- Explicit Mutations: All state changes follow a consistent pattern
+- XSS Prevention: All user data is escaped or inserted via textContent
+- Candidate-Based Commits: Mutations validate before applying
+
+
+================================================================================
+2. ARCHITECTURE DIAGRAM
+================================================================================
+
+TabManager (tab-manager.js)
+         |
+         v
+Character Module Entry Point (characters/index.js)
+    Owns selection state & render lifecycle
+         |
+    +----+----+
+    |         |
+    v         v
+CharacterList  CharacterForm
+character-list.js  character-form.js
+Renders list     Renders form
+                  |
+                  v
+CharacterEvents (character-events.js)
+    All UI event binding
+         |
+    +----+----+----+----+
+    |    |    |    |    |
+    v    v    v    v    v
+CRUD  Stats  Classes  Eliminations  Views
+crud  stats  classes  eliminations  views
+.js   .js    .js      .js           .js
+
+
+================================================================================
+3. FILE: characters/index.js
+================================================================================
+
+Path: js/modules/characters/index.js
+
+Description: Entry point and orchestrator for the character module. Owns
+selection state and render lifecycle.
+
+DEPENDENCIES:
+- window.CharacterList (from character-list.js)
+- window.CharacterForm (from character-form.js)
+- window.CharacterEvents (from character-events.js)
+- window.TabManager (from tab-manager.js)
+- window.getCharacterById (from core-utils.js)
+- window.getDisplayName (from core-utils.js)
+
+PUBLIC API:
+
+window.getCurrentEditId()
+    Returns: string|null - Current character ID or null
+
+window.setCurrentEditId(id)
+    Parameters: id (string|null) - Character ID to select
+
+window.showCharacterForm(editId)
+    Parameters: editId (string|null) - Character ID to show, or null for new
+
+window.renderCharacters(container)
+    Parameters: container (HTMLElement) - Container to render into
+
+window.toggleCharacterList(open)
+    Parameters: open (boolean, optional) - Force open/closed state
+
+window.destroyCharacters()
+    Cleans up all event listeners
+
+INTERNAL STATE:
+- _currentEditId: string|null - Currently selected character ID
+- _characterListOpen: boolean - Whether list panel is open
+- _listenersBound: boolean - Whether global listeners are attached
+
+
+================================================================================
+4. FILE: character-list.js
+================================================================================
+
+Path: js/modules/characters/character-list.js
+
+Description: Renders and filters the character list with search and filtering.
+RENDERING ONLY - no event binding.
+
+DEPENDENCIES:
+- window.getCharacterById (from core-utils.js)
+- window.getDisplayName (from core-utils.js)
+- window.getFullName (from core-utils.js)
+- window.getCurrentStatus (from core-utils.js)
+- window.getClasses (from core-utils.js)
+- window.getCurrentEditId (from index.js)
+
+PUBLIC API:
+
+CharacterList.render()
+    Renders the character list with current filters
+    Side effects: Updates DOM only
+
+CharacterList.applyFilters(char, nameFilter, statusFilter, classFilter)
+    Parameters:
+        - char: object - Character object
+        - nameFilter: string - Filter by name (lowercase)
+        - statusFilter: string - Filter by status ('all', 'trainee', etc.)
+        - classFilter: string - Filter by class ID or 'all'
+    Returns: boolean - Whether character passes filters
+
+CharacterList.populateClassFilter()
+    Populates the class filter dropdown with available classes
+
+CharacterList.getFilterValues()
+    Returns: object { nameFilter, statusFilter, classFilter }
+
+CharacterList.getSelectedCharacterId()
+    Returns: string|null - ID of the active list item
+
+CharacterList.DEBOUNCE_DELAY
+    Constant: 300 (ms) - Debounce delay for search input
+
+INTERNAL HELPERS:
+- getStatusIndicator(status): Returns symbol for status type
+- getStatusColor(status): Returns CSS color for status
+- getCharacterClassNames(char): Returns array of class names
+
+FILTER OPTIONS:
+Status: All, Trainee, Rookie, Junior, Senior, Instructor, Support, Civilian,
+        Deceased, Eliminated
+Class: All Classes, plus dynamically loaded classes
+Name: Free text search (debounced 300ms)
+
+
+================================================================================
+5. FILE: character-form.js
+================================================================================
+
+Path: js/modules/characters/character-form.js
+
+Description: Handles form rendering, tab switching, and form field population.
+RENDERING ONLY - events are in character-events.js.
+
+DEPENDENCIES:
+- window.CharacterViews
+- window.CharacterCRUD
+- window.CharacterEliminations
+- window.CharacterClasses
+- window.CharacterStats
+- window.CharacterList
+- window.getCharacterById (from core-utils.js)
+- window.getDisplayName (from core-utils.js)
+- window.getCurrentEditId (from index.js)
+
+PUBLIC API:
+
+CharacterForm.init(container)
+    Parameters: container (HTMLElement) - Container to initialize
+
+CharacterForm.show(editId)
+    Parameters: editId (string|null) - Character ID to show
+
+CharacterForm.switchTab(tab)
+    Parameters: tab (string) - Tab name: 'name', 'physical', 'personality',
+                'academic', 'professional', 'stats', 'social', 'notes'
+
+CharacterForm.getTabsHTML()
+    Returns: string - HTML for all tabs
+
+CharacterForm.populateFormFields(char)
+    Parameters: char (object) - Character data
+
+CharacterForm.resetFormFields()
+    Resets all form fields to default values (DOM only)
+
+CharacterForm.getCurrentTab()
+    Returns: string - Current active tab name
+
+VALID TABS:
+['name', 'physical', 'personality', 'academic', 'professional', 'stats',
+ 'social', 'notes']
+
+MAGIC_TYPES (18 types):
+earth, water, fire, air, metal, wood,
+blood, bone, mind, morphic, life, death,
+space, time, dimension, void, reality, transference
+
+INTERNAL HELPERS:
+- setFieldValue(id, value): Sets form field value
+- setCheckbox(id, checked): Sets checkbox state
+- setEmptyState(container, text, padding, fontSize): Creates empty state message
+
+
+================================================================================
+6. FILE: character-events.js
+================================================================================
+
+Path: js/modules/characters/character-events.js
+
+Description: Centralized event binding for the character module. All UI events
+are bound here. Supports re-initialization after DOM replacement.
+
+DEPENDENCIES:
+- window.CharacterCRUD
+- window.CharacterClasses
+- window.CharacterEliminations
+- window.CharacterStats
+- window.CharacterViews
+- window.getCharacterById (from core-utils.js)
+- window.getDisplayName (from core-utils.js)
+- window.getCurrentEditId (from index.js)
+- window.setCurrentEditId (from index.js)
+- window.showCharacterForm (from index.js)
+- window.toggleCharacterList (from index.js)
+- window.AppUI.notify (optional)
+
+PUBLIC API:
+
+CharacterEvents.init(container)
+    Parameters: container (HTMLElement) - Container to bind events to
+    Removes old listeners before binding new ones
+
+CharacterEvents.destroy()
+    Removes all event listeners
+
+CharacterEvents.removeAllEventListeners()
+    Internal cleanup function
+
+EVENTS BOUND:
+
+| Component | Event | Handler |
+|-----------|-------|---------|
+| Character list (container) | click | bindCharacterList (delegation) |
+| Toggle list button | click | bindToggleList |
+| Add character button | click | bindAddCharacter |
+| Form submit | submit | bindFormSubmit |
+| Delete button | click | bindDeleteButton |
+| Tab buttons | click | bindTabSwitching |
+| Name filter | input (debounced 300ms) | bindFilters |
+| Status/class filter | change | bindFilters |
+| Clear filter button | click | bindFilters |
+| Add status button | click | bindCareerStatus |
+| Remove status button | click (delegation) | bindCareerStatus |
+| Deceased checkbox | change | bindDeceasedToggle |
+| Add standalone elimination | click | bindEliminationControls |
+| Remove standalone elimination | click (delegation) | bindEliminationControls |
+| Class tag input | keydown (Enter) | bindClassTagInput |
+| Remove class tag | click (delegation) | bindClassTagRemoval |
+| Add to class button | click | bindAcademicClassControls |
+| Remove from class button | click | bindAcademicClassControls |
+| Add social relation | click | bindSocialButton |
+| Click outside panel | click | bindClickOutside |
+| Stat inputs | change/blur | bindStatsEvents |
+| Manual class select | change | bindStatsEvents |
+| Recalc/random buttons | click | bindStatsEvents |
+| Magic inputs | change/blur | bindMagicEvents |
+| Magic class select | change | bindMagicEvents |
+| Random magic buttons | click | bindMagicEvents |
+| Add special move | click | bindSpecialMovesEvents |
+| Remove special move | click (delegation) | bindSpecialMovesEvents |
+
+MAGIC TYPE HELPERS (delegated to CharacterStats):
+- getMagicTypeKeys(): Returns array of magic type keys
+- getMagicCategoryTypes(category): Returns array of magic types in category
+
+
+================================================================================
+7. FILE: character-crud.js
+================================================================================
+
+Path: js/modules/characters/character-crud.js
+
+Description: Character CRUD operations with persistence, rollback, and
+transactional integrity.
+
+DEPENDENCIES:
+- window.getCurrentEditId (from index.js)
+- window.setCurrentEditId (from index.js)
+- window.getCharacterById (from core-utils.js)
+- window.getDisplayName (from core-utils.js)
+- window.saveData (from database.js)
+- window.logActivity (from core-utils.js)
+- window.db.createSafeCopy (from database.js)
+- window.CharacterStats (optional, for magic schema)
+
+PUBLIC API:
+
+CharacterCRUD.save()
+    Returns: Promise<boolean> - True on success, false on failure
+    Saves the current character form data
+
+CharacterCRUD.delete(id)
+    Parameters: id (string) - Character ID to delete
+    Returns: Promise<boolean> - True on success, false on failure
+    Deletes character and cleans team memberships
+
+CharacterCRUD.getClassIds()
+    Returns: string[] - Class IDs from DOM class tags
+
+CharacterCRUD.getCareerStatus()
+    Returns: Array<{status, startYear, endYear}> - Career status entries
+
+CharacterCRUD.getMagic()
+    Returns: object - Magic proficiency values
+
+CharacterCRUD.getFormSpecialMoves(type)
+    Parameters: type (string) - 'physical' or 'magical'
+    Returns: Array<{name, description}> - Special moves
+
+CharacterCRUD.buildCharacterData(...)
+    Builds character data object from form fields
+
+CharacterCRUD.validateCharacter(charData)
+    Parameters: charData (object) - Character data to validate
+    Returns: { valid: boolean, message: string }
+
+CharacterCRUD.createSafeBackup(data)
+    Creates a deep clone backup of data
+
+CharacterCRUD.generateCharacterId()
+    Returns: string - New character ID
+
+CharacterCRUD.getCurrentEditId()
+    Returns: string|null - Current character ID
+
+CharacterCRUD.setCurrentEditId(id)
+    Sets current character ID
+
+MUTATION FLOW:
+    VALIDATE INPUT -> BUILD/NORMALISE -> SNAPSHOT (required) -> MUTATE -> SAVE ->
+    LOG (failure-safe) -> UI COMMIT
+                                       |
+                                   failure
+                                       |
+                                   ROLLBACK
+
+CONSTANTS:
+- MIN_WEEK: 1
+- MAX_WEEK: 52
+
+FIELD VALIDATION:
+- First name: required
+- Last name: required
+- Deceased: requires deathYear, deathAge, or deathWeek
+- Death Week: must be 1-52
+
+
+================================================================================
+8. FILE: character-stats.js
+================================================================================
+
+Path: js/modules/characters/character-stats.js
+
+Description: Character stats, magic proficiencies, class suggestions, and
+special moves. Getters are pure; mutations are explicit.
+
+DEPENDENCIES:
+- No external dependencies (pure calculations + DOM rendering)
+
+CONSTANTS:
+- MAGIC_MAX: 10 (Master is 9-10)
+- STAT_MIN: 1
+- STAT_MAX: 50
+- MAX_MOVE_NAME_LENGTH: 100
+- MAX_MOVE_DESCRIPTION_LENGTH: 500
+- MAX_SPECIAL_MOVES: 20
+- BALANCED_MAGE_THRESHOLD: 3
+
+STAT DEFINITIONS:
+- str: Strength
+- dex: Dexterity
+- con: Constitution
+- int: Intelligence
+- wis: Wisdom
+- cha: Charisma
+
+CLASS DEFINITIONS (15 classes):
+Warrior, Skirmisher, Protector, Sage, Mystic, Stalker, Spellblade,
+Channeler, Warden, Adept, Artificer, Occultist, Blade Dancer,
+Elementalist, Sentinel
+
+Each class has:
+- id: string - Unique identifier
+- label: string - Display name
+- icon: string - Emoji icon
+- primaryStats: string[] - Primary attributes
+- secondaryStats: string[] - Secondary attributes
+- statWeights: object - Weight for each stat
+- minStats: object - Minimum stat requirements
+- priority: number - Tie-breaker priority (higher = better)
+- description: string - Class description
+
+MAGIC DEFINITIONS (18 types, 3 categories):
+- Elemental (6): earth, water, fire, air, metal, wood
+- Body (6): blood, bone, mind, morphic, life, death
+- Aether (6): space, time, dimension, void, reality, transference
+
+PUBLIC API:
+
+STAT FUNCTIONS:
+- getDefaultStats(): Returns default stat object
+- getCharacterStats(char): Returns sanitized stats (pure)
+- getAbilityModifier(score): Returns ability modifier
+- getModifierDisplay(score): Returns formatted modifier (+2, -1, etc.)
+- generateRandomStats(): Returns random stats
+
+CLASS SUGGESTION:
+- suggestClass(stats): Returns best matching class or null
+- updateClassSuggestion(): Updates DOM suggestion display
+
+MAGIC FUNCTIONS:
+- getDefaultMagicProficiencies(): Returns default magic object
+- getCharacterMagic(char): Returns sanitized magic (pure)
+- calculateMagicPower(char): Returns total magic power
+- getMagicPowerDisplay(char): Returns formatted power display
+- suggestMagicClass(char): Returns best magic class or null
+- getMagicLevelLabel(score): Returns proficiency label
+- getMagicLevelColor(score): Returns CSS color for level
+
+SPECIAL MOVES:
+- getSpecialMoves(char): Returns deep copy of moves (pure)
+- addSpecialMove(char, type, name, description): Adds a move (mutates)
+- removeSpecialMove(char, type, index): Removes a move (mutates)
+- renderSpecialMoves(containerId, moves, type): Renders moves
+
+HTML GENERATORS:
+- getStatsTabHTML(): Returns stats tab HTML
+- getMagicTabHTML(): Returns magic tab HTML
+- getSpecialMovesHTML(): Returns special moves HTML
+
+EVENT STUBS (compatibility):
+- initStatsEvents(): No-op (events in character-events.js)
+- initMagicEvents(): No-op
+- initSpecialMovesEvents(): No-op
+- populateClassSelect(): Populates manual class selector
+
+MAGIC CLASS SEMANTICS:
+- "Magic Class" is a broad discipline (Elementalist, Body Mage, Aether Mage)
+- "Magic Specialisation" is a specific type (Pyromancer, Necromancer, etc.)
+- Ties resolve according to MAGIC_TYPES declaration order (intentional)
+
+
+================================================================================
+9. FILE: character-classes.js
+================================================================================
+
+Path: js/modules/characters/character-classes.js
+
+Description: Character class assignments, management, and queries.
+
+DEPENDENCIES:
+- window.getCurrentEditId (from index.js)
+- window.setCurrentEditId (from index.js)
+- window.getCharacterById (from core-utils.js)
+- window.getDisplayName (from core-utils.js)
+- window.getClasses (from core-utils.js)
+- window.getClass (from core-utils.js)
+- window.getClassByName (from core-utils.js)
+- window.createClass (from core-utils.js)
+- window.saveData (from database.js)
+- window.db.createSafeCopy (from database.js)
+- window.logActivity (optional)
+
+PUBLIC API:
+
+MUTATIONS:
+- addToClass(): Adds current character to selected class (Promise<boolean>)
+- removeFromClass(): Shows modal to remove from a class (Promise<boolean>)
+- removeClassById(charId, classId): Removes character from class (Promise<boolean>)
+- addClassByName(name): Finds/creates class and assigns character (Promise<boolean>)
+
+RENDERING:
+- populateAcademicClassSelector(char): Populates class dropdown
+- updateCurrentClassesDisplay(char): Updates current classes display
+- addClassTag(classId, className): Adds visual class tag (NO event binding)
+- getClassTags(): Returns class IDs from DOM tags
+- clearClassTags(): Clears all class tags
+- populateClassTags(classIds): Populates tags from class IDs
+
+QUERIES:
+- getCharacterClasses(char): Returns class objects for character
+- getCharacterClassNames(char): Returns class names for character
+- getCharactersByClass(classId): Returns characters in class
+- getAvailableStudentsForClass(classId, week): Returns available students
+
+UI REFRESH:
+- refreshUI(char): Refreshes all character UI
+
+MUTATION FLOW:
+    VALIDATE -> SNAPSHOT -> MUTATE -> SAVE -> LOG (failure-safe) -> UI COMMIT
+                                       |
+                                   failure
+                                       |
+                                   ROLLBACK
+
+INTERNAL HELPERS:
+- normaliseClassIds(char): Normalizes class IDs (mutates, called after snapshot)
+- getNormalisedClassIds(char): Returns normalized IDs (pure, for validation)
+- createSafeBackup(data): Creates backup for rollback
+
+
+================================================================================
+10. FILE: character-eliminations.js
+================================================================================
+
+Path: js/modules/characters/character-eliminations.js
+
+Description: Tournament and standalone elimination management.
+
+DEPENDENCIES:
+- window.getCharacterById (from core-utils.js)
+- window.getDisplayName (from core-utils.js)
+- window.getCurrentEditId (from index.js)
+- window.saveData (from database.js)
+- window.db.createSafeCopy (from database.js)
+- window.logActivity (optional)
+
+CONSTANTS:
+- MIN_WEEK: 1
+- MAX_WEEK: 52
+
+PUBLIC API:
+
+RENDERING:
+- renderTournament(char): Renders tournament eliminations
+- renderStandalone(char): Renders standalone eliminations
+
+MUTATIONS:
+- addStandalone(): Adds standalone elimination (Promise<boolean>)
+- removeStandalone(charId, eliminationId): Removes standalone elimination
+
+TOURNAMENT HELPERS:
+- markCharacterEliminated(charId, tournamentId, week, reason): Promise<boolean>
+- unmarkCharacterEliminated(charId, tournamentId): Promise<boolean>
+
+QUERIES:
+- isCharacterEliminatedByWeek(char, week): Returns boolean
+- getEliminatedCharacters(week): Returns array of character IDs
+
+UTILITIES:
+- rebuildEliminatedWeeks(char): Rebuilds eliminatedWeeks from eliminations
+- validateWeek(week): Returns boolean (1-52)
+
+ELIMINATION SOURCES OF TRUTH:
+1. eliminations array - explicit elimination records
+2. deceased + deathWeek - death timeline boundary
+
+DECEASED HANDLING:
+- Valid deathWeek (1-52): Eliminated from that week onward
+- Missing deathWeek: Eliminated for all weeks (permanently unavailable)
+- Invalid deathWeek: Eliminated for all weeks (fail-closed)
+
+MUTATION FLOW:
+    VALIDATE -> SNAPSHOT -> MUTATE -> SAVE -> LOG (failure-safe) -> UI COMMIT
+                                       |
+                                   failure
+                                       |
+                                   ROLLBACK
+
+
+================================================================================
+11. FILE: character-views.js
+================================================================================
+
+Path: js/modules/characters/character-views.js
+
+Description: Renders academic, professional, and social views for a character.
+READ-ONLY - no state mutation.
+
+DEPENDENCIES:
+- window.getCharacterById (from core-utils.js)
+- window.getDisplayName (from core-utils.js)
+- window.getClassDisplayName (optional, from core-utils.js)
+- window.getDiscipline (optional, from core-utils.js)
+- window.getTeamName (optional, from core-utils.js)
+- window.data (global state)
+
+PUBLIC API:
+
+RENDERING:
+- renderAcademic(char): Renders academic view
+- renderProfessional(char): Renders professional view
+- renderSocial(char): Renders social view
+
+CAREER STATUS:
+- addCareerStatusEntry(container, status, startYear, endYear): DOM-based
+
+QUERY HELPERS:
+- getTeamsByTypeAndCharacter(types, charId): Returns matching teams
+- getRelationshipTypeLabel(typeId): Returns relationship label
+- getRelationshipTypeColor(typeId): Returns safe relationship color
+
+HTML GENERATORS:
+- getAcademicTabHTML(): Returns academic tab static HTML
+- getProfessionalTabHTML(): Returns professional tab static HTML
+- getSocialTabHTML(): Returns social tab static HTML
+
+COLOR VALIDATION:
+Whitelisted relationship colors:
+- #8cbb3a (familial)
+- #c9a24b (professional)
+- #c1453c (romantic)
+- #4a9bc7 (friendship)
+- #9b59b6 (mentor)
+- #e67e22 (rivalry)
+- #27ae60 (alliance)
+- #7f8c8d (other)
+
+CAREER STATUS OPTIONS:
+civilian, trainee, rookie, junior, senior, instructor, support
+
+
+================================================================================
+12. FILE: character-detail.js
+================================================================================
+
+Path: js/modules/characters/character-detail.js
+
+Description: Read-only character detail view modal with tabs. PURE rendering.
+
+DEPENDENCIES:
+- window.getCharacterById (from core-utils.js)
+- window.getDisplayName (from core-utils.js)
+- window.getDiscipline (from core-utils.js)
+
+PUBLIC API:
+
+CharacterDetail.open(charId)
+    Parameters: charId (string) - Character ID to display
+
+CharacterDetail.close()
+    Closes the detail modal
+
+CharacterDetail.switchTab(tab)
+    Parameters: tab (string) - Tab name: 'name', 'physical', 'personality',
+                'career', 'academic', 'stats', 'social', 'notes'
+
+CharacterDetail.render(char)
+    Parameters: char (object) - Character data to render
+
+CharacterDetail.getSpecialMoves(char)
+    Parameters: char (object) - Character data
+    Returns: { physical: [], magical: [] } - Special moves
+
+TABS:
+'name', 'physical', 'personality', 'career', 'academic', 'stats', 'social',
+'notes'
+
+
+================================================================================
+13. CORE UTILITIES REFERENCE
+================================================================================
+
+Path: js/core/utils.js / js/utils/core-utils.js
+
+TYPE HELPERS:
+- isObject(value): Returns boolean
+- isSafeInteger(value): Returns boolean
+- isPositiveInteger(value): Returns boolean
+
+PERIOD PARSING:
+- parseOptionalPeriod(value): Returns number|null (strict integer parsing)
+- parsePositivePeriod(value, fallback): Returns number|fallback
+- parseStrictPositivePeriod(value): Returns number|null
+- hasPeriodValue(value): Returns boolean
+- getPeriodInfo(value): Returns { present, valid, value }
+
+ID GENERATION:
+- generateId(prefix): Returns string
+
+DEEP CLONE:
+- deepClone(value): Returns deep clone or null on failure
+
+TEAM PREDICATES:
+- isTeamOperational(team): Returns boolean (not deleted/inactive/deprecated)
+- isTeamActiveCompat(team): Returns boolean (compatibility active)
+- isTeamStatusActive(team): Returns boolean (literal status === 'active')
+- isValidTeamStatus(status): Returns boolean
+- filterOperationalTeams(teams): Returns filtered array
+
+CHARACTER QUERIES:
+- calculateAge(char): Returns number|null
+- getCharacterAge(char): Returns string (e.g., "45 yrs")
+- getDisplayName(char): Returns string
+- getFullName(char): Returns string
+- getNicknameOrFirstName(char): Returns string
+- getCurrentStatus(char): Returns string
+- getCharacterTeamCount(charId, period): Returns number
+- getCharacterNameById(charId): Returns string
+- getCharacterById(charId): Returns object|null
+
+TEAM QUERIES:
+- getTeamById(teamId): Returns object|null
+- getTeamName(teamId): Returns string
+- getTeams(type, status, includeDeleted): Returns array
+- getActiveTeamsForWeek(week): Returns array
+- getAllOperationalTeams(): Returns array
+- getActiveTeamMembers(team, period): Returns array
+- getActiveTeamMemberCount(team, period): Returns number
+
+STUDENT/INSTRUCTOR QUERIES:
+- getStudents(): Returns array
+- getInstructors(): Returns array
+- getNonCivilianCharacters(): Returns array
+
+DISCIPLINE QUERIES:
+- getDiscipline(id): Returns object|null
+- getAvailableDisciplines(week): Returns array
+
+CLASS QUERIES:
+- getClasses(): Returns array
+- getClass(id): Returns object|null
+- getClassByName(name): Returns object|null
+- getCharactersByClass(classId): Returns array
+- getTeamsByClass(classId): Returns array
+- getClassOptions(): Returns array
+- getClassDisplayName(classId): Returns string
+- getCharacterClasses(char): Returns array
+- getCharacterClassNames(char): Returns array
+
+CLASS MUTATIONS:
+- createClass(name): Returns { success, changed, class }
+- deleteClass(id, confirmed): Returns { success, changed, affected, needsConfirmation }
+- addCharacterToClass(charId, classId): Returns { success, changed, message }
+- removeCharacterFromClass(charId, classId): Returns { success, changed, message }
+
+
+================================================================================
+14. DATA FLOW SUMMARY
+================================================================================
+
+USER ACTION
+     |
+     v
+CharacterEvents (event binding)
+     |
+     v
+Feature Module (CRUD, Classes, Stats, Eliminations)
+     |
+     v
+Validation (no mutation)
+     |
+     v
+Snapshot (backup)
+     |
+     v
+Mutation (window.data)
+     |
+     v
+Save (saveData)
+     |
+     v
+Log (failure-safe)
+     |
+     v
+UI Commit (refresh views)
+     |
+     v
+     |--- On failure ---> Rollback (restore backup)
+
+
+================================================================================
+15. MUTATION CONTRACT
+================================================================================
+
+All mutation functions follow this pattern:
+
+VALIDATE INPUT
+    - Validate all parameters
+    - Validate domain rules
+    - No mutation occurs during validation
+
+SNAPSHOT
+    - Create backup using createSafeBackup()
+    - Abort if backup fails
+
+MUTATE
+    - Apply changes to window.data
+    - Normalise data structures if needed
+
+LOG
+    - Record activity via logActivity()
+    - Failure-safe: wrapped in try/catch
+    - Does NOT trigger rollback
+
+SAVE
+    - Persist via saveData()
+    - Wrapped in Promise.resolve().then() to catch sync exceptions
+
+UI COMMIT
+    - Refresh UI from restored state
+    - Show success notification
+
+ROLLBACK (on failure)
+    - Restore window.data from backup
+    - Refresh UI from restored state
+    - Show error notification
+
+Return Value:
+- All mutation functions return Promise<boolean>
+- true = success, false = failure
+
+
+================================================================================
+16. SECURITY CONTRACT
+================================================================================
+
+XSS PREVENTION:
+- All user-controlled data inserted via DOM APIs (textContent, value)
+- No user data interpolated into HTML strings
+- Dynamic CSS values pass through whitelist/validation
+- All IDs inserted via dataset, not HTML attributes
+
+DATA VALIDATION:
+- All inputs validated before mutation
+- Malformed persisted data handled defensively
+- Arrays/objects checked before iteration
+- Invalid data fails closed (does not proceed)
+
+ROLLBACK:
+- Backup created before every mutation
+- On failure, window.data restored from backup
+- UI refreshed from restored state
+
+PERSISTENCE:
+- All mutations call saveData()
+- saveData() provides atomic persistence
+- Persistence failures trigger rollback
+
+STATE OWNERSHIP:
+- window.data: Source of truth for persisted data
+- AppState: Source of truth for UI/edit state
+- getCurrentEditId/setCurrentEditId: Canonical selection state
+- DOM: Temporary source of form input during save
+
+DEPENDENCY OWNERSHIP:
+- Required dependencies: Module cannot function without these
+- Feature dependencies: Module degrades gracefully without these
+- Optional dependencies: Enhancements that are not required
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================
