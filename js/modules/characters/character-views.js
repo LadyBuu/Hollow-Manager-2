@@ -14,12 +14,16 @@
  *   - User-controlled text is inserted using safe DOM APIs/textContent
  *   - No inline event handlers - events bound in character-events.js
  *   - Safe CSS color validation for relationship types
+ *   - Grades are sorted chronologically
+ *   - Missions show their assigned team
+ *   - Orphaned relationships are clearly identified
  * 
  * DEPENDENCIES:
  *   - window.getCharacterById (from core-utils.js)
  *   - window.getDisplayName (from core-utils.js)
  *   - window.getClassDisplayName (from core-utils.js)
  *   - window.getDiscipline (from core-utils.js)
+ *   - window.getTeamName (from core-utils.js)
  *   - window.data (global state)
  */
 
@@ -41,7 +45,8 @@
             'getCharacterById',
             'getDisplayName',
             'getClassDisplayName',
-            'getDiscipline'
+            'getDiscipline',
+            'getTeamName'
         ];
 
         var missing = [];
@@ -72,12 +77,11 @@
     }
 
     // ============================================================
-    // SAFE CSS COLOR VALIDATION
+    // SAFE CSS COLOR VALIDATION - Whitelist only
     // ============================================================
 
-    // Strictly whitelisted colours used by the application
     var ALLOWED_COLORS = {
-        '#8cbb3a': true,  // familiar
+        '#8cbb3a': true,  // familial
         '#c9a24b': true,  // professional
         '#c1453c': true,  // romantic
         '#4a9bc7': true,  // friendship
@@ -87,9 +91,6 @@
         '#7f8c8d': true   // other
     };
 
-    // Allowed rgb/rgba pattern (restrictive)
-    var RGB_PATTERN = /^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*0?\.?\d+\s*)?\)$/i;
-
     function getSafeRelationshipColor(typeId) {
         var color = getRelationshipTypeColor(typeId);
 
@@ -97,13 +98,8 @@
             return '#7f8c8d';
         }
 
-        // Check whitelist first
+        // Only allow whitelisted colors
         if (ALLOWED_COLORS[color]) {
-            return color;
-        }
-
-        // Allow only strict RGB/RGBA format
-        if (RGB_PATTERN.test(color)) {
             return color;
         }
 
@@ -212,11 +208,12 @@
                 var member = team.members.find(function(m) {
                     return m && String(m.characterId) === String(char.id);
                 });
-                var period = member ? (member.joinPeriod || '?') : '?';
-                if (member && member.leavePeriod) period += ' → ' + member.leavePeriod;
+                var joinPeriod = member ? member.joinPeriod : '';
+                var leavePeriod = member ? member.leavePeriod : '';
+                var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod, 'Wk ');
                 var classDisplay = team.classId ? ' [' + escapeHtml(typeof window.getClassDisplayName === 'function' ? window.getClassDisplayName(team.classId) : 'Unknown') + ']' : '';
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + escapeHtml(team.name) + '</strong>' + classDisplay + ' <span style="color:var(--text-dim);font-size:0.7rem;">(Wk ' + escapeHtml(period) + ')</span>';
+                html += '<strong>' + escapeHtml(team.name) + '</strong>' + classDisplay + ' <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(periodDisplay) + ')</span>';
                 if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(member.role) + ']</span>';
                 html += '</div>';
             });
@@ -224,7 +221,7 @@
             html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No academic teams</p>';
         }
 
-        // Grades - with defensive own-property protection
+        // Grades - sorted chronologically
         html += '<h4 style="color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;">Grades</h4>';
         var curriculum = data.curriculum || {};
         var grades = curriculum.grades && curriculum.grades[char.id] ? curriculum.grades[char.id] : {};
@@ -240,10 +237,16 @@
 
         if (classCount > 0) {
             html += '<div style="max-height:100px;overflow-y:auto;font-size:0.7rem;">';
-            for (var week in grades) {
-                if (!Object.prototype.hasOwnProperty.call(grades, week)) continue;
-                for (var discId in grades[week]) {
-                    if (!Object.prototype.hasOwnProperty.call(grades[week], discId)) continue;
+            // Sort weeks chronologically
+            var weeks = Object.keys(grades).sort(function(a, b) {
+                return parseInt(a) - parseInt(b);
+            });
+            weeks.forEach(function(week) {
+                if (!Object.prototype.hasOwnProperty.call(grades, week)) return;
+                // Sort disciplines alphabetically
+                var discIds = Object.keys(grades[week]).sort();
+                discIds.forEach(function(discId) {
+                    if (!Object.prototype.hasOwnProperty.call(grades[week], discId)) return;
                     var disc = typeof window.getDiscipline === 'function' ? window.getDiscipline(discId) : null;
                     var score = grades[week][discId];
                     var discName = disc ? disc.name : 'Unknown';
@@ -251,8 +254,8 @@
                     html += '<span>' + escapeHtml(discName) + ' (Wk ' + escapeHtml(week) + ')</span>';
                     html += '<span style="color:var(--accent);font-weight:600;">' + escapeHtml(score) + '%</span>';
                     html += '</div>';
-                }
-            }
+                });
+            });
             html += '</div>';
         } else {
             html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No grades recorded</p>';
@@ -281,10 +284,11 @@
                 var member = team.members.find(function(m) {
                     return m && String(m.characterId) === String(char.id);
                 });
-                var period = member ? (member.joinPeriod || '?') : '?';
-                if (member && member.leavePeriod) period += ' → ' + member.leavePeriod;
+                var joinPeriod = member ? member.joinPeriod : '';
+                var leavePeriod = member ? member.leavePeriod : '';
+                var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod);
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--info);margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(period) + ')</span>';
+                html += '<strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(periodDisplay) + ')</span>';
                 if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(member.role) + ']</span>';
                 html += '</div>';
             });
@@ -301,10 +305,11 @@
                 var member = team.members.find(function(m) {
                     return m && String(m.characterId) === String(char.id);
                 });
-                var period = member ? (member.joinPeriod || '?') : '?';
-                if (member && member.leavePeriod) period += ' → ' + member.leavePeriod;
+                var joinPeriod = member ? member.joinPeriod : '';
+                var leavePeriod = member ? member.leavePeriod : '';
+                var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod);
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--warning);margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(period) + ')</span>';
+                html += '<strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(periodDisplay) + ')</span>';
                 if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(member.role) + ']</span>';
                 html += '</div>';
             });
@@ -321,10 +326,11 @@
                 var member = team.members.find(function(m) {
                     return m && String(m.characterId) === String(char.id);
                 });
-                var period = member ? (member.joinPeriod || '?') : '?';
-                if (member && member.leavePeriod) period += ' → ' + member.leavePeriod;
+                var joinPeriod = member ? member.joinPeriod : '';
+                var leavePeriod = member ? member.leavePeriod : '';
+                var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod);
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--text-dim);margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(period) + ')</span>';
+                html += '<strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(periodDisplay) + ')</span>';
                 if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(member.role) + ']</span>';
                 html += '</div>';
             });
@@ -332,7 +338,7 @@
             html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No civilian teams</p>';
         }
 
-        // Missions
+        // Missions - with team name
         html += '<h4 style="color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;">Missions</h4>';
         var missions = data.missions ? data.missions.filter(function(m) {
             if (!m || typeof m !== 'object') return false;
@@ -350,8 +356,13 @@
             missions.forEach(function(m) {
                 var statusColor = m.status === 'completed' ? 'var(--accent)' :
                                  m.status === 'cancelled' ? 'var(--danger)' : 'var(--warning)';
+                var teamName = typeof window.getTeamName === 'function' 
+                    ? window.getTeamName(m.assignedTeamId) 
+                    : 'Unknown Team';
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + statusColor + ';margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + escapeHtml(m.title) + '</strong> <span style="color:' + statusColor + ';font-size:0.65rem;">' + escapeHtml(m.status || 'active') + '</span>';
+                html += '<strong>' + escapeHtml(m.title) + '</strong> ';
+                html += '<span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(teamName) + ']</span> ';
+                html += '<span style="color:' + statusColor + ';font-size:0.65rem;">' + escapeHtml(m.status || 'active') + '</span>';
                 if (m.location) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">(' + escapeHtml(m.location) + ')</span>';
                 html += '</div>';
             });
@@ -386,23 +397,48 @@
         rels.forEach(function(rel) {
             var otherId = String(rel.character1) === String(char.id) ? rel.character2 : rel.character1;
             var other = typeof window.getCharacterById === 'function' ? window.getCharacterById(otherId) : null;
-            var otherName = other ? (typeof window.getDisplayName === 'function' ? window.getDisplayName(other) : 'Unknown') : 'Unknown';
+            
+            // Clearly identify orphaned relationships
+            var otherName = other ? (typeof window.getDisplayName === 'function' ? window.getDisplayName(other) : 'Unknown') : 'Unknown Character';
+            if (!other) {
+                otherName = '⚠ Unknown Character (ID: ' + escapeHtml(otherId) + ')';
+            }
+            
             var typeLabel = getRelationshipTypeLabel(rel.typeId);
             var typeColor = getSafeRelationshipColor(rel.typeId);
+            
+            // Format period
             var period = '';
             if (rel.startYear && rel.endYear) {
                 period = rel.startYear + ' → ' + rel.endYear;
             } else if (rel.startYear) {
                 period = 'From ' + rel.startYear;
             }
+            
             var clarification = rel.clarification ? ' (' + escapeHtml(rel.clarification) + ')' : '';
+            var notes = rel.notes ? ' 📝' : '';
 
             html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + typeColor + ';margin-bottom:3px;font-size:0.75rem;">';
-            html += '<span><strong>' + escapeHtml(otherName) + '</strong> <span style="color:' + typeColor + ';">' + escapeHtml(typeLabel) + clarification + '</span></span>';
+            html += '<span><strong>' + escapeHtml(otherName) + '</strong> <span style="color:' + typeColor + ';">' + escapeHtml(typeLabel) + clarification + '</span>' + notes + '</span>';
             html += '<span style="font-size:0.65rem;color:var(--text-dim);">' + escapeHtml(period) + '</span>';
             html += '</div>';
         });
         container.innerHTML = html;
+    }
+
+    // ============================================================
+    // MEMBERSHIP PERIOD FORMATTER
+    // ============================================================
+
+    function formatMembershipPeriod(join, leave, prefix) {
+        prefix = prefix || '';
+        var joinStr = (join !== undefined && join !== null && join !== '') ? String(join) : '';
+        var leaveStr = (leave !== undefined && leave !== null && leave !== '') ? String(leave) : '';
+
+        if (joinStr && leaveStr) return prefix + joinStr + ' → ' + prefix + leaveStr;
+        if (joinStr) return prefix + joinStr + ' → Present';
+        if (leaveStr) return prefix + leaveStr;
+        return prefix + '?';
     }
 
     // ============================================================
