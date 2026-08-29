@@ -4,14 +4,14 @@
  * Path: js/modules/characters/character-classes.js
  * 
  * This module is responsible for:
- *   - Adding characters to classes (with VALIDATE → SNAPSHOT → MUTATE → LOG → SAVE)
- *   - Removing characters from classes (with VALIDATE → SNAPSHOT → MUTATE → LOG → SAVE)
+ *   - Adding characters to classes (with VALIDATE → SNAPSHOT → MUTATE → SAVE → LOG → UI COMMIT)
+ *   - Removing characters from classes (with VALIDATE → SNAPSHOT → MUTATE → SAVE → LOG → UI COMMIT)
  *   - Rendering class tags in the form
  *   - Populating class selectors
  *   - Querying character-class relationships
  * 
  * IMPORTANT: All mutations follow the correct pattern:
- *   VALIDATE → SNAPSHOT → MUTATE → LOG → SAVE
+ *   VALIDATE → SNAPSHOT → MUTATE → SAVE → LOG (failure-safe) → UI COMMIT
  *   User-controlled text is inserted using safe DOM APIs/textContent
  *   rather than raw HTML, preventing XSS.
  *   Rollback is performed on save failure.
@@ -19,12 +19,12 @@
  * 
  * MUTATION CONTRACT:
  *   1. Validate inputs (no mutation)
- *   2. Create backup of current state
+ *   2. Create backup of current state (abort if fails)
  *   3. Normalise data structures
  *   4. Apply mutation
- *   5. Log activity
- *   6. Persist via saveData()
- *   7. On failure, restore backup and refresh UI
+ *   5. Persist via saveData() (wrapped for safety)
+ *   6. Log activity (failure-safe, no rollback)
+ *   7. On persistence failure, restore backup and refresh UI
  * 
  * STATE SOURCE OF TRUTH:
  *   - Uses getCurrentEditId() for current character selection
@@ -42,8 +42,8 @@
  *   - window.getClassByName (from core-utils.js)
  *   - window.createClass (from core-utils.js)
  *   - window.saveData (from database.js)
- *   - window.logActivity (from core-utils.js)
  *   - window.db.createSafeCopy (from database.js)
+ *   - window.logActivity (optional, for activity logging)
  */
 
 (function() {
@@ -59,7 +59,8 @@
     // CONSTANTS
     // ============================================================
 
-    var VALID_CLASS_TYPES = ['academic'];
+    var MIN_WEEK = 1;
+    var MAX_WEEK = 52;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -75,19 +76,14 @@
             'getClass',
             'getClassByName',
             'createClass',
-            'saveData',
-            'logActivity'
+            'saveData'
         ];
 
         var missing = [];
         required.forEach(function(name) {
             if (name === 'saveData' && typeof window.saveData !== 'function') {
                 missing.push('saveData');
-            } else if (name === 'logActivity' && typeof window.logActivity !== 'function') {
-                missing.push('logActivity');
-            } else if (typeof window[name] !== 'function' && 
-                       name !== 'saveData' && 
-                       name !== 'logActivity') {
+            } else if (typeof window[name] !== 'function') {
                 missing.push(name);
             }
         });
@@ -121,19 +117,6 @@
             console.warn('CharacterClasses: Failed to create backup:', err);
             return null;
         }
-    }
-
-    // ============================================================
-    // HTML ESCAPING - Prevents XSS
-    // ============================================================
-
-    function escapeHtml(value) {
-        return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
     }
 
     // ============================================================
@@ -273,9 +256,14 @@
             return Promise.resolve(false);
         }
 
-        // SNAPSHOT - Only after confirmation
+        // SNAPSHOT - Required, abort if fails
         var data = window.data || {};
         var backup = createSafeBackup(data);
+        if (!backup) {
+            console.error('CharacterClasses: Could not create rollback backup.');
+            showNotification('Unable to safely remove class. Please try again.', 'error');
+            return Promise.resolve(false);
+        }
 
         // NORMALISE and MUTATE
         normaliseClassIds(char);
@@ -283,15 +271,24 @@
             return String(cid) !== String(classId);
         });
 
-        // LOG
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Removed ' + name + ' from class: ' + cls.name);
-        }
-
-        // SAVE
+        // PERSIST
         if (typeof window.saveData === 'function') {
-            return window.saveData()
+            // Wrap in Promise.resolve to catch synchronous exceptions
+            return Promise.resolve()
                 .then(function() {
+                    return window.saveData();
+                })
+                .then(function() {
+                    // LOG - failure-safe, persistence already succeeded
+                    try {
+                        if (typeof window.logActivity === 'function') {
+                            window.logActivity('Removed ' + name + ' from class: ' + cls.name);
+                        }
+                    } catch (logErr) {
+                        console.warn('CharacterClasses: Activity logging failed:', logErr);
+                    }
+
+                    // UI COMMIT - reacquire character from restored state
                     var savedChar = typeof window.getCharacterById === 'function' 
                         ? window.getCharacterById(charId) 
                         : null;
@@ -301,18 +298,19 @@
                 })
                 .catch(function(err) {
                     console.error('Failed to remove character from class:', err);
+                    // ROLLBACK
                     if (backup) {
                         window.data = backup;
-                        safeRenderCharacterList();
-                        if (typeof window.setCurrentEditId === 'function') {
-                            window.setCurrentEditId(charId);
-                        }
-                        safeShowCharacterForm(charId);
+                        var restoredChar = typeof window.getCharacterById === 'function' 
+                            ? window.getCharacterById(charId) 
+                            : null;
+                        safeRefreshUI(restoredChar);
                     }
                     showNotification('Failed to remove character from class. Please try again.', 'error');
                     return false;
                 });
         } else {
+            // This should be unreachable because checkDependencies requires saveData
             safeRefreshUI(char);
             showNotification('Character removed from class successfully!', 'success');
             return Promise.resolve(true);
@@ -367,24 +365,40 @@
             return Promise.resolve(false);
         }
 
-        // SNAPSHOT - Only after validation
+        // SNAPSHOT - Required, abort if fails
         var data = window.data || {};
         var backup = createSafeBackup(data);
+        if (!backup) {
+            console.error('CharacterClasses: Could not create rollback backup.');
+            showNotification('Unable to safely add class. Please try again.', 'error');
+            return Promise.resolve(false);
+        }
 
         // NORMALISE and MUTATE
         normaliseClassIds(char);
         char.classIds.push(classId);
 
-        // LOG
-        var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Added ' + name + ' to class: ' + cls.name);
-        }
-
-        // SAVE
+        // PERSIST
         if (typeof window.saveData === 'function') {
-            return window.saveData()
+            // Wrap in Promise.resolve to catch synchronous exceptions
+            return Promise.resolve()
                 .then(function() {
+                    return window.saveData();
+                })
+                .then(function() {
+                    // LOG - failure-safe, persistence already succeeded
+                    var charName = typeof window.getDisplayName === 'function' 
+                        ? window.getDisplayName(char) 
+                        : char.firstName || 'Character';
+                    try {
+                        if (typeof window.logActivity === 'function') {
+                            window.logActivity('Added ' + charName + ' to class: ' + cls.name);
+                        }
+                    } catch (logErr) {
+                        console.warn('CharacterClasses: Activity logging failed:', logErr);
+                    }
+
+                    // UI COMMIT - reacquire character from restored state
                     var savedChar = typeof window.getCharacterById === 'function' 
                         ? window.getCharacterById(charId) 
                         : null;
@@ -394,18 +408,19 @@
                 })
                 .catch(function(err) {
                     console.error('Failed to add character to class:', err);
+                    // ROLLBACK
                     if (backup) {
                         window.data = backup;
-                        safeRenderCharacterList();
-                        if (typeof window.setCurrentEditId === 'function') {
-                            window.setCurrentEditId(charId);
-                        }
-                        safeShowCharacterForm(charId);
+                        var restoredChar = typeof window.getCharacterById === 'function' 
+                            ? window.getCharacterById(charId) 
+                            : null;
+                        safeRefreshUI(restoredChar);
                     }
                     showNotification('Failed to add character to class. Please try again.', 'error');
                     return false;
                 });
         } else {
+            // This should be unreachable because checkDependencies requires saveData
             safeRefreshUI(char);
             showNotification('Character added to class successfully!', 'success');
             return Promise.resolve(true);
@@ -413,35 +428,44 @@
     }
 
     // ============================================================
-    // ADD CLASS BY NAME - Now properly persists the assignment
+    // ADD CLASS BY NAME - Returns Promise for consistency
     // ============================================================
 
     function addClassByName(name) {
         if (!checkDependencies()) {
             showNotification('Dependencies not loaded. Please refresh the page.', 'error');
-            return;
+            return Promise.resolve(false);
         }
 
         var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
         if (!charId) {
             showNotification('No character selected.', 'error');
-            return;
+            return Promise.resolve(false);
         }
 
         var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
         if (!char) {
             showNotification('Character not found.', 'error');
-            return;
+            return Promise.resolve(false);
         }
 
         if (!name || typeof name !== 'string' || name.trim() === '') {
             showNotification('Please enter a class name.', 'error');
-            return;
+            return Promise.resolve(false);
         }
 
         var trimmedName = name.trim();
 
-        // Find or create class
+        // SNAPSHOT - Required, abort if fails (BEFORE creating class)
+        var data = window.data || {};
+        var backup = createSafeBackup(data);
+        if (!backup) {
+            console.error('CharacterClasses: Could not create rollback backup.');
+            showNotification('Unable to safely add class. Please try again.', 'error');
+            return Promise.resolve(false);
+        }
+
+        // Find or create class (now inside the transaction)
         var cls = typeof window.getClassByName === 'function' ? window.getClassByName(trimmedName) : null;
         if (!cls) {
             var result = typeof window.createClass === 'function' ? window.createClass(trimmedName) : null;
@@ -449,7 +473,7 @@
                 cls = result.class;
             } else {
                 showNotification(result ? result.message : 'Failed to create class.', 'error');
-                return;
+                return Promise.resolve(false);
             }
         }
 
@@ -458,46 +482,61 @@
 
         if (classIds.some(function(cid) { return String(cid) === String(cls.id); })) {
             showNotification('Character is already in this class.', 'error');
-            return;
+            return Promise.resolve(false);
         }
-
-        // SNAPSHOT
-        var data = window.data || {};
-        var backup = createSafeBackup(data);
 
         // NORMALISE and MUTATE
         normaliseClassIds(char);
         char.classIds.push(cls.id);
 
-        // LOG
-        var charName = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Added ' + charName + ' to class: ' + cls.name);
-        }
-
-        // SAVE
+        // PERSIST
         if (typeof window.saveData === 'function') {
-            window.saveData()
+            // Wrap in Promise.resolve to catch synchronous exceptions
+            return Promise.resolve()
                 .then(function() {
+                    return window.saveData();
+                })
+                .then(function() {
+                    // LOG - failure-safe, persistence already succeeded
+                    var charName = typeof window.getDisplayName === 'function' 
+                        ? window.getDisplayName(char) 
+                        : char.firstName || 'Character';
+                    try {
+                        if (typeof window.logActivity === 'function') {
+                            window.logActivity('Added ' + charName + ' to class: ' + cls.name);
+                        }
+                    } catch (logErr) {
+                        console.warn('CharacterClasses: Activity logging failed:', logErr);
+                    }
+
+                    // UI COMMIT
                     addClassTag(cls.id, cls.name);
                     var savedChar = typeof window.getCharacterById === 'function' 
                         ? window.getCharacterById(charId) 
                         : null;
                     safeRefreshUI(savedChar);
                     showNotification('Character added to class successfully!', 'success');
+                    return true;
                 })
                 .catch(function(err) {
                     console.error('Failed to add character to class:', err);
+                    // ROLLBACK - reacquire character from restored state
                     if (backup) {
                         window.data = backup;
-                        safeRefreshUI(char);
+                        var restoredChar = typeof window.getCharacterById === 'function' 
+                            ? window.getCharacterById(charId) 
+                            : null;
+                        safeRefreshUI(restoredChar);
                     }
                     showNotification('Failed to add character to class. Please try again.', 'error');
+                    return false;
                 });
         } else {
+            // This should be unreachable because checkDependencies requires saveData
             addClassTag(cls.id, cls.name);
             safeRefreshUI(char);
             showNotification('Character added to class successfully!', 'success');
+            return Promise.resolve(true);
         }
     }
 
@@ -809,7 +848,7 @@
     function getAvailableStudentsForClass(classId, week) {
         if (!classId) return [];
         var weekNum = Number(week);
-        if (!Number.isInteger(weekNum) || weekNum < 1) {
+        if (!Number.isInteger(weekNum) || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
             return [];
         }
 
@@ -886,8 +925,12 @@
         refreshUI: safeRefreshUI,
 
         // State access (delegated to index)
-        getCurrentEditId: getCurrentEditId,
-        setCurrentEditId: setCurrentEditId
+        getCurrentEditId: function() {
+            return window.getCurrentEditId();
+        },
+        setCurrentEditId: function(id) {
+            return window.setCurrentEditId(id);
+        }
     };
 
 })();
