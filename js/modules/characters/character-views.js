@@ -10,8 +10,7 @@
  *   - Career status entry creation (DOM-based)
  * 
  * IMPORTANT:
- *   - All user-controlled data must be escaped with escapeHtml()
- *   - User-controlled text is inserted using safe DOM APIs/textContent
+ *   - All user-controlled data is inserted using DOM APIs (textContent)
  *   - No inline event handlers - events bound in character-events.js
  *   - Safe CSS color validation for relationship types
  *   - Grades are sorted chronologically
@@ -21,9 +20,9 @@
  * DEPENDENCIES:
  *   - window.getCharacterById (from core-utils.js)
  *   - window.getDisplayName (from core-utils.js)
- *   - window.getClassDisplayName (from core-utils.js)
- *   - window.getDiscipline (from core-utils.js)
- *   - window.getTeamName (from core-utils.js)
+ *   - window.getClassDisplayName (optional, from core-utils.js)
+ *   - window.getDiscipline (optional, from core-utils.js)
+ *   - window.getTeamName (optional, from core-utils.js)
  *   - window.data (global state)
  */
 
@@ -37,16 +36,28 @@
     window.__characterViewsLoaded = true;
 
     // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var CAREER_STATUS_OPTIONS = [
+        { value: '', label: 'Select status...' },
+        { value: 'civilian', label: 'Civilian' },
+        { value: 'trainee', label: 'Trainee' },
+        { value: 'rookie', label: 'Rookie' },
+        { value: 'junior', label: 'Junior' },
+        { value: 'senior', label: 'Senior' },
+        { value: 'instructor', label: 'Instructor' },
+        { value: 'support', label: 'Support' }
+    ];
+
+    // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
         var required = [
             'getCharacterById',
-            'getDisplayName',
-            'getClassDisplayName',
-            'getDiscipline',
-            'getTeamName'
+            'getDisplayName'
         ];
 
         var missing = [];
@@ -56,24 +67,30 @@
             }
         });
 
+        // Optional helpers
+        var optional = [
+            'getClassDisplayName',
+            'getDiscipline',
+            'getTeamName'
+        ];
+
+        var missingOptional = [];
+        optional.forEach(function(name) {
+            if (typeof window[name] !== 'function') {
+                missingOptional.push(name);
+            }
+        });
+
         if (missing.length > 0) {
-            console.warn('CharacterViews: Missing dependencies:', missing.join(', '));
+            console.warn('CharacterViews: Missing required dependencies:', missing.join(', '));
             return false;
         }
+
+        if (missingOptional.length > 0) {
+            console.warn('CharacterViews: Missing optional dependencies:', missingOptional.join(', '));
+        }
+
         return true;
-    }
-
-    // ============================================================
-    // HTML ESCAPING - Prevents XSS
-    // ============================================================
-
-    function escapeHtml(value) {
-        return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
     }
 
     // ============================================================
@@ -98,9 +115,10 @@
             return '#7f8c8d';
         }
 
-        // Only allow whitelisted colors
-        if (ALLOWED_COLORS[color]) {
-            return color;
+        // Normalise and whitelist
+        var normalized = color.toLowerCase();
+        if (ALLOWED_COLORS[normalized]) {
+            return normalized;
         }
 
         return '#7f8c8d';
@@ -170,34 +188,6 @@
     }
 
     // ============================================================
-    // SCHEDULE COUNT
-    // ============================================================
-
-    function getScheduleCount(charId) {
-        var data = window.data || {};
-        if (!data.curriculum || !data.curriculum.schedules) return 0;
-        var schedule = data.curriculum.schedules[charId];
-        if (!schedule) return 0;
-
-        var count = 0;
-        for (var week in schedule) {
-            if (!Object.prototype.hasOwnProperty.call(schedule, week)) continue;
-            var weekData = schedule[week];
-            if (!weekData || typeof weekData !== 'object') continue;
-            for (var day in weekData) {
-                if (!Object.prototype.hasOwnProperty.call(weekData, day)) continue;
-                var dayData = weekData[day];
-                if (!dayData || typeof dayData !== 'object') continue;
-                for (var hour in dayData) {
-                    if (!Object.prototype.hasOwnProperty.call(dayData, hour)) continue;
-                    if (dayData[hour]) count++;
-                }
-            }
-        }
-        return count;
-    }
-
-    // ============================================================
     // MEMBERSHIP PERIOD FORMATTER
     // ============================================================
 
@@ -208,8 +198,24 @@
 
         if (joinStr && leaveStr) return prefix + joinStr + ' → ' + prefix + leaveStr;
         if (joinStr) return prefix + joinStr + ' → Present';
-        if (leaveStr) return prefix + leaveStr;
+        if (leaveStr) return 'Until ' + prefix + leaveStr;
         return prefix + '?';
+    }
+
+    // ============================================================
+    // GRADE VALUE VALIDATION
+    // ============================================================
+
+    function formatGradeValue(score) {
+        var num = Number(score);
+        if (Number.isFinite(num) && num >= 0 && num <= 100) {
+            return Math.round(num) + '%';
+        }
+        return 'Invalid';
+    }
+
+    function isValidGradeObject(value) {
+        return value && typeof value === 'object' && !Array.isArray(value);
     }
 
     // ============================================================
@@ -221,10 +227,16 @@
         if (!container) return;
 
         var data = window.data || {};
-        var html = '';
+
+        // Clear container
+        container.textContent = '';
 
         // Academic Teams
-        html += '<h4 style="color:var(--accent);font-size:0.8rem;margin:8px 0 4px 0;">Academic Teams</h4>';
+        var heading = document.createElement('h4');
+        heading.style.cssText = 'color:var(--accent);font-size:0.8rem;margin:8px 0 4px 0;';
+        heading.textContent = 'Academic Teams';
+        container.appendChild(heading);
+
         var acadTeams = getTeamsByTypeAndCharacter('academic', char.id);
 
         if (acadTeams.length > 0) {
@@ -235,27 +247,72 @@
                 var joinPeriod = member ? member.joinPeriod : '';
                 var leavePeriod = member ? member.leavePeriod : '';
                 var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod, 'Wk ');
-                var classDisplay = team.classId ? ' [' + escapeHtml(typeof window.getClassDisplayName === 'function' ? window.getClassDisplayName(team.classId) : 'Unknown') + ']' : '';
-                html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + escapeHtml(team.name) + '</strong>' + classDisplay + ' <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(periodDisplay) + ')</span>';
-                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(member.role) + ']</span>';
-                html += '</div>';
+                var classDisplay = '';
+                if (team.classId) {
+                    var className = typeof window.getClassDisplayName === 'function'
+                        ? window.getClassDisplayName(team.classId)
+                        : 'Unknown';
+                    classDisplay = ' [' + className + ']';
+                }
+
+                var div = document.createElement('div');
+                div.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);margin-bottom:3px;font-size:0.75rem;';
+
+                var strong = document.createElement('strong');
+                strong.textContent = team.name;
+                div.appendChild(strong);
+
+                if (classDisplay) {
+                    var classSpan = document.createElement('span');
+                    classSpan.textContent = classDisplay;
+                    div.appendChild(classSpan);
+                }
+
+                var periodSpan = document.createElement('span');
+                periodSpan.style.cssText = 'color:var(--text-dim);font-size:0.7rem;';
+                periodSpan.textContent = ' (' + periodDisplay + ')';
+                div.appendChild(periodSpan);
+
+                if (member && member.role) {
+                    var roleSpan = document.createElement('span');
+                    roleSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
+                    roleSpan.textContent = ' [' + member.role + ']';
+                    div.appendChild(roleSpan);
+                }
+
+                container.appendChild(div);
             });
         } else {
-            html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No academic teams</p>';
+            var empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.style.cssText = 'padding:4px;font-size:0.7rem;';
+            empty.textContent = 'No academic teams';
+            container.appendChild(empty);
         }
 
         // Grades - sorted chronologically
-        html += '<h4 style="color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;">Grades</h4>';
+        var gradeHeading = document.createElement('h4');
+        gradeHeading.style.cssText = 'color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;';
+        gradeHeading.textContent = 'Grades';
+        container.appendChild(gradeHeading);
+
         var curriculum = data.curriculum || {};
-        var grades = curriculum.grades && curriculum.grades[char.id] ? curriculum.grades[char.id] : {};
+        var grades = curriculum.grades && curriculum.grades[char.id]
+            ? curriculum.grades[char.id]
+            : {};
+
+        // Defensively validate grades
+        if (!isValidGradeObject(grades)) {
+            grades = {};
+        }
+
         var classCount = 0;
 
         // Count grades defensively
         for (var week in grades) {
             if (!Object.prototype.hasOwnProperty.call(grades, week)) continue;
             var weekGrades = grades[week];
-            if (!weekGrades || typeof weekGrades !== 'object') continue;
+            if (!isValidGradeObject(weekGrades)) continue;
             for (var discId in weekGrades) {
                 if (!Object.prototype.hasOwnProperty.call(weekGrades, discId)) continue;
                 classCount++;
@@ -263,34 +320,55 @@
         }
 
         if (classCount > 0) {
-            html += '<div style="max-height:100px;overflow-y:auto;font-size:0.7rem;">';
-            // Sort weeks chronologically
-            var weeks = Object.keys(grades).sort(function(a, b) {
-                return parseInt(a) - parseInt(b);
+            var gradeContainer = document.createElement('div');
+            gradeContainer.style.cssText = 'max-height:100px;overflow-y:auto;font-size:0.7rem;';
+
+            // Sort weeks chronologically - filter out invalid keys
+            var weeks = Object.keys(grades).filter(function(w) {
+                return /^\d+$/.test(w);
+            }).sort(function(a, b) {
+                return parseInt(a, 10) - parseInt(b, 10);
             });
+
             weeks.forEach(function(week) {
                 if (!Object.prototype.hasOwnProperty.call(grades, week)) return;
                 var weekGrades = grades[week];
-                if (!weekGrades || typeof weekGrades !== 'object') return;
+                if (!isValidGradeObject(weekGrades)) return;
                 // Sort disciplines alphabetically
                 var discIds = Object.keys(weekGrades).sort();
                 discIds.forEach(function(discId) {
                     if (!Object.prototype.hasOwnProperty.call(weekGrades, discId)) return;
-                    var disc = typeof window.getDiscipline === 'function' ? window.getDiscipline(discId) : null;
+                    var disc = typeof window.getDiscipline === 'function'
+                        ? window.getDiscipline(discId)
+                        : null;
                     var score = weekGrades[discId];
                     var discName = disc ? disc.name : 'Unknown';
-                    html += '<div style="padding:2px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;display:flex;justify-content:space-between;">';
-                    html += '<span>' + escapeHtml(discName) + ' (Wk ' + escapeHtml(week) + ')</span>';
-                    html += '<span style="color:var(--accent);font-weight:600;">' + escapeHtml(score) + '%</span>';
-                    html += '</div>';
+                    var formattedScore = formatGradeValue(score);
+
+                    var gradeDiv = document.createElement('div');
+                    gradeDiv.style.cssText = 'padding:2px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;display:flex;justify-content:space-between;';
+
+                    var nameSpan = document.createElement('span');
+                    nameSpan.textContent = discName + ' (Wk ' + week + ')';
+                    gradeDiv.appendChild(nameSpan);
+
+                    var scoreSpan = document.createElement('span');
+                    scoreSpan.style.cssText = 'color:var(--accent);font-weight:600;';
+                    scoreSpan.textContent = formattedScore;
+                    gradeDiv.appendChild(scoreSpan);
+
+                    gradeContainer.appendChild(gradeDiv);
                 });
             });
-            html += '</div>';
-        } else {
-            html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No grades recorded</p>';
-        }
 
-        container.innerHTML = html;
+            container.appendChild(gradeContainer);
+        } else {
+            var empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.style.cssText = 'padding:4px;font-size:0.7rem;';
+            empty.textContent = 'No grades recorded';
+            container.appendChild(empty);
+        }
     }
 
     // ============================================================
@@ -302,10 +380,14 @@
         if (!container) return;
 
         var data = window.data || {};
-        var html = '';
+        container.textContent = '';
 
         // Professional Teams
-        html += '<h4 style="color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;">Professional Teams</h4>';
+        var heading = document.createElement('h4');
+        heading.style.cssText = 'color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;';
+        heading.textContent = 'Professional Teams';
+        container.appendChild(heading);
+
         var profTeams = getTeamsByTypeAndCharacter('professional', char.id);
 
         if (profTeams.length > 0) {
@@ -316,17 +398,42 @@
                 var joinPeriod = member ? member.joinPeriod : '';
                 var leavePeriod = member ? member.leavePeriod : '';
                 var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod);
-                html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--info);margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(periodDisplay) + ')</span>';
-                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(member.role) + ']</span>';
-                html += '</div>';
+
+                var div = document.createElement('div');
+                div.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--info);margin-bottom:3px;font-size:0.75rem;';
+
+                var strong = document.createElement('strong');
+                strong.textContent = team.name;
+                div.appendChild(strong);
+
+                var periodSpan = document.createElement('span');
+                periodSpan.style.cssText = 'color:var(--text-dim);font-size:0.7rem;';
+                periodSpan.textContent = ' (' + periodDisplay + ')';
+                div.appendChild(periodSpan);
+
+                if (member && member.role) {
+                    var roleSpan = document.createElement('span');
+                    roleSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
+                    roleSpan.textContent = ' [' + member.role + ']';
+                    div.appendChild(roleSpan);
+                }
+
+                container.appendChild(div);
             });
         } else {
-            html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No professional teams</p>';
+            var empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.style.cssText = 'padding:4px;font-size:0.7rem;';
+            empty.textContent = 'No professional teams';
+            container.appendChild(empty);
         }
 
         // Temporary Teams
-        html += '<h4 style="color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;">Temporary Teams</h4>';
+        var tempHeading = document.createElement('h4');
+        tempHeading.style.cssText = 'color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;';
+        tempHeading.textContent = 'Temporary Teams';
+        container.appendChild(tempHeading);
+
         var tempTeams = getTeamsByTypeAndCharacter(['temporary', 'internship'], char.id);
 
         if (tempTeams.length > 0) {
@@ -337,17 +444,42 @@
                 var joinPeriod = member ? member.joinPeriod : '';
                 var leavePeriod = member ? member.leavePeriod : '';
                 var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod);
-                html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--warning);margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(periodDisplay) + ')</span>';
-                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(member.role) + ']</span>';
-                html += '</div>';
+
+                var div = document.createElement('div');
+                div.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--warning);margin-bottom:3px;font-size:0.75rem;';
+
+                var strong = document.createElement('strong');
+                strong.textContent = team.name;
+                div.appendChild(strong);
+
+                var periodSpan = document.createElement('span');
+                periodSpan.style.cssText = 'color:var(--text-dim);font-size:0.7rem;';
+                periodSpan.textContent = ' (' + periodDisplay + ')';
+                div.appendChild(periodSpan);
+
+                if (member && member.role) {
+                    var roleSpan = document.createElement('span');
+                    roleSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
+                    roleSpan.textContent = ' [' + member.role + ']';
+                    div.appendChild(roleSpan);
+                }
+
+                container.appendChild(div);
             });
         } else {
-            html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No temporary teams</p>';
+            var empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.style.cssText = 'padding:4px;font-size:0.7rem;';
+            empty.textContent = 'No temporary teams';
+            container.appendChild(empty);
         }
 
         // Civilian Teams
-        html += '<h4 style="color:var(--text-dim);font-size:0.8rem;margin:8px 0 4px 0;">Civilian Teams</h4>';
+        var civHeading = document.createElement('h4');
+        civHeading.style.cssText = 'color:var(--text-dim);font-size:0.8rem;margin:8px 0 4px 0;';
+        civHeading.textContent = 'Civilian Teams';
+        container.appendChild(civHeading);
+
         var civTeams = getTeamsByTypeAndCharacter('civilian', char.id);
 
         if (civTeams.length > 0) {
@@ -358,28 +490,55 @@
                 var joinPeriod = member ? member.joinPeriod : '';
                 var leavePeriod = member ? member.leavePeriod : '';
                 var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod);
-                html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--text-dim);margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(periodDisplay) + ')</span>';
-                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(member.role) + ']</span>';
-                html += '</div>';
+
+                var div = document.createElement('div');
+                div.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--text-dim);margin-bottom:3px;font-size:0.75rem;';
+
+                var strong = document.createElement('strong');
+                strong.textContent = team.name;
+                div.appendChild(strong);
+
+                var periodSpan = document.createElement('span');
+                periodSpan.style.cssText = 'color:var(--text-dim);font-size:0.7rem;';
+                periodSpan.textContent = ' (' + periodDisplay + ')';
+                div.appendChild(periodSpan);
+
+                if (member && member.role) {
+                    var roleSpan = document.createElement('span');
+                    roleSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
+                    roleSpan.textContent = ' [' + member.role + ']';
+                    div.appendChild(roleSpan);
+                }
+
+                container.appendChild(div);
             });
         } else {
-            html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No civilian teams</p>';
+            var empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.style.cssText = 'padding:4px;font-size:0.7rem;';
+            empty.textContent = 'No civilian teams';
+            container.appendChild(empty);
         }
 
         // Missions - with team name
-        html += '<h4 style="color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;">Missions</h4>';
-        var missions = data.missions ? data.missions.filter(function(m) {
-            if (!m || typeof m !== 'object') return false;
-            if (!m.assignedTeamId) return false;
-            return data.teams && data.teams.some(function(t) {
-                if (!t || typeof t !== 'object') return false;
-                return String(t.id) === String(m.assignedTeamId) &&
-                       t.members && t.members.some(function(mem) {
-                           return mem && String(mem.characterId) === String(char.id);
-                       });
-            });
-        }) : [];
+        var missionHeading = document.createElement('h4');
+        missionHeading.style.cssText = 'color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;';
+        missionHeading.textContent = 'Missions';
+        container.appendChild(missionHeading);
+
+        var missions = Array.isArray(data.missions)
+            ? data.missions.filter(function(m) {
+                if (!m || typeof m !== 'object') return false;
+                if (!m.assignedTeamId) return false;
+                return data.teams && data.teams.some(function(t) {
+                    if (!t || typeof t !== 'object') return false;
+                    return String(t.id) === String(m.assignedTeamId) &&
+                           t.members && t.members.some(function(mem) {
+                               return mem && String(mem.characterId) === String(char.id);
+                           });
+                });
+            })
+            : [];
 
         if (missions.length > 0) {
             missions.forEach(function(m) {
@@ -391,21 +550,43 @@
                 } else {
                     statusColor = 'var(--warning)';
                 }
-                var teamName = typeof window.getTeamName === 'function' 
-                    ? window.getTeamName(m.assignedTeamId) 
+                var teamName = typeof window.getTeamName === 'function'
+                    ? window.getTeamName(m.assignedTeamId)
                     : 'Unknown Team';
-                html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + statusColor + ';margin-bottom:3px;font-size:0.75rem;">';
-                html += '<strong>' + escapeHtml(m.title) + '</strong> ';
-                html += '<span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(teamName) + ']</span> ';
-                html += '<span style="color:' + statusColor + ';font-size:0.65rem;">' + escapeHtml(m.status || 'active') + '</span>';
-                if (m.location) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">(' + escapeHtml(m.location) + ')</span>';
-                html += '</div>';
+
+                var div = document.createElement('div');
+                div.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + statusColor + ';margin-bottom:3px;font-size:0.75rem;';
+
+                var strong = document.createElement('strong');
+                strong.textContent = m.title;
+                div.appendChild(strong);
+
+                var teamSpan = document.createElement('span');
+                teamSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
+                teamSpan.textContent = ' [' + teamName + '] ';
+                div.appendChild(teamSpan);
+
+                var statusSpan = document.createElement('span');
+                statusSpan.style.cssText = 'color:' + statusColor + ';font-size:0.65rem;';
+                statusSpan.textContent = m.status || 'active';
+                div.appendChild(statusSpan);
+
+                if (m.location) {
+                    var locSpan = document.createElement('span');
+                    locSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
+                    locSpan.textContent = ' (' + m.location + ')';
+                    div.appendChild(locSpan);
+                }
+
+                container.appendChild(div);
             });
         } else {
-            html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No missions assigned</p>';
+            var empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.style.cssText = 'padding:4px;font-size:0.7rem;';
+            empty.textContent = 'No missions assigned';
+            container.appendChild(empty);
         }
-
-        container.innerHTML = html;
     }
 
     // ============================================================
@@ -417,47 +598,75 @@
         if (!container) return;
 
         var data = window.data || {};
-        var rels = data.social && data.social.relationships ?
-            data.social.relationships.filter(function(r) {
+        container.textContent = '';
+
+        var rels = data.social && Array.isArray(data.social.relationships)
+            ? data.social.relationships.filter(function(r) {
                 return r && (String(r.character1) === String(char.id) ||
                            String(r.character2) === String(char.id));
-            }) : [];
+            })
+            : [];
 
         if (rels.length === 0) {
-            container.innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">No social connections</p>';
+            var empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.style.cssText = 'padding:8px;font-size:0.8rem;';
+            empty.textContent = 'No social connections';
+            container.appendChild(empty);
             return;
         }
 
-        var html = '';
         rels.forEach(function(rel) {
             var otherId = String(rel.character1) === String(char.id) ? rel.character2 : rel.character1;
             var other = typeof window.getCharacterById === 'function' ? window.getCharacterById(otherId) : null;
-            
+
             // Clearly identify orphaned relationships
             var otherName = other ? (typeof window.getDisplayName === 'function' ? window.getDisplayName(other) : 'Unknown') : 'Unknown Character';
             if (!other) {
-                otherName = '⚠ Unknown Character (ID: ' + escapeHtml(otherId) + ')';
+                otherName = '⚠ Unknown Character (ID: ' + otherId + ')';
             }
-            
+
             var typeLabel = getRelationshipTypeLabel(rel.typeId);
             var typeColor = getSafeRelationshipColor(rel.typeId);
-            
+
             var period = '';
             if (rel.startYear && rel.endYear) {
                 period = rel.startYear + ' → ' + rel.endYear;
             } else if (rel.startYear) {
                 period = 'From ' + rel.startYear;
             }
-            
-            var clarification = rel.clarification ? ' (' + escapeHtml(rel.clarification) + ')' : '';
+
+            var clarification = rel.clarification ? ' (' + rel.clarification + ')' : '';
             var notes = rel.notes ? ' 📝' : '';
 
-            html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + typeColor + ';margin-bottom:3px;font-size:0.75rem;">';
-            html += '<span><strong>' + escapeHtml(otherName) + '</strong> <span style="color:' + typeColor + ';">' + escapeHtml(typeLabel) + clarification + '</span>' + notes + '</span>';
-            html += '<span style="font-size:0.65rem;color:var(--text-dim);">' + escapeHtml(period) + '</span>';
-            html += '</div>';
+            var div = document.createElement('div');
+            div.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + typeColor + ';margin-bottom:3px;font-size:0.75rem;';
+
+            var leftSpan = document.createElement('span');
+            var strong = document.createElement('strong');
+            strong.textContent = otherName;
+            leftSpan.appendChild(strong);
+
+            var typeSpan = document.createElement('span');
+            typeSpan.style.cssText = 'color:' + typeColor + ';';
+            typeSpan.textContent = ' ' + typeLabel + clarification;
+            leftSpan.appendChild(typeSpan);
+
+            if (notes) {
+                var notesSpan = document.createElement('span');
+                notesSpan.textContent = notes;
+                leftSpan.appendChild(notesSpan);
+            }
+
+            div.appendChild(leftSpan);
+
+            var rightSpan = document.createElement('span');
+            rightSpan.style.cssText = 'font-size:0.65rem;color:var(--text-dim);';
+            rightSpan.textContent = period;
+            div.appendChild(rightSpan);
+
+            container.appendChild(div);
         });
-        container.innerHTML = html;
     }
 
     // ============================================================
@@ -472,17 +681,8 @@
 
         var select = document.createElement('select');
         select.className = 'career-status-select';
-        var statusOptions = [
-            { value: '', label: 'Select status...' },
-            { value: 'civilian', label: 'Civilian' },
-            { value: 'trainee', label: 'Trainee' },
-            { value: 'rookie', label: 'Rookie' },
-            { value: 'junior', label: 'Junior' },
-            { value: 'senior', label: 'Senior' },
-            { value: 'instructor', label: 'Instructor' },
-            { value: 'support', label: 'Support' }
-        ];
-        statusOptions.forEach(function(opt) {
+
+        CAREER_STATUS_OPTIONS.forEach(function(opt) {
             var option = document.createElement('option');
             option.value = opt.value;
             option.textContent = opt.label;
@@ -569,14 +769,9 @@
                 <div id="career-status-container">
                     <div class="career-status-entry">
                         <select class="career-status-select">
-                            <option value="">Select status...</option>
-                            <option value="civilian">Civilian</option>
-                            <option value="trainee">Trainee</option>
-                            <option value="rookie">Rookie</option>
-                            <option value="junior">Junior</option>
-                            <option value="senior">Senior</option>
-                            <option value="instructor">Instructor</option>
-                            <option value="support">Support</option>
+                            ${CAREER_STATUS_OPTIONS.map(function(opt) {
+                                return '<option value="' + opt.value + '">' + opt.label + '</option>';
+                            }).join('')}
                         </select>
                         <input type="number" class="career-start-year" placeholder="Start Year" />
                         <input type="number" class="career-end-year" placeholder="End Year" />
@@ -623,7 +818,6 @@
         getTeamsByTypeAndCharacter: getTeamsByTypeAndCharacter,
         getRelationshipTypeLabel: getRelationshipTypeLabel,
         getRelationshipTypeColor: getSafeRelationshipColor,
-        getScheduleCount: getScheduleCount,
 
         // HTML generators
         getAcademicTabHTML: getAcademicTabHTML,
