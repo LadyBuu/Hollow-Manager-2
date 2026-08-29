@@ -5,28 +5,29 @@
  * 
  * This module is responsible for:
  *   - Rendering the character form with all tabs
- *   - Switching between tabs
+ *   - Switching between tabs (with lazy view rendering)
  *   - Populating form fields from character data
  *   - Resetting form fields for new characters
  *   - Managing class tags in the form
  * 
  * IMPORTANT:
  *   - This module is for RENDERING only - all event binding is in character-events.js
- *   - State is managed via window.getCurrentEditId() and window.setCurrentEditId()
+ *   - State is managed via window.getCurrentEditId() (read-only for this module)
  *   - All user-controlled data is inserted using safe DOM APIs (textContent, value)
  *   - DOM operations are safe and defensive
  *   - Re-initialization is supported after DOM replacement
+ *   - State mutation (setCurrentEditId) is owned by index.js, not this module
+ *   - Lazy rendering: views are only rendered when their tab is first activated
  * 
  * DEPENDENCIES:
  *   - window.CharacterViews
- *   - window.CharacterCRUD
  *   - window.CharacterEliminations
  *   - window.CharacterClasses
  *   - window.CharacterStats
+ *   - window.CharacterList
  *   - window.getCharacterById (from core-utils.js)
  *   - window.getDisplayName (from core-utils.js)
  *   - window.getCurrentEditId (from index.js)
- *   - window.setCurrentEditId (from index.js)
  */
 
 (function() {
@@ -39,21 +40,44 @@
     window.__characterFormLoaded = true;
 
     // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'stats', 'social', 'notes'];
+
+    // Magic types - kept here for form population, but should eventually be owned by CharacterStats
+    var MAGIC_TYPES = [
+        'earth', 'water', 'fire', 'air', 'metal', 'wood',
+        'blood', 'bone', 'mind', 'morphic', 'life', 'death',
+        'space', 'time', 'dimension', 'void', 'reality', 'transference'
+    ];
+
+    // ============================================================
     // STATE
     // ============================================================
 
-    var currentTab = 'name';
+    var _dependencyCache = null;
+
+    // Track which views have been rendered to support lazy rendering
+    var _renderedViews = {
+        academic: false,
+        professional: false,
+        social: false
+    };
 
     // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
+        if (_dependencyCache !== null) {
+            return _dependencyCache;
+        }
+
         var required = [
             'getCharacterById',
             'getDisplayName',
-            'getCurrentEditId',
-            'setCurrentEditId'
+            'getCurrentEditId'
         ];
 
         var missing = [];
@@ -66,7 +90,6 @@
         // Feature modules - required for their respective features
         var featureModules = {
             'CharacterViews': ['renderAcademic', 'renderProfessional', 'renderSocial', 'addCareerStatusEntry'],
-            'CharacterCRUD': ['save'],
             'CharacterEliminations': ['renderTournament', 'renderStandalone'],
             'CharacterClasses': ['populateClassTags', 'clearClassTags', 'populateAcademicClassSelector', 'updateCurrentClassesDisplay'],
             'CharacterStats': ['getCharacterStats', 'getCharacterMagic', 'updateClassSuggestion', 'updateMagicClassSuggestion', 'updateMagicPowerDisplay', 'getSpecialMoves', 'renderSpecialMoves'],
@@ -89,6 +112,7 @@
 
         if (missing.length > 0) {
             console.warn('CharacterForm: Missing required dependencies:', missing.join(', '));
+            _dependencyCache = false;
             return false;
         }
 
@@ -97,7 +121,26 @@
             // Don't fail - features will be degraded
         }
 
+        _dependencyCache = true;
         return true;
+    }
+
+    // ============================================================
+    // EMPTY STATE HELPER
+    // ============================================================
+
+    function setEmptyState(container, text, padding, fontSize) {
+        if (!container) return;
+
+        container.replaceChildren();
+
+        var empty = document.createElement('p');
+        empty.className = 'empty-state';
+        empty.style.padding = padding || '8px';
+        empty.style.fontSize = fontSize || '0.8rem';
+        empty.textContent = text || 'None';
+
+        container.appendChild(empty);
     }
 
     // ============================================================
@@ -115,19 +158,18 @@
         var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
 
         if (editId) {
-            var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(editId) : null;
-            if (char) {
-                show(editId);
-            }
+            show(editId);
         }
     }
 
     // ============================================================
-    // TAB SWITCHING
+    // TAB SWITCHING - With lazy view rendering
     // ============================================================
 
     function switchTab(tab) {
-        currentTab = tab;
+        if (VALID_TABS.indexOf(tab) === -1) {
+            return;
+        }
 
         var tabBtns = document.querySelectorAll('.char-tab-btn');
         tabBtns.forEach(function(btn) {
@@ -141,16 +183,26 @@
             panel.classList.toggle('active', panelId === tab);
         });
 
+        // Lazy render tab-specific content
         var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
         if (id) {
             var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(id) : null;
             if (char) {
-                if (tab === 'academic' && window.CharacterViews && typeof window.CharacterViews.renderAcademic === 'function') {
-                    window.CharacterViews.renderAcademic(char);
-                } else if (tab === 'professional' && window.CharacterViews && typeof window.CharacterViews.renderProfessional === 'function') {
-                    window.CharacterViews.renderProfessional(char);
-                } else if (tab === 'social' && window.CharacterViews && typeof window.CharacterViews.renderSocial === 'function') {
-                    window.CharacterViews.renderSocial(char);
+                if (tab === 'academic' && !_renderedViews.academic) {
+                    _renderedViews.academic = true;
+                    if (window.CharacterViews && typeof window.CharacterViews.renderAcademic === 'function') {
+                        window.CharacterViews.renderAcademic(char);
+                    }
+                } else if (tab === 'professional' && !_renderedViews.professional) {
+                    _renderedViews.professional = true;
+                    if (window.CharacterViews && typeof window.CharacterViews.renderProfessional === 'function') {
+                        window.CharacterViews.renderProfessional(char);
+                    }
+                } else if (tab === 'social' && !_renderedViews.social) {
+                    _renderedViews.social = true;
+                    if (window.CharacterViews && typeof window.CharacterViews.renderSocial === 'function') {
+                        window.CharacterViews.renderSocial(char);
+                    }
                 }
             }
         }
@@ -167,14 +219,12 @@
         var title = document.getElementById('form-title');
         var nameDisplay = document.getElementById('current-char-name');
 
-        // Bail early if form doesn't exist
         if (!form) {
             console.warn('CharacterForm: Form #character-form not found');
             return;
         }
 
-        switchTab('name');
-
+        // Handle invalid editId - clear form state
         if (editId !== null && editId !== undefined && editId !== '') {
             var char = typeof window.getCharacterById === 'function' 
                 ? window.getCharacterById(editId) 
@@ -182,8 +232,16 @@
             
             if (!char) {
                 if (title) title.textContent = 'Character not found';
+                // Clear the form to avoid stale data
+                resetFormFields();
+                // But keep the form hidden/disabled state appropriate
                 return;
             }
+
+            // Reset view render state for this character
+            _renderedViews.academic = false;
+            _renderedViews.professional = false;
+            _renderedViews.social = false;
 
             if (title) title.textContent = 'Edit Character';
             if (nameDisplay) {
@@ -192,22 +250,23 @@
                     : char.firstName || '';
             }
 
+            // Switch to name tab (this will lazy render the active view)
+            switchTab('name');
+
             populateFormFields(char);
 
-            if (window.CharacterViews && typeof window.CharacterViews.renderAcademic === 'function') {
-                window.CharacterViews.renderAcademic(char);
-            }
-            if (window.CharacterViews && typeof window.CharacterViews.renderProfessional === 'function') {
-                window.CharacterViews.renderProfessional(char);
-            }
-            if (window.CharacterViews && typeof window.CharacterViews.renderSocial === 'function') {
-                window.CharacterViews.renderSocial(char);
-            }
-
+            // Refresh character list to reflect selection
             if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                 window.CharacterList.render();
             }
         } else {
+            // New character - reset view render state
+            _renderedViews.academic = false;
+            _renderedViews.professional = false;
+            _renderedViews.social = false;
+
+            switchTab('name');
+
             if (title) title.textContent = 'New Character';
             if (nameDisplay) nameDisplay.textContent = 'New Character';
 
@@ -230,18 +289,19 @@
         if (!char) return;
 
         // Name tab
-        setFieldValue('char-firstname', char.firstName || '');
-        setFieldValue('char-middlename', char.middleName || '');
-        setFieldValue('char-lastname', char.lastName || '');
-        setFieldValue('char-nickname', char.nickname || '');
-        setFieldValue('char-alias', char.alias || '');
+        setFieldValue('char-firstname', char.firstName);
+        setFieldValue('char-middlename', char.middleName);
+        setFieldValue('char-lastname', char.lastName);
+        setFieldValue('char-nickname', char.nickname);
+        setFieldValue('char-alias', char.alias);
         setFieldValue('char-previous-names', (char.previousNames || []).join(', '));
         setFieldValue('char-name-format', char.nameFormat || 'firstlast');
-        setFieldValue('char-birthyear', char.birthYear || '');
-        setCheckbox('char-deceased', char.deceased || false);
-        setFieldValue('char-death-year', char.deathYear || '');
-        setFieldValue('char-death-cause', char.deathCause || '');
-        setFieldValue('char-death-age', char.deathAge || '');
+        setFieldValue('char-birthyear', char.birthYear);
+        setCheckbox('char-deceased', char.deceased);
+        setFieldValue('char-death-year', char.deathYear);
+        setFieldValue('char-death-cause', char.deathCause);
+        setFieldValue('char-death-age', char.deathAge);
+        setFieldValue('char-death-week', char.deathWeek);
 
         var deathFields = document.getElementById('death-fields');
         if (deathFields) {
@@ -249,47 +309,44 @@
         }
 
         // Physical tab
-        setFieldValue('char-gender', char.gender || '');
-        setFieldValue('char-eyes', char.eyes || '');
-        setFieldValue('char-hair', char.hair || '');
-        setFieldValue('char-skin', char.skin || '');
-        setFieldValue('char-height', char.height || '');
-        setFieldValue('char-weight', char.weight || '');
-        setFieldValue('char-build', char.build || '');
-        setFieldValue('char-appearance-notes', char.appearanceNotes || '');
+        setFieldValue('char-gender', char.gender);
+        setFieldValue('char-eyes', char.eyes);
+        setFieldValue('char-hair', char.hair);
+        setFieldValue('char-skin', char.skin);
+        setFieldValue('char-height', char.height);
+        setFieldValue('char-weight', char.weight);
+        setFieldValue('char-build', char.build);
+        setFieldValue('char-appearance-notes', char.appearanceNotes);
 
         // Personality tab
         var p = char.personality || {};
-        setFieldValue('char-traits', p.traits || '');
-        setFieldValue('char-ideals', p.ideals || '');
-        setFieldValue('char-bonds', p.bonds || '');
-        setFieldValue('char-flaws', p.flaws || '');
-        setFieldValue('char-alignment', p.alignment || '');
-        setFieldValue('char-likes', p.likes || '');
-        setFieldValue('char-dislikes', p.dislikes || '');
-        setFieldValue('char-habits', p.habits || '');
-        setFieldValue('char-fears', p.fears || '');
-        setFieldValue('char-goals', p.goals || '');
+        setFieldValue('char-traits', p.traits);
+        setFieldValue('char-ideals', p.ideals);
+        setFieldValue('char-bonds', p.bonds);
+        setFieldValue('char-flaws', p.flaws);
+        setFieldValue('char-alignment', p.alignment);
+        setFieldValue('char-likes', p.likes);
+        setFieldValue('char-dislikes', p.dislikes);
+        setFieldValue('char-habits', p.habits);
+        setFieldValue('char-fears', p.fears);
+        setFieldValue('char-goals', p.goals);
 
         // Stats tab
         var stats = window.CharacterStats && typeof window.CharacterStats.getCharacterStats === 'function' 
             ? window.CharacterStats.getCharacterStats(char) 
             : char.stats || {};
-        setFieldValue('char-str', stats.str !== undefined ? stats.str : 10);
-        setFieldValue('char-dex', stats.dex !== undefined ? stats.dex : 10);
-        setFieldValue('char-con', stats.con !== undefined ? stats.con : 10);
-        setFieldValue('char-int', stats.int !== undefined ? stats.int : 10);
-        setFieldValue('char-wis', stats.wis !== undefined ? stats.wis : 10);
-        setFieldValue('char-cha', stats.cha !== undefined ? stats.cha : 10);
+        setFieldValue('char-str', stats.str);
+        setFieldValue('char-dex', stats.dex);
+        setFieldValue('char-con', stats.con);
+        setFieldValue('char-int', stats.int);
+        setFieldValue('char-wis', stats.wis);
+        setFieldValue('char-cha', stats.cha);
 
         // Magic stats
         var magic = window.CharacterStats && typeof window.CharacterStats.getCharacterMagic === 'function'
             ? window.CharacterStats.getCharacterMagic(char)
             : char.magic || {};
-        var magicTypes = ['earth', 'water', 'fire', 'air', 'metal', 'wood',
-            'blood', 'bone', 'mind', 'morphic', 'life', 'death',
-            'space', 'time', 'dimension', 'void', 'reality', 'transference'];
-        magicTypes.forEach(function(key) {
+        MAGIC_TYPES.forEach(function(key) {
             var input = document.getElementById('magic-' + key);
             if (input) {
                 input.value = magic[key] !== undefined ? magic[key] : 0;
@@ -320,7 +377,7 @@
         // Career status
         var statusContainer = document.getElementById('career-status-container');
         if (statusContainer) {
-            statusContainer.innerHTML = '';
+            statusContainer.replaceChildren();
             if (char.careerStatus && char.careerStatus.length > 0) {
                 char.careerStatus.forEach(function(status) {
                     if (window.CharacterViews && typeof window.CharacterViews.addCareerStatusEntry === 'function') {
@@ -338,7 +395,7 @@
         }
 
         // Professional tab
-        setFieldValue('char-specialty', char.specialty || '');
+        setFieldValue('char-specialty', char.specialty);
 
         // Class tags
         if (window.CharacterClasses && typeof window.CharacterClasses.populateClassTags === 'function') {
@@ -364,11 +421,11 @@
         }
 
         // Notes
-        setFieldValue('char-notes', char.notes || '');
+        setFieldValue('char-notes', char.notes);
     }
 
     // ============================================================
-    // RESET FORM FIELDS
+    // RESET FORM FIELDS - DOM only, no state mutation
     // ============================================================
 
     function resetFormFields() {
@@ -378,9 +435,25 @@
             if (input.type === 'checkbox') {
                 input.checked = false;
             } else if (input.type === 'number') {
-                var defaultVal = input.id === 'char-str' || input.id === 'char-dex' || 
-                                 input.id === 'char-con' || input.id === 'char-int' || 
-                                 input.id === 'char-wis' || input.id === 'char-cha' ? 10 : '';
+                // Stats defaults are owned by CharacterStats
+                // If CharacterStats is available, use its defaults
+                var defaultVal = 10;
+                if (window.CharacterStats && typeof window.CharacterStats.getDefaultStats === 'function') {
+                    var defaults = window.CharacterStats.getDefaultStats();
+                    // Map input ID to stat key
+                    var statMap = {
+                        'char-str': 'str',
+                        'char-dex': 'dex',
+                        'char-con': 'con',
+                        'char-int': 'int',
+                        'char-wis': 'wis',
+                        'char-cha': 'cha'
+                    };
+                    var statKey = statMap[input.id];
+                    if (statKey && defaults[statKey] !== undefined) {
+                        defaultVal = defaults[statKey];
+                    }
+                }
                 input.value = defaultVal;
             } else {
                 input.value = '';
@@ -394,10 +467,7 @@
         }
 
         // Reset magic inputs to 0
-        var magicTypes = ['earth', 'water', 'fire', 'air', 'metal', 'wood',
-            'blood', 'bone', 'mind', 'morphic', 'life', 'death',
-            'space', 'time', 'dimension', 'void', 'reality', 'transference'];
-        magicTypes.forEach(function(key) {
+        MAGIC_TYPES.forEach(function(key) {
             var input = document.getElementById('magic-' + key);
             if (input) input.value = 0;
         });
@@ -409,7 +479,7 @@
         // Reset career status
         var statusContainer = document.getElementById('career-status-container');
         if (statusContainer) {
-            statusContainer.innerHTML = '';
+            statusContainer.replaceChildren();
             if (window.CharacterViews && typeof window.CharacterViews.addCareerStatusEntry === 'function') {
                 window.CharacterViews.addCareerStatusEntry(statusContainer);
             }
@@ -420,10 +490,14 @@
             window.CharacterClasses.clearClassTags();
         }
 
-        // Reset class selector
+        // Reset class selector - use DOM APIs for consistency
         var classSelect = document.getElementById('academic-class-select');
         if (classSelect) {
-            classSelect.innerHTML = '<option value="">Select a class...</option>';
+            classSelect.replaceChildren();
+            var option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'Select a class...';
+            classSelect.appendChild(option);
         }
 
         // Reset current classes display
@@ -431,26 +505,57 @@
         if (classesDisplay) classesDisplay.textContent = 'None';
 
         // Reset eliminations views
-        var tournView = document.getElementById('tournament-eliminations-view');
-        if (tournView) tournView.innerHTML = '<p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p>';
-        var standaloneView = document.getElementById('standalone-eliminations-container');
-        if (standaloneView) standaloneView.innerHTML = '<p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p>';
+        setEmptyState(
+            document.getElementById('tournament-eliminations-view'),
+            'None',
+            '6px',
+            '0.75rem'
+        );
+
+        setEmptyState(
+            document.getElementById('standalone-eliminations-container'),
+            'None',
+            '6px',
+            '0.75rem'
+        );
 
         // Reset social view
-        var socialView = document.getElementById('social-view');
-        if (socialView) socialView.innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Save character to view social connections</p>';
+        setEmptyState(
+            document.getElementById('social-view'),
+            'Save character to view social connections',
+            '8px',
+            '0.8rem'
+        );
 
         // Reset academic/professional views
-        var acadView = document.getElementById('academic-view');
-        if (acadView) acadView.innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Save character to view academic data</p>';
-        var profView = document.getElementById('professional-view');
-        if (profView) profView.innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Save character to view professional data</p>';
+        setEmptyState(
+            document.getElementById('academic-view'),
+            'Save character to view academic data',
+            '8px',
+            '0.8rem'
+        );
+
+        setEmptyState(
+            document.getElementById('professional-view'),
+            'Save character to view professional data',
+            '8px',
+            '0.8rem'
+        );
 
         // Reset special moves
-        var physMoves = document.getElementById('physical-moves-list');
-        if (physMoves) physMoves.innerHTML = '<p class="empty-state" style="padding:4px;font-size:0.7rem;">None</p>';
-        var magMoves = document.getElementById('magical-moves-list');
-        if (magMoves) magMoves.innerHTML = '<p class="empty-state" style="padding:4px;font-size:0.7rem;">None</p>';
+        setEmptyState(
+            document.getElementById('physical-moves-list'),
+            'None',
+            '4px',
+            '0.7rem'
+        );
+
+        setEmptyState(
+            document.getElementById('magical-moves-list'),
+            'None',
+            '4px',
+            '0.7rem'
+        );
 
         // Update suggestions
         if (window.CharacterStats && typeof window.CharacterStats.updateClassSuggestion === 'function') {
@@ -463,10 +568,12 @@
             window.CharacterStats.updateMagicPowerDisplay();
         }
 
-        // Reset current edit ID using state
-        if (typeof window.setCurrentEditId === 'function') {
-            window.setCurrentEditId(null);
-        }
+        // Reset view render state
+        _renderedViews.academic = false;
+        _renderedViews.professional = false;
+        _renderedViews.social = false;
+
+        // NOTE: setCurrentEditId(null) is owned by index.js, not this module
     }
 
     // ============================================================
@@ -485,6 +592,16 @@
         if (el) {
             el.checked = !!checked;
         }
+    }
+
+    // ============================================================
+    // GET CURRENT TAB (for external use)
+    // ============================================================
+
+    function getCurrentTab() {
+        // Find the active tab button
+        var activeBtn = document.querySelector('.char-tab-btn.active');
+        return activeBtn ? activeBtn.dataset.tab : 'name';
     }
 
     // ============================================================
@@ -564,6 +681,7 @@
                         <div id="death-fields" class="death-fields">
                             <div class="form-group"><label>Year of Death</label><input type="number" id="char-death-year" placeholder="e.g., 2023" /></div>
                             <div class="form-group"><label>Death Age</label><input type="number" id="char-death-age" min="0" max="150" placeholder="e.g., 45" /></div>
+                            <div class="form-group"><label>Death Week (1-52)</label><input type="number" id="char-death-week" min="1" max="52" placeholder="e.g., 24" /></div>
                             <div class="form-group full-width"><label>Cause of Death</label><input type="text" id="char-death-cause" /></div>
                         </div>
                     </div>
@@ -757,7 +875,8 @@
         switchTab: switchTab,
         getTabsHTML: getTabsHTML,
         populateFormFields: populateFormFields,
-        resetFormFields: resetFormFields
+        resetFormFields: resetFormFields,
+        getCurrentTab: getCurrentTab
     };
 
 })();
