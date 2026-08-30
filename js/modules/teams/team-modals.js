@@ -11,6 +11,17 @@
  * IMPORTANT: This module does NOT own data mutations or eligibility logic.
  * All domain operations are delegated to TeamCore.
  * All status/eligibility logic is delegated to TeamMembers.
+ * All ranking logic is delegated to TeamRankings.
+ * 
+ * MUTATION DELEGATION:
+ *   - Team mutations → TeamCore.createTeam() / TeamCore.updateTeam() / TeamCore.deleteTeam()
+ *   - Member mutations → TeamCore.addMember() / TeamCore.removeMember() / TeamCore.updateMember()
+ *   - Ranking mutations → TeamCore.addRanking() / TeamCore.removeRanking()
+ * 
+ * PERSISTENCE:
+ *   - This module does NOT call saveData() directly.
+ *   - Callers (team-manager.js) are responsible for persistence.
+ *   - TeamCore mutations update window.data immediately.
  * 
  * DEPENDENCIES:
  *   Required:
@@ -31,14 +42,10 @@
     'use strict';
 
     // Guard against duplicate script loading
+    // IMPORTANT: Check dependency BEFORE marking as loaded
     if (window.__teamModalsLoaded) {
         return;
     }
-    window.__teamModalsLoaded = true;
-
-    // ============================================================
-    // DEPENDENCY CHECK - Required modules
-    // ============================================================
 
     if (!window.TeamCore) {
         console.error('TeamModals: TeamCore is required but not loaded.');
@@ -54,6 +61,8 @@
         console.error('TeamModals: TeamRankings is required but not loaded.');
         return;
     }
+
+    window.__teamModalsLoaded = true;
 
     // ============================================================
     // CONSTANTS
@@ -145,10 +154,12 @@
             title.textContent = 'Edit Team';
             var team = window.TeamCore.getTeam(editId);
             if (team) {
-                document.getElementById('team-name').value = team.name || '';
-                document.getElementById('team-type').value = team.type || 'academic';
-                document.getElementById('team-start').value = team.startPeriod || '';
-                document.getElementById('team-end').value = team.endPeriod || '';
+                // Null-safe field population
+                setFieldValue('team-name', team.name);
+                setFieldValue('team-type', team.type || 'academic');
+                setFieldValue('team-start', team.startPeriod);
+                setFieldValue('team-end', team.endPeriod);
+
                 // Ranking field is DISPLAY ONLY - disabled by JS
                 var rankingInput = document.getElementById('team-ranking');
                 if (rankingInput) {
@@ -156,19 +167,22 @@
                     rankingInput.value = currentRank || '';
                     rankingInput.disabled = true;
                 }
-                document.getElementById('team-status').value = team.status || 'active';
-                if (team.temporaryMission) {
-                    var missionSelect = document.getElementById('team-mission');
-                    if (missionSelect) missionSelect.value = team.temporaryMission;
+
+                setFieldValue('team-status', team.status || 'active');
+
+                var missionSelect = document.getElementById('team-mission');
+                if (missionSelect && team.temporaryMission) {
+                    missionSelect.value = team.temporaryMission;
                 }
+
                 if (team.type === 'academic') {
                     var classSelect = document.getElementById('team-class');
                     if (classSelect && team.classId) {
                         classSelect.value = team.classId;
                     }
-                    var numberInput = document.getElementById('team-number');
-                    if (numberInput) numberInput.value = team.teamNumber || '';
+                    setFieldValue('team-number', team.teamNumber);
                 }
+
                 if (form) form.dataset.editId = editId;
 
                 var container = document.getElementById('name-history-container');
@@ -187,14 +201,15 @@
             title.textContent = 'Add Team';
             if (form) {
                 form.reset();
-                document.getElementById('team-type').value = 'academic';
-                document.getElementById('team-status').value = 'active';
-                // Ranking field is DISPLAY ONLY - disabled by JS
+                setFieldValue('team-type', 'academic');
+                setFieldValue('team-status', 'active');
+
                 var rankingInput = document.getElementById('team-ranking');
                 if (rankingInput) {
                     rankingInput.value = '';
                     rankingInput.disabled = true;
                 }
+
                 delete form.dataset.editId;
             }
 
@@ -221,6 +236,13 @@
     // ============================================================
     // TEAM FORM HELPERS
     // ============================================================
+
+    function setFieldValue(id, value) {
+        var el = document.getElementById(id);
+        if (el) {
+            el.value = value !== undefined && value !== null ? String(value) : '';
+        }
+    }
 
     function populateClassSelector() {
         var select = document.getElementById('team-class');
@@ -335,6 +357,7 @@
         if (!team) return;
 
         var currentPeriod = getCurrentPeriod(team.type);
+        var periodLabel = team.type === 'academic' ? 'Week' : 'Year';
 
         var titleEl = document.getElementById('modal-team-name');
         if (titleEl) titleEl.textContent = team.name + ' - Members (Full History)';
@@ -343,25 +366,10 @@
         if (select) {
             select.innerHTML = '<option value="">Select character...</option>';
 
-            // Get all characters that could potentially be added
-            var eligibleChars = window.TeamMembers.getCandidateCharacters(team.type);
+            // Get candidates for the current period (period-aware)
+            var candidates = window.TeamMembers.getCandidateCharactersAtPeriod(team.type, currentPeriod);
 
-            // Build current/former member ID sets for UI context
-            var currentMemberIds = [];
-            var formerMemberIds = [];
-
-            if (team.members) {
-                team.members.forEach(function(m) {
-                    var status = window.TeamMembers.getStatusAtPeriod(m, currentPeriod, team.type);
-                    if (status === 'active' || status === 'future') {
-                        currentMemberIds.push(m.characterId);
-                    } else {
-                        formerMemberIds.push(m.characterId);
-                    }
-                });
-            }
-
-            eligibleChars.forEach(function(char) {
+            candidates.forEach(function(char) {
                 if (!char || typeof char !== 'object') return;
                 var charId = char.id;
 
@@ -391,9 +399,15 @@
             });
         }
 
-        document.getElementById('member-role').value = '';
-        document.getElementById('member-join').value = '';
-        document.getElementById('member-leave').value = '';
+        // Null-safe field clearing
+        var roleInput = document.getElementById('member-role');
+        if (roleInput) roleInput.value = '';
+
+        var joinInput = document.getElementById('member-join');
+        if (joinInput) joinInput.value = '';
+
+        var leaveInput = document.getElementById('member-leave');
+        if (leaveInput) leaveInput.value = '';
 
         var membersContainer = document.getElementById('members-list');
         if (membersContainer) {
@@ -434,16 +448,16 @@
 
         if (target.classList.contains('edit-member')) {
             e.stopPropagation();
-            var index = parseInt(target.dataset.index, 10);
-            if (!isNaN(index)) {
-                showEditMemberModal(teamId, index);
+            var charId = target.dataset.characterId;
+            if (charId) {
+                showEditMemberModal(teamId, charId);
             }
             return;
         }
 
         if (target.classList.contains('remove-member')) {
             e.stopPropagation();
-            var charId = target.dataset.char;
+            var charId = target.dataset.characterId;
             if (charId && confirm('Remove this member from the team?')) {
                 var result = window.TeamCore.removeMember(teamId, charId);
                 if (result) {
@@ -460,20 +474,29 @@
     }
 
     // ============================================================
-    // EDIT MEMBER MODAL
+    // EDIT MEMBER MODAL - Uses characterId instead of array index
     // ============================================================
 
-    function showEditMemberModal(teamId, index) {
+    function showEditMemberModal(teamId, charId) {
         var modal = document.getElementById('edit-member-modal');
         if (!modal) return;
 
         var team = window.TeamCore.getTeam(teamId);
-        if (!team || !team.members || !team.members[index]) {
+        if (!team || !team.members) {
+            showNotification('Team not found.', 'error');
+            return;
+        }
+
+        // Find member by characterId (stable identifier)
+        var member = team.members.find(function(m) {
+            return m && String(m.characterId) === String(charId);
+        });
+
+        if (!member) {
             showNotification('Member not found.', 'error');
             return;
         }
 
-        var member = team.members[index];
         var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
         var name = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
 
@@ -490,7 +513,7 @@
         if (leaveEl) leaveEl.value = member.leavePeriod || '';
 
         modal.dataset.teamId = teamId;
-        modal.dataset.index = index;
+        modal.dataset.characterId = charId;
         modal.classList.remove('hidden');
     }
 
@@ -510,13 +533,18 @@
         var team = window.TeamCore.getTeam(teamId);
         if (!team) return;
 
-        var periodLabel = team.type === 'academic' ? 'Week Block' : 'Period';
+        var periodLabel = team.type === 'academic' ? 'Week' : 'Year';
         var titleEl = document.getElementById('ranking-modal-title');
         if (titleEl) titleEl.textContent = team.name + ' - Ranking History';
 
         var periodInput = document.getElementById('ranking-period');
         if (periodInput) {
-            periodInput.placeholder = periodLabel + ' (e.g., 1 for weeks 1-2)';
+            // Set appropriate placeholder based on team type
+            if (team.type === 'academic') {
+                periodInput.placeholder = 'Week (e.g., 1)';
+            } else {
+                periodInput.placeholder = 'Year (e.g., ' + new Date().getFullYear() + ')';
+            }
             periodInput.value = '';
         }
 
@@ -588,6 +616,11 @@
         }
 
         var modal = document.getElementById('ranking-modal');
+        if (!modal) {
+            showNotification('Ranking modal not found.', 'error');
+            return;
+        }
+
         var teamId = modal.dataset.teamId;
         if (!teamId) {
             showNotification('No team selected.', 'error');
@@ -637,6 +670,193 @@
     }
 
     // ============================================================
+    // ADD MEMBER HANDLER
+    // ============================================================
+
+    function addMember() {
+        var modal = document.getElementById('member-modal');
+        if (!modal) {
+            showNotification('Member modal not found.', 'error');
+            return;
+        }
+
+        var teamId = modal.dataset.teamId;
+        if (!teamId) {
+            showNotification('No team selected.', 'error');
+            return;
+        }
+
+        var charSelect = document.getElementById('member-character');
+        var roleInput = document.getElementById('member-role');
+        var joinInput = document.getElementById('member-join');
+        var leaveInput = document.getElementById('member-leave');
+
+        var charId = charSelect ? charSelect.value : '';
+        var role = roleInput ? roleInput.value.trim() : '';
+        var joinPeriod = joinInput ? joinInput.value : '';
+        var leavePeriod = leaveInput ? leaveInput.value : '';
+
+        if (!charId) {
+            showNotification('Please select a character.', 'error');
+            return;
+        }
+
+        var result = window.TeamCore.addMember(teamId, {
+            characterId: charId,
+            role: role,
+            joinPeriod: joinPeriod,
+            leavePeriod: leavePeriod
+        });
+
+        if (!result) {
+            showNotification('Failed to add member. The character may already be in this team.', 'error');
+            return;
+        }
+
+        // Refresh UI
+        var team = window.TeamCore.getTeam(teamId);
+        if (team) {
+            var membersContainer = document.getElementById('members-list');
+            if (membersContainer) {
+                var currentPeriod = getCurrentPeriod(team.type);
+                membersContainer.innerHTML = window.TeamMembers.renderList(team, currentPeriod);
+            }
+        }
+
+        // Clear form fields
+        if (charSelect) charSelect.value = '';
+        if (roleInput) roleInput.value = '';
+        if (joinInput) joinInput.value = '';
+        if (leaveInput) leaveInput.value = '';
+
+        // Refresh character select
+        populateMemberCharacterSelect(teamId);
+
+        if (typeof window.refreshTeamList === 'function') {
+            window.refreshTeamList();
+        }
+
+        showNotification('Member added successfully!', 'success');
+    }
+
+    // ============================================================
+    // SAVE EDIT MEMBER HANDLER
+    // ============================================================
+
+    function saveEditMember(e) {
+        e.preventDefault();
+
+        var modal = document.getElementById('edit-member-modal');
+        if (!modal) {
+            showNotification('Edit member modal not found.', 'error');
+            return;
+        }
+
+        var teamId = modal.dataset.teamId;
+        var charId = modal.dataset.characterId;
+
+        if (!teamId || !charId) {
+            showNotification('No member selected.', 'error');
+            return;
+        }
+
+        var roleInput = document.getElementById('edit-member-role');
+        var joinInput = document.getElementById('edit-member-join');
+        var leaveInput = document.getElementById('edit-member-leave');
+
+        var role = roleInput ? roleInput.value.trim() : '';
+        var joinPeriod = joinInput ? joinInput.value : '';
+        var leavePeriod = leaveInput ? leaveInput.value : '';
+
+        var result = window.TeamCore.updateMember(teamId, charId, {
+            role: role,
+            joinPeriod: joinPeriod,
+            leavePeriod: leavePeriod
+        });
+
+        if (!result) {
+            showNotification('Failed to update member.', 'error');
+            return;
+        }
+
+        // Refresh UI
+        var team = window.TeamCore.getTeam(teamId);
+        if (team) {
+            var membersContainer = document.getElementById('members-list');
+            if (membersContainer) {
+                var currentPeriod = getCurrentPeriod(team.type);
+                membersContainer.innerHTML = window.TeamMembers.renderList(team, currentPeriod);
+            }
+        }
+
+        // Close modal
+        modal.classList.add('hidden');
+
+        if (typeof window.refreshTeamList === 'function') {
+            window.refreshTeamList();
+        }
+
+        showNotification('Member updated successfully!', 'success');
+    }
+
+    // ============================================================
+    // POPULATE MEMBER CHARACTER SELECT
+    // ============================================================
+
+    function populateMemberCharacterSelect(teamId) {
+        var select = document.getElementById('member-character');
+        if (!select) return;
+
+        var team = window.TeamCore.getTeam(teamId);
+        if (!team) return;
+
+        var currentPeriod = getCurrentPeriod(team.type);
+
+        select.innerHTML = '<option value="">Select character...</option>';
+
+        // Use period-aware candidate selection
+        var candidates = window.TeamMembers.getCandidateCharactersAtPeriod(team.type, currentPeriod);
+
+        var currentMemberIds = (team.members || []).map(function(m) {
+            return m ? String(m.characterId) : null;
+        }).filter(function(id) { return id; });
+
+        candidates.forEach(function(char) {
+            if (!char || typeof char !== 'object') return;
+
+            var isInTeam = currentMemberIds.some(function(id) {
+                return String(id) === String(char.id);
+            });
+
+            var eligibility = window.TeamMembers.getEligibilityStatus(
+                team,
+                char,
+                currentPeriod
+            );
+
+            var option = document.createElement('option');
+            option.value = char.id;
+
+            var displayName = window.getDisplayName ? window.getDisplayName(char) : 'Unknown';
+            var currentStatus = window.getCurrentStatus ? window.getCurrentStatus(char) : '';
+            option.textContent = displayName + ' [' + currentStatus + '] ' + eligibility.label;
+
+            if (eligibility.style) {
+                option.style.cssText = eligibility.style;
+            }
+
+            if (eligibility.disabled || isInTeam) {
+                option.disabled = true;
+                if (isInTeam) {
+                    option.textContent += ' ✓ In Team';
+                }
+            }
+
+            select.appendChild(option);
+        });
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -657,10 +877,13 @@
         showRankingModal: showRankingModal,
         closeRankingModal: closeRankingModal,
 
-        // Add ranking
+        // Add handlers
         addRanking: addRanking,
+        addMember: addMember,
+        saveEditMember: saveEditMember,
 
-        // Helpers (exposed for consistency)
+        // Helpers (exposed for team-manager.js)
+        populateMemberCharacterSelect: populateMemberCharacterSelect,
         populateClassSelector: populateClassSelector,
         populateMissionSelector: populateMissionSelector,
         toggleAcademicFields: toggleAcademicFields,
