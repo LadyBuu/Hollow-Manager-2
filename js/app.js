@@ -9,12 +9,22 @@
  *   - Tab switching coordination
  *   - Global render coordination
  *   - Activity logging (without hidden persistence)
+ *   - Data readiness coordination with character system
  * 
  * IMPORTANT: logActivity() does NOT persist the entire dataset.
  * It only updates in-memory state. The caller is responsible for saving.
  * This prevents recursive save chains and race conditions.
  * 
- * Modules like dashboard.js own their own data updates.
+ * DEPENDENCIES:
+ *   - window.UI_CONSTANTS (from constants.js)
+ *   - window.NotificationSystem (from notification.js)
+ *   - window.TabManager (from tab-manager.js)
+ *   - window.data (from database.js)
+ * 
+ * INTEGRATION WITH CHARACTER SYSTEM:
+ *   - Listens for 'dataReady' event to coordinate character module loading
+ *   - Provides global error handling for data failures
+ *   - Notification system integration for user feedback
  */
 
 (function() {
@@ -25,6 +35,17 @@
     // ============================================================
 
     var appInitialized = false;
+    var _dataReadyFired = false;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var UI = window.UI_CONSTANTS || {
+        DEBOUNCE_DELAY: 300,
+        MOBILE_BREAKPOINT: 768,
+        ANIMATION_DURATION: 300
+    };
 
     // ============================================================
     // BURGER MENU CONTROLS
@@ -44,14 +65,15 @@
         
         toggle.addEventListener('click', function(e) {
             e.stopPropagation();
-            nav.classList.toggle('open');
-            this.classList.toggle('open');
-            this.textContent = this.classList.contains('open') ? '✕' : '☰';
+            var isOpen = nav.classList.toggle('open');
+            this.classList.toggle('open', isOpen);
+            this.textContent = isOpen ? '✕' : '☰';
             if (actions) {
-                actions.classList.toggle('open');
+                actions.classList.toggle('open', isOpen);
             }
         });
         
+        // Click outside to close
         document.addEventListener('click', function(e) {
             if (nav.classList.contains('open')) {
                 var isInsideNav = nav.contains(e.target);
@@ -68,8 +90,6 @@
                 }
             }
         });
-        
-        console.log('Burger menu initialized');
     }
 
     // ============================================================
@@ -119,8 +139,66 @@
                 window.data.activities.length = 100;
             }
         }
+    }
+
+    // ============================================================
+    // DATA READY HANDLER - Coordinates character system loading
+    // ============================================================
+
+    function handleDataReady(e) {
+        var detail = e && e.detail;
+        var status = detail ? detail.status : null;
         
-        console.log('[' + type + ']', message);
+        // Prevent duplicate handling
+        if (_dataReadyFired) return;
+        _dataReadyFired = true;
+
+        if (status === 'failed') {
+            var error = detail ? detail.error : null;
+            handleDataFailure(error);
+            return;
+        }
+
+        // Data loaded successfully
+        handleDataSuccess(detail ? detail.data : null);
+    }
+
+    function handleDataSuccess(data) {
+        // Data is already in window.data from database.js
+        // Just notify the user and refresh the current tab
+        
+        var tab = document.getElementById('tab-dashboard');
+        if (tab && window.renderDashboard) {
+            window.renderDashboard(tab);
+        }
+        
+        // Refresh current tab if TabManager is ready
+        if (window.TabManager && typeof window.TabManager.refreshCurrent === 'function') {
+            setTimeout(function() {
+                window.TabManager.refreshCurrent();
+            }, 50);
+        }
+    }
+
+    function handleDataFailure(error) {
+        var message = 'Failed to load data. Please refresh the page.';
+        
+        if (error && error.message) {
+            message = 'Data loading failed: ' + error.message;
+        }
+        
+        // Show notification if available
+        if (window.NotificationSystem && typeof window.NotificationSystem.notifyError === 'function') {
+            window.NotificationSystem.notifyError(message, 0); // Persistent
+        } else if (window.showToast) {
+            window.showToast(message, 'error');
+        } else {
+            // Fallback
+            var el = document.getElementById('tab-dashboard');
+            if (el) {
+                el.innerHTML = '<p class="empty-state" style="color:var(--danger);">' + message + '</p>';
+            }
+        }
     }
 
     // ============================================================
@@ -134,6 +212,9 @@
 
         // Initialize burger menu (static HTML)
         initBurgerMenu();
+        
+        // Set up data ready listener
+        document.addEventListener('dataReady', handleDataReady);
         
         // Close menu when tab changes
         document.addEventListener('tabChanged', function() {
@@ -154,7 +235,7 @@
         window.addEventListener('resize', function() {
             clearTimeout(resizeTimeout);
             resizeTimeout = setTimeout(function() {
-                if (window.innerWidth >= 768) {
+                if (window.innerWidth >= UI.MOBILE_BREAKPOINT) {
                     var nav = document.getElementById('main-nav');
                     var toggle = document.getElementById('nav-toggle');
                     var actions = document.getElementById('header-actions');
@@ -168,10 +249,20 @@
                         actions.classList.remove('open');
                     }
                 }
-            }, 250);
+            }, UI.DEBOUNCE_DELAY);
         });
-        
-        console.log('App initialized');
+
+        // If data is already loaded (database.js loaded before app.js),
+        // handle it immediately
+        if (window.data) {
+            // Don't fire dataReady again, but do handle the initial state
+            if (!_dataReadyFired) {
+                _dataReadyFired = true;
+                setTimeout(function() {
+                    handleDataSuccess(window.data);
+                }, 10);
+            }
+        }
     }
 
     // ============================================================
