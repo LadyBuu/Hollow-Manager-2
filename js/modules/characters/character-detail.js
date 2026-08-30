@@ -451,6 +451,9 @@
         html += '<div class="detail-row"><span class="label">Display Format:</span> <span>' + escapeHtml(formatLabels[nameFormat] || 'First + Last') + '</span></div>';
         html += '<div class="detail-row"><span class="label">Age:</span> <span>' + escapeHtml(age) + '</span></div>';
         html += '<div class="detail-row"><span class="label">Year of Birth:</span> <span>' + escapeHtml(char.birthYear || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Gender:</span> <span>' + escapeHtml(char.gender || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Attraction:</span> <span>' + escapeHtml(char.attraction || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Sexuality:</span> <span>' + escapeHtml(char.sexuality || '-') + '</span></div>';
 
         if (char.deceased) {
             html += '<div class="detail-row"><span class="label">Deceased:</span> <span style="color:var(--danger);font-weight:600;">Yes</span></div>';
@@ -465,7 +468,6 @@
 
     function renderPhysicalTab(char) {
         var html = '<div class="detail-section">';
-        html += '<div class="detail-row"><span class="label">Gender:</span> <span>' + escapeHtml(char.gender || '-') + '</span></div>';
         html += '<div class="detail-row"><span class="label">Eye Color:</span> <span>' + escapeHtml(char.eyes || '-') + '</span></div>';
         html += '<div class="detail-row"><span class="label">Hair Color:</span> <span>' + escapeHtml(char.hair || '-') + '</span></div>';
         html += '<div class="detail-row"><span class="label">Skin Color/Tone:</span> <span>' + escapeHtml(char.skin || '-') + '</span></div>';
