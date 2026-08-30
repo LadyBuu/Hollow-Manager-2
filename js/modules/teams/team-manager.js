@@ -42,7 +42,10 @@
  *     - window.getCurrentStatus
  *     - window.updateDashboardStats
  *     - window.saveData
- *     - window.showToast
+ *     - window.logActivity
+ *     - window.NotificationSystem (from notification.js)
+ *     - window.CALENDAR_CONSTANTS (from constants.js)
+ *     - window.DomUtils (from dom-utils.js)
  */
 
 (function() {
@@ -69,10 +72,24 @@
     }
 
     // ============================================================
-    // HTML ESCAPING - Prevents XSS
+    // CONSTANTS
+    // ============================================================
+
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
+    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
+    var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
+    var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
+
+    // ============================================================
+    // HTML ESCAPING - Use DomUtils when available
     // ============================================================
 
     function escapeHtml(value) {
+        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
+            return window.DomUtils.escapeHtml(value);
+        }
+        // Fallback
         return String(value == null ? '' : value)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
@@ -97,11 +114,16 @@
     };
 
     // ============================================================
-    // NOTIFICATION
+    // NOTIFICATION - Use NotificationSystem when available
     // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
+
+        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
+            window.NotificationSystem.notify(message, type);
+            return;
+        }
 
         if (typeof window.showToast === 'function') {
             window.showToast(message, type);
@@ -138,7 +160,7 @@
         var onError = options.onError || null;
 
         if (typeof window.saveData !== 'function') {
-            console.error('Persistence unavailable.');
+            console.warn('Persistence unavailable.');
             if (onError) onError();
             showNotification('Changes were applied in memory, but persistent storage is unavailable.', 'error');
             return;
@@ -585,7 +607,7 @@
                                         <input type="text" id="team-number" placeholder="e.g., A, B, 1, 2...">
                                     </div>
                                 </div>
-                                <div class="form-group full-width" id="associated-mission-field" style="display:none;">
+                                <div class="form-group full-width" id="temporary-mission-field" style="display:none;">
                                     <label>Associated Mission</label>
                                     <select id="team-mission">
                                         <option value="">None</option>
@@ -878,6 +900,11 @@
         refreshTeamStats();
         safeUpdateDashboardStats();
 
+        // Log activity
+        if (typeof window.logActivity === 'function') {
+            window.logActivity(editId ? 'Updated team: ' + teamData.name : 'Created team: ' + teamData.name);
+        }
+
         // Then persist (with no UI dependency)
         persistMutation({
             successMessage: editId ? 'Team updated successfully!' : 'Team created successfully!',
@@ -903,6 +930,11 @@
         if (!result) {
             showNotification('Failed to delete team.', 'error');
             return;
+        }
+
+        // Log activity
+        if (typeof window.logActivity === 'function') {
+            window.logActivity('Deleted team: ' + team.name);
         }
 
         // Refresh UI immediately to reflect in-memory change
@@ -1059,6 +1091,13 @@
             return;
         }
 
+        // Log activity
+        var char = window.getCharacterById ? window.getCharacterById(charId) : null;
+        var charName = char ? (window.getDisplayName ? window.getDisplayName(char) : 'character') : 'character';
+        if (typeof window.logActivity === 'function') {
+            window.logActivity('Added ' + charName + ' to team');
+        }
+
         // Refresh UI immediately to reflect in-memory change
         var updatedTeam = getTeam(teamId);
         if (updatedTeam) {
@@ -1086,6 +1125,13 @@
         if (!result) {
             showNotification('Failed to remove member.', 'error');
             return;
+        }
+
+        // Log activity
+        var char = window.getCharacterById ? window.getCharacterById(charId) : null;
+        var charName = char ? (window.getDisplayName ? window.getDisplayName(char) : 'character') : 'character';
+        if (typeof window.logActivity === 'function') {
+            window.logActivity('Removed ' + charName + ' from team');
         }
 
         // Refresh UI immediately to reflect in-memory change
@@ -1148,6 +1194,13 @@
         if (!result) {
             showNotification('Failed to update member.', 'error');
             return;
+        }
+
+        // Log activity
+        var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
+        var charName = char ? (window.getDisplayName ? window.getDisplayName(char) : 'character') : 'character';
+        if (typeof window.logActivity === 'function') {
+            window.logActivity('Updated member ' + charName + ' in team');
         }
 
         // Refresh UI immediately to reflect in-memory change
@@ -1250,6 +1303,12 @@
             return;
         }
 
+        // Log activity
+        if (typeof window.logActivity === 'function') {
+            var team = getTeam(teamId);
+            window.logActivity('Added ranking #' + rank + ' for ' + (team ? team.name : 'team'));
+        }
+
         // Refresh UI immediately to reflect in-memory change
         var updatedTeam = getTeam(teamId);
         if (updatedTeam) {
@@ -1274,6 +1333,12 @@
         if (!result) {
             showNotification('Failed to remove ranking.', 'error');
             return;
+        }
+
+        // Log activity
+        if (typeof window.logActivity === 'function') {
+            var team = getTeam(teamId);
+            window.logActivity('Removed ranking for ' + (team ? team.name : 'team') + ' (' + period + ')');
         }
 
         // Refresh UI immediately to reflect in-memory change
@@ -1336,7 +1401,7 @@
     }
 
     function toggleMissionField(type) {
-        var field = document.getElementById('associated-mission-field');
+        var field = document.getElementById('temporary-mission-field');
         if (field) {
             field.style.display = (type === 'temporary' || type === 'professional') ? 'block' : 'none';
         }
@@ -1353,15 +1418,15 @@
         var endInput = document.getElementById('team-end');
 
         if (type === 'academic') {
-            if (startLabel) startLabel.textContent = 'Start Week';
+            if (startLabel) startLabel.textContent = 'Start Week (' + MIN_WEEK + '-' + MAX_WEEK + ')';
             if (endLabel) endLabel.textContent = 'End Week (optional)';
             if (startInput) startInput.placeholder = 'Week (e.g., 1)';
-            if (endInput) endInput.placeholder = 'Week (e.g., 52)';
+            if (endInput) endInput.placeholder = 'Week (e.g., ' + MAX_WEEK + ')';
         } else {
-            if (startLabel) startLabel.textContent = 'Start Period';
+            if (startLabel) startLabel.textContent = 'Start Period (' + MIN_YEAR + '-' + MAX_YEAR + ')';
             if (endLabel) endLabel.textContent = 'End Period (optional)';
-            if (startInput) startInput.placeholder = 'Year or date';
-            if (endInput) endInput.placeholder = 'Year or date';
+            if (startInput) startInput.placeholder = 'Year (e.g., ' + MIN_YEAR + ')';
+            if (endInput) endInput.placeholder = 'Year (e.g., ' + MAX_YEAR + ')';
         }
 
         toggleAcademicFields(type);
@@ -1404,7 +1469,7 @@
                             applyFilters(tab);
                         });
                     }
-                    var inactiveCheck = filterContainer.querySelector('#academic-show-inactive, #professional-show-inactive');
+                    var inactiveCheck = filterContainer.querySelector('#academic-show-inactive, #professional-show-inactive, #temporary-show-inactive');
                     if (inactiveCheck) {
                         inactiveCheck.addEventListener('change', function() {
                             applyFilters(tab);
@@ -1609,7 +1674,7 @@
         }
 
         // Filter inactive checkboxes
-        var inactiveChecks = container.querySelectorAll('#academic-show-inactive, #professional-show-inactive');
+        var inactiveChecks = container.querySelectorAll('#academic-show-inactive, #professional-show-inactive, #temporary-show-inactive');
         inactiveChecks.forEach(function(check) {
             check.addEventListener('change', function() {
                 applyFilters(teamState.currentTab);
@@ -1631,7 +1696,7 @@
 
             if (weekInput) {
                 var week = parseInt(weekInput.value, 10);
-                if (!isNaN(week) && week >= 1 && week <= 52) {
+                if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
                     filter.filterWeek = week;
                 }
             }
@@ -1647,7 +1712,7 @@
 
             if (yearInput) {
                 var year = parseInt(yearInput.value, 10);
-                if (!isNaN(year) && year >= 1900) {
+                if (!isNaN(year) && year >= MIN_YEAR) {
                     filter.filterYear = year;
                 } else {
                     filter.filterYear = '';
@@ -1658,14 +1723,18 @@
             }
         } else if (tab === 'temporary') {
             var tempYearInput = document.getElementById('team-filter-year');
+            var tempInactiveCheck = document.getElementById('temporary-show-inactive');
 
             if (tempYearInput) {
                 var year = parseInt(tempYearInput.value, 10);
-                if (!isNaN(year) && year >= 1900) {
+                if (!isNaN(year) && year >= MIN_YEAR) {
                     filter.filterYear = year;
                 } else {
                     filter.filterYear = '';
                 }
+            }
+            if (tempInactiveCheck) {
+                filter.filterStatus = tempInactiveCheck.checked ? 'inactive' : 'active';
             }
         }
 
