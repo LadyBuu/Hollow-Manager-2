@@ -33,6 +33,9 @@
  *   - window.showCharacterForm (from index.js)
  *   - window.toggleCharacterList (from index.js)
  *   - window.AppUI.notify (optional, for notifications)
+ *   - window.UI_CONSTANTS (from constants.js)
+ *   - window.MAGIC_CONSTANTS (from constants.js)
+ *   - window.NotificationSystem (from notification.js)
  * 
  * NOTE: CharacterStats owns magic schema definitions. This module
  *       consumes them rather than duplicating them.
@@ -120,14 +123,13 @@
 
         if (missingFeatures.length > 0) {
             console.warn('CharacterEvents: Missing feature dependencies:', missingFeatures.join(', '));
-            // Don't fail - features will be degraded
         }
 
         return true;
     }
 
     // ============================================================
-    // MAGIC TYPE HELPERS - Delegate to CharacterStats
+    // MAGIC TYPE HELPERS - Delegate to CharacterStats or Constants
     // ============================================================
 
     function getMagicTypeKeys() {
@@ -135,12 +137,7 @@
             typeof window.CharacterStats.getMagicTypeKeys === 'function') {
             return window.CharacterStats.getMagicTypeKeys();
         }
-        // Fallback for when CharacterStats isn't available
-        return [
-            'earth', 'water', 'fire', 'air', 'metal', 'wood',
-            'blood', 'bone', 'mind', 'morphic', 'life', 'death',
-            'space', 'time', 'dimension', 'void', 'reality', 'transference'
-        ];
+        return window.MAGIC_CONSTANTS.TYPES.slice();
     }
 
     function getMagicCategoryTypes(category) {
@@ -148,13 +145,9 @@
             typeof window.CharacterStats.getMagicCategoryTypes === 'function') {
             return window.CharacterStats.getMagicCategoryTypes(category);
         }
-        // Fallback for when CharacterStats isn't available
-        var categoryMap = {
-            'elemental': ['earth', 'water', 'fire', 'air', 'metal', 'wood'],
-            'body': ['blood', 'bone', 'mind', 'morphic', 'life', 'death'],
-            'aether': ['space', 'time', 'dimension', 'void', 'reality', 'transference']
-        };
-        return categoryMap[category] || [];
+        return window.MAGIC_CONSTANTS.CATEGORIES[category] 
+            ? window.MAGIC_CONSTANTS.CATEGORIES[category].types.slice()
+            : [];
     }
 
     // ============================================================
@@ -193,10 +186,8 @@
     function showNotification(message, type) {
         type = type || 'info';
 
-        if (typeof window.AppUI !== 'undefined' &&
-            window.AppUI &&
-            typeof window.AppUI.notify === 'function') {
-            window.AppUI.notify(message, type);
+        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
+            window.NotificationSystem.notify(message, type);
             return;
         }
 
@@ -308,7 +299,7 @@
                 if (typeof window.showCharacterForm === 'function') {
                     window.showCharacterForm(null);
                 }
-                if (window.innerWidth < 768 && typeof window.toggleCharacterList === 'function') {
+                if (window.innerWidth < window.UI_CONSTANTS.MOBILE_BREAKPOINT && typeof window.toggleCharacterList === 'function') {
                     window.toggleCharacterList(false);
                 }
             });
@@ -377,7 +368,7 @@
                     if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                         window.CharacterList.render();
                     }
-                }, 300);
+                }, window.UI_CONSTANTS.DEBOUNCE_DELAY);
             });
         }
 
@@ -651,7 +642,7 @@
                 window.showCharacterForm(id);
             }
 
-            if (window.innerWidth < 768 && typeof window.toggleCharacterList === 'function') {
+            if (window.innerWidth < window.UI_CONSTANTS.MOBILE_BREAKPOINT && typeof window.toggleCharacterList === 'function') {
                 window.toggleCharacterList(false);
             }
         });
@@ -674,11 +665,11 @@
                 addSafeEventListener(el, 'blur', function() {
                     var val = parseInt(this.value);
                     if (isNaN(val)) {
-                        this.value = 10;
-                    } else if (val < 1) {
-                        this.value = 1;
-                    } else if (val > 30) {
-                        this.value = 30;
+                        this.value = window.STATS_CONSTANTS.DEFAULT;
+                    } else if (val < window.STATS_CONSTANTS.MIN) {
+                        this.value = window.STATS_CONSTANTS.MIN;
+                    } else if (val > window.STATS_CONSTANTS.MAX) {
+                        this.value = window.STATS_CONSTANTS.MAX;
                     }
                     if (window.CharacterStats && typeof window.CharacterStats.updateClassSuggestion === 'function') {
                         window.CharacterStats.updateClassSuggestion();
@@ -777,7 +768,7 @@
                     var val = parseInt(this.value);
                     var max = window.CharacterStats && typeof window.CharacterStats.MAGIC_MAX !== 'undefined'
                         ? window.CharacterStats.MAGIC_MAX
-                        : 10;
+                        : window.MAGIC_CONSTANTS.MAX;
                     if (isNaN(val)) {
                         this.value = 0;
                     } else if (val < 0) {
