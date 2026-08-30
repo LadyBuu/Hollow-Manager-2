@@ -22,6 +22,9 @@
  *     - window.getDisplayName
  *     - window.getCharacterById
  *     - window.getCurrentStatus
+ *     - window.NotificationSystem (from notification.js)
+ *     - window.CALENDAR_CONSTANTS (from constants.js)
+ *     - window.DomUtils (from dom-utils.js)
  */
 
 (function() {
@@ -53,16 +56,55 @@
     }
 
     // ============================================================
-    // HTML ESCAPING - Prevents XSS
+    // CONSTANTS
+    // ============================================================
+
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
+    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
+    var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
+    var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
+
+    // ============================================================
+    // HTML ESCAPING - Use DomUtils when available
     // ============================================================
 
     function escapeHtml(value) {
+        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
+            return window.DomUtils.escapeHtml(value);
+        }
+        // Fallback
         return String(value == null ? '' : value)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    }
+
+    // ============================================================
+    // NOTIFICATION - Use NotificationSystem when available
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+
+        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
+            window.NotificationSystem.notify(message, type);
+            return;
+        }
+
+        if (typeof window.showToast === 'function') {
+            window.showToast(message, type);
+            return;
+        }
+
+        // Fallback to alert for errors
+        if (type === 'error') {
+            alert('Error: ' + message);
+        } else {
+            alert(message);
+        }
     }
 
     // ============================================================
@@ -225,6 +267,7 @@
         var fields = document.getElementById('academic-team-fields');
         if (fields) {
             fields.classList.toggle('hidden', type !== 'academic');
+            fields.style.display = (type === 'academic') ? 'block' : 'none';
         }
     }
 
@@ -232,6 +275,7 @@
         var field = document.getElementById('temporary-mission-field');
         if (field) {
             field.classList.toggle('hidden', type !== 'temporary' && type !== 'professional');
+            field.style.display = (type === 'temporary' || type === 'professional') ? 'block' : 'none';
         }
     }
 
@@ -246,15 +290,15 @@
         var endInput = document.getElementById('team-end');
 
         if (type === 'academic') {
-            if (startLabel) startLabel.textContent = 'Start Week';
+            if (startLabel) startLabel.textContent = 'Start Week (' + MIN_WEEK + '-' + MAX_WEEK + ')';
             if (endLabel) endLabel.textContent = 'End Week (optional)';
             if (startInput) startInput.placeholder = 'Week (e.g., 1)';
-            if (endInput) endInput.placeholder = 'Week (e.g., 52)';
+            if (endInput) endInput.placeholder = 'Week (e.g., ' + MAX_WEEK + ')';
         } else {
-            if (startLabel) startLabel.textContent = 'Start Period';
+            if (startLabel) startLabel.textContent = 'Start Period (' + MIN_YEAR + '-' + MAX_YEAR + ')';
             if (endLabel) endLabel.textContent = 'End Period (optional)';
-            if (startInput) startInput.placeholder = 'Year or date';
-            if (endInput) endInput.placeholder = 'Year or date';
+            if (startInput) startInput.placeholder = 'Year (e.g., ' + MIN_YEAR + ')';
+            if (endInput) endInput.placeholder = 'Year (e.g., ' + MAX_YEAR + ')';
         }
 
         toggleAcademicFields(type);
@@ -265,16 +309,17 @@
         if (!container) return;
         var entry = document.createElement('div');
         entry.className = 'name-history-entry';
+        entry.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;flex-wrap:wrap;align-items:center;';
         entry.innerHTML = `
-            <input type="text" class="name-history-name" placeholder="Team Name" value="${escapeHtml(name || '')}">
-            <input type="text" class="name-history-start" placeholder="Start" value="${escapeHtml(start || '')}">
-            <input type="text" class="name-history-end" placeholder="End" value="${escapeHtml(end || '')}">
-            <button type="button" class="small danger remove-name">✕</button>
+            <input type="text" class="name-history-name" placeholder="Team Name" value="${escapeHtml(name || '')}" style="flex:1;min-width:80px;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">
+            <input type="text" class="name-history-start" placeholder="Start" value="${escapeHtml(start || '')}" style="flex:1;min-width:60px;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">
+            <input type="text" class="name-history-end" placeholder="End" value="${escapeHtml(end || '')}" style="flex:1;min-width:60px;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">
+            <button type="button" class="small danger remove-name" style="padding:2px 6px;font-size:0.6rem;">✕</button>
         `;
         container.appendChild(entry);
         entry.querySelector('.remove-name').onclick = function() {
             if (container.children.length > 1) entry.remove();
-            else alert('You need at least one name entry.');
+            else showNotification('You need at least one name entry.', 'error');
         };
     }
 
@@ -299,8 +344,7 @@
             select.innerHTML = '<option value="">Select character...</option>';
 
             // Get all characters that could potentially be added
-            // Note: TeamMembers.getEligibleCharacters returns candidates based on status
-            var eligibleChars = window.TeamMembers.getEligibleCharacters(team.type);
+            var eligibleChars = window.TeamMembers.getCandidateCharacters(team.type);
 
             // Build current/former member ID sets for UI context
             var currentMemberIds = [];
@@ -407,6 +451,8 @@
                         window.refreshTeamList();
                     }
                     showMemberModal(teamId);
+                } else {
+                    showNotification('Failed to remove member.', 'error');
                 }
             }
             return;
@@ -423,7 +469,7 @@
 
         var team = window.TeamCore.getTeam(teamId);
         if (!team || !team.members || !team.members[index]) {
-            alert('Member not found.');
+            showNotification('Member not found.', 'error');
             return;
         }
 
@@ -525,9 +571,69 @@
                         window.refreshTeamList();
                     }
                     showRankingModal(teamId);
+                } else {
+                    showNotification('Failed to remove ranking.', 'error');
                 }
             }
         }
+    }
+
+    // ============================================================
+    // ADD RANKING HANDLER
+    // ============================================================
+
+    function addRanking(e) {
+        if (e && e.preventDefault) {
+            e.preventDefault();
+        }
+
+        var modal = document.getElementById('ranking-modal');
+        var teamId = modal.dataset.teamId;
+        if (!teamId) {
+            showNotification('No team selected.', 'error');
+            return;
+        }
+
+        var periodInput = document.getElementById('ranking-period');
+        var rankInput = document.getElementById('ranking-rank');
+
+        var period = periodInput ? periodInput.value.trim() : '';
+        var rank = rankInput ? parseInt(rankInput.value, 10) : null;
+
+        if (!period) {
+            showNotification('Please enter a period.', 'error');
+            return;
+        }
+
+        if (!Number.isInteger(rank) || rank < 1) {
+            showNotification('Please enter a valid rank (positive integer).', 'error');
+            return;
+        }
+
+        var result = window.TeamCore.addRanking(teamId, period, rank);
+        if (!result) {
+            showNotification('Failed to add ranking.', 'error');
+            return;
+        }
+
+        // Clear form fields
+        if (periodInput) periodInput.value = '';
+        if (rankInput) rankInput.value = '';
+
+        // Refresh UI
+        var team = window.TeamCore.getTeam(teamId);
+        if (team) {
+            var listEl = document.getElementById('ranking-list');
+            if (listEl) {
+                listEl.innerHTML = window.TeamRankings.renderList(team);
+            }
+        }
+
+        if (typeof window.refreshTeamList === 'function') {
+            window.refreshTeamList();
+        }
+
+        showNotification('Ranking added successfully!', 'success');
     }
 
     // ============================================================
@@ -550,6 +656,9 @@
         // Ranking modal
         showRankingModal: showRankingModal,
         closeRankingModal: closeRankingModal,
+
+        // Add ranking
+        addRanking: addRanking,
 
         // Helpers (exposed for consistency)
         populateClassSelector: populateClassSelector,
