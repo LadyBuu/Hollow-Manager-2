@@ -2,43 +2,89 @@
  * js/core/tab-manager.js - Tab Navigation System
  * Handles tab switching and module registration
  * Path: js/core/tab-manager.js
+ * 
+ * This module is responsible for:
+ *   - Managing tab switching and navigation
+ *   - Registering tab render functions
+ *   - Coordinating with data loading lifecycle
+ *   - URL hash management
+ *   - Preventing race conditions during initialization
+ * 
+ * IMPORTANT:
+ *   - Tabs are rendered ONLY after data is ready
+ *   - The 'dataReady' event triggers initial tab rendering
+ *   - Tab switching is deferred until data is available
+ *   - All tab render functions are idempotent
+ * 
+ * DEPENDENCIES:
+ *   - window.UI_CONSTANTS (from constants.js)
+ *   - window.data (from database.js)
  */
 
-var TabManager = {
-    currentTab: 'dashboard',
-    tabs: {},
-    tabContentElements: {},
-    navLinks: [],
-    isInitialized: false,
-    isRendering: false,
-    pendingTab: null,
-    pendingUpdateHistory: false,
-    switchTimeout: null,
+(function() {
+    'use strict';
 
-    init: function() {
-        if (this.isInitialized) return;
+    // Guard against duplicate loading
+    if (window.__tabManagerLoaded) {
+        return;
+    }
+    window.__tabManagerLoaded = true;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var UI = window.UI_CONSTANTS || {
+        DEBOUNCE_DELAY: 300,
+        MOBILE_BREAKPOINT: 768
+    };
+
+    // ============================================================
+    // STATE
+    // ============================================================
+
+    var state = {
+        currentTab: 'dashboard',
+        tabs: {},
+        tabContentElements: {},
+        navLinks: [],
+        isInitialized: false,
+        isRendering: false,
+        isDataReady: false,
+        hasSwitched: false,
+        pendingTab: null,
+        pendingUpdateHistory: false,
+        switchTimeout: null,
+        initializationComplete: false
+    };
+
+    // ============================================================
+    // INITIALIZATION
+    // ============================================================
+
+    function init() {
+        if (state.isInitialized) return;
+        state.isInitialized = true;
 
         try {
-            var self = this;
-
             // Find all tab content elements
             document.querySelectorAll('.tab-content').forEach(function(el) {
                 var id = el.id;
                 if (id && id.startsWith('tab-')) {
                     var tabName = id.replace('tab-', '');
-                    self.tabContentElements[tabName] = el;
+                    state.tabContentElements[tabName] = el;
                 }
             });
 
             // Find all nav links and attach events
             document.querySelectorAll('#main-nav a[data-tab]').forEach(function(link) {
-                self.navLinks.push(link);
+                state.navLinks.push(link);
 
                 link.addEventListener('click', function(e) {
                     e.preventDefault();
                     var tab = this.dataset.tab;
                     if (tab) {
-                        self.switchTo(tab, true);
+                        switchTo(tab, true);
                     }
                 });
             });
@@ -49,117 +95,173 @@ var TabManager = {
                     e.preventDefault();
                     var tab = this.dataset.tab;
                     if (tab) {
-                        self.switchTo(tab, true);
+                        switchTo(tab, true);
                     }
                 });
             });
 
+            // Stat links on dashboard
             document.querySelectorAll('.stat-link[data-tab]').forEach(function(link) {
                 link.addEventListener('click', function(e) {
                     e.preventDefault();
                     var tab = this.dataset.tab;
                     if (tab) {
-                        self.switchTo(tab, true);
+                        switchTo(tab, true);
                     }
                 });
             });
 
+            // Listen for data ready
+            document.addEventListener('dataReady', onDataReady);
+            document.addEventListener('dataLoaded', onDataReady);
+
+            // If data is already available, mark as ready
+            if (window.data) {
+                state.isDataReady = true;
+            }
+
             // Set initial tab from URL hash or default
             var hash = window.location.hash.slice(1);
-            var initialTab = self.tabs[hash] ? hash : 'dashboard';
+            var initialTab = state.tabs[hash] ? hash : 'dashboard';
 
             // Use replaceState for initial tab to avoid extra history entry
             if (window.history && window.history.replaceState) {
                 window.history.replaceState(null, '', '#' + initialTab);
             }
 
-            this.isInitialized = true;
+            state.initializationComplete = true;
 
-            // Switch to initial tab after a short delay for modules to register
-            setTimeout(function() {
-                self.switchTo(initialTab, false);
-            }, 50);
+            // If data is already ready, switch to initial tab
+            if (state.isDataReady) {
+                setTimeout(function() {
+                    switchTo(initialTab, false);
+                }, 10);
+            }
 
         } catch (error) {
             console.error('Failed to initialise TabManager:', error);
         }
-    },
+    }
 
-    register: function(tabName, renderFn) {
+    // ============================================================
+    // DATA READY HANDLER
+    // ============================================================
+
+    function onDataReady(e) {
+        if (state.isDataReady) return;
+        state.isDataReady = true;
+
+        // Get the initial tab from URL hash
+        var hash = window.location.hash.slice(1);
+        var initialTab = state.tabs[hash] ? hash : 'dashboard';
+
+        // If we haven't switched to a tab yet, switch now
+        if (!state.hasSwitched) {
+            state.hasSwitched = true;
+            switchTo(initialTab, false);
+        } else {
+            // Refresh current tab with data
+            refreshCurrent();
+        }
+    }
+
+    // ============================================================
+    // TAB REGISTRATION
+    // ============================================================
+
+    function register(tabName, renderFn) {
         if (!tabName || typeof renderFn !== 'function') {
             console.warn('Invalid tab registration:', tabName);
             return false;
         }
 
-        this.tabs[tabName] = renderFn;
+        state.tabs[tabName] = renderFn;
 
         // If this tab is already active and initialized, render it
-        if (this.isInitialized && this.currentTab === tabName) {
-            var container = this.tabContentElements[tabName];
+        if (state.isInitialized && state.currentTab === tabName && state.isDataReady) {
+            var container = state.tabContentElements[tabName];
             if (container) {
                 setTimeout(function() {
-                    this._renderTab(tabName);
-                }.bind(this), 50);
+                    renderTab(tabName);
+                }, 50);
             }
         }
 
         return true;
-    },
+    }
 
-    /**
-     * Switch to a tab
-     * @param {string} tabName - Tab identifier
-     * @param {boolean} updateHistory - Whether to push a new history entry (default: true)
-     */
-    switchTo: function(tabName, updateHistory) {
-        if (!this.tabs[tabName]) {
+    // ============================================================
+    // TAB SWITCHING
+    // ============================================================
+
+    function switchTo(tabName, updateHistory) {
+        // Validate tab exists
+        if (!state.tabs[tabName]) {
+            console.warn('TabManager: Unknown tab "' + tabName + '"');
             return;
         }
 
-        // If already on this tab, do nothing (use forceRefresh for explicit refresh)
-        if (tabName === this.currentTab && this.isInitialized) {
+        // If data is not ready, queue the tab switch
+        if (!state.isDataReady) {
+            state.pendingTab = tabName;
+            state.pendingUpdateHistory = updateHistory !== false;
+            console.log('TabManager: Data not ready, queuing tab "' + tabName + '"');
+            return;
+        }
+
+        // If already on this tab, just refresh
+        if (tabName === state.currentTab && state.isInitialized) {
+            refreshCurrent();
             return;
         }
 
         // Clear any pending switch
-        if (this.switchTimeout) {
-            clearTimeout(this.switchTimeout);
-            this.switchTimeout = null;
+        if (state.switchTimeout) {
+            clearTimeout(state.switchTimeout);
+            state.switchTimeout = null;
         }
 
         // If currently rendering, defer with history flag preserved
-        if (this.isRendering) {
-            this.pendingTab = tabName;
-            this.pendingUpdateHistory = updateHistory !== false;
+        if (state.isRendering) {
+            state.pendingTab = tabName;
+            state.pendingUpdateHistory = updateHistory !== false;
             return;
         }
 
-        var self = this;
-        this.switchTimeout = setTimeout(function() {
-            self._doSwitch(tabName, updateHistory !== false);
-            self.switchTimeout = null;
+        // Schedule the switch
+        state.switchTimeout = setTimeout(function() {
+            doSwitch(tabName, updateHistory !== false);
+            state.switchTimeout = null;
         }, 50);
-    },
+    }
 
-    _doSwitch: function(tabName, updateHistory) {
-        // If still rendering, defer with history flag preserved
-        if (this.isRendering) {
-            this.pendingTab = tabName;
-            this.pendingUpdateHistory = updateHistory !== false;
+    function doSwitch(tabName, updateHistory) {
+        // If data is not ready, queue the tab switch
+        if (!state.isDataReady) {
+            state.pendingTab = tabName;
+            state.pendingUpdateHistory = updateHistory !== false;
             return;
         }
 
-        this.isRendering = true;
-        this.currentTab = tabName;
+        // If still rendering, defer with history flag preserved
+        if (state.isRendering) {
+            state.pendingTab = tabName;
+            state.pendingUpdateHistory = updateHistory !== false;
+            return;
+        }
+
+        state.isRendering = true;
+        state.currentTab = tabName;
+        state.hasSwitched = true;
 
         // Update nav links
-        this.navLinks.forEach(function(link) {
+        state.navLinks.forEach(function(link) {
             link.classList.toggle('active', link.dataset.tab === tabName);
         });
 
         // Update tab content visibility
-        for (var key in this.tabContentElements) {
-            var el = this.tabContentElements[key];
+        for (var key in state.tabContentElements) {
+            var el = state.tabContentElements[key];
             if (!el) continue;
             if (key === tabName) {
                 el.style.display = 'block';
@@ -171,12 +273,7 @@ var TabManager = {
         }
 
         // Close mobile nav
-        var nav = document.getElementById('main-nav');
-        var actions = document.getElementById('header-actions');
-        var toggle = document.getElementById('nav-toggle');
-        if (nav) nav.classList.remove('open');
-        if (actions) actions.classList.remove('open');
-        if (toggle) toggle.classList.remove('open');
+        closeMobileNav();
 
         // Update URL hash only if requested
         if (updateHistory !== false && window.history && window.history.pushState) {
@@ -184,34 +281,41 @@ var TabManager = {
         }
 
         // Render the tab content
-        this._renderTab(tabName);
+        renderTab(tabName);
 
-        this.isRendering = false;
+        state.isRendering = false;
 
         // Clear and handle pending tab with preserved history flag
-        var pending = this.pendingTab;
-        var pendingUpdateHistory = this.pendingUpdateHistory;
+        var pending = state.pendingTab;
+        var pendingUpdateHistory = state.pendingUpdateHistory;
 
-        this.pendingTab = null;
-        this.pendingUpdateHistory = false;
+        state.pendingTab = null;
+        state.pendingUpdateHistory = false;
 
         if (pending && pending !== tabName) {
-            this.switchTo(pending, pendingUpdateHistory);
+            switchTo(pending, pendingUpdateHistory);
         }
 
         // Dispatch event
         var event = new CustomEvent('tabChanged', { detail: { tab: tabName } });
         document.dispatchEvent(event);
-    },
+    }
 
-    _renderTab: function(tabName) {
-        var container = this.tabContentElements[tabName];
-        var renderFn = this.tabs[tabName];
+    // ============================================================
+    // TAB RENDERING
+    // ============================================================
 
-        if (!container || !renderFn) {
-            if (container) {
-                container.innerHTML = '<p class="empty-state">Tab content unavailable.</p>';
-            }
+    function renderTab(tabName) {
+        var container = state.tabContentElements[tabName];
+        var renderFn = state.tabs[tabName];
+
+        if (!container) {
+            console.warn('TabManager: Container not found for tab "' + tabName + '"');
+            return;
+        }
+
+        if (!renderFn) {
+            container.innerHTML = '<p class="empty-state">Tab content unavailable.</p>';
             return;
         }
 
@@ -221,133 +325,170 @@ var TabManager = {
             console.error('Error rendering tab ' + tabName + ':', e);
             container.innerHTML = '<p class="empty-state">Error loading tab content.</p>';
         }
-    },
+    }
 
-    getCurrentTab: function() {
-        return this.currentTab;
-    },
+    // ============================================================
+    // REFRESH
+    // ============================================================
 
-    isTabActive: function(tabName) {
-        return this.currentTab === tabName;
-    },
-
-    getTabContainer: function(tabName) {
-        return this.tabContentElements[tabName] || null;
-    },
-
-    /**
-     * Force a refresh of the current tab's content
-     * @param {string} tabName - Tab to refresh (defaults to current)
-     */
-    forceRefresh: function(tabName) {
-        tabName = tabName || this.currentTab;
-
-        if (this.isRendering) {
-            this.pendingTab = tabName;
-            this.pendingUpdateHistory = false;
+    function refreshCurrent() {
+        if (state.isRendering) {
+            state.pendingTab = state.currentTab;
+            state.pendingUpdateHistory = false;
             return;
         }
 
-        this._renderTab(tabName);
-    },
+        if (!state.isDataReady) {
+            console.log('TabManager: Data not ready, cannot refresh');
+            return;
+        }
 
-    refreshCurrent: function() {
-        this.forceRefresh(this.currentTab);
+        renderTab(state.currentTab);
     }
-};
 
-// ============================================================
-// REGISTER ALL TABS
-// ============================================================
+    function forceRefresh(tabName) {
+        tabName = tabName || state.currentTab;
 
-TabManager.register('dashboard', function(container) {
-    if (typeof window.renderDashboard === 'function') {
-        window.renderDashboard(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Dashboard loading...</p>';
+        if (state.isRendering) {
+            state.pendingTab = tabName;
+            state.pendingUpdateHistory = false;
+            return;
+        }
+
+        if (!state.isDataReady) {
+            state.pendingTab = tabName;
+            state.pendingUpdateHistory = false;
+            return;
+        }
+
+        renderTab(tabName);
     }
-});
 
-TabManager.register('characters', function(container) {
-    if (typeof window.renderCharacters === 'function') {
-        window.renderCharacters(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Characters module loading...</p>';
+    // ============================================================
+    // NAVIGATION HELPERS
+    // ============================================================
+
+    function closeMobileNav() {
+        var nav = document.getElementById('main-nav');
+        var toggle = document.getElementById('nav-toggle');
+        var actions = document.getElementById('header-actions');
+
+        if (nav) nav.classList.remove('open');
+        if (toggle) {
+            toggle.classList.remove('open');
+            toggle.textContent = '☰';
+        }
+        if (actions) actions.classList.remove('open');
     }
-});
 
-TabManager.register('teams', function(container) {
-    if (typeof window.renderTeamManager === 'function') {
-        window.renderTeamManager(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Teams module loading...</p>';
+    // ============================================================
+    // QUERY HELPERS
+    // ============================================================
+
+    function getCurrentTab() {
+        return state.currentTab;
     }
-});
 
-TabManager.register('tournaments', function(container) {
-    if (typeof window.renderTournaments === 'function') {
-        window.renderTournaments(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Tournaments module loading...</p>';
+    function isTabActive(tabName) {
+        return state.currentTab === tabName;
     }
-});
 
-TabManager.register('curriculum', function(container) {
-    if (typeof window.renderCurriculum === 'function') {
-        window.renderCurriculum(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Curriculum module loading...</p>';
+    function getTabContainer(tabName) {
+        return state.tabContentElements[tabName] || null;
     }
-});
 
-TabManager.register('missions', function(container) {
-    if (typeof window.renderMissionsView === 'function') {
-        window.renderMissionsView(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Missions module loading...</p>';
+    function isDataReady() {
+        return state.isDataReady;
     }
-});
 
-TabManager.register('social', function(container) {
-    if (typeof window.renderSocialView === 'function') {
-        window.renderSocialView(container);
-    } else {
-        container.innerHTML = '<p class="empty-state">Social module loading...</p>';
+    function getPendingTab() {
+        return state.pendingTab;
     }
-});
 
-// ============================================================
-// AUTO-INIT
-// ============================================================
+    // ============================================================
+    // DESTROY / CLEANUP
+    // ============================================================
 
-window.TabManager = TabManager;
+    function destroy() {
+        if (state.switchTimeout) {
+            clearTimeout(state.switchTimeout);
+            state.switchTimeout = null;
+        }
 
-function initTabManager() {
-    if (TabManager.isInitialized) return;
-    TabManager.init();
-}
+        document.removeEventListener('dataReady', onDataReady);
+        document.removeEventListener('dataLoaded', onDataReady);
 
-// One clear startup path: wait for DOM, then init
-if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    setTimeout(initTabManager, 50);
-} else {
-    document.addEventListener('DOMContentLoaded', function() {
+        state.isInitialized = false;
+        state.isRendering = false;
+        state.initializationComplete = false;
+    }
+
+    // ============================================================
+    // AUTO-INIT
+    // ============================================================
+
+    function initTabManager() {
+        if (state.isInitialized) return;
+        init();
+    }
+
+    // One clear startup path: wait for DOM, then init
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
         setTimeout(initTabManager, 50);
+    } else {
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(initTabManager, 50);
+        });
+    }
+
+    // Refresh current tab after data loads (if already initialized)
+    document.addEventListener('dataReady', function() {
+        if (state.isInitialized) {
+            // If data was not ready before, mark it now
+            if (!state.isDataReady) {
+                state.isDataReady = true;
+            }
+            refreshCurrent();
+        }
     });
-}
 
-// Refresh current tab after data loads (if already initialized)
-document.addEventListener('dataReady', function() {
-    if (TabManager.isInitialized) {
-        TabManager.refreshCurrent();
-    }
-});
+    // Handle hash changes - don't update history again
+    window.addEventListener('hashchange', function() {
+        if (!state.isInitialized) return;
+        var hash = window.location.hash.slice(1);
+        if (hash && state.tabs[hash]) {
+            switchTo(hash, false);
+        }
+    });
 
-// Handle hash changes - don't update history again
-window.addEventListener('hashchange', function() {
-    if (!TabManager.isInitialized) return;
-    var hash = window.location.hash.slice(1);
-    if (hash && TabManager.tabs[hash]) {
-        TabManager.switchTo(hash, false);
-    }
-});
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
+    window.TabManager = {
+        // Lifecycle
+        init: init,
+        destroy: destroy,
+
+        // Registration
+        register: register,
+
+        // Navigation
+        switchTo: switchTo,
+        getCurrentTab: getCurrentTab,
+        isTabActive: isTabActive,
+        getTabContainer: getTabContainer,
+
+        // Refresh
+        refreshCurrent: refreshCurrent,
+        forceRefresh: forceRefresh,
+
+        // Data state
+        isDataReady: isDataReady,
+        getPendingTab: getPendingTab,
+
+        // Internal state (read-only)
+        _state: state
+    };
+
+})();
