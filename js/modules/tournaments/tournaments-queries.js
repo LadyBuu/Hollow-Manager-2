@@ -18,20 +18,36 @@
  *   - isTournamentComplete() provides a query-layer projection of completion semantics
  *     (see TournamentsCore for authoritative mutation semantics)
  * 
+ * PARTICIPANT TYPE AUTHORITY:
+ *   - Tournament context is AUTHORITATIVE when supplied.
+ *   - Participant type is determined by tournament mode (canonical type).
+ *   - Explicit participant object type is only used when NO tournament context exists.
+ *   - This ensures queries and renderers agree on participant identity.
+ * 
  * DEPENDENCIES:
  *   - TournamentsSchema for shared validation and type checking
+ *   - CALENDAR_CONSTANTS for week validation
  */
 
 (function() {
     'use strict';
 
+    // Guard: Check dependencies BEFORE marking as loaded
     if (window.__tournamentsQueriesLoaded) return;
+
+    if (!window.TournamentsSchema) {
+        console.error('TournamentsQueries: TournamentsSchema required.');
+        return;
+    }
+
+    // Check CALENDAR_CONSTANTS
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var MIN_WEEK = Number.isInteger(CALENDAR.MIN_WEEK) ? CALENDAR.MIN_WEEK : 1;
+    var MAX_WEEK = Number.isInteger(CALENDAR.MAX_WEEK) ? CALENDAR.MAX_WEEK : 52;
+
     window.__tournamentsQueriesLoaded = true;
 
-    function getDataStore() {
-        if (!window.data || typeof window.data !== 'object') return null;
-        return window.data;
-    }
+    var Schema = window.TournamentsSchema;
 
     // ============================================================
     // INTERNAL HELPERS
@@ -42,6 +58,11 @@
         if (typeof id === 'object') return null;
         var normalised = String(id).trim();
         return normalised !== '' ? normalised : null;
+    }
+
+    function getDataStore() {
+        if (!window.data || typeof window.data !== 'object') return null;
+        return window.data;
     }
 
     function getParticipantRecord(tournament, id) {
@@ -81,6 +102,16 @@
         return char.name || 'Unknown Character';
     }
 
+    /**
+     * Get the canonical participant type for a tournament mode.
+     * Returns null for invalid modes.
+     */
+    function getCanonicalParticipantType(mode) {
+        if (mode === 'teams') return 'team';
+        if (mode === 'individuals') return 'character';
+        return null;
+    }
+
     // ============================================================
     // QUERIES API
     // ============================================================
@@ -108,80 +139,88 @@
         },
 
         /**
-         * Get participant name using the participant's declared type.
+         * Get participant name using the canonical type from tournament mode.
          * 
-         * CRITICAL: If the declared type is present, we ONLY look in the
-         * corresponding entity type. We do NOT search across boundaries.
-         * This prevents malformed data from being silently hidden.
+         * AUTHORITATIVE: Tournament context determines participant type.
+         * If no tournament context, falls back to supplied participant type.
          * 
          * @param {string|object} participant - Either an ID string or a participant object
-         * @param {object} tournament - Tournament context for type resolution (optional but recommended)
+         * @param {object} tournament - Tournament context (optional but recommended)
          */
         getParticipantName: function(participant, tournament) {
             if (!participant) return 'Unknown';
 
+            var idStr = null;
+            var suppliedType = null;
+
+            // Extract ID and type from participant
             if (typeof participant === 'object' && participant !== null) {
-                var id = participant.id;
-                var type = participant.type;
-
-                if (!id) return 'Unknown';
-
-                var normalisedId = normaliseId(id);
-                if (normalisedId === null) return 'Unknown';
-
-                if (type === 'team') {
-                    var team = getTeamById(normalisedId);
-                    if (team) return team.name || 'Unknown Team';
-                    return 'Unknown Team';
+                idStr = normaliseId(participant.id);
+                if (participant.type !== undefined) {
+                    suppliedType = participant.type;
                 }
-
-                if (type === 'character') {
-                    var char = getCharacterById(normalisedId);
-                    if (char) return getCharacterName(char);
-                    return 'Unknown Character';
-                }
-
-                if (type !== undefined) {
-                    return 'Unknown (' + type + ')';
-                }
+            } else {
+                idStr = normaliseId(participant);
             }
 
-            var idStr = normaliseId(typeof participant === 'object' ? participant.id : participant);
             if (idStr === null) return 'Unknown';
 
+            // ---- DETERMINE TYPE ----
+            var type = null;
+
+            // 1. Tournament context is authoritative
             if (tournament) {
-                var record = getParticipantRecord(tournament, idStr);
-                if (record && record.type) {
-                    if (record.type === 'team') {
-                        var team = getTeamById(idStr);
-                        if (team) return team.name || 'Unknown Team';
-                        return 'Unknown Team';
+                var canonicalType = getCanonicalParticipantType(tournament.mode);
+                if (canonicalType) {
+                    // Verify the participant exists with this type
+                    var record = getParticipantRecord(tournament, idStr);
+                    if (record && record.type === canonicalType) {
+                        type = canonicalType;
+                    } else if (record) {
+                        // Participant exists but type doesn't match canonical - data is malformed
+                        // Return "Unknown" rather than silently using wrong type
+                        return 'Unknown (' + idStr + ')';
                     }
-                    if (record.type === 'character') {
-                        var char = getCharacterById(idStr);
-                        if (char) return getCharacterName(char);
-                        return 'Unknown Character';
-                    }
-                    return 'Unknown (' + record.type + ')';
+                    // If no record, participant is not in tournament - unknown
                 }
             }
 
-            // Fallback: legacy ID-only lookup
-            var data = getDataStore();
-            if (!data) return 'Unknown';
-
-            if (Array.isArray(data.characters)) {
-                var char = data.characters.find(function(c) {
-                    return c && normaliseId(c.id) === idStr;
-                });
-                if (char) return getCharacterName(char);
+            // 2. Fallback to supplied type
+            if (!type && suppliedType) {
+                if (suppliedType === 'team' || suppliedType === 'character') {
+                    type = suppliedType;
+                }
             }
 
-            if (Array.isArray(data.teams)) {
-                var team = data.teams.find(function(t) {
-                    return t && normaliseId(t.id) === idStr;
-                });
+            // 3. Legacy datastore inference (only if no tournament context)
+            if (!type) {
+                var data = getDataStore();
+                if (data) {
+                    if (Array.isArray(data.characters) && data.characters.some(function(c) {
+                        return c && normaliseId(c.id) === idStr;
+                    })) {
+                        type = 'character';
+                    } else if (Array.isArray(data.teams) && data.teams.some(function(t) {
+                        return t && normaliseId(t.id) === idStr;
+                    })) {
+                        type = 'team';
+                    }
+                }
+            }
+
+            if (!type) return 'Unknown';
+
+            // ---- LOOK UP ENTITY ----
+            if (type === 'team') {
+                var team = getTeamById(idStr);
                 if (team) return team.name || 'Unknown Team';
+                return 'Unknown Team';
+            }
+
+            if (type === 'character') {
+                var char = getCharacterById(idStr);
+                if (char) return getCharacterName(char);
+                return 'Unknown Character';
             }
 
             return 'Unknown';
@@ -189,9 +228,9 @@
 
         /**
          * Get participant type.
-         * If tournament context is provided, uses declared participant type.
-         * Otherwise falls back to legacy datastore inference.
-         * Invalid declared types return 'unknown'.
+         * 
+         * AUTHORITATIVE: Tournament context determines participant type.
+         * If no tournament context, falls back to supplied participant type.
          * 
          * @param {string|object} participant - Either an ID string or a participant object
          * @param {object} tournament - Tournament context (optional)
@@ -200,37 +239,49 @@
         getParticipantType: function(participant, tournament) {
             if (!participant) return 'unknown';
 
-            // If we have a participant object with declared type and tournament context
+            var idStr = null;
+            var suppliedType = null;
+
+            // Extract ID and type from participant
             if (typeof participant === 'object' && participant !== null) {
-                if (participant.type) {
-                    var validTypes = ['character', 'team'];
-                    if (validTypes.indexOf(participant.type) !== -1) {
-                        return participant.type;
-                    }
-                    return 'unknown';
+                idStr = normaliseId(participant.id);
+                if (participant.type !== undefined) {
+                    suppliedType = participant.type;
                 }
-                if (!participant.id) return 'unknown';
-                var id = participant.id;
             } else {
-                var id = participant;
+                idStr = normaliseId(participant);
             }
 
-            // If tournament context is provided, try to resolve from participant record
-            if (tournament) {
-                var record = getParticipantRecord(tournament, id);
-                if (record && record.type) {
-                    var validTypes = ['character', 'team'];
-                    if (validTypes.indexOf(record.type) !== -1) {
-                        return record.type;
-                    }
-                    return 'unknown';
-                }
-            }
-
-            // Fallback: legacy datastore lookup
-            var idStr = normaliseId(id);
             if (idStr === null) return 'unknown';
 
+            // ---- DETERMINE TYPE ----
+            // 1. Tournament context is authoritative
+            if (tournament) {
+                var canonicalType = getCanonicalParticipantType(tournament.mode);
+                if (canonicalType) {
+                    // Verify the participant exists with this type
+                    var record = getParticipantRecord(tournament, idStr);
+                    if (record && record.type === canonicalType) {
+                        return canonicalType;
+                    }
+                    // If participant exists but type doesn't match canonical, data is malformed
+                    if (record && record.type !== canonicalType) {
+                        return 'unknown';
+                    }
+                    // If no record, participant is not in tournament
+                    return 'unknown';
+                }
+            }
+
+            // 2. Fallback to supplied type
+            if (suppliedType) {
+                if (suppliedType === 'team' || suppliedType === 'character') {
+                    return suppliedType;
+                }
+                return 'unknown';
+            }
+
+            // 3. Legacy datastore inference (only if no tournament context)
             var data = getDataStore();
             if (!data) return 'unknown';
 
@@ -247,6 +298,28 @@
             }
 
             return 'unknown';
+        },
+
+        /**
+         * Get tournament participant name with context.
+         * Convenience wrapper around getParticipantName.
+         */
+        getTournamentParticipantName: function(tournament, participantId) {
+            if (!tournament) return 'Unknown';
+            var id = normaliseId(participantId);
+            if (id === null) return 'Unknown';
+            return this.getParticipantName({ id: id }, tournament);
+        },
+
+        /**
+         * Get tournament participant type with context.
+         * Convenience wrapper around getParticipantType.
+         */
+        getTournamentParticipantType: function(tournament, participantId) {
+            if (!tournament) return 'unknown';
+            var id = normaliseId(participantId);
+            if (id === null) return 'unknown';
+            return this.getParticipantType({ id: id }, tournament);
         },
 
         /**
@@ -322,7 +395,8 @@
                     var result = match.results && match.results[target];
                     if (result === 'pass') return 'passed';
                     if (result === 'fail') return 'failed';
-                    return 'pending';
+                    // Completed group exam with missing result → unknown
+                    return match.status === 'completed' ? 'unknown' : 'pending';
                 }
 
                 // Standard match - check winner/loser/advancing
@@ -473,16 +547,23 @@
 
                 var display = {
                     id: normalised,
-                    name: this.getParticipantName({ id: normalised }, tournament),
+                    name: this.getTournamentParticipantName(tournament, normalised),
                     outcome: 'pending',
                     isGroupExam: isGroupExam
                 };
 
                 if (isGroupExam) {
                     var resultValue = match.results && match.results[normalised];
-                    if (resultValue === 'pass') display.outcome = 'passed';
-                    else if (resultValue === 'fail') display.outcome = 'failed';
-                    else display.outcome = 'pending';
+                    if (resultValue === 'pass') {
+                        display.outcome = 'passed';
+                    } else if (resultValue === 'fail') {
+                        display.outcome = 'failed';
+                    } else if (match.status === 'completed') {
+                        // Completed group exam with missing result → unknown
+                        display.outcome = 'unknown';
+                    } else {
+                        display.outcome = 'pending';
+                    }
                 } else {
                     if (match.winner && normaliseId(match.winner) === normalised) {
                         display.outcome = 'winner';
@@ -557,28 +638,6 @@
         },
 
         /**
-         * Get tournament participant name with context.
-         * Convenience wrapper around getParticipantName.
-         */
-        getTournamentParticipantName: function(tournament, participantId) {
-            if (!tournament) return 'Unknown';
-            var id = normaliseId(participantId);
-            if (id === null) return 'Unknown';
-            return this.getParticipantName({ id: id }, tournament);
-        },
-
-        /**
-         * Get tournament participant type with context.
-         * Convenience wrapper around getParticipantType.
-         */
-        getTournamentParticipantType: function(tournament, participantId) {
-            if (!tournament) return null;
-            var id = normaliseId(participantId);
-            if (id === null) return null;
-            return this.getParticipantType({ id: id }, tournament);
-        },
-
-        /**
          * Check if a match is complete using the match's status.
          */
         isMatchComplete: function(tournament, roundIndex, matchIndex) {
@@ -632,7 +691,28 @@
             }
 
             return [];
-        }
+        },
+
+        /**
+         * Get the week range for validation.
+         * Returns { min: number, max: number }
+         */
+        getWeekRange: function() {
+            return { min: MIN_WEEK, max: MAX_WEEK };
+        },
+
+        /**
+         * Check if a week is valid.
+         */
+        isValidWeek: function(week) {
+            var num = Number(week);
+            return Number.isInteger(num) && num >= MIN_WEEK && num <= MAX_WEEK;
+        },
+
+        /**
+         * Get the canonical participant type for a tournament mode.
+         */
+        getCanonicalParticipantType: getCanonicalParticipantType
     };
 
     // ============================================================
