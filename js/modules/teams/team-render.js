@@ -23,6 +23,8 @@
  *   - window.getCharacterById (from utils)
  *   - window.getCharacterAge (from utils)
  *   - window.getClassDisplayName (from utils)
+ *   - window.CALENDAR_CONSTANTS (from constants.js)
+ *   - window.DomUtils (from dom-utils.js)
  */
 
 (function() {
@@ -59,10 +61,24 @@
     }
 
     // ============================================================
-    // HTML ESCAPING - Prevents XSS
+    // CONSTANTS
+    // ============================================================
+
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
+    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
+    var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
+    var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
+
+    // ============================================================
+    // HTML ESCAPING - Use DomUtils when available
     // ============================================================
 
     function escapeHtml(value) {
+        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
+            return window.DomUtils.escapeHtml(value);
+        }
+        // Fallback
         return String(value == null ? '' : value)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
@@ -278,7 +294,95 @@
                     </div>
                 </div>
             `;
-        }
+        },
+
+        /**
+         * Render a single team card for compact display
+         * @param {object} team - Team object
+         * @param {number|string} period - Current period
+         * @returns {string} HTML string
+         */
+        renderTeamCard: function(team, period) {
+            if (!team || typeof team !== 'object') return '';
+
+            var periodNum = parseInt(period, 10) || 1;
+            var activeMembers = window.TeamCore.getActiveMembers(team, periodNum);
+            var memberCount = activeMembers.length;
+            var rankDisplay = getTeamRankDisplay(team);
+            var periodDisplay = window.TeamCore.getPeriodDisplay(team);
+            var typeLabel = window.TeamCore.getTypeLabel(team.type);
+
+            var isInactive = team.status === 'deprecated' || team.status === 'inactive';
+            var inactiveClass = isInactive ? 'inactive' : '';
+
+            var classDisplay = '';
+            if (team.type === 'academic' && team.classId) {
+                var className = window.getClassDisplayName ? window.getClassDisplayName(team.classId) : null;
+                if (className && className !== 'Unassigned') {
+                    classDisplay = ' <span class="team-class">[' + escapeHtml(className) + ']</span>';
+                }
+            }
+
+            var html = '<div class="team-card ' + inactiveClass + '" data-id="' + escapeHtml(team.id) + '">';
+            html += '<div class="team-card-header">';
+            html += '<strong>' + escapeHtml(team.name) + '</strong>' + classDisplay;
+            html += ' <span class="team-type-label">' + escapeHtml(typeLabel) + '</span>';
+            if (isInactive) {
+                html += ' <span class="team-status-inactive">(Inactive)</span>';
+            }
+            html += '</div>';
+            html += '<div class="team-card-details">';
+            html += '<span class="team-period">' + escapeHtml(periodDisplay) + '</span>';
+            html += '<span class="team-rank">Rank: ' + escapeHtml(rankDisplay) + '</span>';
+            html += '<span class="team-member-count">Members: ' + memberCount + '</span>';
+            html += '</div>';
+            html += '<div class="team-card-actions">';
+            html += '<button class="small toggle-members" data-id="' + escapeHtml(team.id) + '">▸</button>';
+            html += '<button class="small manage-members" data-id="' + escapeHtml(team.id) + '">Members</button>';
+            html += '<button class="small manage-rankings" data-id="' + escapeHtml(team.id) + '">Rankings</button>';
+            html += '<button class="small edit-team" data-id="' + escapeHtml(team.id) + '">Edit</button>';
+            html += '<button class="small danger delete-team" data-id="' + escapeHtml(team.id) + '">Delete</button>';
+            html += '</div>';
+            html += '</div>';
+
+            return html;
+        },
+
+        /**
+         * Render a team summary for dashboard or quick view
+         * @param {object} team - Team object
+         * @returns {string} HTML string
+         */
+        renderTeamSummary: function(team) {
+            if (!team || typeof team !== 'object') return '';
+
+            var rankDisplay = getTeamRankDisplay(team);
+            var memberCount = team.members ? team.members.length : 0;
+            var typeLabel = window.TeamCore.getTypeLabel(team.type);
+
+            var html = '<div class="team-summary">';
+            html += '<span class="team-name">' + escapeHtml(team.name) + '</span>';
+            html += '<span class="team-type">' + escapeHtml(typeLabel) + '</span>';
+            html += '<span class="team-rank">#' + escapeHtml(rankDisplay) + '</span>';
+            html += '<span class="team-members">' + memberCount + ' members</span>';
+            html += '</div>';
+
+            return html;
+        },
+
+        /**
+         * Get the status class for a member status
+         * @param {string} status - Status string
+         * @returns {string} CSS class name
+         */
+        getStatusClass: getStatusClass,
+
+        /**
+         * Get the period label for a team type
+         * @param {string} teamType - Team type
+         * @returns {string} Period label
+         */
+        getPeriodLabel: getPeriodLabel
     };
 
     // ============================================================
