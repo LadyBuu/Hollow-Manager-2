@@ -12,6 +12,11 @@
  *   - All mutation modules depend on the schema being present
  *   - This function is a REPAIR operation, not a domain mutation
  * 
+ * RETURN CONTRACT:
+ *   - Always returns { success: true } if repair completes
+ *   - Returns { success: false, message: string } if data store is unavailable
+ *   - Callers should check result before proceeding
+ * 
  * REPAIR SEMANTICS:
  *   - Missing collections are created with defaults.
  *   - Valid collections are preserved unchanged.
@@ -100,7 +105,10 @@
         var data = getDataStore();
 
         if (!data) {
-            return;
+            return {
+                success: false,
+                message: 'Data store is not available.'
+            };
         }
 
         // Ensure curriculum exists and is an object
@@ -168,6 +176,8 @@
             data.curriculum.currentWeek > 52) {
             data.curriculum.currentWeek = 1;
         }
+
+        return { success: true };
     }
 
     // ============================================================
