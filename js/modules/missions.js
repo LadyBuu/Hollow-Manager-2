@@ -29,6 +29,10 @@
  *   M = Medium  
  *   H = Hard
  *   X = Expert
+ * 
+ * SUPPORT PERSONNEL:
+ *   Individual characters can be added to missions as support.
+ *   They are separate from the assigned team and can be any character.
  */
 
 (function() {
@@ -132,6 +136,12 @@
         'expert': 'X'
     };
 
+    // Month names for display
+    var MONTH_NAMES = [
+        'January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+
     // ============================================================
     // STATE
     // ============================================================
@@ -154,12 +164,17 @@
         container.innerHTML = getMissionsHTML();
 
         populateTeamSelectors();
+        populateCharacterSelectors();
         populateSubtypeSelectors();
         renderMissions();
         initMissionEvents();
     }
 
     function getMissionsHTML() {
+        var currentYear = new Date().getFullYear();
+        var currentMonth = new Date().getMonth() + 1;
+        var currentDay = new Date().getDate();
+
         return `
             <div class="page-header">
                 <h2>Mission Manager</h2>
@@ -187,7 +202,7 @@
 
             <!-- Mission Form Modal -->
             <div id="mission-form-modal" class="modal hidden">
-                <div class="modal-content" style="max-width:700px;">
+                <div class="modal-content" style="max-width:750px;">
                     <div class="modal-header">
                         <h3 id="mission-form-title">Create Mission</h3>
                         <button class="close-modal" id="close-mission-form">&times;</button>
@@ -209,8 +224,27 @@
                                     <span style="font-size:0.6rem;color:var(--text-dim);">Auto-generated: {Team}-{Year}-{Difficulty}{Sequence}</span>
                                 </div>
                                 <div class="form-group">
-                                    <label>Year</label>
-                                    <input type="number" id="mission-year" value="${new Date().getFullYear()}" min="2000" max="2100" style="width:100px;">
+                                    <label>Date</label>
+                                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                                        <div>
+                                            <label style="font-size:0.65rem;color:var(--text-dim);">Year</label>
+                                            <input type="number" id="mission-year" value="${currentYear}" style="width:80px;">
+                                        </div>
+                                        <div>
+                                            <label style="font-size:0.65rem;color:var(--text-dim);">Month</label>
+                                            <select id="mission-month" style="width:100px;">
+                                                ${MONTH_NAMES.map(function(name, index) {
+                                                    var monthNum = index + 1;
+                                                    var selected = monthNum === currentMonth ? 'selected' : '';
+                                                    return '<option value="' + monthNum + '" ' + selected + '>' + name + '</option>';
+                                                }).join('')}
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label style="font-size:0.65rem;color:var(--text-dim);">Day</label>
+                                            <input type="number" id="mission-day" value="${currentDay}" min="1" max="31" style="width:60px;">
+                                        </div>
+                                    </div>
                                 </div>
                                 <div class="form-group">
                                     <label>Primary Category</label>
@@ -319,6 +353,17 @@
                                     </select>
                                 </div>
                                 <div class="form-group full-width">
+                                    <label>Support Personnel</label>
+                                    <p style="font-size:0.7rem;color:var(--text-dim);margin-bottom:4px;">Individual characters assigned to support this mission</p>
+                                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                                        <select id="mission-support-select" style="flex:1;min-width:150px;">
+                                            <option value="">Select character...</option>
+                                        </select>
+                                        <button type="button" id="add-support-btn" class="small primary">+ Add Support</button>
+                                    </div>
+                                    <div id="mission-support-list" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;"></div>
+                                </div>
+                                <div class="form-group full-width">
                                     <label>Objectives</label>
                                     <input type="text" id="mission-objective" placeholder="Add objective...">
                                     <button type="button" id="add-objective-btn" class="small primary" style="margin-top:4px;">+ Add Objective</button>
@@ -394,6 +439,7 @@
             teamAbbr = 'UNS'; // Unassigned
         }
 
+        // Use full year for ID (no hardcoded range)
         var yearStr = String(year).slice(-2);
         var difficultyCode = DIFFICULTY_CODES[difficulty] || 'M';
 
@@ -412,6 +458,30 @@
         });
 
         return prefix + String(sequence).padStart(3, '0');
+    }
+
+    // ============================================================
+    // CHARACTER SELECTOR
+    // ============================================================
+
+    function populateCharacterSelectors() {
+        var select = document.getElementById('mission-support-select');
+        if (!select) return;
+
+        var characters = window.getStudents ? window.getStudents() : [];
+        if (!characters || characters.length === 0) {
+            characters = window.data && window.data.characters ? window.data.characters : [];
+        }
+
+        select.innerHTML = '<option value="">Select character...</option>';
+
+        characters.forEach(function(char) {
+            var name = window.getDisplayName ? window.getDisplayName(char) : (char.name || char.firstName || 'Unknown');
+            var option = document.createElement('option');
+            option.value = char.id;
+            option.textContent = name + ' (' + (char.status || 'Active') + ')';
+            select.appendChild(option);
+        });
     }
 
     // ============================================================
@@ -536,6 +606,7 @@
             var teamDisplay = teamName + (teamType ? ' (' + teamType + ')' : '');
             var progressBar = mission.progress || 0;
             var difficultyLabel = getDifficultyLabel(mission.difficulty);
+            var supportCount = mission.supportPersonnel ? mission.supportPersonnel.length : 0;
 
             var primaryType = mission.primaryType ? MISSION_TYPES[mission.primaryType] : null;
             var secondaryType = mission.secondaryType ? MISSION_TYPES[mission.secondaryType] : null;
@@ -557,6 +628,15 @@
             var escalationLabel = getEscalationLabel(mission.escalation);
             var billingLabel = getBillingLabel(mission.billing);
 
+            // Date display
+            var dateDisplay = '';
+            if (mission.year && mission.month && mission.day) {
+                var monthName = MONTH_NAMES[mission.month - 1] || '';
+                dateDisplay = monthName + ' ' + mission.day + ', ' + mission.year;
+            } else if (mission.year) {
+                dateDisplay = String(mission.year);
+            }
+
             // Payment display
             var payDisplay = '';
             if (mission.basePay) {
@@ -571,11 +651,15 @@
                 payDisplay = '—';
             }
 
-            html += '<div class="list-item" style="grid-template-columns:0.8fr 1fr 0.6fr 0.6fr 0.6fr 0.6fr 0.6fr 0.8fr 0.6fr;cursor:pointer;" data-id="' + mission.id + '">';
+            html += '<div class="list-item" style="grid-template-columns:0.8fr 0.8fr 1fr 0.5fr 0.5fr 0.5fr 0.5fr 0.5fr 0.6fr 0.5fr;cursor:pointer;" data-id="' + mission.id + '">';
             html += '<span style="font-size:0.7rem;color:var(--text-dim);font-family:monospace;">' + (mission.missionId || '—') + '</span>';
+            html += '<span style="font-size:0.65rem;color:var(--text-dim);">' + dateDisplay + '</span>';
             html += '<span><strong>' + mission.title + '</strong>';
             if (mission.status === 'completed') {
                 html += ' <span style="color:var(--info);font-size:0.6rem;">✓</span>';
+            }
+            if (supportCount > 0) {
+                html += ' <span style="color:var(--accent);font-size:0.6rem;">+' + supportCount + ' support</span>';
             }
             html += '</span>';
             html += '<span style="font-size:0.7rem;color:var(--text-dim);">' + typeDisplay + '</span>';
@@ -742,6 +826,8 @@
         if (!data.missions) data.missions = [];
 
         var year = missionData.year || new Date().getFullYear();
+        var month = missionData.month || new Date().getMonth() + 1;
+        var day = missionData.day || new Date().getDate();
 
         // Auto-generate mission ID
         var missionId = generateMissionId(
@@ -775,6 +861,8 @@
             title: missionData.title || 'Untitled Mission',
             description: missionData.description || '',
             year: year,
+            month: month,
+            day: day,
             primaryType: missionData.primaryType || '',
             subtype: missionData.subtype || '',
             secondaryType: missionData.secondaryType || '',
@@ -790,6 +878,7 @@
             pay: totalPay, // Legacy support
             billing: missionData.billing || 'original',
             assignedTeamId: missionData.assignedTeamId || null,
+            supportPersonnel: missionData.supportPersonnel || [],
             status: missionData.status || 'active',
             objectives: missionData.objectives || [],
             progress: 0,
@@ -941,6 +1030,61 @@
     }
 
     // ============================================================
+    // SUPPORT PERSONNEL HELPERS
+    // ============================================================
+
+    function addSupportPersonnel(missionId, characterId) {
+        var mission = getMission(missionId);
+        if (!mission) return null;
+
+        if (!mission.supportPersonnel) mission.supportPersonnel = [];
+
+        // Check if already added
+        var exists = mission.supportPersonnel.some(function(id) {
+            return String(id) === String(characterId);
+        });
+
+        if (exists) {
+            return mission;
+        }
+
+        mission.supportPersonnel.push(characterId);
+
+        if (typeof window.saveData === 'function') {
+            window.saveData().catch(function(err) { /* ignore */ });
+        }
+        return mission;
+    }
+
+    function removeSupportPersonnel(missionId, characterId) {
+        var mission = getMission(missionId);
+        if (!mission) return null;
+
+        if (!mission.supportPersonnel) return mission;
+
+        mission.supportPersonnel = mission.supportPersonnel.filter(function(id) {
+            return String(id) !== String(characterId);
+        });
+
+        if (typeof window.saveData === 'function') {
+            window.saveData().catch(function(err) { /* ignore */ });
+        }
+        return mission;
+    }
+
+    function getSupportPersonnel(mission) {
+        if (!mission || !mission.supportPersonnel) return [];
+        var characters = [];
+        mission.supportPersonnel.forEach(function(id) {
+            var char = window.getCharacterById ? window.getCharacterById(id) : null;
+            if (char) {
+                characters.push(char);
+            }
+        });
+        return characters;
+    }
+
+    // ============================================================
     // TEAM SELECTORS
     // ============================================================
 
@@ -1071,6 +1215,7 @@
         var teamType = getTeamTypeLabel(mission.assignedTeamId);
         var teamDisplay = teamName + (teamType ? ' (' + teamType + ')' : '');
         var difficultyLabel = getDifficultyLabel(mission.difficulty);
+        var supportPersonnel = getSupportPersonnel(mission);
 
         var primaryType = mission.primaryType ? MISSION_TYPES[mission.primaryType] : null;
         var secondaryType = mission.secondaryType ? MISSION_TYPES[mission.secondaryType] : null;
@@ -1086,6 +1231,17 @@
         var createdAt = new Date(mission.createdAt).toLocaleDateString();
         var completedAt = mission.completedAt ? new Date(mission.completedAt).toLocaleDateString() : 'Not completed';
 
+        // Date display
+        var dateDisplay = '';
+        if (mission.year && mission.month && mission.day) {
+            var monthName = MONTH_NAMES[mission.month - 1] || '';
+            dateDisplay = monthName + ' ' + mission.day + ', ' + mission.year;
+        } else if (mission.year) {
+            dateDisplay = String(mission.year);
+        } else {
+            dateDisplay = 'Not specified';
+        }
+
         var payDisplay = '';
         if (mission.basePay && mission.surchargePay) {
             payDisplay = 'Base: ' + mission.basePay + ' | Surcharge: ' + mission.surchargePay + ' | Total: ' + mission.pay;
@@ -1095,6 +1251,17 @@
             payDisplay = mission.pay;
         } else {
             payDisplay = 'Not specified';
+        }
+
+        // Support personnel HTML
+        var supportHtml = '';
+        if (supportPersonnel.length > 0) {
+            supportHtml = '<div style="margin-top:8px;"><strong>Support Personnel:</strong><div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">';
+            supportPersonnel.forEach(function(char) {
+                var name = window.getDisplayName ? window.getDisplayName(char) : (char.name || char.firstName || 'Unknown');
+                supportHtml += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;border:1px solid var(--border-soft);">' + name + '</span>';
+            });
+            supportHtml += '</div></div>';
         }
 
         var objectivesHtml = '';
@@ -1132,7 +1299,7 @@
 
         content.innerHTML = `
             <div class="detail-row"><span class="label">Mission ID:</span> <span style="font-family:monospace;font-weight:bold;color:var(--accent);">${mission.missionId || 'N/A'}</span></div>
-            <div class="detail-row"><span class="label">Year:</span> <span>${mission.year || 'N/A'}</span></div>
+            <div class="detail-row"><span class="label">Date:</span> <span>${dateDisplay}</span></div>
             <div class="detail-row"><span class="label">Status:</span> <span style="color:${statusInfo.color};font-weight:600;">${statusInfo.label}</span></div>
             <div class="detail-row"><span class="label">Priority:</span> <span style="color:${priorityInfo.color};font-weight:600;">${priorityInfo.label}</span></div>
             <div class="detail-row"><span class="label">Difficulty:</span> <span>${difficultyLabel}</span></div>
@@ -1143,6 +1310,7 @@
             ${mission.threatType ? '<div class="detail-row"><span class="label">Threat Type:</span> <span>' + mission.threatType + '</span></div>' : ''}
             ${mission.environment ? '<div class="detail-row"><span class="label">Environment:</span> <span>' + mission.environment + '</span></div>' : ''}
             <div class="detail-row"><span class="label">Team:</span> <span>${teamDisplay}</span></div>
+            ${supportHtml}
             <div class="detail-row"><span class="label">Location:</span> <span>${mission.location || 'Not specified'}</span></div>
             <div class="detail-row"><span class="label">Duration:</span> <span>${mission.duration || 'Not specified'}</span></div>
             <div class="detail-row"><span class="label">Payment:</span> <span>${payDisplay}</span></div>
@@ -1190,8 +1358,10 @@
 
         modal.classList.remove('hidden');
         populateTeamSelectors();
+        populateCharacterSelectors();
 
         document.getElementById('mission-objectives-list').innerHTML = '';
+        document.getElementById('mission-support-list').innerHTML = '';
 
         // Set up pay calculation
         var basePayInput = document.getElementById('mission-base-pay');
@@ -1201,7 +1371,7 @@
             surchargeInput.addEventListener('input', calculateTotalPay);
         }
 
-        // Update mission ID preview when team, year, or difficulty changes
+        // Update mission ID preview when team or difficulty changes
         var teamSelect = document.getElementById('mission-team');
         var yearInput = document.getElementById('mission-year');
         var difficultySelect = document.getElementById('mission-difficulty');
@@ -1227,6 +1397,8 @@
                 document.getElementById('mission-title').value = mission.title || '';
                 document.getElementById('mission-id').value = mission.missionId || '';
                 document.getElementById('mission-year').value = mission.year || new Date().getFullYear();
+                document.getElementById('mission-month').value = mission.month || new Date().getMonth() + 1;
+                document.getElementById('mission-day').value = mission.day || new Date().getDate();
                 document.getElementById('mission-description').value = mission.description || '';
                 document.getElementById('mission-primary-type').value = mission.primaryType || '';
                 document.getElementById('mission-subtype').value = mission.subtype || '';
@@ -1248,6 +1420,16 @@
                 document.getElementById('mission-notes').value = mission.notes || '';
                 document.getElementById('mission-tags').value = (mission.tags || []).join(', ');
 
+                // Populate support personnel
+                if (mission.supportPersonnel) {
+                    mission.supportPersonnel.forEach(function(charId) {
+                        var char = window.getCharacterById ? window.getCharacterById(charId) : null;
+                        if (char) {
+                            addSupportTag(charId, window.getDisplayName ? window.getDisplayName(char) : (char.name || char.firstName || 'Unknown'));
+                        }
+                    });
+                }
+
                 if (mission.objectives) {
                     mission.objectives.forEach(function(obj) {
                         addObjectiveToList(obj.text);
@@ -1259,7 +1441,10 @@
         } else {
             title.textContent = 'Create Mission';
             form.reset();
-            document.getElementById('mission-year').value = new Date().getFullYear();
+            var now = new Date();
+            document.getElementById('mission-year').value = now.getFullYear();
+            document.getElementById('mission-month').value = now.getMonth() + 1;
+            document.getElementById('mission-day').value = now.getDate();
             document.getElementById('mission-primary-type').value = '';
             document.getElementById('mission-subtype').value = '';
             document.getElementById('mission-secondary-type').value = '';
@@ -1273,6 +1458,48 @@
         }
         populateSubtypeSelectors();
     }
+
+    // ============================================================
+    // SUPPORT TAG HELPERS
+    // ============================================================
+
+    function addSupportTag(characterId, characterName) {
+        var container = document.getElementById('mission-support-list');
+        if (!container) return;
+
+        // Check if already added
+        var existing = container.querySelector('[data-id="' + characterId + '"]');
+        if (existing) return;
+
+        var div = document.createElement('div');
+        div.dataset.id = characterId;
+        div.style.cssText = 'display:flex;align-items:center;gap:4px;background:var(--panel-alt);padding:2px 8px;border-radius:12px;font-size:0.7rem;border:1px solid var(--border-soft);';
+        div.innerHTML = `
+            <span>${characterName}</span>
+            <button type="button" class="remove-support-btn" data-id="${characterId}" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button>
+            <input type="hidden" value="${characterId}">
+        `;
+        container.appendChild(div);
+
+        div.querySelector('.remove-support-btn').onclick = function() {
+            div.remove();
+        };
+    }
+
+    function collectSupportPersonnel() {
+        var container = document.getElementById('mission-support-list');
+        if (!container) return [];
+
+        var ids = [];
+        container.querySelectorAll('input[type="hidden"]').forEach(function(input) {
+            ids.push(input.value);
+        });
+        return ids;
+    }
+
+    // ============================================================
+    // OBJECTIVE HELPERS
+    // ============================================================
 
     function addObjectiveToList(text) {
         var container = document.getElementById('mission-objectives-list');
@@ -1315,11 +1542,20 @@
             objectives.push({ text: objectiveInput.value.trim(), done: false });
         }
 
+        var supportPersonnel = collectSupportPersonnel();
+
         var tags = document.getElementById('mission-tags').value.split(',').map(function(t) { return t.trim(); }).filter(function(t) { return t; });
+
+        var year = parseInt(document.getElementById('mission-year').value);
+        if (!year || isNaN(year) || year < 1000 || year > 9999) {
+            year = new Date().getFullYear();
+        }
 
         var missionData = {
             title: document.getElementById('mission-title').value.trim(),
-            year: parseInt(document.getElementById('mission-year').value) || new Date().getFullYear(),
+            year: year,
+            month: parseInt(document.getElementById('mission-month').value) || new Date().getMonth() + 1,
+            day: parseInt(document.getElementById('mission-day').value) || new Date().getDate(),
             description: document.getElementById('mission-description').value.trim(),
             primaryType: document.getElementById('mission-primary-type').value || '',
             subtype: document.getElementById('mission-subtype').value || '',
@@ -1335,6 +1571,7 @@
             surchargePay: document.getElementById('mission-surcharge-pay').value.trim(),
             billing: document.getElementById('mission-billing').value || 'original',
             assignedTeamId: document.getElementById('mission-team').value || null,
+            supportPersonnel: supportPersonnel,
             status: document.getElementById('mission-status').value || 'active',
             objectives: objectives,
             notes: document.getElementById('mission-notes').value.trim(),
@@ -1387,7 +1624,7 @@
         }
 
         var lines = [];
-        lines.push('MissionID,Title,Year,Status,Priority,Difficulty,PrimaryType,Subtype,SecondaryType,Escalation,ThreatType,Environment,Team,TeamType,Location,Duration,BasePay,SurchargePay,TotalPay,Billing,Progress,Objectives,Notes,Tags,CreatedAt,CompletedAt');
+        lines.push('MissionID,Title,Year,Month,Day,Status,Priority,Difficulty,PrimaryType,Subtype,SecondaryType,Escalation,ThreatType,Environment,Team,TeamType,Location,Duration,BasePay,SurchargePay,TotalPay,Billing,Progress,SupportPersonnel,Objectives,Notes,Tags,CreatedAt,CompletedAt');
 
         missions.forEach(function(m) {
             var teamName = getTeamName(m.assignedTeamId);
@@ -1397,6 +1634,20 @@
             var subtypeLabel = getSubtypeLabel(m.subtype);
             var escalationLabel = getEscalationLabel(m.escalation);
             var billingLabel = getBillingLabel(m.billing);
+            
+            // Support personnel names
+            var supportNames = '';
+            if (m.supportPersonnel && m.supportPersonnel.length > 0) {
+                var names = [];
+                m.supportPersonnel.forEach(function(id) {
+                    var char = window.getCharacterById ? window.getCharacterById(id) : null;
+                    if (char) {
+                        names.push(window.getDisplayName ? window.getDisplayName(char) : (char.name || char.firstName || 'Unknown'));
+                    }
+                });
+                supportNames = names.join('; ');
+            }
+            
             var objectivesStr = '';
             if (m.objectives) {
                 objectivesStr = m.objectives.map(function(o) {
@@ -1411,6 +1662,8 @@
                 csvField(m.missionId || ''),
                 csvField(m.title || ''),
                 m.year || '',
+                m.month || '',
+                m.day || '',
                 m.status || 'active',
                 m.priority || 'medium',
                 m.difficulty || 'medium',
@@ -1429,6 +1682,7 @@
                 csvField(m.pay || ''),
                 csvField(billingLabel),
                 m.progress || '0',
+                csvField(supportNames),
                 csvField(objectivesStr),
                 csvField(m.notes || ''),
                 csvField(tagsStr),
@@ -1456,10 +1710,10 @@
 
     function exportMissionTemplateCSV() {
         var lines = [
-            'MissionID,Title,Year,Status,Priority,Difficulty,PrimaryType,Subtype,SecondaryType,Escalation,ThreatType,Environment,Team,TeamType,Location,Duration,BasePay,SurchargePay,TotalPay,Billing,Progress,Objectives,Notes,Tags,CreatedAt,CompletedAt',
-            'RS-2026-H001,Operation Nightfall,2026,active,high,hard,investigation,reconnaissance,research,Tier IV,Human/Magical,Urban,Raven Squad,Professional,Berlin,2 weeks,5000,2000,7000,Escalated,50,Infiltrate base;Retrieve documents ✓;Extract intel,Use stealth approach,covert;rescue,2024-01-15,',
-            'AT-2026-M001,Field Testing Alpha,2026,active,medium,medium,research,field_testing,,Tier II,Magical,Lab,Team Alpha,Academic,London,3 days,2000,,2000,Original,0,Test new tracking spell;Document results,Proceed with caution,testing;magic,2024-01-20,',
-            'LG-2026-E001,Supply Run,2026,completed,low,easy,acquisition,resources,,Tier I,,Rural,Logistics Team,Temporary,Outpost 7,1 day,500,,500,Original,100,Deliver supplies ✓;Check inventory ✓,All delivered,logistics;supply,2024-01-10,2024-01-11'
+            'MissionID,Title,Year,Month,Day,Status,Priority,Difficulty,PrimaryType,Subtype,SecondaryType,Escalation,ThreatType,Environment,Team,TeamType,Location,Duration,BasePay,SurchargePay,TotalPay,Billing,Progress,SupportPersonnel,Objectives,Notes,Tags,CreatedAt,CompletedAt',
+            'RS-2026-H001,Operation Nightfall,2026,6,15,active,high,hard,investigation,reconnaissance,research,Tier IV,Human/Magical,Urban,Raven Squad,Professional,Berlin,2 weeks,5000,2000,7000,Escalated,50,Dr. Sarah Chen;Agent Marcus,Infiltrate base;Retrieve documents ✓;Extract intel,Use stealth approach,covert;rescue,2024-01-15,',
+            'AT-2026-M001,Field Testing Alpha,2026,7,20,active,medium,medium,research,field_testing,,Tier II,Magical,Lab,Team Alpha,Academic,London,3 days,2000,,2000,Original,0,,Test new tracking spell;Document results,Proceed with caution,testing;magic,2024-01-20,',
+            'LG-2026-E001,Supply Run,2026,8,5,completed,low,easy,acquisition,resources,,Tier I,,Rural,Logistics Team,Temporary,Outpost 7,1 day,500,,500,Original,100,Cpl. Davis,Deliver supplies ✓;Check inventory ✓,All delivered,logistics;supply,2024-01-10,2024-01-11'
         ];
 
         var csvContent = lines.join('\n');
@@ -1496,7 +1750,7 @@
                     var values = parseCSVLine(line);
 
                     if (i === 0) {
-                        var possibleHeaders = ['MissionID', 'Title', 'Year', 'Status', 'Priority', 'Difficulty', 'PrimaryType', 'Subtype', 'SecondaryType', 'Escalation', 'ThreatType', 'Environment', 'Team', 'TeamType', 'Location', 'Duration', 'BasePay', 'SurchargePay', 'TotalPay', 'Billing', 'Progress', 'Objectives', 'Notes', 'Tags', 'CreatedAt', 'CompletedAt'];
+                        var possibleHeaders = ['MissionID', 'Title', 'Year', 'Month', 'Day', 'Status', 'Priority', 'Difficulty', 'PrimaryType', 'Subtype', 'SecondaryType', 'Escalation', 'ThreatType', 'Environment', 'Team', 'TeamType', 'Location', 'Duration', 'BasePay', 'SurchargePay', 'TotalPay', 'Billing', 'Progress', 'SupportPersonnel', 'Objectives', 'Notes', 'Tags', 'CreatedAt', 'CompletedAt'];
                         var headerMatch = 0;
                         values.forEach(function(v) {
                             if (possibleHeaders.indexOf(v.trim()) !== -1) headerMatch++;
@@ -1510,6 +1764,8 @@
                     var missionData = {
                         title: '',
                         year: new Date().getFullYear(),
+                        month: new Date().getMonth() + 1,
+                        day: new Date().getDate(),
                         status: 'active',
                         priority: 'medium',
                         difficulty: 'medium',
@@ -1520,6 +1776,7 @@
                         threatType: '',
                         environment: '',
                         assignedTeamId: null,
+                        supportPersonnel: [],
                         location: '',
                         duration: '',
                         basePay: '',
@@ -1535,6 +1792,8 @@
                         'MissionID': 'missionId',
                         'Title': 'title',
                         'Year': 'year',
+                        'Month': 'month',
+                        'Day': 'day',
                         'Status': 'status',
                         'Priority': 'priority',
                         'Difficulty': 'difficulty',
@@ -1552,13 +1811,14 @@
                         'TotalPay': 'pay',
                         'Billing': 'billing',
                         'Progress': 'progress',
+                        'SupportPersonnel': 'supportPersonnel',
                         'Objectives': 'objectives',
                         'Notes': 'notes',
                         'Tags': 'tags'
                     };
 
                     if (headers.length === 0) {
-                        headers = ['MissionID', 'Title', 'Year', 'Status', 'Priority', 'Difficulty', 'PrimaryType', 'Subtype', 'SecondaryType', 'Escalation', 'ThreatType', 'Environment', 'Team', 'TeamType', 'Location', 'Duration', 'BasePay', 'SurchargePay', 'TotalPay', 'Billing', 'Progress', 'Objectives', 'Notes', 'Tags', 'CreatedAt', 'CompletedAt'];
+                        headers = ['MissionID', 'Title', 'Year', 'Month', 'Day', 'Status', 'Priority', 'Difficulty', 'PrimaryType', 'Subtype', 'SecondaryType', 'Escalation', 'ThreatType', 'Environment', 'Team', 'TeamType', 'Location', 'Duration', 'BasePay', 'SurchargePay', 'TotalPay', 'Billing', 'Progress', 'SupportPersonnel', 'Objectives', 'Notes', 'Tags', 'CreatedAt', 'CompletedAt'];
                     }
 
                     headers.forEach(function(header, index) {
@@ -1573,8 +1833,18 @@
                             // Don't import missionId, it will be auto-generated
                         } else if (mapped === 'year') {
                             var y = parseInt(value);
-                            if (!isNaN(y) && y >= 2000 && y <= 2100) {
+                            if (!isNaN(y) && y >= 1000 && y <= 9999) {
                                 missionData.year = y;
+                            }
+                        } else if (mapped === 'month') {
+                            var m = parseInt(value);
+                            if (!isNaN(m) && m >= 1 && m <= 12) {
+                                missionData.month = m;
+                            }
+                        } else if (mapped === 'day') {
+                            var d = parseInt(value);
+                            if (!isNaN(d) && d >= 1 && d <= 31) {
+                                missionData.day = d;
                             }
                         } else if (mapped === 'status') {
                             if (['active', 'completed', 'cancelled'].indexOf(value) !== -1) {
@@ -1633,6 +1903,21 @@
                         } else if (mapped === 'progress') {
                             var prog = parseInt(value);
                             if (!isNaN(prog)) missionData.progress = prog;
+                        } else if (mapped === 'supportPersonnel') {
+                            if (value) {
+                                var supportNames = value.split(';').map(function(n) { return n.trim(); }).filter(function(n) { return n; });
+                                var data = window.data || {};
+                                var characters = data.characters || [];
+                                supportNames.forEach(function(name) {
+                                    var char = characters.find(function(c) {
+                                        var charName = window.getDisplayName ? window.getDisplayName(c) : (c.name || c.firstName || '');
+                                        return charName.toLowerCase() === name.toLowerCase();
+                                    });
+                                    if (char) {
+                                        missionData.supportPersonnel.push(char.id);
+                                    }
+                                });
+                            }
                         } else if (mapped === 'objectives') {
                             if (value) {
                                 var objParts = value.split(';');
@@ -1796,6 +2081,21 @@
             form.addEventListener('submit', saveMission);
         }
 
+        var addSupportBtn = document.getElementById('add-support-btn');
+        if (addSupportBtn) {
+            addSupportBtn.addEventListener('click', function() {
+                var select = document.getElementById('mission-support-select');
+                if (select && select.value) {
+                    var char = window.getCharacterById ? window.getCharacterById(select.value) : null;
+                    if (char) {
+                        var name = window.getDisplayName ? window.getDisplayName(char) : (char.name || char.firstName || 'Unknown');
+                        addSupportTag(select.value, name);
+                        select.value = '';
+                    }
+                }
+            });
+        }
+
         var addObjBtn = document.getElementById('add-objective-btn');
         if (addObjBtn) {
             addObjBtn.addEventListener('click', function() {
@@ -1916,8 +2216,14 @@
     window.getStatusInfo = getStatusInfo;
     window.getDifficultyLabel = getDifficultyLabel;
     window.populateTeamSelectors = populateTeamSelectors;
+    window.populateCharacterSelectors = populateCharacterSelectors;
     window.populateSubtypeSelectors = populateSubtypeSelectors;
     window.addObjectiveToList = addObjectiveToList;
+    window.addSupportTag = addSupportTag;
+    window.collectSupportPersonnel = collectSupportPersonnel;
+    window.addSupportPersonnel = addSupportPersonnel;
+    window.removeSupportPersonnel = removeSupportPersonnel;
+    window.getSupportPersonnel = getSupportPersonnel;
     window.exportMissionsCSV = exportMissionsCSV;
     window.exportMissionTemplateCSV = exportMissionTemplateCSV;
     window.importMissionsCSV = importMissionsCSV;
@@ -1927,5 +2233,6 @@
     window.generateMissionId = generateMissionId;
     window.calculateTotalPay = calculateTotalPay;
     window.DIFFICULTY_CODES = DIFFICULTY_CODES;
+    window.MONTH_NAMES = MONTH_NAMES;
 
 })();
