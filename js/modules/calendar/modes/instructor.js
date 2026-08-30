@@ -1,885 +1,50 @@
 /**
- * js/modules/calendar/modes/instructor.js - Instructor Calendar Mode
- * Full implementation of instructor calendar
- * Path: js/modules/calendar/modes/instructor.js
+ * js/modules/characters/character-detail.js - Character Detail View
+ * Tabbed interface for viewing all character information
+ * Path: js/modules/characters/character-detail.js
  * 
  * This module is responsible for:
- *   - Rendering instructor calendar grid
- *   - Displaying instructor's class templates and blocks
- *   - Showing which students are assigned to each class
- *   - Managing student assignments (delegated to core)
+ *   - Displaying character details in a modal
+ *   - Tabbed navigation between detail sections
+ *   - Pure read-only rendering (no mutations)
+ *   - HTML escaping for XSS prevention
+ *   - Safe CSS color validation for relationship types
  * 
- * IMPORTANT:
- *   - This module uses core functions for ALL mutations
- *   - NO direct window.data mutations
- *   - Student schedules are the canonical source of truth for assignments
- *   - Instructor templates define the instructor's scheduled teaching slots
- *   - All assignment changes go through updateInstructorClassAssignments()
+ * SECURITY CONTRACT:
+ *   Every dynamic value entering an HTML string must pass through escapeHtml(),
+ *   except values originating exclusively from hard-coded internal constants.
+ *   This is a strict invariant enforced throughout this module.
+ * 
+ * DATA VALIDATION:
+ *   All array/object access is validated to prevent runtime errors from
+ *   corrupted or malformed persisted data.
+ * 
+ * DEPENDENCIES:
+ *   - window.getCharacterById (from core-utils.js)
+ *   - window.getDisplayName (from core-utils.js)
+ *   - window.RELATIONSHIP_CONSTANTS (from constants.js)
+ *   - window.DomUtils (from dom-utils.js)
  */
 
 (function() {
     'use strict';
 
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    if (!window.CalendarUtils) {
+    // Guard against duplicate script loading
+    if (window.__characterDetailLoaded) {
         return;
     }
 
-    // ============================================================
-    // GUARD AGAINST DUPLICATE LOADING
-    // ============================================================
-
-    if (window.__instructorModeLoaded) {
-        return;
-    }
-    window.__instructorModeLoaded = true;
+    var state = {
+        characterId: null,
+        activeTab: 'name'
+    };
 
     // ============================================================
-    // CONSTANTS
-    // ============================================================
-
-    var CalendarUtils = window.CalendarUtils;
-
-    var DAY_NAMES = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-    var CALENDAR_START_HOUR = CalendarUtils.CALENDAR_START_HOUR;
-    var CALENDAR_END_HOUR = CalendarUtils.CALENDAR_END_HOUR;
-
-    // ============================================================
-    // DEPENDENCY VALIDATION
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        // Query functions
-        if (typeof window.getInstructors !== 'function') {
-            missing.push('getInstructors');
-        }
-
-        if (typeof window.getDisplayName !== 'function') {
-            missing.push('getDisplayName');
-        }
-
-        if (typeof window.getAvailableDisciplines !== 'function') {
-            missing.push('getAvailableDisciplines');
-        }
-
-        if (typeof window.getDiscipline !== 'function') {
-            missing.push('getDiscipline');
-        }
-
-        if (typeof window.getStudentSchedule !== 'function') {
-            missing.push('getStudentSchedule');
-        }
-
-        if (typeof window.getCharacterById !== 'function') {
-            missing.push('getCharacterById');
-        }
-
-        if (typeof window.getClassInstructor !== 'function') {
-            missing.push('getClassInstructor');
-        }
-
-        if (typeof window.getClassDuration !== 'function') {
-            missing.push('getClassDuration');
-        }
-
-        if (typeof window.getClassLabel !== 'function') {
-            missing.push('getClassLabel');
-        }
-
-        if (typeof window.getClassGroupLabel !== 'function') {
-            missing.push('getClassGroupLabel');
-        }
-
-        if (typeof window.getStudents !== 'function') {
-            missing.push('getStudents');
-        }
-
-        // Persistence
-        if (typeof window.saveData !== 'function') {
-            missing.push('saveData');
-        }
-
-        // Core mutation functions
-        if (typeof window.addInstructorClassTemplate !== 'function') {
-            missing.push('addInstructorClassTemplate');
-        }
-
-        if (typeof window.removeInstructorClassTemplate !== 'function') {
-            missing.push('removeInstructorClassTemplate');
-        }
-
-        if (typeof window.removeInstructorBlock !== 'function') {
-            missing.push('removeInstructorBlock');
-        }
-
-        if (typeof window.updateInstructorClassAssignments !== 'function') {
-            missing.push('updateInstructorClassAssignments');
-        }
-
-        if (missing.length > 0) {
-            return false;
-        }
-
-        return true;
-    }
-
-    // ============================================================
-    // PUBLIC API
-    // ============================================================
-
-    function getInstructors() {
-        return typeof window.getInstructors === 'function' ? window.getInstructors() : [];
-    }
-
-    function getSchedule(state) {
-        var data = window.data || {};
-        var schedule = {};
-
-        if (state && state.selectedId) {
-            var instructorId = state.selectedId;
-            var week = state.week;
-
-            // Get instructor class templates.
-            // Templates define the instructor's scheduled teaching slots.
-            // Student schedules remain authoritative for actual assignments.
-            if (data.curriculum && data.curriculum.instructorTemplates) {
-                var templateKey = instructorId + '_' + week;
-                var templates = data.curriculum.instructorTemplates[templateKey] || {};
-
-                for (var classKey in templates) {
-                    if (!Object.prototype.hasOwnProperty.call(templates, classKey)) continue;
-                    var parts = classKey.split('_');
-                    var day = parseInt(parts[0], 10);
-                    var hour = parseInt(parts[1], 10);
-                    var template = templates[classKey];
-
-                    if (!schedule[day]) schedule[day] = {};
-                    schedule[day][hour] = {
-                        disciplineId: template.disciplineId,
-                        label: template.label || '',
-                        groupLabel: template.groupLabel || '',
-                        duration: template.duration || 1,
-                        isTemplate: true
-                    };
-                }
-            }
-
-            // Get instructor blocks
-            if (data.curriculum && data.curriculum.instructorBlocks) {
-                var blockKey = instructorId + '_' + week;
-                var blocks = data.curriculum.instructorBlocks[blockKey] || {};
-
-                for (var day in blocks) {
-                    if (!Object.prototype.hasOwnProperty.call(blocks, day)) continue;
-                    var dayBlocks = blocks[day];
-                    for (var hour in dayBlocks) {
-                        if (!Object.prototype.hasOwnProperty.call(dayBlocks, hour)) continue;
-                        var block = dayBlocks[hour];
-                        if (!schedule[day]) schedule[day] = {};
-                        schedule[day][hour] = {
-                            isBlock: true,
-                            label: block.label || 'Blocked Time',
-                            groupLabel: block.groupLabel || null,
-                            duration: block.duration || 1,
-                            disciplineId: block.disciplineId || null
-                        };
-                    }
-                }
-            }
-
-            // Get student schedules (canonical source of truth for assignments)
-            var students = window.getStudents() || [];
-            for (var s = 0; s < students.length; s++) {
-                var student = students[s];
-                var studentSchedule = window.getStudentSchedule(student.id, week) || {};
-
-                for (var day in studentSchedule) {
-                    if (!Object.prototype.hasOwnProperty.call(studentSchedule, day)) continue;
-                    var daySchedule = studentSchedule[day];
-                    if (!daySchedule || typeof daySchedule !== 'object') continue;
-
-                    for (var hour in daySchedule) {
-                        if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
-                        var disciplineId = daySchedule[hour];
-                        if (!disciplineId) continue;
-
-                        var classInstructorId = window.getClassInstructor(student.id, week, parseInt(day, 10), parseInt(hour, 10));
-                        if (classInstructorId && String(classInstructorId) === String(instructorId)) {
-                            if (!schedule[day]) schedule[day] = {};
-
-                            var duration = window.getClassDuration(student.id, week, parseInt(day, 10), parseInt(hour, 10)) || 1;
-                            var label = window.getClassLabel(student.id, week, parseInt(day, 10), parseInt(hour, 10));
-                            var groupLabel = window.getClassGroupLabel(student.id, week, parseInt(day, 10), parseInt(hour, 10));
-
-                            if (schedule[day][hour] && schedule[day][hour].isTemplate) {
-                                if (!schedule[day][hour].students) schedule[day][hour].students = [];
-                                var alreadyExists = false;
-                                for (var a = 0; a < schedule[day][hour].students.length; a++) {
-                                    if (String(schedule[day][hour].students[a].studentId) === String(student.id)) {
-                                        alreadyExists = true;
-                                        break;
-                                    }
-                                }
-                                if (!alreadyExists) {
-                                    schedule[day][hour].students.push({
-                                        studentId: student.id,
-                                        studentName: window.getDisplayName(student),
-                                        groupLabel: groupLabel
-                                    });
-                                }
-                            } else if (!schedule[day][hour] || schedule[day][hour].isBlock) {
-                                if (!schedule[day][hour]) {
-                                    schedule[day][hour] = {
-                                        disciplineId: disciplineId,
-                                        students: [],
-                                        label: label || '',
-                                        duration: duration,
-                                        groupLabel: groupLabel || '',
-                                        isTemplate: false
-                                    };
-                                }
-
-                                if (schedule[day][hour] && !schedule[day][hour].isBlock) {
-                                    if (!schedule[day][hour].students) schedule[day][hour].students = [];
-                                    var alreadyExists2 = false;
-                                    for (var b = 0; b < schedule[day][hour].students.length; b++) {
-                                        if (String(schedule[day][hour].students[b].studentId) === String(student.id)) {
-                                            alreadyExists2 = true;
-                                            break;
-                                        }
-                                    }
-                                    if (!alreadyExists2) {
-                                        schedule[day][hour].students.push({
-                                            studentId: student.id,
-                                            studentName: window.getDisplayName(student),
-                                            groupLabel: groupLabel
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        return schedule;
-    }
-
-    function render(container, state) {
-        if (!checkDependencies()) {
-            container.innerHTML = '<p class="empty-state">Instructor calendar dependencies not loaded.</p>';
-            return;
-        }
-
-        if (!state || !state.selectedId) {
-            container.innerHTML = '<div class="empty-state">Select an instructor to view their calendar</div>';
-            return;
-        }
-
-        renderInstructorCalendar(container, state);
-    }
-
-    // ============================================================
-    // RENDER INSTRUCTOR CALENDAR
-    // ============================================================
-
-    function renderInstructorCalendar(container, state) {
-        var instructorId = state.selectedId;
-        var week = state.week;
-
-        var schedule = getSchedule(state);
-        var instructor = window.getCharacterById(instructorId);
-        var instructorName = instructor ? window.getDisplayName(instructor) : 'Unknown';
-
-        var html = '<div class="instructor-calendar">';
-        html += '<div class="instructor-header"><h3>' + escapeHtml(instructorName) + ' - Week ' + week + '</h3></div>';
-        html += getCalendarGridHTML(schedule, instructorId, week);
-        html += '</div>';
-
-        container.innerHTML = html;
-
-        bindInstructorEvents(container, instructorId, week);
-    }
-
-    // ============================================================
-    // CALENDAR GRID HTML
-    // ============================================================
-
-    function getCalendarGridHTML(schedule, instructorId, week) {
-        var hours = [];
-        for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
-            hours.push(h);
-        }
-
-        var html = '<div class="schedule-grid">';
-
-        for (var day = 1; day <= 7; day++) {
-            var dayName = DAY_NAMES[day];
-
-            html += '<div class="day-column" data-day="' + day + '">';
-            html += '<div class="day-header">' + dayName + '</div>';
-            html += '<div class="day-slots">';
-
-            var occupiedHours = {};
-
-            for (var i = 0; i < hours.length; i++) {
-                var hour = hours[i];
-
-                if (occupiedHours[hour]) {
-                    continue;
-                }
-
-                var slotData = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
-
-                if (slotData) {
-                    var duration = slotData.duration || 1;
-
-                    for (var h = hour; h < hour + duration && h <= CALENDAR_END_HOUR; h++) {
-                        occupiedHours[h] = true;
-                    }
-
-                    var isBlock = slotData.isBlock || false;
-                    var discipline = window.getDiscipline(slotData.disciplineId);
-                    var studentCount = slotData.students ? slotData.students.length : 0;
-                    var labelDisplay = slotData.label ? ' [' + escapeHtml(slotData.label) + ']' : '';
-                    var groupDisplay = slotData.groupLabel ? ' (G' + escapeHtml(slotData.groupLabel) + ')' : '';
-                    var durationDisplay = duration > 1 ? ' (' + duration + 'h)' : '';
-                    var templateDisplay = slotData.isTemplate && studentCount === 0 ? ' (template)' : '';
-                    var blockDisplay = isBlock ? ' [B]' : '';
-                    var disciplineName = discipline ? escapeHtml(discipline.name) : 'Unknown';
-
-                    var classNames = 'time-slot occupied';
-                    if (isBlock) classNames += ' blocked';
-
-                    html += '<div class="' + classNames + '" data-day="' + day + '" data-hour="' + hour + '" data-duration="' + duration + '" style="min-height:' + (30 * duration) + 'px;height:' + (30 * duration) + 'px;">';
-                    html += '<span class="slot-time">' + CalendarUtils.formatHour(hour) + '</span>';
-                    html += '<span class="slot-label">' + disciplineName + labelDisplay + groupDisplay + durationDisplay + blockDisplay + (studentCount > 0 ? ' - ' + studentCount + ' students' : '') + templateDisplay + '</span>';
-                    html += '</div>';
-
-                } else {
-                    html += '<div class="time-slot empty" data-day="' + day + '" data-hour="' + hour + '">';
-                    html += '<span class="slot-time">' + CalendarUtils.formatHour(hour) + '</span>';
-                    html += '<span class="slot-label">+</span>';
-                    html += '</div>';
-                }
-            }
-
-            html += '</div>';
-            html += '</div>';
-        }
-
-        html += '</div>';
-
-        return html;
-    }
-
-    // ============================================================
-    // BIND EVENTS
-    // ============================================================
-
-    function bindInstructorEvents(container, instructorId, week) {
-        var emptySlots = container.querySelectorAll('.time-slot.empty');
-        for (var i = 0; i < emptySlots.length; i++) {
-            var slot = emptySlots[i];
-            slot.addEventListener('click', function() {
-                var day = parseInt(this.dataset.day, 10);
-                var hour = parseInt(this.dataset.hour, 10);
-                showAddInstructorClassModal(instructorId, week, day, hour, container);
-            });
-        }
-
-        var occupiedSlots = container.querySelectorAll('.time-slot.occupied:not(.blocked)');
-        for (var j = 0; j < occupiedSlots.length; j++) {
-            var occSlot = occupiedSlots[j];
-            occSlot.addEventListener('click', function() {
-                var day = parseInt(this.dataset.day, 10);
-                var hour = parseInt(this.dataset.hour, 10);
-                showInstructorClassDetailsModal(instructorId, week, day, hour, container);
-            });
-
-            occSlot.addEventListener('contextmenu', function(e) {
-                e.preventDefault();
-                var day = parseInt(this.dataset.day, 10);
-                var hour = parseInt(this.dataset.hour, 10);
-                if (confirm('Remove this class?')) {
-                    removeInstructorClass(instructorId, week, day, hour, container);
-                }
-            });
-        }
-
-        var blockedSlots = container.querySelectorAll('.time-slot.blocked');
-        for (var k = 0; k < blockedSlots.length; k++) {
-            var blockSlot = blockedSlots[k];
-            blockSlot.addEventListener('click', function() {
-                var day = parseInt(this.dataset.day, 10);
-                var hour = parseInt(this.dataset.hour, 10);
-                showBlockDetailsModal(instructorId, week, day, hour, container);
-            });
-
-            blockSlot.addEventListener('contextmenu', function(e) {
-                e.preventDefault();
-                var day = parseInt(this.dataset.day, 10);
-                var hour = parseInt(this.dataset.hour, 10);
-                if (confirm('Remove this blocked time?')) {
-                    removeBlockedTime(instructorId, week, day, hour, container);
-                }
-            });
-        }
-    }
-
-    // ============================================================
-    // ADD CLASS MODAL
-    // ============================================================
-
-    function showAddInstructorClassModal(instructorId, week, day, hour, container) {
-        var disciplines = window.getAvailableDisciplines(week) || [];
-        var availableDisciplines = [];
-        for (var i = 0; i < disciplines.length; i++) {
-            var d = disciplines[i];
-            if (d.instructorIds) {
-                for (var j = 0; j < d.instructorIds.length; j++) {
-                    if (String(d.instructorIds[j]) === String(instructorId)) {
-                        availableDisciplines.push(d);
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (availableDisciplines.length === 0) {
-            showNotification('No disciplines available for this instructor in week ' + week + '.', 'error');
-            return;
-        }
-
-        var hourDisplay = CalendarUtils.formatHour(hour);
-
-        var modal = document.createElement('div');
-        modal.className = 'modal';
-        modal.innerHTML = (
-            '<div class="modal-content" style="max-width:450px;">' +
-                '<div class="modal-header">' +
-                    '<h3>Add Class - ' + DAY_NAMES[day] + ' at ' + hourDisplay + '</h3>' +
-                    '<button class="close-modal">&times;</button>' +
-                '</div>' +
-                '<div class="modal-body">' +
-                    '<div class="form-group">' +
-                        '<label>Discipline:</label>' +
-                        '<select id="add-class-discipline" style="width:100%;padding:8px;">' +
-                            getDisciplineOptionsHTML(availableDisciplines) +
-                        '</select>' +
-                    '</div>' +
-                    '<div class="form-group">' +
-                        '<label>Class Label (optional):</label>' +
-                        '<input type="text" id="add-class-label" placeholder="e.g., A, B, Group 1..." style="width:100%;padding:8px;">' +
-                    '</div>' +
-                    '<div class="form-group">' +
-                        '<label>Group Label (optional):</label>' +
-                        '<input type="text" id="add-class-group" placeholder="e.g., 1, 2, 3..." style="width:100%;padding:8px;">' +
-                    '</div>' +
-                    '<div class="form-group">' +
-                        '<label>Duration (hours):</label>' +
-                        '<select id="add-class-duration" style="width:100%;padding:8px;">' +
-                            '<option value="1">1 hour</option>' +
-                            '<option value="2">2 hours</option>' +
-                            '<option value="3">3 hours</option>' +
-                            '<option value="4">4 hours</option>' +
-                        '</select>' +
-                    '</div>' +
-                    '<div class="form-actions" style="margin-top:16px;">' +
-                        '<button type="button" id="cancel-add-class" class="secondary">Cancel</button>' +
-                        '<button type="button" id="confirm-add-class" class="primary">Add Class</button>' +
-                    '</div>' +
-                '</div>' +
-            '</div>'
-        );
-
-        document.body.appendChild(modal);
-
-        var closeModal = function() { modal.remove(); };
-        modal.querySelector('.close-modal').onclick = closeModal;
-        modal.querySelector('#cancel-add-class').onclick = closeModal;
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) {
-                modal.remove();
-            }
-        });
-
-        modal.querySelector('#confirm-add-class').onclick = function() {
-            var disciplineSelect = document.getElementById('add-class-discipline');
-            var disciplineId = disciplineSelect ? disciplineSelect.value : null;
-            var duration = parseInt(document.getElementById('add-class-duration').value, 10) || 1;
-            var label = document.getElementById('add-class-label').value.trim();
-            var groupLabel = document.getElementById('add-class-group').value.trim();
-
-            if (!disciplineId) {
-                showNotification('Please select a discipline.', 'error');
-                return;
-            }
-
-            if (hour + duration > CALENDAR_END_HOUR + 1) {
-                showNotification('Class extends beyond the calendar boundary.', 'error');
-                return;
-            }
-
-            if (typeof window.addInstructorClassTemplate === 'function') {
-                var result = window.addInstructorClassTemplate(instructorId, week, day, hour, {
-                    disciplineId: disciplineId,
-                    label: label,
-                    groupLabel: groupLabel,
-                    duration: duration,
-                    assignedStudents: []
-                });
-
-                if (result && result.success) {
-                    modal.remove();
-                    window.saveData()
-                        .then(function() {
-                            showNotification('Class template added.', 'success');
-                            render(container, { selectedId: instructorId, week: week });
-                        })
-                        .catch(function() {
-                            showNotification('Class added in memory, but persistence failed.', 'error');
-                            render(container, { selectedId: instructorId, week: week });
-                        });
-                } else {
-                    showNotification(result && result.message ? result.message : 'Failed to add class template.', 'error');
-                }
-            } else {
-                showNotification('addInstructorClassTemplate not available.', 'error');
-            }
-        };
-    }
-
-    function getDisciplineOptionsHTML(disciplines) {
-        var html = '';
-        for (var i = 0; i < disciplines.length; i++) {
-            var d = disciplines[i];
-            html += '<option value="' + escapeHtml(d.id) + '">' + escapeHtml(d.name) + '</option>';
-        }
-        return html;
-    }
-
-    // ============================================================
-    // CLASS DETAILS MODAL
-    // ============================================================
-
-    function showInstructorClassDetailsModal(instructorId, week, day, hour, container) {
-        var schedule = getSchedule({ selectedId: instructorId, week: week });
-        var slotData = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
-
-        if (!slotData) {
-            showNotification('Class not found.', 'error');
-            return;
-        }
-
-        var discipline = window.getDiscipline(slotData.disciplineId);
-        var hourDisplay = CalendarUtils.formatHour(hour);
-        var duration = slotData.duration || 1;
-        var studentCount = slotData.students ? slotData.students.length : 0;
-
-        var studentNames = 'None';
-        if (slotData.students && slotData.students.length > 0) {
-            var names = [];
-            for (var i = 0; i < slotData.students.length; i++) {
-                names.push(slotData.students[i].studentName);
-            }
-            studentNames = names.join(', ');
-        }
-
-        var disciplineName = discipline ? escapeHtml(discipline.name) : 'Unknown';
-
-        var modal = document.createElement('div');
-        modal.className = 'modal';
-        modal.innerHTML = (
-            '<div class="modal-content" style="max-width:500px;">' +
-                '<div class="modal-header">' +
-                    '<h3>' + disciplineName + (slotData.label ? ' [' + escapeHtml(slotData.label) + ']' : '') + '</h3>' +
-                    '<button class="close-modal">&times;</button>' +
-                '</div>' +
-                '<div class="modal-body">' +
-                    '<div class="detail-row"><span class="label">Day/Time:</span> <span>' + escapeHtml(DAY_NAMES[day]) + ' at ' + escapeHtml(hourDisplay) + '</span></div>' +
-                    '<div class="detail-row"><span class="label">Duration:</span> <span><strong>' + duration + ' hour' + (duration > 1 ? 's' : '') + '</strong></span></div>' +
-                    '<div class="detail-row"><span class="label">Group:</span> <span><strong>' + (slotData.groupLabel ? escapeHtml(slotData.groupLabel) : 'None') + '</strong></span></div>' +
-                    '<div class="detail-row"><span class="label">Students:</span> <span><strong>' + studentCount + '</strong> - ' + escapeHtml(studentNames) + '</span></div>' +
-                    '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">' +
-                        '<button type="button" id="manage-students-btn" class="primary small">Manage Students</button>' +
-                        '<button type="button" id="remove-class-btn" class="danger small">Remove Class</button>' +
-                        '<button type="button" id="close-detail" class="secondary small">Close</button>' +
-                    '</div>' +
-                '</div>' +
-            '</div>'
-        );
-
-        document.body.appendChild(modal);
-
-        var closeModal = function() { modal.remove(); };
-        modal.querySelector('.close-modal').onclick = closeModal;
-        modal.querySelector('#close-detail').onclick = closeModal;
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) {
-                modal.remove();
-            }
-        });
-
-        modal.querySelector('#remove-class-btn').onclick = function() {
-            if (confirm('Remove this class?')) {
-                modal.remove();
-                removeInstructorClass(instructorId, week, day, hour, container);
-            }
-        };
-
-        modal.querySelector('#manage-students-btn').onclick = function() {
-            modal.remove();
-            showManageStudentsModal(instructorId, week, day, hour, container);
-        };
-    }
-
-    // ============================================================
-    // MANAGE STUDENTS MODAL - Uses Core Function
-    // ============================================================
-
-    function showManageStudentsModal(instructorId, week, day, hour, container) {
-        var schedule = getSchedule({ selectedId: instructorId, week: week });
-        var slotData = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
-
-        if (!slotData) {
-            showNotification('Class not found.', 'error');
-            return;
-        }
-
-        var discipline = window.getDiscipline(slotData.disciplineId);
-        var allStudents = window.getStudents() || [];
-        var assignedStudentIds = [];
-        if (slotData.students) {
-            for (var i = 0; i < slotData.students.length; i++) {
-                assignedStudentIds.push(slotData.students[i].studentId);
-            }
-        }
-
-        var modal = document.createElement('div');
-        modal.className = 'modal';
-
-        var studentsHTML = '';
-        for (var s = 0; s < allStudents.length; s++) {
-            var student = allStudents[s];
-            var name = window.getDisplayName(student);
-            var isAssigned = false;
-            for (var a = 0; a < assignedStudentIds.length; a++) {
-                if (String(assignedStudentIds[a]) === String(student.id)) {
-                    isAssigned = true;
-                    break;
-                }
-            }
-            studentsHTML += (
-                '<label style="display:block;padding:4px 0;font-size:0.8rem;cursor:pointer;border-bottom:1px solid var(--border-soft);">' +
-                    '<input type="checkbox" class="assign-student-checkbox" value="' + escapeHtml(student.id) + '" ' + (isAssigned ? 'checked' : '') + '> ' +
-                    escapeHtml(name) +
-                    (isAssigned ? ' <span style="color:var(--accent);font-size:0.7rem;">[assigned]</span>' : '') +
-                '</label>'
-            );
-        }
-
-        var disciplineName = discipline ? escapeHtml(discipline.name) : 'Unknown';
-
-        modal.innerHTML = (
-            '<div class="modal-content" style="max-width:550px;">' +
-                '<div class="modal-header">' +
-                    '<h3>Manage Students - ' + disciplineName + '</h3>' +
-                    '<button class="close-modal">&times;</button>' +
-                '</div>' +
-                '<div class="modal-body">' +
-                    '<div style="max-height:300px;overflow-y:auto;">' +
-                        studentsHTML +
-                    '</div>' +
-                    '<div class="form-actions" style="margin-top:16px;">' +
-                        '<button type="button" id="cancel-manage" class="secondary">Cancel</button>' +
-                        '<button type="button" id="update-assignments" class="primary">Update Assignments</button>' +
-                    '</div>' +
-                '</div>' +
-            '</div>'
-        );
-
-        document.body.appendChild(modal);
-
-        var closeModal = function() { modal.remove(); };
-        modal.querySelector('.close-modal').onclick = closeModal;
-        modal.querySelector('#cancel-manage').onclick = closeModal;
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) {
-                modal.remove();
-            }
-        });
-
-        modal.querySelector('#update-assignments').onclick = function() {
-            var selectedStudents = [];
-            var checkboxes = modal.querySelectorAll('.assign-student-checkbox:checked');
-            for (var c = 0; c < checkboxes.length; c++) {
-                selectedStudents.push(checkboxes[c].value);
-            }
-
-            if (typeof window.updateInstructorClassAssignments === 'function') {
-                var result = window.updateInstructorClassAssignments(
-                    instructorId,
-                    week,
-                    day,
-                    hour,
-                    selectedStudents
-                );
-
-                if (result && result.success) {
-                    modal.remove();
-                    window.saveData()
-                        .then(function() {
-                            var msg = 'Student assignments updated.';
-                            if (result.added && result.added > 0) {
-                                msg += ' Added ' + result.added + ' student(s).';
-                            }
-                            if (result.removed && result.removed > 0) {
-                                msg += ' Removed ' + result.removed + ' student(s).';
-                            }
-                            if (result.conflicts && result.conflicts.length > 0) {
-                                msg += ' Conflicts: ' + result.conflicts.join(', ');
-                            }
-                            showNotification(msg, 'success');
-                            render(container, { selectedId: instructorId, week: week });
-                        })
-                        .catch(function() {
-                            showNotification('Assignments updated in memory, but persistence failed.', 'error');
-                            render(container, { selectedId: instructorId, week: week });
-                        });
-                } else {
-                    showNotification(result && result.message ? result.message : 'Failed to update assignments.', 'error');
-                }
-            } else {
-                showNotification('updateInstructorClassAssignments not available.', 'error');
-            }
-        };
-    }
-
-    // ============================================================
-    // REMOVE CLASS - Uses Core Function
-    // ============================================================
-
-    function removeInstructorClass(instructorId, week, day, hour, container) {
-        if (typeof window.removeInstructorClassTemplate === 'function') {
-            var result = window.removeInstructorClassTemplate(instructorId, week, day, hour);
-
-            if (result && result.success) {
-                window.saveData()
-                    .then(function() {
-                        showNotification('Class removed.', 'success');
-                        render(container, { selectedId: instructorId, week: week });
-                    })
-                    .catch(function() {
-                        showNotification('Class removed in memory, but persistence failed.', 'error');
-                        render(container, { selectedId: instructorId, week: week });
-                    });
-            } else {
-                showNotification(result && result.message ? result.message : 'Failed to remove class.', 'error');
-            }
-        } else {
-            showNotification('removeInstructorClassTemplate not available.', 'error');
-        }
-    }
-
-    // ============================================================
-    // BLOCKED TIME
-    // ============================================================
-
-    function showBlockDetailsModal(instructorId, week, day, hour, container) {
-        var data = window.data || {};
-        var blockKey = instructorId + '_' + week;
-        var block = null;
-
-        if (data.curriculum && data.curriculum.instructorBlocks &&
-            data.curriculum.instructorBlocks[blockKey] &&
-            data.curriculum.instructorBlocks[blockKey][day] &&
-            data.curriculum.instructorBlocks[blockKey][day][hour]) {
-            block = data.curriculum.instructorBlocks[blockKey][day][hour];
-        }
-
-        if (!block) {
-            showNotification('Block not found.', 'error');
-            return;
-        }
-
-        var hourDisplay = CalendarUtils.formatHour(hour);
-
-        var modal = document.createElement('div');
-        modal.className = 'modal';
-        modal.innerHTML = (
-            '<div class="modal-content" style="max-width:400px;">' +
-                '<div class="modal-header">' +
-                    '<h3>' + escapeHtml(block.label || 'Blocked Time') + '</h3>' +
-                    '<button class="close-modal">&times;</button>' +
-                '</div>' +
-                '<div class="modal-body">' +
-                    '<div class="detail-row"><span class="label">Day/Time:</span> <span>' + escapeHtml(DAY_NAMES[day]) + ' at ' + escapeHtml(hourDisplay) + '</span></div>' +
-                    '<div class="detail-row"><span class="label">Duration:</span> <span>' + (block.duration || 1) + ' hour(s)</span></div>' +
-                    '<div class="detail-row"><span class="label">Group:</span> <span>' + (block.groupLabel ? escapeHtml(block.groupLabel) : 'None') + '</span></div>' +
-                    '<div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">' +
-                        '<button type="button" id="remove-block" class="danger small">Remove Block</button>' +
-                        '<button type="button" id="close-block" class="secondary small">Close</button>' +
-                    '</div>' +
-                '</div>' +
-            '</div>'
-        );
-
-        document.body.appendChild(modal);
-
-        var closeModal = function() { modal.remove(); };
-        modal.querySelector('.close-modal').onclick = closeModal;
-        modal.querySelector('#close-block').onclick = closeModal;
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) {
-                modal.remove();
-            }
-        });
-
-        modal.querySelector('#remove-block').onclick = function() {
-            modal.remove();
-            removeBlockedTime(instructorId, week, day, hour, container);
-        };
-    }
-
-    function removeBlockedTime(instructorId, week, day, hour, container) {
-        if (typeof window.removeInstructorBlock === 'function') {
-            var result = window.removeInstructorBlock(instructorId, week, day, hour);
-
-            if (result && result.success) {
-                window.saveData()
-                    .then(function() {
-                        showNotification('Block removed.', 'success');
-                        render(container, { selectedId: instructorId, week: week });
-                    })
-                    .catch(function() {
-                        showNotification('Block removed in memory, but persistence failed.', 'error');
-                        render(container, { selectedId: instructorId, week: week });
-                    });
-            } else {
-                showNotification(result && result.message ? result.message : 'Failed to remove block.', 'error');
-            }
-        } else {
-            showNotification('removeInstructorBlock not available.', 'error');
-        }
-    }
-
-    // ============================================================
-    // HELPERS
+    // HTML ESCAPING - Prevents XSS
     // ============================================================
 
     function escapeHtml(value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
-        var str = String(value);
-        return str
+        return String(value == null ? '' : value)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
@@ -887,36 +52,829 @@
             .replace(/'/g, '&#039;');
     }
 
-    function showNotification(message, type) {
-        type = type || 'info';
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
+    // ============================================================
+    // SAFE CSS COLOR VALIDATION - Whitelist based
+    // ============================================================
+
+    function getSafeRelationshipColor(typeId) {
+        var color = getRelationshipTypeColor(typeId);
+        
+        if (!color || typeof color !== 'string') {
+            return window.RELATIONSHIP_CONSTANTS.DEFAULT_COLOR;
         }
-        if (type === 'error') {
-            alert('Error: ' + message);
-        } else if (type === 'success') {
-            alert(message);
+
+        // Check whitelist
+        if (window.isAllowedRelationshipColor && window.isAllowedRelationshipColor(color)) {
+            return color;
         }
+
+        return window.RELATIONSHIP_CONSTANTS.DEFAULT_COLOR;
     }
 
     // ============================================================
-    // REGISTER WITH CALENDAR MODES
+    // DATA VALIDATION HELPERS
     // ============================================================
 
-    if (window.CalendarModes && typeof window.CalendarModes.registerMode === 'function') {
-        window.CalendarModes.registerMode('instructor', {
-            label: 'Instructor',
-            hint: 'Click a slot to add class | Right-click to remove | Click class to manage students',
-            render: render,
-            getEntities: getInstructors,
-            getEntityDisplayName: function(entity) {
-                return typeof window.getDisplayName === 'function'
-                    ? window.getDisplayName(entity)
-                    : (entity.name || 'Unknown');
-            },
-            getData: getSchedule
+    function getArray(value, fallback) {
+        return Array.isArray(value) ? value : (fallback || []);
+    }
+
+    function getObject(value, fallback) {
+        return value && typeof value === 'object' && !Array.isArray(value)
+            ? value
+            : (fallback || {});
+    }
+
+    function getString(value, fallback) {
+        return value !== undefined && value !== null ? String(value) : (fallback || '');
+    }
+
+    // ============================================================
+    // RELATIONSHIP TYPE HELPERS - Single source of truth
+    // ============================================================
+
+    function getRelationshipType(typeId) {
+        var data = window.data || {};
+        var social = data.social || {};
+        var types = Array.isArray(social.relationshipTypes) ? social.relationshipTypes : [];
+        return types.find(function(t) {
+            return t && String(t.id) === String(typeId);
+        }) || null;
+    }
+
+    function getRelationshipTypeLabel(typeId) {
+        var type = getRelationshipType(typeId);
+        return type ? type.label : (typeId || 'Other');
+    }
+
+    function getRelationshipTypeColor(typeId) {
+        var type = getRelationshipType(typeId);
+        return type ? type.color : window.RELATIONSHIP_CONSTANTS.DEFAULT_COLOR;
+    }
+
+    // ============================================================
+    // TEAM/MISSION QUERY HELPERS - Single source of truth
+    // ============================================================
+
+    function getCharacterTeamsByType(charId, types) {
+        var data = window.data || {};
+        var teams = Array.isArray(data.teams) ? data.teams : [];
+        
+        if (!Array.isArray(types)) {
+            types = [types];
+        }
+
+        return teams.filter(function(team) {
+            if (!team || typeof team !== 'object') return false;
+            if (team.status === 'deleted') return false;
+            if (types.indexOf(team.type) === -1) return false;
+            if (!Array.isArray(team.members)) return false;
+            return team.members.some(function(m) {
+                return m && String(m.characterId) === String(charId);
+            });
         });
     }
+
+    function getCharacterMissions(charId) {
+        var data = window.data || {};
+        var teams = Array.isArray(data.teams) ? data.teams : [];
+        var missions = Array.isArray(data.missions) ? data.missions : [];
+
+        return missions.filter(function(m) {
+            if (!m || typeof m !== 'object') return false;
+            if (!m.assignedTeamId) return false;
+            return teams.some(function(t) {
+                if (!t || typeof t !== 'object') return false;
+                if (String(t.id) !== String(m.assignedTeamId)) return false;
+                if (!Array.isArray(t.members)) return false;
+                return t.members.some(function(mem) {
+                    return mem && String(mem.characterId) === String(charId);
+                });
+            });
+        });
+    }
+
+    function getScheduleCount(charId) {
+        var data = window.data || {};
+        var curriculum = data.curriculum || {};
+        var schedules = curriculum.schedules || {};
+        var charSchedule = schedules[charId] || {};
+
+        var count = 0;
+        for (var week in charSchedule) {
+            if (!Object.prototype.hasOwnProperty.call(charSchedule, week)) continue;
+            var weekData = charSchedule[week];
+            if (!weekData || typeof weekData !== 'object') continue;
+            for (var day in weekData) {
+                if (!Object.prototype.hasOwnProperty.call(weekData, day)) continue;
+                var dayData = weekData[day];
+                if (!dayData || typeof dayData !== 'object') continue;
+                for (var hour in dayData) {
+                    if (!Object.prototype.hasOwnProperty.call(dayData, hour)) continue;
+                    if (dayData[hour]) count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    function getCharacterTournamentEliminations(char) {
+        var data = window.data || {};
+        var eliminations = Array.isArray(char.eliminations) ? char.eliminations : [];
+        var tournaments = Array.isArray(data.tournaments) ? data.tournaments : [];
+
+        return eliminations.filter(function(e) {
+            return e && !e.standalone;
+        }).map(function(e) {
+            var tournName = 'Unknown Tournament';
+            if (e.tournamentId) {
+                var tourn = tournaments.find(function(t) {
+                    return t && String(t.id) === String(e.tournamentId);
+                });
+                if (tourn) tournName = tourn.name;
+            }
+            return {
+                tournamentName: tournName,
+                week: e.week || '?',
+                reason: e.reason || ''
+            };
+        });
+    }
+
+    function getCharacterStandaloneEliminations(char) {
+        var eliminations = Array.isArray(char.eliminations) ? char.eliminations : [];
+        return eliminations.filter(function(e) {
+            return e && e.standalone;
+        });
+    }
+
+    function getCharacterGrades(charId) {
+        var data = window.data || {};
+        var curriculum = data.curriculum || {};
+        var grades = curriculum.grades || {};
+        var charGrades = grades[charId] || {};
+
+        var result = [];
+        for (var week in charGrades) {
+            if (!Object.prototype.hasOwnProperty.call(charGrades, week)) continue;
+            var weekData = charGrades[week];
+            if (!weekData || typeof weekData !== 'object') continue;
+            for (var discId in weekData) {
+                if (!Object.prototype.hasOwnProperty.call(weekData, discId)) continue;
+                var score = weekData[discId];
+                var disc = window.getDiscipline ? window.getDiscipline(discId) : null;
+                result.push({
+                    week: week,
+                    disciplineId: discId,
+                    disciplineName: disc ? disc.name : 'Unknown',
+                    score: score
+                });
+            }
+        }
+        return result;
+    }
+
+    // ============================================================
+    // PERIOD FORMATTING
+    // ============================================================
+
+    function formatPeriod(joinPeriod, leavePeriod, prefix) {
+        prefix = prefix || '';
+        var join = getString(joinPeriod, '?');
+        var leave = getString(leavePeriod, '');
+
+        if (!join && !leave) return prefix + '?';
+        if (join && leave) return prefix + join + ' → ' + prefix + leave;
+        if (join) return prefix + join + ' → Present';
+        return prefix + leave;
+    }
+
+    // ============================================================
+    // OPEN / CLOSE
+    // ============================================================
+
+    function openCharacterDetail(charId) {
+        var char = window.getCharacterById ? window.getCharacterById(charId) : null;
+        if (!char) {
+            alert('Character not found.');
+            return;
+        }
+
+        state.characterId = charId;
+        state.activeTab = 'name';
+
+        var modal = document.getElementById('character-detail-modal');
+        if (!modal) {
+            createCharacterDetailModal();
+            modal = document.getElementById('character-detail-modal');
+        }
+
+        renderCharacterDetail(char);
+        modal.classList.remove('hidden');
+    }
+
+    function closeCharacterDetail() {
+        var modal = document.getElementById('character-detail-modal');
+        if (modal) modal.classList.add('hidden');
+        state.characterId = null;
+    }
+
+    // ============================================================
+    // MODAL CREATION
+    // ============================================================
+
+    function createCharacterDetailModal() {
+        var modal = document.createElement('div');
+        modal.id = 'character-detail-modal';
+        modal.className = 'modal hidden';
+        modal.innerHTML = `
+            <div class="modal-content wide">
+                <div class="modal-header">
+                    <h3 id="detail-character-name">Character</h3>
+                    <button class="close-modal" id="close-character-detail">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="detail-tabs">
+                        <button class="detail-tab-btn active" data-tab="name">Name</button>
+                        <button class="detail-tab-btn" data-tab="physical">Physical</button>
+                        <button class="detail-tab-btn" data-tab="personality">Personality</button>
+                        <button class="detail-tab-btn" data-tab="career">Career</button>
+                        <button class="detail-tab-btn" data-tab="academic">Academic</button>
+                        <button class="detail-tab-btn" data-tab="stats">Stats</button>
+                        <button class="detail-tab-btn" data-tab="social">Social</button>
+                        <button class="detail-tab-btn" data-tab="notes">Notes</button>
+                    </div>
+                    <div id="detail-tab-content">
+                        <div id="detail-name" class="detail-tab-panel active"></div>
+                        <div id="detail-physical" class="detail-tab-panel" style="display:none;"></div>
+                        <div id="detail-personality" class="detail-tab-panel" style="display:none;"></div>
+                        <div id="detail-career" class="detail-tab-panel" style="display:none;"></div>
+                        <div id="detail-academic" class="detail-tab-panel" style="display:none;"></div>
+                        <div id="detail-stats" class="detail-tab-panel" style="display:none;"></div>
+                        <div id="detail-social" class="detail-tab-panel" style="display:none;"></div>
+                        <div id="detail-notes" class="detail-tab-panel" style="display:none;"></div>
+                    </div>
+                    <div class="form-actions">
+                        <button id="edit-character-from-detail" class="primary">Edit Character</button>
+                        <button id="close-character-detail-btn" class="secondary">Close</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+
+        document.getElementById('close-character-detail').addEventListener('click', closeCharacterDetail);
+        document.getElementById('close-character-detail-btn').addEventListener('click', closeCharacterDetail);
+
+        modal.addEventListener('click', function(e) {
+            if (e.target === this) closeCharacterDetail();
+        });
+
+        modal.querySelectorAll('.detail-tab-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var tab = this.dataset.tab;
+                switchDetailTab(tab);
+            });
+        });
+
+        document.getElementById('edit-character-from-detail').addEventListener('click', function() {
+            var id = state.characterId;
+            if (id) {
+                closeCharacterDetail();
+                if (typeof window.showCharacterForm === 'function') {
+                    window.showCharacterForm(id);
+                }
+            }
+        });
+    }
+
+    // ============================================================
+    // TAB SWITCHING
+    // ============================================================
+
+    function switchDetailTab(tab) {
+        var modal = document.getElementById('character-detail-modal');
+        if (!modal) return;
+
+        state.activeTab = tab;
+
+        modal.querySelectorAll('.detail-tab-btn').forEach(function(btn) {
+            btn.classList.toggle('active', btn.dataset.tab === tab);
+        });
+
+        modal.querySelectorAll('.detail-tab-panel').forEach(function(panel) {
+            var panelId = panel.id.replace('detail-', '');
+            panel.style.display = panelId === tab ? 'block' : 'none';
+            panel.classList.toggle('active', panelId === tab);
+        });
+
+        var char = window.getCharacterById ? window.getCharacterById(state.characterId) : null;
+        if (char) {
+            renderDetailTab(tab, char);
+        }
+    }
+
+    // ============================================================
+    // RENDER DETAIL
+    // ============================================================
+
+    function renderCharacterDetail(char) {
+        var name = window.getDisplayName ? window.getDisplayName(char) : 'Unknown';
+        var nameEl = document.getElementById('detail-character-name');
+        if (nameEl) nameEl.textContent = name;
+
+        renderDetailTab(state.activeTab, char);
+    }
+
+    function renderDetailTab(tab, char) {
+        var container = document.getElementById('detail-' + tab);
+        if (!container) return;
+
+        var html = '';
+
+        switch(tab) {
+            case 'name':
+                html = renderNameTab(char);
+                break;
+            case 'physical':
+                html = renderPhysicalTab(char);
+                break;
+            case 'personality':
+                html = renderPersonalityTab(char);
+                break;
+            case 'career':
+                html = renderCareerTab(char);
+                break;
+            case 'academic':
+                html = renderAcademicTab(char);
+                break;
+            case 'stats':
+                html = renderStatsTab(char);
+                break;
+            case 'social':
+                html = renderSocialTab(char);
+                break;
+            case 'notes':
+                html = renderNotesTab(char);
+                break;
+        }
+
+        container.innerHTML = html;
+    }
+
+    // ============================================================
+    // TAB RENDERERS - WITH HTML ESCAPING
+    // ============================================================
+
+    function renderNameTab(char) {
+        var nameFormat = char.nameFormat || 'firstlast';
+        var formatLabels = {
+            'firstlast': 'First + Last',
+            'lastfirst': 'Last, First',
+            'nicklast': 'Nickname + Last',
+            'firstnick': 'First "Nickname"',
+            'alias': 'Alias'
+        };
+
+        var displayName = window.getDisplayName ? window.getDisplayName(char) : 'Unknown';
+        var age = window.getCharacterAge ? window.getCharacterAge(char) : '-';
+
+        var html = '<div class="detail-section">';
+        html += '<div class="detail-row"><span class="label">Display Name:</span> <span style="font-weight:600;font-size:1.1rem;color:var(--accent);">' + escapeHtml(displayName) + '</span></div>';
+        html += '<div class="detail-row"><span class="label">First Name:</span> <span>' + escapeHtml(char.firstName || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Middle Name:</span> <span>' + escapeHtml(char.middleName || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Last Name:</span> <span>' + escapeHtml(char.lastName || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Nickname:</span> <span>' + escapeHtml(char.nickname || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Alias:</span> <span>' + escapeHtml(char.alias || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Previous Names:</span> <span>' + escapeHtml((Array.isArray(char.previousNames) ? char.previousNames : []).join(', ') || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Display Format:</span> <span>' + escapeHtml(formatLabels[nameFormat] || 'First + Last') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Age:</span> <span>' + escapeHtml(age) + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Year of Birth:</span> <span>' + escapeHtml(char.birthYear || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Gender:</span> <span>' + escapeHtml(char.gender || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Attraction:</span> <span>' + escapeHtml(char.attraction || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Sexuality:</span> <span>' + escapeHtml(char.sexuality || '-') + '</span></div>';
+
+        if (char.deceased) {
+            html += '<div class="detail-row"><span class="label">Deceased:</span> <span style="color:var(--danger);font-weight:600;">Yes</span></div>';
+            html += '<div class="detail-row"><span class="label">Year of Death:</span> <span>' + escapeHtml(char.deathYear || '-') + '</span></div>';
+            html += '<div class="detail-row"><span class="label">Death Age:</span> <span>' + escapeHtml(char.deathAge || '-') + '</span></div>';
+            html += '<div class="detail-row"><span class="label">Cause of Death:</span> <span>' + escapeHtml(char.deathCause || '-') + '</span></div>';
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderPhysicalTab(char) {
+        var html = '<div class="detail-section">';
+        html += '<div class="detail-row"><span class="label">Eye Color:</span> <span>' + escapeHtml(char.eyes || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Hair Color:</span> <span>' + escapeHtml(char.hair || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Skin Color/Tone:</span> <span>' + escapeHtml(char.skin || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Height:</span> <span>' + escapeHtml(char.height || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Weight:</span> <span>' + escapeHtml(char.weight || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Build:</span> <span>' + escapeHtml(char.build || '-') + '</span></div>';
+        html += '<div class="detail-row" style="flex-direction:column;align-items:flex-start;gap:4px;"><span class="label">Appearance Notes:</span><span style="padding:4px 0;">' + escapeHtml(char.appearanceNotes || '-') + '</span></div>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderPersonalityTab(char) {
+        var personality = getObject(char.personality, {});
+        var html = '<div class="detail-section">';
+        html += '<div class="detail-row"><span class="label">Traits:</span> <span>' + escapeHtml(personality.traits || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Ideals:</span> <span>' + escapeHtml(personality.ideals || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Bonds:</span> <span>' + escapeHtml(personality.bonds || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Flaws:</span> <span>' + escapeHtml(personality.flaws || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Alignment:</span> <span>' + escapeHtml(personality.alignment || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Likes:</span> <span>' + escapeHtml(personality.likes || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Dislikes:</span> <span>' + escapeHtml(personality.dislikes || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Habits:</span> <span>' + escapeHtml(personality.habits || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Fears:</span> <span>' + escapeHtml(personality.fears || '-') + '</span></div>';
+        html += '<div class="detail-row"><span class="label">Goals:</span> <span>' + escapeHtml(personality.goals || '-') + '</span></div>';
+        html += '</div>';
+        return html;
+    }
+
+    function renderCareerTab(char) {
+        var data = window.data || {};
+        var careerStatus = Array.isArray(char.careerStatus) ? char.careerStatus : [];
+
+        var html = '<div class="detail-section">';
+        
+        html += '<h4 style="color:var(--accent);font-size:0.85rem;margin-bottom:8px;">Career Status History</h4>';
+
+        if (careerStatus.length > 0) {
+            html += '<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px;">';
+            careerStatus.forEach(function(status) {
+                if (!status || typeof status !== 'object') return;
+                var period = status.startYear || '?';
+                if (status.endYear) {
+                    period += ' → ' + status.endYear;
+                } else {
+                    period += ' → Present';
+                }
+                var statusName = status.status || 'Unknown';
+                var displayName = statusName.charAt(0).toUpperCase() + statusName.slice(1);
+                html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);">';
+                html += '<span style="font-weight:600;">' + escapeHtml(displayName) + '</span>';
+                html += ' <span style="color:var(--text-dim);font-size:0.8rem;">(' + escapeHtml(period) + ')</span>';
+                html += '</div>';
+            });
+            html += '</div>';
+        } else {
+            html += '<p class="empty-state" style="padding:8px;font-size:0.8rem;">No career history</p>';
+        }
+
+        // Professional Teams
+        html += '<h4 style="color:var(--info);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Professional Teams</h4>';
+        var profTeams = getCharacterTeamsByType(char.id, 'professional');
+        if (profTeams.length > 0) {
+            profTeams.forEach(function(team) {
+                var member = Array.isArray(team.members) ? team.members.find(function(m) {
+                    return m && String(m.characterId) === String(char.id);
+                }) : null;
+                var period = formatPeriod(member ? member.joinPeriod : null, member ? member.leavePeriod : null);
+                html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--info);margin-bottom:4px;">';
+                html += '<span><strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.8rem;">(' + escapeHtml(period) + ')</span></span>';
+                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">[' + escapeHtml(member.role) + ']</span>';
+                html += '</div>';
+            });
+        } else {
+            html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No professional teams</p>';
+        }
+
+        // Temporary Teams
+        html += '<h4 style="color:var(--warning);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Temporary Teams</h4>';
+        var tempTeams = getCharacterTeamsByType(char.id, ['temporary', 'internship']);
+        if (tempTeams.length > 0) {
+            tempTeams.forEach(function(team) {
+                var member = Array.isArray(team.members) ? team.members.find(function(m) {
+                    return m && String(m.characterId) === String(char.id);
+                }) : null;
+                var period = formatPeriod(member ? member.joinPeriod : null, member ? member.leavePeriod : null);
+                html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--warning);margin-bottom:4px;">';
+                html += '<span><strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.8rem;">(' + escapeHtml(period) + ')</span></span>';
+                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">[' + escapeHtml(member.role) + ']</span>';
+                html += '</div>';
+            });
+        } else {
+            html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No temporary teams</p>';
+        }
+
+        // Civilian Teams
+        html += '<h4 style="color:var(--text-dim);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Civilian Teams</h4>';
+        var civTeams = getCharacterTeamsByType(char.id, 'civilian');
+        if (civTeams.length > 0) {
+            civTeams.forEach(function(team) {
+                var member = Array.isArray(team.members) ? team.members.find(function(m) {
+                    return m && String(m.characterId) === String(char.id);
+                }) : null;
+                var period = formatPeriod(member ? member.joinPeriod : null, member ? member.leavePeriod : null);
+                html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--text-dim);margin-bottom:4px;">';
+                html += '<span><strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.8rem;">(' + escapeHtml(period) + ')</span></span>';
+                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">[' + escapeHtml(member.role) + ']</span>';
+                html += '</div>';
+            });
+        } else {
+            html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No civilian teams</p>';
+        }
+
+        // Missions
+        html += '<h4 style="color:var(--warning);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Missions</h4>';
+        var missions = getCharacterMissions(char.id);
+        if (missions.length > 0) {
+            missions.forEach(function(m) {
+                var statusColor = m.status === 'completed' ? 'var(--accent)' : 
+                                 m.status === 'cancelled' ? 'var(--danger)' : 'var(--warning)';
+                html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + statusColor + ';margin-bottom:4px;">';
+                html += '<span><strong>' + escapeHtml(m.title) + '</strong> <span style="color:' + statusColor + ';font-size:0.7rem;">' + escapeHtml(m.status || 'active') + '</span></span>';
+                if (m.location) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(m.location) + ')</span>';
+                html += '</div>';
+            });
+        } else {
+            html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No missions assigned</p>';
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderAcademicTab(char) {
+        var data = window.data || {};
+        var html = '<div class="detail-section">';
+
+        // Academic Teams
+        html += '<h4 style="color:var(--accent);font-size:0.85rem;margin-bottom:8px;">Academic Teams</h4>';
+        var acadTeams = getCharacterTeamsByType(char.id, 'academic');
+        if (acadTeams.length > 0) {
+            acadTeams.forEach(function(team) {
+                var member = Array.isArray(team.members) ? team.members.find(function(m) {
+                    return m && String(m.characterId) === String(char.id);
+                }) : null;
+                var period = formatPeriod(member ? member.joinPeriod : null, member ? member.leavePeriod : null, 'Wk ');
+                var classDisplay = team.classId ? ' [' + escapeHtml(window.getClassDisplayName ? window.getClassDisplayName(team.classId) : 'Unknown') + ']' : '';
+                html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);margin-bottom:4px;">';
+                html += '<span><strong>' + escapeHtml(team.name) + '</strong>' + classDisplay + ' <span style="color:var(--text-dim);font-size:0.8rem;">(' + escapeHtml(period) + ')</span></span>';
+                if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">[' + escapeHtml(member.role) + ']</span>';
+                html += '</div>';
+            });
+        } else {
+            html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No academic teams</p>';
+        }
+
+        // Grades
+        html += '<h4 style="color:var(--info);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Grades</h4>';
+        var grades = getCharacterGrades(char.id);
+        if (grades.length > 0) {
+            html += '<div style="max-height:120px;overflow-y:auto;font-size:0.75rem;">';
+            grades.forEach(function(g) {
+                html += '<div style="padding:3px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;display:flex;justify-content:space-between;">';
+                html += '<span>' + escapeHtml(g.disciplineName) + ' (Wk ' + escapeHtml(g.week) + ')</span>';
+                html += '<span style="color:var(--accent);font-weight:600;">' + escapeHtml(g.score) + '%</span>';
+                html += '</div>';
+            });
+            html += '</div>';
+        } else {
+            html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No grades recorded</p>';
+        }
+
+        // Tournament Eliminations
+        html += '<h4 style="color:var(--danger);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Tournament Eliminations</h4>';
+        var tournElims = getCharacterTournamentEliminations(char);
+        if (tournElims.length > 0) {
+            tournElims.forEach(function(elim) {
+                html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--danger);margin-bottom:3px;">';
+                html += '<span style="font-size:0.75rem;"><strong>' + escapeHtml(elim.tournamentName) + '</strong> - Week ' + escapeHtml(elim.week) + (elim.reason ? ' (' + escapeHtml(elim.reason) + ')' : '') + '</span>';
+                html += '</div>';
+            });
+        } else {
+            html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No tournament eliminations</p>';
+        }
+
+        // Standalone Eliminations
+        html += '<h4 style="color:var(--warning);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Standalone Eliminations</h4>';
+        var standaloneElims = getCharacterStandaloneEliminations(char);
+        if (standaloneElims.length > 0) {
+            standaloneElims.forEach(function(elim) {
+                html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--warning);margin-bottom:3px;">';
+                html += '<span style="font-size:0.75rem;">Week ' + escapeHtml(elim.week) + (elim.reason ? ' - ' + escapeHtml(elim.reason) : '') + '</span>';
+                html += '</div>';
+            });
+        } else {
+            html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No standalone eliminations</p>';
+        }
+
+        // Schedule Summary
+        html += '<h4 style="color:var(--warning);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Schedule Summary</h4>';
+        var scheduleCount = getScheduleCount(char.id);
+        if (scheduleCount > 0) {
+            html += '<p style="font-size:0.75rem;color:var(--text-dim);">Total classes scheduled: <strong>' + scheduleCount + '</strong></p>';
+        } else {
+            html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No schedule recorded</p>';
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderStatsTab(char) {
+        var stats = window.getCharacterStats ? window.getCharacterStats(char) : { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
+        var suggestedClass = window.suggestClass ? window.suggestClass(stats) : null;
+        var magic = window.getCharacterMagic ? window.getCharacterMagic(char) : {};
+        var magicClass = window.suggestMagicClass ? window.suggestMagicClass(char) : null;
+        var moves = window.getCharacterSpecialMoves ? window.getCharacterSpecialMoves(char) : { physical: [], magical: [] };
+        var magicPower = window.calculateMagicPower ? window.calculateMagicPower(char) : 0;
+        var magicPowerDisplay = window.getMagicPowerDisplay ? window.getMagicPowerDisplay(char) : '';
+
+        var html = '<div class="detail-section">';
+
+        // Physical Stats
+        html += '<h4 style="color:var(--accent);font-size:0.85rem;margin-bottom:8px;">Physical Stats</h4>';
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;">';
+        var statLabels = { str: 'STR', dex: 'DEX', con: 'CON', int: 'INT', wis: 'WIS', cha: 'CHA' };
+        for (var key in statLabels) {
+            var val = stats[key] || 10;
+            var mod = Math.floor((val - 10) / 2);
+            html += '<div style="background:var(--bg);padding:6px 10px;border-radius:4px;border:1px solid var(--border-soft);text-align:center;">';
+            html += '<div style="font-size:0.6rem;color:var(--text-dim);">' + escapeHtml(statLabels[key]) + '</div>';
+            html += '<div style="font-size:1.2rem;font-weight:700;color:var(--accent);">' + escapeHtml(val) + '</div>';
+            html += '<div class="stat-modifier" style="font-size:0.65rem;color:' + (mod > 0 ? 'var(--accent)' : mod < 0 ? 'var(--danger)' : 'var(--text-dim)') + ';">' + (mod >= 0 ? '+' : '') + mod + '</div>';
+            html += '</div>';
+        }
+        html += '</div>';
+
+        // Class Suggestion
+        html += '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
+        html += '<span style="font-size:0.75rem;color:var(--text-dim);">Physical Class:</span>';
+        if (suggestedClass) {
+            html += '<span style="font-weight:600;color:var(--accent);">' + escapeHtml((suggestedClass.icon || '') + ' ' + suggestedClass.label) + '</span>';
+        } else {
+            html += '<span style="font-weight:600;color:var(--text-dim);">—</span>';
+        }
+        html += '</div>';
+
+        // Magic Stats
+        html += '<h4 style="color:var(--info);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Magic Stats</h4>';
+        html += '<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin-bottom:12px;">';
+        var magicTypes = {
+            earth: 'Earth', water: 'Water', fire: 'Fire', air: 'Air', metal: 'Metal', wood: 'Wood',
+            blood: 'Blood', bone: 'Bone', mind: 'Mind', morphic: 'Morphic', life: 'Life', death: 'Death',
+            space: 'Space', time: 'Time', dimension: 'Dimension', void: 'Void', reality: 'Reality', transference: 'Transference'
+        };
+        for (var key in magicTypes) {
+            var val = magic[key] || 0;
+            var color = val >= 9 ? 'var(--danger)' : (val >= 7 ? 'var(--warning)' : (val >= 5 ? 'var(--accent)' : (val >= 3 ? 'var(--info)' : 'var(--text-dim)')));
+            html += '<div style="background:var(--bg);padding:2px 4px;border-radius:3px;border:1px solid var(--border-soft);text-align:center;">';
+            html += '<div style="font-size:0.45rem;color:var(--text-dim);">' + escapeHtml(magicTypes[key]) + '</div>';
+            html += '<div style="font-size:0.85rem;font-weight:700;color:' + color + ';">' + escapeHtml(val) + '</div>';
+            html += '</div>';
+        }
+        html += '</div>';
+
+        // Magic Class
+        html += '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
+        html += '<span style="font-size:0.75rem;color:var(--text-dim);">Magic Class:</span>';
+        if (magicClass) {
+            html += '<span style="font-weight:600;color:var(--info);">' + escapeHtml(magicClass.name) + '</span>';
+        } else {
+            html += '<span style="font-weight:600;color:var(--text-dim);">—</span>';
+        }
+        html += '</div>';
+
+        // Magic Power
+        html += '<div style="font-size:0.75rem;color:var(--text-dim);">Magic Power: <span style="font-weight:600;color:var(--info);">' + escapeHtml(magicPowerDisplay || magicPower + '/180') + '</span></div>';
+
+        // Special Moves
+        html += '<h4 style="color:var(--accent);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Special Moves</h4>';
+
+        html += '<div style="margin-bottom:8px;">';
+        html += '<span style="font-size:0.75rem;color:var(--accent);font-weight:600;">Physical:</span>';
+        if (moves.physical && moves.physical.length > 0) {
+            html += '<div style="margin-top:4px;">';
+            moves.physical.forEach(function(m) {
+                html += '<div style="padding:2px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;border-left:2px solid var(--accent);">';
+                html += '<span style="font-weight:600;font-size:0.75rem;">' + escapeHtml(m.name) + '</span>';
+                if (m.description) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">- ' + escapeHtml(m.description) + '</span>';
+                html += '</div>';
+            });
+            html += '</div>';
+        } else {
+            html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No physical moves</p>';
+        }
+        html += '</div>';
+
+        html += '<div>';
+        html += '<span style="font-size:0.75rem;color:var(--info);font-weight:600;">Magical:</span>';
+        if (moves.magical && moves.magical.length > 0) {
+            html += '<div style="margin-top:4px;">';
+            moves.magical.forEach(function(m) {
+                html += '<div style="padding:2px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;border-left:2px solid var(--info);">';
+                html += '<span style="font-weight:600;font-size:0.75rem;">' + escapeHtml(m.name) + '</span>';
+                if (m.description) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">- ' + escapeHtml(m.description) + '</span>';
+                html += '</div>';
+            });
+            html += '</div>';
+        } else {
+            html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No magical moves</p>';
+        }
+        html += '</div>';
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderSocialTab(char) {
+        var data = window.data || {};
+        var social = data.social || {};
+        var relationships = Array.isArray(social.relationships) ? social.relationships : [];
+        var rels = relationships.filter(function(r) {
+            return r && (String(r.character1) === String(char.id) || String(r.character2) === String(char.id));
+        });
+
+        var html = '<div class="detail-section">';
+        html += '<h4 style="color:var(--accent);font-size:0.85rem;margin-bottom:8px;">Social Connections</h4>';
+
+        if (rels.length === 0) {
+            html += '<p class="empty-state" style="padding:8px;font-size:0.8rem;">No social connections</p>';
+        } else {
+            html += '<div style="display:flex;flex-direction:column;gap:4px;">';
+            rels.forEach(function(rel) {
+                var otherId = String(rel.character1) === String(char.id) ? rel.character2 : rel.character1;
+                var other = window.getCharacterById ? window.getCharacterById(otherId) : null;
+                var otherName = other ? (window.getDisplayName ? window.getDisplayName(other) : 'Unknown') : 'Unknown';
+                var type = getRelationshipType(rel.typeId);
+                var typeLabel = type ? type.label : (rel.typeId || 'Other');
+                var typeColor = getSafeRelationshipColor(rel.typeId);
+                var period = '';
+                if (rel.startYear && rel.endYear) {
+                    period = rel.startYear + ' → ' + rel.endYear;
+                } else if (rel.startYear) {
+                    period = 'From ' + rel.startYear;
+                }
+                var clarification = rel.clarification ? ' (' + escapeHtml(rel.clarification) + ')' : '';
+                var notes = rel.notes ? ' 📝' : '';
+
+                html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + typeColor + ';">';
+                html += '<span><strong>' + escapeHtml(otherName) + '</strong> <span style="color:' + typeColor + ';font-size:0.8rem;">' + escapeHtml(typeLabel) + clarification + '</span></span>';
+                if (period) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">' + escapeHtml(period) + '</span>';
+                if (notes) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">' + notes + '</span>';
+                html += '</div>';
+            });
+            html += '</div>';
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function renderNotesTab(char) {
+        var html = '<div class="detail-section">';
+        html += '<div style="background:var(--bg);padding:12px;border-radius:6px;border:1px solid var(--border-soft);min-height:100px;">';
+        html += '<p style="white-space:pre-wrap;margin:0;">' + escapeHtml(char.notes || 'No notes') + '</p>';
+        html += '</div>';
+        html += '</div>';
+        return html;
+    }
+
+    // ============================================================
+    // SPECIAL MOVES - PURE
+    // ============================================================
+
+    function getCharacterSpecialMoves(char) {
+        if (!char || !char.specialMoves || typeof char.specialMoves !== 'object') {
+            return { physical: [], magical: [] };
+        }
+        return {
+            physical: Array.isArray(char.specialMoves.physical)
+                ? char.specialMoves.physical
+                : [],
+            magical: Array.isArray(char.specialMoves.magical)
+                ? char.specialMoves.magical
+                : []
+        };
+    }
+
+    // ============================================================
+    // EXPOSE - Namespaced API
+    // ============================================================
+
+    window.CharacterDetail = {
+        open: openCharacterDetail,
+        close: closeCharacterDetail,
+        switchTab: switchDetailTab,
+        render: renderCharacterDetail,
+        getSpecialMoves: getCharacterSpecialMoves
+    };
+
+    // Legacy compatibility
+    window.openCharacterDetail = openCharacterDetail;
+    window.closeCharacterDetail = closeCharacterDetail;
+    window.switchDetailTab = switchDetailTab;
+    window.renderCharacterDetail = renderCharacterDetail;
+    window.getCharacterSpecialMoves = getCharacterSpecialMoves;
+
+    // Mark as loaded
+    window.__characterDetailLoaded = true;
 
 })();
