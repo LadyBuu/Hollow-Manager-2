@@ -8,7 +8,19 @@
  * IMPORTANT:
  *   - These validators do NOT mutate any state
  *   - They return { valid: boolean, message?: string }
- *   - They are the SINGLE source of truth for validation logic
+ *   - They are the SINGLE source of truth for shared STRUCTURAL and VALUE validation
+ *   - Shared validators enforce generic structure and enumerated value constraints
+ *   - Caller modules enforce relationships and application-specific business rules
+ *   - This module validates STRUCTURE and VALUES, not DOMAIN RELATIONSHIPS
+ * 
+ * VALIDATION HIERARCHY:
+ *   Schema repair (curriculum-schema.js)
+ *        ↓
+ *   Shared structural/value validation (this module)
+ *        ↓
+ *   Domain validation (caller modules)
+ *        ↓
+ *   Business logic (caller modules)
  */
 
 (function() {
@@ -36,12 +48,51 @@
         return value !== undefined && value !== null && String(value).trim() !== '';
     }
 
+    /**
+     * Parse a positive integer (>= 1).
+     * Returns null for invalid, empty, or non-positive values.
+     */
     function parsePositiveInteger(value) {
         if (value === undefined || value === null || value === '') {
             return null;
         }
         var num = Number(value);
-        return Number.isInteger(num) && num >= 1 ? num : null;
+        if (!Number.isFinite(num) || !Number.isInteger(num) || num < 1) {
+            return null;
+        }
+        return num;
+    }
+
+    /**
+     * Parse a non-negative integer (>= 0).
+     * Returns null for invalid or negative values.
+     * Used for max students, capacity, and other integer values that can be zero.
+     */
+    function parseNonNegativeInteger(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        var num = Number(value);
+        if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0) {
+            return null;
+        }
+        return num;
+    }
+
+    /**
+     * Parse a non-negative number (>= 0).
+     * Returns null for invalid or negative values.
+     * Used for weekly hours, weights, and other decimal values that can be zero.
+     */
+    function parseNonNegativeNumber(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        var num = Number(value);
+        if (!Number.isFinite(num) || num < 0) {
+            return null;
+        }
+        return num;
     }
 
     function isSafeInteger(value) {
@@ -70,6 +121,21 @@
     // GRADING SYSTEM VALIDATION
     // ============================================================
 
+    /**
+     * Validate a grading system.
+     * 
+     * @param {Array} system - Array of grade entries
+     * @param {string} system[].label - Grade label (e.g., "A", "B", "C")
+     * @param {number|string} system[].min - Minimum percentage (0-100)
+     * @param {number|string} system[].max - Maximum percentage (0-100)
+     * @returns {Object} { valid: boolean, message?: string }
+     * 
+     * NOTE: Accepts legacy 'letter' field as alias for 'label' for backward compatibility.
+     * If both are provided and differ, validation fails.
+     * This function validates only; it does NOT normalise or mutate input.
+     * Empty grading system is valid (no grade levels defined).
+     * Grading ranges do NOT need to cover the entire 0-100 scale.
+     */
     function validateGradingSystem(system) {
         if (!Array.isArray(system)) {
             return { valid: false, message: 'Grading system must be an array.' };
@@ -88,11 +154,31 @@
                 return { valid: false, message: 'Invalid grade entry at index ' + i + '.' };
             }
 
-            // Accept both 'letter' and 'label' for input
-            var letter = String(g.label || g.letter || '').trim();
+            // Handle legacy 'letter' field
+            var hasLabel = g.label !== undefined && g.label !== null && String(g.label).trim() !== '';
+            var hasLetter = g.letter !== undefined && g.letter !== null && String(g.letter).trim() !== '';
 
-            if (!letter) {
+            // Ambiguous input: both provided and different
+            if (hasLabel && hasLetter && String(g.label).trim() !== String(g.letter).trim()) {
+                return {
+                    valid: false,
+                    message: 'Cannot supply both label and letter with different values at index ' + i + '.'
+                };
+            }
+
+            var label = hasLabel ? String(g.label).trim() : (hasLetter ? String(g.letter).trim() : '');
+
+            if (!label) {
                 return { valid: false, message: 'Grade label is required at index ' + i + '.' };
+            }
+
+            // Explicitly reject null/undefined/empty min/max
+            if (g.min === undefined || g.min === null || g.min === '' ||
+                g.max === undefined || g.max === null || g.max === '') {
+                return {
+                    valid: false,
+                    message: 'Grade minimum and maximum are required at index ' + i + '.'
+                };
             }
 
             var min = Number(g.min);
@@ -102,7 +188,7 @@
                 return { valid: false, message: 'Invalid grade range at index ' + i + '.' };
             }
 
-            normalized.push({ letter: letter, min: min, max: max });
+            normalized.push({ label: label, min: min, max: max });
         }
 
         // Check for overlapping ranges
@@ -114,26 +200,26 @@
                 if (a.min <= b.max && b.min <= a.max) {
                     return {
                         valid: false,
-                        message: 'Grading ranges for "' + a.letter + '" and "' + b.letter + '" overlap.'
+                        message: 'Grading ranges for "' + a.label + '" and "' + b.label + '" overlap.'
                     };
                 }
             }
         }
 
-        // Check for duplicate letters (case-insensitive)
-        var letters = {};
+        // Check for duplicate labels (case-insensitive)
+        var labels = Object.create(null);
 
         for (var i = 0; i < normalized.length; i++) {
-            var letter = normalized[i].letter.toUpperCase();
+            var label = normalized[i].label.toUpperCase();
 
-            if (letters[letter]) {
+            if (labels[label]) {
                 return {
                     valid: false,
-                    message: 'Duplicate grade letter "' + normalized[i].letter + '".'
+                    message: 'Duplicate grade label "' + normalized[i].label + '".'
                 };
             }
 
-            letters[letter] = true;
+            labels[label] = true;
         }
 
         return { valid: true };
@@ -143,144 +229,208 @@
     // DISCIPLINE VALIDATION
     // ============================================================
 
+    /**
+     * Validate discipline data.
+     * 
+     * @param {Object} data - Discipline data to validate
+     * @param {boolean} isPartial - If true, only validate fields that are present
+     * @returns {Object} { valid: boolean, message?: string }
+     * 
+     * NOTE: This validates STRUCTURE. It does NOT check:
+     *   - That instructor IDs exist (caller responsibility)
+     *   - That the discipline name is unique (caller responsibility)
+     *   - That the discipline is in the correct schema location (caller responsibility)
+     *   - That instructor IDs are valid strings (this module validates structure)
+     */
     function validateDiscipline(data, isPartial) {
         if (!isObject(data)) {
             return { valid: false, message: 'Discipline data must be an object.' };
         }
 
-        if (isPartial) {
-            // Partial validation: only validate fields that are present
-
-            if (data.name !== undefined && !isNonEmptyString(data.name)) {
-                return { valid: false, message: 'Discipline name cannot be empty.' };
-            }
-
-            if (data.type !== undefined && (data.type !== 'mandatory' && data.type !== 'optional')) {
-                return { valid: false, message: 'Valid discipline type is required.' };
-            }
-
-            if (data.instructorIds !== undefined && (!Array.isArray(data.instructorIds) || data.instructorIds.length === 0)) {
-                return { valid: false, message: 'At least one instructor is required.' };
-            }
-
-            if (data.startWeek !== undefined) {
-                var start = validateWeek(data.startWeek);
-
-                if (data.startWeek !== '' && data.startWeek !== null && data.startWeek !== undefined && start === null) {
-                    return { valid: false, message: 'Start week must be between 1 and 52.' };
-                }
-            }
-
-            if (data.endWeek !== undefined) {
-                var end = validateWeek(data.endWeek);
-
-                if (data.endWeek !== '' && data.endWeek !== null && data.endWeek !== undefined && end === null) {
-                    return { valid: false, message: 'End week must be between 1 and 52.' };
-                }
-            }
-
-            if (data.weeklyHours !== undefined && data.weeklyHours !== '' && data.weeklyHours !== null) {
-                var hours = Number(data.weeklyHours);
-
-                if (isNaN(hours) || hours < 0 || hours > 40) {
-                    return { valid: false, message: 'Weekly hours must be between 0 and 40.' };
-                }
-            }
-
-            if (data.maxStudents !== undefined && data.maxStudents !== '' && data.maxStudents !== null) {
-                var students = Number(data.maxStudents);
-
-                if (isNaN(students) || students < 0 || students > 100) {
-                    return { valid: false, message: 'Max students must be between 0 and 100.' };
-                }
-            }
-
-            if (data.weight !== undefined && data.weight !== '' && data.weight !== null) {
-                var weight = Number(data.weight);
-
-                if (isNaN(weight) || weight < 0.1 || weight > 10) {
-                    return { valid: false, message: 'Weight must be between 0.1 and 10.' };
-                }
-            }
-
-            if (data.gradingSystem !== undefined) {
-                var gradingValidation = validateGradingSystem(data.gradingSystem);
-
-                if (!gradingValidation.valid) {
-                    return gradingValidation;
-                }
-            }
-
-        } else {
-            // Full validation: all fields required
-
+        // Name validation
+        if (!isPartial) {
             if (!isNonEmptyString(data.name)) {
                 return { valid: false, message: 'Discipline name is required.' };
             }
+        } else {
+            if (data.name !== undefined && !isNonEmptyString(data.name)) {
+                return { valid: false, message: 'Discipline name cannot be empty.' };
+            }
+        }
 
-            if (!data.type || (data.type !== 'mandatory' && data.type !== 'optional')) {
+        // Type validation
+        var validTypes = ['mandatory', 'optional'];
+
+        if (!isPartial) {
+            if (!data.type || validTypes.indexOf(data.type) === -1) {
                 return { valid: false, message: 'Valid discipline type is required.' };
             }
+        } else {
+            if (data.type !== undefined && validTypes.indexOf(data.type) === -1) {
+                return { valid: false, message: 'Valid discipline type is required.' };
+            }
+        }
 
+        // Instructor validation (structure only - existence checked by caller)
+        if (!isPartial) {
             if (!Array.isArray(data.instructorIds) || data.instructorIds.length === 0) {
                 return { valid: false, message: 'At least one instructor is required.' };
             }
 
-            if (data.startWeek !== '' && data.startWeek !== undefined && data.startWeek !== null) {
-                var start = validateWeek(data.startWeek);
+            // Validate each instructor ID is a non-empty string
+            var seen = Object.create(null);
 
-                if (start === null) {
-                    return { valid: false, message: 'Start week must be between 1 and 52.' };
+            for (var i = 0; i < data.instructorIds.length; i++) {
+                var id = data.instructorIds[i];
+
+                if (!isNonEmptyString(id)) {
+                    return {
+                        valid: false,
+                        message: 'Instructor ID at index ' + i + ' must be a non-empty string.'
+                    };
+                }
+
+                if (seen[id]) {
+                    return {
+                        valid: false,
+                        message: 'Duplicate instructor ID: ' + id + '.'
+                    };
+                }
+
+                seen[id] = true;
+            }
+        } else {
+            if (data.instructorIds !== undefined) {
+                if (!Array.isArray(data.instructorIds) || data.instructorIds.length === 0) {
+                    return { valid: false, message: 'At least one instructor is required.' };
+                }
+
+                var seen = Object.create(null);
+
+                for (var i = 0; i < data.instructorIds.length; i++) {
+                    var id = data.instructorIds[i];
+
+                    if (!isNonEmptyString(id)) {
+                        return {
+                            valid: false,
+                            message: 'Instructor ID at index ' + i + ' must be a non-empty string.'
+                        };
+                    }
+
+                    if (seen[id]) {
+                        return {
+                            valid: false,
+                            message: 'Duplicate instructor ID: ' + id + '.'
+                        };
+                    }
+
+                    seen[id] = true;
                 }
             }
+        }
 
-            if (data.endWeek !== '' && data.endWeek !== undefined && data.endWeek !== null) {
-                var end = validateWeek(data.endWeek);
-
-                if (end === null) {
-                    return { valid: false, message: 'End week must be between 1 and 52.' };
-                }
+        // Week validation
+        function validateWeekField(value, label) {
+            if (value === undefined || value === null || value === '') {
+                return { valid: true, value: null };
             }
 
-            if (data.startWeek && data.endWeek) {
-                var start = parsePositiveInteger(data.startWeek);
-                var end = parsePositiveInteger(data.endWeek);
-
-                if (start !== null && end !== null && start > end) {
-                    return { valid: false, message: 'Start week must be before end week.' };
-                }
+            var num = parsePositiveInteger(value);
+            if (num === null || num < 1 || num > 52) {
+                return { valid: false, message: label + ' must be between 1 and 52.' };
             }
 
-            if (data.weeklyHours !== '' && data.weeklyHours !== undefined && data.weeklyHours !== null) {
-                var hours = Number(data.weeklyHours);
+            return { valid: true, value: num };
+        }
 
-                if (isNaN(hours) || hours < 0 || hours > 40) {
-                    return { valid: false, message: 'Weekly hours must be between 0 and 40.' };
-                }
+        var startResult = validateWeekField(data.startWeek, 'Start week');
+        if (!startResult.valid) {
+            return startResult;
+        }
+
+        var endResult = validateWeekField(data.endWeek, 'End week');
+        if (!endResult.valid) {
+            return endResult;
+        }
+
+        // Cross-field: startWeek <= endWeek (if both present)
+        var start = data.startWeek !== '' && data.startWeek !== null && data.startWeek !== undefined
+            ? parsePositiveInteger(data.startWeek)
+            : null;
+
+        var end = data.endWeek !== '' && data.endWeek !== null && data.endWeek !== undefined
+            ? parsePositiveInteger(data.endWeek)
+            : null;
+
+        if (start !== null && end !== null && start > end) {
+            return { valid: false, message: 'Start week must be before end week.' };
+        }
+
+        // Weekly hours validation
+        function validateHours(value) {
+            if (value === undefined || value === null || value === '') {
+                return { valid: true, value: null };
             }
 
-            if (data.maxStudents !== '' && data.maxStudents !== undefined && data.maxStudents !== null) {
-                var students = Number(data.maxStudents);
-
-                if (isNaN(students) || students < 0 || students > 100) {
-                    return { valid: false, message: 'Max students must be between 0 and 100.' };
-                }
+            var num = parseNonNegativeNumber(value);
+            if (num === null || num < 0 || num > 40) {
+                return { valid: false, message: 'Weekly hours must be between 0 and 40.' };
             }
 
-            if (data.weight !== '' && data.weight !== undefined && data.weight !== null) {
-                var weight = Number(data.weight);
+            return { valid: true, value: Math.round(num * 10) / 10 };
+        }
 
-                if (isNaN(weight) || weight < 0.1 || weight > 10) {
-                    return { valid: false, message: 'Weight must be between 0.1 and 10.' };
-                }
+        var hoursResult = validateHours(data.weeklyHours);
+        if (!hoursResult.valid) {
+            return hoursResult;
+        }
+
+        // Max students validation
+        function validateMaxStudents(value) {
+            if (value === undefined || value === null || value === '') {
+                return { valid: true, value: null };
             }
 
-            if (data.gradingSystem) {
-                var gradingValidation = validateGradingSystem(data.gradingSystem);
+            var num = parseNonNegativeInteger(value);
+            if (num === null || num > 100) {
+                return {
+                    valid: false,
+                    message: 'Max students must be between 0 and 100.'
+                };
+            }
 
-                if (!gradingValidation.valid) {
-                    return gradingValidation;
-                }
+            return { valid: true, value: num };
+        }
+
+        var studentsResult = validateMaxStudents(data.maxStudents);
+        if (!studentsResult.valid) {
+            return studentsResult;
+        }
+
+        // Weight validation
+        function validateWeight(value) {
+            if (value === undefined || value === null || value === '') {
+                return { valid: true, value: null };
+            }
+
+            var num = parseNonNegativeNumber(value);
+            if (num === null || num < 0.1 || num > 10) {
+                return { valid: false, message: 'Weight must be between 0.1 and 10.' };
+            }
+
+            return { valid: true, value: Math.round(num * 100) / 100 };
+        }
+
+        var weightResult = validateWeight(data.weight);
+        if (!weightResult.valid) {
+            return weightResult;
+        }
+
+        // Grading system validation
+        if (data.gradingSystem !== undefined) {
+            var gradingResult = validateGradingSystem(data.gradingSystem);
+            if (!gradingResult.valid) {
+                return gradingResult;
             }
         }
 
@@ -291,6 +441,21 @@
     // TEAM MEMBER VALIDATION
     // ============================================================
 
+    /**
+     * Validate team member data.
+     * 
+     * @param {Object} data - Member data to validate
+     * @param {string} data.characterId - Character ID (required)
+     * @param {string} data.role - Role name (defaults to 'Member')
+     * @param {string|number} data.joinPeriod - Join period (optional)
+     * @param {string|number} data.leavePeriod - Leave period (optional)
+     * @returns {Object} { valid: boolean, message?: string }
+     * 
+     * NOTE: This validates STRUCTURE. It does NOT check:
+     *   - That the character exists (caller responsibility)
+     *   - That the team exists (caller responsibility)
+     *   - That the join/leave periods make sense in context (caller responsibility)
+     */
     function validateMemberData(data) {
         if (!isObject(data)) {
             return { valid: false, message: 'Member data must be an object.' };
@@ -300,6 +465,11 @@
             return { valid: false, message: 'Character ID is required.' };
         }
 
+        if (data.role !== undefined && data.role !== null && typeof data.role !== 'string') {
+            return { valid: false, message: 'Role must be a string.' };
+        }
+
+        // Validate join period
         if (data.joinPeriod !== '' && data.joinPeriod !== undefined && data.joinPeriod !== null) {
             var join = parsePositiveInteger(data.joinPeriod);
 
@@ -308,6 +478,7 @@
             }
         }
 
+        // Validate leave period
         if (data.leavePeriod !== '' && data.leavePeriod !== undefined && data.leavePeriod !== null) {
             var leave = parsePositiveInteger(data.leavePeriod);
 
@@ -316,6 +487,7 @@
             }
         }
 
+        // Cross-field: join <= leave (if both present)
         var joinNum = parsePositiveInteger(data.joinPeriod);
         var leaveNum = parsePositiveInteger(data.leavePeriod);
 
@@ -330,42 +502,78 @@
     // LOCATION VALIDATION
     // ============================================================
 
+    /**
+     * Validate location data.
+     * 
+     * @param {Object} data - Location data to validate
+     * @param {boolean} isPartial - If true, only validate fields that are present
+     * @returns {Object} { valid: boolean, message?: string }
+     * 
+     * NOTE: This validates STRUCTURE. It does NOT check:
+     *   - That the location name is unique (caller responsibility)
+     *   - That the location exists (caller responsibility)
+     *   - That the location type is valid (caller responsibility)
+     */
     function validateLocation(data, isPartial) {
         if (!isObject(data)) {
             return { valid: false, message: 'Location data must be an object.' };
         }
 
-        if (isPartial) {
-            if (data.name !== undefined && !isNonEmptyString(data.name)) {
-                return { valid: false, message: 'Location name cannot be empty.' };
-            }
-
-            if (data.type !== undefined && typeof data.type !== 'string') {
-                return { valid: false, message: 'Invalid location type.' };
-            }
-
-            if (data.capacity !== undefined) {
-                if (data.capacity !== null && data.capacity !== '') {
-                    var cap = Number(data.capacity);
-
-                    if (!Number.isInteger(cap) || cap < 0) {
-                        return { valid: false, message: 'Capacity must be a whole number of 0 or greater.' };
-                    }
-                }
-            }
-
-        } else {
+        // Name validation
+        if (!isPartial) {
             if (!isNonEmptyString(data.name)) {
                 return { valid: false, message: 'Location name is required.' };
             }
+        } else {
+            if (data.name !== undefined && !isNonEmptyString(data.name)) {
+                return { valid: false, message: 'Location name cannot be empty.' };
+            }
+        }
 
-            if (data.capacity !== null && data.capacity !== '') {
-                var cap = Number(data.capacity);
+        // Type validation
+        var validTypes = ['indoor', 'outdoor', 'pool', 'classroom', 'lab', 'field', 'other'];
 
-                if (!Number.isInteger(cap) || cap < 0) {
-                    return { valid: false, message: 'Capacity must be a whole number of 0 or greater.' };
+        if (!isPartial) {
+            if (!data.type || validTypes.indexOf(data.type) === -1) {
+                return { valid: false, message: 'Valid location type is required.' };
+            }
+        } else {
+            if (data.type !== undefined && validTypes.indexOf(data.type) === -1) {
+                return { valid: false, message: 'Invalid location type.' };
+            }
+        }
+
+        // Capacity validation
+        function validateCapacity(value) {
+            if (value === undefined || value === null || value === '') {
+                return { valid: true };
+            }
+
+            var num = parseNonNegativeInteger(value);
+            if (num === null) {
+                return { valid: false, message: 'Capacity must be a whole number of 0 or greater.' };
+            }
+
+            return { valid: true };
+        }
+
+        if (!isPartial) {
+            var capResult = validateCapacity(data.capacity);
+            if (!capResult.valid) {
+                return capResult;
+            }
+        } else {
+            if (data.capacity !== undefined) {
+                var capResult = validateCapacity(data.capacity);
+                if (!capResult.valid) {
+                    return capResult;
                 }
             }
+        }
+
+        // Description validation
+        if (data.description !== undefined && typeof data.description !== 'string') {
+            return { valid: false, message: 'Description must be a string.' };
         }
 
         return { valid: true };
@@ -381,6 +589,8 @@
         isNonEmptyString: isNonEmptyString,
         hasValue: hasValue,
         parsePositiveInteger: parsePositiveInteger,
+        parseNonNegativeInteger: parseNonNegativeInteger,
+        parseNonNegativeNumber: parseNonNegativeNumber,
         isSafeInteger: isSafeInteger,
 
         // Week validation
