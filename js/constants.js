@@ -11,6 +11,7 @@
  *   - UI constants (animation, breakpoints, delays)
  *   - Status constants (valid statuses for all entity types)
  *   - Validation constants (length limits, counts)
+ *   - Data version constants
  * 
  * IMPORTANT:
  *   - Load this module FIRST before any other module
@@ -58,6 +59,14 @@
         CALENDAR_END_HOUR: 23,
         /** Days in a week */
         DAYS_IN_WEEK: 7,
+        /** Minimum year for validation */
+        MIN_YEAR: 1900,
+        /** Maximum year for validation */
+        MAX_YEAR: 9999,
+        /** Default year (current year) */
+        DEFAULT_YEAR: function() {
+            return new Date().getFullYear();
+        },
         /** Day names (1-indexed: Monday = 1, Sunday = 7) */
         DAY_NAMES: ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
         /** Short day names (1-indexed) */
@@ -264,11 +273,43 @@
             LOCATION: 'loc',
             DISCIPLINE: 'disc',
             TOURNAMENT: 'tourn',
-            MISSION: 'mission',
+            MISSION: 'miss',
             RELATIONSHIP: 'rel',
             ELIMINATION: 'elim',
             ACTIVITY: 'act'
         }
+    };
+
+    // ============================================================
+    // DATA VERSION CONSTANTS
+    // ============================================================
+
+    window.DATA_CONSTANTS = {
+        /** Current application data version */
+        VERSION: 13,
+        /** Minimum supported version (for migration) */
+        MIN_SUPPORTED_VERSION: 1,
+        /** Maximum warning limit for CSV import */
+        MAX_WARNINGS: 50
+    };
+
+    // ============================================================
+    // CHARACTER FIELD CONSTANTS
+    // ============================================================
+
+    window.CHARACTER_CONSTANTS = {
+        /** Valid name formats */
+        NAME_FORMATS: ['firstlast', 'lastfirst', 'nicklast', 'firstnick', 'alias'],
+        /** Default name format */
+        DEFAULT_NAME_FORMAT: 'firstlast',
+        /** Maximum previous names */
+        MAX_PREVIOUS_NAMES: 10,
+        /** Maximum career status entries */
+        MAX_CAREER_STATUS: 20,
+        /** Valid attraction values (for suggestions) */
+        ATTRACTION_VALUES: ['', 'Women', 'Men', 'All', 'None', 'Other'],
+        /** Valid sexuality values (for suggestions) */
+        SEXUALITY_VALUES: ['', 'Heterosexual', 'Homosexual', 'Bisexual', 'Pansexual', 'Asexual', 'Questioning', 'Other']
     };
 
     // ============================================================
@@ -386,6 +427,39 @@
         if (!status || typeof status !== 'string') return 'var(--text-dim)';
         var key = status.toLowerCase();
         return window.STATUS_CONSTANTS.STATUS_COLORS[key] || 'var(--text-dim)';
+    };
+
+    /**
+     * Get the current data version.
+     * @returns {number} Current data version
+     */
+    window.getDataVersion = function() {
+        return window.DATA_CONSTANTS.VERSION;
+    };
+
+    /**
+     * Get character attraction suggestions.
+     * @returns {string[]} Array of attraction values
+     */
+    window.getAttractionValues = function() {
+        return window.CHARACTER_CONSTANTS.ATTRACTION_VALUES.slice();
+    };
+
+    /**
+     * Get character sexuality suggestions.
+     * @returns {string[]} Array of sexuality values
+     */
+    window.getSexualityValues = function() {
+        return window.CHARACTER_CONSTANTS.SEXUALITY_VALUES.slice();
+    };
+
+    /**
+     * Check if a name format is valid.
+     * @param {string} format - Name format string
+     * @returns {boolean} True if the format is valid
+     */
+    window.isValidNameFormat = function(format) {
+        return window.CHARACTER_CONSTANTS.NAME_FORMATS.indexOf(format) !== -1;
     };
 
 })();
