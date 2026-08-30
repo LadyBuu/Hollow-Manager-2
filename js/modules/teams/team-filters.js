@@ -3,8 +3,16 @@
  * Handles filtering teams by various criteria
  * Path: js/modules/teams/team-filters.js
  * 
+ * This module is responsible for:
+ *   - Filtering teams by type and criteria
+ *   - Providing default filter values
+ *   - Reading filter values from DOM
+ *   - Building filter HTML (safe, escaped)
+ * 
  * DEPENDENCIES:
  *   - window.TeamCore - Canonical team operations (required)
+ *   - window.CALENDAR_CONSTANTS - Week/year constants (from constants.js)
+ *   - window.DomUtils - HTML escaping (from dom-utils.js)
  *   - window.getWeekBlock - Week block calculation (from utils)
  * 
  * IMPORTANT:
@@ -60,10 +68,24 @@
     window.__teamFiltersLoaded = true;
 
     // ============================================================
-    // HTML ESCAPING - Prevents XSS
+    // CONSTANTS
+    // ============================================================
+
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
+    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
+    var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
+    var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
+
+    // ============================================================
+    // HTML ESCAPING - Use DomUtils when available
     // ============================================================
 
     function escapeHtml(value) {
+        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
+            return window.DomUtils.escapeHtml(value);
+        }
+        // Fallback
         return String(value == null ? '' : value)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
@@ -78,7 +100,7 @@
 
     function getWeekBlock(weekNum) {
         if (typeof window.getWeekBlock !== 'function') {
-            console.error('TeamFilters: window.getWeekBlock is not available.');
+            console.warn('TeamFilters: window.getWeekBlock is not available.');
             return null;
         }
         return window.getWeekBlock(weekNum);
@@ -121,6 +143,10 @@
 
             if (normalisedType === 'academic') {
                 var weekNum = parseInt(filter.filterWeek, 10) || 1;
+                // Clamp week to valid range
+                if (weekNum < MIN_WEEK) weekNum = MIN_WEEK;
+                if (weekNum > MAX_WEEK) weekNum = MAX_WEEK;
+
                 var block = getWeekBlock(weekNum);
                 if (!block) return [];
 
@@ -148,7 +174,7 @@
 
             } else if (normalisedType === 'professional' || normalisedType === 'temporary') {
                 var year = parseInt(filter.filterYear, 10);
-                if (!isNaN(year)) {
+                if (!isNaN(year) && year >= MIN_YEAR && year <= MAX_YEAR) {
                     // Filter by interval overlap: team's period includes the selected year
                     teams = teams.filter(function(team) {
                         var start = parseInt(team.startPeriod, 10);
@@ -166,7 +192,7 @@
                 if (filter.filterStatus === 'active') {
                     teams = teams.filter(function(t) { return t.status === 'active'; });
                 } else if (filter.filterStatus === 'inactive') {
-                    teams = teams.filter(function(t) { return t.status === 'deprecated' || t.status === 'inactive'); });
+                    teams = teams.filter(function(t) { return t.status === 'deprecated' || t.status === 'inactive'; });
                 }
 
             } else if (normalisedType === 'civilian') {
@@ -225,7 +251,7 @@
 
                 if (weekInput) {
                     var week = parseInt(weekInput.value, 10);
-                    if (!isNaN(week) && week >= 1 && week <= 52) {
+                    if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
                         filter.filterWeek = week;
                     }
                 }
@@ -241,7 +267,7 @@
 
                 if (yearInput) {
                     var year = parseInt(yearInput.value, 10);
-                    if (!isNaN(year) && year >= 1900) {
+                    if (!isNaN(year) && year >= MIN_YEAR) {
                         filter.filterYear = year;
                     } else {
                         filter.filterYear = '';
@@ -256,7 +282,7 @@
 
                 if (tempYearInput) {
                     var year = parseInt(tempYearInput.value, 10);
-                    if (!isNaN(year) && year >= 1900) {
+                    if (!isNaN(year) && year >= MIN_YEAR) {
                         filter.filterYear = year;
                     } else {
                         filter.filterYear = '';
@@ -292,14 +318,16 @@
 
                 // Build class options with escaped values
                 var classOptionsHtml = '';
-                classes.forEach(function(cls) {
-                    var selected = String(classFilterValue) === String(cls.id) ? ' selected' : '';
-                    classOptionsHtml += '<option value="' + escapeHtml(cls.id) + '"' + selected + '>' + escapeHtml(cls.name) + '</option>';
-                });
+                if (classes.length > 0) {
+                    classes.forEach(function(cls) {
+                        var selected = String(classFilterValue) === String(cls.id) ? ' selected' : '';
+                        classOptionsHtml += '<option value="' + escapeHtml(cls.id) + '"' + selected + '>' + escapeHtml(cls.name) + '</option>';
+                    });
+                }
 
                 html += '<div class="filter-section">';
                 html += '<label for="team-filter-week">Week:</label>';
-                html += '<input type="number" id="team-filter-week" value="' + escapeHtml(String(weekValue)) + '" min="1" max="52" style="width:80px;">';
+                html += '<input type="number" id="team-filter-week" value="' + escapeHtml(String(weekValue)) + '" min="' + MIN_WEEK + '" max="' + MAX_WEEK + '" style="width:80px;">';
                 html += '<button id="apply-filter-btn" class="small primary">Apply</button>';
                 html += '<span style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Shows teams active during this 2-week block</span>';
                 html += '<label style="margin-left:12px;">Class:</label>';
@@ -316,7 +344,7 @@
                 var yearValue = filter.filterYear || '';
                 html += '<div class="filter-section">';
                 html += '<label for="team-filter-year">Year:</label>';
-                html += '<input type="number" id="team-filter-year" value="' + escapeHtml(String(yearValue)) + '" min="1900" max="2100" style="width:80px;" placeholder="All">';
+                html += '<input type="number" id="team-filter-year" value="' + escapeHtml(String(yearValue)) + '" min="' + MIN_YEAR + '" max="' + MAX_YEAR + '" style="width:80px;" placeholder="All">';
                 html += '<button id="apply-filter-btn" class="small primary">Apply</button>';
                 html += '<span style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Shows teams active during this year</span>';
                 html += '<label style="margin-left:12px;display:flex;align-items:center;gap:4px;font-size:0.75rem;color:var(--text-dim);cursor:pointer;">';
@@ -325,10 +353,10 @@
                 html += '</div>';
 
             } else if (type === 'temporary') {
-                var yearValue = filter.filterYear || '';
+                var tempYearValue = filter.filterYear || '';
                 html += '<div class="filter-section">';
                 html += '<label for="team-filter-year">Year:</label>';
-                html += '<input type="number" id="team-filter-year" value="' + escapeHtml(String(yearValue)) + '" min="1900" max="2100" style="width:80px;" placeholder="All">';
+                html += '<input type="number" id="team-filter-year" value="' + escapeHtml(String(tempYearValue)) + '" min="' + MIN_YEAR + '" max="' + MAX_YEAR + '" style="width:80px;" placeholder="All">';
                 html += '<button id="apply-filter-btn" class="small primary">Apply</button>';
                 html += '<span style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Shows teams active during this year</span>';
                 html += '<label style="margin-left:12px;display:flex;align-items:center;gap:4px;font-size:0.75rem;color:var(--text-dim);cursor:pointer;">';
@@ -343,6 +371,42 @@
             }
 
             return html;
+        },
+
+        /**
+         * Get the valid week range for academic teams.
+         * @returns {object} { min: number, max: number }
+         */
+        getWeekRange: function() {
+            return { min: MIN_WEEK, max: MAX_WEEK };
+        },
+
+        /**
+         * Get the valid year range for non-academic teams.
+         * @returns {object} { min: number, max: number }
+         */
+        getYearRange: function() {
+            return { min: MIN_YEAR, max: MAX_YEAR };
+        },
+
+        /**
+         * Check if a week is valid for academic teams.
+         * @param {number|string} week - Week number
+         * @returns {boolean} True if valid
+         */
+        isValidWeek: function(week) {
+            var num = parseInt(week, 10);
+            return !isNaN(num) && num >= MIN_WEEK && num <= MAX_WEEK;
+        },
+
+        /**
+         * Check if a year is valid for non-academic teams.
+         * @param {number|string} year - Year
+         * @returns {boolean} True if valid
+         */
+        isValidYear: function(year) {
+            var num = parseInt(year, 10);
+            return !isNaN(num) && num >= MIN_YEAR && num <= MAX_YEAR;
         }
     };
 
