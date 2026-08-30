@@ -346,6 +346,8 @@
             nameFormat: getVal('char-name-format', 'firstlast'),
             birthYear: getVal('char-birthyear', ''),
             gender: getVal('char-gender', ''),
+            attraction: getVal('char-attraction', ''),
+            sexuality: getVal('char-sexuality', ''),
             eyes: getVal('char-eyes', ''),
             hair: getVal('char-hair', ''),
             skin: getVal('char-skin', ''),
