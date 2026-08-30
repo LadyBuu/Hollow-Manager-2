@@ -43,6 +43,9 @@
  *   - window.db.createSafeCopy (from database.js)
  *   - window.CharacterStats (for magic schema, optional but recommended)
  *   - window.logActivity (optional, for activity logging)
+ *   - window.MAGIC_CONSTANTS (from constants.js)
+ *   - window.CALENDAR_CONSTANTS (from constants.js)
+ *   - window.NotificationSystem (from notification.js)
  */
 
 (function() {
@@ -58,8 +61,8 @@
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = 1;
-    var MAX_WEEK = 52;
+    var MIN_WEEK = window.CALENDAR_CONSTANTS.MIN_WEEK;
+    var MAX_WEEK = window.CALENDAR_CONSTANTS.MAX_WEEK;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -135,6 +138,11 @@
 
     function showNotification(message, type) {
         type = type || 'info';
+
+        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
+            window.NotificationSystem.notify(message, type);
+            return;
+        }
 
         if (typeof window.showToast === 'function') {
             window.showToast(message, type);
@@ -249,15 +257,10 @@
             if (Array.isArray(keys) && keys.length > 0) {
                 return keys;
             }
-            console.warn('CharacterCRUD: CharacterStats returned invalid magic type keys.');
         }
 
-        // Fallback for when CharacterStats isn't available
-        return [
-            'earth', 'water', 'fire', 'air', 'metal', 'wood',
-            'blood', 'bone', 'mind', 'morphic', 'life', 'death',
-            'space', 'time', 'dimension', 'void', 'reality', 'transference'
-        ];
+        // Use constants as fallback
+        return window.MAGIC_CONSTANTS.TYPES.slice();
     }
 
     function getMagicMax() {
@@ -266,7 +269,7 @@
             typeof window.CharacterStats.MAGIC_MAX === 'number') {
             return window.CharacterStats.MAGIC_MAX;
         }
-        return 10;
+        return window.MAGIC_CONSTANTS.MAX;
     }
 
     function getMagic() {
@@ -515,7 +518,6 @@
         // SNAPSHOT - Required, abort if fails
         var backup = createSafeBackup(data);
         if (!backup) {
-            console.error('CharacterCRUD: Could not create rollback backup.');
             showNotification('Unable to safely save character. Please try again.', 'error');
             return Promise.resolve(false);
         }
@@ -547,8 +549,7 @@
                             );
                         }
                     } catch (logErr) {
-                        console.warn('CharacterCRUD: Activity logging failed:', logErr);
-                        // Do NOT rollback - persistence already succeeded
+                        // Ignore logging errors
                     }
 
                     // UI COMMIT
@@ -556,7 +557,6 @@
                     return true;
                 })
                 .catch(function(err) {
-                    console.error('Failed to save character:', err);
                     // ROLLBACK
                     window.data = backup;
                     safeRenderCharacterList();
@@ -625,7 +625,6 @@
         // SNAPSHOT - Required, abort if fails
         var backup = createSafeBackup(data);
         if (!backup) {
-            console.error('CharacterCRUD: Could not create rollback backup for deletion.');
             showNotification('Unable to safely delete character. Please try again.', 'error');
             return Promise.resolve(false);
         }
@@ -656,8 +655,7 @@
                             window.logActivity('Deleted character: ' + name);
                         }
                     } catch (logErr) {
-                        console.warn('CharacterCRUD: Activity logging failed:', logErr);
-                        // Do NOT rollback - persistence already succeeded
+                        // Ignore logging errors
                     }
 
                     // UI COMMIT
@@ -665,7 +663,6 @@
                     return true;
                 })
                 .catch(function(err) {
-                    console.error('Failed to delete character:', err);
                     // ROLLBACK
                     window.data = backup;
                     safeRenderCharacterList();
