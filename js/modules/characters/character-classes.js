@@ -40,10 +40,13 @@
  *   - window.getClasses (from core-utils.js)
  *   - window.getClass (from core-utils.js)
  *   - window.getClassByName (from core-utils.js)
- *   - window.createClass (from core-utils.js)
+ *   - window.createClass (from class-core.js)
  *   - window.saveData (from database.js)
  *   - window.db.createSafeCopy (from database.js)
  *   - window.logActivity (optional, for activity logging)
+ *   - window.CALENDAR_CONSTANTS (from constants.js)
+ *   - window.DomUtils (from dom-utils.js)
+ *   - window.NotificationSystem (from notification.js)
  */
 
 (function() {
@@ -59,8 +62,8 @@
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = 1;
-    var MAX_WEEK = 52;
+    var MIN_WEEK = window.CALENDAR_CONSTANTS.MIN_WEEK;
+    var MAX_WEEK = window.CALENDAR_CONSTANTS.MAX_WEEK;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -125,6 +128,11 @@
 
     function showNotification(message, type) {
         type = type || 'info';
+
+        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
+            window.NotificationSystem.notify(message, type);
+            return;
+        }
 
         if (typeof window.showToast === 'function') {
             window.showToast(message, type);
@@ -260,7 +268,6 @@
         var data = window.data || {};
         var backup = createSafeBackup(data);
         if (!backup) {
-            console.error('CharacterClasses: Could not create rollback backup.');
             showNotification('Unable to safely remove class. Please try again.', 'error');
             return Promise.resolve(false);
         }
@@ -285,7 +292,7 @@
                             window.logActivity('Removed ' + name + ' from class: ' + cls.name);
                         }
                     } catch (logErr) {
-                        console.warn('CharacterClasses: Activity logging failed:', logErr);
+                        // Ignore logging errors
                     }
 
                     // UI COMMIT - reacquire character from restored state
@@ -297,7 +304,6 @@
                     return true;
                 })
                 .catch(function(err) {
-                    console.error('Failed to remove character from class:', err);
                     // ROLLBACK
                     if (backup) {
                         window.data = backup;
@@ -369,7 +375,6 @@
         var data = window.data || {};
         var backup = createSafeBackup(data);
         if (!backup) {
-            console.error('CharacterClasses: Could not create rollback backup.');
             showNotification('Unable to safely add class. Please try again.', 'error');
             return Promise.resolve(false);
         }
@@ -395,7 +400,7 @@
                             window.logActivity('Added ' + charName + ' to class: ' + cls.name);
                         }
                     } catch (logErr) {
-                        console.warn('CharacterClasses: Activity logging failed:', logErr);
+                        // Ignore logging errors
                     }
 
                     // UI COMMIT - reacquire character from restored state
@@ -407,7 +412,6 @@
                     return true;
                 })
                 .catch(function(err) {
-                    console.error('Failed to add character to class:', err);
                     // ROLLBACK
                     if (backup) {
                         window.data = backup;
@@ -460,7 +464,6 @@
         var data = window.data || {};
         var backup = createSafeBackup(data);
         if (!backup) {
-            console.error('CharacterClasses: Could not create rollback backup.');
             showNotification('Unable to safely add class. Please try again.', 'error');
             return Promise.resolve(false);
         }
@@ -506,7 +509,7 @@
                             window.logActivity('Added ' + charName + ' to class: ' + cls.name);
                         }
                     } catch (logErr) {
-                        console.warn('CharacterClasses: Activity logging failed:', logErr);
+                        // Ignore logging errors
                     }
 
                     // UI COMMIT
@@ -519,7 +522,6 @@
                     return true;
                 })
                 .catch(function(err) {
-                    console.error('Failed to add character to class:', err);
                     // ROLLBACK - reacquire character from restored state
                     if (backup) {
                         window.data = backup;
@@ -724,8 +726,6 @@
         tag.appendChild(nameSpan);
         tag.appendChild(button);
         container.appendChild(tag);
-
-        // NO event listener - handled by delegation in character-events.js
     }
 
     // ============================================================
