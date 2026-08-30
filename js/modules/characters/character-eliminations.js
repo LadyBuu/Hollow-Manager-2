@@ -42,6 +42,8 @@
  *   - window.saveData (from database.js)
  *   - window.db.createSafeCopy (from database.js)
  *   - window.logActivity (optional, for activity logging)
+ *   - window.CALENDAR_CONSTANTS (from constants.js)
+ *   - window.NotificationSystem (from notification.js)
  */
 
 (function() {
@@ -57,8 +59,8 @@
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = 1;
-    var MAX_WEEK = 52;
+    var MIN_WEEK = window.CALENDAR_CONSTANTS.MIN_WEEK;
+    var MAX_WEEK = window.CALENDAR_CONSTANTS.MAX_WEEK;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -95,10 +97,8 @@
     function showNotification(message, type) {
         type = type || 'info';
 
-        if (typeof window.AppUI !== 'undefined' &&
-            window.AppUI &&
-            typeof window.AppUI.notify === 'function') {
-            window.AppUI.notify(message, type);
+        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
+            window.NotificationSystem.notify(message, type);
             return;
         }
 
@@ -410,8 +410,6 @@
             div.appendChild(button);
             container.appendChild(div);
         });
-
-        // Event listeners are bound via event delegation in character-events.js
     }
 
     // ============================================================
@@ -471,7 +469,6 @@
         // SNAPSHOT - Required, abort if fails
         var backup = createSafeBackup(data);
         if (!backup) {
-            console.error('CharacterEliminations: Could not create rollback backup.');
             showNotification('Unable to safely eliminate character. Please try again.', 'error');
             return;
         }
@@ -504,14 +501,13 @@
                         window.logActivity('Eliminated ' + name + ' (standalone, week ' + week + '): ' + reason);
                     }
                 } catch (logErr) {
-                    console.warn('CharacterEliminations: Activity logging failed:', logErr);
+                    // Ignore logging errors
                 }
 
                 // UI COMMIT
                 onAddSuccess(charId);
             })
             .catch(function(err) {
-                console.error('Failed to add elimination:', err);
                 // ROLLBACK
                 if (backup) {
                     window.data = backup;
@@ -570,7 +566,6 @@
         // SNAPSHOT - Required, abort if fails
         var backup = createSafeBackup(data);
         if (!backup) {
-            console.error('CharacterEliminations: Could not create rollback backup.');
             showNotification('Unable to safely remove elimination. Please try again.', 'error');
             return;
         }
@@ -594,14 +589,13 @@
                         window.logActivity('Removed standalone elimination for ' + name + ' (week ' + elim.week + ')');
                     }
                 } catch (logErr) {
-                    console.warn('CharacterEliminations: Activity logging failed:', logErr);
+                    // Ignore logging errors
                 }
 
                 // UI COMMIT
                 onRemoveSuccess(charId);
             })
             .catch(function(err) {
-                console.error('Failed to remove elimination:', err);
                 // ROLLBACK
                 if (backup) {
                     window.data = backup;
@@ -652,7 +646,6 @@
         var weekNum = Number(week);
 
         if (isCharacterEliminatedByWeek(char, weekNum)) {
-            console.log('markCharacterEliminated: Character already eliminated by week ' + weekNum);
             return Promise.resolve(false);
         }
 
@@ -661,14 +654,12 @@
         });
 
         if (alreadyExists) {
-            console.log('markCharacterEliminated: Character already eliminated from this tournament');
             return Promise.resolve(false);
         }
 
         // SNAPSHOT - Required, abort if fails
         var backup = createSafeBackup(data);
         if (!backup) {
-            console.error('CharacterEliminations: Could not create rollback backup.');
             showNotification('Unable to safely mark character eliminated. Please try again.', 'error');
             return Promise.resolve(false);
         }
@@ -708,7 +699,7 @@
                         window.logActivity(name + ' eliminated from ' + tournName + ' (week ' + weekNum + ')');
                     }
                 } catch (logErr) {
-                    console.warn('CharacterEliminations: Activity logging failed:', logErr);
+                    // Ignore logging errors
                 }
 
                 // UI COMMIT
@@ -717,7 +708,6 @@
                 return true;
             })
             .catch(function(err) {
-                console.error('Failed to mark character eliminated:', err);
                 // ROLLBACK
                 if (backup) {
                     window.data = backup;
@@ -754,14 +744,12 @@
         });
 
         if (!hasMatchingElimination) {
-            console.log('unmarkCharacterEliminated: No matching elimination found');
             return Promise.resolve(false);
         }
 
         // SNAPSHOT - Required, abort if fails
         var backup = createSafeBackup(data);
         if (!backup) {
-            console.error('CharacterEliminations: Could not create rollback backup.');
             showNotification('Unable to safely unmark character eliminated. Please try again.', 'error');
             return Promise.resolve(false);
         }
@@ -795,7 +783,7 @@
                         window.logActivity('Restored ' + name + ' from ' + tournName);
                     }
                 } catch (logErr) {
-                    console.warn('CharacterEliminations: Activity logging failed:', logErr);
+                    // Ignore logging errors
                 }
 
                 // UI COMMIT
@@ -804,7 +792,6 @@
                 return true;
             })
             .catch(function(err) {
-                console.error('Failed to unmark character eliminated:', err);
                 // ROLLBACK
                 if (backup) {
                     window.data = backup;
