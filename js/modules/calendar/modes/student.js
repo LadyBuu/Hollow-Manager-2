@@ -4,7 +4,7 @@
  * Path: js/modules/calendar/modes/student.js
  * 
  * This module is responsible for:
- *   - Rendering student schedule grid
+ *   - Rendering student schedule grid (using shared renderer)
  *   - Adding/removing classes from schedule
  *   - Managing rest days (user-configurable per student/week)
  *   - Displaying available disciplines
@@ -26,6 +26,12 @@
     // ============================================================
 
     if (!window.CalendarUtils) {
+        console.error('StudentMode: CalendarUtils not loaded.');
+        return;
+    }
+
+    if (!window.CalendarRenderer) {
+        console.error('StudentMode: CalendarRenderer not loaded.');
         return;
     }
 
@@ -43,10 +49,10 @@
     // ============================================================
 
     var CalendarUtils = window.CalendarUtils;
+    var CalendarRenderer = window.CalendarRenderer;
 
-    var DAY_NAMES = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-    var CALENDAR_START_HOUR = CalendarUtils.CALENDAR_START_HOUR;
-    var CALENDAR_END_HOUR = CalendarUtils.CALENDAR_END_HOUR;
+    var CALENDAR_START_HOUR = CalendarUtils.CALENDAR_START_HOUR || 5;
+    var CALENDAR_END_HOUR = CalendarUtils.CALENDAR_END_HOUR || 23;
 
     // ============================================================
     // DEPENDENCY VALIDATION
@@ -116,82 +122,11 @@
         }
 
         if (missing.length > 0) {
+            console.warn('StudentMode: Missing dependencies:', missing.join(', '));
             return false;
         }
 
         return true;
-    }
-
-    // ============================================================
-    // RANGE OVERLAP DETECTION - UI-Level Guardrail
-    // ============================================================
-
-    /**
-     * Check if a requested time range overlaps with any existing class.
-     * Uses duration metadata to determine class boundaries.
-     * 
-     * This is a UI-level guardrail. Core mutation functions remain
-     * the authoritative source of truth for validation.
-     * 
-     * @param {object} schedule - Student schedule for the week
-     * @param {string} studentId - Student ID
-     * @param {number} week - Week number
-     * @param {number} day - Day number (1-7)
-     * @param {number} startHour - Requested start hour
-     * @param {number} duration - Requested duration in hours
-     * @returns {boolean} True if there is an overlap
-     */
-    function hasRangeOverlap(schedule, studentId, week, day, startHour, duration) {
-        var daySchedule = schedule[day] || {};
-
-        for (var existingHour in daySchedule) {
-            if (!Object.prototype.hasOwnProperty.call(daySchedule, existingHour)) {
-                continue;
-            }
-
-            var disciplineId = daySchedule[existingHour];
-            if (!disciplineId) {
-                continue;
-            }
-
-            var existingStart = parseInt(existingHour, 10);
-            var existingDuration = window.getClassDuration(studentId, week, day, existingStart) || 1;
-            var existingEnd = existingStart + existingDuration;
-            var requestedEnd = startHour + duration;
-
-            // Range overlap check: [start, end) interval model
-            if (startHour < existingEnd && requestedEnd > existingStart) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Build a map of occupied hours for a schedule.
-     * Used for availability checks in the time-slot modal.
-     */
-    function buildOccupiedMap(schedule, studentId, week) {
-        var occupied = {};
-
-        for (var day = 1; day <= 7; day++) {
-            if (!schedule[day]) continue;
-
-            for (var hour in schedule[day]) {
-                if (!schedule[day][hour]) continue;
-
-                var startHour = parseInt(hour, 10);
-                var duration = window.getClassDuration(studentId, week, day, startHour) || 1;
-
-                for (var h = startHour; h < startHour + duration && h <= CALENDAR_END_HOUR; h++) {
-                    if (!occupied[day]) occupied[day] = {};
-                    occupied[day][h] = true;
-                }
-            }
-        }
-
-        return occupied;
     }
 
     // ============================================================
@@ -226,7 +161,7 @@
     }
 
     // ============================================================
-    // RENDER STUDENT SCHEDULE
+    // RENDER STUDENT SCHEDULE - Using Shared Renderer
     // ============================================================
 
     function renderStudentSchedule(container, state) {
@@ -235,375 +170,194 @@
 
         var schedule = window.getStudentSchedule(studentId, week) || {};
         var restDays = window.getStudentRestDays(studentId, week) || [];
-
-        // Student-specific availability for the sidebar
         var availableDisciplines = getAvailableDisciplinesForStudent(studentId, week);
+        var student = window.getCharacterById(studentId);
+        var studentName = student ? window.getDisplayName(student) : 'Unknown';
 
-        var html = getScheduleGridHTML(schedule, restDays, studentId, week, availableDisciplines);
-        container.innerHTML = html;
-
-        bindStudentEvents(container, studentId, week);
-    }
-
-    // ============================================================
-    // SCHEDULE GRID HTML
-    // ============================================================
-
-    function getScheduleGridHTML(schedule, restDays, studentId, week, availableDisciplines) {
-        var hours = [];
-        for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
-            hours.push(h);
-        }
-
-        var html = '<div class="schedule-grid">';
-
-        for (var day = 1; day <= 7; day++) {
-            var isRestDay = restDays.indexOf(day) !== -1;
-            var dayName = DAY_NAMES[day];
-
-            html += '<div class="day-column' + (isRestDay ? ' rest-day' : '') + '" data-day="' + day + '">';
-            html += '<div class="day-header">' + dayName + (isRestDay ? ' [R]' : '') + '</div>';
-            html += '<div class="day-slots">';
-
-            var occupiedHours = {};
-
-            for (var i = 0; i < hours.length; i++) {
-                var hour = hours[i];
-
-                if (occupiedHours[hour]) {
-                    continue;
-                }
-
-                var disciplineId = null;
-                if (schedule[day] && schedule[day][hour]) {
-                    disciplineId = schedule[day][hour];
-                }
-
-                if (disciplineId) {
-                    var discipline = window.getDiscipline(disciplineId);
-                    var duration = window.getClassDuration(studentId, week, day, hour) || 1;
-                    var instructorId = window.getClassInstructor(studentId, week, day, hour);
-                    var label = window.getClassLabel(studentId, week, day, hour);
-                    var groupLabel = window.getClassGroupLabel(studentId, week, day, hour);
-
-                    for (var h = hour; h < hour + duration && h <= CALENDAR_END_HOUR; h++) {
-                        occupiedHours[h] = true;
+        // Prepare data for shared renderer
+        var data = {
+            schedule: schedule,
+            restDays: restDays,
+            entityName: studentName,
+            getDiscipline: function(id) {
+                return window.getDiscipline(id);
+            },
+            getDuration: function(day, hour) {
+                return window.getClassDuration(studentId, week, day, hour) || 1;
+            },
+            getLabel: function(day, hour) {
+                return window.getClassLabel(studentId, week, day, hour) || '';
+            },
+            getGroupLabel: function(day, hour) {
+                return window.getClassGroupLabel(studentId, week, day, hour) || '';
+            },
+            getInstructorName: function(day, hour) {
+                var instructorId = window.getClassInstructor(studentId, week, day, hour);
+                if (instructorId) {
+                    var instructor = window.getCharacterById(instructorId);
+                    if (instructor) {
+                        return window.getDisplayName(instructor);
                     }
-
-                    var instructorName = '';
-                    if (instructorId) {
-                        var instructor = window.getCharacterById(instructorId);
-                        if (instructor) {
-                            instructorName = window.getDisplayName(instructor);
-                        }
-                    }
-
-                    var labelDisplay = label ? ' [' + escapeHtml(label) + ']' : '';
-                    var groupDisplay = groupLabel ? ' (G' + escapeHtml(groupLabel) + ')' : '';
-                    var durationDisplay = duration > 1 ? ' (' + duration + 'h)' : '';
-                    var disciplineName = discipline ? escapeHtml(discipline.name) : 'Unknown';
-
-                    html += '<div class="time-slot occupied" data-day="' + day + '" data-hour="' + hour + '" data-duration="' + duration + '" style="min-height:' + (30 * duration) + 'px;height:' + (30 * duration) + 'px;">';
-                    html += '<span class="slot-time">' + CalendarUtils.formatHour(hour) + '</span>';
-                    html += '<span class="slot-label">' + disciplineName + labelDisplay + groupDisplay + durationDisplay + (instructorName ? ' (' + escapeHtml(instructorName) + ')' : '') + '</span>';
-                    html += '</div>';
-
-                } else if (isRestDay) {
-                    html += '<div class="time-slot empty rest-slot" data-day="' + day + '" data-hour="' + hour + '">';
-                    html += '<span class="slot-time">' + CalendarUtils.formatHour(hour) + '</span>';
-                    html += '</div>';
-
-                } else {
-                    html += '<div class="time-slot empty" data-day="' + day + '" data-hour="' + hour + '">';
-                    html += '<span class="slot-time">' + CalendarUtils.formatHour(hour) + '</span>';
-                    html += '<span class="slot-label">+</span>';
-                    html += '</div>';
                 }
-            }
-
-            html += '</div>';
-            html += '</div>';
-        }
-
-        html += '</div>';
-
-        html += getSidebarHTML(schedule, restDays, studentId, week, availableDisciplines);
-
-        return html;
-    }
-
-    // ============================================================
-    // SIDEBAR HTML
-    // ============================================================
-
-    function getSidebarHTML(schedule, restDays, studentId, week, availableDisciplines) {
-        var html = '<div class="schedule-sidebar">';
-
-        html += '<div class="sidebar-section">';
-        html += '<h4>Rest Days</h4>';
-        html += '<div class="rest-day-controls">';
-        for (var d = 1; d <= 7; d++) {
-            var checked = restDays.indexOf(d) !== -1 ? 'checked' : '';
-            html += '<label><input type="checkbox" class="rest-day-check" data-day="' + d + '" ' + checked + '> ' + DAY_NAMES[d] + '</label>';
-        }
-        html += '</div>';
-        html += '<button id="save-rest-days-btn" class="small primary">Save Rest Days</button>';
-        html += '</div>';
-
-        html += '<div class="sidebar-section">';
-        html += '<h4>Available Disciplines</h4>';
-        html += '<div id="available-disciplines">';
-        if (availableDisciplines.length === 0) {
-            html += '<p class="empty-state">No disciplines available for this student</p>';
-        } else {
-            for (var i = 0; i < availableDisciplines.length; i++) {
-                var item = availableDisciplines[i];
-                var d = item.discipline;
+                return '';
+            },
+            availableItems: availableDisciplines.map(function(item) {
                 var remaining = item.maxHours - item.used;
-                html += '<div class="available-discipline" data-discipline="' + escapeHtml(d.id) + '">' +
-                    escapeHtml(d.name) + ' <span style="font-size:0.6rem;color:var(--text-dim);">(' + remaining + 'h remaining)</span>' +
-                '</div>';
-            }
-        }
-        html += '</div>';
-        html += '</div>';
+                return {
+                    id: item.discipline.id,
+                    label: item.discipline.name,
+                    subtitle: remaining + 'h remaining'
+                };
+            }),
+            availableLabel: 'Available Disciplines',
+            slotLabelField: 'label'
+        };
 
-        html += '</div>';
-        return html;
-    }
+        // Use shared renderer
+        CalendarRenderer.renderGrid(container, state, data);
 
-    // ============================================================
-    // BIND EVENTS
-    // ============================================================
-
-    function bindStudentEvents(container, studentId, week) {
-        var emptySlots = container.querySelectorAll('.time-slot.empty:not(.rest-slot)');
-        for (var i = 0; i < emptySlots.length; i++) {
-            var slot = emptySlots[i];
-            slot.addEventListener('click', function() {
-                var day = parseInt(this.dataset.day, 10);
-                var hour = parseInt(this.dataset.hour, 10);
+        // Bind events with student-specific callbacks
+        CalendarRenderer.bindEvents(container, state, {
+            onSlotClick: function(day, hour) {
                 showAddClassModal(studentId, week, day, hour, container);
-            });
-        }
-
-        var occupiedSlots = container.querySelectorAll('.time-slot.occupied');
-        for (var j = 0; j < occupiedSlots.length; j++) {
-            var occSlot = occupiedSlots[j];
-            occSlot.addEventListener('click', function() {
-                var day = parseInt(this.dataset.day, 10);
-                var hour = parseInt(this.dataset.hour, 10);
-                showClassDetailsModal(studentId, week, day, hour, container);
-            });
-
-            occSlot.addEventListener('contextmenu', function(e) {
-                e.preventDefault();
-                var day = parseInt(this.dataset.day, 10);
-                var hour = parseInt(this.dataset.hour, 10);
+            },
+            onSlotRightClick: function(day, hour) {
                 if (confirm('Remove this class from the schedule?')) {
                     removeClass(studentId, week, day, hour, container);
                 }
-            });
-        }
-
-        var saveRestBtn = container.querySelector('#save-rest-days-btn');
-        if (saveRestBtn) {
-            saveRestBtn.addEventListener('click', function() {
-                saveRestDays(container, studentId, week);
-            });
-        }
-
-        var availDisciplines = container.querySelectorAll('.available-discipline');
-        for (var k = 0; k < availDisciplines.length; k++) {
-            var el = availDisciplines[k];
-            el.addEventListener('click', function() {
-                var disciplineId = this.dataset.discipline;
+            },
+            onSlotDetails: function(day, hour) {
+                showClassDetailsModal(studentId, week, day, hour, container);
+            },
+            onRestDaySave: function(days) {
+                saveRestDays(studentId, week, days, container);
+            },
+            onAvailableItemClick: function(disciplineId) {
                 showTimeSlotsModal(studentId, week, disciplineId, container);
-            });
-        }
+            }
+        });
     }
 
     // ============================================================
     // REST DAYS
     // ============================================================
 
-    function saveRestDays(container, studentId, week) {
-        var checkboxes = container.querySelectorAll('.rest-day-check');
-        var days = [];
-        for (var i = 0; i < checkboxes.length; i++) {
-            var cb = checkboxes[i];
-            if (cb.checked) {
-                days.push(parseInt(cb.dataset.day, 10));
-            }
-        }
-
+    function saveRestDays(studentId, week, days, container) {
         var result = window.setStudentRestDays(studentId, week, days);
         if (result && result.success) {
             window.saveData()
                 .then(function() {
-                    showNotification('Rest days saved.', 'success');
+                    CalendarRenderer.showNotification('Rest days saved.', 'success');
                     render(container, { selectedId: studentId, week: week });
                 })
                 .catch(function() {
-                    showNotification('Rest days saved in memory, but persistence failed.', 'error');
+                    CalendarRenderer.showNotification('Rest days saved in memory, but persistence failed.', 'error');
                 });
         } else {
-            showNotification(result && result.message ? result.message : 'Failed to save rest days.', 'error');
+            CalendarRenderer.showNotification(result && result.message ? result.message : 'Failed to save rest days.', 'error');
         }
     }
 
     // ============================================================
-    // ADD CLASS MODAL
+    // ADD CLASS MODAL - Using Shared Renderer
     // ============================================================
 
     function showAddClassModal(studentId, week, day, hour, container) {
         var available = getAvailableDisciplinesForStudent(studentId, week);
 
         if (available.length === 0) {
-            showNotification('All disciplines are full for this week.', 'error');
+            CalendarRenderer.showNotification('All disciplines are full for this week.', 'error');
             return;
         }
 
         var hourDisplay = CalendarUtils.formatHour(hour);
 
-        var modal = document.createElement('div');
-        modal.className = 'modal';
-        modal.innerHTML = (
-            '<div class="modal-content" style="max-width:500px;">' +
-                '<div class="modal-header">' +
-                    '<h3>Add Class - ' + DAY_NAMES[day] + ' at ' + hourDisplay + '</h3>' +
-                    '<button class="close-modal">&times;</button>' +
-                '</div>' +
-                '<div class="modal-body">' +
-                    '<div class="form-group">' +
-                        '<label>Select Discipline:</label>' +
-                        '<select id="add-class-select" style="width:100%;padding:8px;margin-bottom:8px;">' +
-                            getAvailableOptionsHTML(available) +
-                        '</select>' +
-                    '</div>' +
-                    '<div class="form-group">' +
-                        '<label>Duration (hours):</label>' +
-                        '<select id="add-class-duration" style="width:100%;padding:8px;">' +
-                            '<option value="1">1 hour</option>' +
-                            '<option value="2">2 hours</option>' +
-                            '<option value="3">3 hours</option>' +
-                            '<option value="4">4 hours</option>' +
-                        '</select>' +
-                    '</div>' +
-                    '<div class="form-actions" style="margin-top:16px;">' +
-                        '<button type="button" id="cancel-add-class" class="secondary">Cancel</button>' +
-                        '<button type="button" id="confirm-add-class" class="primary">Add Class</button>' +
-                    '</div>' +
-                '</div>' +
-            '</div>'
-        );
+        CalendarRenderer.createAddClassModal({
+            title: 'Add Class - ' + CalendarRenderer.DAY_NAMES[day] + ' at ' + hourDisplay,
+            disciplines: available.map(function(item) { return item.discipline; }),
+            maxDuration: 4,
+            getDisciplineLabel: function(d) {
+                return d.name;
+            },
+            onConfirm: function(disciplineId, duration, label, groupLabel, closeModal) {
+                // Validate calendar boundary
+                if (hour + duration > CALENDAR_END_HOUR + 1) {
+                    CalendarRenderer.showNotification('Class extends beyond the calendar boundary.', 'error');
+                    return;
+                }
 
-        document.body.appendChild(modal);
+                // Re-read schedule at commit time (defensive)
+                var currentSchedule = window.getStudentSchedule(studentId, week) || {};
 
-        var closeModal = function() { modal.remove(); };
-        modal.querySelector('.close-modal').onclick = closeModal;
-        modal.querySelector('#cancel-add-class').onclick = closeModal;
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) {
-                modal.remove();
+                // UI-level range overlap check (guardrail)
+                if (hasRangeOverlap(currentSchedule, studentId, week, day, hour, duration)) {
+                    CalendarRenderer.showNotification('This would overlap with an existing class.', 'error');
+                    return;
+                }
+
+                // Validate remaining weekly hours
+                var availableItem = null;
+                for (var i = 0; i < available.length; i++) {
+                    if (available[i].discipline.id === disciplineId) {
+                        availableItem = available[i];
+                        break;
+                    }
+                }
+
+                if (!availableItem) {
+                    CalendarRenderer.showNotification('This discipline is no longer available.', 'error');
+                    return;
+                }
+
+                var remainingHours = availableItem.maxHours - availableItem.used;
+
+                if (duration > remainingHours) {
+                    CalendarRenderer.showNotification(
+                        'This class would exceed the remaining weekly hours for this discipline.',
+                        'error'
+                    );
+                    return;
+                }
+
+                var discipline = window.getDiscipline(disciplineId);
+                var instructorId = discipline && discipline.instructorIds && discipline.instructorIds.length > 0
+                    ? discipline.instructorIds[0]
+                    : null;
+
+                var result = window.addStudentScheduleClass(
+                    studentId,
+                    week,
+                    day,
+                    hour,
+                    disciplineId,
+                    duration,
+                    instructorId
+                );
+
+                if (!result || !result.success) {
+                    CalendarRenderer.showNotification(result ? result.message : 'Failed to add class.', 'error');
+                    return;
+                }
+
+                closeModal();
+                window.saveData()
+                    .then(function() {
+                        CalendarRenderer.showNotification('Class added successfully.', 'success');
+                        render(container, { selectedId: studentId, week: week });
+                    })
+                    .catch(function() {
+                        CalendarRenderer.showNotification('Class added in memory, but persistence failed.', 'error');
+                        render(container, { selectedId: studentId, week: week });
+                    });
+            },
+            onCancel: function() {
+                // No-op
             }
         });
-
-        modal.querySelector('#confirm-add-class').onclick = function() {
-            var select = document.getElementById('add-class-select');
-            var disciplineId = select ? select.value : null;
-            if (!disciplineId) {
-                showNotification('Please select a discipline.', 'error');
-                return;
-            }
-
-            var durationEl = document.getElementById('add-class-duration');
-            var duration = parseInt(durationEl ? durationEl.value : 1, 10) || 1;
-
-            // Validate calendar boundary
-            if (hour + duration > CALENDAR_END_HOUR + 1) {
-                showNotification('Class extends beyond the calendar boundary.', 'error');
-                return;
-            }
-
-            // Re-read schedule at commit time (defensive)
-            var currentSchedule = window.getStudentSchedule(studentId, week) || {};
-
-            // UI-level range overlap check (guardrail)
-            if (hasRangeOverlap(currentSchedule, studentId, week, day, hour, duration)) {
-                showNotification('This would overlap with an existing class.', 'error');
-                return;
-            }
-
-            // Validate remaining weekly hours
-            var availableItem = null;
-            for (var i = 0; i < available.length; i++) {
-                if (available[i].discipline.id === disciplineId) {
-                    availableItem = available[i];
-                    break;
-                }
-            }
-
-            if (!availableItem) {
-                showNotification('This discipline is no longer available.', 'error');
-                return;
-            }
-
-            var remainingHours = availableItem.maxHours - availableItem.used;
-
-            if (duration > remainingHours) {
-                showNotification(
-                    'This class would exceed the remaining weekly hours for this discipline.',
-                    'error'
-                );
-                return;
-            }
-
-            var discipline = window.getDiscipline(disciplineId);
-            var instructorId = discipline && discipline.instructorIds && discipline.instructorIds.length > 0
-                ? discipline.instructorIds[0]
-                : null;
-
-            var result = window.addStudentScheduleClass(
-                studentId,
-                week,
-                day,
-                hour,
-                disciplineId,
-                duration,
-                instructorId
-            );
-
-            if (!result || !result.success) {
-                showNotification(result ? result.message : 'Failed to add class.', 'error');
-                return;
-            }
-
-            modal.remove();
-            window.saveData()
-                .then(function() {
-                    showNotification('Class added successfully.', 'success');
-                    render(container, { selectedId: studentId, week: week });
-                })
-                .catch(function() {
-                    showNotification('Class added in memory, but persistence failed.', 'error');
-                    render(container, { selectedId: studentId, week: week });
-                });
-        };
-    }
-
-    function getAvailableOptionsHTML(available) {
-        var html = '';
-        for (var i = 0; i < available.length; i++) {
-            var item = available[i];
-            var d = item.discipline;
-            html += '<option value="' + escapeHtml(d.id) + '">' + escapeHtml(d.name) + '</option>';
-        }
-        return html;
     }
 
     // ============================================================
-    // CLASS DETAILS MODAL
+    // CLASS DETAILS MODAL - Using Shared Renderer
     // ============================================================
 
     function showClassDetailsModal(studentId, week, day, hour, container) {
@@ -612,13 +366,13 @@
         var disciplineId = daySchedule[hour];
 
         if (!disciplineId) {
-            showNotification('Class not found.', 'error');
+            CalendarRenderer.showNotification('Class not found.', 'error');
             return;
         }
 
         var discipline = window.getDiscipline(disciplineId);
         if (!discipline) {
-            showNotification('Discipline not found.', 'error');
+            CalendarRenderer.showNotification('Discipline not found.', 'error');
             return;
         }
 
@@ -637,45 +391,31 @@
 
         var hourDisplay = CalendarUtils.formatHour(hour);
 
-        var modal = document.createElement('div');
-        modal.className = 'modal';
-        modal.innerHTML = (
-            '<div class="modal-content" style="max-width:450px;">' +
-                '<div class="modal-header">' +
-                    '<h3>' + escapeHtml(discipline.name) + (label ? ' [' + escapeHtml(label) + ']' : '') + (groupLabel ? ' (G' + escapeHtml(groupLabel) + ')' : '') + '</h3>' +
-                    '<button class="close-modal">&times;</button>' +
-                '</div>' +
-                '<div class="modal-body">' +
-                    '<div class="detail-row"><span class="label">Instructor:</span> <span><strong>' + escapeHtml(instructorName) + '</strong></span></div>' +
-                    '<div class="detail-row"><span class="label">Day/Time:</span> <span>' + escapeHtml(DAY_NAMES[day]) + ' at ' + escapeHtml(hourDisplay) + '</span></div>' +
-                    '<div class="detail-row"><span class="label">Duration:</span> <span><strong>' + duration + ' hour' + (duration > 1 ? 's' : '') + '</strong></span></div>' +
-                    '<div class="detail-row"><span class="label">Group:</span> <span><strong>' + (groupLabel ? escapeHtml(groupLabel) : 'None') + '</strong></span></div>' +
-                    '<div class="detail-row"><span class="label">Week:</span> <span>' + week + '</span></div>' +
-                    '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">' +
-                        '<button type="button" id="remove-class-detail" class="danger small">Remove from Schedule</button>' +
-                        '<button type="button" id="close-detail" class="secondary small">Close</button>' +
-                    '</div>' +
-                '</div>' +
-            '</div>'
-        );
-
-        document.body.appendChild(modal);
-
-        var closeModal = function() { modal.remove(); };
-        modal.querySelector('.close-modal').onclick = closeModal;
-        modal.querySelector('#close-detail').onclick = closeModal;
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) {
-                modal.remove();
+        CalendarRenderer.createDetailsModal({
+            title: discipline.name + (label ? ' [' + label + ']' : '') + (groupLabel ? ' (G' + groupLabel + ')' : ''),
+            details: [
+                { label: 'Instructor', value: instructorName },
+                { label: 'Day/Time', value: CalendarRenderer.DAY_NAMES[day] + ' at ' + hourDisplay },
+                { label: 'Duration', value: duration + ' hour' + (duration > 1 ? 's' : '') },
+                { label: 'Group', value: groupLabel || 'None' },
+                { label: 'Week', value: week }
+            ],
+            actions: [
+                {
+                    label: 'Remove from Schedule',
+                    className: 'danger',
+                    handler: function(closeModal) {
+                        if (confirm('Remove this class from the schedule?')) {
+                            closeModal();
+                            removeClass(studentId, week, day, hour, container);
+                        }
+                    }
+                }
+            ],
+            onClose: function() {
+                // No-op
             }
         });
-
-        modal.querySelector('#remove-class-detail').onclick = function() {
-            if (confirm('Remove this class from the schedule?')) {
-                modal.remove();
-                removeClass(studentId, week, day, hour, container);
-            }
-        };
     }
 
     // ============================================================
@@ -686,41 +426,81 @@
         var result = window.removeStudentScheduleClass(studentId, week, day, hour);
 
         if (!result || !result.success) {
-            showNotification(result ? result.message : 'Failed to remove class.', 'error');
+            CalendarRenderer.showNotification(result ? result.message : 'Failed to remove class.', 'error');
             return;
         }
 
         window.saveData()
             .then(function() {
-                showNotification('Class removed from schedule.', 'success');
+                CalendarRenderer.showNotification('Class removed from schedule.', 'success');
                 render(container, { selectedId: studentId, week: week });
             })
             .catch(function() {
-                showNotification('Class removed in memory, but persistence failed.', 'error');
+                CalendarRenderer.showNotification('Class removed in memory, but persistence failed.', 'error');
                 render(container, { selectedId: studentId, week: week });
             });
     }
 
     // ============================================================
-    // TIME SLOTS MODAL - Duration-Aware
+    // TIME SLOTS MODAL - Using Shared Renderer
     // ============================================================
 
     function showTimeSlotsModal(studentId, week, disciplineId, container) {
         var discipline = window.getDiscipline(disciplineId);
         if (!discipline) {
-            showNotification('Discipline not found.', 'error');
+            CalendarRenderer.showNotification('Discipline not found.', 'error');
             return;
         }
 
         var schedule = window.getStudentSchedule(studentId, week) || {};
         var restDays = window.getStudentRestDays(studentId, week) || [];
+        var occupiedMap = CalendarRenderer.buildOccupiedMap(schedule, function(day, hour) {
+            return window.getClassDuration(studentId, week, day, hour) || 1;
+        });
 
+        // Build time slots list
         var modal = document.createElement('div');
         modal.className = 'modal';
+
+        var slotsHTML = '';
+        var foundSlots = false;
+        var selectionHours = CalendarUtils.getSelectionHours ? CalendarUtils.getSelectionHours() : [];
+
+        if (selectionHours.length === 0) {
+            for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
+                selectionHours.push(h);
+            }
+        }
+
+        for (var day = 1; day <= 7; day++) {
+            if (restDays.indexOf(day) !== -1) {
+                continue;
+            }
+
+            for (var i = 0; i < selectionHours.length; i++) {
+                var hour = selectionHours[i];
+                var isOccupied = occupiedMap[day] && occupiedMap[day][hour];
+
+                if (!isOccupied) {
+                    foundSlots = true;
+                    slotsHTML += (
+                        '<div style="padding:6px 10px;border-bottom:1px solid var(--border-soft);display:flex;justify-content:space-between;align-items:center;">' +
+                            '<span>' + CalendarRenderer.DAY_NAMES[day] + ' at ' + CalendarUtils.formatHour(hour) + '</span>' +
+                            '<button class="add-to-slot-btn primary small" data-day="' + day + '" data-hour="' + hour + '">Add 1h</button>' +
+                        '</div>'
+                    );
+                }
+            }
+        }
+
+        if (!foundSlots) {
+            slotsHTML = '<p class="empty-state">No available time slots for this discipline this week.</p>';
+        }
+
         modal.innerHTML = (
             '<div class="modal-content" style="max-width:400px;">' +
                 '<div class="modal-header">' +
-                    '<h3>' + escapeHtml(discipline.name) + ' - Available Slots</h3>' +
+                    '<h3>' + CalendarRenderer.escapeHtml(discipline.name) + ' - Available Slots</h3>' +
                     '<button class="close-modal">&times;</button>' +
                 '</div>' +
                 '<div class="modal-body">' +
@@ -728,7 +508,7 @@
                         'Click on a time slot to add a 1-hour class.' +
                     '</p>' +
                     '<div style="max-height:300px;overflow-y:auto;" id="time-slots-list">' +
-                        getTimeSlotsListHTML(schedule, restDays, studentId, week) +
+                        slotsHTML +
                     '</div>' +
                     '<div class="form-actions" style="margin-top:12px;">' +
                         '<button type="button" id="close-slots-modal" class="secondary">Close</button>' +
@@ -739,18 +519,23 @@
 
         document.body.appendChild(modal);
 
-        var closeModal = function() { modal.remove(); };
+        var closeModal = function() {
+            if (modal.parentNode) {
+                modal.parentNode.removeChild(modal);
+            }
+        };
+
         modal.querySelector('.close-modal').onclick = closeModal;
         modal.querySelector('#close-slots-modal').onclick = closeModal;
         modal.addEventListener('click', function(e) {
             if (e.target === modal) {
-                modal.remove();
+                closeModal();
             }
         });
 
         var slotButtons = modal.querySelectorAll('.add-to-slot-btn');
-        for (var i = 0; i < slotButtons.length; i++) {
-            var btn = slotButtons[i];
+        for (var j = 0; j < slotButtons.length; j++) {
+            var btn = slotButtons[j];
             btn.addEventListener('click', function() {
                 var day = parseInt(this.dataset.day, 10);
                 var hour = parseInt(this.dataset.hour, 10);
@@ -760,8 +545,8 @@
 
                 // UI-level range overlap check (guardrail)
                 if (hasRangeOverlap(currentSchedule, studentId, week, day, hour, 1)) {
-                    showNotification('This slot is no longer available.', 'error');
-                    modal.remove();
+                    CalendarRenderer.showNotification('This slot is no longer available.', 'error');
+                    closeModal();
                     render(container, { selectedId: studentId, week: week });
                     return;
                 }
@@ -781,58 +566,22 @@
                 );
 
                 if (!result || !result.success) {
-                    showNotification(result ? result.message : 'Failed to add class.', 'error');
+                    CalendarRenderer.showNotification(result ? result.message : 'Failed to add class.', 'error');
                     return;
                 }
 
-                modal.remove();
+                closeModal();
                 window.saveData()
                     .then(function() {
-                        showNotification('Class added successfully.', 'success');
+                        CalendarRenderer.showNotification('Class added successfully.', 'success');
                         render(container, { selectedId: studentId, week: week });
                     })
                     .catch(function() {
-                        showNotification('Class added in memory, but persistence failed.', 'error');
+                        CalendarRenderer.showNotification('Class added in memory, but persistence failed.', 'error');
                         render(container, { selectedId: studentId, week: week });
                     });
             });
         }
-    }
-
-    function getTimeSlotsListHTML(schedule, restDays, studentId, week) {
-        var html = '';
-        var foundSlots = false;
-        var selectionHours = CalendarUtils.getSelectionHours();
-
-        // Build occupied map using the shared helper
-        var occupiedMap = buildOccupiedMap(schedule, studentId, week);
-
-        for (var day = 1; day <= 7; day++) {
-            if (restDays.indexOf(day) !== -1) {
-                continue;
-            }
-
-            for (var i = 0; i < selectionHours.length; i++) {
-                var hour = selectionHours[i];
-                var isOccupied = occupiedMap[day] && occupiedMap[day][hour];
-
-                if (!isOccupied) {
-                    foundSlots = true;
-                    html += (
-                        '<div style="padding:6px 10px;border-bottom:1px solid var(--border-soft);display:flex;justify-content:space-between;align-items:center;">' +
-                            '<span>' + DAY_NAMES[day] + ' at ' + CalendarUtils.formatHour(hour) + '</span>' +
-                            '<button class="add-to-slot-btn primary small" data-day="' + day + '" data-hour="' + hour + '">Add 1h</button>' +
-                        '</div>'
-                    );
-                }
-            }
-        }
-
-        if (!foundSlots) {
-            html = '<p class="empty-state">No available time slots for this discipline this week.</p>';
-        }
-
-        return html;
     }
 
     // ============================================================
@@ -873,30 +622,30 @@
         return available;
     }
 
-    function escapeHtml(value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
-        var str = String(value);
-        return str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
+    function hasRangeOverlap(schedule, studentId, week, day, startHour, duration) {
+        var daySchedule = schedule[day] || {};
 
-    function showNotification(message, type) {
-        type = type || 'info';
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
+        for (var existingHour in daySchedule) {
+            if (!Object.prototype.hasOwnProperty.call(daySchedule, existingHour)) {
+                continue;
+            }
+
+            var disciplineId = daySchedule[existingHour];
+            if (!disciplineId) {
+                continue;
+            }
+
+            var existingStart = parseInt(existingHour, 10);
+            var existingDuration = window.getClassDuration(studentId, week, day, existingStart) || 1;
+            var existingEnd = existingStart + existingDuration;
+            var requestedEnd = startHour + duration;
+
+            if (startHour < existingEnd && requestedEnd > existingStart) {
+                return true;
+            }
         }
-        if (type === 'error') {
-            alert('Error: ' + message);
-        } else if (type === 'success') {
-            alert(message);
-        }
+
+        return false;
     }
 
     // ============================================================
