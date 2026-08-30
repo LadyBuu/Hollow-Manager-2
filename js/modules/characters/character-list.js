@@ -25,6 +25,8 @@
  *   - window.getCurrentEditId (from index.js)
  *   - window.showCharacterForm (from index.js)
  *   - window.toggleCharacterList (from index.js)
+ *   - window.UI_CONSTANTS (from constants.js)
+ *   - window.DomUtils (from dom-utils.js)
  */
 
 (function() {
@@ -40,7 +42,7 @@
     // CONSTANTS
     // ============================================================
 
-    var DEBOUNCE_DELAY = 300;
+    var DEBOUNCE_DELAY = window.UI_CONSTANTS.DEBOUNCE_DELAY;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -79,7 +81,6 @@
 
         if (missingOptional.length > 0) {
             console.warn('CharacterList: Missing optional dependencies:', missingOptional.join(', '));
-            // Don't fail - some features may be degraded
         }
 
         return true;
@@ -309,10 +310,6 @@
         });
 
         listContainer.innerHTML = html;
-
-        // NOTE: Event listeners are NOT bound here.
-        // They are bound via event delegation in character-events.js
-        // See bindCharacterList() in character-events.js
     }
 
     // ============================================================
