@@ -23,6 +23,11 @@
  *   - Callers (team-manager.js) are responsible for persistence.
  *   - TeamCore mutations update window.data immediately.
  * 
+ * ELIGIBILITY BOUNDARY:
+ *   - TeamMembers is the SINGLE AUTHORITY for eligibility status.
+ *   - This module consumes TeamMembers.getEligibilityStatus() and does not
+ *     re-implement eligibility rules.
+ * 
  * DEPENDENCIES:
  *   Required:
  *     - window.TeamCore
@@ -65,14 +70,15 @@
     window.__teamModalsLoaded = true;
 
     // ============================================================
-    // CONSTANTS
+    // CONSTANTS - Use type-safe defaults
     // ============================================================
 
     var CALENDAR = window.CALENDAR_CONSTANTS || {};
-    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
-    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
-    var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
-    var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
+
+    var MIN_WEEK = Number.isInteger(CALENDAR.MIN_WEEK) ? CALENDAR.MIN_WEEK : 1;
+    var MAX_WEEK = Number.isInteger(CALENDAR.MAX_WEEK) ? CALENDAR.MAX_WEEK : 52;
+    var MIN_YEAR = Number.isInteger(CALENDAR.MIN_YEAR) ? CALENDAR.MIN_YEAR : 1900;
+    var MAX_YEAR = Number.isInteger(CALENDAR.MAX_YEAR) ? CALENDAR.MAX_YEAR : 2100;
 
     // ============================================================
     // HTML ESCAPING - Use DomUtils when available
@@ -129,6 +135,50 @@
             return 1;
         }
         return data.currentYear || new Date().getFullYear();
+    }
+
+    // ============================================================
+    // UI REFRESH HELPERS
+    // ============================================================
+
+    function refreshMemberList(teamId) {
+        var team = window.TeamCore.getTeam(teamId);
+        if (!team) return;
+
+        var container = document.getElementById('members-list');
+        if (!container) return;
+
+        var currentPeriod = getCurrentPeriod(team.type);
+        container.innerHTML = window.TeamMembers.renderList(team, currentPeriod);
+    }
+
+    function refreshRankingList(teamId) {
+        var team = window.TeamCore.getTeam(teamId);
+        if (!team) return;
+
+        var listEl = document.getElementById('ranking-list');
+        if (listEl) {
+            listEl.innerHTML = window.TeamRankings.renderList(team);
+        }
+    }
+
+    function refreshCharacterSelect(teamId) {
+        populateMemberCharacterSelect(teamId);
+    }
+
+    function refreshAllMemberUI(teamId) {
+        refreshMemberList(teamId);
+        refreshCharacterSelect(teamId);
+        if (typeof window.refreshTeamList === 'function') {
+            window.refreshTeamList();
+        }
+    }
+
+    function refreshAllRankingUI(teamId) {
+        refreshRankingList(teamId);
+        if (typeof window.refreshTeamList === 'function') {
+            window.refreshTeamList();
+        }
     }
 
     // ============================================================
@@ -329,19 +379,52 @@
 
     function addNameHistoryEntry(container, name, start, end) {
         if (!container) return;
+
         var entry = document.createElement('div');
         entry.className = 'name-history-entry';
         entry.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;flex-wrap:wrap;align-items:center;';
-        entry.innerHTML = `
-            <input type="text" class="name-history-name" placeholder="Team Name" value="${escapeHtml(name || '')}" style="flex:1;min-width:80px;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">
-            <input type="text" class="name-history-start" placeholder="Start" value="${escapeHtml(start || '')}" style="flex:1;min-width:60px;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">
-            <input type="text" class="name-history-end" placeholder="End" value="${escapeHtml(end || '')}" style="flex:1;min-width:60px;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">
-            <button type="button" class="small danger remove-name" style="padding:2px 6px;font-size:0.6rem;">✕</button>
-        `;
+
+        // Use DOM APIs for safety
+        var nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.className = 'name-history-name';
+        nameInput.placeholder = 'Team Name';
+        nameInput.value = name || '';
+        nameInput.style.cssText = 'flex:1;min-width:80px;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+
+        var startInput = document.createElement('input');
+        startInput.type = 'text';
+        startInput.className = 'name-history-start';
+        startInput.placeholder = 'Start';
+        startInput.value = start || '';
+        startInput.style.cssText = 'flex:1;min-width:60px;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+
+        var endInput = document.createElement('input');
+        endInput.type = 'text';
+        endInput.className = 'name-history-end';
+        endInput.placeholder = 'End';
+        endInput.value = end || '';
+        endInput.style.cssText = 'flex:1;min-width:60px;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+
+        var removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'small danger remove-name';
+        removeBtn.style.cssText = 'padding:2px 6px;font-size:0.6rem;';
+        removeBtn.textContent = '✕';
+
+        entry.appendChild(nameInput);
+        entry.appendChild(startInput);
+        entry.appendChild(endInput);
+        entry.appendChild(removeBtn);
+
         container.appendChild(entry);
-        entry.querySelector('.remove-name').onclick = function() {
-            if (container.children.length > 1) entry.remove();
-            else showNotification('You need at least one name entry.', 'error');
+
+        removeBtn.onclick = function() {
+            if (container.children.length > 1) {
+                entry.remove();
+            } else {
+                showNotification('You need at least one name entry.', 'error');
+            }
         };
     }
 
@@ -357,10 +440,11 @@
         if (!team) return;
 
         var currentPeriod = getCurrentPeriod(team.type);
-        var periodLabel = team.type === 'academic' ? 'Week' : 'Year';
 
         var titleEl = document.getElementById('modal-team-name');
-        if (titleEl) titleEl.textContent = team.name + ' - Members (Full History)';
+        if (titleEl) {
+            titleEl.textContent = team.name + ' - Members (Full History)';
+        }
 
         var select = document.getElementById('member-character');
         if (select) {
@@ -461,10 +545,7 @@
             if (charId && confirm('Remove this member from the team?')) {
                 var result = window.TeamCore.removeMember(teamId, charId);
                 if (result) {
-                    if (typeof window.refreshTeamList === 'function') {
-                        window.refreshTeamList();
-                    }
-                    showMemberModal(teamId);
+                    refreshAllMemberUI(teamId);
                 } else {
                     showNotification('Failed to remove member.', 'error');
                 }
@@ -523,6 +604,109 @@
     }
 
     // ============================================================
+    // HANDLE ADD MEMBER - Action handler
+    // ============================================================
+
+    function handleAddMember() {
+        var modal = document.getElementById('member-modal');
+        if (!modal) {
+            showNotification('Member modal not found.', 'error');
+            return;
+        }
+
+        var teamId = modal.dataset.teamId;
+        if (!teamId) {
+            showNotification('No team selected.', 'error');
+            return;
+        }
+
+        var charSelect = document.getElementById('member-character');
+        var roleInput = document.getElementById('member-role');
+        var joinInput = document.getElementById('member-join');
+        var leaveInput = document.getElementById('member-leave');
+
+        var charId = charSelect ? charSelect.value : '';
+        var role = roleInput ? roleInput.value.trim() : '';
+        var joinPeriod = joinInput ? joinInput.value : '';
+        var leavePeriod = leaveInput ? leaveInput.value : '';
+
+        if (!charId) {
+            showNotification('Please select a character.', 'error');
+            return;
+        }
+
+        var result = window.TeamCore.addMember(teamId, {
+            characterId: charId,
+            role: role,
+            joinPeriod: joinPeriod,
+            leavePeriod: leavePeriod
+        });
+
+        if (!result) {
+            showNotification('Failed to add member. The character may already be in this team.', 'error');
+            return;
+        }
+
+        // Clear form fields
+        if (charSelect) charSelect.value = '';
+        if (roleInput) roleInput.value = '';
+        if (joinInput) joinInput.value = '';
+        if (leaveInput) leaveInput.value = '';
+
+        // Refresh UI
+        refreshAllMemberUI(teamId);
+        showNotification('Member added successfully!', 'success');
+    }
+
+    // ============================================================
+    // HANDLE SAVE EDIT MEMBER - Action handler
+    // ============================================================
+
+    function handleSaveEditMember(e) {
+        e.preventDefault();
+
+        var modal = document.getElementById('edit-member-modal');
+        if (!modal) {
+            showNotification('Edit member modal not found.', 'error');
+            return;
+        }
+
+        var teamId = modal.dataset.teamId;
+        var charId = modal.dataset.characterId;
+
+        if (!teamId || !charId) {
+            showNotification('No member selected.', 'error');
+            return;
+        }
+
+        var roleInput = document.getElementById('edit-member-role');
+        var joinInput = document.getElementById('edit-member-join');
+        var leaveInput = document.getElementById('edit-member-leave');
+
+        var role = roleInput ? roleInput.value.trim() : '';
+        var joinPeriod = joinInput ? joinInput.value : '';
+        var leavePeriod = leaveInput ? leaveInput.value : '';
+
+        var result = window.TeamCore.updateMember(teamId, charId, {
+            role: role,
+            joinPeriod: joinPeriod,
+            leavePeriod: leavePeriod
+        });
+
+        if (!result) {
+            showNotification('Failed to update member.', 'error');
+            return;
+        }
+
+        // Close modal
+        modal.classList.add('hidden');
+
+        // Refresh UI
+        refreshAllMemberUI(teamId);
+        showNotification('Member updated successfully!', 'success');
+    }
+
+    // ============================================================
     // RANKING MODAL - Uses TeamRankings for all ranking operations
     // ============================================================
 
@@ -533,7 +717,6 @@
         var team = window.TeamCore.getTeam(teamId);
         if (!team) return;
 
-        var periodLabel = team.type === 'academic' ? 'Week' : 'Year';
         var titleEl = document.getElementById('ranking-modal-title');
         if (titleEl) titleEl.textContent = team.name + ' - Ranking History';
 
@@ -595,10 +778,7 @@
             if (period && confirm('Remove this ranking entry?')) {
                 var result = window.TeamCore.removeRanking(teamId, period);
                 if (result) {
-                    if (typeof window.refreshTeamList === 'function') {
-                        window.refreshTeamList();
-                    }
-                    showRankingModal(teamId);
+                    refreshAllRankingUI(teamId);
                 } else {
                     showNotification('Failed to remove ranking.', 'error');
                 }
@@ -607,10 +787,10 @@
     }
 
     // ============================================================
-    // ADD RANKING HANDLER
+    // HANDLE ADD RANKING - Action handler
     // ============================================================
 
-    function addRanking(e) {
+    function handleAddRanking(e) {
         if (e && e.preventDefault) {
             e.preventDefault();
         }
@@ -624,6 +804,12 @@
         var teamId = modal.dataset.teamId;
         if (!teamId) {
             showNotification('No team selected.', 'error');
+            return;
+        }
+
+        var team = window.TeamCore.getTeam(teamId);
+        if (!team) {
+            showNotification('Team not found.', 'error');
             return;
         }
 
@@ -654,149 +840,8 @@
         if (rankInput) rankInput.value = '';
 
         // Refresh UI
-        var team = window.TeamCore.getTeam(teamId);
-        if (team) {
-            var listEl = document.getElementById('ranking-list');
-            if (listEl) {
-                listEl.innerHTML = window.TeamRankings.renderList(team);
-            }
-        }
-
-        if (typeof window.refreshTeamList === 'function') {
-            window.refreshTeamList();
-        }
-
+        refreshAllRankingUI(teamId);
         showNotification('Ranking added successfully!', 'success');
-    }
-
-    // ============================================================
-    // ADD MEMBER HANDLER
-    // ============================================================
-
-    function addMember() {
-        var modal = document.getElementById('member-modal');
-        if (!modal) {
-            showNotification('Member modal not found.', 'error');
-            return;
-        }
-
-        var teamId = modal.dataset.teamId;
-        if (!teamId) {
-            showNotification('No team selected.', 'error');
-            return;
-        }
-
-        var charSelect = document.getElementById('member-character');
-        var roleInput = document.getElementById('member-role');
-        var joinInput = document.getElementById('member-join');
-        var leaveInput = document.getElementById('member-leave');
-
-        var charId = charSelect ? charSelect.value : '';
-        var role = roleInput ? roleInput.value.trim() : '';
-        var joinPeriod = joinInput ? joinInput.value : '';
-        var leavePeriod = leaveInput ? leaveInput.value : '';
-
-        if (!charId) {
-            showNotification('Please select a character.', 'error');
-            return;
-        }
-
-        var result = window.TeamCore.addMember(teamId, {
-            characterId: charId,
-            role: role,
-            joinPeriod: joinPeriod,
-            leavePeriod: leavePeriod
-        });
-
-        if (!result) {
-            showNotification('Failed to add member. The character may already be in this team.', 'error');
-            return;
-        }
-
-        // Refresh UI
-        var team = window.TeamCore.getTeam(teamId);
-        if (team) {
-            var membersContainer = document.getElementById('members-list');
-            if (membersContainer) {
-                var currentPeriod = getCurrentPeriod(team.type);
-                membersContainer.innerHTML = window.TeamMembers.renderList(team, currentPeriod);
-            }
-        }
-
-        // Clear form fields
-        if (charSelect) charSelect.value = '';
-        if (roleInput) roleInput.value = '';
-        if (joinInput) joinInput.value = '';
-        if (leaveInput) leaveInput.value = '';
-
-        // Refresh character select
-        populateMemberCharacterSelect(teamId);
-
-        if (typeof window.refreshTeamList === 'function') {
-            window.refreshTeamList();
-        }
-
-        showNotification('Member added successfully!', 'success');
-    }
-
-    // ============================================================
-    // SAVE EDIT MEMBER HANDLER
-    // ============================================================
-
-    function saveEditMember(e) {
-        e.preventDefault();
-
-        var modal = document.getElementById('edit-member-modal');
-        if (!modal) {
-            showNotification('Edit member modal not found.', 'error');
-            return;
-        }
-
-        var teamId = modal.dataset.teamId;
-        var charId = modal.dataset.characterId;
-
-        if (!teamId || !charId) {
-            showNotification('No member selected.', 'error');
-            return;
-        }
-
-        var roleInput = document.getElementById('edit-member-role');
-        var joinInput = document.getElementById('edit-member-join');
-        var leaveInput = document.getElementById('edit-member-leave');
-
-        var role = roleInput ? roleInput.value.trim() : '';
-        var joinPeriod = joinInput ? joinInput.value : '';
-        var leavePeriod = leaveInput ? leaveInput.value : '';
-
-        var result = window.TeamCore.updateMember(teamId, charId, {
-            role: role,
-            joinPeriod: joinPeriod,
-            leavePeriod: leavePeriod
-        });
-
-        if (!result) {
-            showNotification('Failed to update member.', 'error');
-            return;
-        }
-
-        // Refresh UI
-        var team = window.TeamCore.getTeam(teamId);
-        if (team) {
-            var membersContainer = document.getElementById('members-list');
-            if (membersContainer) {
-                var currentPeriod = getCurrentPeriod(team.type);
-                membersContainer.innerHTML = window.TeamMembers.renderList(team, currentPeriod);
-            }
-        }
-
-        // Close modal
-        modal.classList.add('hidden');
-
-        if (typeof window.refreshTeamList === 'function') {
-            window.refreshTeamList();
-        }
-
-        showNotification('Member updated successfully!', 'success');
     }
 
     // ============================================================
@@ -824,10 +869,7 @@
         candidates.forEach(function(char) {
             if (!char || typeof char !== 'object') return;
 
-            var isInTeam = currentMemberIds.some(function(id) {
-                return String(id) === String(char.id);
-            });
-
+            // Use TeamMembers for ALL eligibility logic - this is the single authority
             var eligibility = window.TeamMembers.getEligibilityStatus(
                 team,
                 char,
@@ -845,11 +887,8 @@
                 option.style.cssText = eligibility.style;
             }
 
-            if (eligibility.disabled || isInTeam) {
+            if (eligibility.disabled) {
                 option.disabled = true;
-                if (isInTeam) {
-                    option.textContent += ' ✓ In Team';
-                }
             }
 
             select.appendChild(option);
@@ -877,10 +916,10 @@
         showRankingModal: showRankingModal,
         closeRankingModal: closeRankingModal,
 
-        // Add handlers
-        addRanking: addRanking,
-        addMember: addMember,
-        saveEditMember: saveEditMember,
+        // Action handlers (exposed for event binding)
+        handleAddRanking: handleAddRanking,
+        handleAddMember: handleAddMember,
+        handleSaveEditMember: handleSaveEditMember,
 
         // Helpers (exposed for team-manager.js)
         populateMemberCharacterSelect: populateMemberCharacterSelect,
@@ -889,7 +928,13 @@
         toggleAcademicFields: toggleAcademicFields,
         toggleMissionField: toggleMissionField,
         updatePeriodLabels: updatePeriodLabels,
-        addNameHistoryEntry: addNameHistoryEntry
+        addNameHistoryEntry: addNameHistoryEntry,
+
+        // UI refresh helpers
+        refreshMemberList: refreshMemberList,
+        refreshRankingList: refreshRankingList,
+        refreshAllMemberUI: refreshAllMemberUI,
+        refreshAllRankingUI: refreshAllRankingUI
     };
 
 })();
