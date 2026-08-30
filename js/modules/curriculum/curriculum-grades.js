@@ -22,11 +22,18 @@
  *   - Student existence is validated for all mutations
  *   - Discipline existence is validated for all mutations (including deletion)
  *   - Grading letter calculation REQUIRES window.getGradeLetter (no fallback)
- *   - Malformed existing grade containers are normalised during candidate preparation
+ *   - Grade containers are validated before cloning; malformed containers are rejected
+ *   - Grade VALUES are NOT normalised during candidate preparation (data integrity)
  *   - parseGradeScore() is the SINGLE canonical grade parser
  *   - availableCount = global number of disciplines available that week
  *   - scheduledCount = disciplines this student actually has scheduled
  *   - gradedCount = scheduled disciplines with valid grades
+ * 
+ * DATA INTEGRITY POLICY:
+ *   - Container structure (grades[studentId][week]) is validated and normalised
+ *   - Grade values (scores) are validated on mutation but NOT automatically cleaned
+ *   - Malformed existing grade values are preserved until explicitly modified
+ *   - This prevents silent data loss from corrupted storage
  * 
  * GRADE SEMANTICS:
  *   - Grades are stored as: grades[studentId][week][disciplineId] = score
@@ -212,6 +219,31 @@
         }
     }
 
+    /**
+     * Validate that the grades store is structurally sound.
+     * Returns true only if grades is an object (or undefined/null).
+     * Does NOT validate nested structures.
+     */
+    function isValidGradesContainer(value) {
+        return value === undefined || value === null || isObject(value);
+    }
+
+    /**
+     * Validate a student grade container.
+     * Returns true only if the container is an object (or undefined/null).
+     */
+    function isValidStudentContainer(value) {
+        return value === undefined || value === null || isObject(value);
+    }
+
+    /**
+     * Validate a week grade container.
+     * Returns true only if the container is an object (or undefined/null).
+     */
+    function isValidWeekContainer(value) {
+        return value === undefined || value === null || isObject(value);
+    }
+
     // ============================================================
     // RESULT HELPERS
     // ============================================================
@@ -245,20 +277,42 @@
         }
 
         var data = getDataStore();
-        if (!data || !data.curriculum || !data.curriculum.grades) {
+        if (!data || !data.curriculum) {
             return {};
         }
 
-        if (!data.curriculum.grades[studentId]) {
+        var grades = data.curriculum.grades;
+
+        // Validate root container
+        if (!isValidGradesContainer(grades)) {
             return {};
         }
 
-        if (!data.curriculum.grades[studentId][weekNum]) {
+        if (!grades || !isObject(grades)) {
             return {};
         }
 
-        var grades = data.curriculum.grades[studentId][weekNum];
-        var result = deepClone(grades);
+        if (!grades[studentId]) {
+            return {};
+        }
+
+        var studentContainer = grades[studentId];
+
+        if (!isValidStudentContainer(studentContainer)) {
+            return {};
+        }
+
+        if (!studentContainer[weekNum]) {
+            return {};
+        }
+
+        var weekContainer = studentContainer[weekNum];
+
+        if (!isValidWeekContainer(weekContainer)) {
+            return {};
+        }
+
+        var result = deepClone(weekContainer);
         return result !== null ? result : {};
     }
 
@@ -282,23 +336,50 @@
         }
 
         var data = getDataStore();
-        if (!data || !data.curriculum || !data.curriculum.grades) {
+        if (!data || !data.curriculum) {
+            return {};
+        }
+
+        var grades = data.curriculum.grades;
+
+        if (!isValidGradesContainer(grades)) {
+            return {};
+        }
+
+        if (!grades || !isObject(grades)) {
             return {};
         }
 
         var result = {};
 
-        for (var studentId in data.curriculum.grades) {
-            if (!Object.prototype.hasOwnProperty.call(data.curriculum.grades, studentId)) {
+        for (var studentId in grades) {
+            if (!Object.prototype.hasOwnProperty.call(grades, studentId)) {
                 continue;
             }
-            var studentGrades = data.curriculum.grades[studentId];
-            if (studentGrades && studentGrades[weekNum]) {
-                var weekGrades = studentGrades[weekNum];
-                var cloned = deepClone(weekGrades);
-                if (cloned !== null) {
-                    result[studentId] = cloned;
-                }
+
+            var studentContainer = grades[studentId];
+
+            if (!isValidStudentContainer(studentContainer)) {
+                continue;
+            }
+
+            if (!studentContainer || !studentContainer[weekNum]) {
+                continue;
+            }
+
+            var weekContainer = studentContainer[weekNum];
+
+            if (!isValidWeekContainer(weekContainer)) {
+                continue;
+            }
+
+            if (!weekContainer || !isObject(weekContainer)) {
+                continue;
+            }
+
+            var cloned = deepClone(weekContainer);
+            if (cloned !== null) {
+                result[studentId] = cloned;
             }
         }
 
@@ -374,7 +455,7 @@
             return failure('Invalid disciplines: ' + disciplineNames.join(', ') + '.');
         }
 
-        // ---- PHASE 3: BUILD CANDIDATE (DEEP CLONE) ----
+        // ---- PHASE 3: BUILD CANDIDATE ----
         var data = getDataStore();
         if (!data) {
             return failure('Data store is not available.');
@@ -384,12 +465,20 @@
             return failure('Curriculum data is not available.');
         }
 
-        var candidate = deepClone(data.curriculum.grades || {});
+        var existingGrades = data.curriculum.grades;
+
+        // Validate root structure
+        if (!isValidGradesContainer(existingGrades)) {
+            return failure('Grade data store is malformed.');
+        }
+
+        var candidate = deepClone(existingGrades || {});
         if (candidate === null) {
             return failure('Failed to prepare grade data.');
         }
 
         // ---- PHASE 4: NORMALISE CANDIDATE STRUCTURE ----
+        // Only normalise containers, NOT grade values
         if (!isObject(candidate[studentId])) {
             candidate[studentId] = {};
         }
@@ -503,7 +592,13 @@
             return failure('Curriculum data is not available.');
         }
 
-        var candidate = deepClone(data.curriculum.grades || {});
+        var existingGrades = data.curriculum.grades;
+
+        if (!isValidGradesContainer(existingGrades)) {
+            return failure('Grade data store is malformed.');
+        }
+
+        var candidate = deepClone(existingGrades || {});
         if (candidate === null) {
             return failure('Failed to prepare grade data.');
         }
@@ -590,23 +685,49 @@
 
         // ---- PHASE 2: CHECK EXISTS ----
         var data = getDataStore();
-        if (!data || !data.curriculum || !data.curriculum.grades) {
+        if (!data || !data.curriculum) {
             return successWithGrades({}, 'unchanged', false, 0);
         }
 
-        if (!data.curriculum.grades[studentId] || !data.curriculum.grades[studentId][weekNum]) {
+        var existingGrades = data.curriculum.grades;
+
+        if (!isValidGradesContainer(existingGrades)) {
+            return failure('Grade data store is malformed.');
+        }
+
+        if (!existingGrades || !isObject(existingGrades)) {
+            return successWithGrades({}, 'unchanged', false, 0);
+        }
+
+        if (!existingGrades[studentId]) {
+            return successWithGrades({}, 'unchanged', false, 0);
+        }
+
+        var studentContainer = existingGrades[studentId];
+
+        if (!isValidStudentContainer(studentContainer)) {
+            return failure('Student grade data is malformed.');
+        }
+
+        if (!studentContainer || !studentContainer[weekNum]) {
+            return successWithGrades({}, 'unchanged', false, 0);
+        }
+
+        var weekContainer = studentContainer[weekNum];
+
+        if (!isValidWeekContainer(weekContainer)) {
+            return failure('Week grade data is malformed.');
+        }
+
+        if (!weekContainer || !isObject(weekContainer)) {
             return successWithGrades({}, 'unchanged', false, 0);
         }
 
         // ---- PHASE 3: COUNT BEFORE DELETE ----
-        var existingWeekGrades = data.curriculum.grades[studentId][weekNum];
-        var deletedCount = 0;
-        if (isObject(existingWeekGrades)) {
-            deletedCount = Object.keys(existingWeekGrades).length;
-        }
+        var deletedCount = Object.keys(weekContainer).length;
 
         // ---- PHASE 4: BUILD CANDIDATE ----
-        var candidate = deepClone(data.curriculum.grades);
+        var candidate = deepClone(existingGrades);
         if (candidate === null) {
             return failure('Failed to prepare grade data.');
         }
@@ -639,30 +760,47 @@
 
         // ---- PHASE 2: CHECK EXISTS ----
         var data = getDataStore();
-        if (!data || !data.curriculum || !data.curriculum.grades) {
+        if (!data || !data.curriculum) {
             return successWithGrades({}, 'unchanged', false, 0);
         }
 
-        if (!data.curriculum.grades[studentId]) {
+        var existingGrades = data.curriculum.grades;
+
+        if (!isValidGradesContainer(existingGrades)) {
+            return failure('Grade data store is malformed.');
+        }
+
+        if (!existingGrades || !isObject(existingGrades)) {
+            return successWithGrades({}, 'unchanged', false, 0);
+        }
+
+        if (!existingGrades[studentId]) {
+            return successWithGrades({}, 'unchanged', false, 0);
+        }
+
+        var studentContainer = existingGrades[studentId];
+
+        if (!isValidStudentContainer(studentContainer)) {
+            return failure('Student grade data is malformed.');
+        }
+
+        if (!studentContainer || !isObject(studentContainer)) {
             return successWithGrades({}, 'unchanged', false, 0);
         }
 
         // ---- PHASE 3: COUNT BEFORE DELETE ----
-        var existingStudentGrades = data.curriculum.grades[studentId];
         var deletedCount = 0;
-        if (isObject(existingStudentGrades)) {
-            for (var week in existingStudentGrades) {
-                if (Object.prototype.hasOwnProperty.call(existingStudentGrades, week)) {
-                    var weekGrades = existingStudentGrades[week];
-                    if (isObject(weekGrades)) {
-                        deletedCount += Object.keys(weekGrades).length;
-                    }
+        for (var week in studentContainer) {
+            if (Object.prototype.hasOwnProperty.call(studentContainer, week)) {
+                var weekGrades = studentContainer[week];
+                if (isObject(weekGrades)) {
+                    deletedCount += Object.keys(weekGrades).length;
                 }
             }
         }
 
         // ---- PHASE 4: BUILD CANDIDATE ----
-        var candidate = deepClone(data.curriculum.grades);
+        var candidate = deepClone(existingGrades);
         if (candidate === null) {
             return failure('Failed to prepare grade data.');
         }
