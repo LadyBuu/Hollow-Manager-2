@@ -18,6 +18,12 @@
  * DATA VALIDATION:
  *   All array/object access is validated to prevent runtime errors from
  *   corrupted or malformed persisted data.
+ * 
+ * DEPENDENCIES:
+ *   - window.getCharacterById (from core-utils.js)
+ *   - window.getDisplayName (from core-utils.js)
+ *   - window.RELATIONSHIP_CONSTANTS (from constants.js)
+ *   - window.DomUtils (from dom-utils.js)
  */
 
 (function() {
@@ -50,39 +56,19 @@
     // SAFE CSS COLOR VALIDATION - Whitelist based
     // ============================================================
 
-    // Strictly whitelisted colours used by the application
-    var ALLOWED_COLORS = {
-        '#8cbb3a': true,  // familiar
-        '#c9a24b': true,  // professional
-        '#c1453c': true,  // romantic
-        '#4a9bc7': true,  // friendship
-        '#9b59b6': true,  // mentor
-        '#e67e22': true,  // rivalry
-        '#27ae60': true,  // alliance
-        '#7f8c8d': true   // other
-    };
-
-    // Allowed rgb/rgba pattern (restrictive)
-    var RGB_PATTERN = /^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*0?\.?\d+\s*)?\)$/i;
-
     function getSafeRelationshipColor(typeId) {
         var color = getRelationshipTypeColor(typeId);
         
         if (!color || typeof color !== 'string') {
-            return '#7f8c8d';
+            return window.RELATIONSHIP_CONSTANTS.DEFAULT_COLOR;
         }
 
-        // Check whitelist first
-        if (ALLOWED_COLORS[color]) {
+        // Check whitelist
+        if (window.isAllowedRelationshipColor && window.isAllowedRelationshipColor(color)) {
             return color;
         }
 
-        // Allow only strict RGB/RGBA format
-        if (RGB_PATTERN.test(color)) {
-            return color;
-        }
-
-        return '#7f8c8d';
+        return window.RELATIONSHIP_CONSTANTS.DEFAULT_COLOR;
     }
 
     // ============================================================
@@ -123,7 +109,7 @@
 
     function getRelationshipTypeColor(typeId) {
         var type = getRelationshipType(typeId);
-        return type ? type.color : '#7f8c8d';
+        return type ? type.color : window.RELATIONSHIP_CONSTANTS.DEFAULT_COLOR;
     }
 
     // ============================================================
