@@ -17,6 +17,9 @@
  *   - The core owns validation and parsing.
  *   - This module collects raw form data and passes it to core.
  *   - UI validation is for UX only; core validation is authoritative.
+ *   - Live preview uses getGradeLetter(discipline, score) for unsaved values.
+ *   - Summary reflects persisted data, not unsaved changes.
+ *   - Weight validation matches core semantics (isFinite && > 0).
  * 
  * LIFECYCLE:
  *   This module is rendered by curriculum-main.js via TabManager.
@@ -29,6 +32,7 @@
  *   - The summary only counts disciplines the student is scheduled in.
  *   - Live preview updates letter grade and weighted score on input.
  *   - Summary reflects persisted data, not unsaved changes.
+ *   - getStudentDisciplineIds() is imported from the core.
  */
 
 (function() {
@@ -82,6 +86,10 @@
             missing.push('getStudentSchedule');
         }
 
+        if (typeof window.getStudentDisciplineIds !== 'function') {
+            missing.push('getStudentDisciplineIds');
+        }
+
         if (typeof window.getGrades !== 'function') {
             missing.push('getGrades');
         }
@@ -94,16 +102,16 @@
             missing.push('calculateGradeSummary');
         }
 
-        if (typeof window.calculateGradeLetter !== 'function') {
-            missing.push('calculateGradeLetter');
-        }
-
         if (typeof window.saveData !== 'function') {
             missing.push('saveData');
         }
 
         if (typeof window.ensureCurriculum !== 'function') {
             missing.push('ensureCurriculum');
+        }
+
+        if (typeof window.getGradeLetter !== 'function') {
+            missing.push('getGradeLetter');
         }
 
         if (missing.length > 0) {
@@ -253,7 +261,7 @@
     }
 
     // ============================================================
-    // STRICT GRADES EQUALITY CHECK
+    // NUMERIC-AWARE GRADE EQUALITY CHECK
     // ============================================================
 
     function gradesEqual(a, b) {
@@ -272,7 +280,7 @@
     }
 
     // ============================================================
-    // STRICT NUMERIC VALIDATION
+    // STRICT NUMERIC VALIDATION (UI-level only)
     // ============================================================
 
     function isValidGrade(value) {
@@ -281,6 +289,14 @@
         }
         var num = Number(value);
         return isFinite(num) && num >= 0 && num <= 100;
+    }
+
+    /**
+     * Validate a weight value using the same semantics as the core.
+     * Returns true only if weight is a finite number greater than 0.
+     */
+    function isValidWeight(weight) {
+        return isFinite(Number(weight)) && Number(weight) > 0;
     }
 
     // ============================================================
@@ -329,7 +345,7 @@
         }
 
         var schedule = window.getStudentSchedule(state.selectedStudentId, state.currentWeek);
-        var studentDisciplineIds = getStudentDisciplineIds(schedule);
+        var studentDisciplineIds = window.getStudentDisciplineIds(schedule);
 
         var grades = {};
         if (typeof window.getGrades === 'function') {
@@ -383,13 +399,17 @@
             if (hasScore && isInSchedule) {
                 var numericScore = Number(score);
                 if (isFinite(numericScore)) {
-                    var letterResult = window.calculateGradeLetter(state.selectedStudentId, state.currentWeek, d.id);
-                    if (letterResult !== null) {
-                        letter = letterResult;
+                    // Use getGradeLetter directly for persisted data
+                    if (typeof window.getGradeLetter === 'function') {
+                        var letterResult = window.getGradeLetter(d, numericScore);
+                        if (letterResult !== null && letterResult !== undefined) {
+                            letter = letterResult;
+                        }
                     }
 
-                    if (d.weight) {
-                        weighted = numericScore * d.weight;
+                    // Use same weight validation as core
+                    if (isValidWeight(d.weight)) {
+                        weighted = numericScore * Number(d.weight);
                         weightedDisplay = weighted.toFixed(1);
                     }
                 }
@@ -414,7 +434,7 @@
             html += '<td style="color:' + typeColor + ';font-size:0.7rem;">' + typeLabel + '</td>';
             html += '<td style="font-size:0.7rem;">' + safeInstructor + '</td>';
             html += '<td class="weight">' + (d.weight || 1) + '</td>';
-            html += '<td><input type="number" class="grade-input" data-discipline="' + escapeHtml(d.id) + '" data-original="' + safeScore + '" value="' + safeScore + '" min="0" max="100" step="0.5" ' + disabledAttr + '></td>';
+            html += '<td><input type="number" class="grade-input" data-discipline="' + escapeHtml(d.id) + '" data-original="' + safeScore + '" value="' + safeScore + '" min="0" max="100" step="0.1" ' + disabledAttr + '></td>';
             html += '<td class="grade-letter">' + (safeLetter || '--') + '</td>';
             html += '<td class="weighted-score">' + safeWeightedDisplay + '</td>';
             html += '</tr>';
@@ -425,7 +445,7 @@
 
         gradesContainer.innerHTML = html;
 
-        // Live preview while editing
+        // Live preview while editing - uses getGradeLetter directly
         var gradeInputs = gradesContainer.querySelectorAll('.grade-input:not([disabled])');
         for (var i = 0; i < gradeInputs.length; i++) {
             var input = gradeInputs[i];
@@ -442,16 +462,35 @@
 
                 if (isValidGrade(value)) {
                     var numericValue = Number(value);
-                    var letter = window.calculateGradeLetter(state.selectedStudentId, state.currentWeek, disciplineId);
-                    if (letter !== null) {
-                        letterEl.textContent = letter;
+
+                    // Look up the discipline for letter grade calculation
+                    var discipline = null;
+                    for (var j = 0; j < disciplines.length; j++) {
+                        if (String(disciplines[j].id) === String(disciplineId)) {
+                            discipline = disciplines[j];
+                            break;
+                        }
+                    }
+
+                    // Calculate letter grade from raw input using getGradeLetter
+                    if (discipline && typeof window.getGradeLetter === 'function') {
+                        var letterResult = window.getGradeLetter(discipline, numericValue);
+                        if (letterResult !== null && letterResult !== undefined) {
+                            letterEl.textContent = letterResult;
+                        } else {
+                            letterEl.textContent = '--';
+                        }
                     } else {
                         letterEl.textContent = '--';
                     }
 
-                    var discipline = getDisciplineFromList(disciplines, disciplineId);
-                    var weighted = discipline && discipline.weight ? numericValue * discipline.weight : 0;
-                    weightedEl.textContent = weighted.toFixed(1);
+                    // Calculate weighted score using same weight validation as core
+                    if (discipline && isValidWeight(discipline.weight)) {
+                        var weighted = numericValue * Number(discipline.weight);
+                        weightedEl.textContent = weighted.toFixed(1);
+                    } else {
+                        weightedEl.textContent = '--';
+                    }
                 } else if (value === '') {
                     letterEl.textContent = '--';
                     weightedEl.textContent = '--';
@@ -466,48 +505,7 @@
             });
         }
 
-        updateGradeSummary(container, student, disciplines, grades, studentDisciplineIds);
-    }
-
-    function getDisciplineFromList(disciplines, id) {
-        for (var i = 0; i < disciplines.length; i++) {
-            if (String(disciplines[i].id) === String(id)) {
-                return disciplines[i];
-            }
-        }
-        return null;
-    }
-
-    // ============================================================
-    // GET STUDENT DISCIPLINE IDS FROM SCHEDULE
-    // ============================================================
-
-    function getStudentDisciplineIds(schedule) {
-        var ids = [];
-        if (!schedule || typeof schedule !== 'object') {
-            return ids;
-        }
-
-        for (var day in schedule) {
-            if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
-                continue;
-            }
-            var daySchedule = schedule[day];
-            if (!daySchedule || typeof daySchedule !== 'object') {
-                continue;
-            }
-
-            for (var hour in daySchedule) {
-                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
-                    continue;
-                }
-                var disciplineId = daySchedule[hour];
-                if (disciplineId && ids.indexOf(disciplineId) === -1) {
-                    ids.push(disciplineId);
-                }
-            }
-        }
-        return ids;
+        updateGradeSummary(container, student);
     }
 
     // ============================================================
@@ -529,10 +527,10 @@
     }
 
     // ============================================================
-    // UPDATE GRADE SUMMARY
+    // UPDATE GRADE SUMMARY - Simplified
     // ============================================================
 
-    function updateGradeSummary(container, student, disciplines, grades, studentDisciplineIds) {
+    function updateGradeSummary(container, student) {
         var summaryContainer = container ? container.querySelector('#grades-summary-content') : document.getElementById('grades-summary-content');
         if (!summaryContainer) {
             return;
@@ -585,7 +583,7 @@
     }
 
     // ============================================================
-    // SAVE GRADES - Only sends changed fields
+    // SAVE GRADES - Container-scoped
     // ============================================================
 
     function saveGrades(container) {
@@ -598,7 +596,11 @@
         var hasChanges = false;
         var invalidInputs = [];
 
-        var gradeInputs = document.querySelectorAll('.grade-input:not([disabled])');
+        // Scope queries to container
+        var gradeInputs = container
+            ? container.querySelectorAll('.grade-input:not([disabled])')
+            : document.querySelectorAll('.grade-input:not([disabled])');
+
         for (var i = 0; i < gradeInputs.length; i++) {
             var input = gradeInputs[i];
             var disciplineId = input.dataset.discipline;
@@ -652,23 +654,10 @@
             return;
         }
 
-        // Update data-original attributes to prevent double-saving
-        var updatedInputs = document.querySelectorAll('.grade-input:not([disabled])');
-        for (var i = 0; i < updatedInputs.length; i++) {
-            var input = updatedInputs[i];
-            var disciplineId = input.dataset.discipline;
-            if (grades[disciplineId] !== undefined) {
-                input.dataset.original = grades[disciplineId] !== undefined && grades[disciplineId] !== null ? String(grades[disciplineId]) : '';
-            }
-        }
-
+        // Re-render from canonical state (this updates data-original attributes automatically)
         renderGrades(container);
 
-        if (typeof window.logActivity === 'function') {
-            var student = window.getCharacterById(state.selectedStudentId);
-            var studentName = student ? window.getDisplayName(student) : 'Unknown';
-            window.logActivity('Saved grades for ' + studentName + ' (' + state.selectedStudentId + '), week ' + state.currentWeek);
-        }
+        // Core already logs the mutation. View does not log separately.
 
         // Persist
         if (typeof window.saveData === 'function') {
@@ -711,7 +700,6 @@
         var studentSelect = container ? container.querySelector('#grades-student') : document.getElementById('grades-student');
 
         if (studentSelect) {
-            // Clone to remove any existing listeners
             var newSelect = studentSelect.cloneNode(true);
             studentSelect.parentNode.replaceChild(newSelect, studentSelect);
             studentSelect = newSelect;
@@ -744,7 +732,6 @@
             });
         }
 
-        // Auto-select first student if none selected
         if (studentSelect && studentSelect.options.length > 1 && !state.selectedStudentId) {
             studentSelect.selectedIndex = 1;
             state.selectedStudentId = studentSelect.value;
@@ -769,4 +756,4 @@
     window.renderGradesView = renderGradesView;
     window.gradesState = state;
 
-})();grad
+})();
