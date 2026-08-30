@@ -6,9 +6,19 @@
  * 
  * IMPORTANT:
  *   - ensureCurriculum() is IDEMPOTENT: safe to call multiple times
- *   - It only adds missing structure, never deletes data
+ *   - It adds missing structure and repairs malformed structure
+ *   - Valid existing data is preserved
  *   - It should be called during application bootstrap
  *   - All mutation modules depend on the schema being present
+ *   - This function is a REPAIR operation, not a domain mutation
+ * 
+ * REPAIR SEMANTICS:
+ *   - Missing collections are created with defaults.
+ *   - Valid collections are preserved unchanged.
+ *   - Malformed collections are replaced with empty defaults.
+ *   - Repair may discard data contained inside malformed structures.
+ *   - No valid data is intentionally deleted.
+ *   - Deep content validation belongs to the relevant domain module.
  */
 
 (function() {
@@ -33,6 +43,26 @@
 
     function isObject(value) {
         return value !== null && typeof value === 'object' && !Array.isArray(value);
+    }
+
+    function deepClone(value) {
+        if (value === null || typeof value !== 'object') {
+            return value;
+        }
+        if (typeof structuredClone === 'function') {
+            try {
+                return structuredClone(value);
+            } catch (e) {
+                console.error('CurriculumSchema: structuredClone failed:', e);
+                return null;
+            }
+        }
+        try {
+            return JSON.parse(JSON.stringify(value));
+        } catch (e) {
+            console.error('CurriculumSchema: JSON clone failed:', e);
+            return null;
+        }
     }
 
     // ============================================================
@@ -73,25 +103,50 @@
             return;
         }
 
-        // Ensure curriculum exists
+        // Ensure curriculum exists and is an object
         if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
             data.curriculum = {};
         }
 
-        // Get defaults and merge
+        // Get defaults
         var defaults = getDefaultCurriculum();
 
+        // Repair every collection in the schema
         for (var key in defaults) {
             if (!Object.prototype.hasOwnProperty.call(defaults, key)) {
                 continue;
             }
 
-            if (data.curriculum[key] === undefined) {
-                data.curriculum[key] = defaults[key];
+            var current = data.curriculum[key];
+            var defaultValue = defaults[key];
+            var isDefaultArray = Array.isArray(defaultValue);
+
+            // Case 1: Missing or null
+            if (current === undefined || current === null) {
+                data.curriculum[key] = deepClone(defaultValue);
+                continue;
             }
+
+            // Case 2: Should be array but isn't
+            if (isDefaultArray && !Array.isArray(current)) {
+                data.curriculum[key] = [];
+                continue;
+            }
+
+            // Case 3: Should be object but isn't (including arrays)
+            if (!isDefaultArray && !isObject(current)) {
+                data.curriculum[key] = deepClone(defaultValue);
+                continue;
+            }
+
+            // Case 4: Correct top-level type - preserve it
+            // Deep content validation belongs to the relevant domain module.
         }
 
-        // Ensure top-level collections exist
+        // ============================================================
+        // TOP-LEVEL COLLECTIONS (outside curriculum)
+        // ============================================================
+
         if (!Array.isArray(data.classes)) {
             data.classes = [];
         }
@@ -100,33 +155,18 @@
             data.locations = [];
         }
 
-        if (!data.locationSchedules || typeof data.locationSchedules !== 'object') {
+        if (!isObject(data.locationSchedules)) {
             data.locationSchedules = {};
         }
 
-        // Ensure rankings is an object
-        if (!isObject(data.curriculum.rankings)) {
-            data.curriculum.rankings = {};
-        }
+        // ============================================================
+        // CURRENT WEEK (ensure valid integer)
+        // ============================================================
 
-        // Ensure grades is an object
-        if (!isObject(data.curriculum.grades)) {
-            data.curriculum.grades = {};
-        }
-
-        // Ensure schedules is an object
-        if (!isObject(data.curriculum.schedules)) {
-            data.curriculum.schedules = {};
-        }
-
-        // Ensure restDays is an object
-        if (!isObject(data.curriculum.restDays)) {
-            data.curriculum.restDays = {};
-        }
-
-        // Ensure autoGroups is an object
-        if (!isObject(data.curriculum.autoGroups)) {
-            data.curriculum.autoGroups = {};
+        if (!Number.isInteger(data.curriculum.currentWeek) ||
+            data.curriculum.currentWeek < 1 ||
+            data.curriculum.currentWeek > 52) {
+            data.curriculum.currentWeek = 1;
         }
     }
 
@@ -135,6 +175,7 @@
     // ============================================================
 
     window.ensureCurriculum = ensureCurriculum;
+
     window.CurriculumSchema = {
         ensureCurriculum: ensureCurriculum,
         getDefaultCurriculum: getDefaultCurriculum
