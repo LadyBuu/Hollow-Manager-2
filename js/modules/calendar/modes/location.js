@@ -16,6 +16,7 @@
  *   - The core is authoritative for all data mutations
  *   - Removal is handled via right-click or details modal, not the assignment modal
  *   - getCharacterById is optional; instructor names degrade gracefully
+ *   - All core functions are from the curriculum modules
  */
 
 (function() {
@@ -61,8 +62,13 @@
     function checkDependencies() {
         var missing = [];
 
+        // Query functions from curriculum modules
         if (typeof window.getLocations !== 'function') {
             missing.push('getLocations');
+        }
+
+        if (typeof window.getLocation !== 'function') {
+            missing.push('getLocation');
         }
 
         if (typeof window.getLocationSchedule !== 'function') {
@@ -85,14 +91,24 @@
             missing.push('getStudentSchedule');
         }
 
-        if (typeof window.getClassLocation !== 'function') {
-            missing.push('getClassLocation');
-        }
-
         if (typeof window.getDisplayName !== 'function') {
             missing.push('getDisplayName');
         }
 
+        if (typeof window.getCharacterById !== 'function') {
+            missing.push('getCharacterById');
+        }
+
+        // Location schedule functions from curriculum modules
+        if (typeof window.getLocationClassDuration !== 'function') {
+            missing.push('getLocationClassDuration');
+        }
+
+        if (typeof window.getClassLocation !== 'function') {
+            missing.push('getClassLocation');
+        }
+
+        // Mutation functions from curriculum modules
         if (typeof window.setLocationClass !== 'function') {
             missing.push('setLocationClass');
         }
@@ -105,21 +121,22 @@
             missing.push('clearLocationSchedule');
         }
 
+        if (typeof window.getLocationUsage !== 'function') {
+            missing.push('getLocationUsage');
+        }
+
+        if (typeof window.getLocationUsageByWeek !== 'function') {
+            missing.push('getLocationUsageByWeek');
+        }
+
+        if (typeof window.getLocationCapacity !== 'function') {
+            missing.push('getLocationCapacity');
+        }
+
+        // Persistence
         if (typeof window.saveData !== 'function') {
             missing.push('saveData');
         }
-
-        if (typeof window.getLocation !== 'function') {
-            missing.push('getLocation');
-        }
-
-        // Duration metadata function (preferred)
-        if (typeof window.getLocationClassDuration !== 'function') {
-            missing.push('getLocationClassDuration');
-        }
-
-        // getCharacterById is optional - used for instructor names in dropdown
-        // The module degrades gracefully if not available
 
         if (missing.length > 0) {
             console.warn('LocationMode: Missing dependencies:', missing.join(', '));
@@ -161,6 +178,57 @@
     }
 
     // ============================================================
+    // GET LOCATION BY ID
+    // ============================================================
+
+    function getLocationById(id) {
+        if (typeof window.getLocation === 'function') {
+            return window.getLocation(id);
+        }
+        return null;
+    }
+
+    // ============================================================
+    // DURATION HELPERS
+    // ============================================================
+
+    /**
+     * Get the display duration of a class at a location slot.
+     * Prefers metadata from getLocationClassDuration().
+     * Falls back to inference ONLY if metadata is missing.
+     * 
+     * This is a UI display helper. The core is authoritative for duration.
+     */
+    function getLocationDisplayDuration(locationId, week, day, hour, schedule) {
+        // Try metadata first using curriculum module
+        if (typeof window.getLocationClassDuration === 'function') {
+            var duration = window.getLocationClassDuration(locationId, week, day, hour);
+            if (duration !== null && duration !== undefined && duration >= 1) {
+                return duration;
+            }
+        }
+
+        // Fallback: infer from contiguous schedule entries
+        // This is ONLY used when metadata is missing (legacy data or migration)
+        if (schedule && schedule[day]) {
+            var disciplineId = schedule[day][hour];
+            if (disciplineId) {
+                var inferred = 1;
+                for (var h = hour + 1; h <= CALENDAR_END_HOUR; h++) {
+                    if (schedule[day] && String(schedule[day][h]) === String(disciplineId)) {
+                        inferred++;
+                    } else {
+                        break;
+                    }
+                }
+                return inferred;
+            }
+        }
+
+        return 1;
+    }
+
+    // ============================================================
     // RENDER LOCATION SCHEDULE - Using Shared Renderer
     // ============================================================
 
@@ -169,7 +237,7 @@
         var week = state.week;
 
         var schedule = window.getLocationSchedule(locationId, week) || {};
-        var location = window.getLocation(locationId);
+        var location = getLocationById(locationId);
         var locationName = location ? location.name : 'Unknown';
 
         var allStudents = window.getStudents() || [];
@@ -263,9 +331,17 @@
     // ============================================================
 
     function getLocationSidebarHTML(locationId, week) {
-        var usageCount = window.getLocationUsage ? window.getLocationUsage(locationId) : 0;
-        var weekUsage = window.getLocationUsageByWeek ? window.getLocationUsageByWeek(locationId, week) : 0;
-        var capacity = window.getLocationCapacity ? window.getLocationCapacity(locationId) : null;
+        var usageCount = typeof window.getLocationUsage === 'function'
+            ? window.getLocationUsage(locationId)
+            : 0;
+
+        var weekUsage = typeof window.getLocationUsageByWeek === 'function'
+            ? window.getLocationUsageByWeek(locationId, week)
+            : 0;
+
+        var capacity = typeof window.getLocationCapacity === 'function'
+            ? window.getLocationCapacity(locationId)
+            : null;
 
         var html = '<div class="sidebar-section">';
         html += '<h4>Location Info</h4>';
@@ -280,46 +356,6 @@
         html += '</div>';
 
         return html;
-    }
-
-    // ============================================================
-    // DURATION HELPERS
-    // ============================================================
-
-    /**
-     * Get the display duration of a class at a location slot.
-     * Prefers metadata from getLocationClassDuration().
-     * Falls back to inference ONLY if metadata is missing.
-     * 
-     * This is a UI display helper. The core is authoritative for duration.
-     */
-    function getLocationDisplayDuration(locationId, week, day, hour, schedule) {
-        // Try metadata first
-        if (typeof window.getLocationClassDuration === 'function') {
-            var duration = window.getLocationClassDuration(locationId, week, day, hour);
-            if (duration !== null && duration !== undefined && duration >= 1) {
-                return duration;
-            }
-        }
-
-        // Fallback: infer from contiguous schedule entries
-        // This is ONLY used when metadata is missing (legacy data or migration)
-        if (schedule && schedule[day]) {
-            var disciplineId = schedule[day][hour];
-            if (disciplineId) {
-                var inferred = 1;
-                for (var h = hour + 1; h <= CALENDAR_END_HOUR; h++) {
-                    if (schedule[day] && String(schedule[day][h]) === String(disciplineId)) {
-                        inferred++;
-                    } else {
-                        break;
-                    }
-                }
-                return inferred;
-            }
-        }
-
-        return 1;
     }
 
     // ============================================================
@@ -404,7 +440,7 @@
         }
 
         var hourDisplay = CalendarUtils.formatHour(hour);
-        var location = window.getLocation(locationId);
+        var location = getLocationById(locationId);
         var locationName = location ? location.name : 'Unknown';
 
         CalendarRenderer.createAddClassModal({
@@ -441,6 +477,7 @@
                     return;
                 }
 
+                // Use the curriculum module function
                 var result = window.setLocationClass(locationId, week, day, hour, disciplineId);
 
                 if (!result || !result.success) {
@@ -475,7 +512,7 @@
 
         var hourDisplay = day !== null && hour !== null ? CalendarUtils.formatHour(hour) : 'any slot';
         var dayDisplay = day !== null ? CalendarRenderer.DAY_NAMES[day] : 'any day';
-        var location = window.getLocation(locationId);
+        var location = getLocationById(locationId);
         var locationName = location ? location.name : 'Unknown';
 
         var modal = CalendarRenderer.createAddClassModal({
@@ -510,6 +547,7 @@
                     for (var d = 1; d <= 7; d++) {
                         for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
                             if (!schedule[d] || !schedule[d][h]) {
+                                // Use the curriculum module function
                                 var result = window.setLocationClass(locationId, week, d, h, disciplineId);
                                 if (result && result.success) {
                                     foundSlot = true;
@@ -602,11 +640,13 @@
         var studentNames = getStudentsAtLocation(locationId, week, day, hour, disciplineId);
 
         var disciplineName = discipline ? discipline.name : 'Unknown';
+        var location = getLocationById(locationId);
+        var locationName = location ? location.name : 'Unknown';
 
         CalendarRenderer.createDetailsModal({
             title: disciplineName,
             details: [
-                { label: 'Location', value: window.getLocation(locationId) ? window.getLocation(locationId).name : 'Unknown' },
+                { label: 'Location', value: locationName },
                 { label: 'Day/Time', value: CalendarRenderer.DAY_NAMES[day] + ' at ' + hourDisplay },
                 { label: 'Duration', value: duration + ' hour' + (duration > 1 ? 's' : '') },
                 { label: 'Students', value: studentNames.length > 0 ? studentNames.length + ' - ' + studentNames.join(', ') : 'None' }
@@ -634,6 +674,7 @@
     // ============================================================
 
     function removeLocationClass(locationId, week, day, hour, container) {
+        // Use the curriculum module function
         var result = window.removeLocationClass(locationId, week, day, hour);
 
         if (!result || !result.success) {
@@ -657,6 +698,7 @@
     // ============================================================
 
     function clearLocationWeek(locationId, week, container) {
+        // Use the curriculum module function
         var result = window.clearLocationSchedule(locationId, week);
 
         if (!result || !result.success) {
