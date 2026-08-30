@@ -21,7 +21,7 @@
  *   2. Validate existing structure (via Schema)
  *   3. Validate operation-specific inputs (REJECT invalid, don't filter)
  *   4. Build complete proposed state via buildProposedMatch()
- *   5. Validate proposed state
+ *   5. Validate proposed state (mutation rules + Schema delegation)
  *   6. Apply COMPLETE proposed state (all fields)
  *   7. Return a DEFENSIVE COPY of the result
  * 
@@ -29,17 +29,20 @@
  *   - Group exams: winner and loser must be null
  *   - Standard matches: if advancing is present, winner must be in advancing
  *   - Two-person standard: loser is derived from winner
+ *   - Cannot modify a completed match
+ *   - Cannot modify a match in a completed round
  * 
  * DEPENDENCIES:
  *   - TournamentsCore for tournament lookup
  *   - TournamentsSchema for shared validation
+ *   - CALENDAR_CONSTANTS for week validation
  */
 
 (function() {
     'use strict';
 
+    // Guard: Check dependencies BEFORE marking as loaded
     if (window.__tournamentsMatchesLoaded) return;
-    window.__tournamentsMatchesLoaded = true;
 
     if (!window.TournamentsCore) {
         console.error('TournamentsMatches: TournamentsCore required.');
@@ -50,6 +53,13 @@
         console.error('TournamentsMatches: TournamentsSchema required.');
         return;
     }
+
+    // Check CALENDAR_CONSTANTS
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var MIN_WEEK = Number.isInteger(CALENDAR.MIN_WEEK) ? CALENDAR.MIN_WEEK : 1;
+    var MAX_WEEK = Number.isInteger(CALENDAR.MAX_WEEK) ? CALENDAR.MAX_WEEK : 52;
+
+    window.__tournamentsMatchesLoaded = true;
 
     var Core = window.TournamentsCore;
     var Schema = window.TournamentsSchema;
@@ -64,6 +74,7 @@
     var isValidGroupExamResult = Schema.isValidGroupExamResult;
     var normaliseId = Schema.normaliseId;
     var isValidParticipantType = Schema.isValidParticipantType;
+    var isValidWeek = Schema.isValidWeek;
 
     // ============================================================
     // CONSTANTS
@@ -74,10 +85,10 @@
         'type',
         'status',
         'winner',
-        'loser',
         'advancing',
         'results'
     ];
+    // loser is DERIVED - NOT publicly updateable
 
     var MATCH_KEYS = [
         'participants',
@@ -93,7 +104,7 @@
     // INTERNAL HELPERS
     // ============================================================
 
-    function getValidTournament(id) {
+    function getTournamentWithRounds(id) {
         var tournament = Core.getTournament(id);
         if (!tournament) return null;
         if (!Array.isArray(tournament.rounds)) return null;
@@ -170,6 +181,14 @@
         if (!winner) return null;
         var winnerId = normaliseId(winner);
         if (winnerId === null) return null;
+        
+        // Verify winner is in participants
+        if (!participants.some(function(id) {
+            return normaliseId(id) === winnerId;
+        })) {
+            return null;
+        }
+        
         var loser = participants.find(function(id) {
             return normaliseId(id) !== winnerId;
         });
@@ -258,13 +277,6 @@
             }
         }
 
-        if (updates.loser !== undefined) {
-            if (updates.loser !== null) {
-                return null;
-            }
-            normalisedUpdates.loser = null;
-        }
-
         if (updates.advancing !== undefined) {
             if (updates.advancing === null || updates.advancing === undefined) {
                 normalisedUpdates.advancing = [];
@@ -299,7 +311,7 @@
             winner: normalisedUpdates.winner !== undefined
                 ? normalisedUpdates.winner
                 : base.winner,
-            loser: null,
+            loser: null, // Will be derived if needed
             advancing: normalisedUpdates.advancing !== undefined
                 ? normalisedUpdates.advancing
                 : (base.advancing ? base.advancing.slice() : []),
@@ -331,144 +343,31 @@
 
     /**
      * Validate a complete proposed match state.
+     * MUTATION-SPECIFIC validation + delegation to Schema.
      * Returns { valid: boolean, errors: array }
      */
     function validateProposedMatch(proposed, tournament, round, matchIndex) {
         var errors = [];
 
-        // ---- TYPE ----
-        if (!isValidMatchType(proposed.type)) {
-            errors.push('Invalid match type. Must be "standard" or "group_exam".');
+        // ---- MUTATION-SPECIFIC VALIDATION ----
+        // Cannot modify a match in a completed round
+        if (round.status === 'completed') {
+            errors.push('Cannot modify matches in a completed round.');
+            return { valid: false, errors: errors };
         }
 
-        if (round.matchType && round.matchType !== proposed.type) {
-            errors.push('Match type "' + proposed.type + '" does not match round type "' + round.matchType + '".');
-        }
-
-        // ---- STATUS ----
-        if (!isValidMatchStatus(proposed.status)) {
-            errors.push('Invalid match status. Must be "pending", "in_progress", or "completed".');
-        }
-
-        // ---- PARTICIPANTS ----
-        var matchSize = round.matchSize || 2;
-        if (proposed.participants.length !== matchSize) {
-            errors.push('Match size mismatch. Expected: ' + matchSize + ', got: ' + proposed.participants.length);
-        }
-
-        var expectedType = tournament.mode === 'teams' ? 'team' : 'character';
-        if (!validateMatchParticipants(tournament, proposed.participants, expectedType)) {
-            errors.push('Invalid match participants.');
-        }
-
-        var seen = {};
-        for (var i = 0; i < proposed.participants.length; i++) {
-            var id = proposed.participants[i];
-            if (seen[id]) {
-                errors.push('Duplicate participant in match: "' + id + '"');
-            }
-            seen[id] = true;
-        }
-
-        // ---- WINNER ----
-        if (proposed.type === 'group_exam' && proposed.winner !== null) {
-            errors.push('Group exam matches do not have a winner field.');
-        }
-
-        if (proposed.winner !== null) {
-            var winnerId = normaliseId(proposed.winner);
-            if (winnerId === null) {
-                errors.push('Invalid winner ID.');
-            } else if (proposed.participants.indexOf(winnerId) === -1) {
-                errors.push('Winner must be a participant in the match.');
-            } else if (!validateParticipant(tournament, winnerId, expectedType)) {
-                errors.push('Winner is not a valid tournament participant.');
-            }
-        }
-
-        // ---- LOSER ----
-        if (proposed.loser !== null) {
-            if (proposed.type === 'group_exam') {
-                errors.push('Group exam matches do not have a loser field.');
-            } else {
-                var loserId = normaliseId(proposed.loser);
-                if (loserId === null) {
-                    errors.push('Invalid loser ID.');
-                } else if (proposed.participants.indexOf(loserId) === -1) {
-                    errors.push('Loser must be a participant in the match.');
-                } else if (proposed.winner && loserId === normaliseId(proposed.winner)) {
-                    errors.push('Loser cannot be the same as winner.');
-                }
-            }
-        }
-
-        // ---- ADVANCING ----
-        if (Array.isArray(proposed.advancing)) {
-            var advancingSeen = {};
-            for (var a = 0; a < proposed.advancing.length; a++) {
-                var advId = normaliseId(proposed.advancing[a]);
-                if (advId === null) {
-                    errors.push('Invalid advancing participant ID.');
-                    continue;
-                }
-                if (advancingSeen[advId]) {
-                    errors.push('Duplicate advancing participant: "' + advId + '"');
-                }
-                advancingSeen[advId] = true;
-                if (proposed.participants.indexOf(advId) === -1) {
-                    errors.push('Advancing participant must be in the match.');
-                }
-                if (!validateParticipant(tournament, advId, expectedType)) {
-                    errors.push('Advancing participant is not a valid tournament participant.');
-                }
-            }
-
-            // Winner must be in advancing for standard matches
-            if (proposed.type === 'standard' && proposed.winner && proposed.advancing.length > 0) {
-                if (proposed.advancing.indexOf(proposed.winner) === -1) {
-                    errors.push('Standard match winner must be included in advancing participants.');
-                }
-            }
-        }
-
-        // ---- RESULTS ----
-        if (Object.keys(proposed.results).length > 0) {
-            if (proposed.type !== 'group_exam') {
-                errors.push('Results are only valid for group_exam matches.');
-            } else {
-                var resultKeys = Object.keys(proposed.results);
-                for (var r = 0; r < resultKeys.length; r++) {
-                    var key = resultKeys[r];
-                    var id = normaliseId(key);
-                    if (id === null) {
-                        errors.push('Invalid result participant ID: "' + key + '"');
-                        continue;
-                    }
-                    if (proposed.participants.indexOf(id) === -1) {
-                        errors.push('Result participant "' + key + '" is not in the match.');
-                    }
-                    var value = proposed.results[key];
-                    if (!isValidGroupExamResult(value)) {
-                        errors.push('Result for participant "' + key + '" must be "pass" or "fail".');
-                    }
-                }
-            }
-        }
-
-        // ---- COMPLETED MATCH VALIDATION ----
+        // Cannot modify a completed match
         if (proposed.status === 'completed') {
-            if (proposed.type === 'standard' && !proposed.winner) {
-                errors.push('Completed standard match must have a winner.');
-            }
-            if (proposed.type === 'group_exam') {
-                for (var m = 0; m < proposed.participants.length; m++) {
-                    var pid = proposed.participants[m];
-                    if (!proposed.results[pid] || !isValidGroupExamResult(proposed.results[pid])) {
-                        errors.push('Completed group exam must have results for all participants.');
-                        break;
-                    }
-                }
-            }
+            // Allow completion to remain, but ensure it's valid
+            // The actual validation of completed state is delegated to Schema
+        }
+
+        // ---- DELEGATE STRUCTURAL VALIDATION TO SCHEMA ----
+        var schemaResult = Schema.validateMatch(proposed, tournament, true, round);
+        if (!schemaResult.valid) {
+            schemaResult.errors.forEach(function(err) {
+                errors.push(err);
+            });
         }
 
         return { valid: errors.length === 0, errors: errors };
@@ -484,6 +383,17 @@
         return matches.map(cloneMatch);
     }
 
+    function cloneRound(round) {
+        if (!round || typeof round !== 'object') return round;
+        var copy = Object.assign({}, round);
+        if (Array.isArray(round.matches)) {
+            copy.matches = round.matches.map(function(match) {
+                return Object.assign({}, match);
+            });
+        }
+        return copy;
+    }
+
     /**
      * Apply the complete proposed state to a match.
      * Used by ALL mutation operations.
@@ -492,6 +402,7 @@
         var changed = false;
         for (var k = 0; k < MATCH_KEYS.length; k++) {
             var key = MATCH_KEYS[k];
+            // Use deep equality to detect changes (simplified)
             if (JSON.stringify(match[key]) !== JSON.stringify(proposed[key])) {
                 match[key] = proposed[key];
                 changed = true;
@@ -500,20 +411,45 @@
         return changed;
     }
 
+    /**
+     * Build a complete proposed tournament state for a match mutation.
+     * Used for all match mutations to ensure atomicity at the tournament level.
+     */
+    function buildProposedTournament(tournament, roundIndex, proposedRound) {
+        var proposed = Object.assign({}, tournament);
+        proposed.rounds = tournament.rounds.map(function(r, idx) {
+            if (idx === roundIndex) {
+                return proposedRound;
+            }
+            return cloneRound(r);
+        });
+        return proposed;
+    }
+
     // ============================================================
     // MATCH API
     // ============================================================
 
     var TournamentsMatches = {
+        /**
+         * Add a match to a round.
+         * Uses build-validate-apply pipeline with tournament-level validation.
+         * 
+         * @param {string} tournamentId - Tournament ID
+         * @param {number} roundIndex - Index of the round
+         * @param {object} matchData - Match data
+         * @returns {object|null} Defensive copy of the created match
+         */
         addMatch: function(tournamentId, roundIndex, matchData) {
             if (!isObject(matchData)) return null;
 
-            var tournament = getValidTournament(tournamentId);
+            var tournament = getTournamentWithRounds(tournamentId);
             if (!tournament) return null;
 
             var round = getMutableRound(tournament, roundIndex);
             if (!round) return null;
 
+            // Validate existing tournament structure
             var structureValidation = Schema.validateTournament(tournament, { strict: true });
             if (!structureValidation.valid) return null;
 
@@ -528,28 +464,49 @@
                 results: {}
             };
 
-            var proposed = buildProposedMatch(base, matchData, tournament, round);
-            if (proposed === null) return null;
+            var proposedMatch = buildProposedMatch(base, matchData, tournament, round);
+            if (proposedMatch === null) return null;
 
-            var validation = validateProposedMatch(proposed, tournament, round, -1);
+            var validation = validateProposedMatch(proposedMatch, tournament, round, -1);
             if (!validation.valid) return null;
 
-            round.matches.push(proposed);
+            // ---- BUILD PROPOSED TOURNAMENT STATE ----
+            var proposedRound = cloneRound(round);
+            proposedRound.matches.push(proposedMatch);
+
+            var proposedTournament = buildProposedTournament(tournament, roundIndex, proposedRound);
+
+            // ---- VALIDATE PROPOSED TOURNAMENT ----
+            var tournValidation = Schema.validateTournament(proposedTournament, { strict: true });
+            if (!tournValidation.valid) return null;
+
+            // ---- APPLY ----
+            round.matches.push(proposedMatch);
 
             if (typeof window.logActivity === 'function') {
                 window.logActivity('Added match to round ' + (round.roundNumber || roundIndex + 1) + ' of tournament: ' + tournament.name);
             }
 
-            return cloneMatch(proposed);
+            return cloneMatch(proposedMatch);
         },
 
+        /**
+         * Remove a match from a round.
+         * Uses build-validate-apply pipeline with tournament-level validation.
+         * 
+         * @param {string} tournamentId - Tournament ID
+         * @param {number} roundIndex - Index of the round
+         * @param {number} matchIndex - Index of the match to remove
+         * @returns {boolean} Success
+         */
         removeMatch: function(tournamentId, roundIndex, matchIndex) {
-            var tournament = getValidTournament(tournamentId);
+            var tournament = getTournamentWithRounds(tournamentId);
             if (!tournament) return false;
 
             var round = getMutableRound(tournament, roundIndex);
             if (!round) return false;
 
+            // Validate existing tournament structure
             var structureValidation = Schema.validateTournament(tournament, { strict: true });
             if (!structureValidation.valid) return false;
 
@@ -558,7 +515,24 @@
 
             if (match.status === 'completed') return false;
 
-            round.matches.splice(matchIndex, 1);
+            // ---- BUILD PROPOSED STATE ----
+            var proposedMatches = round.matches
+                .map(cloneMatch)
+                .filter(function(_, idx) {
+                    return idx !== matchIndex;
+                });
+
+            var proposedRound = cloneRound(round);
+            proposedRound.matches = proposedMatches;
+
+            var proposedTournament = buildProposedTournament(tournament, roundIndex, proposedRound);
+
+            // ---- VALIDATE PROPOSED TOURNAMENT ----
+            var tournValidation = Schema.validateTournament(proposedTournament, { strict: true });
+            if (!tournValidation.valid) return false;
+
+            // ---- APPLY ----
+            round.matches = proposedMatches;
 
             if (typeof window.logActivity === 'function') {
                 window.logActivity('Removed match from round ' + (round.roundNumber || roundIndex + 1) + ' of tournament: ' + tournament.name);
@@ -567,15 +541,26 @@
             return true;
         },
 
+        /**
+         * Update a match.
+         * Uses build-validate-apply pipeline with tournament-level validation.
+         * 
+         * @param {string} tournamentId - Tournament ID
+         * @param {number} roundIndex - Index of the round
+         * @param {number} matchIndex - Index of the match to update
+         * @param {object} updates - Updates to apply
+         * @returns {object|null} Defensive copy of the updated match
+         */
         updateMatch: function(tournamentId, roundIndex, matchIndex, updates) {
             if (!isObject(updates)) return null;
 
-            var tournament = getValidTournament(tournamentId);
+            var tournament = getTournamentWithRounds(tournamentId);
             if (!tournament) return null;
 
             var round = getMutableRound(tournament, roundIndex);
             if (!round) return null;
 
+            // Validate existing tournament structure
             var structureValidation = Schema.validateTournament(tournament, { strict: true });
             if (!structureValidation.valid) return null;
 
@@ -584,28 +569,57 @@
 
             if (match.status === 'completed') return null;
 
-            var proposed = buildProposedMatch(match, updates, tournament, round);
-            if (proposed === null) return null;
+            // ---- BUILD PROPOSED MATCH ----
+            var proposedMatch = buildProposedMatch(match, updates, tournament, round);
+            if (proposedMatch === null) return null;
 
-            var validation = validateProposedMatch(proposed, tournament, round, matchIndex);
+            var validation = validateProposedMatch(proposedMatch, tournament, round, matchIndex);
             if (!validation.valid) return null;
 
-            var changed = applyProposedMatch(match, proposed);
+            // ---- BUILD PROPOSED TOURNAMENT STATE ----
+            var proposedRound = cloneRound(round);
+            proposedRound.matches = round.matches.map(function(m, idx) {
+                if (idx === matchIndex) {
+                    return proposedMatch;
+                }
+                return cloneMatch(m);
+            });
 
-            if (changed && typeof window.logActivity === 'function') {
+            var proposedTournament = buildProposedTournament(tournament, roundIndex, proposedRound);
+
+            // ---- VALIDATE PROPOSED TOURNAMENT ----
+            var tournValidation = Schema.validateTournament(proposedTournament, { strict: true });
+            if (!tournValidation.valid) return null;
+
+            // ---- APPLY ----
+            applyProposedMatch(match, proposedMatch);
+
+            if (typeof window.logActivity === 'function') {
                 window.logActivity('Updated match in round ' + (round.roundNumber || roundIndex + 1) + ' of tournament: ' + tournament.name);
             }
 
             return cloneMatch(match);
         },
 
+        /**
+         * Complete a match.
+         * Uses build-validate-apply pipeline with tournament-level validation.
+         * 
+         * @param {string} tournamentId - Tournament ID
+         * @param {number} roundIndex - Index of the round
+         * @param {number} matchIndex - Index of the match to complete
+         * @param {string|null} winnerId - Winner ID (standard matches)
+         * @param {object|null} results - Results (group exam matches)
+         * @returns {object|null} Defensive copy of the completed match
+         */
         completeMatch: function(tournamentId, roundIndex, matchIndex, winnerId, results) {
-            var tournament = getValidTournament(tournamentId);
+            var tournament = getTournamentWithRounds(tournamentId);
             if (!tournament) return null;
 
             var round = getMutableRound(tournament, roundIndex);
             if (!round) return null;
 
+            // Validate existing tournament structure
             var structureValidation = Schema.validateTournament(tournament, { strict: true });
             if (!structureValidation.valid) return null;
 
@@ -617,6 +631,9 @@
             var updates = { status: 'completed' };
 
             if (match.type === 'standard') {
+                if (winnerId === undefined || winnerId === null) {
+                    return null;
+                }
                 var winnerNormalised = normaliseReject(winnerId);
                 if (winnerNormalised === null) return null;
                 if (match.participants.indexOf(winnerNormalised) === -1) return null;
@@ -627,19 +644,37 @@
                 if (!results || !isObject(results) || Object.keys(results).length === 0) return null;
                 var normalisedResults = normaliseResultsStrict(results);
                 if (normalisedResults === null) return null;
+                // All participants must have results
                 for (var i = 0; i < match.participants.length; i++) {
                     if (!normalisedResults[match.participants[i]]) return null;
                 }
                 updates.results = normalisedResults;
             }
 
-            var proposed = buildProposedMatch(match, updates, tournament, round);
-            if (proposed === null) return null;
+            // ---- BUILD PROPOSED MATCH ----
+            var proposedMatch = buildProposedMatch(match, updates, tournament, round);
+            if (proposedMatch === null) return null;
 
-            var validation = validateProposedMatch(proposed, tournament, round, matchIndex);
+            var validation = validateProposedMatch(proposedMatch, tournament, round, matchIndex);
             if (!validation.valid) return null;
 
-            applyProposedMatch(match, proposed);
+            // ---- BUILD PROPOSED TOURNAMENT STATE ----
+            var proposedRound = cloneRound(round);
+            proposedRound.matches = round.matches.map(function(m, idx) {
+                if (idx === matchIndex) {
+                    return proposedMatch;
+                }
+                return cloneMatch(m);
+            });
+
+            var proposedTournament = buildProposedTournament(tournament, roundIndex, proposedRound);
+
+            // ---- VALIDATE PROPOSED TOURNAMENT ----
+            var tournValidation = Schema.validateTournament(proposedTournament, { strict: true });
+            if (!tournValidation.valid) return null;
+
+            // ---- APPLY ----
+            applyProposedMatch(match, proposedMatch);
 
             if (typeof window.logActivity === 'function') {
                 window.logActivity('Completed match in round ' + (round.roundNumber || roundIndex + 1) + ' of tournament: ' + tournament.name);
@@ -648,6 +683,17 @@
             return cloneMatch(match);
         },
 
+        /**
+         * Set a group exam result.
+         * Uses build-validate-apply pipeline with tournament-level validation.
+         * 
+         * @param {string} tournamentId - Tournament ID
+         * @param {number} roundIndex - Index of the round
+         * @param {number} matchIndex - Index of the match
+         * @param {string} participantId - Participant ID
+         * @param {string} result - 'pass' or 'fail'
+         * @returns {object|null} Defensive copy of the updated match
+         */
         setGroupExamResult: function(tournamentId, roundIndex, matchIndex, participantId, result) {
             var participantNormalised = normaliseReject(participantId);
             if (participantNormalised === null) return null;
@@ -655,12 +701,13 @@
             if (!result) return null;
             if (result !== 'pass' && result !== 'fail') return null;
 
-            var tournament = getValidTournament(tournamentId);
+            var tournament = getTournamentWithRounds(tournamentId);
             if (!tournament) return null;
 
             var round = getMutableRound(tournament, roundIndex);
             if (!round) return null;
 
+            // Validate existing tournament structure
             var structureValidation = Schema.validateTournament(tournament, { strict: true });
             if (!structureValidation.valid) return null;
 
@@ -680,13 +727,30 @@
             };
             updates.results[participantNormalised] = result;
 
-            var proposed = buildProposedMatch(match, updates, tournament, round);
-            if (proposed === null) return null;
+            // ---- BUILD PROPOSED MATCH ----
+            var proposedMatch = buildProposedMatch(match, updates, tournament, round);
+            if (proposedMatch === null) return null;
 
-            var validation = validateProposedMatch(proposed, tournament, round, matchIndex);
+            var validation = validateProposedMatch(proposedMatch, tournament, round, matchIndex);
             if (!validation.valid) return null;
 
-            applyProposedMatch(match, proposed);
+            // ---- BUILD PROPOSED TOURNAMENT STATE ----
+            var proposedRound = cloneRound(round);
+            proposedRound.matches = round.matches.map(function(m, idx) {
+                if (idx === matchIndex) {
+                    return proposedMatch;
+                }
+                return cloneMatch(m);
+            });
+
+            var proposedTournament = buildProposedTournament(tournament, roundIndex, proposedRound);
+
+            // ---- VALIDATE PROPOSED TOURNAMENT ----
+            var tournValidation = Schema.validateTournament(proposedTournament, { strict: true });
+            if (!tournValidation.valid) return null;
+
+            // ---- APPLY ----
+            applyProposedMatch(match, proposedMatch);
 
             if (typeof window.logActivity === 'function') {
                 window.logActivity('Set group exam result for participant in tournament: ' + tournament.name);
@@ -695,16 +759,27 @@
             return cloneMatch(match);
         },
 
+        /**
+         * Set a match winner.
+         * Uses build-validate-apply pipeline with tournament-level validation.
+         * 
+         * @param {string} tournamentId - Tournament ID
+         * @param {number} roundIndex - Index of the round
+         * @param {number} matchIndex - Index of the match
+         * @param {string} winnerId - Winner ID
+         * @returns {object|null} Defensive copy of the updated match
+         */
         setMatchWinner: function(tournamentId, roundIndex, matchIndex, winnerId) {
             var winnerNormalised = normaliseReject(winnerId);
             if (winnerNormalised === null) return null;
 
-            var tournament = getValidTournament(tournamentId);
+            var tournament = getTournamentWithRounds(tournamentId);
             if (!tournament) return null;
 
             var round = getMutableRound(tournament, roundIndex);
             if (!round) return null;
 
+            // Validate existing tournament structure
             var structureValidation = Schema.validateTournament(tournament, { strict: true });
             if (!structureValidation.valid) return null;
 
@@ -720,13 +795,31 @@
             if (!validateParticipant(tournament, winnerNormalised, expectedType)) return null;
 
             var updates = { winner: winnerNormalised };
-            var proposed = buildProposedMatch(match, updates, tournament, round);
-            if (proposed === null) return null;
 
-            var validation = validateProposedMatch(proposed, tournament, round, matchIndex);
+            // ---- BUILD PROPOSED MATCH ----
+            var proposedMatch = buildProposedMatch(match, updates, tournament, round);
+            if (proposedMatch === null) return null;
+
+            var validation = validateProposedMatch(proposedMatch, tournament, round, matchIndex);
             if (!validation.valid) return null;
 
-            applyProposedMatch(match, proposed);
+            // ---- BUILD PROPOSED TOURNAMENT STATE ----
+            var proposedRound = cloneRound(round);
+            proposedRound.matches = round.matches.map(function(m, idx) {
+                if (idx === matchIndex) {
+                    return proposedMatch;
+                }
+                return cloneMatch(m);
+            });
+
+            var proposedTournament = buildProposedTournament(tournament, roundIndex, proposedRound);
+
+            // ---- VALIDATE PROPOSED TOURNAMENT ----
+            var tournValidation = Schema.validateTournament(proposedTournament, { strict: true });
+            if (!tournValidation.valid) return null;
+
+            // ---- APPLY ----
+            applyProposedMatch(match, proposedMatch);
 
             if (typeof window.logActivity === 'function') {
                 window.logActivity('Set match winner in tournament: ' + tournament.name);
@@ -740,7 +833,7 @@
         // ============================================================
 
         getRoundMatches: function(tournamentId, roundIndex) {
-            var tournament = getValidTournament(tournamentId);
+            var tournament = getTournamentWithRounds(tournamentId);
             if (!tournament) return [];
 
             var round = getRound(tournament, roundIndex);
@@ -750,7 +843,7 @@
         },
 
         getMatch: function(tournamentId, roundIndex, matchIndex) {
-            var tournament = getValidTournament(tournamentId);
+            var tournament = getTournamentWithRounds(tournamentId);
             if (!tournament) return null;
 
             var round = getRound(tournament, roundIndex);
@@ -804,6 +897,26 @@
             }
 
             return [];
+        },
+
+        // ============================================================
+        // VALIDATION HELPERS
+        // ============================================================
+
+        /**
+         * Validate a match object against the schema.
+         * Returns { valid: boolean, errors: array }
+         */
+        validateMatch: function(match, tournament, strict, round) {
+            return Schema.validateMatch(match, tournament, strict, round);
+        },
+
+        /**
+         * Get the week range for validation.
+         * Returns { min: number, max: number }
+         */
+        getWeekRange: function() {
+            return { min: MIN_WEEK, max: MAX_WEEK };
         }
     };
 
@@ -813,6 +926,7 @@
 
     window.TournamentsMatches = TournamentsMatches;
 
+    // Delegate to Core for backward compatibility
     if (window.TournamentsCore) {
         window.TournamentsCore.addMatch = TournamentsMatches.addMatch;
         window.TournamentsCore.removeMatch = TournamentsMatches.removeMatch;
