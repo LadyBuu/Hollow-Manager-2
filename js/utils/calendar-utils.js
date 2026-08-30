@@ -8,15 +8,17 @@
  *   - Week calculations (based on a consistent day-of-year model)
  *   - Time slot utilities
  *   - Date comparison helpers
- *   - Schedule validation helpers
+ *   - Schedule validation helpers (DELEGATES to CurriculumValidators)
  *   - Schedule key generation
  *   - Ranking block calculations
  * 
  * IMPORTANT:
  *   - All functions are PURE: no side effects, no data mutation
  *   - No DOM manipulation
- *   - No dependencies on window.data or CoreUtils
+ *   - No dependencies on window.data
  *   - Safe for use in any context
+ *   - Validation functions DELEGATE to CurriculumValidators
+ *   - This is the SINGLE SOURCE OF TRUTH for calendar display utilities
  * 
  * WEEK MODEL:
  *   - Week 1 = days 1-7 of the year
@@ -44,9 +46,9 @@
  *   - Blocks are pairs of weeks: weeks 1-2 = block 1, weeks 3-4 = block 2, etc.
  *   - This is used for UI grouping of ranking periods
  * 
- * NOTE: Period parsing functions (parseOptionalPeriod, parsePositivePeriod,
- * parseStrictPositivePeriod, hasPeriodValue, getPeriodInfo) have been moved
- * to core-utils.js. Use CoreUtils.* for those.
+ * DEPENDENCIES:
+ *   - CurriculumValidators (for validation functions)
+ *   - If CurriculumValidators is not available, validation functions return null
  */
 
 (function() {
@@ -82,6 +84,12 @@
     var DAYS_IN_WEEK = 7;
     var CALENDAR_START_HOUR = 5;
     var CALENDAR_END_HOUR = 23;
+
+    // ============================================================
+    // DEPENDENCY: CurriculumValidators
+    // ============================================================
+
+    var Validators = window.CurriculumValidators;
 
     // ============================================================
     // HELPER: Canonical year normalisation
@@ -321,9 +329,25 @@
     // WEEK HELPERS - Consistent day-of-year model
     // ============================================================
 
+    /**
+     * Validate a week number.
+     * Delegates to CurriculumValidators if available.
+     * Fallback validation if validators are not loaded.
+     */
     function validateWeek(week) {
+        if (Validators && typeof Validators.validateWeek === 'function') {
+            return Validators.validateWeek(week);
+        }
+
+        // Fallback validation
+        if (week === undefined || week === null || week === '') {
+            return null;
+        }
         var num = Number(week);
-        return Number.isInteger(num) && num >= 1 ? num : null;
+        if (!Number.isInteger(num) || num < 1 || num > 52) {
+            return null;
+        }
+        return num;
     }
 
     function getWeekLabel(week) {
@@ -496,12 +520,13 @@
     }
 
     // ============================================================
-    // SCHEDULE SLOT VALIDATION - Shared setter validation
+    // SCHEDULE SLOT VALIDATION - DELEGATES TO CURRICULUMVALIDATORS
     // ============================================================
 
     /**
      * Validate a schedule slot for setters.
      * Returns normalised, validated values on success.
+     * DELEGATES to CurriculumValidators for core validation.
      * 
      * @param {string} studentId - The student's ID
      * @param {number|string} week - The week number (must be 1-52)
@@ -512,36 +537,44 @@
      *   Failure: { success: false, message: string }
      */
     function validateScheduleSlot(studentId, week, day, hour) {
-        // This function depends on CoreUtils.parseStrictPositivePeriod
-        // If CoreUtils is not available, use internal parse
-        var parseStrict;
-        if (window.CoreUtils && typeof window.CoreUtils.parseStrictPositivePeriod === 'function') {
-            parseStrict = window.CoreUtils.parseStrictPositivePeriod;
-        } else {
-            // Fallback internal parser
-            parseStrict = function(value) {
-                if (value === undefined || value === null || value === '') {
-                    return null;
-                }
-                var str = String(value).trim();
-                if (!/^\d+$/.test(str)) {
-                    return null;
-                }
-                var parsed = Number(str);
-                if (!Number.isSafeInteger(parsed) || parsed < 1) {
-                    return null;
-                }
-                return parsed;
+        // Use CurriculumValidators if available
+        if (Validators) {
+            var weekNum = Validators.validateWeek(week);
+            if (weekNum === null) {
+                return { success: false, message: 'Valid week is required (1-52).' };
+            }
+
+            if (!Validators.isNonEmptyString(studentId)) {
+                return { success: false, message: 'Student ID is required.' };
+            }
+
+            var dayNum = Number(day);
+            if (!Number.isInteger(dayNum) || dayNum < 1 || dayNum > 7) {
+                return { success: false, message: 'Valid day is required (1-7).' };
+            }
+
+            var hourNum = Number(hour);
+            if (!Number.isInteger(hourNum) || hourNum < 0 || hourNum > 23) {
+                return { success: false, message: 'Valid hour is required (0-23).' };
+            }
+
+            return {
+                success: true,
+                studentId: String(studentId).trim(),
+                week: weekNum,
+                day: String(dayNum),
+                hour: String(hourNum)
             };
         }
 
+        // Fallback validation if CurriculumValidators not available
         if (studentId === undefined || studentId === null || String(studentId).trim() === '') {
             return { success: false, message: 'Student ID is required.' };
         }
         var normalisedStudentId = String(studentId).trim();
         
-        var weekNum = parseStrict(week);
-        if (weekNum === null || weekNum < 1 || weekNum > 52) {
+        var weekNum = Number(week);
+        if (!Number.isInteger(weekNum) || weekNum < 1 || weekNum > 52) {
             return { success: false, message: 'Valid week is required (1-52).' };
         }
         
@@ -852,7 +885,7 @@
     }
 
     // ============================================================
-    // VALIDATION HELPERS
+    // VALIDATION HELPERS - DELEGATE TO CURRICULUMVALIDATORS
     // ============================================================
 
     function isValidDay(day) {
@@ -863,7 +896,15 @@
         return Number.isInteger(hour) && hour >= 0 && hour <= 23;
     }
 
+    /**
+     * Validate duration (1-4 hours).
+     * Delegates to CurriculumValidators if available.
+     */
     function isValidDuration(duration) {
+        if (Validators && typeof Validators.parsePositiveInteger === 'function') {
+            var num = Validators.parsePositiveInteger(duration);
+            return num !== null && num >= 1 && num <= 4;
+        }
         return Number.isInteger(duration) && duration >= 1 && duration <= 4;
     }
 
@@ -889,7 +930,17 @@
         return { day: day, hour: hour };
     }
 
+    /**
+     * Validate duration (1-4 hours).
+     * Returns the validated duration or null.
+     * Delegates to CurriculumValidators if available.
+     */
     function validateDuration(value) {
+        if (Validators && typeof Validators.parsePositiveInteger === 'function') {
+            var num = Validators.parsePositiveInteger(value);
+            return num !== null && num >= 1 && num <= 4 ? num : null;
+        }
+
         var num = Number(value);
         return Number.isInteger(num) && num >= 1 && num <= 4 ? num : null;
     }
