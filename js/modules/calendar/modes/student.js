@@ -16,6 +16,7 @@
  *   - Duration metadata is respected for availability calculations
  *   - Student schedules are the canonical source of truth
  *   - UI-level overlap detection is a guardrail; core is authoritative
+ *   - All core functions are from the curriculum modules
  */
 
 (function() {
@@ -61,16 +62,25 @@
     function checkDependencies() {
         var missing = [];
 
-        if (typeof window.getStudentSchedule !== 'function') {
-            missing.push('getStudentSchedule');
-        }
-
+        // Query functions from curriculum modules
         if (typeof window.getStudents !== 'function') {
             missing.push('getStudents');
         }
 
         if (typeof window.getDisplayName !== 'function') {
             missing.push('getDisplayName');
+        }
+
+        if (typeof window.getCharacterById !== 'function') {
+            missing.push('getCharacterById');
+        }
+
+        if (typeof window.getStudentSchedule !== 'function') {
+            missing.push('getStudentSchedule');
+        }
+
+        if (typeof window.getStudentRestDays !== 'function') {
+            missing.push('getStudentRestDays');
         }
 
         if (typeof window.getAvailableDisciplines !== 'function') {
@@ -81,22 +91,7 @@
             missing.push('getDiscipline');
         }
 
-        if (typeof window.getStudentRestDays !== 'function') {
-            missing.push('getStudentRestDays');
-        }
-
-        if (typeof window.setStudentRestDays !== 'function') {
-            missing.push('setStudentRestDays');
-        }
-
-        if (typeof window.addStudentScheduleClass !== 'function') {
-            missing.push('addStudentScheduleClass');
-        }
-
-        if (typeof window.removeStudentScheduleClass !== 'function') {
-            missing.push('removeStudentScheduleClass');
-        }
-
+        // Metadata functions from curriculum modules
         if (typeof window.getClassInstructor !== 'function') {
             missing.push('getClassInstructor');
         }
@@ -113,12 +108,22 @@
             missing.push('getClassGroupLabel');
         }
 
-        if (typeof window.saveData !== 'function') {
-            missing.push('saveData');
+        // Mutation functions from curriculum modules
+        if (typeof window.setStudentScheduleClass !== 'function') {
+            missing.push('setStudentScheduleClass');
         }
 
-        if (typeof window.getCharacterById !== 'function') {
-            missing.push('getCharacterById');
+        if (typeof window.removeStudentScheduleClass !== 'function') {
+            missing.push('removeStudentScheduleClass');
+        }
+
+        if (typeof window.setStudentRestDays !== 'function') {
+            missing.push('setStudentRestDays');
+        }
+
+        // Persistence
+        if (typeof window.saveData !== 'function') {
+            missing.push('saveData');
         }
 
         if (missing.length > 0) {
@@ -324,7 +329,8 @@
                     ? discipline.instructorIds[0]
                     : null;
 
-                var result = window.addStudentScheduleClass(
+                // Use the curriculum module function
+                var result = window.setStudentScheduleClass(
                     studentId,
                     week,
                     day,
@@ -423,6 +429,7 @@
     // ============================================================
 
     function removeClass(studentId, week, day, hour, container) {
+        // Use the curriculum module function
         var result = window.removeStudentScheduleClass(studentId, week, day, hour);
 
         if (!result || !result.success) {
@@ -555,7 +562,8 @@
                     ? discipline.instructorIds[0]
                     : null;
 
-                var result = window.addStudentScheduleClass(
+                // Use the curriculum module function
+                var result = window.setStudentScheduleClass(
                     studentId,
                     week,
                     day,
