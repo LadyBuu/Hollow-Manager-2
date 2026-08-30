@@ -9,7 +9,8 @@
  *   - Tab switching coordination
  *   - Global render coordination
  *   - Activity logging (without hidden persistence)
- *   - Data readiness coordination with character system
+ *   - Data readiness coordination with TabManager
+ *   - Centralized error handling for data loading
  * 
  * IMPORTANT: logActivity() does NOT persist the entire dataset.
  * It only updates in-memory state. The caller is responsible for saving.
@@ -22,9 +23,10 @@
  *   - window.data (from database.js)
  * 
  * INTEGRATION WITH CHARACTER SYSTEM:
- *   - Listens for 'dataReady' event to coordinate character module loading
+ *   - Listens for 'dataReady' event to coordinate tab rendering
  *   - Provides global error handling for data failures
  *   - Notification system integration for user feedback
+ *   - Proper initialization ordering with TabManager
  */
 
 (function() {
@@ -63,6 +65,7 @@
         if (toggle._burgerInitialized) return;
         toggle._burgerInitialized = true;
         
+        // Toggle menu on button click
         toggle.addEventListener('click', function(e) {
             e.stopPropagation();
             var isOpen = nav.classList.toggle('open');
@@ -90,6 +93,18 @@
                 }
             }
         });
+
+        // Close menu when a nav link is clicked
+        nav.querySelectorAll('a').forEach(function(link) {
+            link.addEventListener('click', function() {
+                nav.classList.remove('open');
+                toggle.classList.remove('open');
+                toggle.textContent = '☰';
+                if (actions) {
+                    actions.classList.remove('open');
+                }
+            });
+        });
     }
 
     // ============================================================
@@ -99,18 +114,18 @@
     function renderAll() {
         var currentTab = 'dashboard';
         
-        if (
-            window.TabManager &&
-            typeof window.TabManager.getCurrentTab === 'function'
-        ) {
+        if (window.TabManager && typeof window.TabManager.getCurrentTab === 'function') {
             currentTab = window.TabManager.getCurrentTab();
         }
         
-        if (
-            window.TabManager &&
-            typeof window.TabManager.forceRefresh === 'function'
-        ) {
+        if (window.TabManager && typeof window.TabManager.forceRefresh === 'function') {
             window.TabManager.forceRefresh(currentTab);
+        } else if (window.renderDashboard) {
+            // Fallback: just render dashboard
+            var tab = document.getElementById('tab-dashboard');
+            if (tab) {
+                window.renderDashboard(tab);
+            }
         }
     }
 
@@ -142,7 +157,7 @@
     }
 
     // ============================================================
-    // DATA READY HANDLER - Coordinates character system loading
+    // DATA READY HANDLER - Coordinates tab system loading
     // ============================================================
 
     function handleDataReady(e) {
@@ -165,18 +180,35 @@
 
     function handleDataSuccess(data) {
         // Data is already in window.data from database.js
-        // Just notify the user and refresh the current tab
-        
+        // Notify TabManager that data is ready
+        if (window.TabManager) {
+            // If TabManager has onDataReady method, call it
+            if (typeof window.TabManager.onDataReady === 'function') {
+                window.TabManager.onDataReady();
+            } 
+            // Otherwise, set data ready state directly
+            else if (window.TabManager._state) {
+                window.TabManager._state.isDataReady = true;
+                // Refresh current tab if initialized
+                if (window.TabManager.isInitialized) {
+                    window.TabManager.refreshCurrent();
+                }
+            }
+        }
+
+        // Render dashboard
         var tab = document.getElementById('tab-dashboard');
         if (tab && window.renderDashboard) {
             window.renderDashboard(tab);
         }
-        
-        // Refresh current tab if TabManager is ready
-        if (window.TabManager && typeof window.TabManager.refreshCurrent === 'function') {
-            setTimeout(function() {
-                window.TabManager.refreshCurrent();
-            }, 50);
+
+        // Log success (don't use console.log in production, but this is helpful)
+        if (data) {
+            var msg = 'Data loaded successfully. ';
+            msg += (data.characters ? data.characters.length : 0) + ' characters, ';
+            msg += (data.teams ? data.teams.length : 0) + ' teams, ';
+            msg += (data.tournaments ? data.tournaments.length : 0) + ' tournaments.';
+            console.info(msg);
         }
     }
 
@@ -193,12 +225,14 @@
         } else if (window.showToast) {
             window.showToast(message, 'error');
         } else {
-            // Fallback
+            // Fallback: show in dashboard
             var el = document.getElementById('tab-dashboard');
             if (el) {
-                el.innerHTML = '<p class="empty-state" style="color:var(--danger);">' + message + '</p>';
+                el.innerHTML = '<p class="empty-state" style="color:var(--danger);padding:20px;">' + message + '</p>';
             }
         }
+        
+        console.error('Data loading failed:', error);
     }
 
     // ============================================================
@@ -218,16 +252,7 @@
         
         // Close menu when tab changes
         document.addEventListener('tabChanged', function() {
-            var nav = document.getElementById('main-nav');
-            var toggle = document.getElementById('nav-toggle');
-            var actions = document.getElementById('header-actions');
-            
-            if (nav) nav.classList.remove('open');
-            if (toggle) {
-                toggle.classList.remove('open');
-                toggle.textContent = '☰';
-            }
-            if (actions) actions.classList.remove('open');
+            closeMobileNav();
         });
         
         // Resize handler - closes mobile menu on desktop
@@ -236,18 +261,7 @@
             clearTimeout(resizeTimeout);
             resizeTimeout = setTimeout(function() {
                 if (window.innerWidth >= UI.MOBILE_BREAKPOINT) {
-                    var nav = document.getElementById('main-nav');
-                    var toggle = document.getElementById('nav-toggle');
-                    var actions = document.getElementById('header-actions');
-                    
-                    if (nav) nav.classList.remove('open');
-                    if (toggle) {
-                        toggle.classList.remove('open');
-                        toggle.textContent = '☰';
-                    }
-                    if (actions) {
-                        actions.classList.remove('open');
-                    }
+                    closeMobileNav();
                 }
             }, UI.DEBOUNCE_DELAY);
         });
@@ -263,6 +277,25 @@
                 }, 10);
             }
         }
+
+        console.info('App initialized');
+    }
+
+    // ============================================================
+    // NAVIGATION HELPERS
+    // ============================================================
+
+    function closeMobileNav() {
+        var nav = document.getElementById('main-nav');
+        var toggle = document.getElementById('nav-toggle');
+        var actions = document.getElementById('header-actions');
+        
+        if (nav) nav.classList.remove('open');
+        if (toggle) {
+            toggle.classList.remove('open');
+            toggle.textContent = '☰';
+        }
+        if (actions) actions.classList.remove('open');
     }
 
     // ============================================================
@@ -273,6 +306,7 @@
     window.logActivity = logActivity;
     window.initBurgerMenu = initBurgerMenu;
     window.initApp = initApp;
+    window.closeMobileNav = closeMobileNav;
 
     // ============================================================
     // AUTO-INIT - No arbitrary delay
