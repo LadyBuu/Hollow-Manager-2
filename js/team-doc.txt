@@ -1,0 +1,1375 @@
+================================================================================
+                    HOLLOW BLADES - TEAM MODULES
+                    Complete Architecture Documentation
+================================================================================
+
+TABLE OF CONTENTS
+─────────────────
+1.  Architecture Overview
+2.  Module Descriptions
+3.  Dependency Graph
+4.  API Reference
+5.  Data Structures
+6.  Constants Usage
+7.  Persistence Contract
+8.  Security Contract
+9.  Migration Guide
+10. Error Handling
+11. Testing Strategy
+
+
+================================================================================
+1. ARCHITECTURE OVERVIEW
+================================================================================
+
+The team modules follow a domain-driven design with clear separation of concerns.
+Each module has a single, well-defined responsibility.
+
+ARCHITECTURE LAYERS
+───────────────────
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              UI LAYER                                      │
+│  team-manager.js    - Main UI controller, tab rendering, event binding     │
+│  team-modals.js     - Modal dialogs (team form, member modal, ranking)     │
+│  team-render.js     - Pure rendering (data → HTML)                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                           DOMAIN LAYER                                     │
+│  team-core.js       - Canonical mutation API, data validation              │
+│  team-members.js    - Member timeline, eligibility, rendering              │
+│  team-rankings.js   - Ranking domain logic, cache management               │
+│  team-filters.js    - Team filtering semantics                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                           UTILITY LAYER                                    │
+│  constants.js       - Shared constants (CALENDAR, STATUS, ID)              │
+│  core-utils.js      - Domain utilities (getDisplayName, getCharacterById)  │
+│  dom-utils.js       - DOM utilities (escapeHtml, createElement)            │
+│  notification.js    - Toast notification system                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+MUTATION FLOW
+─────────────
+
+User Action
+    ↓
+team-manager.js / team-modals.js
+    ↓ (validates UI input)
+team-core.js
+    ↓ (validates domain rules)
+window.data mutation
+    ↓
+team-manager.js calls saveData()
+    ↓
+UI refresh (team-render.js, team-list.js)
+
+
+================================================================================
+2. MODULE DESCRIPTIONS
+================================================================================
+
+TEAM-CORE.JS
+────────────
+
+PURPOSE: Canonical mutation API for all team data operations.
+STATUS: ✅ COMPLETE
+
+RESPONSIBILITIES:
+  - Team CRUD (create, read, update, delete)
+  - Member operations (add, remove, update)
+  - Ranking operations (add, remove, cache management)
+  - Data validation (all mutations are validation-atomic)
+  - Type normalisation (legacy 'internship' → 'professional')
+
+KEY METHODS:
+  - createTeam(teamData) → object|null
+  - getTeam(id) → object|null
+  - getAllTeams() → array
+  - getTeams(type, status) → array
+  - updateTeam(id, updates) → object|null
+  - deleteTeam(id) → boolean
+  - addMember(teamId, memberData) → object|null
+  - removeMember(teamId, charId) → boolean
+  - updateMember(teamId, charId, updates) → object|null
+  - addRanking(teamId, period, rank) → boolean
+  - removeRanking(teamId, period) → boolean
+  - getActiveMembers(team, period) → array
+  - getCurrentRank(team) → string
+  - getSortedRankings(team) → array
+  - getPeriodDisplay(team) → string
+  - getTypeLabel(type) → string
+  - getMemberStatusInfo(status) → { label, color }
+
+INVARIANTS ENFORCED:
+  - No duplicate members per team
+  - Exactly one ranking per period
+  - Ranking periods must be valid for team type
+  - Member periods must be valid for team type
+  - startPeriod <= endPeriod
+  - joinPeriod <= leavePeriod (inclusive semantics)
+  - Type changes rejected if existing members/rankings invalid
+
+PERSISTENCE CONTRACT:
+  - Does NOT call saveData()
+  - Caller is responsible for persistence
+  - Mutations are applied to window.data immediately
+
+DEPENDENCIES:
+  - window.CALENDAR_CONSTANTS
+  - window.STATUS_CONSTANTS
+  - window.ID_CONSTANTS
+  - window.DomUtils
+  - window.CoreUtils
+  - window.logActivity
+
+
+TEAM-MEMBERS.JS
+───────────────
+
+PURPOSE: Historical timeline engine for team members.
+STATUS: ✅ COMPLETE
+
+RESPONSIBILITIES:
+  - Determine member status at any period (historical timeline)
+  - Determine character eligibility for teams
+  - Period-aware candidate selection
+  - Render member lists (returns HTML)
+
+KEY METHODS:
+  - getStatusAtPeriod(member, period, teamType) → string
+  - getStatusAtWeek(member, week) → string
+  - getEligibilityStatus(team, char, currentPeriod) → { label, disabled, style }
+  - getCandidateCharactersAtPeriod(teamType, period) → array
+  - getCandidateCharacters(teamType) → array (current-status based, legacy)
+  - renderList(team, filterPeriod) → string
+  - parseTypedPeriod(value, teamType) → { value, unit } | null
+  - isValidAcademicWeek(value) → boolean
+  - isValidYear(value) → boolean
+
+STATUS VALUES RETURNED:
+  - 'active':   Member is active at this period
+  - 'future':   Member joins at a future period
+  - 'left':     Member has left before this period
+  - 'deceased': Character died at or before this period
+  - 'eliminated': Character eliminated at or before this period
+  - 'unknown':  Membership status cannot be determined
+
+PERIOD SEMANTICS:
+  - Academic teams: periods are weeks (1-52)
+  - Non-academic teams: periods are years (1900-2100)
+  - leavePeriod is INCLUSIVE: member remains active during leavePeriod
+  - joinPeriod is INCLUSIVE: member becomes active at joinPeriod
+
+ELIGIBILITY HIERARCHY:
+  1. If character is already in team → use membership history
+  2. If character is deceased → check death year (only for year-based periods)
+  3. If character is eliminated → check elimination week (only for week-based periods)
+  4. If character is in other team → block (if active or future)
+  5. Otherwise → available
+
+PERSISTENCE CONTRACT:
+  - READ-ONLY: does NOT mutate data
+  - Does NOT call saveData()
+
+DEPENDENCIES:
+  - window.TeamCore
+  - window.CALENDAR_CONSTANTS
+  - window.STATUS_CONSTANTS
+  - window.DomUtils
+  - window.getCharacterById
+  - window.getDisplayName
+  - window.getCurrentStatus
+  - window.getCharacterAge
+
+
+TEAM-RANKINGS.JS
+────────────────
+
+PURPOSE: Ranking domain logic and rendering.
+STATUS: ✅ COMPLETE
+
+RESPONSIBILITIES:
+  - Add ranking entries (enforces one per period)
+  - Remove ranking entries (exact removal)
+  - Maintain currentRank cache
+  - Render ranking lists (returns HTML)
+  - Ranking queries (getRankAtPeriod, getRankChange)
+
+KEY METHODS:
+  - addRanking(teamId, period, rank) → boolean
+  - removeRanking(teamId, period) → boolean
+  - getSortedHistory(team) → array
+  - getCurrentRank(team) → string
+  - getMostRecentRanking(team) → object|null
+  - getSummary(team) → { total, current, mostRecent, history }
+  - hasRankings(team) → boolean
+  - getRankAtPeriod(team, period) → number|null
+  - getRankChange(team, fromPeriod, toPeriod) → { from, to, change } | null
+  - renderList(team) → string
+  - renderSummary(team) → string
+  - isValidPeriod(period, teamType) → boolean
+  - getPeriodRange(teamType) → { min, max, label }
+
+INVARIANTS ENFORCED:
+  - Exactly ONE ranking per period
+  - Ranks must be positive integers
+  - Periods must be valid for team type
+  - Malformed entries filtered at query time
+  - Mutations reject malformed history (fail-closed)
+
+PERSISTENCE CONTRACT:
+  - Does NOT call saveData()
+  - Mutations applied to window.data immediately
+
+DEPENDENCIES:
+  - window.TeamCore
+  - window.CALENDAR_CONSTANTS
+  - window.DomUtils
+  - window.logActivity
+
+
+TEAM-FILTERS.JS
+───────────────
+
+PURPOSE: Team filtering semantics.
+STATUS: ✅ COMPLETE
+
+RESPONSIBILITIES:
+  - Filter teams by type and criteria
+  - Provide default filter values
+  - Read filter values from DOM
+  - Build filter HTML (safe, escaped)
+
+KEY METHODS:
+  - filterTeams(type, filter) → array
+  - getDefaultFilter(type) → object
+  - readFilterFromDOM(type, currentState, domRefs) → object
+  - buildFilterHTML(type, filter, classes) → string
+  - getWeekRange() → { min, max }
+  - getYearRange() → { min, max }
+  - isValidWeek(week) → boolean
+  - isValidYear(year) → boolean
+
+FILTER SEMANTICS:
+  - Academic: Teams active during a specific 2-week block (interval overlap)
+  - Professional: Teams active during a specific year (interval overlap)
+  - Temporary: Teams active during a specific year (interval overlap)
+  - Civilian: All civilian teams (no filtering)
+
+PERIOD SEMANTICS:
+  - Missing startPeriod = active indefinitely from beginning
+  - Missing endPeriod = ongoing (active forever)
+  - Active during = interval overlaps the selected period
+
+PERSISTENCE CONTRACT:
+  - PURE: no mutation, no persistence
+
+DEPENDENCIES:
+  - window.TeamCore
+  - window.CALENDAR_CONSTANTS
+  - window.DomUtils
+  - window.getWeekBlock
+
+
+TEAM-MODALS.JS
+──────────────
+
+PURPOSE: Modal dialogs for team management.
+STATUS: ✅ COMPLETE
+
+RESPONSIBILITIES:
+  - Open/close modal dialogs
+  - Populate modal UI (team form, member modal, ranking modal)
+  - Wire modal-specific event handlers
+  - Delegate domain operations to TeamCore, TeamMembers, TeamRankings
+
+KEY METHODS:
+  - showTeamForm(editId) → void
+  - closeTeamForm() → void
+  - showMemberModal(teamId) → void
+  - closeMemberModal() → void
+  - showEditMemberModal(teamId, charId) → void
+  - closeEditMemberModal() → void
+  - showRankingModal(teamId) → void
+  - closeRankingModal() → void
+  - handleAddMember() → void
+  - handleSaveEditMember(e) → void
+  - handleAddRanking(e) → void
+  - populateMemberCharacterSelect(teamId) → void
+
+MUTATION DELEGATION:
+  - Team mutations → TeamCore.createTeam() / updateTeam() / deleteTeam()
+  - Member mutations → TeamCore.addMember() / removeMember() / updateMember()
+  - Ranking mutations → TeamCore.addRanking() / removeRanking()
+
+PERSISTENCE CONTRACT:
+  - Does NOT call saveData()
+  - Caller (team-manager.js) is responsible for persistence
+
+DEPENDENCIES:
+  - window.TeamCore
+  - window.TeamMembers
+  - window.TeamRankings
+  - window.CALENDAR_CONSTANTS
+  - window.DomUtils
+  - window.NotificationSystem
+  - window.getClasses
+  - window.getDisplayName
+  - window.getCharacterById
+  - window.getCurrentStatus
+
+
+TEAM-RENDER.JS
+──────────────
+
+PURPOSE: Pure rendering functions.
+STATUS: ✅ COMPLETE
+
+RESPONSIBILITIES:
+  - Render a list of teams
+  - Render expanded member sections
+  - Render team cards (compact view)
+  - Render team summaries (dashboard view)
+
+KEY METHODS:
+  - renderList(teams, type, filterPeriod, expandedTeamId) → string
+  - renderExpandedMembers(team, filterPeriod) → string
+  - renderContainer(activeTab) → string
+  - renderTeamCard(team, period) → string
+  - renderTeamSummary(team) → string
+  - getStatusClass(status) → string
+  - getPeriodLabel(teamType) → string
+
+PERSISTENCE CONTRACT:
+  - PURE: no mutation, no persistence
+
+DEPENDENCIES:
+  - window.TeamCore
+  - window.TeamMembers
+  - window.TeamRankings
+  - window.CALENDAR_CONSTANTS
+  - window.DomUtils
+  - window.getDisplayName
+  - window.getCharacterById
+  - window.getCharacterAge
+  - window.getClassDisplayName
+
+
+TEAM-MANAGER.JS
+───────────────
+
+PURPOSE: Main UI controller for team management.
+STATUS: ✅ COMPLETE
+
+RESPONSIBILITIES:
+  - Render team manager UI
+  - Display team lists with filtering
+  - Team CRUD operations (delegates to TeamCore)
+  - Member management (delegates to TeamCore)
+  - Ranking management (delegates to TeamCore)
+  - Modal management for members and rankings
+
+KEY METHODS:
+  - renderTeamManager(container) → void
+  - refreshTeamList() → void
+  - refreshTeamStats() → void
+  - applyFilters(tab) → void
+
+RENDERING PHILOSOPHY:
+  - UI refresh happens IMMEDIATELY after mutation, before persistence
+  - Memory is authoritative, persistence is best-effort
+  - Modals close immediately after successful mutation
+
+PERSISTENCE CONTRACT:
+  - Calls saveData() after mutations
+  - User notified of persistence failures but UI already shows the change
+
+DEPENDENCIES:
+  - window.TeamCore
+  - window.TeamFilters
+  - window.TeamRankings (optional)
+  - window.TeamMembers (optional)
+  - window.saveData
+  - window.logActivity
+  - window.NotificationSystem
+  - window.CALENDAR_CONSTANTS
+  - window.DomUtils
+
+
+================================================================================
+3. DEPENDENCY GRAPH
+================================================================================
+
+LOAD ORDER (MUST BE RESPECTED)
+───────────────────────────────
+
+1.  constants.js                    ← ALL CONSTANTS
+2.  utils/core-utils.js              ← DOMAIN UTILITIES
+3.  utils/dom-utils.js               ← DOM UTILITIES
+4.  utils/notification.js            ← NOTIFICATION
+5.  utils/calendar-utils.js          ← CALENDAR UTILITIES
+6.  core/state.js                    ← UI STATE
+7.  core/database.js                 ← PERSISTENCE
+8.  core/loader.js                   ← DATA LOADING
+9.  core/tab-manager.js              ← TAB NAVIGATION
+    ↓
+10. modules/teams/team-core.js      ← DEPENDENCY: constants.js, core-utils.js
+    ↓
+11. modules/teams/team-filters.js   ← DEPENDENCY: team-core.js
+    ↓
+12. modules/teams/team-members.js   ← DEPENDENCY: team-core.js
+    ↓
+13. modules/teams/team-rankings.js  ← DEPENDENCY: team-core.js
+    ↓
+14. modules/teams/team-modals.js    ← DEPENDENCY: team-core, team-members, team-rankings
+    ↓
+15. modules/teams/team-render.js    ← DEPENDENCY: team-core, team-members, team-rankings
+    ↓
+16. modules/teams/team-manager.js   ← DEPENDENCY: All of the above
+    ↓
+17. app.js                          ← BOOTSTRAPPER
+
+MODULE DEPENDENCY MAP
+─────────────────────
+
+                    ┌─────────────────┐
+                    │   constants.js  │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │   core-utils.js │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │   team-core.js  │
+                    └────┬───────┬────┘
+                         │       │
+          ┌──────────────▼───────▼──────────────┐
+          │              │                      │
+    ┌─────▼─────┐ ┌─────▼─────┐ ┌──────────────▼──────┐
+    │team-members│ │team-rankings│ │    team-filters.js   │
+    └─────┬─────┘ └─────┬─────┘ └──────────────────────┘
+          │             │
+          └──────┬──────┘
+                 │
+          ┌──────▼──────┐
+          │ team-modals │
+          └──────┬──────┘
+                 │
+          ┌──────▼──────┐
+          │ team-render │
+          └──────┬──────┘
+                 │
+          ┌──────▼──────┐
+          │team-manager │
+          └─────────────┘
+
+
+================================================================================
+4. API REFERENCE
+================================================================================
+
+TEAM-CORE API
+─────────────
+
+4.1 createTeam(teamData)
+─────────────────────────
+Create a new team. Atomic: validates all inputs before mutation.
+
+Parameters:
+  teamData (object):
+    - name (string, required): Team name
+    - type (string, optional): 'academic', 'professional', 'temporary', 'civilian' (default: 'academic')
+    - startPeriod (string, optional): Start week/year (empty = open-ended)
+    - endPeriod (string, optional): End week/year (empty = ongoing)
+    - status (string, optional): 'active', 'inactive', 'deprecated' (default: 'active')
+    - nameHistory (array, optional): [{ name, startPeriod, endPeriod }]
+    - classId (string, optional): Academic class ID (academic teams only)
+    - teamNumber (string, optional): Team number (academic teams only)
+    - temporaryMission (string, optional): Associated mission ID
+
+Returns: (object|null) Created team or null if invalid
+
+4.2 getTeam(id)
+───────────────
+Get a team by ID. Returns a LIVE reference. Do not mutate directly.
+
+Parameters:
+  id (string): Team ID
+
+Returns: (object|null) Team object or null
+
+4.3 getAllTeams()
+─────────────────
+Get all teams. Returns a SHALLOW array copy containing live references.
+
+Returns: (array) Array of team objects
+
+4.4 getTeams(type, status)
+──────────────────────────
+Get teams filtered by type and status.
+
+Parameters:
+  type (string, optional): Team type (normalised internally)
+  status (string, optional): 'active', 'inactive', 'deprecated'
+
+Returns: (array) Array of team objects (shallow copy)
+
+4.5 updateTeam(id, updates)
+───────────────────────────
+Update an existing team. Atomic: validates all updates before applying.
+
+Parameters:
+  id (string): Team ID
+  updates (object): Fields to update (same schema as createTeam)
+
+Returns: (object|null) Updated team or null if invalid
+
+4.6 deleteTeam(id)
+──────────────────
+Delete a team permanently. Uses findIndex + splice for exact removal.
+
+Parameters:
+  id (string): Team ID
+
+Returns: (boolean) Success
+
+4.7 addMember(teamId, memberData)
+─────────────────────────────────
+Add a member to a team. Validates all inputs before mutation.
+
+Parameters:
+  teamId (string): Team ID
+  memberData (object):
+    - characterId (string, required): Character ID
+    - role (string, optional): Member role (default: 'Member')
+    - joinPeriod (string, optional): Join week/year
+    - leavePeriod (string, optional): Leave week/year
+
+Returns: (object|null) Added member or null
+
+4.8 removeMember(teamId, charId)
+────────────────────────────────
+Remove a member from a team. Uses findIndex + splice for exact removal.
+
+Parameters:
+  teamId (string): Team ID
+  charId (string): Character ID
+
+Returns: (boolean) Success
+
+4.9 updateMember(teamId, charId, updates)
+──────────────────────────────────────────
+Update a member's details. Atomic: validates complete proposed state.
+
+Parameters:
+  teamId (string): Team ID
+  charId (string): Character ID
+  updates (object): { role, joinPeriod, leavePeriod }
+
+Returns: (object|null) Updated member or null
+
+4.10 addRanking(teamId, period, rank)
+─────────────────────────────────────
+Add a ranking entry. Enforces one ranking per period.
+
+Parameters:
+  teamId (string): Team ID
+  period (string|number): Week (academic) or Year (other types)
+  rank (string|number): Rank number (positive integer)
+
+Returns: (boolean) Success
+
+4.11 removeRanking(teamId, period)
+──────────────────────────────────
+Remove a ranking entry by period. Uses findIndex + splice for exact removal.
+
+Parameters:
+  teamId (string): Team ID
+  period (string|number): Week (academic) or Year (other types)
+
+Returns: (boolean) Success
+
+4.12 getActiveMembers(team, period)
+───────────────────────────────────
+Get active members of a team at a given period.
+
+Parameters:
+  team (object): Team object
+  period (number|string): Week (academic) or Year (other types)
+
+Returns: (array) Array of active members
+
+4.13 getCurrentRank(team)
+─────────────────────────
+Get the current rank for a team. Always recalculates from history.
+
+Parameters:
+  team (object): Team object
+
+Returns: (string) Current rank (empty string if none)
+
+4.14 getSortedRankings(team)
+────────────────────────────
+Get sorted ranking history for a team. Malformed entries filtered out.
+
+Parameters:
+  team (object): Team object
+
+Returns: (array) Sorted ranking history
+
+4.15 getPeriodDisplay(team)
+───────────────────────────
+Get team period display string.
+
+Parameters:
+  team (object): Team object
+
+Returns: (string) Formatted period display (e.g., "Wk 1 - Wk 52", "2020 - 2025")
+
+4.16 getTypeLabel(type)
+───────────────────────
+Get human-readable team type label.
+
+Parameters:
+  type (string): Team type
+
+Returns: (string) Label
+
+4.17 getMemberStatusInfo(status)
+────────────────────────────────
+Get status info for a member.
+
+Parameters:
+  status (string): 'active', 'left', 'deceased', 'eliminated', 'future', 'unknown'
+
+Returns: (object) { label, color }
+
+4.18 getCurrentPeriod(teamType)
+───────────────────────────────
+Get the current period for a team type.
+
+Parameters:
+  teamType (string): Team type
+
+Returns: (number) Current period
+
+
+TEAM-MEMBERS API
+────────────────
+
+4.19 getStatusAtPeriod(member, period, teamType)
+────────────────────────────────────────────────
+Get member status at a specific period.
+
+Parameters:
+  member (object): Member object (characterId, joinPeriod, leavePeriod)
+  period (number|string): Week (academic) or Year (other types)
+  teamType (string): Team type ('academic', 'professional', 'temporary', 'civilian')
+
+Returns: (string) 'active', 'future', 'left', 'deceased', 'eliminated', 'unknown'
+
+4.20 getStatusAtWeek(member, week)
+─────────────────────────────────
+Convenience wrapper for getStatusAtPeriod with academic type.
+
+Parameters:
+  member (object): Member object
+  week (number|string): Week number
+
+Returns: (string) Status
+
+4.21 getEligibilityStatus(team, char, currentPeriod)
+────────────────────────────────────────────────────
+Get eligibility status for a character in a team.
+
+Parameters:
+  team (object): Team object
+  char (object): Character object
+  currentPeriod (number|string): Current period
+
+Returns: (object) { label, disabled, style }
+
+4.22 getCandidateCharactersAtPeriod(teamType, period)
+─────────────────────────────────────────────────────
+Get candidate characters for a team type at a specific period.
+Period-aware: uses historical status, not just current.
+
+Parameters:
+  teamType (string): Team type
+  period (number|string): Period to check
+
+Returns: (array) Array of character objects
+
+4.23 getCandidateCharacters(teamType)
+─────────────────────────────────────
+Get candidate characters for a team type based on CURRENT status.
+⚠️ DEPRECATED: Use getCandidateCharactersAtPeriod() for historical accuracy.
+
+Parameters:
+  teamType (string): Team type
+
+Returns: (array) Array of character objects
+
+4.24 renderList(team, filterPeriod)
+───────────────────────────────────
+Render members list for a team. PURE: returns HTML string.
+
+Parameters:
+  team (object): Team object
+  filterPeriod (number|string): Current period
+
+Returns: (string) HTML string
+
+4.25 parseTypedPeriod(value, teamType)
+──────────────────────────────────────
+Parse a period with type awareness.
+
+Parameters:
+  value (number|string): Period value
+  teamType (string): Team type
+
+Returns: (object|null) { value, unit: 'week'|'year' } or null
+
+
+TEAM-RANKINGS API
+─────────────────
+
+4.26 addRanking(teamId, period, rank)
+─────────────────────────────────────
+Add a ranking entry. Enforces one ranking per period.
+
+Parameters:
+  teamId (string): Team ID
+  period (string|number): Period (week or year)
+  rank (string|number): Rank number (positive integer)
+
+Returns: (boolean) Success
+
+4.27 removeRanking(teamId, period)
+─────────────────────────────────
+Remove a ranking entry by period. Exact removal.
+
+Parameters:
+  teamId (string): Team ID
+  period (string|number): Period to remove
+
+Returns: (boolean) Success
+
+4.28 getSortedHistory(team)
+───────────────────────────
+Get ranking history sorted by period. Malformed entries filtered.
+
+Parameters:
+  team (object): Team object
+
+Returns: (array) Sorted ranking history
+
+4.29 getCurrentRank(team)
+─────────────────────────
+Get the current rank. Always recalculates from history.
+
+Parameters:
+  team (object): Team object
+
+Returns: (string) Current rank (empty string if none)
+
+4.30 getSummary(team)
+─────────────────────
+Get ranking summary.
+
+Parameters:
+  team (object): Team object
+
+Returns: (object) { total, current, mostRecent, history }
+
+4.31 hasRankings(team)
+─────────────────────
+Check if a team has any ranking entries. Uses getSortedHistory().
+
+Parameters:
+  team (object): Team object
+
+Returns: (boolean) True if the team has rankings
+
+4.32 getRankAtPeriod(team, period)
+─────────────────────────────────
+Get the rank at a specific period.
+
+Parameters:
+  team (object): Team object
+  period (string|number): Period to look up
+
+Returns: (number|null) Rank or null
+
+4.33 getRankChange(team, fromPeriod, toPeriod)
+──────────────────────────────────────────────
+Get the change in rank between two periods.
+
+Parameters:
+  team (object): Team object
+  fromPeriod (string|number): Starting period
+  toPeriod (string|number): Ending period
+
+Returns: (object|null) { from, to, change } or null
+
+4.34 isValidPeriod(period, teamType)
+────────────────────────────────────
+Check if a period is valid for a team type.
+
+Parameters:
+  period (string|number): Period to validate
+  teamType (string): Team type
+
+Returns: (boolean) True if valid
+
+4.35 getPeriodRange(teamType)
+─────────────────────────────
+Get the valid period range for a team type.
+
+Parameters:
+  teamType (string): Team type
+
+Returns: (object) { min, max, label, minLabel, maxLabel }
+
+4.36 renderList(team)
+─────────────────────
+Render ranking list for a team. PURE: returns HTML string.
+
+Parameters:
+  team (object): Team object
+
+Returns: (string) HTML string
+
+4.37 renderSummary(team)
+────────────────────────
+Render a ranking summary (compact view).
+
+Parameters:
+  team (object): Team object
+
+Returns: (string) HTML string
+
+
+TEAM-FILTERS API
+────────────────
+
+4.38 filterTeams(type, filter)
+─────────────────────────────
+Filter teams by type and criteria. PURE: operates on shallow copy.
+
+Parameters:
+  type (string): Team type
+  filter (object): Filter options
+    - filterWeek (number): Week for academic teams
+    - filterYear (number): Year for professional/temporary teams
+    - filterStatus (string): 'active' or 'inactive'
+    - filterClass (string): Class ID for academic teams
+
+Returns: (array) Filtered teams
+
+4.39 getDefaultFilter(type)
+───────────────────────────
+Get default filter for a team type.
+
+Parameters:
+  type (string): Team type
+
+Returns: (object) Default filter
+
+4.40 readFilterFromDOM(type, currentState, domRefs)
+───────────────────────────────────────────────────
+Read filter values from the DOM.
+
+Parameters:
+  type (string): Team type
+  currentState (object): Current filter state
+  domRefs (object): DOM element references (optional)
+
+Returns: (object) New filter state
+
+4.41 buildFilterHTML(type, filter, classes)
+───────────────────────────────────────────
+Build filter HTML for a team type. All values escaped.
+
+Parameters:
+  type (string): Team type
+  filter (object): Current filter values
+  classes (array): Available classes for academic filter
+
+Returns: (string) HTML string (safe, escaped)
+
+4.42 getWeekRange()
+───────────────────
+Get the valid week range for academic teams.
+
+Returns: (object) { min, max }
+
+4.43 getYearRange()
+───────────────────
+Get the valid year range for non-academic teams.
+
+Returns: (object) { min, max }
+
+4.44 isValidWeek(week)
+─────────────────────
+Check if a week is valid for academic teams.
+
+Parameters:
+  week (number|string): Week number
+
+Returns: (boolean) True if valid
+
+4.45 isValidYear(year)
+─────────────────────
+Check if a year is valid for non-academic teams.
+
+Parameters:
+  year (number|string): Year
+
+Returns: (boolean) True if valid
+
+
+TEAM-RENDER API
+───────────────
+
+4.46 renderList(teams, type, filterPeriod, expandedTeamId)
+───────────────────────────────────────────────────────────
+Render a list of teams.
+
+Parameters:
+  teams (array): Array of team objects
+  type (string): Team type for labels
+  filterPeriod (number|string): Current period for member filtering
+  expandedTeamId (string): ID of expanded team
+
+Returns: (string) HTML string
+
+4.47 renderExpandedMembers(team, filterPeriod)
+─────────────────────────────────────────────
+Render expanded members section.
+
+Parameters:
+  team (object): Team object
+  filterPeriod (number|string): Current period
+
+Returns: (string) HTML string
+
+4.48 renderContainer(activeTab)
+───────────────────────────────
+Render the team manager container.
+
+Parameters:
+  activeTab (string): Current active tab
+
+Returns: (string) HTML string
+
+4.49 renderTeamCard(team, period)
+─────────────────────────────────
+Render a single team card (compact view).
+
+Parameters:
+  team (object): Team object
+  period (number|string): Current period
+
+Returns: (string) HTML string
+
+4.50 renderTeamSummary(team)
+────────────────────────────
+Render a team summary (dashboard view).
+
+Parameters:
+  team (object): Team object
+
+Returns: (string) HTML string
+
+
+================================================================================
+5. DATA STRUCTURES
+================================================================================
+
+TEAM OBJECT
+───────────
+
+{
+  id: string,                    // Unique identifier
+  name: string,                   // Team name
+  type: string,                   // 'academic', 'professional', 'temporary', 'civilian'
+  startPeriod: string,            // Start week/year (empty = open-ended)
+  endPeriod: string,              // End week/year (empty = ongoing)
+  currentRank: string,            // MATERIALISED CACHE (derived from rankingHistory)
+  status: string,                 // 'active', 'inactive', 'deprecated'
+  nameHistory: [                  // Historical names
+    {
+      name: string,
+      startPeriod: string,
+      endPeriod: string
+    }
+  ],
+  members: [                      // Team members
+    {
+      characterId: string,
+      role: string,
+      joinPeriod: string,
+      leavePeriod: string
+    }
+  ],
+  rankingHistory: [              // AUTHORITATIVE source of truth
+    {
+      period: string,
+      rank: number
+    }
+  ],
+  temporaryMission: string|null,  // Associated mission ID
+  classId: string|null,           // Academic class ID (academic teams only)
+  teamNumber: string,             // Team number (academic teams only)
+  createdAt: string               // ISO 8601 date string
+}
+
+MEMBER OBJECT
+─────────────
+
+{
+  characterId: string,            // Character ID
+  role: string,                   // Member role
+  joinPeriod: string,             // Join week/year (empty = unknown)
+  leavePeriod: string             // Leave week/year (empty = active/ongoing)
+}
+
+RANKING ENTRY
+─────────────
+
+{
+  period: string,                 // Week or year (normalised to string)
+  rank: number                    // Rank number (positive integer)
+}
+
+FILTER OBJECT
+─────────────
+
+{
+  filterWeek: number,             // Academic: current week
+  filterYear: number|string,      // Professional/Temporary: current year
+  filterStatus: string,           // 'active' or 'inactive'
+  filterClass: string             // Academic: class ID filter ('all' for all)
+}
+
+
+================================================================================
+6. CONSTANTS USAGE
+================================================================================
+
+CALENDAR_CONSTANTS (from constants.js)
+─────────────────────────────────────
+
+{
+  MIN_WEEK: 1,
+  MAX_WEEK: 52,
+  MIN_YEAR: 1900,
+  MAX_YEAR: 2100,
+  DEFAULT_YEAR: function() { return new Date().getFullYear(); }
+}
+
+STATUS_CONSTANTS (from constants.js)
+────────────────────────────────────
+
+{
+  VALID_TEAM_STATUSES: ['active', 'inactive', 'deprecated'],
+  STUDENT_STATUSES: ['trainee', 'rookie', 'junior'],
+  INSTRUCTOR_STATUSES: ['instructor', 'teacher', 'professor', 'senior']
+}
+
+ID_CONSTANTS (from constants.js)
+────────────────────────────────
+
+{
+  PREFIXES: {
+    CHARACTER: 'char',
+    TEAM: 'team',
+    CLASS: 'class',
+    LOCATION: 'loc',
+    DISCIPLINE: 'disc',
+    TOURNAMENT: 'tourn',
+    MISSION: 'miss',
+    RELATIONSHIP: 'rel',
+    ELIMINATION: 'elim',
+    ACTIVITY: 'act'
+  }
+}
+
+
+================================================================================
+7. PERSISTENCE CONTRACT
+================================================================================
+
+GENERAL PRINCIPLE
+─────────────────
+
+    ┌──────────────────────────────────────────────────────────────────────────┐
+    │  Mutation modules (TeamCore) DO NOT call saveData()                      │
+    │  UI modules (TeamManager) DO call saveData()                            │
+    │                                                                          │
+    │  This separation ensures:                                                │
+    │  1. Core modules are testable without persistence side effects           │
+    │  2. Persistence can be batched/coalesced by the UI                      │
+    │  3. UI controls when persistence happens (after user action)            │
+    └──────────────────────────────────────────────────────────────────────────┘
+
+FLOW
+────
+
+User Action
+    ↓
+team-manager.js / team-modals.js
+    ↓ (validates UI input)
+TeamCore mutation (mutates window.data)
+    ↓
+team-manager.js calls saveData()
+    ↓
+UI refresh
+
+EXCEPTIONS
+──────────
+
+None. All team mutations follow this contract.
+
+RACE CONDITIONS
+───────────────
+
+Not applicable. Mutations are synchronous; persistence is async but
+does not block UI updates.
+
+
+================================================================================
+8. SECURITY CONTRACT
+================================================================================
+
+XSS PREVENTION
+──────────────
+
+All user-controlled data must be escaped before HTML insertion.
+
+Escaping is handled by DomUtils.escapeHtml():
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+USAGE PATTERN
+─────────────
+
+  // CORRECT ✅
+  html += '<span>' + escapeHtml(userName) + '</span>';
+
+  // CORRECT ✅ (DOM API)
+  var span = document.createElement('span');
+  span.textContent = userName;
+
+  // INCORRECT ❌
+  html += '<span>' + userName + '</span>';
+
+CSS INJECTION PREVENTION
+────────────────────────
+
+Status colors are hard-coded constants, not user-controlled:
+
+  var map = {
+    'active': { label: 'Active', color: 'var(--accent)' },
+    'left': { label: 'Former', color: 'var(--text-dim)' },
+    // ... all values are hard-coded constants
+  };
+
+All CSS values come from trusted sources (variables or constants).
+
+
+================================================================================
+9. MIGRATION GUIDE
+================================================================================
+
+LEGACY TYPE MIGRATION
+─────────────────────
+
+The type 'internship' is a LEGACY persisted value. It is explicitly migrated
+to the canonical 'professional' type on read.
+
+  normalizeTeamType('internship') → 'professional'
+
+This does NOT mutate stored data. Migration is interpretive.
+
+RANKING HISTORY MIGRATION
+─────────────────────────
+
+Malformed ranking entries are FILTERED AT QUERY TIME, not repaired during
+mutation. This follows the "fail-closed" philosophy:
+
+  - Mutations: reject malformed history (fail-closed)
+  - Queries: filter malformed entries (defensive)
+
+EXPLICIT REPAIR
+───────────────
+
+For administrative repair of corrupted data, use the repair functions:
+
+  TeamCore repair functions (if available)
+
+This is explicit and does not happen automatically.
+
+
+================================================================================
+10. ERROR HANDLING
+================================================================================
+
+MUTATION VALIDATION
+───────────────────
+
+All mutations follow this pattern:
+
+  1. Validate inputs (reject invalid)
+  2. Validate existing structure (reject malformed)
+  3. Build proposed state (clone)
+  4. Validate proposed state
+  5. Apply mutation
+
+If any step fails, the operation returns null/false and nothing changes.
+
+ERROR RETURN VALUES
+───────────────────
+
+  - Object-returning operations: null on failure
+  - Boolean-returning operations: false on failure
+  - Error messages are logged to console.warn()
+
+UI NOTIFICATION
+───────────────
+
+  - showNotification() displays user-facing error messages
+  - NotificationSystem is preferred (when available)
+  - Fallback to alert() for critical errors
+
+LOG ACTIVITY
+────────────
+
+All successful mutations are logged via window.logActivity():
+
+  recordActivity('Created team: ' + team.name + ' (' + team.type + ')');
+
+
+================================================================================
+11. TESTING STRATEGY
+================================================================================
+
+UNIT TESTS
+──────────
+
+TeamCore:
+  - createTeam() with valid/invalid data
+  - updateTeam() with valid/invalid updates
+  - addMember() with valid/invalid member data
+  - addRanking() with valid/invalid periods
+  - getActiveMembers() with various periods
+
+TeamMembers:
+  - getStatusAtPeriod() with various period combinations
+  - getEligibilityStatus() with various team/character states
+  - parseTypedPeriod() with valid/invalid inputs
+
+TeamRankings:
+  - addRanking() duplicate period enforcement
+  - removeRanking() exact removal
+  - getSortedHistory() malformed entry filtering
+  - getRankChange() with various periods
+
+INTEGRATION TESTS
+─────────────────
+
+  - Team creation → member addition → ranking addition → persistence
+  - Team type change validation (reject malformed data)
+  - Historical team construction (period-aware candidate selection)
+
+MUTATION TESTS
+──────────────
+
+  - Mutations are ATOMIC: validate before mutation
+  - Invalid operations do NOT mutate state
+  - Malformed data is REJECTED, not repaired
+
+
+================================================================================
+APPENDIX A: FILE PATHS
+================================================================================
+
+js/constants.js
+js/utils/core-utils.js
+js/utils/dom-utils.js
+js/utils/notification.js
+js/utils/calendar-utils.js
+js/core/state.js
+js/core/database.js
+js/core/loader.js
+js/core/tab-manager.js
+js/core/class-core.js
+js/modules/teams/team-core.js
+js/modules/teams/team-filters.js
+js/modules/teams/team-members.js
+js/modules/teams/team-rankings.js
+js/modules/teams/team-modals.js
+js/modules/teams/team-render.js
+js/modules/teams/team-manager.js
+js/app.js
+
+
+================================================================================
+APPENDIX B: LOAD ORDER CHECKLIST
+================================================================================
+
+□ constants.js
+□ utils/core-utils.js
+□ utils/dom-utils.js
+□ utils/notification.js
+□ utils/calendar-utils.js
+□ core/state.js
+□ core/database.js
+□ core/loader.js
+□ core/tab-manager.js
+□ core/class-core.js
+□ modules/teams/team-core.js
+□ modules/teams/team-filters.js
+□ modules/teams/team-members.js
+□ modules/teams/team-rankings.js
+□ modules/teams/team-modals.js
+□ modules/teams/team-render.js
+□ modules/teams/team-manager.js
+□ app.js
+
+
+================================================================================
+APPENDIX C: COMMON ERROR PATTERNS
+================================================================================
+
+ERROR: "TeamCore: Data store is not available."
+CAUSE: window.data is not defined or window.data.teams is not an array.
+FIX: Ensure database.js has loaded and data is ready.
+
+ERROR: "TeamMembers: TeamCore is required but not loaded."
+CAUSE: team-core.js must be loaded before team-members.js.
+FIX: Check load order in index.html.
+
+ERROR: "TeamManager: TeamCore is required but not loaded."
+CAUSE: Same as above.
+FIX: Check load order in index.html.
+
+ERROR: "Failed to save team changes to persistent storage."
+CAUSE: saveData() failed (IndexedDB error).
+FIX: Check IndexedDB availability and permissions.
+
+ERROR: "Duplicate period found in ranking history."
+CAUSE: Ranking history contains duplicate periods (malformed data).
+FIX: Use repair functions to clean data, or manually remove duplicates.
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================
