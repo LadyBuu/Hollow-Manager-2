@@ -19,6 +19,16 @@
  * 
  * Format: Primary Category | Subtype | Secondary Category (optional)
  * Example: "Investigation | Reconnaissance"
+ * 
+ * MISSION ID FORMAT:
+ *   {TeamAbbr}-{Year}-{DifficultyCode}{Sequence}
+ *   Example: RS-2026-H001 (Raven Squad, 2026, Hard, #1)
+ * 
+ * DIFFICULTY CODES:
+ *   E = Easy
+ *   M = Medium  
+ *   H = Hard
+ *   X = Expert
  */
 
 (function() {
@@ -114,6 +124,14 @@
     // Secondary type options (same as primary types)
     var SECONDARY_TYPES = Object.keys(MISSION_TYPES);
 
+    // Difficulty codes for mission ID generation
+    var DIFFICULTY_CODES = {
+        'easy': 'E',
+        'medium': 'M',
+        'hard': 'H',
+        'expert': 'X'
+    };
+
     // ============================================================
     // STATE
     // ============================================================
@@ -187,11 +205,12 @@
                                 </div>
                                 <div class="form-group">
                                     <label>Mission ID</label>
-                                    <input type="text" id="mission-id" placeholder="e.g., ML-001">
+                                    <input type="text" id="mission-id" readonly placeholder="Auto-generated on save" style="background:var(--bg);color:var(--text-dim);">
+                                    <span style="font-size:0.6rem;color:var(--text-dim);">Auto-generated: {Team}-{Year}-{Difficulty}{Sequence}</span>
                                 </div>
                                 <div class="form-group">
-                                    <label>Contract Type</label>
-                                    <input type="text" id="mission-contract-type" placeholder="e.g., Investigation">
+                                    <label>Year</label>
+                                    <input type="number" id="mission-year" value="${new Date().getFullYear()}" min="2000" max="2100" style="width:100px;">
                                 </div>
                                 <div class="form-group">
                                     <label>Primary Category</label>
@@ -264,8 +283,17 @@
                                     </select>
                                 </div>
                                 <div class="form-group">
-                                    <label>Pay/Reward</label>
-                                    <input type="text" id="mission-pay" placeholder="e.g., 5000 credits">
+                                    <label>Base Contract Pay</label>
+                                    <input type="text" id="mission-base-pay" placeholder="e.g., 5000 credits">
+                                </div>
+                                <div class="form-group">
+                                    <label>Surcharge / Escalation Pay</label>
+                                    <input type="text" id="mission-surcharge-pay" placeholder="e.g., 2000 credits">
+                                    <span style="font-size:0.6rem;color:var(--text-dim);">Additional payment for escalated circumstances</span>
+                                </div>
+                                <div class="form-group">
+                                    <label>Total Pay</label>
+                                    <input type="text" id="mission-total-pay" readonly placeholder="Auto-calculated" style="background:var(--bg);color:var(--accent);font-weight:bold;">
                                 </div>
                                 <div class="form-group">
                                     <label>Billing Status</label>
@@ -334,6 +362,59 @@
     }
 
     // ============================================================
+    // AUTO-GENERATE MISSION ID
+    // ============================================================
+
+    function generateMissionId(teamId, year, difficulty) {
+        var data = window.data || {};
+        var missions = data.missions || [];
+        
+        // Get team abbreviation
+        var teamAbbr = '';
+        if (teamId) {
+            var team = window.getTeamById(teamId);
+            if (team) {
+                // Generate abbreviation from team name
+                var nameParts = team.name.split(' ');
+                if (nameParts.length === 1) {
+                    teamAbbr = nameParts[0].substring(0, 3).toUpperCase();
+                } else {
+                    teamAbbr = nameParts.map(function(part) {
+                        return part.charAt(0).toUpperCase();
+                    }).join('');
+                }
+                // Ensure it's at least 2 characters
+                if (teamAbbr.length < 2) {
+                    teamAbbr = teamAbbr.padEnd(2, 'X');
+                }
+            }
+        }
+        
+        if (!teamAbbr) {
+            teamAbbr = 'UNS'; // Unassigned
+        }
+
+        var yearStr = String(year).slice(-2);
+        var difficultyCode = DIFFICULTY_CODES[difficulty] || 'M';
+
+        // Count missions with same prefix to get sequence number
+        var prefix = teamAbbr + '-' + yearStr + '-' + difficultyCode;
+        var sequence = 1;
+        
+        missions.forEach(function(m) {
+            if (m.missionId && m.missionId.startsWith(prefix)) {
+                var numPart = m.missionId.replace(prefix, '');
+                var num = parseInt(numPart);
+                if (!isNaN(num) && num >= sequence) {
+                    sequence = num + 1;
+                }
+            }
+        });
+
+        return prefix + String(sequence).padStart(3, '0');
+    }
+
+    // ============================================================
     // SUBTYPE SELECTOR
     // ============================================================
 
@@ -399,6 +480,30 @@
     }
 
     // ============================================================
+    // CALCULATE TOTAL PAY
+    // ============================================================
+
+    function calculateTotalPay() {
+        var basePay = document.getElementById('mission-base-pay').value.trim();
+        var surcharge = document.getElementById('mission-surcharge-pay').value.trim();
+        var totalInput = document.getElementById('mission-total-pay');
+
+        var baseNum = parseFloat(basePay.replace(/[^0-9.]/g, ''));
+        var surchargeNum = parseFloat(surcharge.replace(/[^0-9.]/g, ''));
+
+        if (!isNaN(baseNum) && !isNaN(surchargeNum)) {
+            var total = baseNum + surchargeNum;
+            totalInput.value = total.toFixed(2) + ' credits';
+        } else if (!isNaN(baseNum)) {
+            totalInput.value = baseNum.toFixed(2) + ' credits';
+        } else if (!isNaN(surchargeNum)) {
+            totalInput.value = surchargeNum.toFixed(2) + ' credits';
+        } else {
+            totalInput.value = '';
+        }
+    }
+
+    // ============================================================
     // RENDER MISSIONS
     // ============================================================
 
@@ -452,13 +557,25 @@
             var escalationLabel = getEscalationLabel(mission.escalation);
             var billingLabel = getBillingLabel(mission.billing);
 
-            html += '<div class="list-item" style="grid-template-columns:1fr 0.8fr 0.6fr 0.6fr 0.6fr 0.6fr 0.6fr 1fr;cursor:pointer;" data-id="' + mission.id + '">';
+            // Payment display
+            var payDisplay = '';
+            if (mission.basePay) {
+                payDisplay = mission.basePay;
+                if (mission.surchargePay) {
+                    payDisplay += ' (+' + mission.surchargePay + ')';
+                }
+            } else if (mission.pay) {
+                // Legacy support
+                payDisplay = mission.pay;
+            } else {
+                payDisplay = '—';
+            }
+
+            html += '<div class="list-item" style="grid-template-columns:0.8fr 1fr 0.6fr 0.6fr 0.6fr 0.6fr 0.6fr 0.8fr 0.6fr;cursor:pointer;" data-id="' + mission.id + '">';
+            html += '<span style="font-size:0.7rem;color:var(--text-dim);font-family:monospace;">' + (mission.missionId || '—') + '</span>';
             html += '<span><strong>' + mission.title + '</strong>';
             if (mission.status === 'completed') {
                 html += ' <span style="color:var(--info);font-size:0.6rem;">✓</span>';
-            }
-            if (mission.missionId) {
-                html += ' <span style="color:var(--text-dim);font-size:0.6rem;">[' + mission.missionId + ']</span>';
             }
             html += '</span>';
             html += '<span style="font-size:0.7rem;color:var(--text-dim);">' + typeDisplay + '</span>';
@@ -624,12 +741,40 @@
         var data = window.data || {};
         if (!data.missions) data.missions = [];
 
+        var year = missionData.year || new Date().getFullYear();
+
+        // Auto-generate mission ID
+        var missionId = generateMissionId(
+            missionData.assignedTeamId,
+            year,
+            missionData.difficulty || 'medium'
+        );
+
+        // Calculate total pay
+        var totalPay = '';
+        if (missionData.basePay && missionData.surchargePay) {
+            var baseNum = parseFloat(missionData.basePay.replace(/[^0-9.]/g, ''));
+            var surchargeNum = parseFloat(missionData.surchargePay.replace(/[^0-9.]/g, ''));
+            if (!isNaN(baseNum) && !isNaN(surchargeNum)) {
+                totalPay = (baseNum + surchargeNum).toFixed(2) + ' credits';
+            } else if (!isNaN(baseNum)) {
+                totalPay = baseNum.toFixed(2) + ' credits';
+            }
+        } else if (missionData.basePay) {
+            totalPay = missionData.basePay;
+        } else if (missionData.surchargePay) {
+            totalPay = missionData.surchargePay;
+        } else if (missionData.pay) {
+            // Legacy support
+            totalPay = missionData.pay;
+        }
+
         var mission = {
             id: window.generateId('miss'),
-            missionId: missionData.missionId || '',
+            missionId: missionId,
             title: missionData.title || 'Untitled Mission',
             description: missionData.description || '',
-            contractType: missionData.contractType || '',
+            year: year,
             primaryType: missionData.primaryType || '',
             subtype: missionData.subtype || '',
             secondaryType: missionData.secondaryType || '',
@@ -640,7 +785,9 @@
             duration: missionData.duration || '',
             difficulty: missionData.difficulty || 'medium',
             priority: missionData.priority || 'medium',
-            pay: missionData.pay || '',
+            basePay: missionData.basePay || '',
+            surchargePay: missionData.surchargePay || '',
+            pay: totalPay, // Legacy support
             billing: missionData.billing || 'original',
             assignedTeamId: missionData.assignedTeamId || null,
             status: missionData.status || 'active',
@@ -655,7 +802,7 @@
 
         data.missions.push(mission);
         if (typeof window.logActivity === 'function') {
-            window.logActivity('Created mission: ' + mission.title + ' (' + getMissionTypeLabel(mission.primaryType) + ')');
+            window.logActivity('Created mission: ' + mission.title + ' (' + mission.missionId + ')');
         }
         if (typeof window.saveData === 'function') {
             window.saveData().catch(function(err) { /* ignore */ });
@@ -673,6 +820,33 @@
                 changes.push(key);
                 mission[key] = updates[key];
             }
+        }
+
+        // Re-generate mission ID if team or difficulty changed
+        if (updates.assignedTeamId || updates.difficulty) {
+            var newId = generateMissionId(
+                mission.assignedTeamId || updates.assignedTeamId,
+                mission.year || new Date().getFullYear(),
+                mission.difficulty || updates.difficulty || 'medium'
+            );
+            if (newId !== mission.missionId) {
+                mission.missionId = newId;
+                changes.push('missionId');
+            }
+        }
+
+        // Recalculate total pay
+        if (updates.basePay !== undefined || updates.surchargePay !== undefined) {
+            var baseNum = parseFloat((mission.basePay || '').replace(/[^0-9.]/g, ''));
+            var surchargeNum = parseFloat((mission.surchargePay || '').replace(/[^0-9.]/g, ''));
+            if (!isNaN(baseNum) && !isNaN(surchargeNum)) {
+                mission.pay = (baseNum + surchargeNum).toFixed(2) + ' credits';
+            } else if (!isNaN(baseNum)) {
+                mission.pay = baseNum.toFixed(2) + ' credits';
+            } else if (!isNaN(surchargeNum)) {
+                mission.pay = surchargeNum.toFixed(2) + ' credits';
+            }
+            changes.push('pay');
         }
 
         if (updates.status === 'completed' && mission.status === 'completed') {
@@ -912,6 +1086,17 @@
         var createdAt = new Date(mission.createdAt).toLocaleDateString();
         var completedAt = mission.completedAt ? new Date(mission.completedAt).toLocaleDateString() : 'Not completed';
 
+        var payDisplay = '';
+        if (mission.basePay && mission.surchargePay) {
+            payDisplay = 'Base: ' + mission.basePay + ' | Surcharge: ' + mission.surchargePay + ' | Total: ' + mission.pay;
+        } else if (mission.basePay) {
+            payDisplay = 'Base: ' + mission.basePay + (mission.surchargePay ? ' | Surcharge: ' + mission.surchargePay : '');
+        } else if (mission.pay) {
+            payDisplay = mission.pay;
+        } else {
+            payDisplay = 'Not specified';
+        }
+
         var objectivesHtml = '';
         if (mission.objectives && mission.objectives.length > 0) {
             objectivesHtml = '<div style="margin-top:8px;"><strong>Objectives:</strong><ul style="list-style:none;padding:0;margin:4px 0;">';
@@ -946,8 +1131,8 @@
         }
 
         content.innerHTML = `
-            <div class="detail-row"><span class="label">Mission ID:</span> <span>${mission.missionId || 'N/A'}</span></div>
-            <div class="detail-row"><span class="label">Contract Type:</span> <span>${mission.contractType || 'N/A'}</span></div>
+            <div class="detail-row"><span class="label">Mission ID:</span> <span style="font-family:monospace;font-weight:bold;color:var(--accent);">${mission.missionId || 'N/A'}</span></div>
+            <div class="detail-row"><span class="label">Year:</span> <span>${mission.year || 'N/A'}</span></div>
             <div class="detail-row"><span class="label">Status:</span> <span style="color:${statusInfo.color};font-weight:600;">${statusInfo.label}</span></div>
             <div class="detail-row"><span class="label">Priority:</span> <span style="color:${priorityInfo.color};font-weight:600;">${priorityInfo.label}</span></div>
             <div class="detail-row"><span class="label">Difficulty:</span> <span>${difficultyLabel}</span></div>
@@ -960,7 +1145,7 @@
             <div class="detail-row"><span class="label">Team:</span> <span>${teamDisplay}</span></div>
             <div class="detail-row"><span class="label">Location:</span> <span>${mission.location || 'Not specified'}</span></div>
             <div class="detail-row"><span class="label">Duration:</span> <span>${mission.duration || 'Not specified'}</span></div>
-            <div class="detail-row"><span class="label">Pay:</span> <span>${mission.pay || 'Not specified'}</span></div>
+            <div class="detail-row"><span class="label">Payment:</span> <span>${payDisplay}</span></div>
             <div class="detail-row"><span class="label">Billing:</span> <span>${billingLabel}</span></div>
             <div class="detail-row"><span class="label">Created:</span> <span>${createdAt}</span></div>
             <div class="detail-row"><span class="label">Completed:</span> <span>${completedAt}</span></div>
@@ -1008,13 +1193,40 @@
 
         document.getElementById('mission-objectives-list').innerHTML = '';
 
+        // Set up pay calculation
+        var basePayInput = document.getElementById('mission-base-pay');
+        var surchargeInput = document.getElementById('mission-surcharge-pay');
+        if (basePayInput && surchargeInput) {
+            basePayInput.addEventListener('input', calculateTotalPay);
+            surchargeInput.addEventListener('input', calculateTotalPay);
+        }
+
+        // Update mission ID preview when team, year, or difficulty changes
+        var teamSelect = document.getElementById('mission-team');
+        var yearInput = document.getElementById('mission-year');
+        var difficultySelect = document.getElementById('mission-difficulty');
+        var idInput = document.getElementById('mission-id');
+
+        function updateMissionIdPreview() {
+            var teamId = teamSelect ? teamSelect.value : null;
+            var year = parseInt(yearInput ? yearInput.value : new Date().getFullYear());
+            var difficulty = difficultySelect ? difficultySelect.value : 'medium';
+            if (year && !isNaN(year)) {
+                idInput.value = generateMissionId(teamId, year, difficulty);
+            }
+        }
+
+        if (teamSelect) teamSelect.addEventListener('change', updateMissionIdPreview);
+        if (yearInput) yearInput.addEventListener('change', updateMissionIdPreview);
+        if (difficultySelect) difficultySelect.addEventListener('change', updateMissionIdPreview);
+
         if (editId) {
             title.textContent = 'Edit Mission';
             var mission = getMission(editId);
             if (mission) {
                 document.getElementById('mission-title').value = mission.title || '';
                 document.getElementById('mission-id').value = mission.missionId || '';
-                document.getElementById('mission-contract-type').value = mission.contractType || '';
+                document.getElementById('mission-year').value = mission.year || new Date().getFullYear();
                 document.getElementById('mission-description').value = mission.description || '';
                 document.getElementById('mission-primary-type').value = mission.primaryType || '';
                 document.getElementById('mission-subtype').value = mission.subtype || '';
@@ -1026,7 +1238,9 @@
                 document.getElementById('mission-duration').value = mission.duration || '';
                 document.getElementById('mission-difficulty').value = mission.difficulty || 'medium';
                 document.getElementById('mission-priority').value = mission.priority || 'medium';
-                document.getElementById('mission-pay').value = mission.pay || '';
+                document.getElementById('mission-base-pay').value = mission.basePay || '';
+                document.getElementById('mission-surcharge-pay').value = mission.surchargePay || '';
+                document.getElementById('mission-total-pay').value = mission.pay || '';
                 document.getElementById('mission-billing').value = mission.billing || 'original';
                 document.getElementById('mission-status').value = mission.status || 'active';
                 document.getElementById('mission-team').value = mission.assignedTeamId || '';
@@ -1040,10 +1254,12 @@
                     });
                 }
                 form.dataset.editId = editId;
+                updateMissionIdPreview();
             }
         } else {
             title.textContent = 'Create Mission';
             form.reset();
+            document.getElementById('mission-year').value = new Date().getFullYear();
             document.getElementById('mission-primary-type').value = '';
             document.getElementById('mission-subtype').value = '';
             document.getElementById('mission-secondary-type').value = '';
@@ -1051,7 +1267,9 @@
             document.getElementById('mission-difficulty').value = 'medium';
             document.getElementById('mission-priority').value = 'medium';
             document.getElementById('mission-team').value = '';
+            document.getElementById('mission-total-pay').value = '';
             delete form.dataset.editId;
+            updateMissionIdPreview();
         }
         populateSubtypeSelectors();
     }
@@ -1100,10 +1318,9 @@
         var tags = document.getElementById('mission-tags').value.split(',').map(function(t) { return t.trim(); }).filter(function(t) { return t; });
 
         var missionData = {
-            missionId: document.getElementById('mission-id').value.trim(),
             title: document.getElementById('mission-title').value.trim(),
+            year: parseInt(document.getElementById('mission-year').value) || new Date().getFullYear(),
             description: document.getElementById('mission-description').value.trim(),
-            contractType: document.getElementById('mission-contract-type').value.trim(),
             primaryType: document.getElementById('mission-primary-type').value || '',
             subtype: document.getElementById('mission-subtype').value || '',
             secondaryType: document.getElementById('mission-secondary-type').value || '',
@@ -1114,7 +1331,8 @@
             duration: document.getElementById('mission-duration').value.trim(),
             difficulty: document.getElementById('mission-difficulty').value,
             priority: document.getElementById('mission-priority').value,
-            pay: document.getElementById('mission-pay').value.trim(),
+            basePay: document.getElementById('mission-base-pay').value.trim(),
+            surchargePay: document.getElementById('mission-surcharge-pay').value.trim(),
             billing: document.getElementById('mission-billing').value || 'original',
             assignedTeamId: document.getElementById('mission-team').value || null,
             status: document.getElementById('mission-status').value || 'active',
@@ -1169,7 +1387,7 @@
         }
 
         var lines = [];
-        lines.push('Title,MissionID,ContractType,Status,Priority,Difficulty,PrimaryType,Subtype,SecondaryType,Escalation,ThreatType,Environment,Team,TeamType,Location,Duration,Pay,Billing,Progress,Objectives,Notes,Tags,CreatedAt,CompletedAt');
+        lines.push('MissionID,Title,Year,Status,Priority,Difficulty,PrimaryType,Subtype,SecondaryType,Escalation,ThreatType,Environment,Team,TeamType,Location,Duration,BasePay,SurchargePay,TotalPay,Billing,Progress,Objectives,Notes,Tags,CreatedAt,CompletedAt');
 
         missions.forEach(function(m) {
             var teamName = getTeamName(m.assignedTeamId);
@@ -1190,9 +1408,9 @@
             var completedAt = m.completedAt ? new Date(m.completedAt).toLocaleDateString() : '';
 
             var row = [
-                csvField(m.title || ''),
                 csvField(m.missionId || ''),
-                csvField(m.contractType || ''),
+                csvField(m.title || ''),
+                m.year || '',
                 m.status || 'active',
                 m.priority || 'medium',
                 m.difficulty || 'medium',
@@ -1206,6 +1424,8 @@
                 csvField(teamType),
                 csvField(m.location || ''),
                 csvField(m.duration || ''),
+                csvField(m.basePay || ''),
+                csvField(m.surchargePay || ''),
                 csvField(m.pay || ''),
                 csvField(billingLabel),
                 m.progress || '0',
@@ -1236,10 +1456,10 @@
 
     function exportMissionTemplateCSV() {
         var lines = [
-            'Title,MissionID,ContractType,Status,Priority,Difficulty,PrimaryType,Subtype,SecondaryType,Escalation,ThreatType,Environment,Team,TeamType,Location,Duration,Pay,Billing,Progress,Objectives,Notes,Tags,CreatedAt,CompletedAt',
-            'Operation Nightfall,ML-001,Investigation,active,high,hard,investigation,reconnaissance,research,Tier IV,Human/Magical,Urban,Raven Squad,Professional,Berlin,2 weeks,5000 credits,Escalated,50,Infiltrate base;Retrieve documents ✓;Extract intel,Use stealth approach,covert;rescue,2024-01-15,',
-            'Field Testing Alpha,FT-001,Research,active,medium,medium,research,field_testing,,Tier II,Magical,Lab,Team Alpha,Academic,London,3 days,2000 credits,Original,0,Test new tracking spell;Document results,Proceed with caution,testing;magic,2024-01-20,',
-            'Supply Run,SR-001,Logistics,completed,low,easy,acquisition,resources,,Tier I,,Rural,Logistics Team,Temporary,Outpost 7,1 day,500 credits,Original,100,Deliver supplies ✓;Check inventory ✓,All delivered,logistics;supply,2024-01-10,2024-01-11'
+            'MissionID,Title,Year,Status,Priority,Difficulty,PrimaryType,Subtype,SecondaryType,Escalation,ThreatType,Environment,Team,TeamType,Location,Duration,BasePay,SurchargePay,TotalPay,Billing,Progress,Objectives,Notes,Tags,CreatedAt,CompletedAt',
+            'RS-2026-H001,Operation Nightfall,2026,active,high,hard,investigation,reconnaissance,research,Tier IV,Human/Magical,Urban,Raven Squad,Professional,Berlin,2 weeks,5000,2000,7000,Escalated,50,Infiltrate base;Retrieve documents ✓;Extract intel,Use stealth approach,covert;rescue,2024-01-15,',
+            'AT-2026-M001,Field Testing Alpha,2026,active,medium,medium,research,field_testing,,Tier II,Magical,Lab,Team Alpha,Academic,London,3 days,2000,,2000,Original,0,Test new tracking spell;Document results,Proceed with caution,testing;magic,2024-01-20,',
+            'LG-2026-E001,Supply Run,2026,completed,low,easy,acquisition,resources,,Tier I,,Rural,Logistics Team,Temporary,Outpost 7,1 day,500,,500,Original,100,Deliver supplies ✓;Check inventory ✓,All delivered,logistics;supply,2024-01-10,2024-01-11'
         ];
 
         var csvContent = lines.join('\n');
@@ -1276,7 +1496,7 @@
                     var values = parseCSVLine(line);
 
                     if (i === 0) {
-                        var possibleHeaders = ['Title', 'MissionID', 'ContractType', 'Status', 'Priority', 'Difficulty', 'PrimaryType', 'Subtype', 'SecondaryType', 'Escalation', 'ThreatType', 'Environment', 'Team', 'TeamType', 'Location', 'Duration', 'Pay', 'Billing', 'Progress', 'Objectives', 'Notes', 'Tags', 'CreatedAt', 'CompletedAt'];
+                        var possibleHeaders = ['MissionID', 'Title', 'Year', 'Status', 'Priority', 'Difficulty', 'PrimaryType', 'Subtype', 'SecondaryType', 'Escalation', 'ThreatType', 'Environment', 'Team', 'TeamType', 'Location', 'Duration', 'BasePay', 'SurchargePay', 'TotalPay', 'Billing', 'Progress', 'Objectives', 'Notes', 'Tags', 'CreatedAt', 'CompletedAt'];
                         var headerMatch = 0;
                         values.forEach(function(v) {
                             if (possibleHeaders.indexOf(v.trim()) !== -1) headerMatch++;
@@ -1289,8 +1509,7 @@
 
                     var missionData = {
                         title: '',
-                        missionId: '',
-                        contractType: '',
+                        year: new Date().getFullYear(),
                         status: 'active',
                         priority: 'medium',
                         difficulty: 'medium',
@@ -1303,7 +1522,8 @@
                         assignedTeamId: null,
                         location: '',
                         duration: '',
-                        pay: '',
+                        basePay: '',
+                        surchargePay: '',
                         billing: 'original',
                         progress: 0,
                         objectives: [],
@@ -1312,9 +1532,9 @@
                     };
 
                     var headerMap = {
-                        'Title': 'title',
                         'MissionID': 'missionId',
-                        'ContractType': 'contractType',
+                        'Title': 'title',
+                        'Year': 'year',
                         'Status': 'status',
                         'Priority': 'priority',
                         'Difficulty': 'difficulty',
@@ -1327,7 +1547,9 @@
                         'Team': 'teamName',
                         'Location': 'location',
                         'Duration': 'duration',
-                        'Pay': 'pay',
+                        'BasePay': 'basePay',
+                        'SurchargePay': 'surchargePay',
+                        'TotalPay': 'pay',
                         'Billing': 'billing',
                         'Progress': 'progress',
                         'Objectives': 'objectives',
@@ -1336,7 +1558,7 @@
                     };
 
                     if (headers.length === 0) {
-                        headers = ['Title', 'MissionID', 'ContractType', 'Status', 'Priority', 'Difficulty', 'PrimaryType', 'Subtype', 'SecondaryType', 'Escalation', 'ThreatType', 'Environment', 'Team', 'TeamType', 'Location', 'Duration', 'Pay', 'Billing', 'Progress', 'Objectives', 'Notes', 'Tags', 'CreatedAt', 'CompletedAt'];
+                        headers = ['MissionID', 'Title', 'Year', 'Status', 'Priority', 'Difficulty', 'PrimaryType', 'Subtype', 'SecondaryType', 'Escalation', 'ThreatType', 'Environment', 'Team', 'TeamType', 'Location', 'Duration', 'BasePay', 'SurchargePay', 'TotalPay', 'Billing', 'Progress', 'Objectives', 'Notes', 'Tags', 'CreatedAt', 'CompletedAt'];
                     }
 
                     headers.forEach(function(header, index) {
@@ -1348,9 +1570,12 @@
                         if (mapped === 'title') {
                             missionData.title = value;
                         } else if (mapped === 'missionId') {
-                            missionData.missionId = value;
-                        } else if (mapped === 'contractType') {
-                            missionData.contractType = value;
+                            // Don't import missionId, it will be auto-generated
+                        } else if (mapped === 'year') {
+                            var y = parseInt(value);
+                            if (!isNaN(y) && y >= 2000 && y <= 2100) {
+                                missionData.year = y;
+                            }
                         } else if (mapped === 'status') {
                             if (['active', 'completed', 'cancelled'].indexOf(value) !== -1) {
                                 missionData.status = value;
@@ -1396,8 +1621,10 @@
                             missionData.location = value;
                         } else if (mapped === 'duration') {
                             missionData.duration = value;
-                        } else if (mapped === 'pay') {
-                            missionData.pay = value;
+                        } else if (mapped === 'basePay') {
+                            missionData.basePay = value;
+                        } else if (mapped === 'surchargePay') {
+                            missionData.surchargePay = value;
                         } else if (mapped === 'billing') {
                             var billingValues = ['original', 'escalated', 'emergency', 'internal'];
                             if (billingValues.indexOf(value) !== -1) {
@@ -1697,5 +1924,8 @@
     window.csvField = csvField;
     window.parseCSVLine = parseCSVLine;
     window.MISSION_TYPES = MISSION_TYPES;
+    window.generateMissionId = generateMissionId;
+    window.calculateTotalPay = calculateTotalPay;
+    window.DIFFICULTY_CODES = DIFFICULTY_CODES;
 
 })();
