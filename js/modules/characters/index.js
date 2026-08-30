@@ -1,475 +1,465 @@
 /**
- * js/modules/characters/index.js - Character Module Entry Point
- * Path: js/modules/characters/index.js
+ * modules/calendar/index.js - Unified Calendar Entry Point
+ * Single entry point for all calendar functionality
+ * Path: js/modules/calendar/index.js
  * 
- * This file is the conductor for the character module:
- *   - Renders the character manager container
- *   - Orchestrates child modules (list, form, events)
- *   - Manages current character selection persistence
- *   - Registers with TabManager
- *   - Owns the selection state (getCurrentEditId / setCurrentEditId)
- * 
- * IMPORTANT:
- *   - This module owns selection state via getCurrentEditId() / setCurrentEditId()
- *   - All character selection changes MUST go through setCurrentEditId()
- *   - CharacterForm.show() is the only way to display a character
- *   - Events are bound by CharacterEvents after rendering
- *   - The list open state is preserved across re-renders
- *   - Can be destroyed and re-initialized for lifecycle management
- *   - Waits for dataReady event before rendering
+ * This module is responsible for:
+ *   - Registering with TabManager
+ *   - Rendering the calendar container
+ *   - Initializing the CalendarUI controller
+ *   - Managing calendar lifecycle
+ *   - Restoring state from sessionStorage and URL hash
  * 
  * LIFECYCLE:
- *   - renderCharacters(container) - Renders the module
- *   - destroy() - Removes all listeners and cleans up
+ *   TabManager registers 'calendar' → renderCalendar() → CalendarUI.init()
+ *   Tab switching → renderCalendar() → CalendarUI.render()
  * 
- * REQUIRED DEPENDENCIES:
- *   - window.CharacterList (from character-list.js)
- *   - window.CharacterForm (from character-form.js)
- *   - window.CharacterEvents (from character-events.js)
- *   - window.TabManager (from tab-manager.js)
- *   - window.getCharacterById (from core-utils.js)
- *   - window.getDisplayName (from core-utils.js)
- * 
- * OPTIONAL FEATURE MODULES:
- *   - window.CharacterStats
- *   - window.CharacterCRUD
- *   - window.CharacterViews
- *   - window.CharacterClasses
- *   - window.CharacterEliminations
- * 
- * DATA READY HANDLING:
- *   - Renders immediately if window.data exists
- *   - Waits for 'dataReady' event if data not yet loaded
- *   - Shows loading state while waiting
- *   - Handles data corruption gracefully
+ * IMPORTANT:
+ *   - This module is the only external entry point for calendar
+ *   - All calendar logic lives in calendar/ subdirectory
+ *   - This module does NOT implement calendar logic directly
+ *   - It uses CalendarModes registry for ALL mode validation
+ *   - All core functions are from the curriculum modules
+ *   - This module delegates to curriculum modules for data operations
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate script loading
-    if (window.__charactersIndexLoaded) {
+    // ============================================================
+    // DEPENDENCIES (MUST BE CHECKED FIRST)
+    // ============================================================
+
+    if (!window.CalendarUI) {
+        console.error('CalendarModule: CalendarUI not loaded.');
         return;
     }
-    window.__charactersIndexLoaded = true;
+
+    if (typeof window.TabManager === 'undefined') {
+        console.error('CalendarModule: TabManager not loaded.');
+        return;
+    }
+
+    // ============================================================
+    // GUARD AGAINST DUPLICATE LOADING (AFTER DEPENDENCIES)
+    // ============================================================
+
+    if (window.__calendarModuleLoaded) {
+        return;
+    }
+    window.__calendarModuleLoaded = true;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var CalendarUI = window.CalendarUI;
+    var CalendarModes = window.CalendarModes;
+
+    // ============================================================
+    // DEPENDENCY VALIDATION
+    // ============================================================
+
+    function checkDependencies() {
+        var missing = [];
+
+        // Core curriculum dependencies
+        if (typeof window.ensureCurriculum !== 'function') {
+            missing.push('ensureCurriculum');
+        }
+
+        if (typeof window.getStudents !== 'function') {
+            missing.push('getStudents');
+        }
+
+        if (typeof window.getInstructors !== 'function') {
+            missing.push('getInstructors');
+        }
+
+        if (typeof window.getLocations !== 'function') {
+            missing.push('getLocations');
+        }
+
+        if (typeof window.getDisplayName !== 'function') {
+            missing.push('getDisplayName');
+        }
+
+        if (typeof window.getCharacterById !== 'function') {
+            missing.push('getCharacterById');
+        }
+
+        if (typeof window.saveData !== 'function') {
+            missing.push('saveData');
+        }
+
+        if (missing.length > 0) {
+            console.warn('CalendarModule: Missing dependencies:', missing.join(', '));
+            return false;
+        }
+
+        return true;
+    }
 
     // ============================================================
     // STATE
     // ============================================================
 
-    var _currentEditId = null;
-    var _characterListOpen = false;
-    var _listenersBound = false;
-    var _isRendering = false;
-    var _pendingRender = false;
-    var _dataReadyFired = false;
+    var _initialized = false;
+    var _container = null;
+    var _stateRestored = false;
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // RENDER CALENDAR - Public API
     // ============================================================
 
-    function hasMethods(obj, methods) {
-        if (!obj || typeof obj !== 'object') return false;
-        for (var i = 0; i < methods.length; i++) {
-            if (typeof obj[methods[i]] !== 'function') {
-                return false;
-            }
+    function renderCalendar(container) {
+        if (!container) {
+            container = document.getElementById('tab-calendar');
         }
-        return true;
+
+        if (!container) {
+            console.warn('CalendarModule: Container not found.');
+            return;
+        }
+
+        if (!window.data) {
+            container.innerHTML = '<p class="empty-state">Loading calendar data...</p>';
+            return;
+        }
+
+        // Ensure curriculum schema exists
+        if (typeof window.ensureCurriculum === 'function') {
+            window.ensureCurriculum();
+        }
+
+        // Validate dependencies
+        if (!checkDependencies()) {
+            container.innerHTML = '<p class="empty-state">Calendar dependencies not loaded. Please refresh the page.</p>';
+            return;
+        }
+
+        // Initialize or re-render
+        if (!_initialized || _container !== container) {
+            _container = container;
+            _initialized = true;
+
+            container.innerHTML = getCalendarContainerHTML();
+
+            // Get initial state from sessionStorage and URL
+            var options = getInitialOptions();
+
+            // Initialize CalendarUI with callbacks
+            CalendarUI.init(container, options, {
+                onStateChange: function() {
+                    saveState();
+                }
+            });
+        } else {
+            // Just re-render the existing UI
+            CalendarUI.render();
+        }
     }
 
-    function checkDependencies() {
-        var required = [
-            'getCharacterById',
-            'getDisplayName',
-            'CharacterList',
-            'CharacterForm',
-            'CharacterEvents',
-            'TabManager'
-        ];
+    // ============================================================
+    // CALENDAR CONTAINER HTML
+    // ============================================================
 
-        var missing = [];
-        required.forEach(function(name) {
-            if (name === 'CharacterList' || name === 'CharacterForm' || 
-                name === 'CharacterEvents' || name === 'TabManager') {
-                if (typeof window[name] === 'undefined' || window[name] === null) {
-                    missing.push(name);
+    function getCalendarContainerHTML() {
+        return (
+            '<div class="calendar-container">' +
+                '<div id="calendar-content">' +
+                    '<p class="empty-state">Loading calendar...</p>' +
+                '</div>' +
+            '</div>'
+        );
+    }
+
+    // ============================================================
+    // INITIAL OPTIONS - Restore from sessionStorage and URL
+    // ============================================================
+
+    function getInitialOptions() {
+        var options = {
+            mode: 'student',
+            week: 1,
+            selectedId: null
+        };
+
+        // Priority 1: sessionStorage (user's last session)
+        try {
+            var saved = sessionStorage.getItem('calendar_state');
+            if (saved) {
+                var parsed = JSON.parse(saved);
+                if (parsed.mode && isValidMode(parsed.mode)) {
+                    options.mode = parsed.mode;
                 }
-            } else if (typeof window[name] !== 'function') {
-                missing.push(name);
+                if (parsed.week !== undefined && parsed.week !== null) {
+                    var week = parseInt(parsed.week, 10);
+                    if (!isNaN(week) && week >= 1 && week <= 52) {
+                        options.week = week;
+                    }
+                }
+                if (parsed.selectedId !== undefined && parsed.selectedId !== null) {
+                    options.selectedId = parsed.selectedId;
+                }
+                _stateRestored = true;
             }
-        });
-
-        // Verify required module APIs
-        if (window.CharacterList && !hasMethods(window.CharacterList, ['render'])) {
-            missing.push('CharacterList.render');
-        }
-        if (window.CharacterForm && !hasMethods(window.CharacterForm, ['show', 'init', 'getTabsHTML'])) {
-            missing.push('CharacterForm (missing required methods)');
-        }
-        if (window.CharacterEvents && !hasMethods(window.CharacterEvents, ['init', 'destroy'])) {
-            missing.push('CharacterEvents (missing required methods)');
-        }
-        if (window.TabManager && !hasMethods(window.TabManager, ['register'])) {
-            missing.push('TabManager.register');
+        } catch (_) {
+            // Ignore storage errors
         }
 
-        if (missing.length > 0) {
-            console.warn('Characters Index: Missing required dependencies:', missing.join(', '));
+        // Priority 2: URL hash (overrides session)
+        try {
+            var hash = window.location.hash;
+            if (hash) {
+                var queryIndex = hash.indexOf('?');
+                if (queryIndex !== -1) {
+                    var params = new URLSearchParams(hash.substring(queryIndex + 1));
+                    var modeParam = params.get('mode');
+                    if (modeParam && isValidMode(modeParam)) {
+                        options.mode = modeParam;
+                    }
+                    var weekParam = params.get('week');
+                    if (weekParam !== null) {
+                        var week = parseInt(weekParam, 10);
+                        if (!isNaN(week) && week >= 1 && week <= 52) {
+                            options.week = week;
+                        }
+                    }
+                    var idParam = params.get('id');
+                    if (idParam !== null) {
+                        options.selectedId = idParam;
+                    }
+                }
+            }
+        } catch (_) {
+            // Ignore URL parsing errors
+        }
+
+        // Priority 3: validate selectedId against current mode
+        if (options.selectedId !== null && options.selectedId !== undefined) {
+            if (!isValidSelectedId(options.mode, options.selectedId)) {
+                options.selectedId = null;
+            }
+        }
+
+        // Priority 4: auto-select first available
+        if (!options.selectedId) {
+            var firstId = getFirstAvailableId(options.mode);
+            if (firstId) {
+                options.selectedId = firstId;
+            }
+        }
+
+        return options;
+    }
+
+    // ============================================================
+    // MODE VALIDATION - REGISTRY IS THE SOURCE OF TRUTH
+    // ============================================================
+
+    function isValidMode(mode) {
+        if (!CalendarModes) {
             return false;
         }
-        return true;
-    }
-
-    // ============================================================
-    // STATE ACCESSORS - Single source of truth for selection
-    // ============================================================
-
-    function getCurrentEditId() {
-        return _currentEditId;
-    }
-
-    function setCurrentEditId(id) {
-        _currentEditId = id;
-    }
-
-    // Expose state accessors
-    window.getCurrentEditId = getCurrentEditId;
-    window.setCurrentEditId = setCurrentEditId;
-
-    // ============================================================
-    // TOGGLE CHARACTER LIST - Preserves state
-    // ============================================================
-
-    function toggleCharacterList(open) {
-        var panel = document.getElementById('char-list-panel');
-        var toggle = document.getElementById('toggle-char-list');
-        if (!panel) return;
-        
-        if (open === undefined) {
-            _characterListOpen = !_characterListOpen;
-        } else {
-            _characterListOpen = open;
+        if (typeof CalendarModes.hasMode === 'function') {
+            return CalendarModes.hasMode(mode);
         }
-        
-        panel.classList.toggle('open', _characterListOpen);
-        if (toggle) {
-            toggle.classList.toggle('open', _characterListOpen);
-        }
+        return false;
     }
 
-    // Expose toggle for other modules
-    window.toggleCharacterList = toggleCharacterList;
-
     // ============================================================
-    // SHOW CHARACTER FORM - Centralized selection
+    // SELECTED ID VALIDATION
     // ============================================================
 
-    function showCharacterForm(editId) {
-        // Update the current selection state
-        setCurrentEditId(editId);
-        
-        // Delegate to the form module
-        if (window.CharacterForm && typeof window.CharacterForm.show === 'function') {
-            window.CharacterForm.show(editId);
-        } else {
-            console.warn('CharacterForm.show() not available');
-        }
-    }
-
-    // Expose for other modules
-    window.showCharacterForm = showCharacterForm;
-
-    // ============================================================
-    // GET CHARACTERS HTML - Renders the container
-    // ============================================================
-
-    function getCharactersHTML() {
-        var openClass = _characterListOpen ? ' open' : '';
-        var toggleOpenClass = _characterListOpen ? ' open' : '';
-
-        var tabsHTML = '';
-        if (window.CharacterForm && typeof window.CharacterForm.getTabsHTML === 'function') {
-            tabsHTML = window.CharacterForm.getTabsHTML();
+    function isValidSelectedId(modeName, id) {
+        if (id === null || id === undefined) {
+            return false;
         }
 
-        return `
-            <div class="character-manager">
-                <div class="char-list-toggle">
-                    <button id="toggle-char-list" class="primary small${toggleOpenClass}">☰ Characters</button>
-                    <button id="add-character-btn" class="primary small">+ New</button>
-                    <span id="current-char-name" style="font-weight:600;color:var(--accent);margin-left:8px;"></span>
-                </div>
+        if (!CalendarModes) {
+            return false;
+        }
 
-                <div id="char-list-panel" class="char-list-panel${openClass}">
-                    <div class="filter-section compact">
-                        <input type="text" id="char-name-filter" placeholder="Search..." style="width:120px;padding:3px 6px;font-size:0.7rem;" />
-                        <select id="char-status-filter" style="padding:3px 6px;font-size:0.7rem;width:100px;">
-                            <option value="all">All</option>
-                            <option value="trainee">Trainee</option>
-                            <option value="rookie">Rookie</option>
-                            <option value="junior">Junior</option>
-                            <option value="senior">Senior</option>
-                            <option value="instructor">Instructor</option>
-                            <option value="support">Support</option>
-                            <option value="civilian">Civilian</option>
-                            <option value="deceased">Deceased</option>
-                            <option value="eliminated">Eliminated</option>
-                        </select>
-                        <select id="char-class-filter" style="padding:3px 6px;font-size:0.7rem;width:120px;">
-                            <option value="all">All Classes</option>
-                        </select>
-                        <button id="clear-char-filter" class="small secondary" style="padding:2px 6px;">✕</button>
-                    </div>
-                    <div id="characters-container">
-                        <p class="empty-state" style="padding:10px;font-size:0.8rem;">No characters</p>
-                    </div>
-                </div>
+        var mode = CalendarModes.getMode(modeName);
+        if (!mode || typeof mode.getEntities !== 'function') {
+            return false;
+        }
 
-                <div id="character-form-container" class="form-container">
-                    <h3 id="form-title">Select a character</h3>
-                    <form id="character-form">
-                        ${tabsHTML}
-                        <div class="form-actions" style="margin-top:12px;border-top:1px solid var(--border-soft);padding-top:12px;">
-                            <button type="button" id="delete-char-btn" class="danger">Delete</button>
-                            <button type="submit" id="save-char-btn" class="primary">Save Character</button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        `;
+        var entities = mode.getEntities() || [];
+        for (var i = 0; i < entities.length; i++) {
+            if (String(entities[i].id) === String(id)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // ============================================================
-    // RENDER CHARACTERS - Main render function
+    // GET FIRST AVAILABLE ID
     // ============================================================
 
-    function renderCharacters(container) {
-        // Prevent concurrent renders
-        if (_isRendering) {
-            _pendingRender = true;
+    function getFirstAvailableId(modeName) {
+        if (!CalendarModes) {
+            return null;
+        }
+
+        var mode = CalendarModes.getMode(modeName);
+        if (!mode || typeof mode.getEntities !== 'function') {
+            return null;
+        }
+
+        var entities = mode.getEntities() || [];
+        return entities.length > 0 ? entities[0].id : null;
+    }
+
+    // ============================================================
+    // SAVE STATE - Persist to sessionStorage and URL
+    // ============================================================
+
+    function saveState() {
+        if (!CalendarUI || typeof CalendarUI.getState !== 'function') {
             return;
         }
 
-        _isRendering = true;
+        var state = CalendarUI.getState();
 
         try {
-            if (!checkDependencies()) {
-                if (!container) {
-                    container = document.getElementById('tab-characters');
-                }
-                if (container) {
-                    container.innerHTML = '<p class="empty-state">Dependencies not loaded. Please refresh the page.</p>';
-                }
-                _isRendering = false;
-                return;
-            }
-
-            if (!container) {
-                container = document.getElementById('tab-characters');
-            }
-            if (!container) {
-                console.warn('Characters: Container #tab-characters not found');
-                _isRendering = false;
-                return;
-            }
-
-            // Wait for data
-            if (!window.data) {
-                container.innerHTML = '<p class="empty-state">Loading data...</p>';
-                // Listen for dataReady if not already listening
-                if (!container._dataListener) {
-                    container._dataListener = true;
-                    document.addEventListener('dataReady', function onDataReady() {
-                        document.removeEventListener('dataReady', onDataReady);
-                        // Re-render when data is ready
-                        if (!_isRendering) {
-                            renderCharacters(container);
-                        } else {
-                            _pendingRender = true;
-                        }
-                    });
-                }
-                _isRendering = false;
-                return;
-            }
-
-            // Validate data structures - fail closed
-            if (!Array.isArray(window.data.characters)) {
-                console.warn('Characters: Invalid characters data structure');
-                container.innerHTML = '<p class="empty-state">Character data is corrupted. Please reload.</p>';
-                _isRendering = false;
-                return;
-            }
-
-            if (!Array.isArray(window.data.classes)) {
-                console.warn('Characters: Invalid classes data structure');
-                container.innerHTML = '<p class="empty-state">Class data is corrupted. Please reload.</p>';
-                _isRendering = false;
-                return;
-            }
-
-            // Build the container HTML
-            container.innerHTML = getCharactersHTML();
-            
-            // Render the character list
-            if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-                window.CharacterList.render();
-            }
-            
-            // Initialize form (rendering only, no events)
-            if (window.CharacterForm && typeof window.CharacterForm.init === 'function') {
-                window.CharacterForm.init(container);
-            }
-            
-            // Initialize events - this will remove any old listeners and bind new ones
-            if (window.CharacterEvents && typeof window.CharacterEvents.init === 'function') {
-                window.CharacterEvents.init(container);
-            }
-            
-            // Select the current character, preserving selection
-            selectCurrentCharacter();
-
-            // Bind global listeners if not already bound
-            bindGlobalListeners();
-
-        } catch (err) {
-            console.error('Characters: Error rendering:', err);
-            if (container) {
-                container.innerHTML = '<p class="empty-state" style="color:var(--danger);">Error loading characters. Please refresh the page.</p>';
-            }
-        } finally {
-            _isRendering = false;
-            // Handle any pending render requests
-            if (_pendingRender) {
-                _pendingRender = false;
-                renderCharacters(container);
-            }
-        }
-    }
-
-    // ============================================================
-    // SELECT CURRENT CHARACTER - Preserves selection
-    // ============================================================
-
-    function selectCurrentCharacter() {
-        var data = window.data || {};
-        
-        if (!data.characters || data.characters.length === 0) {
-            setCurrentEditId(null);
-            return;
+            sessionStorage.setItem('calendar_state', JSON.stringify(state));
+        } catch (_) {
+            // Ignore storage errors
         }
 
-        var charToShow = null;
-        
-        if (_currentEditId) {
-            charToShow = typeof window.getCharacterById === 'function' 
-                ? window.getCharacterById(_currentEditId) 
-                : null;
-        }
-        
-        if (!charToShow) {
-            charToShow = data.characters[0];
-            if (charToShow) {
-                setCurrentEditId(charToShow.id);
+        try {
+            var hash = window.location.hash || '';
+            var base = hash.split('?')[0];
+            if (base.charAt(0) === '#') {
+                base = base.substring(1);
             }
-        }
-        
-        if (charToShow) {
-            showCharacterForm(charToShow.id);
-        }
-    }
 
-    // ============================================================
-    // GLOBAL LISTENERS - With proper lifecycle management
-    // ============================================================
+            var query = 'mode=' + encodeURIComponent(state.mode) +
+                        '&week=' + encodeURIComponent(state.week);
 
-    function bindGlobalListeners() {
-        if (_listenersBound) return;
-        document.addEventListener('dataReady', handleDataReady);
-        document.addEventListener('tabChanged', handleTabChanged);
-        _listenersBound = true;
-    }
-
-    function unbindGlobalListeners() {
-        if (!_listenersBound) return;
-        document.removeEventListener('dataReady', handleDataReady);
-        document.removeEventListener('tabChanged', handleTabChanged);
-        _listenersBound = false;
-    }
-
-    function handleDataReady(e) {
-        var detail = e && e.detail;
-        var status = detail ? detail.status : null;
-        
-        if (status === 'failed') {
-            var container = document.getElementById('tab-characters');
-            if (container) {
-                container.innerHTML = '<p class="empty-state" style="color:var(--danger);">Failed to load character data. Please refresh the page.</p>';
+            if (state.selectedId) {
+                query += '&id=' + encodeURIComponent(state.selectedId);
             }
-            return;
-        }
 
-        _dataReadyFired = true;
+            var newHash = '#' + base + '?' + query;
 
-        var container = document.getElementById('tab-characters');
-        if (container && container.style.display !== 'none') {
-            renderCharacters(container);
-        }
-    }
-
-    function handleTabChanged(e) {
-        if (e.detail && e.detail.tab === 'characters') {
-            var container = document.getElementById('tab-characters');
-            if (container) {
-                renderCharacters(container);
+            if (window.location.hash !== newHash) {
+                window.history.replaceState(null, '', newHash);
             }
+        } catch (_) {
+            // Ignore history errors
         }
-    }
-
-    // ============================================================
-    // DESTROY - Clean up for re-rendering
-    // ============================================================
-
-    function destroy() {
-        if (window.CharacterEvents && typeof window.CharacterEvents.destroy === 'function') {
-            window.CharacterEvents.destroy();
-        }
-        unbindGlobalListeners();
-        _isRendering = false;
-        _pendingRender = false;
     }
 
     // ============================================================
     // REGISTER WITH TABMANAGER
     // ============================================================
 
-    if (typeof window.TabManager !== 'undefined' && window.TabManager.register) {
-        window.TabManager.register('characters', renderCharacters);
+    if (typeof window.TabManager !== 'undefined') {
+        window.TabManager.register('calendar', renderCalendar);
     }
 
     // ============================================================
-    // INITIAL RENDER - If data already loaded
+    // LIFECYCLE EVENTS
+    // ============================================================
+
+    // When data is ready, render the calendar if it's visible
+    document.addEventListener('dataReady', function() {
+        var container = document.getElementById('tab-calendar');
+        if (container && container.style.display !== 'none') {
+            renderCalendar(container);
+        }
+    });
+
+    // When tab changes, render or save state
+    document.addEventListener('tabChanged', function(e) {
+        if (!e || !e.detail) {
+            return;
+        }
+
+        if (e.detail.tab === 'calendar') {
+            var container = document.getElementById('tab-calendar');
+            if (container) {
+                renderCalendar(container);
+            }
+        } else if (_initialized) {
+            saveState();
+        }
+    });
+
+    // Save state before unloading
+    window.addEventListener('beforeunload', function() {
+        if (_initialized) {
+            saveState();
+        }
+    });
+
+    // Handle hash changes - update state without saving
+    window.addEventListener('hashchange', function() {
+        if (!_initialized) {
+            return;
+        }
+
+        var hash = window.location.hash;
+        if (hash) {
+            var queryIndex = hash.indexOf('?');
+            if (queryIndex !== -1) {
+                var params = new URLSearchParams(hash.substring(queryIndex + 1));
+                var modeParam = params.get('mode');
+                var weekParam = params.get('week');
+                var idParam = params.get('id');
+
+                var newState = {};
+                var changed = false;
+
+                if (modeParam && isValidMode(modeParam) && modeParam !== CalendarUI.getState().mode) {
+                    newState.mode = modeParam;
+                    changed = true;
+                }
+
+                if (weekParam !== null) {
+                    var week = parseInt(weekParam, 10);
+                    if (!isNaN(week) && week >= 1 && week <= 52 && week !== CalendarUI.getState().week) {
+                        newState.week = week;
+                        changed = true;
+                    }
+                }
+
+                if (idParam !== null && idParam !== CalendarUI.getState().selectedId) {
+                    if (isValidSelectedId(modeParam || CalendarUI.getState().mode, idParam)) {
+                        newState.selectedId = idParam;
+                        changed = true;
+                    }
+                }
+
+                if (changed) {
+                    CalendarUI.setState(newState);
+                }
+            }
+        }
+    });
+
+    // ============================================================
+    // AUTO-INITIALIZE IF DATA ALREADY AVAILABLE
     // ============================================================
 
     if (window.data) {
         setTimeout(function() {
-            var container = document.getElementById('tab-characters');
+            var container = document.getElementById('tab-calendar');
             if (container && container.style.display !== 'none') {
-                renderCharacters(container);
+                renderCalendar(container);
             }
         }, 100);
     }
 
     // ============================================================
-    // EXPOSE PUBLIC API
+    // EXPOSE
     // ============================================================
 
-    window.renderCharacters = renderCharacters;
-    window.showCharacterForm = showCharacterForm;
-    window.toggleCharacterList = toggleCharacterList;
-    window.getCurrentEditId = getCurrentEditId;
-    window.setCurrentEditId = setCurrentEditId;
-    window.destroyCharacters = destroy;
+    window.renderCalendar = renderCalendar;
 
 })();
