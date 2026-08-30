@@ -19,6 +19,9 @@
  *   - Canonical numbers are actual numbers (not strings)
  *   - Canonical createdAt is ISO 8601 string
  *   - participants, rounds, eliminations are REQUIRED canonical arrays (may be empty)
+ *   - Participant type is SEMANTIC IDENTITY: mode determines canonical type
+ *   - Group exams: winner and loser MUST be null
+ *   - Round matchSize MUST be enforced on all matches in the round
  * 
  * STRICTNESS SEMANTICS:
  *   - strict: false → "Is this structurally understandable tournament data?"
@@ -34,12 +37,19 @@
  *   - Elimination participant exists in tournament with matching type
  *   - Winner exists in tournament with matching type
  *   - Winner is NOT eliminated
+ *   - Group exam winner/loser MUST be null
+ *   - Match participant count MUST match round.matchSize
+ *   - Completed group exam MUST have results for all participants
+ *   - Completed standard match MUST have a winner
  * 
  * SCHEMA VERSIONING:
  *   - SCHEMA_VERSION is the current version
  *   - New tournaments get _schemaVersion set on creation
  *   - Existing tournaments without _schemaVersion are assumed version 1
  *   - Future migrations can use _schemaVersion to upgrade data
+ * 
+ * DEPENDENCIES:
+ *   - window.CALENDAR_CONSTANTS (from constants.js)
  */
 
 (function() {
@@ -59,6 +69,14 @@
     var VALID_MATCH_TYPES = ['standard', 'group_exam'];
     var VALID_MATCH_STATUSES = ['pending', 'in_progress', 'completed'];
     var VALID_GROUP_EXAM_RESULTS = ['pass', 'fail'];
+
+    // ============================================================
+    // CALENDAR CONSTANTS - Use from global constants when available
+    // ============================================================
+
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var MIN_WEEK = Number.isInteger(CALENDAR.MIN_WEEK) ? CALENDAR.MIN_WEEK : 1;
+    var MAX_WEEK = Number.isInteger(CALENDAR.MAX_WEEK) ? CALENDAR.MAX_WEEK : 52;
 
     // ============================================================
     // TYPE HELPERS
@@ -83,11 +101,11 @@
 
     function isValidWeek(value) {
         var num = parsePositiveInteger(value);
-        return num !== null && num >= 1 && num <= 52;
+        return num !== null && num >= MIN_WEEK && num <= MAX_WEEK;
     }
 
     function isStrictValidWeek(value) {
-        return isStrictPositiveInteger(value) && value >= 1 && value <= 52;
+        return isStrictPositiveInteger(value) && value >= MIN_WEEK && value <= MAX_WEEK;
     }
 
     function normaliseId(id) {
@@ -210,6 +228,11 @@
             return result && VALID_GROUP_EXAM_RESULTS.indexOf(result) !== -1;
         },
 
+        // Week range helpers
+        getWeekRange: function() {
+            return { min: MIN_WEEK, max: MAX_WEEK };
+        },
+
         /**
          * Get the current round from a tournament (derived from rounds.length).
          * This is a QUERY, not a stored value.
@@ -217,6 +240,40 @@
         getCurrentRound: function(tournament) {
             if (!tournament || !Array.isArray(tournament.rounds)) return 0;
             return tournament.rounds.length;
+        },
+
+        /**
+         * Get the canonical participant type for a tournament mode.
+         * Returns null for invalid modes.
+         */
+        getCanonicalParticipantType: function(mode) {
+            if (mode === 'teams') return 'team';
+            if (mode === 'individuals') return 'character';
+            return null;
+        },
+
+        /**
+         * Get the participant type from a tournament record.
+         * Returns null if not found or type is invalid.
+         */
+        getParticipantTypeFromRecord: function(tournament, participantId) {
+            var id = normaliseId(participantId);
+            if (id === null) return null;
+            if (!Array.isArray(tournament.participants)) return null;
+            var record = tournament.participants.find(function(p) {
+                return p && normaliseId(p.id) === id;
+            });
+            return record && isValidParticipantType(record.type) ? record.type : null;
+        },
+
+        /**
+         * Check if a participant matches the canonical type for the tournament mode.
+         */
+        isParticipantTypeCanonical: function(tournament, participantId) {
+            var canonicalType = this.getCanonicalParticipantType(tournament.mode);
+            if (canonicalType === null) return false;
+            var recordType = this.getParticipantTypeFromRecord(tournament, participantId);
+            return recordType === canonicalType;
         },
 
         // ============================================================
@@ -264,11 +321,11 @@
                 }
 
                 if (!isStrictValidWeek(tournament.startWeek)) {
-                    errors.push('Start week must be a number between 1 and 52.');
+                    errors.push('Start week must be a number between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.');
                 }
 
                 if (!isStrictValidWeek(tournament.endWeek)) {
-                    errors.push('End week must be a number between 1 and 52.');
+                    errors.push('End week must be a number between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.');
                 }
 
                 if (!isStrictPositiveInteger(tournament.totalRounds)) {
@@ -326,11 +383,11 @@
                 }
 
                 if (!isValidWeek(tournament.startWeek)) {
-                    errors.push('Start week must be between 1 and 52.');
+                    errors.push('Start week must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.');
                 }
 
                 if (!isValidWeek(tournament.endWeek)) {
-                    errors.push('End week must be between 1 and 52.');
+                    errors.push('End week must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.');
                 }
 
                 var totalRounds = parsePositiveInteger(tournament.totalRounds);
@@ -382,21 +439,6 @@
                         });
                     }
                 }
-
-                if (tournament.matches !== undefined) {
-                    if (!Array.isArray(tournament.matches)) {
-                        errors.push('Matches must be an array.');
-                    } else {
-                        tournament.matches.forEach(function(match, index) {
-                            var result = this.validateMatch(match, tournament, strict);
-                            if (!result.valid) {
-                                result.errors.forEach(function(err) {
-                                    errors.push('Match ' + (index + 1) + ': ' + err);
-                                });
-                            }
-                        }, this);
-                    }
-                }
             }
 
             // Week range validation (works for both modes)
@@ -407,6 +449,8 @@
             }
 
             // ---- PARTICIPANTS ----
+            var canonicalType = this.getCanonicalParticipantType(tournament.mode);
+
             if (Array.isArray(tournament.participants)) {
                 var seenParticipantIds = Object.create(null);
 
@@ -432,18 +476,15 @@
                             seenParticipantIds[pid] = true;
                         }
                     }
-                }, this);
 
-                // Mode compatibility
-                if (tournament.mode && Array.isArray(tournament.participants)) {
-                    var incompatible = tournament.participants.some(function(p) {
-                        return (tournament.mode === 'teams' && p.type !== 'team') ||
-                               (tournament.mode === 'individuals' && p.type !== 'character');
-                    });
-                    if (incompatible) {
-                        errors.push('Participant type incompatible with tournament mode.');
+                    // Participant type must match canonical type
+                    if (canonicalType !== null && p && p.type !== undefined) {
+                        if (p.type !== canonicalType) {
+                            errors.push('Participant "' + (p.id || 'unknown') + '" has type "' + p.type + 
+                                '" but tournament mode "' + tournament.mode + '" requires "' + canonicalType + '".');
+                        }
                     }
-                }
+                }, this);
             }
 
             // ---- ROUNDS ----
@@ -523,6 +564,12 @@
                             if (tournament.winner.type !== undefined &&
                                 winnerParticipant.type !== tournament.winner.type) {
                                 errors.push('Winner participant type does not match tournament participant type.');
+                            }
+                            // Winner type must match canonical type
+                            if (canonicalType !== null && tournament.winner.type !== undefined &&
+                                tournament.winner.type !== canonicalType) {
+                                errors.push('Winner type "' + tournament.winner.type + 
+                                    '" does not match tournament mode "' + tournament.mode + '" (requires "' + canonicalType + '").');
                             }
                         }
                     }
@@ -627,7 +674,7 @@
                     errors.push('Matches must be an array.');
                 } else {
                     round.matches.forEach(function(match, index) {
-                        var result = this.validateMatch(match, tournament, strict);
+                        var result = this.validateMatch(match, tournament, strict, round);
                         if (!result.valid) {
                             result.errors.forEach(function(err) {
                                 errors.push('Match ' + (index + 1) + ': ' + err);
@@ -643,8 +690,13 @@
         /**
          * Validate a match object deeply.
          * Returns { valid: boolean, errors: array }
+         * 
+         * @param {object} match - Match object to validate
+         * @param {object} tournament - Parent tournament context
+         * @param {boolean} strict - Strict validation mode
+         * @param {object} round - Parent round context (for matchSize enforcement)
          */
-        validateMatch: function(match, tournament, strict) {
+        validateMatch: function(match, tournament, strict, round) {
             var errors = [];
 
             if (!match || typeof match !== 'object') {
@@ -681,6 +733,16 @@
                 }
             }
 
+            // ---- GROUP EXAM: WINNER AND LOSER MUST BE NULL ----
+            if (match.type === 'group_exam') {
+                if (match.winner !== undefined && match.winner !== null) {
+                    errors.push('Group exam winner must be null.');
+                }
+                if (match.loser !== undefined && match.loser !== null) {
+                    errors.push('Group exam loser must be null.');
+                }
+            }
+
             // ---- PARTICIPANTS ----
             var participantIds = [];
             var hasInvalidParticipant = false;
@@ -690,6 +752,15 @@
             } else if (match.participants.length < 2) {
                 errors.push('Match must have at least 2 participants.');
             } else {
+                // Enforce round.matchSize
+                if (round && round.matchSize !== undefined) {
+                    var expectedSize = round.matchSize;
+                    if (match.participants.length !== expectedSize) {
+                        errors.push('Match participants (' + match.participants.length + 
+                            ') do not match round size (' + expectedSize + ').');
+                    }
+                }
+
                 var seen = Object.create(null);
                 match.participants.forEach(function(id) {
                     var normalised = strict
@@ -727,13 +798,18 @@
 
             // ---- WINNER ----
             if (match.winner !== undefined && match.winner !== null) {
-                var winnerId = strict
-                    ? normaliseIdStrict(match.winner)
-                    : normaliseIdLenient(match.winner);
-                if (winnerId === null) {
-                    errors.push('Invalid winner ID.');
-                } else if (participantIds.indexOf(winnerId) === -1) {
-                    errors.push('Winner must be a participant in the match.');
+                // Group exam winner check already done above
+                if (match.type === 'group_exam') {
+                    // Already handled
+                } else {
+                    var winnerId = strict
+                        ? normaliseIdStrict(match.winner)
+                        : normaliseIdLenient(match.winner);
+                    if (winnerId === null) {
+                        errors.push('Invalid winner ID.');
+                    } else if (participantIds.indexOf(winnerId) === -1) {
+                        errors.push('Winner must be a participant in the match.');
+                    }
                 }
             }
 
@@ -749,10 +825,16 @@
                         errors.push('Invalid loser ID.');
                     } else if (participantIds.indexOf(loserId) === -1) {
                         errors.push('Loser must be a participant in the match.');
-                    } else if (match.winner && loserId === strict
-                        ? normaliseIdStrict(match.winner)
-                        : normaliseIdLenient(match.winner)) {
-                        errors.push('Loser cannot be the same as winner.');
+                    } else {
+                        // Check loser != winner with correct precedence
+                        if (match.winner) {
+                            var winnerNormalised = strict
+                                ? normaliseIdStrict(match.winner)
+                                : normaliseIdLenient(match.winner);
+                            if (loserId === winnerNormalised) {
+                                errors.push('Loser cannot be the same as winner.');
+                            }
+                        }
                     }
                 }
             }
@@ -847,7 +929,7 @@
 
             if (strict) {
                 if (!isStrictValidWeek(elimination.week)) {
-                    errors.push('Elimination week must be a number between 1 and 52.');
+                    errors.push('Elimination week must be a number between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.');
                 }
 
                 var knownKeys = ['participantId', 'participantType', 'week', 'reason'];
@@ -859,7 +941,7 @@
 
             } else {
                 if (!isValidWeek(elimination.week)) {
-                    errors.push('Elimination week must be between 1 and 52.');
+                    errors.push('Elimination week must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.');
                 }
             }
 
