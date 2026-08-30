@@ -19,6 +19,7 @@
  *   - calculateGradeSummary() is imported from curriculum-grades.js
  *   - Shared validators are consumed from CurriculumValidators
  *   - No live state is mutated before validation and candidate preparation complete
+ *   - A failed clone does NOT silently become an empty object
  */
 
 (function() {
@@ -167,6 +168,11 @@
         }
     }
 
+    /**
+     * Clone the rankings store.
+     * Returns null on failure - does NOT silently convert to {}.
+     * This allows callers to distinguish "empty store" from "clone failure".
+     */
     function cloneRankings(rankings) {
         if (!rankings || typeof rankings !== 'object') {
             return {};
@@ -244,6 +250,11 @@
         return { success: true };
     }
 
+    /**
+     * Prepare the rankings store for mutation.
+     * Validates structure WITHOUT mutating live state.
+     * Returns candidate object on success, or failure object.
+     */
     function prepareRankingsStore(data) {
         if (!data || !data.curriculum || typeof data.curriculum !== 'object') {
             return { success: false, message: 'Curriculum data is not available.' };
@@ -251,6 +262,7 @@
 
         var existing = data.curriculum.rankings;
 
+        // Check for corrupted structure (but don't repair it yet)
         if (existing !== undefined && existing !== null &&
             (typeof existing !== 'object' || Array.isArray(existing))) {
             return { success: false, message: 'Ranking data store is corrupted.' };
@@ -258,7 +270,12 @@
 
         var candidate = cloneRankings(existing || {});
 
-        if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+        // cloneRankings returns null only on failure
+        if (candidate === null) {
+            return { success: false, message: 'Failed to clone ranking data.' };
+        }
+
+        if (typeof candidate !== 'object' || Array.isArray(candidate)) {
             return { success: false, message: 'Failed to prepare ranking data.' };
         }
 
