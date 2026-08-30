@@ -11,27 +11,38 @@
  *   - Escapes all user-controlled content
  *   - Does NOT attach event handlers (UI layer handles that)
  *   - Does NOT make decisions about data meaning (Queries does that)
- *   - Participant type is determined by tournament mode (canonical)
+ *   - Participant type is determined by Queries (canonical)
  * 
  * PARTICIPANT TYPE CONTRACT:
- *   - tournament.mode === 'teams' → all participants are teams
- *   - tournament.mode === 'individuals' → all participants are characters
- *   - Explicit participant types are accepted for display but canonical
- *     type is determined by tournament mode
+ *   - Queries is the SINGLE AUTHORITY for participant type resolution.
+ *   - This module uses Queries.getTournamentParticipantName() and
+ *     Queries.getTournamentParticipantType() exclusively.
+ *   - Tournament.mode is the canonical source; Queries enforces this.
+ * 
+ * DEPENDENCIES:
+ *   - window.TournamentsQueries (required)
+ *   - window.CALENDAR_CONSTANTS (from constants.js)
+ *   - Queries.getWeekRange() for week validation
  */
 
 (function() {
     'use strict';
 
+    // Guard: Check dependencies BEFORE marking as loaded
     if (window.__tournamentsRenderLoaded) return;
-    window.__tournamentsRenderLoaded = true;
 
     if (!window.TournamentsQueries) {
         console.error('TournamentsRender: TournamentsQueries required.');
         return;
     }
 
+    // Check CALENDAR_CONSTANTS via Queries
     var queries = window.TournamentsQueries;
+    var weekRange = queries.getWeekRange ? queries.getWeekRange() : { min: 1, max: 52 };
+    var MIN_WEEK = weekRange.min;
+    var MAX_WEEK = weekRange.max;
+
+    window.__tournamentsRenderLoaded = true;
 
     // ============================================================
     // HELPERS
@@ -85,22 +96,45 @@
     }
 
     /**
-     * Get participant type based on tournament mode.
-     * This is the canonical type for the tournament.
+     * Get the canonical participant type for a tournament mode.
+     * Delegates to Queries for the authoritative answer.
      */
-    function getParticipantTypeForMode(mode) {
-        return mode === 'teams' ? 'team' : 'character';
+    function getCanonicalParticipantType(mode) {
+        if (queries.getCanonicalParticipantType) {
+            return queries.getCanonicalParticipantType(mode);
+        }
+        return mode === 'teams' ? 'team' : (mode === 'individuals' ? 'character' : null);
     }
 
     /**
-     * Get a participant name with the correct type for the tournament mode.
-     * The canonical type is determined by tournament.mode, not by stored type.
+     * Get a participant name using Queries as the authority.
+     * This is the ONLY way to get participant names in this module.
      */
-    function getParticipantNameWithType(tournament, id) {
+    function getParticipantName(tournament, id) {
         if (!tournament) return 'Unknown';
-        var mode = tournament.mode || 'individuals';
-        var type = getParticipantTypeForMode(mode);
-        return queries.getParticipantName({ id: id, type: type }, tournament);
+        if (!queries.getTournamentParticipantName) {
+            return 'Unknown';
+        }
+        return queries.getTournamentParticipantName(tournament, id);
+    }
+
+    /**
+     * Get a participant type using Queries as the authority.
+     * This is the ONLY way to get participant types in this module.
+     */
+    function getParticipantType(tournament, id) {
+        if (!tournament) return 'unknown';
+        if (!queries.getTournamentParticipantType) {
+            return 'unknown';
+        }
+        return queries.getTournamentParticipantType(tournament, id);
+    }
+
+    /**
+     * Get the week range for display.
+     */
+    function getWeekRangeDisplay() {
+        return MIN_WEEK + ' - ' + MAX_WEEK;
     }
 
     // ============================================================
@@ -108,6 +142,17 @@
     // ============================================================
 
     var TournamentsRender = {
+        /**
+         * Get the week range constants for use in forms.
+         * Delegates to Queries for the authoritative values.
+         */
+        getWeekRange: function() {
+            if (queries.getWeekRange) {
+                return queries.getWeekRange();
+            }
+            return { min: MIN_WEEK, max: MAX_WEEK };
+        },
+
         renderList: function(tournaments) {
             if (!tournaments || tournaments.length === 0) {
                 return '<p class="empty-state">No tournaments created yet.</p>';
@@ -125,10 +170,10 @@
             html += '</div>';
 
             tournaments.forEach(function(tourn) {
-                var winnerName = queries.getWinnerName(tourn);
-                var participantCount = queries.getParticipantCount(tourn);
-                var roundCount = queries.getRoundCount(tourn);
-                var isComplete = queries.isTournamentComplete(tourn);
+                var winnerName = queries.getWinnerName ? queries.getWinnerName(tourn) : 'Not determined';
+                var participantCount = queries.getParticipantCount ? queries.getParticipantCount(tourn) : 0;
+                var roundCount = queries.getRoundCount ? queries.getRoundCount(tourn) : 0;
+                var isComplete = queries.isTournamentComplete ? queries.isTournamentComplete(tourn) : false;
                 var statusDisplay = getTournamentStatusDisplay(tourn.status);
 
                 html += '<div class="list-item tourn-item" data-id="' + escapeHtml(tourn.id) + '">';
@@ -163,14 +208,16 @@
         },
 
         renderInfo: function(tournament) {
-            var winnerName = queries.getWinnerName(tournament);
-            var isComplete = queries.isTournamentComplete(tournament);
+            var winnerName = queries.getWinnerName ? queries.getWinnerName(tournament) : 'Not determined';
+            var isComplete = queries.isTournamentComplete ? queries.isTournamentComplete(tournament) : false;
             var statusDisplay = getTournamentStatusDisplay(tournament.status);
+            var weekRange = this.getWeekRange();
 
             return '<div class="tourn-info">' +
                 '<span class="tourn-info-item">Mode: <strong>' + escapeHtml(tournament.mode) + '</strong></span>' +
-                '<span class="tourn-info-item">Weeks ' + escapeHtml(tournament.startWeek) + ' - ' + escapeHtml(tournament.endWeek) + '</span>' +
-                '<span class="tourn-info-item">Rounds: ' + queries.getRoundCount(tournament) + '/' + escapeHtml(tournament.totalRounds) + '</span>' +
+                '<span class="tourn-info-item">Weeks ' + escapeHtml(tournament.startWeek) + ' - ' + escapeHtml(tournament.endWeek) +
+                ' (' + escapeHtml(weekRange.min) + '-' + escapeHtml(weekRange.max) + ')</span>' +
+                '<span class="tourn-info-item">Rounds: ' + (queries.getRoundCount ? queries.getRoundCount(tournament) : 0) + '/' + escapeHtml(tournament.totalRounds) + '</span>' +
                 '<span class="tourn-info-item">Status: <span class="tourn-status ' + statusDisplay.class + '">' + escapeHtml(statusDisplay.text) + '</span></span>' +
                 (isComplete && winnerName !== 'Not determined' ?
                     '<span class="tourn-info-item tourn-winner-badge">Winner: ' + escapeHtml(winnerName) + '</span>' :
@@ -180,8 +227,8 @@
 
         renderParticipants: function(tournament) {
             var participants = Array.isArray(tournament.participants) ? tournament.participants : [];
-            var isComplete = queries.isTournamentComplete(tournament);
-            var hasHistory = queries.getRoundCount(tournament) > 0;
+            var isComplete = queries.isTournamentComplete ? queries.isTournamentComplete(tournament) : false;
+            var hasHistory = queries.getRoundCount ? queries.getRoundCount(tournament) > 0 : false;
 
             var html = '<div class="tourn-section participants-section">';
             html += '<h4 class="section-title">Participants</h4>';
@@ -191,9 +238,16 @@
             } else {
                 html += '<div class="participant-list">';
                 participants.forEach(function(p) {
-                    var name = getParticipantNameWithType(tournament, p.id);
-                    var isEliminated = queries.isParticipantEliminated(tournament, p.id);
-                    var isWinner = tournament.winner && String(tournament.winner.id) === String(p.id);
+                    // Use Queries for ALL participant name resolution
+                    var name = getParticipantName(tournament, p.id);
+                    var isEliminated = queries.isParticipantEliminated ? queries.isParticipantEliminated(tournament, p.id) : false;
+
+                    // Use Queries for winner check - don't manually compare IDs
+                    var isWinner = false;
+                    if (tournament.winner && tournament.winner.id) {
+                        var winnerId = typeof tournament.winner.id === 'string' ? tournament.winner.id : String(tournament.winner.id);
+                        isWinner = winnerId === String(p.id);
+                    }
 
                     var classes = 'participant-tag';
                     if (isEliminated) classes += ' eliminated';
@@ -226,7 +280,7 @@
 
         renderRounds: function(tournament) {
             var rounds = Array.isArray(tournament.rounds) ? tournament.rounds : [];
-            var isComplete = queries.isTournamentComplete(tournament);
+            var isComplete = queries.isTournamentComplete ? queries.isTournamentComplete(tournament) : false;
             var roundCount = rounds.length;
             var maxRounds = tournament.totalRounds || 1;
             var canAddRound = !isComplete && roundCount < maxRounds;
@@ -244,9 +298,9 @@
                 html += '<p class="empty-message">No rounds created.</p>';
             } else {
                 rounds.forEach(function(round, roundIndex) {
-                    var roundStatus = queries.getRoundStatus(tournament, roundIndex);
+                    var roundStatus = queries.getRoundStatus ? queries.getRoundStatus(tournament, roundIndex) : 'empty';
                     var statusDisplay = getRoundStatusDisplay(roundStatus);
-                    var matchCount = queries.getMatchCount(tournament, roundIndex);
+                    var matchCount = queries.getMatchCount ? queries.getMatchCount(tournament, roundIndex) : 0;
                     var roundNumber = round.roundNumber || (roundIndex + 1);
 
                     html += '<div class="round-item" data-round="' + roundIndex + '">';
@@ -270,7 +324,7 @@
                     if (Array.isArray(round.matches) && round.matches.length > 0) {
                         html += '<div class="match-list">';
                         round.matches.forEach(function(match, matchIndex) {
-                            var matchDisplay = queries.getMatchDisplay(tournament, roundIndex, matchIndex);
+                            var matchDisplay = queries.getMatchDisplay ? queries.getMatchDisplay(tournament, roundIndex, matchIndex) : [];
                             var matchStatus = match.status || 'pending';
                             var statusDisplay = getRoundStatusDisplay(matchStatus);
 
@@ -315,7 +369,7 @@
 
         renderEliminations: function(tournament) {
             var eliminations = Array.isArray(tournament.eliminations) ? tournament.eliminations : [];
-            var isComplete = queries.isTournamentComplete(tournament);
+            var isComplete = queries.isTournamentComplete ? queries.isTournamentComplete(tournament) : false;
 
             var html = '<div class="tourn-section eliminations-section">';
             html += '<h4 class="section-title">Eliminations</h4>';
@@ -325,7 +379,8 @@
             } else {
                 html += '<div class="elimination-list">';
                 eliminations.forEach(function(e) {
-                    var name = getParticipantNameWithType(tournament, e.participantId);
+                    // Use Queries for participant name
+                    var name = getParticipantName(tournament, e.participantId);
                     var week = e.week || '?';
                     var reason = e.reason || 'Eliminated';
 
@@ -345,15 +400,18 @@
         },
 
         renderWinner: function(tournament) {
-            var isComplete = queries.isTournamentComplete(tournament);
-            var winnerName = queries.getWinnerName(tournament);
-            var winner = queries.getWinner(tournament);
+            var isComplete = queries.isTournamentComplete ? queries.isTournamentComplete(tournament) : false;
+            var winnerName = queries.getWinnerName ? queries.getWinnerName(tournament) : 'Not determined';
+            var winner = queries.getWinner ? queries.getWinner(tournament) : null;
 
             var html = '<div class="tourn-section winner-section">';
             html += '<h4 class="section-title">Tournament Winner</h4>';
 
             if (isComplete && winner) {
-                var typeLabel = winner.type === 'team' ? 'Team' : 'Character';
+                // Use Queries to get the canonical type
+                var canonicalType = getCanonicalParticipantType(tournament.mode);
+                var typeLabel = canonicalType === 'team' ? 'Team' : (canonicalType === 'character' ? 'Character' : 'Unknown');
+
                 html += '<div class="winner-display">';
                 html += '<span class="winner-name">' + escapeHtml(winnerName) + '</span>';
                 html += '<span class="winner-type">(' + typeLabel + ')</span>';
@@ -361,7 +419,7 @@
             } else if (isComplete) {
                 html += '<span class="empty-message">Winner not set</span>';
             } else {
-                var roundCount = queries.getRoundCount(tournament);
+                var roundCount = queries.getRoundCount ? queries.getRoundCount(tournament) : 0;
                 if (roundCount > 0) {
                     html += '<span class="pending-message">Tournament in progress</span>';
                 } else {
@@ -376,6 +434,7 @@
         renderForm: function(tournament, modeOptions, statusOptions) {
             var isEdit = !!tournament;
             var t = tournament || {};
+            var weekRange = this.getWeekRange();
 
             modeOptions = modeOptions || ['teams', 'individuals'];
             statusOptions = statusOptions || ['draft', 'active', 'completed'];
@@ -399,11 +458,11 @@
             html += '<div class="form-row">';
             html += '<div class="form-group">';
             html += '<label>Start Week</label>';
-            html += '<input type="number" id="tourn-start-week" value="' + escapeHtml(t.startWeek || 1) + '" min="1" max="52">';
+            html += '<input type="number" id="tourn-start-week" value="' + escapeHtml(t.startWeek || 1) + '" min="' + weekRange.min + '" max="' + weekRange.max + '">';
             html += '</div>';
             html += '<div class="form-group">';
             html += '<label>End Week</label>';
-            html += '<input type="number" id="tourn-end-week" value="' + escapeHtml(t.endWeek || 52) + '" min="1" max="52">';
+            html += '<input type="number" id="tourn-end-week" value="' + escapeHtml(t.endWeek || 52) + '" min="' + weekRange.min + '" max="' + weekRange.max + '">';
             html += '</div>';
             html += '</div>';
 
@@ -437,10 +496,25 @@
             }
 
             var round = Array.isArray(tournament.rounds) ? tournament.rounds[roundIndex] : null;
-            var match = round && Array.isArray(round.matches) && typeof matchIndex === 'number' && matchIndex >= 0 ? round.matches[matchIndex] : null;
+            var match = null;
+
+            // Defensive match retrieval with bounds checking
+            if (
+                round &&
+                Array.isArray(round.matches) &&
+                Number.isInteger(matchIndex) &&
+                matchIndex >= 0 &&
+                matchIndex < round.matches.length
+            ) {
+                match = round.matches[matchIndex] || null;
+            }
+
             var isEdit = !!match;
             var isGroupExam = match && match.type === 'group_exam';
-            var participantType = getParticipantTypeForMode(tournament.mode);
+
+            // Use Queries for canonical participant type
+            var canonicalType = getCanonicalParticipantType(tournament.mode);
+            var participantTypeLabel = canonicalType === 'team' ? 'Team' : (canonicalType === 'character' ? 'Character' : 'Unknown');
 
             var html = '<form class="match-form" id="match-form">';
             html += '<div class="form-group">';
@@ -464,9 +538,9 @@
                     html += '<option value="">Select participant...</option>';
                     if (Array.isArray(availableParticipants)) {
                         availableParticipants.forEach(function(p) {
-                            var name = getParticipantNameWithType(tournament, p.id);
-                            html += '<option value="' + escapeHtml(p.id) + '" data-type="' + escapeHtml(participantType) + '">' +
-                                escapeHtml(name) + ' (' + escapeHtml(participantType) + ')' +
+                            var name = getParticipantName(tournament, p.id);
+                            html += '<option value="' + escapeHtml(p.id) + '">' +
+                                escapeHtml(name) + ' (' + participantTypeLabel + ')' +
                                 '</option>';
                         });
                     }
@@ -474,9 +548,9 @@
                 }
             } else {
                 participants.forEach(function(id, index) {
-                    var name = getParticipantNameWithType(tournament, id);
+                    var name = getParticipantName(tournament, id);
                     html += '<div class="participant-slot">';
-                    html += '<span>' + escapeHtml(name) + ' (' + escapeHtml(participantType) + ')</span>';
+                    html += '<span>' + escapeHtml(name) + ' (' + participantTypeLabel + ')</span>';
                     html += '<input type="hidden" name="participant_' + index + '" value="' + escapeHtml(id) + '">';
                     html += '<button type="button" class="remove-match-participant small danger">✕</button>';
                     html += '</div>';
@@ -485,9 +559,9 @@
                 html += '<option value="">Add participant...</option>';
                 if (Array.isArray(availableParticipants)) {
                     availableParticipants.forEach(function(p) {
-                        var name = getParticipantNameWithType(tournament, p.id);
-                        html += '<option value="' + escapeHtml(p.id) + '" data-type="' + escapeHtml(participantType) + '">' +
-                            escapeHtml(name) + ' (' + escapeHtml(participantType) + ')' +
+                        var name = getParticipantName(tournament, p.id);
+                        html += '<option value="' + escapeHtml(p.id) + '">' +
+                            escapeHtml(name) + ' (' + participantTypeLabel + ')' +
                             '</option>';
                     });
                 }
@@ -503,10 +577,10 @@
                 html += '<div id="exam-results">';
                 if (match.participants) {
                     match.participants.forEach(function(id) {
-                        var name = getParticipantNameWithType(tournament, id);
+                        var name = getParticipantName(tournament, id);
                         var result = match.results && match.results[id];
                         html += '<div class="exam-result-row">';
-                        html += '<span>' + escapeHtml(name) + ' (' + escapeHtml(participantType) + ')</span>';
+                        html += '<span>' + escapeHtml(name) + ' (' + participantTypeLabel + ')</span>';
                         html += '<select class="exam-result-select" data-id="' + escapeHtml(id) + '">';
                         html += '<option value="">—</option>';
                         html += '<option value="pass"' + (result === 'pass' ? ' selected' : '') + '>Pass</option>';
