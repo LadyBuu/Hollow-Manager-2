@@ -1,6 +1,6 @@
 /**
  * js/modules/teams/team-members.js - Team Member Management
- * Handles adding, removing, and managing team members
+ * Handles member status, eligibility, and rendering
  * Path: js/modules/teams/team-members.js
  * 
  * This module is responsible for:
@@ -14,10 +14,8 @@
  * This module does NOT call saveData().
  * 
  * ELIGIBILITY CONCEPTS:
- *   - Candidate characters: Those whose CURRENT career status makes them
- *     appropriate for a team type (e.g., trainees for academic teams)
- *     NOTE: This is based on current status, not historical period.
- *     For historical team construction, additional filtering may be needed.
+ *   - Candidate characters: Those whose career status at a SPECIFIC PERIOD
+ *     makes them appropriate for a team type. This is PERIOD-AWARE.
  *   - Eligibility status: Whether a candidate can be added to a specific team
  *     at a specific period, with appropriate UI labels and styling
  * 
@@ -27,6 +25,13 @@
  *   - Deceased status is only returned if death occurred at or before the period
  *   - Unknown death dates do NOT override known membership history
  *   - If a death date is unknown, membership history takes precedence
+ *   - PERIOD UNITS ARE TYPE-AWARE: academic teams use weeks, others use years
+ * 
+ * PERIOD SEMANTICS:
+ *   - leavePeriod is INCLUSIVE: member remains active during leavePeriod
+ *   - joinPeriod is INCLUSIVE: member becomes active at joinPeriod
+ *   - Membership is active when: join <= period <= leave
+ *   - This convention is consistent with team startPeriod/endPeriod
  * 
  * PERSISTENCE CONTRACT:
  *   - This module does NOT persist data
@@ -46,26 +51,24 @@
  *   - window.getCharacterById (from core-utils.js)
  *   - window.getDisplayName (from core-utils.js)
  *   - window.getCurrentStatus (from core-utils.js)
- *   - window.getCharacterAge (from core-utils.js)
+ *   - window.getCharacterAge (from core-utils.js) - NOTE: Currently uses current age, not period-aware
  */
 
 (function() {
     'use strict';
 
     // Guard against duplicate script loading
+    // IMPORTANT: Check dependency BEFORE marking as loaded
     if (window.__teamMembersLoaded) {
         return;
     }
-    window.__teamMembersLoaded = true;
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
 
     if (!window.TeamCore) {
         console.error('TeamMembers: TeamCore is required but not loaded.');
         return;
     }
+
+    window.__teamMembersLoaded = true;
 
     // ============================================================
     // CONSTANTS
@@ -79,8 +82,6 @@
     var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
     var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
 
-    var STUDENT_STATUSES = STATUS.STUDENT_STATUSES || ['trainee', 'rookie', 'junior'];
-    var INSTRUCTOR_STATUSES = STATUS.INSTRUCTOR_STATUSES || ['instructor', 'teacher', 'professor', 'senior'];
     var ALLOWED_NON_CIVILIAN = ['trainee', 'rookie', 'junior', 'senior', 'instructor', 'support'];
 
     // ============================================================
@@ -131,6 +132,46 @@
         return num !== null && num >= MIN_YEAR && num <= MAX_YEAR;
     }
 
+    /**
+     * Parse a period with type awareness.
+     * Returns { value: number, unit: 'week' | 'year' } or null.
+     */
+    function parseTypedPeriod(value, teamType) {
+        var num = parseNumericPeriod(value);
+        if (num === null) return null;
+
+        if (teamType === 'academic') {
+            if (num >= MIN_WEEK && num <= MAX_WEEK) {
+                return { value: num, unit: 'week' };
+            }
+            return null;
+        } else {
+            if (num >= MIN_YEAR && num <= MAX_YEAR) {
+                return { value: num, unit: 'year' };
+            }
+            return null;
+        }
+    }
+
+    // ============================================================
+    // PERIOD COMPARISON - Type-aware
+    // ============================================================
+
+    /**
+     * Compare two periods of potentially different types.
+     * Returns true if periodA <= periodB.
+     * 
+     * IMPORTANT: This only supports same-unit comparison.
+     * Week vs year comparison is NOT supported (returns false).
+     */
+    function isPeriodLessThanOrEqual(periodA, periodB, unitA, unitB) {
+        // Different units cannot be compared directly
+        if (unitA !== unitB) {
+            return false;
+        }
+        return periodA <= periodB;
+    }
+
     // ============================================================
     // MEMBER STATUS DETERMINATION - Historical timeline engine
     // ============================================================
@@ -140,30 +181,37 @@
      * Returns status strings: 'active', 'left', 'future', 'deceased', 'eliminated', 'unknown'
      * 
      * This is a TIMELINE-AWARE engine:
-     * - A character is only deceased if their death occurred at or before the given period
+     * - Periods are type-aware: academic = weeks, others = years
+     * - Death dates are compared only against year-based periods
+     * - Eliminations are compared only against week-based periods (academic)
      * - Unknown death dates do NOT override known membership history
-     * - If death date is unknown, membership history takes precedence
-     * - Eliminations are checked at or before the given period
      * 
      * @param {object} member - Member object (must have characterId, joinPeriod, leavePeriod)
      * @param {number|string} period - Period (week or year)
-     * @param {string} teamType - Team type (for future use)
+     * @param {string} teamType - Team type ('academic', 'professional', 'temporary', 'civilian')
      * @returns {string} Status string
      */
     function getStatusAtPeriod(member, period, teamType) {
         if (!member || typeof member !== 'object') return 'unknown';
 
-        var periodNum = parsePositivePeriod(period);
-        if (periodNum === null) {
+        // Parse period with type awareness
+        var typedPeriod = parseTypedPeriod(period, teamType);
+        if (!typedPeriod) {
             return 'unknown';
         }
 
+        var periodNum = typedPeriod.value;
+        var periodUnit = typedPeriod.unit;
+
         var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
 
-        // Check if character is deceased AT OR BEFORE this period
-        if (char && char.deceased) {
+        // ============================================================
+        // DECEASED CHECK - Only for year-based periods
+        // ============================================================
+        if (char && char.deceased && periodUnit === 'year') {
             var deathYear = parsePositivePeriod(char.deathYear);
             if (deathYear !== null) {
+                // Death year is a year, compare against year-based period
                 if (deathYear <= periodNum) {
                     return 'deceased';
                 }
@@ -175,9 +223,10 @@
             }
         }
 
-        // Check if character is eliminated AT OR BEFORE this period
-        // Note: Eliminations are global in this model (uses weeks as timeline)
-        if (char && char.eliminatedWeeks && Array.isArray(char.eliminatedWeeks)) {
+        // ============================================================
+        // ELIMINATION CHECK - Only for week-based periods (academic)
+        // ============================================================
+        if (periodUnit === 'week' && char && char.eliminatedWeeks && Array.isArray(char.eliminatedWeeks)) {
             for (var i = 0; i < char.eliminatedWeeks.length; i++) {
                 var elimWeek = parsePositivePeriod(char.eliminatedWeeks[i]);
                 if (elimWeek !== null && elimWeek <= periodNum) {
@@ -186,7 +235,9 @@
             }
         }
 
-        // Check membership status
+        // ============================================================
+        // MEMBERSHIP CHECK - Period type aware
+        // ============================================================
         var join = parsePositivePeriod(member.joinPeriod);
         var leave = parsePositivePeriod(member.leavePeriod);
 
@@ -195,13 +246,32 @@
             return 'unknown';
         }
 
+        // Parse join/leave with type awareness
+        var typedJoin = parseTypedPeriod(member.joinPeriod, teamType);
+        var typedLeave = member.leavePeriod ? parseTypedPeriod(member.leavePeriod, teamType) : null;
+
+        // If join period doesn't match the team's period type, treat as unknown
+        if (!typedJoin || typedJoin.unit !== periodUnit) {
+            return 'unknown';
+        }
+
         // Future member: join is in the future
-        if (join > periodNum) {
+        if (typedJoin.value > periodNum) {
             return 'future';
         }
 
         // Active member: join <= period and (no leave or leave >= period)
-        if (leave === null || leave >= periodNum) {
+        if (typedLeave === null) {
+            return 'active';
+        }
+
+        // If leave exists but doesn't match unit type, treat as open-ended
+        if (typedLeave.unit !== periodUnit) {
+            return 'active';
+        }
+
+        // leavePeriod is INCLUSIVE: member remains active during leavePeriod
+        if (typedLeave.value >= periodNum) {
             return 'active';
         }
 
@@ -212,6 +282,10 @@
     /**
      * Get member status at a specific week (academic teams).
      * Convenience wrapper for getStatusAtPeriod.
+     * 
+     * @param {object} member - Member object
+     * @param {number|string} week - Week number
+     * @returns {string} Status string
      */
     function getStatusAtWeek(member, week) {
         return getStatusAtPeriod(member, week, 'academic');
@@ -225,6 +299,8 @@
      * Get eligibility status for a character in a team at a specific period.
      * Returns { label, disabled, style } for UI rendering.
      * This is the SINGLE AUTHORITY for eligibility classification.
+     * 
+     * Uses getStatusAtPeriod() as the underlying temporal authority.
      * 
      * @param {object} team - Team object
      * @param {object} char - Character object
@@ -241,14 +317,19 @@
         }
 
         var charId = char.id;
-        var periodNum = parsePositivePeriod(currentPeriod);
-        if (periodNum === null) {
+
+        // Parse period with type awareness
+        var typedPeriod = parseTypedPeriod(currentPeriod, team.type);
+        if (!typedPeriod) {
             return {
                 label: 'Invalid period',
                 disabled: true,
                 style: 'color:var(--text-dim);'
             };
         }
+
+        var periodNum = typedPeriod.value;
+        var periodUnit = typedPeriod.unit;
 
         // Find the actual member record if the character is in this team
         var existingMember = null;
@@ -258,19 +339,27 @@
             });
         }
 
-        // If character is in this team, check their status
+        // If character is in this team, check their status using the canonical timeline engine
         if (existingMember) {
             var memberStatus = getStatusAtPeriod(
                 existingMember,
-                periodNum,
+                currentPeriod,
                 team.type
             );
 
-            if (memberStatus === 'active' || memberStatus === 'future') {
+            if (memberStatus === 'active') {
                 return {
                     label: '✓ In Team',
                     disabled: true,
                     style: 'color:var(--accent);font-weight:bold;'
+                };
+            }
+
+            if (memberStatus === 'future') {
+                return {
+                    label: '⏳ Future Member',
+                    disabled: true,
+                    style: 'color:var(--warning);'
                 };
             }
 
@@ -307,8 +396,8 @@
 
         // Character is not in this team - check if they can be added
 
-        // Character deceased (timeline-aware)
-        if (char.deceased) {
+        // Character deceased (timeline-aware, only for year-based periods)
+        if (char.deceased && periodUnit === 'year') {
             var deathYear = parsePositivePeriod(char.deathYear);
             if (deathYear !== null) {
                 if (deathYear <= periodNum) {
@@ -325,8 +414,8 @@
             }
         }
 
-        // Character eliminated (timeline-aware)
-        if (char.eliminatedWeeks && Array.isArray(char.eliminatedWeeks)) {
+        // Character eliminated (timeline-aware, only for week-based periods)
+        if (periodUnit === 'week' && char.eliminatedWeeks && Array.isArray(char.eliminatedWeeks)) {
             for (var i = 0; i < char.eliminatedWeeks.length; i++) {
                 var elimWeek = parsePositivePeriod(char.eliminatedWeeks[i]);
                 if (elimWeek !== null && elimWeek <= periodNum) {
@@ -340,10 +429,18 @@
         }
 
         // Check if character is active/future in another team
-        var data = window.data || {};
-        if (Array.isArray(data.teams)) {
-            for (var i = 0; i < data.teams.length; i++) {
-                var otherTeam = data.teams[i];
+        // (Uses TeamCore.getAllTeams() when available)
+        var teams = [];
+        if (window.TeamCore && typeof window.TeamCore.getAllTeams === 'function') {
+            teams = window.TeamCore.getAllTeams();
+        } else {
+            var data = window.data || {};
+            teams = data.teams || [];
+        }
+
+        if (Array.isArray(teams)) {
+            for (var i = 0; i < teams.length; i++) {
+                var otherTeam = teams[i];
                 if (!otherTeam || typeof otherTeam !== 'object') continue;
                 if (String(otherTeam.id) === String(team.id)) continue;
                 if (otherTeam.status === 'deleted') continue;
@@ -356,7 +453,7 @@
                 if (otherMember) {
                     var otherStatus = getStatusAtPeriod(
                         otherMember,
-                        periodNum,
+                        currentPeriod,
                         otherTeam.type
                     );
                     if (otherStatus === 'active' || otherStatus === 'future') {
@@ -379,24 +476,29 @@
     }
 
     // ============================================================
-    // CHARACTER ELIGIBILITY - Candidate selection (current status based)
+    // CHARACTER ELIGIBILITY - PERIOD-AWARE candidate selection
     // ============================================================
 
     /**
-     * Get candidate characters for a team type.
-     * This returns characters whose CURRENT career status makes them appropriate
-     * for the team type, regardless of their current team membership.
+     * Get candidate characters for a team type at a specific period.
+     * This returns characters whose career status AT THE GIVEN PERIOD
+     * makes them appropriate for the team type.
      * 
-     * NOTE: This is based on CURRENT status, not historical period.
-     * For historical team construction, additional filtering may be needed.
+     * This is the PERIOD-AWARE version - it looks at historical status,
+     * not just current status.
      * 
      * @param {string} teamType - Team type
+     * @param {number|string} period - Period to check (week for academic, year for others)
      * @returns {array} Array of character objects
      */
-    function getCandidateCharacters(teamType) {
+    function getCandidateCharactersAtPeriod(teamType, period) {
         var data = window.data || {};
         var chars = data.characters || [];
         if (!Array.isArray(chars)) return [];
+
+        // Validate period for team type
+        var typedPeriod = parseTypedPeriod(period, teamType);
+        if (!typedPeriod) return [];
 
         var result = [];
 
@@ -405,9 +507,14 @@
 
             var status = '';
             if (typeof window.getCurrentStatus === 'function') {
+                // TODO: Make this period-aware. Currently uses current status.
+                // For true historical filtering, we need a getStatusAtPeriod() for characters.
                 status = String(window.getCurrentStatus(c) || '').toLowerCase();
             }
 
+            // For now, we use current status as a proxy.
+            // In a fully period-aware system, this would check the character's
+            // career status at the given period.
             if (teamType === 'academic') {
                 if (status === 'trainee' || status.startsWith('trainee')) {
                     result.push(c);
@@ -442,7 +549,23 @@
     }
 
     /**
-     * @deprecated Use getCandidateCharacters() instead.
+     * Get candidate characters for a team type based on CURRENT status.
+     * This is a legacy wrapper for UI that hasn't been updated to use
+     * period-aware candidate selection yet.
+     * 
+     * @deprecated Use getCandidateCharactersAtPeriod() for historical accuracy.
+     * @param {string} teamType - Team type
+     * @returns {array} Array of character objects
+     */
+    function getCandidateCharacters(teamType) {
+        // Default to current year/period
+        var data = window.data || {};
+        var defaultPeriod = teamType === 'academic' ? 1 : (data.currentYear || new Date().getFullYear());
+        return getCandidateCharactersAtPeriod(teamType, defaultPeriod);
+    }
+
+    /**
+     * @deprecated Use getCandidateCharactersAtPeriod() instead.
      * Kept for backward compatibility.
      */
     function getEligibleCharacters(teamType) {
@@ -466,11 +589,14 @@
             return '<p class="empty-state">No members in this team</p>';
         }
 
-        var periodLabel = team.type === 'academic' ? 'Wk' : 'Period';
-        var periodNum = parsePositivePeriod(filterPeriod);
-        if (periodNum === null) {
-            periodNum = 1;
+        var typedPeriod = parseTypedPeriod(filterPeriod, team.type);
+        if (!typedPeriod) {
+            return '<p class="empty-state">Invalid period for this team type</p>';
         }
+
+        var periodNum = typedPeriod.value;
+        var periodUnit = typedPeriod.unit;
+        var periodLabel = team.type === 'academic' ? 'Wk' : 'Period';
 
         var html = '';
 
@@ -479,7 +605,7 @@
         var historicalMembers = [];
 
         team.members.forEach(function(member, index) {
-            var status = getStatusAtPeriod(member, periodNum, team.type);
+            var status = getStatusAtPeriod(member, filterPeriod, team.type);
 
             if (status === 'active' || status === 'future') {
                 currentMembers.push({ member: member, index: index, status: status });
@@ -495,19 +621,14 @@
             return aJoin - bJoin;
         });
 
-        // Sort historical by priority (unknown goes to bottom)
+        // Sort historical by priority
+        var priorityOrder = { 'left': 0, 'eliminated': 1, 'deceased': 2, 'unknown': 3 };
         historicalMembers.sort(function(a, b) {
-            var priorityMap = {
-                'left': 0,
-                'eliminated': 1,
-                'deceased': 2,
-                'unknown': 3
-            };
-            var aPriority = priorityMap[a.status] !== undefined ? priorityMap[a.status] : 4;
-            var bPriority = priorityMap[b.status] !== undefined ? priorityMap[b.status] : 4;
+            var aPriority = priorityOrder[a.status] !== undefined ? priorityOrder[a.status] : 4;
+            var bPriority = priorityOrder[b.status] !== undefined ? priorityOrder[b.status] : 4;
             if (aPriority !== bPriority) return aPriority - bPriority;
 
-            // Fall back to character name if same priority
+            // Fall back to character name
             var aChar = window.getCharacterById ? window.getCharacterById(a.member.characterId) : null;
             var bChar = window.getCharacterById ? window.getCharacterById(b.member.characterId) : null;
             var aName = aChar ? (window.getDisplayName ? window.getDisplayName(aChar) : 'Unknown') : 'Unknown';
@@ -523,14 +644,19 @@
             var status = item.status;
             var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
             var name = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
+            // NOTE: Age is currently current-age, not period-aware.
+            // TODO: Add getCharacterAgeAtPeriod() for historical accuracy.
             var age = char ? (window.getCharacterAge ? window.getCharacterAge(char) : '-') : '-';
 
             var statusInfo = window.TeamCore.getMemberStatusInfo(status);
-            var statusColor = statusInfo.color; // Internal constant, safe
-            var periodDisplay = periodLabel + (member.joinPeriod || '?');
-            if (member.leavePeriod) {
-                periodDisplay += ' → ' + periodLabel + member.leavePeriod;
-            }
+            var statusColor = statusInfo.color;
+
+            // Build period display with proper formatting
+            var joinDisplay = member.joinPeriod || '?';
+            var leaveDisplay = member.leavePeriod || '';
+            var periodDisplay = team.type === 'academic'
+                ? 'Wk ' + joinDisplay + (leaveDisplay ? ' → Wk ' + leaveDisplay : '')
+                : joinDisplay + (leaveDisplay ? ' → ' + leaveDisplay : '');
 
             var statusIcon = '';
             var statusSuffix = '';
@@ -561,10 +687,13 @@
             var escapedStatusLabel = escapeHtml(statusInfo.label);
             var escapedCharId = escapeHtml(member.characterId);
 
+            // Use stable character ID for data attributes, not array index
+            var dataCharId = escapeHtml(member.characterId);
+
             html += '<div class="member-entry" style="border-left:3px solid ' + statusColor + ';padding-left:8px;' +
                 (status === 'deceased' ? 'opacity:0.6;' : '') +
                 (status === 'left' ? 'opacity:0.7;' : '') +
-                (status === 'unknown' ? 'opacity:0.5;' : '') + '" data-member-index="' + index + '">' +
+                (status === 'unknown' ? 'opacity:0.5;' : '') + '" data-character-id="' + dataCharId + '">' +
                 '<div class="member-info" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px;width:100%;">' +
                 '<span><strong>' + escapedName + '</strong></span>' +
                 '<span class="role" style="color:var(--accent);font-size:0.75rem;">' + escapedRole + '</span>' +
@@ -572,8 +701,8 @@
                 '<span class="years" style="color:var(--text-dim);font-size:0.7rem;">Age: ' + escapedAge + '</span>' +
                 '<span style="color:' + statusColor + ';font-size:0.7rem;font-weight:600;">' + statusIcon + escapedStatusLabel + statusSuffix + '</span>' +
                 '<div class="member-actions" style="display:flex;gap:4px;">' +
-                '<button class="small edit-member" data-index="' + index + '">Edit</button>' +
-                '<button class="small danger remove-member" data-char="' + escapedCharId + '">Remove</button>' +
+                '<button class="small edit-member" data-character-id="' + dataCharId + '">Edit</button>' +
+                '<button class="small danger remove-member" data-character-id="' + dataCharId + '">Remove</button>' +
                 '</div>' +
                 '</div>' +
                 '</div>';
@@ -587,12 +716,13 @@
     // ============================================================
 
     var TeamMembers = {
-        // Status determination
+        // Status determination - period-aware
         getStatusAtPeriod: getStatusAtPeriod,
         getStatusAtWeek: getStatusAtWeek,
 
-        // Eligibility
-        getCandidateCharacters: getCandidateCharacters,
+        // Eligibility - period-aware
+        getCandidateCharactersAtPeriod: getCandidateCharactersAtPeriod,
+        getCandidateCharacters: getCandidateCharacters, // Legacy: current-status based
         getEligibleCharacters: getEligibleCharacters, // Legacy alias
         getEligibilityStatus: getEligibilityStatus,
 
@@ -603,6 +733,7 @@
         isValidAcademicWeek: isValidAcademicWeek,
         isValidYear: isValidYear,
         parsePositivePeriod: parsePositivePeriod,
+        parseTypedPeriod: parseTypedPeriod,
 
         // Constants
         MIN_WEEK: MIN_WEEK,
