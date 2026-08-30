@@ -17,15 +17,21 @@
  *   - All query results are DEEP CLONED to prevent external mutation
  *   - Unknown fields are rejected in updateDiscipline()
  *   - Shared validators are consumed from CurriculumValidators
+ *   - Shared helpers are consumed from CurriculumHelpers
  *   - No fallback validation - validators are required
  *   - startWeek/endWeek are stored as strings (empty = no restriction)
  *   - Discipline type validation is delegated to CurriculumValidators
  * 
- * REQUIRED DEPENDENCIES:
- *   - window.CurriculumValidators (for validation)
+ * DEPENDENCIES:
+ *   - CurriculumHelpers (for type checking, cloning, logging, ID generation)
+ *   - CurriculumValidators (for validation)
  *   - window.getCharacterById (for instructor validation)
  *   - window.getDisplayName (for instructor name display)
- *   - window.logActivity (for activity logging)
+ * 
+ * LOAD ORDER:
+ *   1. curriculum-helpers.js
+ *   2. curriculum-validators.js
+ *   3. curriculum-disciplines.js
  * 
  * PARSING SEMANTICS:
  *   - Invalid values in parsing helpers return null to signal validation failure
@@ -36,79 +42,50 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
+    // ============================================================
+    // GUARD AGAINST DUPLICATE LOADING
+    // ============================================================
+
     if (window.__curriculumDisciplinesLoaded) {
         return;
     }
     window.__curriculumDisciplinesLoaded = true;
 
     // ============================================================
-    // VALIDATOR DEPENDENCIES
+    // DEPENDENCY CHECK
     // ============================================================
 
+    var Helpers = window.CurriculumHelpers;
     var Validators = window.CurriculumValidators;
 
-    if (!Validators) {
-        console.error('[CurriculumDisciplines] CurriculumValidators not available.');
-        return;
+    if (!Helpers) {
+        throw new Error('[CurriculumDisciplines] CurriculumHelpers not available.');
     }
+
+    if (!Validators) {
+        throw new Error('[CurriculumDisciplines] CurriculumValidators not available.');
+    }
+
+    // ============================================================
+    // HELPER ALIASES
+    // ============================================================
+
+    var isObject = Helpers.isObject;
+    var isNonEmptyString = Helpers.isNonEmptyString;
+    var deepClone = Helpers.deepClone;
+    var generateId = Helpers.generateId;
+    var logActivity = Helpers.logActivity;
+    var failure = Helpers.failure;
+    var successWithEntity = Helpers.successWithEntity;
 
     // ============================================================
     // PRIVATE HELPERS
     // ============================================================
 
-    function isObject(value) {
-        return value !== null && typeof value === 'object' && !Array.isArray(value);
-    }
-
     function getDataStore() {
-        if (!window.data || typeof window.data !== 'object') {
-            return null;
-        }
-        return window.data;
+        return Helpers.getDataStore();
     }
 
-    function logActivity(message, type) {
-        type = type || 'info';
-        if (typeof window.logActivity === 'function') {
-            window.logActivity(message, type);
-        }
-    }
-
-    function generateId(prefix) {
-        prefix = prefix || 'disc';
-        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
-            return prefix + '_' + window.crypto.randomUUID();
-        }
-        return prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
-    }
-
-    function deepClone(value) {
-        if (value === null || typeof value !== 'object') {
-            return value;
-        }
-        if (typeof structuredClone === 'function') {
-            try {
-                return structuredClone(value);
-            } catch (e) {
-                console.error('CurriculumDisciplines: structuredClone failed:', e);
-                return null;
-            }
-        }
-        try {
-            return JSON.parse(JSON.stringify(value));
-        } catch (e) {
-            console.error('CurriculumDisciplines: JSON clone failed:', e);
-            return null;
-        }
-    }
-
-    /**
-     * Parse a discipline week value for storage.
-     * Returns null if value is invalid (should be caught by validation).
-     * Returns empty string for undefined/null/empty.
-     * Returns string for valid positive integers.
-     */
     function parseDisciplineWeek(value) {
         if (value === undefined || value === null || value === '') {
             return '';
@@ -117,12 +94,6 @@
         return parsed !== null ? String(parsed) : null;
     }
 
-    /**
-     * Parse a numeric field for storage.
-     * Returns null if value is invalid (should be caught by validation).
-     * Returns empty string for undefined/null/empty.
-     * Returns number for valid non-negative numbers.
-     */
     function parseOptionalNumber(value) {
         if (value === undefined || value === null || value === '') {
             return '';
@@ -131,12 +102,6 @@
         return parsed !== null ? parsed : null;
     }
 
-    /**
-     * Parse an integer field for storage.
-     * Returns null if value is invalid (should be caught by validation).
-     * Returns empty string for undefined/null/empty.
-     * Returns number for valid non-negative integers.
-     */
     function parseOptionalInteger(value) {
         if (value === undefined || value === null || value === '') {
             return '';
@@ -145,12 +110,6 @@
         return parsed !== null ? parsed : null;
     }
 
-    /**
-     * Parse a weight field for storage.
-     * Returns null if value is invalid (should be caught by validation).
-     * Returns 1 for undefined/null/empty (safe default).
-     * Returns number for valid numbers (rounded to 2 decimals).
-     */
     function parseWeight(value) {
         if (value === undefined || value === null || value === '') {
             return 1;
@@ -162,12 +121,8 @@
         return Math.round(parsed * 100) / 100;
     }
 
-    /**
-     * Get a character by ID.
-     * REQUIRED DEPENDENCY: window.getCharacterById must be available.
-     */
     function getCharacterByIdSafe(id) {
-        if (!Validators.isNonEmptyString(id)) {
+        if (!isNonEmptyString(id)) {
             return null;
         }
 
@@ -184,27 +139,11 @@
     }
 
     // ============================================================
-    // RESULT HELPERS
-    // ============================================================
-
-    function failure(message) {
-        return { success: false, message: message };
-    }
-
-    function successWithDiscipline(discipline) {
-        var cloned = deepClone(discipline);
-        if (cloned === null) {
-            return failure('Failed to clone discipline data.');
-        }
-        return { success: true, discipline: cloned };
-    }
-
-    // ============================================================
     // DISCIPLINE QUERIES
     // ============================================================
 
     function getDiscipline(id) {
-        if (!Validators.isNonEmptyString(id)) {
+        if (!isNonEmptyString(id)) {
             return null;
         }
 
@@ -276,7 +215,7 @@
     }
 
     function disciplineExists(id) {
-        if (!Validators.isNonEmptyString(id)) {
+        if (!isNonEmptyString(id)) {
             return false;
         }
 
@@ -367,8 +306,8 @@
     // ============================================================
 
     function createDiscipline(data) {
-        // ---- PHASE 1: VALIDATE INPUT USING SHARED VALIDATORS ----
-        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        // ---- PHASE 1: VALIDATE INPUT ----
+        if (!isObject(data)) {
             return failure('Discipline data must be an object.');
         }
 
@@ -482,17 +421,17 @@
         store.curriculum.disciplines = candidate;
 
         logActivity('Created discipline: ' + discipline.name);
-        return successWithDiscipline(discipline);
+        return successWithEntity('discipline', discipline);
     }
 
     function updateDiscipline(id, data) {
         // ---- PHASE 1: VALIDATE ID ----
-        if (!Validators.isNonEmptyString(id)) {
+        if (!isNonEmptyString(id)) {
             return failure('Discipline ID is required.');
         }
 
         // ---- PHASE 2: VALIDATE UPDATE PAYLOAD ----
-        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        if (!isObject(data)) {
             return failure('Updates must be an object.');
         }
 
@@ -552,7 +491,7 @@
         // ---- PHASE 7: APPLY CHANGES TO CANDIDATE ----
         if (data.name !== undefined) {
             var newName = String(data.name).trim();
-            if (!Validators.isNonEmptyString(newName)) {
+            if (!isNonEmptyString(newName)) {
                 return failure('Discipline name cannot be empty.');
             }
 
@@ -663,7 +602,7 @@
 
         // ---- PHASE 8: NO CHANGES ----
         if (!hasChanges) {
-            return successWithDiscipline(discipline);
+            return successWithEntity('discipline', discipline);
         }
 
         // ---- PHASE 9: VALIDATE CANDIDATE ----
@@ -682,14 +621,16 @@
         store.curriculum.disciplines = candidateArray;
 
         logActivity('Updated discipline: ' + candidate.name);
-        return successWithDiscipline(candidate);
+        return successWithEntity('discipline', candidate);
     }
 
     function deleteDiscipline(id) {
-        if (!Validators.isNonEmptyString(id)) {
+        // ---- PHASE 1: VALIDATE ----
+        if (!isNonEmptyString(id)) {
             return failure('Discipline ID is required.');
         }
 
+        // ---- PHASE 2: GET STORE ----
         var store = getDataStore();
         if (!store || !store.curriculum || !Array.isArray(store.curriculum.disciplines)) {
             return failure('No disciplines found.');
@@ -706,14 +647,14 @@
         var discipline = store.curriculum.disciplines[index];
         var name = discipline.name;
 
-        // Clone the entire curriculum structure for transactional cleanup
+        // ---- PHASE 3: CLONE CURRICULUM FOR TRANSACTIONAL CLEANUP ----
         var curriculumClone = deepClone(store.curriculum);
         if (curriculumClone === null) {
             return failure('Failed to prepare deletion. Please try again.');
         }
 
         try {
-            // Remove from schedules
+            // ---- PHASE 4: REMOVE FROM SCHEDULES ----
             if (curriculumClone.schedules && isObject(curriculumClone.schedules)) {
                 for (var studentId in curriculumClone.schedules) {
                     if (!Object.prototype.hasOwnProperty.call(curriculumClone.schedules, studentId)) {
@@ -773,7 +714,7 @@
                 }
             }
 
-            // Remove from grades
+            // ---- PHASE 5: REMOVE FROM GRADES ----
             if (curriculumClone.grades && isObject(curriculumClone.grades)) {
                 for (var studentId in curriculumClone.grades) {
                     if (!Object.prototype.hasOwnProperty.call(curriculumClone.grades, studentId)) {
@@ -796,7 +737,7 @@
                 }
             }
 
-            // Remove from auto-groups
+            // ---- PHASE 6: REMOVE FROM AUTO-GROUPS ----
             if (curriculumClone.autoGroups && isObject(curriculumClone.autoGroups)) {
                 for (var key in curriculumClone.autoGroups) {
                     if (!Object.prototype.hasOwnProperty.call(curriculumClone.autoGroups, key)) {
@@ -809,12 +750,12 @@
                 }
             }
 
-            // Remove from discipline groups
+            // ---- PHASE 7: REMOVE FROM DISCIPLINE GROUPS ----
             if (curriculumClone.disciplineGroups) {
                 delete curriculumClone.disciplineGroups[id];
             }
 
-            // Remove the discipline itself
+            // ---- PHASE 8: REMOVE DISCIPLINE ----
             if (!Array.isArray(curriculumClone.disciplines)) {
                 return failure('Corrupted discipline data structure.');
             }
@@ -830,11 +771,10 @@
             curriculumClone.disciplines.splice(cloneIndex, 1);
 
         } catch (e) {
-            console.error('CurriculumDisciplines.deleteDiscipline: Transaction failed:', e);
             return failure('Deletion failed during cleanup: ' + e.message);
         }
 
-        // Commit
+        // ---- PHASE 9: COMMIT ----
         var originalCurriculum = store.curriculum;
         var keys = Object.keys(originalCurriculum);
 
