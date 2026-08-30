@@ -52,6 +52,7 @@
 
     var DEFAULT_TAB = 'dashboard';
     var SWITCH_DELAY = 50;
+    var MAX_WAIT_TIME = 5000; // 5 seconds max wait for modules
 
     // ============================================================
     // TAB MANAGER
@@ -83,6 +84,7 @@
         _registeredModules: {},
         _pendingRegistrations: {},
         _failedModules: {},
+        _waitingForModules: {},
 
         // ============================================================
         // INITIALIZATION
@@ -100,13 +102,33 @@
                 
                 this.isInitialized = true;
 
-                // Set initial tab from URL hash
+                // Get initial tab from URL hash or default
                 var initialTab = this._getInitialTab();
                 
                 // Update URL without history entry
                 this._updateUrlHash(initialTab, false);
 
-                // Switch to initial tab after a short delay
+                // If the tab is not yet registered, wait for it
+                if (!this.tabs[initialTab]) {
+                    console.log('[TabManager] Waiting for tab "' + initialTab + '" to load...');
+                    this._waitingForModules[initialTab] = {
+                        tab: initialTab,
+                        startTime: Date.now()
+                    };
+                    
+                    // Set a timeout to fall back to default
+                    var self = this;
+                    setTimeout(function() {
+                        if (!self.tabs[initialTab] && self.currentTab === initialTab) {
+                            console.warn('[TabManager] Tab "' + initialTab + '" failed to load, falling back to default.');
+                            self.switchTo(DEFAULT_TAB, false);
+                        }
+                    }, MAX_WAIT_TIME);
+                    
+                    return;
+                }
+
+                // Switch to initial tab
                 var self = this;
                 setTimeout(function() {
                     self.switchTo(initialTab, false);
@@ -143,31 +165,35 @@
             // Store the renderer
             this.tabs[key] = renderFn;
             this._registeredModules[key] = true;
-
-            // Remove from failed modules
             delete this._failedModules[key];
+            delete this._waitingForModules[key];
 
-            // If this tab is currently active, render it
-            if (this.isInitialized && this.currentTab === key) {
-                var container = this.tabContentElements[key];
-                if (container) {
-                    var self = this;
-                    setTimeout(function() {
-                        self._renderTab(key);
-                    }, SWITCH_DELAY);
-                }
-            }
+            console.log('[TabManager] Registered tab: "' + key + '"');
 
-            // Process any pending registration for this tab
-            if (this._pendingRegistrations[key]) {
-                delete this._pendingRegistrations[key];
-                if (this.isInitialized && this.currentTab === key) {
+            // If this tab is currently active or pending, render it
+            if (this.isInitialized) {
+                // Check if this is the current tab
+                if (this.currentTab === key) {
                     var container = this.tabContentElements[key];
                     if (container) {
                         var self = this;
                         setTimeout(function() {
                             self._renderTab(key);
                         }, SWITCH_DELAY);
+                    }
+                }
+                
+                // Check if this was a pending registration
+                if (this._pendingRegistrations[key]) {
+                    delete this._pendingRegistrations[key];
+                    if (this.currentTab === key) {
+                        var container = this.tabContentElements[key];
+                        if (container) {
+                            var self = this;
+                            setTimeout(function() {
+                                self._renderTab(key);
+                            }, SWITCH_DELAY);
+                        }
                     }
                 }
             }
@@ -222,7 +248,15 @@
             if (!this.tabs[key]) {
                 // Check if module is registered but renderer not loaded
                 if (this._registeredModules[key]) {
+                    console.log('[TabManager] Tab "' + key + '" is registered but not yet loaded. Waiting...');
                     this._pendingRegistrations[key] = true;
+                    return;
+                }
+                
+                // Unknown tab - fall back to default
+                if (key !== DEFAULT_TAB) {
+                    console.warn('[TabManager] Unknown tab "' + key + '", falling back to default.');
+                    this.switchTo(DEFAULT_TAB, false);
                     return;
                 }
                 
@@ -341,8 +375,9 @@
          * Bind navigation links
          */
         _bindNavLinks: function() {
+            var self = this;
             document.querySelectorAll('#main-nav a[data-tab]').forEach(function(link) {
-                this.navLinks.push(link);
+                self.navLinks.push(link);
 
                 link.addEventListener('click', function(e) {
                     e.preventDefault();
@@ -351,7 +386,7 @@
                         TabManager.switchTo(tab, true);
                     }
                 });
-            }, this);
+            });
         },
 
         /**
@@ -364,6 +399,7 @@
                 '.dashboard-card[data-tab]'
             ];
 
+            var self = this;
             selectors.forEach(function(selector) {
                 document.querySelectorAll(selector).forEach(function(link) {
                     link.addEventListener('click', function(e) {
@@ -379,12 +415,28 @@
 
         /**
          * Get initial tab from URL hash
+         * If the tab is not registered, default to 'dashboard'
          */
         _getInitialTab: function() {
             var hash = window.location.hash.slice(1);
-            if (hash && this.tabs[hash]) {
+            
+            // If hash is empty, use default
+            if (!hash) {
+                return DEFAULT_TAB;
+            }
+
+            // If tab is registered, use it
+            if (this.tabs[hash]) {
                 return hash;
             }
+
+            // If tab is pending registration, use it but mark as waiting
+            if (this._registeredModules[hash]) {
+                return hash;
+            }
+
+            // Unknown tab - use default
+            console.warn('[TabManager] Unknown initial tab "' + hash + '", using default.');
             return DEFAULT_TAB;
         },
 
