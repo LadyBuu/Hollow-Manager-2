@@ -15,52 +15,64 @@
  *   - deleteClass() removes character references and unassigns academic teams
  *   - Malformed relationship fields are skipped (not repaired)
  *   - Shared validators are consumed from CurriculumValidators
+ *   - Shared helpers are consumed from CurriculumHelpers
+ * 
+ * DEPENDENCIES:
+ *   - CurriculumHelpers (for type checking, cloning, logging, ID generation)
+ *   - CurriculumValidators (for validation)
+ * 
+ * LOAD ORDER:
+ *   1. curriculum-helpers.js
+ *   2. curriculum-validators.js
+ *   3. curriculum-classes.js
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
+    // ============================================================
+    // GUARD AGAINST DUPLICATE LOADING
+    // ============================================================
+
     if (window.__curriculumClassesLoaded) {
         return;
     }
     window.__curriculumClassesLoaded = true;
 
     // ============================================================
-    // VALIDATOR DEPENDENCIES
+    // DEPENDENCY CHECK
     // ============================================================
 
+    var Helpers = window.CurriculumHelpers;
     var Validators = window.CurriculumValidators;
 
-    if (!Validators) {
-        console.error('[CurriculumClasses] CurriculumValidators not available.');
-        return;
+    if (!Helpers) {
+        throw new Error('[CurriculumClasses] CurriculumHelpers not available.');
     }
+
+    if (!Validators) {
+        throw new Error('[CurriculumClasses] CurriculumValidators not available.');
+    }
+
+    // ============================================================
+    // HELPER ALIASES
+    // ============================================================
+
+    var isNonEmptyString = Helpers.isNonEmptyString;
+    var isObject = Helpers.isObject;
+    var deepClone = Helpers.deepClone;
+    var generateId = Helpers.generateId;
+    var logActivity = Helpers.logActivity;
+    var failure = Helpers.failure;
+    var success = Helpers.success;
+    var successWithEntity = Helpers.successWithEntity;
 
     // ============================================================
     // PRIVATE HELPERS
     // ============================================================
 
     function getDataStore() {
-        if (!window.data || typeof window.data !== 'object') {
-            return null;
-        }
-        return window.data;
-    }
-
-    function generateId(prefix) {
-        prefix = prefix || 'class';
-        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
-            return prefix + '_' + window.crypto.randomUUID();
-        }
-        return prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
-    }
-
-    function logActivity(message, type) {
-        type = type || 'info';
-        if (typeof window.logActivity === 'function') {
-            window.logActivity(message, type);
-        }
+        return Helpers.getDataStore();
     }
 
     function getDisplayName(char) {
@@ -73,48 +85,12 @@
         return 'Unknown';
     }
 
-    function deepClone(value) {
-        if (value === null || typeof value !== 'object') {
-            return value;
-        }
-        if (typeof structuredClone === 'function') {
-            try {
-                return structuredClone(value);
-            } catch (e) {
-                console.error('CurriculumClasses: structuredClone failed:', e);
-                return null;
-            }
-        }
-        try {
-            return JSON.parse(JSON.stringify(value));
-        } catch (e) {
-            console.error('CurriculumClasses: JSON clone failed:', e);
-            return null;
-        }
-    }
-
-    // ============================================================
-    // RESULT HELPERS
-    // ============================================================
-
-    function failure(message) {
-        return { success: false, message: message };
-    }
-
-    function successWithClass(cls) {
-        var cloned = deepClone(cls);
-        if (cloned === null) {
-            return failure('Failed to clone class data.');
-        }
-        return { success: true, class: cloned };
-    }
-
     // ============================================================
     // CLASS QUERIES
     // ============================================================
 
     function getClass(id) {
-        if (id === undefined || id === null || id === '') {
+        if (!isNonEmptyString(id)) {
             return null;
         }
 
@@ -147,7 +123,7 @@
     }
 
     function getClassByName(name) {
-        if (!Validators.isNonEmptyString(name)) {
+        if (!isNonEmptyString(name)) {
             return null;
         }
 
@@ -196,7 +172,7 @@
     }
 
     function getCharactersByClass(classId) {
-        if (!Validators.isNonEmptyString(classId)) {
+        if (!isNonEmptyString(classId)) {
             return [];
         }
 
@@ -223,7 +199,7 @@
     }
 
     function getTeamsByClass(classId) {
-        if (!Validators.isNonEmptyString(classId)) {
+        if (!isNonEmptyString(classId)) {
             return [];
         }
 
@@ -250,7 +226,7 @@
     }
 
     function getTeamCountByClass(classId) {
-        if (!Validators.isNonEmptyString(classId)) {
+        if (!isNonEmptyString(classId)) {
             return 0;
         }
 
@@ -274,7 +250,7 @@
     }
 
     function getCharacterCountByClass(classId) {
-        if (!Validators.isNonEmptyString(classId)) {
+        if (!isNonEmptyString(classId)) {
             return 0;
         }
 
@@ -321,7 +297,7 @@
     }
 
     function classExists(id) {
-        if (id === undefined || id === null || id === '') {
+        if (!isNonEmptyString(id)) {
             return false;
         }
 
@@ -347,13 +323,21 @@
     // ============================================================
 
     function createClass(name) {
-        if (!Validators.isNonEmptyString(name)) {
+        // ---- PHASE 1: VALIDATE ---- 
+        if (!isNonEmptyString(name)) {
             return failure('Class name is required.');
         }
 
         var target = String(name).trim();
-        var data = getDataStore();
 
+        // ---- PHASE 2: VALIDATE USING SHARED VALIDATOR ----
+        var validation = Validators.validateClass({ name: target }, false);
+        if (!validation.valid) {
+            return failure(validation.message);
+        }
+
+        // ---- PHASE 3: GET STORE ----
+        var data = getDataStore();
         if (!data) {
             return failure('Data store is not available.');
         }
@@ -362,6 +346,7 @@
             return failure('Classes data is corrupted.');
         }
 
+        // ---- PHASE 4: CHECK DUPLICATE ----
         var existing = data.classes.find(function(c) {
             return c && c.name && c.name.trim().toLowerCase() === target.toLowerCase();
         });
@@ -370,34 +355,39 @@
             return failure('A class with this name already exists.');
         }
 
+        // ---- PHASE 5: BUILD CLASS ----
         var newClass = {
             id: generateId('class'),
             name: target,
             createdAt: new Date().toISOString()
         };
 
+        // ---- PHASE 6: BUILD CANDIDATE ----
         var candidate = deepClone(data.classes);
         if (candidate === null) {
             return failure('Failed to prepare class data.');
         }
 
         candidate.push(newClass);
+
+        // ---- PHASE 7: COMMIT ----
         data.classes = candidate;
 
         logActivity('Created class: ' + newClass.name);
-        return successWithClass(newClass);
+        return successWithEntity('class', newClass);
     }
 
     function updateClass(id, updates) {
-        if (!Validators.isNonEmptyString(id)) {
+        // ---- PHASE 1: VALIDATE ID ----
+        if (!isNonEmptyString(id)) {
             return failure('Class ID is required.');
         }
 
-        if (!updates || typeof updates !== 'object') {
+        if (!isObject(updates)) {
             return failure('Updates must be an object.');
         }
 
-        // Reject unknown fields
+        // ---- PHASE 2: REJECT UNKNOWN FIELDS ----
         var allowedFields = { name: true };
 
         for (var key in updates) {
@@ -409,6 +399,15 @@
             }
         }
 
+        // ---- PHASE 3: VALIDATE UPDATES ----
+        if (updates.name !== undefined) {
+            var validation = Validators.validateClass({ name: updates.name }, true);
+            if (!validation.valid) {
+                return failure(validation.message);
+            }
+        }
+
+        // ---- PHASE 4: GET STORE ----
         var data = getDataStore();
         if (!data) {
             return failure('Data store is not available.');
@@ -427,8 +426,9 @@
         }
 
         var cls = data.classes[index];
-        var candidate = deepClone(cls);
 
+        // ---- PHASE 5: BUILD CANDIDATE ----
+        var candidate = deepClone(cls);
         if (candidate === null) {
             return failure('Failed to clone class data.');
         }
@@ -436,11 +436,13 @@
         var hasChanges = false;
 
         if (updates.name !== undefined) {
-            if (!Validators.isNonEmptyString(updates.name)) {
+            if (!isNonEmptyString(updates.name)) {
                 return failure('Class name cannot be empty.');
             }
 
             var newName = String(updates.name).trim();
+
+            // Check duplicate (excluding self)
             var existing = data.classes.find(function(c) {
                 return c && String(c.id) !== String(id) &&
                     c.name && c.name.trim().toLowerCase() === newName.toLowerCase();
@@ -454,27 +456,33 @@
             hasChanges = true;
         }
 
+        // ---- PHASE 6: NO CHANGES ----
         if (!hasChanges) {
-            return successWithClass(cls);
+            return successWithEntity('class', cls);
         }
 
+        // ---- PHASE 7: BUILD FULL CANDIDATE ----
         var candidateArray = deepClone(data.classes);
         if (candidateArray === null) {
             return failure('Failed to prepare class data.');
         }
 
         candidateArray[index] = candidate;
+
+        // ---- PHASE 8: COMMIT ----
         data.classes = candidateArray;
 
         logActivity('Updated class: ' + candidate.name);
-        return successWithClass(candidate);
+        return successWithEntity('class', candidate);
     }
 
     function deleteClass(id) {
-        if (!Validators.isNonEmptyString(id)) {
+        // ---- PHASE 1: VALIDATE ID ----
+        if (!isNonEmptyString(id)) {
             return failure('Class ID is required.');
         }
 
+        // ---- PHASE 2: GET STORE ----
         var data = getDataStore();
         if (!data) {
             return failure('Data store is not available.');
@@ -503,7 +511,7 @@
         var cls = data.classes[index];
         var name = cls.name;
 
-        // All candidates are prepared BEFORE any mutation
+        // ---- PHASE 3: BUILD ALL CANDIDATES ----
         var candidateClasses = deepClone(data.classes);
         if (candidateClasses === null) {
             return failure('Failed to prepare class data.');
@@ -522,7 +530,7 @@
         var affectedCharacters = [];
         var affectedTeams = [];
 
-        // Clean references in characters
+        // ---- PHASE 4: CLEAN REFERENCES IN CHARACTERS ----
         for (var i = 0; i < candidateCharacters.length; i++) {
             var char = candidateCharacters[i];
             if (!char || typeof char !== 'object' || !Array.isArray(char.classIds)) {
@@ -540,7 +548,7 @@
             }
         }
 
-        // Clean references in academic teams
+        // ---- PHASE 5: CLEAN REFERENCES IN TEAMS ----
         for (var i = 0; i < candidateTeams.length; i++) {
             var team = candidateTeams[i];
             if (!team || typeof team !== 'object' || team.type !== 'academic') {
@@ -555,15 +563,16 @@
             }
         }
 
-        // Remove the class from the candidate array
+        // ---- PHASE 6: REMOVE CLASS ----
         candidateClasses.splice(index, 1);
 
-        // Commit all candidates atomically (in practice, sequential assignment)
+        // ---- PHASE 7: COMMIT ALL CANDIDATES ----
         data.classes = candidateClasses;
         data.characters = candidateCharacters;
         data.teams = candidateTeams;
 
         logActivity('Deleted class: ' + name + ' (' + affectedCharacters.length + ' characters, ' + affectedTeams.length + ' teams)');
+
         return {
             success: true,
             affectedCharacters: affectedCharacters,
@@ -576,14 +585,16 @@
     // ============================================================
 
     function addCharacterToClass(charId, classId) {
-        if (!Validators.isNonEmptyString(charId)) {
+        // ---- PHASE 1: VALIDATE ----
+        if (!isNonEmptyString(charId)) {
             return failure('Character ID is required.');
         }
 
-        if (!Validators.isNonEmptyString(classId)) {
+        if (!isNonEmptyString(classId)) {
             return failure('Class ID is required.');
         }
 
+        // ---- PHASE 2: GET STORE ----
         var data = getDataStore();
         if (!data) {
             return failure('Data store is not available.');
@@ -593,11 +604,13 @@
             return failure('Character data is corrupted.');
         }
 
+        // ---- PHASE 3: VALIDATE CLASS EXISTS ----
         var cls = getClass(classId);
         if (!cls) {
             return failure('Class not found.');
         }
 
+        // ---- PHASE 4: FIND CHARACTER ----
         var charIndex = -1;
         var char = null;
 
@@ -619,6 +632,7 @@
             return failure('Character is already in this class.');
         }
 
+        // ---- PHASE 5: BUILD CANDIDATE ----
         var candidateChars = deepClone(data.characters);
         if (candidateChars === null) {
             return failure('Failed to prepare character data.');
@@ -634,6 +648,8 @@
         }
 
         candidateChar.classIds.push(classId);
+
+        // ---- PHASE 6: COMMIT ----
         data.characters = candidateChars;
 
         var charName = getDisplayName(char);
@@ -648,14 +664,16 @@
     }
 
     function removeCharacterFromClass(charId, classId) {
-        if (!Validators.isNonEmptyString(charId)) {
+        // ---- PHASE 1: VALIDATE ----
+        if (!isNonEmptyString(charId)) {
             return failure('Character ID is required.');
         }
 
-        if (!Validators.isNonEmptyString(classId)) {
+        if (!isNonEmptyString(classId)) {
             return failure('Class ID is required.');
         }
 
+        // ---- PHASE 2: GET STORE ----
         var data = getDataStore();
         if (!data) {
             return failure('Data store is not available.');
@@ -665,11 +683,13 @@
             return failure('Character data is corrupted.');
         }
 
+        // ---- PHASE 3: VALIDATE CLASS EXISTS ----
         var cls = getClass(classId);
         if (!cls) {
             return failure('Class not found.');
         }
 
+        // ---- PHASE 4: FIND CHARACTER ----
         var charIndex = -1;
         var char = null;
 
@@ -691,6 +711,7 @@
             return failure('Character is not in this class.');
         }
 
+        // ---- PHASE 5: BUILD CANDIDATE ----
         var candidateChars = deepClone(data.characters);
         if (candidateChars === null) {
             return failure('Failed to prepare character data.');
@@ -709,6 +730,7 @@
             return String(cid) !== String(classId);
         });
 
+        // ---- PHASE 6: COMMIT ----
         data.characters = candidateChars;
 
         var charName = getDisplayName(char);
