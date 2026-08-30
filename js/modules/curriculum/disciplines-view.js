@@ -12,9 +12,9 @@
  * IMPORTANT: 
  *   - All application-data mutations are delegated to core functions.
  *   - This module does NOT mutate window.data directly.
- *   - UI state is managed locally (filter type is read from DOM).
- *   - Persistence is handled through the central saveData() function.
- *   - All core mutation functions return { success: boolean, message?: string, ... }
+ *   - The core owns validation and parsing.
+ *   - This module collects raw form data and passes it to core.
+ *   - UI validation is for UX only; core validation is authoritative.
  * 
  * LIFECYCLE:
  *   This module is rendered by curriculum-main.js via TabManager.
@@ -67,10 +67,6 @@
             missing.push('saveData');
         }
 
-        if (typeof window.logActivity !== 'function') {
-            missing.push('logActivity');
-        }
-
         if (typeof window.ensureCurriculum !== 'function') {
             missing.push('ensureCurriculum');
         }
@@ -102,11 +98,13 @@
             return;
         }
 
-        window.ensureCurriculum();
-
+        // Validate dependencies BEFORE calling ensureCurriculum
         if (!validateDependencies(container)) {
             return;
         }
+
+        // Schema initialisation - safe to call after deps verified
+        window.ensureCurriculum();
 
         container.innerHTML = getDisciplinesHTML();
         renderDisciplines(container);
@@ -183,7 +181,7 @@
                                     '</select>' +
                                 '</div>' +
                                 '<div class="form-group full-width">' +
-                                    '<label>Instructors *</label>' +
+                                    '<label>Instructors</label>' +
                                     '<div id="instructors-container">' +
                                         '<div class="instructor-entry">' +
                                             '<select class="instructor-select">' +
@@ -222,7 +220,7 @@
                                     '<label>Grading System</label>' +
                                     '<div id="grading-system-container">' +
                                         '<div class="grading-entry">' +
-                                            '<input type="text" class="grading-letter" placeholder="Letter" style="width:80px;">' +
+                                            '<input type="text" class="grading-label" placeholder="Label" style="width:80px;">' +
                                             '<input type="number" class="grading-min" placeholder="Min %" min="0" max="100" style="width:80px;">' +
                                             '<input type="number" class="grading-max" placeholder="Max %" min="0" max="100" style="width:80px;">' +
                                             '<button type="button" class="small danger remove-grading">[X]</button>' +
@@ -286,9 +284,16 @@
             var d = filteredDisciplines[i];
             var instructors = getInstructorNames(d);
             var instructorDisplay = instructors.length > 0 ? instructors.join(', ') : 'Not assigned';
-            var weekDisplay = d.startWeek ? 'Wk ' + d.startWeek : '?';
-            if (d.endWeek) {
-                weekDisplay += ' - Wk ' + d.endWeek;
+
+            var weekDisplay = '';
+            if (d.startWeek && d.endWeek) {
+                weekDisplay = 'Wk ' + d.startWeek + ' - Wk ' + d.endWeek;
+            } else if (d.startWeek) {
+                weekDisplay = 'Wk ' + d.startWeek + ' +';
+            } else if (d.endWeek) {
+                weekDisplay = 'Until Wk ' + d.endWeek;
+            } else {
+                weekDisplay = 'All year';
             }
 
             var typeLabel = d.type === 'mandatory' ? 'Mandatory' : (d.type === 'optional' ? 'Optional' : '--');
@@ -402,7 +407,12 @@
             return;
         }
 
-        if (!confirm('Delete "' + discipline.name + '" permanently? This will remove it from all schedules.')) {
+        var confirmMsg = 'Delete "' + discipline.name + '" permanently?\n\n';
+        confirmMsg += 'This will remove it from all schedules and auto-groups.\n';
+        confirmMsg += 'Historical grade records will be preserved.\n\n';
+        confirmMsg += 'This action cannot be undone.';
+
+        if (!confirm(confirmMsg)) {
             return;
         }
 
@@ -579,19 +589,19 @@
     // ADD GRADING ENTRY
     // ============================================================
 
-    function addGradingEntry(container, letter, min, max) {
+    function addGradingEntry(container, label, min, max) {
         var entry = document.createElement('div');
         entry.className = 'grading-entry';
         entry.style.cssText = 'display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;align-items:center;';
 
-        var letterInput = document.createElement('input');
-        letterInput.type = 'text';
-        letterInput.className = 'grading-letter';
-        letterInput.placeholder = 'Letter';
-        letterInput.style.cssText = 'width:80px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:0.78rem;';
+        var labelInput = document.createElement('input');
+        labelInput.type = 'text';
+        labelInput.className = 'grading-label';
+        labelInput.placeholder = 'Label';
+        labelInput.style.cssText = 'width:80px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:0.78rem;';
 
-        if (letter) {
-            letterInput.value = letter;
+        if (label) {
+            labelInput.value = label;
         }
 
         var minInput = document.createElement('input');
@@ -601,6 +611,7 @@
         minInput.style.cssText = 'width:80px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:0.78rem;';
         minInput.min = '0';
         minInput.max = '100';
+        minInput.step = '0.5';
 
         if (min !== undefined && min !== null) {
             minInput.value = min;
@@ -613,6 +624,7 @@
         maxInput.style.cssText = 'width:80px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font-size:0.78rem;';
         maxInput.min = '0';
         maxInput.max = '100';
+        maxInput.step = '0.5';
 
         if (max !== undefined && max !== null) {
             maxInput.value = max;
@@ -632,7 +644,7 @@
             }
         });
 
-        entry.appendChild(letterInput);
+        entry.appendChild(labelInput);
         entry.appendChild(minInput);
         entry.appendChild(maxInput);
         entry.appendChild(removeBtn);
@@ -658,7 +670,7 @@
     }
 
     // ============================================================
-    // COLLECT GRADING SYSTEM
+    // COLLECT GRADING SYSTEM - Preserve ALL non-empty rows
     // ============================================================
 
     function collectGradingSystem(form) {
@@ -667,147 +679,37 @@
 
         for (var i = 0; i < entries.length; i++) {
             var entry = entries[i];
-            var letterInput = entry.querySelector('.grading-letter');
+            var labelInput = entry.querySelector('.grading-label');
             var minInput = entry.querySelector('.grading-min');
             var maxInput = entry.querySelector('.grading-max');
 
-            if (!letterInput || !minInput || !maxInput) {
+            if (!labelInput || !minInput || !maxInput) {
                 continue;
             }
 
-            var letter = letterInput.value.trim();
-            var min = minInput.value;
-            var max = maxInput.value;
+            var label = labelInput.value.trim();
+            var min = minInput.value.trim();
+            var max = maxInput.value.trim();
 
-            if (letter && min !== '' && max !== '') {
-                var minNum = parseFloat(min);
-                var maxNum = parseFloat(max);
-
-                if (!isNaN(minNum) && !isNaN(maxNum) && minNum >= 0 && maxNum <= 100 && minNum <= maxNum) {
-                    system.push({
-                        label: letter,
-                        min: minNum,
-                        max: maxNum
-                    });
-                }
+            // Skip completely blank rows
+            if (!label && min === '' && max === '') {
+                continue;
             }
+
+            // Collect EVERY non-empty row, even if incomplete.
+            // The core validator will reject invalid ones.
+            system.push({
+                label: label || '',
+                min: min !== '' ? parseFloat(min) : undefined,
+                max: max !== '' ? parseFloat(max) : undefined
+            });
         }
 
         return system;
     }
 
     // ============================================================
-    // VALIDATE GRADING SYSTEM
-    // ============================================================
-
-    function validateGradingSystem(system) {
-        if (system.length === 0) {
-            return { valid: true };
-        }
-
-        for (var i = 0; i < system.length; i++) {
-            for (var j = i + 1; j < system.length; j++) {
-                var a = system[i];
-                var b = system[j];
-
-                if (a.min <= b.max && b.min <= a.max) {
-                    return {
-                        valid: false,
-                        message: 'Grading ranges for "' + a.label + '" and "' + b.label + '" overlap.'
-                    };
-                }
-            }
-        }
-
-        var letters = {};
-
-        for (var i = 0; i < system.length; i++) {
-            var label = system[i].label.trim().toUpperCase();
-
-            if (letters[label]) {
-                return {
-                    valid: false,
-                    message: 'Duplicate grade label "' + system[i].label + '".'
-                };
-            }
-
-            letters[label] = true;
-        }
-
-        return { valid: true };
-    }
-
-    // ============================================================
-    // VALIDATE DISCIPLINE FORM DATA
-    // ============================================================
-
-    function validateDisciplineData(data) {
-        if (!data.name) {
-            return { valid: false, message: 'Discipline name is required.' };
-        }
-
-        if (!data.type) {
-            return { valid: false, message: 'Please select a discipline type.' };
-        }
-
-        if (data.instructorIds.length === 0) {
-            return { valid: false, message: 'Please select at least one instructor.' };
-        }
-
-        if (data.startWeek !== '' && data.startWeek !== undefined) {
-            var start = parseInt(data.startWeek, 10);
-
-            if (isNaN(start) || start < 1 || start > 52) {
-                return { valid: false, message: 'Start week must be between 1 and 52.' };
-            }
-        }
-
-        if (data.endWeek !== '' && data.endWeek !== undefined) {
-            var end = parseInt(data.endWeek, 10);
-
-            if (isNaN(end) || end < 1 || end > 52) {
-                return { valid: false, message: 'End week must be between 1 and 52.' };
-            }
-        }
-
-        if (data.startWeek !== '' && data.endWeek !== '') {
-            var start = parseInt(data.startWeek, 10);
-            var end = parseInt(data.endWeek, 10);
-
-            if (!isNaN(start) && !isNaN(end) && start > end) {
-                return { valid: false, message: 'Start week must be before end week.' };
-            }
-        }
-
-        if (data.weeklyHours !== '' && data.weeklyHours !== undefined) {
-            var hours = parseFloat(data.weeklyHours);
-
-            if (isNaN(hours) || hours < 0 || hours > 40) {
-                return { valid: false, message: 'Weekly hours must be between 0 and 40.' };
-            }
-        }
-
-        if (data.maxStudents !== '' && data.maxStudents !== undefined) {
-            var students = parseInt(data.maxStudents, 10);
-
-            if (isNaN(students) || students < 0 || students > 100) {
-                return { valid: false, message: 'Max students must be between 0 and 100.' };
-            }
-        }
-
-        if (data.weight !== '' && data.weight !== undefined) {
-            var weight = parseFloat(data.weight);
-
-            if (isNaN(weight) || weight < 0.1 || weight > 10) {
-                return { valid: false, message: 'Weight must be between 0.1 and 10.' };
-            }
-        }
-
-        return { valid: true };
-    }
-
-    // ============================================================
-    // SAVE DISCIPLINE
+    // SAVE DISCIPLINE - Delegate validation to core
     // ============================================================
 
     function saveDiscipline(e, container) {
@@ -819,13 +721,6 @@
         var instructorIds = collectInstructorIds(form);
         var gradingSystem = collectGradingSystem(form);
 
-        var gradingValidation = validateGradingSystem(gradingSystem);
-
-        if (!gradingValidation.valid) {
-            showNotification(gradingValidation.message, 'error');
-            return;
-        }
-
         var name = document.getElementById('discipline-name').value.trim();
         var type = document.getElementById('discipline-type').value;
         var curriculum = document.getElementById('discipline-curriculum').value.trim();
@@ -835,10 +730,7 @@
         var students = document.getElementById('discipline-students').value;
         var weight = document.getElementById('discipline-weight').value;
 
-        var weeklyHours = (hours !== '' && hours !== undefined && hours !== null) ? parseFloat(hours) : '';
-        var maxStudents = (students !== '' && students !== undefined && students !== null) ? parseInt(students, 10) : '';
-        var disciplineWeight = (weight !== '' && weight !== undefined && weight !== null) ? parseFloat(weight) : 1;
-
+        // Build data object - let core handle parsing and validation
         var disciplineData = {
             name: name,
             type: type,
@@ -846,18 +738,11 @@
             curriculum: curriculum,
             startWeek: startWeek,
             endWeek: endWeek,
-            weeklyHours: weeklyHours,
-            maxStudents: maxStudents,
-            weight: disciplineWeight,
+            weeklyHours: hours,
+            maxStudents: students,
+            weight: weight,
             gradingSystem: gradingSystem
         };
-
-        var validation = validateDisciplineData(disciplineData);
-
-        if (!validation.valid) {
-            showNotification(validation.message, 'error');
-            return;
-        }
 
         var result;
 
