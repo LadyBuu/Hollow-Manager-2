@@ -4,7 +4,7 @@
  * Path: js/modules/calendar/modes/location.js
  * 
  * This module is responsible for:
- *   - Rendering location schedule grid
+ *   - Rendering location schedule grid (using shared renderer)
  *   - Assigning classes to locations
  *   - Displaying which students are assigned to each location
  * 
@@ -26,6 +26,12 @@
     // ============================================================
 
     if (!window.CalendarUtils) {
+        console.error('LocationMode: CalendarUtils not loaded.');
+        return;
+    }
+
+    if (!window.CalendarRenderer) {
+        console.error('LocationMode: CalendarRenderer not loaded.');
         return;
     }
 
@@ -43,10 +49,10 @@
     // ============================================================
 
     var CalendarUtils = window.CalendarUtils;
+    var CalendarRenderer = window.CalendarRenderer;
 
-    var DAY_NAMES = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-    var CALENDAR_START_HOUR = CalendarUtils.CALENDAR_START_HOUR;
-    var CALENDAR_END_HOUR = CalendarUtils.CALENDAR_END_HOUR;
+    var CALENDAR_START_HOUR = CalendarUtils.CALENDAR_START_HOUR || 5;
+    var CALENDAR_END_HOUR = CalendarUtils.CALENDAR_END_HOUR || 23;
 
     // ============================================================
     // DEPENDENCY VALIDATION
@@ -116,6 +122,7 @@
         // The module degrades gracefully if not available
 
         if (missing.length > 0) {
+            console.warn('LocationMode: Missing dependencies:', missing.join(', '));
             return false;
         }
 
@@ -154,14 +161,125 @@
     }
 
     // ============================================================
-    // GET LOCATION BY ID
+    // RENDER LOCATION SCHEDULE - Using Shared Renderer
     // ============================================================
 
-    function getLocationById(id) {
-        if (typeof window.getLocation === 'function') {
-            return window.getLocation(id);
+    function renderLocationSchedule(container, state) {
+        var locationId = state.selectedId;
+        var week = state.week;
+
+        var schedule = window.getLocationSchedule(locationId, week) || {};
+        var location = window.getLocation(locationId);
+        var locationName = location ? location.name : 'Unknown';
+
+        var allStudents = window.getStudents() || [];
+
+        // Prepare data for shared renderer
+        var data = {
+            schedule: schedule,
+            restDays: [], // Locations don't have rest days
+            entityName: locationName,
+            getDiscipline: function(id) {
+                return window.getDiscipline(id);
+            },
+            getDuration: function(day, hour) {
+                return getLocationDisplayDuration(locationId, week, day, hour, schedule);
+            },
+            getLabel: function(day, hour) {
+                // Locations don't typically have labels, but we could add metadata
+                return '';
+            },
+            getGroupLabel: function(day, hour) {
+                // Locations don't typically have group labels
+                return '';
+            },
+            getInstructorName: function(day, hour) {
+                // Locations don't have instructors directly
+                // We could look up the instructor from the discipline
+                return '';
+            },
+            isBlock: function(day, hour) {
+                // Locations don't have blocks
+                return false;
+            },
+            slotMetadata: function(day, hour) {
+                // Show student count for location slots
+                var disciplineId = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
+                if (!disciplineId) {
+                    return '';
+                }
+
+                var studentNames = getStudentsAtLocation(locationId, week, day, hour, disciplineId);
+                if (studentNames.length > 0) {
+                    return ' - ' + CalendarRenderer.escapeHtml(studentNames.join(', '));
+                }
+                return '';
+            },
+            extraSidebar: getLocationSidebarHTML(locationId, week),
+            availableItems: getAvailableDisciplinesForLocation(locationId, week),
+            availableLabel: 'Available Disciplines'
+        };
+
+        // Use shared renderer
+        CalendarRenderer.renderGrid(container, state, data);
+
+        // Bind events with location-specific callbacks
+        CalendarRenderer.bindEvents(container, state, {
+            onSlotClick: function(day, hour) {
+                showAssignClassModal(locationId, week, day, hour, container);
+            },
+            onSlotRightClick: function(day, hour) {
+                if (confirm('Remove this class from this location?')) {
+                    removeLocationClass(locationId, week, day, hour, container);
+                }
+            },
+            onSlotDetails: function(day, hour) {
+                showLocationClassDetailsModal(locationId, week, day, hour, container);
+            },
+            onAvailableItemClick: function(disciplineId) {
+                // For locations, clicking an available item opens the add modal with that discipline pre-selected
+                showAssignClassModalWithDiscipline(locationId, week, null, null, container, disciplineId);
+            },
+            onClearWeek: function() {
+                clearLocationWeek(locationId, week, container);
+            }
+        });
+
+        // Add clear week button if not already rendered
+        var clearBtn = container.querySelector('#clear-week-btn');
+        if (!clearBtn) {
+            var clearBtnContainer = container.querySelector('.calendar-grid-container');
+            if (clearBtnContainer) {
+                var btnWrapper = document.createElement('div');
+                btnWrapper.style.marginTop = '12px';
+                btnWrapper.innerHTML = '<button id="clear-week-btn" class="danger small">Clear Week</button>';
+                clearBtnContainer.appendChild(btnWrapper);
+            }
         }
-        return null;
+    }
+
+    // ============================================================
+    // LOCATION SIDEBAR
+    // ============================================================
+
+    function getLocationSidebarHTML(locationId, week) {
+        var usageCount = window.getLocationUsage ? window.getLocationUsage(locationId) : 0;
+        var weekUsage = window.getLocationUsageByWeek ? window.getLocationUsageByWeek(locationId, week) : 0;
+        var capacity = window.getLocationCapacity ? window.getLocationCapacity(locationId) : null;
+
+        var html = '<div class="sidebar-section">';
+        html += '<h4>Location Info</h4>';
+        html += '<div style="font-size:0.8rem;color:var(--text-dim);">';
+        html += '<div>Total Usage: <strong>' + usageCount + '</strong> slots</div>';
+        html += '<div>This Week: <strong>' + weekUsage + '</strong> slots</div>';
+        if (capacity !== null && capacity !== undefined) {
+            var capacityDisplay = capacity === 0 ? 'Unlimited' : capacity;
+            html += '<div>Capacity: <strong>' + capacityDisplay + '</strong></div>';
+        }
+        html += '</div>';
+        html += '</div>';
+
+        return html;
     }
 
     // ============================================================
@@ -174,7 +292,6 @@
      * Falls back to inference ONLY if metadata is missing.
      * 
      * This is a UI display helper. The core is authoritative for duration.
-     * The name reflects that this is for display purposes only.
      */
     function getLocationDisplayDuration(locationId, week, day, hour, schedule) {
         // Try metadata first
@@ -206,297 +323,13 @@
     }
 
     // ============================================================
-    // RENDER LOCATION SCHEDULE
+    // STUDENT HELPERS
     // ============================================================
 
-    function renderLocationSchedule(container, state) {
-        var locationId = state.selectedId;
-        var week = state.week;
-
-        var schedule = window.getLocationSchedule(locationId, week) || {};
-        var location = getLocationById(locationId);
-        var locationName = location ? location.name : 'Unknown';
-
-        var allStudents = window.getStudents() || [];
-
-        var html = '<div class="location-schedule">';
-        html += '<div class="location-header"><h3>' + escapeHtml(locationName) + ' - Week ' + week + '</h3></div>';
-        html += getCalendarGridHTML(schedule, locationId, week, allStudents);
-        html += '<div style="margin-top:12px;"><button id="clear-location-week" class="danger small">Clear Week</button></div>';
-        html += '</div>';
-
-        container.innerHTML = html;
-
-        bindLocationEvents(container, locationId, week);
-    }
-
-    // ============================================================
-    // CALENDAR GRID HTML
-    // ============================================================
-
-    function getCalendarGridHTML(schedule, locationId, week, allStudents) {
-        var hours = [];
-        for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
-            hours.push(h);
-        }
-
-        var html = '<div class="schedule-grid">';
-
-        for (var day = 1; day <= 7; day++) {
-            var dayName = DAY_NAMES[day];
-
-            html += '<div class="day-column" data-day="' + day + '">';
-            html += '<div class="day-header">' + dayName + '</div>';
-            html += '<div class="day-slots">';
-
-            var occupiedHours = {};
-
-            for (var i = 0; i < hours.length; i++) {
-                var hour = hours[i];
-
-                if (occupiedHours[hour]) {
-                    continue;
-                }
-
-                var disciplineId = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
-
-                if (disciplineId) {
-                    var discipline = window.getDiscipline(disciplineId);
-
-                    // Get duration using the display helper (metadata first, inference fallback)
-                    var duration = getLocationDisplayDuration(locationId, week, day, hour, schedule);
-
-                    // Mark occupied hours based on duration
-                    for (var h = hour; h < hour + duration && h <= CALENDAR_END_HOUR; h++) {
-                        occupiedHours[h] = true;
-                    }
-
-                    // Find students assigned to this location.
-                    // Students are matched by:
-                    // 1. Having a class at this location (via getClassLocation)
-                    // 2. Having the same discipline at the same start hour
-                    // This assumes both location and student schedules use start-hour-only representation
-                    var studentNames = [];
-                    for (var s = 0; s < allStudents.length; s++) {
-                        var student = allStudents[s];
-                        var classLocation = window.getClassLocation(student.id, week, day, hour);
-                        if (classLocation && String(classLocation) === String(locationId)) {
-                            var sched = window.getStudentSchedule(student.id, week) || {};
-                            if (sched[day] && String(sched[day][hour]) === String(disciplineId)) {
-                                studentNames.push(window.getDisplayName(student));
-                            }
-                        }
-                    }
-
-                    var durationDisplay = duration > 1 ? ' (' + duration + 'h)' : '';
-                    var studentDisplay = studentNames.length > 0 ? ' - ' + escapeHtml(studentNames.join(', ')) : '';
-                    var disciplineName = discipline ? escapeHtml(discipline.name) : 'Unknown';
-
-                    html += '<div class="time-slot occupied" data-day="' + day + '" data-hour="' + hour + '" data-duration="' + duration + '" style="min-height:' + (30 * duration) + 'px;height:' + (30 * duration) + 'px;">';
-                    html += '<span class="slot-time">' + CalendarUtils.formatHour(hour) + '</span>';
-                    html += '<span class="slot-label">' + disciplineName + durationDisplay + studentDisplay + '</span>';
-                    html += '</div>';
-
-                } else {
-                    html += '<div class="time-slot empty" data-day="' + day + '" data-hour="' + hour + '">';
-                    html += '<span class="slot-time">' + CalendarUtils.formatHour(hour) + '</span>';
-                    html += '<span class="slot-label">+</span>';
-                    html += '</div>';
-                }
-            }
-
-            html += '</div>';
-            html += '</div>';
-        }
-
-        html += '</div>';
-
-        return html;
-    }
-
-    // ============================================================
-    // BIND EVENTS
-    // ============================================================
-
-    function bindLocationEvents(container, locationId, week) {
-        var emptySlots = container.querySelectorAll('.time-slot.empty');
-        for (var i = 0; i < emptySlots.length; i++) {
-            var slot = emptySlots[i];
-            slot.addEventListener('click', function() {
-                var day = parseInt(this.dataset.day, 10);
-                var hour = parseInt(this.dataset.hour, 10);
-                showAssignClassModal(locationId, week, day, hour, container);
-            });
-        }
-
-        var occupiedSlots = container.querySelectorAll('.time-slot.occupied');
-        for (var j = 0; j < occupiedSlots.length; j++) {
-            var occSlot = occupiedSlots[j];
-            occSlot.addEventListener('click', function() {
-                var day = parseInt(this.dataset.day, 10);
-                var hour = parseInt(this.dataset.hour, 10);
-                showLocationClassDetailsModal(locationId, week, day, hour, container);
-            });
-
-            occSlot.addEventListener('contextmenu', function(e) {
-                e.preventDefault();
-                var day = parseInt(this.dataset.day, 10);
-                var hour = parseInt(this.dataset.hour, 10);
-                if (confirm('Remove this class from this location?')) {
-                    removeLocationClass(locationId, week, day, hour, container);
-                }
-            });
-        }
-
-        var clearBtn = container.querySelector('#clear-location-week');
-        if (clearBtn) {
-            clearBtn.addEventListener('click', function() {
-                if (confirm('Clear all classes from this location for week ' + week + '?')) {
-                    clearLocationWeek(locationId, week, container);
-                }
-            });
-        }
-    }
-
-    // ============================================================
-    // ASSIGN CLASS MODAL
-    // ============================================================
-
-    function showAssignClassModal(locationId, week, day, hour, container) {
-        var disciplines = window.getAvailableDisciplines(week) || [];
-
-        if (disciplines.length === 0) {
-            showNotification('No disciplines available for week ' + week + '.', 'error');
-            return;
-        }
-
-        var hourDisplay = CalendarUtils.formatHour(hour);
-        var location = getLocationById(locationId);
-        var locationName = location ? location.name : 'Unknown';
-
-        var modal = document.createElement('div');
-        modal.className = 'modal';
-
-        var optionsHTML = '';
-        for (var i = 0; i < disciplines.length; i++) {
-            var d = disciplines[i];
-            var instructorDisplay = '';
-            if (d.instructorIds && d.instructorIds.length > 0) {
-                var instructorNames = [];
-                for (var j = 0; j < d.instructorIds.length; j++) {
-                    // getCharacterById is optional; degrade gracefully if not available
-                    var inst = typeof window.getCharacterById === 'function'
-                        ? window.getCharacterById(d.instructorIds[j])
-                        : null;
-                    if (inst) {
-                        instructorNames.push(window.getDisplayName(inst));
-                    }
-                }
-                if (instructorNames.length > 0) {
-                    instructorDisplay = ' (' + instructorNames.join(', ') + ')';
-                }
-            }
-            optionsHTML += '<option value="' + escapeHtml(d.id) + '">' + escapeHtml(d.name) + instructorDisplay + '</option>';
-        }
-
-        modal.innerHTML = (
-            '<div class="modal-content" style="max-width:450px;">' +
-                '<div class="modal-header">' +
-                    '<h3>Assign Class - ' + escapeHtml(locationName) + ' - ' + escapeHtml(DAY_NAMES[day]) + ' at ' + escapeHtml(hourDisplay) + '</h3>' +
-                    '<button class="close-modal">&times;</button>' +
-                '</div>' +
-                '<div class="modal-body">' +
-                    '<div class="form-group">' +
-                        '<label>Discipline:</label>' +
-                        '<select id="assign-class-select" style="width:100%;padding:8px;margin-top:4px;">' +
-                            optionsHTML +
-                        '</select>' +
-                    '</div>' +
-                    '<div class="form-actions" style="margin-top:16px;">' +
-                        '<button type="button" id="cancel-assign" class="secondary">Cancel</button>' +
-                        '<button type="button" id="confirm-assign" class="primary">Assign</button>' +
-                    '</div>' +
-                '</div>' +
-            '</div>'
-        );
-
-        document.body.appendChild(modal);
-
-        var closeModal = function() { modal.remove(); };
-        modal.querySelector('.close-modal').onclick = closeModal;
-        modal.querySelector('#cancel-assign').onclick = closeModal;
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) {
-                modal.remove();
-            }
-        });
-
-        modal.querySelector('#confirm-assign').onclick = function() {
-            var select = document.getElementById('assign-class-select');
-            var disciplineId = select ? select.value : null;
-
-            if (!disciplineId) {
-                showNotification('Please select a discipline.', 'error');
-                return;
-            }
-
-            // Re-read schedule at commit time (defensive)
-            var currentSchedule = window.getLocationSchedule(locationId, week) || {};
-
-            // Check if slot is still empty (defensive)
-            if (currentSchedule[day] && currentSchedule[day][hour]) {
-                showNotification('This slot is no longer available.', 'error');
-                modal.remove();
-                render(container, { selectedId: locationId, week: week });
-                return;
-            }
-
-            var result = window.setLocationClass(locationId, week, day, hour, disciplineId);
-
-            if (!result || !result.success) {
-                showNotification(result && result.message ? result.message : 'Failed to assign class.', 'error');
-                return;
-            }
-
-            modal.remove();
-            window.saveData()
-                .then(function() {
-                    showNotification('Class assigned to location.', 'success');
-                    render(container, { selectedId: locationId, week: week });
-                })
-                .catch(function() {
-                    showNotification('Class assigned in memory, but persistence failed.', 'error');
-                    render(container, { selectedId: locationId, week: week });
-                });
-        };
-    }
-
-    // ============================================================
-    // CLASS DETAILS MODAL
-    // ============================================================
-
-    function showLocationClassDetailsModal(locationId, week, day, hour, container) {
-        var schedule = window.getLocationSchedule(locationId, week) || {};
-        var disciplineId = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
-
-        if (!disciplineId) {
-            showNotification('Class not found.', 'error');
-            return;
-        }
-
-        var discipline = window.getDiscipline(disciplineId);
-        var hourDisplay = CalendarUtils.formatHour(hour);
-
-        // Get duration using the display helper (metadata first, inference fallback)
-        var duration = getLocationDisplayDuration(locationId, week, day, hour, schedule);
-
-        // Find students assigned to this location.
-        // Students are matched by:
-        // 1. Having a class at this location (via getClassLocation)
-        // 2. Having the same discipline at the same start hour
-        // This assumes both location and student schedules use start-hour-only representation
+    function getStudentsAtLocation(locationId, week, day, hour, disciplineId) {
         var allStudents = window.getStudents() || [];
         var studentNames = [];
+
         for (var s = 0; s < allStudents.length; s++) {
             var student = allStudents[s];
             var classLocation = window.getClassLocation(student.id, week, day, hour);
@@ -508,45 +341,292 @@
             }
         }
 
-        var disciplineName = discipline ? escapeHtml(discipline.name) : 'Unknown';
+        return studentNames;
+    }
 
-        var modal = document.createElement('div');
-        modal.className = 'modal';
-        modal.innerHTML = (
-            '<div class="modal-content" style="max-width:450px;">' +
-                '<div class="modal-header">' +
-                    '<h3>' + disciplineName + '</h3>' +
-                    '<button class="close-modal">&times;</button>' +
-                '</div>' +
-                '<div class="modal-body">' +
-                    '<div class="detail-row"><span class="label">Day/Time:</span> <span>' + escapeHtml(DAY_NAMES[day]) + ' at ' + escapeHtml(hourDisplay) + '</span></div>' +
-                    '<div class="detail-row"><span class="label">Duration:</span> <span><strong>' + duration + ' hour' + (duration > 1 ? 's' : '') + '</strong></span></div>' +
-                    '<div class="detail-row"><span class="label">Students:</span> <span><strong>' + studentNames.length + '</strong> - ' + (studentNames.length > 0 ? escapeHtml(studentNames.join(', ')) : 'None') + '</span></div>' +
-                    '<div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">' +
-                        '<button type="button" id="remove-class-btn" class="danger small">Remove from Location</button>' +
-                        '<button type="button" id="close-detail" class="secondary small">Close</button>' +
-                    '</div>' +
-                '</div>' +
-            '</div>'
-        );
+    // ============================================================
+    // AVAILABLE DISCIPLINES FOR LOCATION
+    // ============================================================
 
-        document.body.appendChild(modal);
+    function getAvailableDisciplinesForLocation(locationId, week) {
+        var allDisciplines = window.getAvailableDisciplines(week) || [];
+        var schedule = window.getLocationSchedule(locationId, week) || {};
 
-        var closeModal = function() { modal.remove(); };
-        modal.querySelector('.close-modal').onclick = closeModal;
-        modal.querySelector('#close-detail').onclick = closeModal;
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) {
-                modal.remove();
+        // Get occupied hours
+        var occupied = {};
+        for (var day in schedule) {
+            if (!Object.prototype.hasOwnProperty.call(schedule, day)) continue;
+            var daySchedule = schedule[day];
+            if (!daySchedule || typeof daySchedule !== 'object') continue;
+
+            for (var hour in daySchedule) {
+                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
+                var discId = daySchedule[hour];
+                if (discId) {
+                    if (!occupied[discId]) occupied[discId] = [];
+                    occupied[discId].push({ day: parseInt(day, 10), hour: parseInt(hour, 10) });
+                }
+            }
+        }
+
+        // Filter disciplines that are not already assigned
+        var available = [];
+        for (var i = 0; i < allDisciplines.length; i++) {
+            var d = allDisciplines[i];
+            if (!occupied[d.id] || occupied[d.id].length === 0) {
+                available.push({
+                    id: d.id,
+                    label: d.name,
+                    subtitle: 'Not assigned'
+                });
+            } else {
+                available.push({
+                    id: d.id,
+                    label: d.name,
+                    subtitle: occupied[d.id].length + ' slot(s)'
+                });
+            }
+        }
+
+        return available;
+    }
+
+    // ============================================================
+    // ASSIGN CLASS MODAL - Using Shared Renderer
+    // ============================================================
+
+    function showAssignClassModal(locationId, week, day, hour, container) {
+        var disciplines = window.getAvailableDisciplines(week) || [];
+
+        if (disciplines.length === 0) {
+            CalendarRenderer.showNotification('No disciplines available for week ' + week + '.', 'error');
+            return;
+        }
+
+        var hourDisplay = CalendarUtils.formatHour(hour);
+        var location = window.getLocation(locationId);
+        var locationName = location ? location.name : 'Unknown';
+
+        CalendarRenderer.createAddClassModal({
+            title: 'Assign Class - ' + locationName + ' - ' + CalendarRenderer.DAY_NAMES[day] + ' at ' + hourDisplay,
+            disciplines: disciplines,
+            maxDuration: 4,
+            getDisciplineLabel: function(d) {
+                var label = d.name;
+                if (d.instructorIds && d.instructorIds.length > 0) {
+                    var instructorNames = [];
+                    for (var j = 0; j < d.instructorIds.length; j++) {
+                        var inst = typeof window.getCharacterById === 'function'
+                            ? window.getCharacterById(d.instructorIds[j])
+                            : null;
+                        if (inst) {
+                            instructorNames.push(window.getDisplayName(inst));
+                        }
+                    }
+                    if (instructorNames.length > 0) {
+                        label += ' (' + instructorNames.join(', ') + ')';
+                    }
+                }
+                return label;
+            },
+            onConfirm: function(disciplineId, duration, label, groupLabel, closeModal) {
+                // Re-read schedule at commit time (defensive)
+                var currentSchedule = window.getLocationSchedule(locationId, week) || {};
+
+                // Check if slot is still empty (defensive)
+                if (currentSchedule[day] && currentSchedule[day][hour]) {
+                    CalendarRenderer.showNotification('This slot is no longer available.', 'error');
+                    closeModal();
+                    render(container, { selectedId: locationId, week: week });
+                    return;
+                }
+
+                var result = window.setLocationClass(locationId, week, day, hour, disciplineId);
+
+                if (!result || !result.success) {
+                    CalendarRenderer.showNotification(result && result.message ? result.message : 'Failed to assign class.', 'error');
+                    return;
+                }
+
+                closeModal();
+                window.saveData()
+                    .then(function() {
+                        CalendarRenderer.showNotification('Class assigned to location.', 'success');
+                        render(container, { selectedId: locationId, week: week });
+                    })
+                    .catch(function() {
+                        CalendarRenderer.showNotification('Class assigned in memory, but persistence failed.', 'error');
+                        render(container, { selectedId: locationId, week: week });
+                    });
+            },
+            onCancel: function() {
+                // No-op
+            }
+        });
+    }
+
+    function showAssignClassModalWithDiscipline(locationId, week, day, hour, container, preSelectedDisciplineId) {
+        var disciplines = window.getAvailableDisciplines(week) || [];
+
+        if (disciplines.length === 0) {
+            CalendarRenderer.showNotification('No disciplines available for week ' + week + '.', 'error');
+            return;
+        }
+
+        var hourDisplay = day !== null && hour !== null ? CalendarUtils.formatHour(hour) : 'any slot';
+        var dayDisplay = day !== null ? CalendarRenderer.DAY_NAMES[day] : 'any day';
+        var location = window.getLocation(locationId);
+        var locationName = location ? location.name : 'Unknown';
+
+        var modal = CalendarRenderer.createAddClassModal({
+            title: 'Assign ' + (preSelectedDisciplineId ? 'Class' : 'Class') + ' - ' + locationName + ' - ' + dayDisplay + ' at ' + hourDisplay,
+            disciplines: disciplines,
+            maxDuration: 4,
+            getDisciplineLabel: function(d) {
+                var label = d.name;
+                if (d.instructorIds && d.instructorIds.length > 0) {
+                    var instructorNames = [];
+                    for (var j = 0; j < d.instructorIds.length; j++) {
+                        var inst = typeof window.getCharacterById === 'function'
+                            ? window.getCharacterById(d.instructorIds[j])
+                            : null;
+                        if (inst) {
+                            instructorNames.push(window.getDisplayName(inst));
+                        }
+                    }
+                    if (instructorNames.length > 0) {
+                        label += ' (' + instructorNames.join(', ') + ')';
+                    }
+                }
+                return label;
+            },
+            onConfirm: function(disciplineId, duration, label, groupLabel, closeModal) {
+                // For "any slot" mode, find an available slot
+                if (day === null || hour === null) {
+                    // Find first available slot
+                    var schedule = window.getLocationSchedule(locationId, week) || {};
+                    var foundSlot = false;
+
+                    for (var d = 1; d <= 7; d++) {
+                        for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
+                            if (!schedule[d] || !schedule[d][h]) {
+                                var result = window.setLocationClass(locationId, week, d, h, disciplineId);
+                                if (result && result.success) {
+                                    foundSlot = true;
+                                    closeModal();
+                                    window.saveData()
+                                        .then(function() {
+                                            CalendarRenderer.showNotification('Class assigned to location.', 'success');
+                                            render(container, { selectedId: locationId, week: week });
+                                        })
+                                        .catch(function() {
+                                            CalendarRenderer.showNotification('Class assigned in memory, but persistence failed.', 'error');
+                                            render(container, { selectedId: locationId, week: week });
+                                        });
+                                    return;
+                                }
+                            }
+                        }
+                    }
+
+                    if (!foundSlot) {
+                        CalendarRenderer.showNotification('No available slots found.', 'error');
+                    }
+                    return;
+                }
+
+                // Specific slot assignment
+                var currentSchedule = window.getLocationSchedule(locationId, week) || {};
+
+                if (currentSchedule[day] && currentSchedule[day][hour]) {
+                    CalendarRenderer.showNotification('This slot is no longer available.', 'error');
+                    closeModal();
+                    render(container, { selectedId: locationId, week: week });
+                    return;
+                }
+
+                var result = window.setLocationClass(locationId, week, day, hour, disciplineId);
+
+                if (!result || !result.success) {
+                    CalendarRenderer.showNotification(result && result.message ? result.message : 'Failed to assign class.', 'error');
+                    return;
+                }
+
+                closeModal();
+                window.saveData()
+                    .then(function() {
+                        CalendarRenderer.showNotification('Class assigned to location.', 'success');
+                        render(container, { selectedId: locationId, week: week });
+                    })
+                    .catch(function() {
+                        CalendarRenderer.showNotification('Class assigned in memory, but persistence failed.', 'error');
+                        render(container, { selectedId: locationId, week: week });
+                    });
+            },
+            onCancel: function() {
+                // No-op
             }
         });
 
-        modal.querySelector('#remove-class-btn').onclick = function() {
-            if (confirm('Remove this class from this location?')) {
-                modal.remove();
-                removeLocationClass(locationId, week, day, hour, container);
+        // Pre-select the discipline if provided
+        if (preSelectedDisciplineId) {
+            var select = modal.querySelector('#add-class-select');
+            if (select) {
+                select.value = preSelectedDisciplineId;
             }
-        };
+        }
+
+        return modal;
+    }
+
+    // ============================================================
+    // CLASS DETAILS MODAL - Using Shared Renderer
+    // ============================================================
+
+    function showLocationClassDetailsModal(locationId, week, day, hour, container) {
+        var schedule = window.getLocationSchedule(locationId, week) || {};
+        var disciplineId = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
+
+        if (!disciplineId) {
+            CalendarRenderer.showNotification('Class not found.', 'error');
+            return;
+        }
+
+        var discipline = window.getDiscipline(disciplineId);
+        var hourDisplay = CalendarUtils.formatHour(hour);
+
+        // Get duration using the display helper
+        var duration = getLocationDisplayDuration(locationId, week, day, hour, schedule);
+
+        // Find students assigned to this location
+        var studentNames = getStudentsAtLocation(locationId, week, day, hour, disciplineId);
+
+        var disciplineName = discipline ? discipline.name : 'Unknown';
+
+        CalendarRenderer.createDetailsModal({
+            title: disciplineName,
+            details: [
+                { label: 'Location', value: window.getLocation(locationId) ? window.getLocation(locationId).name : 'Unknown' },
+                { label: 'Day/Time', value: CalendarRenderer.DAY_NAMES[day] + ' at ' + hourDisplay },
+                { label: 'Duration', value: duration + ' hour' + (duration > 1 ? 's' : '') },
+                { label: 'Students', value: studentNames.length > 0 ? studentNames.length + ' - ' + studentNames.join(', ') : 'None' }
+            ],
+            actions: [
+                {
+                    label: 'Remove from Location',
+                    className: 'danger',
+                    handler: function(closeModal) {
+                        if (confirm('Remove this class from this location?')) {
+                            closeModal();
+                            removeLocationClass(locationId, week, day, hour, container);
+                        }
+                    }
+                }
+            ],
+            onClose: function() {
+                // No-op
+            }
+        });
     }
 
     // ============================================================
@@ -557,17 +637,17 @@
         var result = window.removeLocationClass(locationId, week, day, hour);
 
         if (!result || !result.success) {
-            showNotification(result && result.message ? result.message : 'Failed to remove class.', 'error');
+            CalendarRenderer.showNotification(result && result.message ? result.message : 'Failed to remove class.', 'error');
             return;
         }
 
         window.saveData()
             .then(function() {
-                showNotification('Class removed from location.', 'success');
+                CalendarRenderer.showNotification('Class removed from location.', 'success');
                 render(container, { selectedId: locationId, week: week });
             })
             .catch(function() {
-                showNotification('Class removed in memory, but persistence failed.', 'error');
+                CalendarRenderer.showNotification('Class removed in memory, but persistence failed.', 'error');
                 render(container, { selectedId: locationId, week: week });
             });
     }
@@ -580,49 +660,19 @@
         var result = window.clearLocationSchedule(locationId, week);
 
         if (!result || !result.success) {
-            showNotification(result && result.message ? result.message : 'Failed to clear schedule.', 'error');
+            CalendarRenderer.showNotification(result && result.message ? result.message : 'Failed to clear schedule.', 'error');
             return;
         }
 
         window.saveData()
             .then(function() {
-                showNotification('Location schedule cleared.', 'success');
+                CalendarRenderer.showNotification('Location schedule cleared.', 'success');
                 render(container, { selectedId: locationId, week: week });
             })
             .catch(function() {
-                showNotification('Location schedule cleared in memory, but persistence failed.', 'error');
+                CalendarRenderer.showNotification('Location schedule cleared in memory, but persistence failed.', 'error');
                 render(container, { selectedId: locationId, week: week });
             });
-    }
-
-    // ============================================================
-    // HELPERS
-    // ============================================================
-
-    function escapeHtml(value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
-        var str = String(value);
-        return str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
-
-    function showNotification(message, type) {
-        type = type || 'info';
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
-        }
-        if (type === 'error') {
-            alert('Error: ' + message);
-        } else if (type === 'success') {
-            alert(message);
-        }
     }
 
     // ============================================================
@@ -632,7 +682,7 @@
     if (window.CalendarModes && typeof window.CalendarModes.registerMode === 'function') {
         window.CalendarModes.registerMode('location', {
             label: 'Location',
-            hint: 'Click a slot to assign a class | Right-click to remove',
+            hint: 'Click a slot to assign a class | Right-click to remove | Click available discipline to auto-assign',
             render: render,
             getEntities: getLocations,
             getEntityDisplayName: function(entity) {
