@@ -64,6 +64,14 @@
  *   - Legacy migration exceptions are explicitly documented
  *   - Existing malformed data is preserved and excluded from calculations
  *   - Missing data structures (window.data) cause operations to fail
+ * 
+ * DEPENDENCIES:
+ *   - window.CALENDAR_CONSTANTS (from constants.js)
+ *   - window.STATUS_CONSTANTS (from constants.js)
+ *   - window.ID_CONSTANTS (from constants.js)
+ *   - window.DomUtils (from dom-utils.js)
+ *   - window.CoreUtils (from core-utils.js)
+ *   - window.logActivity (from app.js)
  */
 
 (function() {
@@ -79,8 +87,18 @@
     // CONSTANTS
     // ============================================================
 
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var STATUS = window.STATUS_CONSTANTS || {};
+    var ID = window.ID_CONSTANTS || {};
+
+    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
+    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
+    var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
+    var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
+    var DEFAULT_YEAR = CALENDAR.DEFAULT_YEAR ? CALENDAR.DEFAULT_YEAR() : new Date().getFullYear();
+
     var VALID_TEAM_TYPES = ['academic', 'professional', 'temporary', 'civilian'];
-    var VALID_TEAM_STATUSES = ['active', 'inactive', 'deprecated'];
+    var VALID_TEAM_STATUSES = STATUS.VALID_TEAM_STATUSES || ['active', 'inactive', 'deprecated'];
     var UPDATEABLE_PROPERTIES = [
         'name',
         'type',
@@ -93,6 +111,49 @@
         'teamNumber'
     ];
     // currentRank is DERIVED, not updateable directly
+
+    // ============================================================
+    // UTILITY HELPERS - Use shared utilities when available
+    // ============================================================
+
+    function isString(value) {
+        return typeof value === 'string';
+    }
+
+    function isNonEmptyString(value) {
+        return isString(value) && value.trim() !== '';
+    }
+
+    function isObject(value) {
+        return value !== null && typeof value === 'object' && !Array.isArray(value);
+    }
+
+    function escapeHtml(value) {
+        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
+            return window.DomUtils.escapeHtml(value);
+        }
+        // Fallback
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function deepClone(value) {
+        if (window.CoreUtils && typeof window.CoreUtils.deepClone === 'function') {
+            return window.CoreUtils.deepClone(value);
+        }
+        // Fallback
+        if (value === null || typeof value !== 'object') return value;
+        try {
+            return JSON.parse(JSON.stringify(value));
+        } catch (e) {
+            console.warn('TeamCore: Failed to clone:', e);
+            return null;
+        }
+    }
 
     // ============================================================
     // DATA STORE ACCESS - Pure, no repair
@@ -111,18 +172,6 @@
     // ============================================================
     // VALIDATION HELPERS
     // ============================================================
-
-    function isString(value) {
-        return typeof value === 'string';
-    }
-
-    function isNonEmptyString(value) {
-        return isString(value) && value.trim() !== '';
-    }
-
-    function isObject(value) {
-        return value !== null && typeof value === 'object' && !Array.isArray(value);
-    }
 
     /**
      * Check if a team type is valid.
@@ -156,6 +205,9 @@
     }
 
     function parseNumericPeriod(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
         var str = String(value).trim();
         if (!/^\d+$/.test(str)) {
             return null;
@@ -166,12 +218,12 @@
 
     function isValidAcademicWeek(value) {
         var num = parseNumericPeriod(value);
-        return num !== null && num >= 1 && num <= 52;
+        return num !== null && num >= MIN_WEEK && num <= MAX_WEEK;
     }
 
     function isValidYear(value) {
         var num = parseNumericPeriod(value);
-        return num !== null && num >= 1900 && num <= 2100;
+        return num !== null && num >= MIN_YEAR && num <= MAX_YEAR;
     }
 
     function isValidPeriodForType(value, type) {
@@ -274,11 +326,11 @@
             if (join === null) {
                 return { valid: false, message: 'Invalid join period format.' };
             }
-            if (teamType === 'academic' && (join < 1 || join > 52)) {
-                return { valid: false, message: 'Join period must be between 1 and 52 for academic teams.' };
+            if (teamType === 'academic' && (join < MIN_WEEK || join > MAX_WEEK)) {
+                return { valid: false, message: 'Join period must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + ' for academic teams.' };
             }
             if (teamType !== 'academic' && !isValidYear(member.joinPeriod)) {
-                return { valid: false, message: 'Join period must be a valid year (1900-2100).' };
+                return { valid: false, message: 'Join period must be a valid year (' + MIN_YEAR + '-' + MAX_YEAR + ').' };
             }
         }
 
@@ -287,11 +339,11 @@
             if (leave === null) {
                 return { valid: false, message: 'Invalid leave period format.' };
             }
-            if (teamType === 'academic' && (leave < 1 || leave > 52)) {
-                return { valid: false, message: 'Leave period must be between 1 and 52 for academic teams.' };
+            if (teamType === 'academic' && (leave < MIN_WEEK || leave > MAX_WEEK)) {
+                return { valid: false, message: 'Leave period must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + ' for academic teams.' };
             }
             if (teamType !== 'academic' && !isValidYear(member.leavePeriod)) {
-                return { valid: false, message: 'Leave period must be a valid year (1900-2100).' };
+                return { valid: false, message: 'Leave period must be a valid year (' + MIN_YEAR + '-' + MAX_YEAR + ').' };
             }
         }
 
@@ -436,9 +488,9 @@
                     if (join === null) {
                         errors.push('Member ' + (index + 1) + ' has invalid join period format.');
                     } else if (newType !== 'academic' && !isValidYear(member.joinPeriod)) {
-                        errors.push('Member ' + (index + 1) + ' join period must be a valid year (1900-2100).');
-                    } else if (newType === 'academic' && (join < 1 || join > 52)) {
-                        errors.push('Member ' + (index + 1) + ' join period must be between 1 and 52 for academic teams.');
+                        errors.push('Member ' + (index + 1) + ' join period must be a valid year (' + MIN_YEAR + '-' + MAX_YEAR + ').');
+                    } else if (newType === 'academic' && (join < MIN_WEEK || join > MAX_WEEK)) {
+                        errors.push('Member ' + (index + 1) + ' join period must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + ' for academic teams.');
                     }
                 }
 
@@ -446,9 +498,9 @@
                     if (leave === null) {
                         errors.push('Member ' + (index + 1) + ' has invalid leave period format.');
                     } else if (newType !== 'academic' && !isValidYear(member.leavePeriod)) {
-                        errors.push('Member ' + (index + 1) + ' leave period must be a valid year (1900-2100).');
-                    } else if (newType === 'academic' && (leave < 1 || leave > 52)) {
-                        errors.push('Member ' + (index + 1) + ' leave period must be between 1 and 52 for academic teams.');
+                        errors.push('Member ' + (index + 1) + ' leave period must be a valid year (' + MIN_YEAR + '-' + MAX_YEAR + ').');
+                    } else if (newType === 'academic' && (leave < MIN_WEEK || leave > MAX_WEEK)) {
+                        errors.push('Member ' + (index + 1) + ' leave period must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + ' for academic teams.');
                     }
                 }
 
@@ -466,10 +518,10 @@
                 var period = parseNumericPeriod(r.period);
                 if (period === null) {
                     errors.push('Ranking ' + (index + 1) + ' has invalid period format.');
-                } else if (newType === 'academic' && (period < 1 || period > 52)) {
-                    errors.push('Ranking ' + (index + 1) + ' period must be between 1 and 52 for academic teams.');
+                } else if (newType === 'academic' && (period < MIN_WEEK || period > MAX_WEEK)) {
+                    errors.push('Ranking ' + (index + 1) + ' period must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + ' for academic teams.');
                 } else if (newType !== 'academic' && !isValidYear(period)) {
-                    errors.push('Ranking ' + (index + 1) + ' period must be a valid year (1900-2100).');
+                    errors.push('Ranking ' + (index + 1) + ' period must be a valid year (' + MIN_YEAR + '-' + MAX_YEAR + ').');
                 }
             });
         }
@@ -580,6 +632,18 @@
     }
 
     // ============================================================
+    // ID GENERATION
+    // ============================================================
+
+    function generateTeamId() {
+        var prefix = ID.PREFIXES ? ID.PREFIXES.TEAM : 'team';
+        if (typeof window.generateId === 'function') {
+            return window.generateId(prefix);
+        }
+        return prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    }
+
+    // ============================================================
     // TEAM CORE API
     // ============================================================
 
@@ -684,9 +748,7 @@
             var team = sanitized.data;
 
             var newTeam = {
-                id: typeof window.generateId === 'function'
-                    ? window.generateId('team')
-                    : 'team_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+                id: generateTeamId(),
                 name: team.name,
                 type: team.type,
                 startPeriod: team.startPeriod,
@@ -1157,12 +1219,12 @@
 
             if (team.type === 'academic') {
                 if (!isValidAcademicWeek(periodNum)) {
-                    console.warn('TeamCore.addRanking: Academic period must be a week number (1-52).');
+                    console.warn('TeamCore.addRanking: Academic period must be a week number (' + MIN_WEEK + '-' + MAX_WEEK + ').');
                     return false;
                 }
             } else {
                 if (!isValidYear(periodNum)) {
-                    console.warn('TeamCore.addRanking: Non-academic period must be a year (1900-2100).');
+                    console.warn('TeamCore.addRanking: Non-academic period must be a year (' + MIN_YEAR + '-' + MAX_YEAR + ').');
                     return false;
                 }
             }
@@ -1368,10 +1430,10 @@
         getTypeLabel: function(type) {
             var normalized = normalizeTeamType(type);
             var labels = {
-                'academic': '📚 Academic',
-                'professional': '💼 Professional',
-                'temporary': '📋 Temporary',
-                'civilian': '👤 Civilian'
+                'academic': 'Academic',
+                'professional': 'Professional',
+                'temporary': 'Temporary',
+                'civilian': 'Civilian'
             };
             return labels[normalized] || type || 'Unknown';
         },
@@ -1391,6 +1453,22 @@
                 'unknown': { label: 'Unknown', color: 'var(--text-dim)' }
             };
             return map[status] || map['unknown'];
+        },
+
+        /**
+         * Get the current period for a team type
+         * @param {string} teamType - Team type
+         * @returns {number} Current period
+         */
+        getCurrentPeriod: function(teamType) {
+            var data = window.data || {};
+            if (teamType === 'academic') {
+                if (window.teamState && window.teamState.filters && window.teamState.filters.academic) {
+                    return window.teamState.filters.academic.filterWeek || 1;
+                }
+                return 1;
+            }
+            return data.currentYear || DEFAULT_YEAR;
         }
     };
 
