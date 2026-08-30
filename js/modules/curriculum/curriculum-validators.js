@@ -12,6 +12,8 @@
  *   - Shared validators enforce generic structure and enumerated value constraints
  *   - Caller modules enforce relationships and application-specific business rules
  *   - This module validates STRUCTURE and VALUES, not DOMAIN RELATIONSHIPS
+ *   - All parsing functions are delegated to CurriculumHelpers
+ *   - No function in this module should depend on other curriculum modules
  * 
  * VALIDATION HIERARCHY:
  *   Schema repair (curriculum-schema.js)
@@ -21,100 +23,178 @@
  *   Domain validation (caller modules)
  *        ↓
  *   Business logic (caller modules)
+ * 
+ * DEPENDENCIES:
+ *   - CurriculumHelpers (for type checking, parsing, and result helpers)
+ * 
+ * LOAD ORDER:
+ *   1. curriculum-helpers.js
+ *   2. curriculum-validators.js
+ *   3. All other curriculum modules
+ * 
+ * EXPOSED GLOBALS:
+ *   - window.CurriculumValidators
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
+    // ============================================================
+    // GUARD AGAINST DUPLICATE LOADING
+    // ============================================================
+
     if (window.__curriculumValidatorsLoaded) {
         return;
     }
     window.__curriculumValidatorsLoaded = true;
 
     // ============================================================
-    // PRIVATE HELPERS
+    // DEPENDENCY CHECK
     // ============================================================
 
-    function isObject(value) {
-        return value !== null && typeof value === 'object' && !Array.isArray(value);
+    var Helpers = window.CurriculumHelpers;
+
+    if (!Helpers) {
+        console.error('[CurriculumValidators] CurriculumHelpers not available.');
+        return;
     }
 
-    function isNonEmptyString(value) {
-        return typeof value === 'string' && value.trim() !== '';
-    }
+    // ============================================================
+    // TYPE HELPERS (Delegated to Helpers)
+    // ============================================================
 
-    function hasValue(value) {
-        return value !== undefined && value !== null && String(value).trim() !== '';
-    }
+    var isObject = Helpers.isObject;
+    var isNonEmptyString = Helpers.isNonEmptyString;
+    var hasValue = Helpers.hasValue;
+    var isSafeInteger = Helpers.isSafeInteger;
+    var isPositiveInteger = Helpers.isPositiveInteger;
+    var isNonNegativeInteger = Helpers.isNonNegativeInteger;
+    var isFiniteNumber = Helpers.isFiniteNumber;
 
-    /**
-     * Parse a positive integer (>= 1).
-     * Returns null for invalid, empty, or non-positive values.
-     */
-    function parsePositiveInteger(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        if (!Number.isFinite(num) || !Number.isInteger(num) || num < 1) {
-            return null;
-        }
-        return num;
-    }
+    // ============================================================
+    // PARSING HELPERS (Delegated to Helpers)
+    // ============================================================
 
-    /**
-     * Parse a non-negative integer (>= 0).
-     * Returns null for invalid or negative values.
-     * Used for max students, capacity, and other integer values that can be zero.
-     */
-    function parseNonNegativeInteger(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0) {
-            return null;
-        }
-        return num;
-    }
+    var parsePositiveInteger = Helpers.parsePositiveInteger;
+    var parseNonNegativeInteger = Helpers.parseNonNegativeInteger;
+    var parseNonNegativeNumber = Helpers.parseNonNegativeNumber;
+    var parseWeek = Helpers.parseWeek;
+    var parseRank = Helpers.parseRank;
+    var parseDuration = Helpers.parseDuration;
+    var parseDay = Helpers.parseDay;
+    var parseHour = Helpers.parseHour;
 
-    /**
-     * Parse a non-negative number (>= 0).
-     * Returns null for invalid or negative values.
-     * Used for weekly hours, weights, and other decimal values that can be zero.
-     */
-    function parseNonNegativeNumber(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        if (!Number.isFinite(num) || num < 0) {
-            return null;
-        }
-        return num;
-    }
+    // ============================================================
+    // RESULT HELPERS (Delegated to Helpers)
+    // ============================================================
 
-    function isSafeInteger(value) {
-        return Number.isSafeInteger(value);
-    }
+    var failure = Helpers.failure;
+    var success = Helpers.success;
 
     // ============================================================
     // WEEK VALIDATION
     // ============================================================
 
+    /**
+     * Validate a week number.
+     * @param {*} value - Week number to validate
+     * @returns {number|null} Validated week or null
+     */
     function validateWeek(value) {
-        var num = parsePositiveInteger(value);
-        return num !== null && num >= 1 && num <= 52 ? num : null;
+        return parseWeek(value);
+    }
+
+    /**
+     * Check if a week number is valid.
+     * @param {*} value - Week number to check
+     * @returns {boolean} True if valid week (1-52)
+     */
+    function isValidWeek(value) {
+        return validateWeek(value) !== null;
     }
 
     // ============================================================
     // RANK VALIDATION
     // ============================================================
 
+    /**
+     * Validate a rank number.
+     * @param {*} value - Rank number to validate
+     * @returns {number|null} Validated rank or null
+     */
     function validateRank(value) {
-        var num = parsePositiveInteger(value);
-        return num !== null ? num : null;
+        return parseRank(value);
+    }
+
+    /**
+     * Check if a rank number is valid.
+     * @param {*} value - Rank number to check
+     * @returns {boolean} True if valid rank (>= 1)
+     */
+    function isValidRank(value) {
+        return validateRank(value) !== null;
+    }
+
+    // ============================================================
+    // DURATION VALIDATION
+    // ============================================================
+
+    /**
+     * Validate a duration (1-4 hours).
+     * @param {*} value - Duration to validate
+     * @returns {number|null} Validated duration or null
+     */
+    function validateDuration(value) {
+        return parseDuration(value);
+    }
+
+    /**
+     * Check if a duration is valid.
+     * @param {*} value - Duration to check
+     * @returns {boolean} True if valid duration (1-4)
+     */
+    function isValidDuration(value) {
+        return validateDuration(value) !== null;
+    }
+
+    // ============================================================
+    // DAY AND HOUR VALIDATION
+    // ============================================================
+
+    /**
+     * Validate a day number (1-7).
+     * @param {*} value - Day number to validate
+     * @returns {number|null} Validated day or null
+     */
+    function validateDay(value) {
+        return parseDay(value);
+    }
+
+    /**
+     * Validate an hour number (0-23).
+     * @param {*} value - Hour number to validate
+     * @returns {number|null} Validated hour or null
+     */
+    function validateHour(value) {
+        return parseHour(value);
+    }
+
+    /**
+     * Check if a day number is valid.
+     * @param {*} value - Day number to check
+     * @returns {boolean} True if valid day (1-7)
+     */
+    function isValidDay(value) {
+        return validateDay(value) !== null;
+    }
+
+    /**
+     * Check if an hour number is valid.
+     * @param {*} value - Hour number to check
+     * @returns {boolean} True if valid hour (0-23)
+     */
+    function isValidHour(value) {
+        return validateHour(value) !== null;
     }
 
     // ============================================================
@@ -335,8 +415,8 @@
                 return { valid: true, value: null };
             }
 
-            var num = parsePositiveInteger(value);
-            if (num === null || num < 1 || num > 52) {
+            var num = parseWeek(value);
+            if (num === null) {
                 return { valid: false, message: label + ' must be between 1 and 52.' };
             }
 
@@ -355,11 +435,11 @@
 
         // Cross-field: startWeek <= endWeek (if both present)
         var start = data.startWeek !== '' && data.startWeek !== null && data.startWeek !== undefined
-            ? parsePositiveInteger(data.startWeek)
+            ? parseWeek(data.startWeek)
             : null;
 
         var end = data.endWeek !== '' && data.endWeek !== null && data.endWeek !== undefined
-            ? parsePositiveInteger(data.endWeek)
+            ? parseWeek(data.endWeek)
             : null;
 
         if (start !== null && end !== null && start > end) {
@@ -580,24 +660,130 @@
     }
 
     // ============================================================
+    // SCHEDULE SLOT VALIDATION
+    // ============================================================
+
+    /**
+     * Validate a schedule slot.
+     * 
+     * @param {string} studentId - Student ID
+     * @param {*} week - Week number
+     * @param {*} day - Day number
+     * @param {*} hour - Hour number
+     * @returns {Object} { valid: boolean, message?: string, data?: Object }
+     * 
+     * NOTE: This validates structure and values. It does NOT check:
+     *   - That the student exists (caller responsibility)
+     *   - That the slot is available (caller responsibility)
+     *   - That there are no conflicts (caller responsibility)
+     */
+    function validateScheduleSlot(studentId, week, day, hour) {
+        if (!isNonEmptyString(studentId)) {
+            return { valid: false, message: 'Student ID is required.' };
+        }
+
+        var weekNum = validateWeek(week);
+        if (weekNum === null) {
+            return { valid: false, message: 'Valid week is required (1-52).' };
+        }
+
+        var dayNum = validateDay(day);
+        if (dayNum === null) {
+            return { valid: false, message: 'Valid day is required (1-7).' };
+        }
+
+        var hourNum = validateHour(hour);
+        if (hourNum === null) {
+            return { valid: false, message: 'Valid hour is required (0-23).' };
+        }
+
+        return {
+            valid: true,
+            data: {
+                studentId: String(studentId).trim(),
+                week: weekNum,
+                day: dayNum,
+                hour: hourNum
+            }
+        };
+    }
+
+    // ============================================================
+    // CLASS VALIDATION
+    // ============================================================
+
+    /**
+     * Validate class data.
+     * 
+     * @param {Object} data - Class data to validate
+     * @param {boolean} isPartial - If true, only validate fields that are present
+     * @returns {Object} { valid: boolean, message?: string }
+     * 
+     * NOTE: This validates STRUCTURE. It does NOT check:
+     *   - That the class name is unique (caller responsibility)
+     *   - That the class exists (caller responsibility)
+     */
+    function validateClass(data, isPartial) {
+        if (!isObject(data)) {
+            return { valid: false, message: 'Class data must be an object.' };
+        }
+
+        // Name validation
+        if (!isPartial) {
+            if (!isNonEmptyString(data.name)) {
+                return { valid: false, message: 'Class name is required.' };
+            }
+        } else {
+            if (data.name !== undefined && !isNonEmptyString(data.name)) {
+                return { valid: false, message: 'Class name cannot be empty.' };
+            }
+        }
+
+        // No other fields to validate for classes
+        return { valid: true };
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.CurriculumValidators = {
-        // Type helpers
+        // Type helpers (delegated)
         isObject: isObject,
         isNonEmptyString: isNonEmptyString,
         hasValue: hasValue,
+        isSafeInteger: isSafeInteger,
+        isPositiveInteger: isPositiveInteger,
+        isNonNegativeInteger: isNonNegativeInteger,
+        isFiniteNumber: isFiniteNumber,
+
+        // Parsing helpers (delegated)
         parsePositiveInteger: parsePositiveInteger,
         parseNonNegativeInteger: parseNonNegativeInteger,
         parseNonNegativeNumber: parseNonNegativeNumber,
-        isSafeInteger: isSafeInteger,
+        parseWeek: parseWeek,
+        parseRank: parseRank,
+        parseDuration: parseDuration,
+        parseDay: parseDay,
+        parseHour: parseHour,
 
         // Week validation
         validateWeek: validateWeek,
+        isValidWeek: isValidWeek,
 
         // Rank validation
         validateRank: validateRank,
+        isValidRank: isValidRank,
+
+        // Duration validation
+        validateDuration: validateDuration,
+        isValidDuration: isValidDuration,
+
+        // Day and hour validation
+        validateDay: validateDay,
+        validateHour: validateHour,
+        isValidDay: isValidDay,
+        isValidHour: isValidHour,
 
         // Grading system validation
         validateGradingSystem: validateGradingSystem,
@@ -609,7 +795,14 @@
         validateMemberData: validateMemberData,
 
         // Location validation
-        validateLocation: validateLocation
+        validateLocation: validateLocation,
+
+        // Schedule slot validation
+        validateScheduleSlot: validateScheduleSlot,
+
+        // Class validation
+        validateClass: validateClass
     };
+
 
 })();
