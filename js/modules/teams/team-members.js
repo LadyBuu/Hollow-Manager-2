@@ -3,15 +3,15 @@
  * Handles adding, removing, and managing team members
  * Path: js/modules/teams/team-members.js
  * 
- * IMPORTANT: This module is READ-ONLY for data operations.
- * All mutations are delegated to TeamCore.
- * This module does NOT call saveData().
- * 
  * This module is responsible for:
  *   - Determining member status at a given period (historical timeline engine)
  *   - Determining character eligibility for teams
  *   - Rendering member lists (returns HTML)
  *   - Providing eligibility status for UI display
+ * 
+ * IMPORTANT: This module is READ-ONLY for data operations.
+ * All mutations are delegated to TeamCore.
+ * This module does NOT call saveData().
  * 
  * ELIGIBILITY CONCEPTS:
  *   - Candidate characters: Those whose CURRENT career status makes them
@@ -37,6 +37,16 @@
  *   - All user-controlled data is escaped before HTML insertion
  *   - Role names are escaped
  *   - Character names are escaped
+ * 
+ * DEPENDENCIES:
+ *   - window.TeamCore - Core team operations (required)
+ *   - window.CALENDAR_CONSTANTS - Week/year constants (from constants.js)
+ *   - window.STATUS_CONSTANTS - Status constants (from constants.js)
+ *   - window.DomUtils - HTML escaping (from dom-utils.js)
+ *   - window.getCharacterById (from core-utils.js)
+ *   - window.getDisplayName (from core-utils.js)
+ *   - window.getCurrentStatus (from core-utils.js)
+ *   - window.getCharacterAge (from core-utils.js)
  */
 
 (function() {
@@ -58,10 +68,30 @@
     }
 
     // ============================================================
-    // HTML ESCAPING - Prevents XSS
+    // CONSTANTS
+    // ============================================================
+
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var STATUS = window.STATUS_CONSTANTS || {};
+
+    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
+    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
+    var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
+    var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
+
+    var STUDENT_STATUSES = STATUS.STUDENT_STATUSES || ['trainee', 'rookie', 'junior'];
+    var INSTRUCTOR_STATUSES = STATUS.INSTRUCTOR_STATUSES || ['instructor', 'teacher', 'professor', 'senior'];
+    var ALLOWED_NON_CIVILIAN = ['trainee', 'rookie', 'junior', 'senior', 'instructor', 'support'];
+
+    // ============================================================
+    // HTML ESCAPING - Use DomUtils when available
     // ============================================================
 
     function escapeHtml(value) {
+        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
+            return window.DomUtils.escapeHtml(value);
+        }
+        // Fallback
         return String(value == null ? '' : value)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
@@ -75,6 +105,9 @@
     // ============================================================
 
     function parseNumericPeriod(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
         var str = String(value).trim();
         if (!/^\d+$/.test(str)) {
             return null;
@@ -86,6 +119,16 @@
     function parsePositivePeriod(value) {
         var parsed = parseNumericPeriod(value);
         return (parsed !== null && parsed >= 1) ? parsed : null;
+    }
+
+    function isValidAcademicWeek(value) {
+        var num = parseNumericPeriod(value);
+        return num !== null && num >= MIN_WEEK && num <= MAX_WEEK;
+    }
+
+    function isValidYear(value) {
+        var num = parseNumericPeriod(value);
+        return num !== null && num >= MIN_YEAR && num <= MAX_YEAR;
     }
 
     // ============================================================
@@ -374,10 +417,10 @@
                     result.push(c);
                 }
             } else {
-                var allowedStatuses = ['trainee', 'rookie', 'junior', 'senior', 'instructor', 'support'];
+                // Professional, temporary, or other non-academic teams
                 var isAllowed = false;
-                for (var i = 0; i < allowedStatuses.length; i++) {
-                    if (status === allowedStatuses[i] || status.startsWith(allowedStatuses[i])) {
+                for (var i = 0; i < ALLOWED_NON_CIVILIAN.length; i++) {
+                    if (status === ALLOWED_NON_CIVILIAN[i] || status.startsWith(ALLOWED_NON_CIVILIAN[i])) {
                         isAllowed = true;
                         break;
                     }
@@ -386,6 +429,13 @@
                     result.push(c);
                 }
             }
+        });
+
+        // Sort by display name
+        result.sort(function(a, b) {
+            var nameA = window.getDisplayName ? window.getDisplayName(a) : (a.firstName || 'Unknown');
+            var nameB = window.getDisplayName ? window.getDisplayName(b) : (b.firstName || 'Unknown');
+            return nameA.localeCompare(nameB);
         });
 
         return result;
@@ -533,16 +583,38 @@
     }
 
     // ============================================================
-    // EXPOSE
+    // PUBLIC API
     // ============================================================
 
-    window.TeamMembers = {
+    var TeamMembers = {
+        // Status determination
         getStatusAtPeriod: getStatusAtPeriod,
         getStatusAtWeek: getStatusAtWeek,
+
+        // Eligibility
         getCandidateCharacters: getCandidateCharacters,
         getEligibleCharacters: getEligibleCharacters, // Legacy alias
         getEligibilityStatus: getEligibilityStatus,
-        renderList: renderList
+
+        // Rendering
+        renderList: renderList,
+
+        // Validation helpers (exposed for external use)
+        isValidAcademicWeek: isValidAcademicWeek,
+        isValidYear: isValidYear,
+        parsePositivePeriod: parsePositivePeriod,
+
+        // Constants
+        MIN_WEEK: MIN_WEEK,
+        MAX_WEEK: MAX_WEEK,
+        MIN_YEAR: MIN_YEAR,
+        MAX_YEAR: MAX_YEAR
     };
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
+    window.TeamMembers = TeamMembers;
 
 })();
