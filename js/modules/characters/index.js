@@ -16,6 +16,7 @@
  *   - Events are bound by CharacterEvents after rendering
  *   - The list open state is preserved across re-renders
  *   - Can be destroyed and re-initialized for lifecycle management
+ *   - Waits for dataReady event before rendering
  * 
  * LIFECYCLE:
  *   - renderCharacters(container) - Renders the module
@@ -35,6 +36,12 @@
  *   - window.CharacterViews
  *   - window.CharacterClasses
  *   - window.CharacterEliminations
+ * 
+ * DATA READY HANDLING:
+ *   - Renders immediately if window.data exists
+ *   - Waits for 'dataReady' event if data not yet loaded
+ *   - Shows loading state while waiting
+ *   - Handles data corruption gracefully
  */
 
 (function() {
@@ -53,6 +60,9 @@
     var _currentEditId = null;
     var _characterListOpen = false;
     var _listenersBound = false;
+    var _isRendering = false;
+    var _pendingRender = false;
+    var _dataReadyFired = false;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -235,66 +245,107 @@
     // ============================================================
 
     function renderCharacters(container) {
-        if (!checkDependencies()) {
+        // Prevent concurrent renders
+        if (_isRendering) {
+            _pendingRender = true;
+            return;
+        }
+
+        _isRendering = true;
+
+        try {
+            if (!checkDependencies()) {
+                if (!container) {
+                    container = document.getElementById('tab-characters');
+                }
+                if (container) {
+                    container.innerHTML = '<p class="empty-state">Dependencies not loaded. Please refresh the page.</p>';
+                }
+                _isRendering = false;
+                return;
+            }
+
             if (!container) {
                 container = document.getElementById('tab-characters');
             }
-            if (container) {
-                container.innerHTML = '<p class="empty-state">Dependencies not loaded. Please refresh the page.</p>';
+            if (!container) {
+                console.warn('Characters: Container #tab-characters not found');
+                _isRendering = false;
+                return;
             }
-            return;
-        }
 
-        if (!container) {
-            container = document.getElementById('tab-characters');
-        }
-        if (!container) {
-            console.warn('Characters: Container #tab-characters not found');
-            return;
-        }
+            // Wait for data
+            if (!window.data) {
+                container.innerHTML = '<p class="empty-state">Loading data...</p>';
+                // Listen for dataReady if not already listening
+                if (!container._dataListener) {
+                    container._dataListener = true;
+                    document.addEventListener('dataReady', function onDataReady() {
+                        document.removeEventListener('dataReady', onDataReady);
+                        // Re-render when data is ready
+                        if (!_isRendering) {
+                            renderCharacters(container);
+                        } else {
+                            _pendingRender = true;
+                        }
+                    });
+                }
+                _isRendering = false;
+                return;
+            }
 
-        if (!window.data) {
-            console.warn('No data available for characters, waiting for dataReady event');
-            container.innerHTML = '<p class="empty-state">Loading data...</p>';
-            return;
-        }
+            // Validate data structures - fail closed
+            if (!Array.isArray(window.data.characters)) {
+                console.warn('Characters: Invalid characters data structure');
+                container.innerHTML = '<p class="empty-state">Character data is corrupted. Please reload.</p>';
+                _isRendering = false;
+                return;
+            }
 
-        // Validate data structures - fail closed
-        if (!Array.isArray(window.data.characters)) {
-            console.warn('Characters: Invalid characters data structure');
-            container.innerHTML = '<p class="empty-state">Character data is corrupted. Please reload.</p>';
-            return;
-        }
+            if (!Array.isArray(window.data.classes)) {
+                console.warn('Characters: Invalid classes data structure');
+                container.innerHTML = '<p class="empty-state">Class data is corrupted. Please reload.</p>';
+                _isRendering = false;
+                return;
+            }
 
-        if (!Array.isArray(window.data.classes)) {
-            console.warn('Characters: Invalid classes data structure');
-            container.innerHTML = '<p class="empty-state">Class data is corrupted. Please reload.</p>';
-            return;
-        }
+            // Build the container HTML
+            container.innerHTML = getCharactersHTML();
+            
+            // Render the character list
+            if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+                window.CharacterList.render();
+            }
+            
+            // Initialize form (rendering only, no events)
+            if (window.CharacterForm && typeof window.CharacterForm.init === 'function') {
+                window.CharacterForm.init(container);
+            }
+            
+            // Initialize events - this will remove any old listeners and bind new ones
+            if (window.CharacterEvents && typeof window.CharacterEvents.init === 'function') {
+                window.CharacterEvents.init(container);
+            }
+            
+            // Select the current character, preserving selection
+            selectCurrentCharacter();
 
-        // Build the container HTML
-        container.innerHTML = getCharactersHTML();
-        
-        // Render the character list
-        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-            window.CharacterList.render();
-        }
-        
-        // Initialize form (rendering only, no events)
-        if (window.CharacterForm && typeof window.CharacterForm.init === 'function') {
-            window.CharacterForm.init(container);
-        }
-        
-        // Initialize events - this will remove any old listeners and bind new ones
-        if (window.CharacterEvents && typeof window.CharacterEvents.init === 'function') {
-            window.CharacterEvents.init(container);
-        }
-        
-        // Select the current character, preserving selection
-        selectCurrentCharacter();
+            // Bind global listeners if not already bound
+            bindGlobalListeners();
 
-        // Bind global listeners if not already bound
-        bindGlobalListeners();
+        } catch (err) {
+            console.error('Characters: Error rendering:', err);
+            if (container) {
+                container.innerHTML = '<p class="empty-state" style="color:var(--danger);">Error loading characters. Please refresh the page.</p>';
+            }
+        } finally {
+            _isRendering = false;
+            // Handle any pending render requests
+            if (_pendingRender) {
+                _pendingRender = false;
+                renderCharacters(container);
+            }
+        }
     }
 
     // ============================================================
@@ -347,7 +398,20 @@
         _listenersBound = false;
     }
 
-    function handleDataReady() {
+    function handleDataReady(e) {
+        var detail = e && e.detail;
+        var status = detail ? detail.status : null;
+        
+        if (status === 'failed') {
+            var container = document.getElementById('tab-characters');
+            if (container) {
+                container.innerHTML = '<p class="empty-state" style="color:var(--danger);">Failed to load character data. Please refresh the page.</p>';
+            }
+            return;
+        }
+
+        _dataReadyFired = true;
+
         var container = document.getElementById('tab-characters');
         if (container && container.style.display !== 'none') {
             renderCharacters(container);
@@ -372,6 +436,8 @@
             window.CharacterEvents.destroy();
         }
         unbindGlobalListeners();
+        _isRendering = false;
+        _pendingRender = false;
     }
 
     // ============================================================
