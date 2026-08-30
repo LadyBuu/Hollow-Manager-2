@@ -186,12 +186,25 @@
             if (typeof window.TabManager.onDataReady === 'function') {
                 window.TabManager.onDataReady();
             } 
-            // Otherwise, set data ready state directly
+            // Otherwise, set data ready state directly and process pending tab
             else if (window.TabManager._state) {
                 window.TabManager._state.isDataReady = true;
-                // Refresh current tab if initialized
-                if (window.TabManager.isInitialized) {
-                    window.TabManager.refreshCurrent();
+                
+                // Process any pending tab
+                if (window.TabManager._state.pendingTab) {
+                    var tab = window.TabManager._state.pendingTab;
+                    var history = window.TabManager._state.pendingUpdateHistory;
+                    window.TabManager._state.pendingTab = null;
+                    window.TabManager._state.pendingUpdateHistory = false;
+                    
+                    if (typeof window.TabManager.switchTo === 'function') {
+                        window.TabManager.switchTo(tab, history);
+                    }
+                } else {
+                    // Refresh current tab if initialized
+                    if (window.TabManager.isInitialized && typeof window.TabManager.refreshCurrent === 'function') {
+                        window.TabManager.refreshCurrent();
+                    }
                 }
             }
         }
@@ -202,7 +215,7 @@
             window.renderDashboard(tab);
         }
 
-        // Log success (don't use console.log in production, but this is helpful)
+        // Log success
         if (data) {
             var msg = 'Data loaded successfully. ';
             msg += (data.characters ? data.characters.length : 0) + ' characters, ';
@@ -233,6 +246,11 @@
         }
         
         console.error('Data loading failed:', error);
+        
+        // Notify TabManager of failure so it can show error state
+        if (window.TabManager && typeof window.TabManager.onDataReady === 'function') {
+            window.TabManager.onDataReady();
+        }
     }
 
     // ============================================================
@@ -278,6 +296,7 @@
             }
         }
 
+        // Log initialization (no console.log in production, but this is helpful)
         console.info('App initialized');
     }
 
