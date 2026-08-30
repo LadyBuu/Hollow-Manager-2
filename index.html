@@ -9,7 +9,9 @@
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
 </head>
 <body>
-    <!-- HEADER -->
+    <!-- ============================================================
+         HEADER
+         ============================================================ -->
     <header>
         <div class="header-top">
             <h1>Hollow <span>Blades</span></h1>
@@ -35,67 +37,18 @@
         </div>
     </header>
 
-    <!-- MAIN CONTENT -->
+    <!-- ============================================================
+         MAIN CONTENT
+         ============================================================ -->
     <main>
         <!-- Tab: Dashboard -->
         <div id="tab-dashboard" class="tab-content active">
-            <div class="page-header">
-                <h2>Dashboard</h2>
-                <span class="text-dim">Year: <span id="header-current-year" style="cursor:pointer;">2024</span></span>
-            </div>
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <h3>Characters</h3>
-                    <p class="stat-number" id="char-count">0</p>
-                    <span class="stat-link" data-tab="characters">Manage →</span>
-                </div>
-                <div class="stat-card">
-                    <h3>Teams</h3>
-                    <p class="stat-number" id="team-count">0</p>
-                    <span class="stat-link" data-tab="teams">Manage →</span>
-                </div>
-                <div class="stat-card">
-                    <h3>Tournaments</h3>
-                    <p class="stat-number" id="tournament-count">0</p>
-                    <span class="stat-link" data-tab="tournaments">Manage →</span>
-                </div>
-                <div class="stat-card">
-                    <h3>Students</h3>
-                    <p class="stat-number" id="student-count">0</p>
-                    <span class="stat-link" data-tab="curriculum">Manage →</span>
-                </div>
-                <div class="stat-card">
-                    <h3>Disciplines</h3>
-                    <p class="stat-number" id="discipline-count">0</p>
-                    <span class="stat-link" data-tab="curriculum">Manage →</span>
-                </div>
-                <div class="stat-card">
-                    <h3>Missions</h3>
-                    <p class="stat-number" id="mission-count">0</p>
-                    <span class="stat-link" data-tab="missions">Manage →</span>
-                </div>
-                <div class="stat-card">
-                    <h3>Social</h3>
-                    <p class="stat-number" id="social-count">0</p>
-                    <span class="stat-link" data-tab="social">View Network →</span>
-                </div>
-            </div>
-            <div class="dashboard-grid">
-                <div class="dashboard-section">
-                    <h3>Quick Actions</h3>
-                    <div class="quick-actions">
-                        <span class="quick-link" data-tab="characters">Add Character</span>
-                        <span class="quick-link" data-tab="teams">Add Team</span>
-                        <span class="quick-link" data-tab="missions">Add Mission</span>
-                        <span class="quick-link" data-tab="social">Add Relationship</span>
-                    </div>
-                </div>
-            </div>
+            <!-- Rendered by dashboard.js -->
         </div>
 
         <!-- Tab: Characters -->
         <div id="tab-characters" class="tab-content">
-            <!-- Rendered by characters.js -->
+            <!-- Rendered by characters/index.js -->
         </div>
 
         <!-- Tab: Teams -->
@@ -124,7 +77,9 @@
         </div>
     </main>
 
-    <!-- SHARED MODAL CONTAINER -->
+    <!-- ============================================================
+         SHARED MODAL CONTAINER
+         ============================================================ -->
     <div id="modal-container" class="modal hidden">
         <div class="modal-content">
             <div class="modal-header">
@@ -135,7 +90,9 @@
         </div>
     </div>
 
-    <!-- CHARACTER DETAIL MODAL -->
+    <!-- ============================================================
+         CHARACTER DETAIL MODAL
+         ============================================================ -->
     <div id="character-detail-modal" class="modal hidden">
         <div class="modal-content wide">
             <div class="modal-header">
@@ -171,24 +128,76 @@
         </div>
     </div>
 
-    <!-- SCRIPTS -->
-    <!-- Core -->
+    <!-- ============================================================
+         SCRIPTS - LOAD ORDER IS CRITICAL
+         ============================================================
+
+         1. CONSTANTS - MUST BE FIRST
+         2. UTILITIES - Pure helpers
+         3. CORE MODULES - Data layer and infrastructure
+         4. CORE DOMAIN - Business logic modules
+         5. FEATURE MODULES - UI modules
+         6. APP BOOTSTRAPPER - Orchestrates everything
+         ============================================================ -->
+
+    <!-- ============================================================
+         1. CONSTANTS - MUST BE FIRST
+         ============================================================ -->
+    <script src="js/constants.js"></script>
+
+    <!-- ============================================================
+         2. UTILITIES
+         ============================================================ -->
+    <script src="js/utils/core-utils.js"></script>
+    <script src="js/utils/dom-utils.js"></script>
+    <script src="js/utils/notification.js"></script>
+    <script src="js/utils/calendar-utils.js"></script>
+
+    <!-- ============================================================
+         3. CORE MODULES
+         ============================================================ -->
     <script src="js/core/state.js"></script>
     <script src="js/core/database.js"></script>
-    <script src="js/core/utils.js"></script>
     <script src="js/core/loader.js"></script>
     <script src="js/core/tab-manager.js"></script>
 
-    <!-- Export -->
+    <!-- ============================================================
+         4. CORE DOMAIN MODULES
+         ============================================================ -->
+    <script src="js/core/class-core.js"></script>
+    <script src="js/core/calendar-core.js"></script>
+    <script src="js/core/discipline-core.js"></script>
+    <script src="js/core/grade-core.js"></script>
+    <script src="js/core/group-core.js"></script>
+    <script src="js/core/location-core.js"></script>
+    <script src="js/core/ranking-core.js"></script>
+    <script src="js/core/schedule-core.js"></script>
+
+    <!-- ============================================================
+         5. EXPORT MODULE
+         ============================================================ -->
     <script src="js/export.js"></script>
 
-    <!-- Modules -->
+    <!-- ============================================================
+         6. FEATURE MODULES
+         ============================================================ -->
+
+    <!-- Dashboard -->
     <script src="js/modules/dashboard.js"></script>
+
+    <!-- Characters (split modules - load in dependency order) -->
     <script src="js/modules/characters/character-stats.js"></script>
+    <script src="js/modules/characters/character-crud.js"></script>
+    <script src="js/modules/characters/character-classes.js"></script>
+    <script src="js/modules/characters/character-eliminations.js"></script>
+    <script src="js/modules/characters/character-views.js"></script>
+    <script src="js/modules/characters/character-list.js"></script>
+    <script src="js/modules/characters/character-form.js"></script>
     <script src="js/modules/characters/character-detail.js"></script>
-    <script src="js/modules/characters/characters.js"></script>
-    
-    <!-- Teams Module - CORRECT ORDER -->
+    <script src="js/modules/characters/character-events.js"></script>
+    <script src="js/modules/characters/index.js"></script>
+
+    <!-- Teams -->
     <script src="js/modules/teams/team-core.js"></script>
     <script src="js/modules/teams/team-filters.js"></script>
     <script src="js/modules/teams/team-render.js"></script>
@@ -196,11 +205,11 @@
     <script src="js/modules/teams/team-rankings.js"></script>
     <script src="js/modules/teams/team-modals.js"></script>
     <script src="js/modules/teams/team-manager.js"></script>
-    
+
     <!-- Tournaments -->
     <script src="js/modules/tournaments/tournaments-core.js"></script>
     <script src="js/modules/tournaments/tournaments-ui.js"></script>
-    
+
     <!-- Curriculum -->
     <script src="js/modules/curriculum/curriculum-main.js"></script>
     <script src="js/modules/curriculum/disciplines.js"></script>
@@ -211,68 +220,17 @@
     <script src="js/modules/curriculum/grades.js"></script>
     <script src="js/modules/curriculum/ranking.js"></script>
     <script src="js/modules/curriculum/classes.js"></script>
-    
+
     <!-- Missions -->
     <script src="js/modules/missions.js"></script>
-    
+
     <!-- Social -->
     <script src="js/modules/social.js"></script>
 
-    <!-- App Bootstrapper -->
+    <!-- ============================================================
+         7. APP BOOTSTRAPPER - MUST BE LAST
+         ============================================================ -->
     <script src="js/app.js"></script>
 
-    <!-- Burger Menu Fix - Additional safety -->
-    <script>
-    (function() {
-        'use strict';
-        
-        function ensureBurgerMenu() {
-            var toggle = document.getElementById('nav-toggle');
-            var nav = document.getElementById('main-nav');
-            
-            if (!toggle || !nav) return;
-            
-            if (toggle._burgerInitialized) return;
-            toggle._burgerInitialized = true;
-            
-            toggle.addEventListener('click', function(e) {
-                e.stopPropagation();
-                nav.classList.toggle('open');
-                this.classList.toggle('open');
-                this.textContent = this.classList.contains('open') ? '✕' : '☰';
-            });
-            
-            document.addEventListener('click', function(e) {
-                if (nav.classList.contains('open')) {
-                    if (!nav.contains(e.target) && !toggle.contains(e.target)) {
-                        nav.classList.remove('open');
-                        toggle.classList.remove('open');
-                        toggle.textContent = '☰';
-                    }
-                }
-            });
-            
-            nav.querySelectorAll('a').forEach(function(link) {
-                link.addEventListener('click', function() {
-                    nav.classList.remove('open');
-                    toggle.classList.remove('open');
-                    toggle.textContent = '☰';
-                });
-            });
-        }
-        
-        if (document.readyState === 'complete' || document.readyState === 'interactive') {
-            setTimeout(ensureBurgerMenu, 50);
-        } else {
-            document.addEventListener('DOMContentLoaded', function() {
-                setTimeout(ensureBurgerMenu, 50);
-            });
-        }
-        
-        document.addEventListener('dataReady', function() {
-            setTimeout(ensureBurgerMenu, 100);
-        });
-    })();
-    </script>
 </body>
 </html>
