@@ -136,8 +136,9 @@
          2. UTILITIES - Pure helpers
          3. CORE MODULES - Data layer and infrastructure
          4. CORE DOMAIN - Business logic modules
-         5. FEATURE MODULES - UI modules
-         6. APP BOOTSTRAPPER - Orchestrates everything
+         5. EXPORT MODULE - CSV/JSON import/export
+         6. FEATURE MODULES - UI modules
+         7. APP BOOTSTRAPPER - Orchestrates everything
          ============================================================ -->
 
     <!-- ============================================================
@@ -175,8 +176,21 @@
 
     <!-- ============================================================
          5. EXPORT MODULE
+         - export-utils.js: Shared utilities (must be first)
+         - csv-parser.js: Pure CSV parsing
+         - csv-schema.js: Schema definitions
+         - csv-io.js: CSV import/export orchestration
+         - json-io.js: JSON import/export
+         - template.js: CSV template generator
+         - index.js: UI wiring (must be last)
          ============================================================ -->
-    <script src="js/export.js"></script>
+    <script src="js/export/export-utils.js"></script>
+    <script src="js/export/csv-parser.js"></script>
+    <script src="js/export/csv-schema.js"></script>
+    <script src="js/export/csv-io.js"></script>
+    <script src="js/export/json-io.js"></script>
+    <script src="js/export/template.js"></script>
+    <script src="js/export/index.js"></script>
 
     <!-- ============================================================
          6. FEATURE MODULES
