@@ -7,6 +7,7 @@
  *   - Adding ranking entries to teams
  *   - Removing ranking entries from teams
  *   - Maintaining the currentRank cache
+ *   - Rendering ranking lists (returns HTML)
  * 
  * IMPORTANT:
  *   rankingHistory is the AUTHORITATIVE source of truth.
@@ -33,7 +34,9 @@
  *   - removeRanking() may also remove malformed entries if they share the target period.
  * 
  * DEPENDENCIES:
- *   - window.TeamCore - For team lookup
+ *   - window.TeamCore - For team lookup (required)
+ *   - window.CALENDAR_CONSTANTS - Week/year constants (from constants.js)
+ *   - window.DomUtils - HTML escaping (from dom-utils.js)
  *   - window.logActivity - For activity logging (optional)
  */
 
@@ -56,6 +59,33 @@
     }
 
     // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
+    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
+    var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
+    var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
+
+    // ============================================================
+    // HTML ESCAPING - Use DomUtils when available
+    // ============================================================
+
+    function escapeHtml(value) {
+        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
+            return window.DomUtils.escapeHtml(value);
+        }
+        // Fallback
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    // ============================================================
     // PERIOD HELPERS
     // ============================================================
 
@@ -75,7 +105,7 @@
     function isValidAcademicPeriod(value) {
         if (!hasPeriodValue(value)) return false;
         var num = Number(value);
-        return Number.isInteger(num) && num >= 1 && num <= 52;
+        return Number.isInteger(num) && num >= MIN_WEEK && num <= MAX_WEEK;
     }
 
     function isValidRank(value) {
@@ -147,7 +177,7 @@
 
             // Validate academic periods as week numbers
             if (team.type === 'academic' && !isValidAcademicPeriod(periodStr)) {
-                console.warn('TeamRankings.addRanking: Academic period must be a week number (1-52).');
+                console.warn('TeamRankings.addRanking: Academic period must be a week number (' + MIN_WEEK + '-' + MAX_WEEK + ').');
                 return false;
             }
 
@@ -307,6 +337,157 @@
             if (!team) return null;
             var history = this.getSortedHistory(team);
             return history.length > 0 ? history[history.length - 1] : null;
+        },
+
+        // ============================================================
+        // RENDERING - Returns HTML string
+        // ============================================================
+
+        /**
+         * Render ranking list for a team.
+         * PURE: Returns HTML string. Does NOT mutate data or DOM.
+         * 
+         * @param {object} team - Team object
+         * @returns {string} HTML string
+         */
+        renderList: function(team) {
+            if (!team) {
+                return '<p class="empty-state">No team provided.</p>';
+            }
+
+            var rankings = this.getSortedHistory(team);
+
+            if (rankings.length === 0) {
+                return '<p class="empty-state">No ranking history</p>';
+            }
+
+            var html = '';
+            var periodLabel = getPeriodLabel(team.type);
+
+            rankings.forEach(function(entry) {
+                var periodDisplay = entry.period;
+                var rankDisplay = entry.rank;
+
+                html += '<div class="ranking-entry" style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border-soft);">';
+                html += '<span><strong>#' + escapeHtml(rankDisplay) + '</strong> - ' + escapeHtml(periodLabel) + ' ' + escapeHtml(periodDisplay) + '</span>';
+                html += '<button class="small danger remove-ranking" data-period="' + escapeHtml(entry.period) + '" style="padding:2px 8px;font-size:0.65rem;">Remove</button>';
+                html += '</div>';
+            });
+
+            return html;
+        },
+
+        /**
+         * Get ranking summary for a team.
+         * Returns an object with summary information.
+         * 
+         * @param {object} team - Team object
+         * @returns {object} { total, current, mostRecent, history }
+         */
+        getSummary: function(team) {
+            if (!team) {
+                return { total: 0, current: '', mostRecent: null, history: [] };
+            }
+
+            var history = this.getSortedHistory(team);
+            var total = history.length;
+            var current = total > 0 ? String(history[history.length - 1].rank) : '';
+            var mostRecent = total > 0 ? history[history.length - 1] : null;
+
+            return {
+                total: total,
+                current: current,
+                mostRecent: mostRecent,
+                history: history
+            };
+        },
+
+        /**
+         * Check if a team has any ranking entries.
+         * 
+         * @param {object} team - Team object
+         * @returns {boolean} True if the team has rankings
+         */
+        hasRankings: function(team) {
+            if (!team || !team.rankingHistory) return false;
+            return team.rankingHistory.length > 0;
+        },
+
+        /**
+         * Get the rank at a specific period.
+         * 
+         * @param {object} team - Team object
+         * @param {string|number} period - Period to look up
+         * @returns {number|null} Rank at that period, or null if not found
+         */
+        getRankAtPeriod: function(team, period) {
+            if (!team || !team.rankingHistory) return null;
+            if (!hasPeriodValue(period)) return null;
+
+            var periodStr = String(period).trim();
+            var entry = team.rankingHistory.find(function(r) {
+                return r && String(r.period) === periodStr;
+            });
+
+            return entry ? entry.rank : null;
+        },
+
+        /**
+         * Get the change in rank between two periods.
+         * 
+         * @param {object} team - Team object
+         * @param {string|number} fromPeriod - Starting period
+         * @param {string|number} toPeriod - Ending period
+         * @returns {object|null} { from, to, change } or null if either period not found
+         */
+        getRankChange: function(team, fromPeriod, toPeriod) {
+            var from = this.getRankAtPeriod(team, fromPeriod);
+            var to = this.getRankAtPeriod(team, toPeriod);
+
+            if (from === null || to === null) {
+                return null;
+            }
+
+            return {
+                from: from,
+                to: to,
+                change: to - from
+            };
+        },
+
+        // ============================================================
+        // VALIDATION HELPERS
+        // ============================================================
+
+        /**
+         * Check if a period is valid for a team type.
+         * 
+         * @param {string|number} period - Period to validate
+         * @param {string} teamType - Team type
+         * @returns {boolean} True if valid
+         */
+        isValidPeriod: function(period, teamType) {
+            if (!hasPeriodValue(period)) return false;
+
+            if (teamType === 'academic') {
+                return isValidAcademicPeriod(period);
+            }
+
+            var num = Number(period);
+            return Number.isInteger(num) && num >= MIN_YEAR && num <= MAX_YEAR;
+        },
+
+        /**
+         * Get the valid period range for a team type.
+         * 
+         * @param {string} teamType - Team type
+         * @returns {object} { min, max }
+         */
+        getPeriodRange: function(teamType) {
+            if (teamType === 'academic') {
+                return { min: MIN_WEEK, max: MAX_WEEK };
+            }
+            return { min: MIN_YEAR, max: MAX_YEAR };
         }
     };
 
