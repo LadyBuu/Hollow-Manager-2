@@ -5,10 +5,16 @@
  * This module provides class CRUD operations.
  * 
  * IMPORTANT:
- *   - All functions return { success: boolean, message?: string, data?: any }
+ *   - All functions return { success: boolean, message?: string }
+ *   - Mutation functions return operation-specific result fields on success
  *   - Validation occurs BEFORE mutation
  *   - This module does NOT call saveData() - callers own persistence
  *   - This module does NOT show UI - caller handles UX
+ *   - All query results are DEEP CLONED to prevent external mutation
+ *   - Class names are unique (case-insensitive, trimmed)
+ *   - deleteClass() removes character references and unassigns academic teams
+ *   - Malformed relationship fields are skipped (not repaired)
+ *   - Shared validators are consumed from CurriculumValidators
  */
 
 (function() {
@@ -21,12 +27,19 @@
     window.__curriculumClassesLoaded = true;
 
     // ============================================================
-    // PRIVATE HELPERS
+    // VALIDATOR DEPENDENCIES
     // ============================================================
 
-    function isNonEmptyString(value) {
-        return typeof value === 'string' && value.trim() !== '';
+    var Validators = window.CurriculumValidators;
+
+    if (!Validators) {
+        console.error('[CurriculumClasses] CurriculumValidators not available.');
+        return;
     }
+
+    // ============================================================
+    // PRIVATE HELPERS
+    // ============================================================
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -60,36 +73,6 @@
         return 'Unknown';
     }
 
-    function getCharacterById(id) {
-        if (typeof window.getCharacterById === 'function') {
-            return window.getCharacterById(id);
-        }
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.characters)) {
-            return null;
-        }
-        return data.characters.find(function(c) {
-            return c && String(c.id) === String(id);
-        }) || null;
-    }
-
-    function getTeamById(id) {
-        if (typeof window.getTeamById === 'function') {
-            return window.getTeamById(id);
-        }
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.teams)) {
-            return null;
-        }
-        return data.teams.find(function(t) {
-            return t && String(t.id) === String(id);
-        }) || null;
-    }
-
-    function normaliseClassName(name) {
-        return isNonEmptyString(name) ? name.trim().toLowerCase() : '';
-    }
-
     function deepClone(value) {
         if (value === null || typeof value !== 'object') {
             return value;
@@ -118,10 +101,6 @@
         return { success: false, message: message };
     }
 
-    function success(data) {
-        return { success: true, data: data };
-    }
-
     function successWithClass(cls) {
         var cloned = deepClone(cls);
         if (cloned === null) {
@@ -135,16 +114,19 @@
     // ============================================================
 
     function getClass(id) {
-        if (!isNonEmptyString(id)) {
+        if (id === undefined || id === null || id === '') {
             return null;
         }
+
         var data = getDataStore();
         if (!data || !Array.isArray(data.classes)) {
             return null;
         }
+
         var cls = data.classes.find(function(c) {
             return c && String(c.id) === String(id);
         });
+
         return cls ? deepClone(cls) : null;
     }
 
@@ -153,6 +135,7 @@
         if (!data || !Array.isArray(data.classes)) {
             return [];
         }
+
         var result = [];
         for (var i = 0; i < data.classes.length; i++) {
             var cloned = deepClone(data.classes[i]);
@@ -164,17 +147,20 @@
     }
 
     function getClassByName(name) {
-        if (!isNonEmptyString(name)) {
+        if (!Validators.isNonEmptyString(name)) {
             return null;
         }
+
         var data = getDataStore();
         if (!data || !Array.isArray(data.classes)) {
             return null;
         }
-        var target = normaliseClassName(name);
+
+        var target = name.trim().toLowerCase();
         var cls = data.classes.find(function(c) {
-            return c && normaliseClassName(c.name) === target;
+            return c && c.name && c.name.trim().toLowerCase() === target;
         });
+
         return cls ? deepClone(cls) : null;
     }
 
@@ -184,10 +170,14 @@
     }
 
     function getClassOptions() {
-        var classes = getClasses();
+        var data = getDataStore();
+        if (!data || !Array.isArray(data.classes)) {
+            return [];
+        }
+
         var options = [];
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
+        for (var i = 0; i < data.classes.length; i++) {
+            var cls = data.classes[i];
             if (!cls || typeof cls !== 'object') {
                 continue;
             }
@@ -197,22 +187,27 @@
                 createdAt: cls.createdAt || ''
             });
         }
+
         options.sort(function(a, b) {
             return a.name.localeCompare(b.name);
         });
+
         return options;
     }
 
     function getCharactersByClass(classId) {
-        if (!isNonEmptyString(classId)) {
+        if (!Validators.isNonEmptyString(classId)) {
             return [];
         }
+
         var data = getDataStore();
         if (!data || !Array.isArray(data.characters)) {
             return [];
         }
+
         var target = String(classId);
         var result = [];
+
         for (var i = 0; i < data.characters.length; i++) {
             var c = data.characters[i];
             if (c && typeof c === 'object' && Array.isArray(c.classIds) &&
@@ -223,19 +218,23 @@
                 }
             }
         }
+
         return result;
     }
 
     function getTeamsByClass(classId) {
-        if (!isNonEmptyString(classId)) {
+        if (!Validators.isNonEmptyString(classId)) {
             return [];
         }
+
         var data = getDataStore();
         if (!data || !Array.isArray(data.teams)) {
             return [];
         }
+
         var target = String(classId);
         var result = [];
+
         for (var i = 0; i < data.teams.length; i++) {
             var t = data.teams[i];
             if (t && typeof t === 'object' && t.type === 'academic' &&
@@ -246,29 +245,73 @@
                 }
             }
         }
+
         return result;
     }
 
     function getTeamCountByClass(classId) {
-        return getTeamsByClass(classId).length;
+        if (!Validators.isNonEmptyString(classId)) {
+            return 0;
+        }
+
+        var data = getDataStore();
+        if (!data || !Array.isArray(data.teams)) {
+            return 0;
+        }
+
+        var target = String(classId);
+        var count = 0;
+
+        for (var i = 0; i < data.teams.length; i++) {
+            var t = data.teams[i];
+            if (t && typeof t === 'object' && t.type === 'academic' &&
+                String(t.classId) === target && t.status !== 'deleted') {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     function getCharacterCountByClass(classId) {
-        return getCharactersByClass(classId).length;
+        if (!Validators.isNonEmptyString(classId)) {
+            return 0;
+        }
+
+        var data = getDataStore();
+        if (!data || !Array.isArray(data.characters)) {
+            return 0;
+        }
+
+        var target = String(classId);
+        var count = 0;
+
+        for (var i = 0; i < data.characters.length; i++) {
+            var c = data.characters[i];
+            if (c && typeof c === 'object' && Array.isArray(c.classIds) &&
+                c.classIds.some(function(cid) { return String(cid) === target; })) {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     function getCharacterClasses(char) {
         if (!char || typeof char !== 'object' || !Array.isArray(char.classIds)) {
             return [];
         }
+
         var classes = getClasses();
         var result = [];
+
         for (var i = 0; i < classes.length; i++) {
             var c = classes[i];
             if (c && char.classIds.some(function(cid) { return String(cid) === String(c.id); })) {
                 result.push(c);
             }
         }
+
         return result;
     }
 
@@ -278,7 +321,25 @@
     }
 
     function classExists(id) {
-        return getClass(id) !== null;
+        if (id === undefined || id === null || id === '') {
+            return false;
+        }
+
+        var data = getDataStore();
+        if (!data || !Array.isArray(data.classes)) {
+            return false;
+        }
+
+        var target = String(id);
+
+        for (var i = 0; i < data.classes.length; i++) {
+            var cls = data.classes[i];
+            if (cls && String(cls.id) === target) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // ============================================================
@@ -286,7 +347,7 @@
     // ============================================================
 
     function createClass(name) {
-        if (!isNonEmptyString(name)) {
+        if (!Validators.isNonEmptyString(name)) {
             return failure('Class name is required.');
         }
 
@@ -302,7 +363,7 @@
         }
 
         var existing = data.classes.find(function(c) {
-            return c && normaliseClassName(c.name) === normaliseClassName(target);
+            return c && c.name && c.name.trim().toLowerCase() === target.toLowerCase();
         });
 
         if (existing) {
@@ -328,12 +389,24 @@
     }
 
     function updateClass(id, updates) {
-        if (!isNonEmptyString(id)) {
+        if (!Validators.isNonEmptyString(id)) {
             return failure('Class ID is required.');
         }
 
         if (!updates || typeof updates !== 'object') {
             return failure('Updates must be an object.');
+        }
+
+        // Reject unknown fields
+        var allowedFields = { name: true };
+
+        for (var key in updates) {
+            if (!Object.prototype.hasOwnProperty.call(updates, key)) {
+                continue;
+            }
+            if (!allowedFields[key]) {
+                return failure('Unsupported class field: ' + key);
+            }
         }
 
         var data = getDataStore();
@@ -363,14 +436,14 @@
         var hasChanges = false;
 
         if (updates.name !== undefined) {
-            if (!isNonEmptyString(updates.name)) {
+            if (!Validators.isNonEmptyString(updates.name)) {
                 return failure('Class name cannot be empty.');
             }
 
             var newName = String(updates.name).trim();
             var existing = data.classes.find(function(c) {
                 return c && String(c.id) !== String(id) &&
-                    normaliseClassName(c.name) === normaliseClassName(newName);
+                    c.name && c.name.trim().toLowerCase() === newName.toLowerCase();
             });
 
             if (existing) {
@@ -398,7 +471,7 @@
     }
 
     function deleteClass(id) {
-        if (!isNonEmptyString(id)) {
+        if (!Validators.isNonEmptyString(id)) {
             return failure('Class ID is required.');
         }
 
@@ -430,6 +503,7 @@
         var cls = data.classes[index];
         var name = cls.name;
 
+        // All candidates are prepared BEFORE any mutation
         var candidateClasses = deepClone(data.classes);
         if (candidateClasses === null) {
             return failure('Failed to prepare class data.');
@@ -466,7 +540,7 @@
             }
         }
 
-        // Clean references in teams
+        // Clean references in academic teams
         for (var i = 0; i < candidateTeams.length; i++) {
             var team = candidateTeams[i];
             if (!team || typeof team !== 'object' || team.type !== 'academic') {
@@ -481,8 +555,10 @@
             }
         }
 
+        // Remove the class from the candidate array
         candidateClasses.splice(index, 1);
 
+        // Commit all candidates atomically (in practice, sequential assignment)
         data.classes = candidateClasses;
         data.characters = candidateCharacters;
         data.teams = candidateTeams;
@@ -500,11 +576,11 @@
     // ============================================================
 
     function addCharacterToClass(charId, classId) {
-        if (!isNonEmptyString(charId)) {
+        if (!Validators.isNonEmptyString(charId)) {
             return failure('Character ID is required.');
         }
 
-        if (!isNonEmptyString(classId)) {
+        if (!Validators.isNonEmptyString(classId)) {
             return failure('Class ID is required.');
         }
 
@@ -572,11 +648,11 @@
     }
 
     function removeCharacterFromClass(charId, classId) {
-        if (!isNonEmptyString(charId)) {
+        if (!Validators.isNonEmptyString(charId)) {
             return failure('Character ID is required.');
         }
 
-        if (!isNonEmptyString(classId)) {
+        if (!Validators.isNonEmptyString(classId)) {
             return failure('Class ID is required.');
         }
 
