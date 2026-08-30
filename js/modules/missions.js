@@ -2,15 +2,130 @@
  * js/modules/missions.js - Mission Manager
  * Handles mission creation, assignment, tracking, and completion
  * Path: js/modules/missions.js
+ * 
+ * MISSION TYPE TAXONOMY:
+ * 
+ * Primary Categories:
+ *   1. Combat - Elimination, Defence, Protection
+ *   2. Recovery - Retrieval, Rescue, Recovery of materials/artifacts
+ *   3. Investigation - Investigation, Reconnaissance, Surveillance
+ *   4. Exploration - Exploration, Survey, Expedition
+ *   5. Infiltration - Stealth entry, Social infiltration, Theft/recovery, Espionage
+ *   6. Containment - Capture, Magical containment, Quarantine
+ *   7. Acquisition - Ingredients, Resources, Specimens
+ *   8. Research - Observation, Field research, Field testing
+ *   9. Diplomatic - Negotiation, Mediation, Representation
+ *   10. Assassination
+ * 
+ * Format: Primary Category | Subtype | Secondary Category (optional)
+ * Example: "Investigation | Reconnaissance"
  */
 
 (function() {
     'use strict';
 
+    // ============================================================
+    // MISSION TYPE TAXONOMY
+    // ============================================================
+
+    var MISSION_TYPES = {
+        'combat': {
+            id: 'combat',
+            label: 'Combat',
+            icon: '⚔',
+            color: 'var(--danger)',
+            description: 'Direct combat operations, elimination, defence, protection',
+            subtypes: ['elimination', 'defence', 'protection']
+        },
+        'recovery': {
+            id: 'recovery',
+            label: 'Recovery',
+            icon: '◈',
+            color: 'var(--warning)',
+            description: 'Retrieval of people, materials, or artifacts',
+            subtypes: ['retrieval', 'rescue', 'material_recovery', 'artifact_recovery']
+        },
+        'investigation': {
+            id: 'investigation',
+            label: 'Investigation',
+            icon: '◉',
+            color: 'var(--accent)',
+            description: 'Investigations, reconnaissance, surveillance',
+            subtypes: ['investigation', 'reconnaissance', 'surveillance']
+        },
+        'exploration': {
+            id: 'exploration',
+            label: 'Exploration',
+            icon: '⌂',
+            color: 'var(--info)',
+            description: 'Exploration, surveys, expeditions',
+            subtypes: ['exploration', 'survey', 'expedition']
+        },
+        'infiltration': {
+            id: 'infiltration',
+            label: 'Infiltration',
+            icon: '◈',
+            color: 'var(--warning)',
+            description: 'Stealth entry, social infiltration, espionage',
+            subtypes: ['stealth_entry', 'social_infiltration', 'theft_recovery', 'espionage']
+        },
+        'containment': {
+            id: 'containment',
+            label: 'Containment',
+            icon: '⊗',
+            color: 'var(--warning)',
+            description: 'Capture, magical containment, quarantine',
+            subtypes: ['capture', 'magical_containment', 'quarantine']
+        },
+        'acquisition': {
+            id: 'acquisition',
+            label: 'Acquisition',
+            icon: '◈',
+            color: 'var(--accent)',
+            description: 'Gathering ingredients, resources, or specimens',
+            subtypes: ['ingredients', 'resources', 'specimens']
+        },
+        'research': {
+            id: 'research',
+            label: 'Research',
+            icon: '◈',
+            color: 'var(--info)',
+            description: 'Observation, field research, field testing',
+            subtypes: ['observation', 'field_research', 'field_testing']
+        },
+        'diplomatic': {
+            id: 'diplomatic',
+            label: 'Diplomatic',
+            icon: '◈',
+            color: 'var(--accent)',
+            description: 'Negotiation, mediation, representation',
+            subtypes: ['negotiation', 'mediation', 'representation']
+        },
+        'assassination': {
+            id: 'assassination',
+            label: 'Assassination',
+            icon: '◈',
+            color: 'var(--danger)',
+            description: 'Targeted elimination',
+            subtypes: ['targeted_elimination']
+        }
+    };
+
+    // Secondary type options (same as primary types)
+    var SECONDARY_TYPES = Object.keys(MISSION_TYPES);
+
+    // ============================================================
+    // STATE
+    // ============================================================
+
     var state = {
         currentFilter: 'all',
         currentMissionId: null
     };
+
+    // ============================================================
+    // RENDER VIEW
+    // ============================================================
 
     function renderMissionsView(container) {
         if (!container) {
@@ -21,6 +136,7 @@
         container.innerHTML = getMissionsHTML();
 
         populateTeamSelectors();
+        populateSubtypeSelectors();
         renderMissions();
         initMissionEvents();
     }
@@ -31,9 +147,9 @@
                 <h2>Mission Manager</h2>
                 <div style="display:flex;gap:8px;flex-wrap:wrap;">
                     <button id="add-mission-btn" class="primary">+ New Mission</button>
-                    <button id="export-missions-csv-btn" class="small">\uD83D\uDCC4 Export CSV</button>
-                    <button id="import-missions-csv-btn" class="small">\uD83D\uDCCD Import CSV</button>
-                    <button id="template-missions-csv-btn" class="small secondary">Template CSV</button>
+                    <button id="export-missions-csv-btn" class="small">⌘ Export CSV</button>
+                    <button id="import-missions-csv-btn" class="small">⌘ Import CSV</button>
+                    <button id="template-missions-csv-btn" class="small secondary">⌘ Template CSV</button>
                     <input type="file" id="missions-csv-file-input" accept=".csv" style="display:none" />
                 </div>
             </div>
@@ -53,7 +169,7 @@
 
             <!-- Mission Form Modal -->
             <div id="mission-form-modal" class="modal hidden">
-                <div class="modal-content" style="max-width:600px;">
+                <div class="modal-content" style="max-width:700px;">
                     <div class="modal-header">
                         <h3 id="mission-form-title">Create Mission</h3>
                         <button class="close-modal" id="close-mission-form">&times;</button>
@@ -68,6 +184,58 @@
                                 <div class="form-group full-width">
                                     <label>Description</label>
                                     <textarea id="mission-description" rows="2" placeholder="Brief description of the mission..."></textarea>
+                                </div>
+                                <div class="form-group">
+                                    <label>Mission ID</label>
+                                    <input type="text" id="mission-id" placeholder="e.g., ML-001">
+                                </div>
+                                <div class="form-group">
+                                    <label>Contract Type</label>
+                                    <input type="text" id="mission-contract-type" placeholder="e.g., Investigation">
+                                </div>
+                                <div class="form-group">
+                                    <label>Primary Category</label>
+                                    <select id="mission-primary-type">
+                                        <option value="">Select...</option>
+                                        ${Object.keys(MISSION_TYPES).map(function(key) {
+                                            var type = MISSION_TYPES[key];
+                                            return '<option value="' + key + '">' + type.icon + ' ' + type.label + '</option>';
+                                        }).join('')}
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Subtype</label>
+                                    <select id="mission-subtype">
+                                        <option value="">Select...</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Secondary Category</label>
+                                    <select id="mission-secondary-type">
+                                        <option value="">None</option>
+                                        ${Object.keys(MISSION_TYPES).map(function(key) {
+                                            var type = MISSION_TYPES[key];
+                                            return '<option value="' + key + '">' + type.icon + ' ' + type.label + '</option>';
+                                        }).join('')}
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Escalation Level</label>
+                                    <select id="mission-escalation">
+                                        <option value="tier_i">Tier I - Routine</option>
+                                        <option value="tier_ii" selected>Tier II - Complicated</option>
+                                        <option value="tier_iii">Tier III - Dangerous</option>
+                                        <option value="tier_iv">Tier IV - Critical</option>
+                                        <option value="tier_v">Tier V - Catastrophic</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Threat Type</label>
+                                    <input type="text" id="mission-threat-type" placeholder="e.g., Human / Magical / Construct">
+                                </div>
+                                <div class="form-group">
+                                    <label>Environment</label>
+                                    <input type="text" id="mission-environment" placeholder="e.g., Rural / Ley-Line Site / Underground">
                                 </div>
                                 <div class="form-group">
                                     <label>Location</label>
@@ -100,14 +268,31 @@
                                     <input type="text" id="mission-pay" placeholder="e.g., 5000 credits">
                                 </div>
                                 <div class="form-group">
+                                    <label>Billing Status</label>
+                                    <select id="mission-billing">
+                                        <option value="original">Original Contract</option>
+                                        <option value="escalated">Escalated / Surcharge</option>
+                                        <option value="emergency">Emergency Intervention</option>
+                                        <option value="internal">Internal / Research</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Status</label>
+                                    <select id="mission-status">
+                                        <option value="active">Active</option>
+                                        <option value="completed">Completed</option>
+                                        <option value="cancelled">Cancelled</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
                                     <label>Assign Team</label>
                                     <select id="mission-team">
                                         <option value="">Unassigned</option>
                                     </select>
                                 </div>
                                 <div class="form-group full-width">
-                                    <label>Objective</label>
-                                    <input type="text" id="mission-objective" placeholder="Primary objective...">
+                                    <label>Objectives</label>
+                                    <input type="text" id="mission-objective" placeholder="Add objective...">
                                     <button type="button" id="add-objective-btn" class="small primary" style="margin-top:4px;">+ Add Objective</button>
                                     <div id="mission-objectives-list" style="margin-top:8px;"></div>
                                 </div>
@@ -148,6 +333,75 @@
         `;
     }
 
+    // ============================================================
+    // SUBTYPE SELECTOR
+    // ============================================================
+
+    function populateSubtypeSelectors() {
+        var primarySelect = document.getElementById('mission-primary-type');
+        var subtypeSelect = document.getElementById('mission-subtype');
+
+        if (!primarySelect || !subtypeSelect) return;
+
+        var currentSubtype = subtypeSelect.value || '';
+
+        subtypeSelect.innerHTML = '<option value="">Select...</option>';
+
+        var selectedPrimary = primarySelect.value;
+        if (selectedPrimary && MISSION_TYPES[selectedPrimary]) {
+            var subtypes = MISSION_TYPES[selectedPrimary].subtypes || [];
+            var subtypeLabels = {
+                'elimination': 'Elimination',
+                'defence': 'Defence',
+                'protection': 'Protection',
+                'retrieval': 'Retrieval',
+                'rescue': 'Rescue',
+                'material_recovery': 'Material Recovery',
+                'artifact_recovery': 'Artifact Recovery',
+                'investigation': 'Investigation',
+                'reconnaissance': 'Reconnaissance',
+                'surveillance': 'Surveillance',
+                'exploration': 'Exploration',
+                'survey': 'Survey',
+                'expedition': 'Expedition',
+                'stealth_entry': 'Stealth Entry',
+                'social_infiltration': 'Social Infiltration',
+                'theft_recovery': 'Theft / Recovery',
+                'espionage': 'Espionage',
+                'capture': 'Capture',
+                'magical_containment': 'Magical Containment',
+                'quarantine': 'Quarantine',
+                'ingredients': 'Ingredients',
+                'resources': 'Resources',
+                'specimens': 'Specimens',
+                'observation': 'Observation',
+                'field_research': 'Field Research',
+                'field_testing': 'Field Testing',
+                'negotiation': 'Negotiation',
+                'mediation': 'Mediation',
+                'representation': 'Representation',
+                'targeted_elimination': 'Targeted Elimination'
+            };
+            subtypes.forEach(function(subtype) {
+                var option = document.createElement('option');
+                option.value = subtype;
+                option.textContent = subtypeLabels[subtype] || subtype;
+                if (subtype === currentSubtype) {
+                    option.selected = true;
+                }
+                subtypeSelect.appendChild(option);
+            });
+        }
+
+        primarySelect.addEventListener('change', function() {
+            populateSubtypeSelectors();
+        });
+    }
+
+    // ============================================================
+    // RENDER MISSIONS
+    // ============================================================
+
     function renderMissions() {
         var container = document.getElementById('missions-list');
         if (!container) return;
@@ -178,12 +432,37 @@
             var progressBar = mission.progress || 0;
             var difficultyLabel = getDifficultyLabel(mission.difficulty);
 
-            html += '<div class="list-item" style="grid-template-columns:1.2fr 0.6fr 0.6fr 0.6fr 0.6fr 1fr;cursor:pointer;" data-id="' + mission.id + '">';
+            var primaryType = mission.primaryType ? MISSION_TYPES[mission.primaryType] : null;
+            var secondaryType = mission.secondaryType ? MISSION_TYPES[mission.secondaryType] : null;
+            var subtypeLabel = getSubtypeLabel(mission.subtype);
+
+            var typeDisplay = '';
+            if (primaryType) {
+                typeDisplay = primaryType.icon + ' ' + primaryType.label;
+                if (subtypeLabel) {
+                    typeDisplay += ' | ' + subtypeLabel;
+                }
+                if (secondaryType) {
+                    typeDisplay += ' | ' + secondaryType.icon + ' ' + secondaryType.label;
+                }
+            } else {
+                typeDisplay = 'Unclassified';
+            }
+
+            var escalationLabel = getEscalationLabel(mission.escalation);
+            var billingLabel = getBillingLabel(mission.billing);
+
+            html += '<div class="list-item" style="grid-template-columns:1fr 0.8fr 0.6fr 0.6fr 0.6fr 0.6fr 0.6fr 1fr;cursor:pointer;" data-id="' + mission.id + '">';
             html += '<span><strong>' + mission.title + '</strong>';
             if (mission.status === 'completed') {
-                html += ' <span style="color:var(--info);font-size:0.6rem;">\u2713</span>';
+                html += ' <span style="color:var(--info);font-size:0.6rem;">✓</span>';
+            }
+            if (mission.missionId) {
+                html += ' <span style="color:var(--text-dim);font-size:0.6rem;">[' + mission.missionId + ']</span>';
             }
             html += '</span>';
+            html += '<span style="font-size:0.7rem;color:var(--text-dim);">' + typeDisplay + '</span>';
+            html += '<span style="font-size:0.65rem;color:var(--text-dim);">' + escalationLabel + '</span>';
             html += '<span style="color:' + priorityInfo.color + ';font-size:0.75rem;">' + priorityInfo.label + '</span>';
             html += '<span style="font-size:0.75rem;">' + difficultyLabel + '</span>';
             html += '<span style="color:' + statusInfo.color + ';font-size:0.75rem;">' + statusInfo.label + '</span>';
@@ -205,6 +484,10 @@
             });
         });
     }
+
+    // ============================================================
+    // MISSION QUERIES
+    // ============================================================
 
     function getMissions(filter) {
         var data = window.data || {};
@@ -240,26 +523,131 @@
         return data.missions.find(function(m) { return String(m.id) === String(id); });
     }
 
+    function getMissionsByType(typeId) {
+        var missions = getMissions('all');
+        return missions.filter(function(m) {
+            return m.primaryType === typeId || m.secondaryType === typeId;
+        });
+    }
+
+    function getMissionTypeCounts() {
+        var missions = getMissions('all');
+        var counts = {};
+        Object.keys(MISSION_TYPES).forEach(function(key) {
+            counts[key] = 0;
+        });
+        missions.forEach(function(m) {
+            if (m.primaryType && counts[m.primaryType] !== undefined) {
+                counts[m.primaryType]++;
+            }
+        });
+        return counts;
+    }
+
+    function getMissionTypeLabel(typeId) {
+        var type = MISSION_TYPES[typeId];
+        return type ? type.label : typeId || 'Unclassified';
+    }
+
+    function getMissionTypeIcon(typeId) {
+        var type = MISSION_TYPES[typeId];
+        return type ? type.icon : '◈';
+    }
+
+    function getMissionTypeColor(typeId) {
+        var type = MISSION_TYPES[typeId];
+        return type ? type.color : 'var(--text-dim)';
+    }
+
+    function getSubtypeLabel(subtypeId) {
+        var labels = {
+            'elimination': 'Elimination',
+            'defence': 'Defence',
+            'protection': 'Protection',
+            'retrieval': 'Retrieval',
+            'rescue': 'Rescue',
+            'material_recovery': 'Material Recovery',
+            'artifact_recovery': 'Artifact Recovery',
+            'investigation': 'Investigation',
+            'reconnaissance': 'Reconnaissance',
+            'surveillance': 'Surveillance',
+            'exploration': 'Exploration',
+            'survey': 'Survey',
+            'expedition': 'Expedition',
+            'stealth_entry': 'Stealth Entry',
+            'social_infiltration': 'Social Infiltration',
+            'theft_recovery': 'Theft / Recovery',
+            'espionage': 'Espionage',
+            'capture': 'Capture',
+            'magical_containment': 'Magical Containment',
+            'quarantine': 'Quarantine',
+            'ingredients': 'Ingredients',
+            'resources': 'Resources',
+            'specimens': 'Specimens',
+            'observation': 'Observation',
+            'field_research': 'Field Research',
+            'field_testing': 'Field Testing',
+            'negotiation': 'Negotiation',
+            'mediation': 'Mediation',
+            'representation': 'Representation',
+            'targeted_elimination': 'Targeted Elimination'
+        };
+        return labels[subtypeId] || subtypeId || '';
+    }
+
+    function getEscalationLabel(escalation) {
+        var labels = {
+            'tier_i': 'Tier I - Routine',
+            'tier_ii': 'Tier II - Complicated',
+            'tier_iii': 'Tier III - Dangerous',
+            'tier_iv': 'Tier IV - Critical',
+            'tier_v': 'Tier V - Catastrophic'
+        };
+        return labels[escalation] || escalation || 'Tier II - Complicated';
+    }
+
+    function getBillingLabel(billing) {
+        var labels = {
+            'original': 'Original Contract',
+            'escalated': 'Escalated / Surcharge',
+            'emergency': 'Emergency Intervention',
+            'internal': 'Internal / Research'
+        };
+        return labels[billing] || billing || 'Original Contract';
+    }
+
+    // ============================================================
+    // MISSION CRUD
+    // ============================================================
+
     function createMission(missionData) {
         var data = window.data || {};
         if (!data.missions) data.missions = [];
 
         var mission = {
             id: window.generateId('miss'),
+            missionId: missionData.missionId || '',
             title: missionData.title || 'Untitled Mission',
             description: missionData.description || '',
+            contractType: missionData.contractType || '',
+            primaryType: missionData.primaryType || '',
+            subtype: missionData.subtype || '',
+            secondaryType: missionData.secondaryType || '',
+            escalation: missionData.escalation || 'tier_ii',
+            threatType: missionData.threatType || '',
+            environment: missionData.environment || '',
             location: missionData.location || '',
-            objective: missionData.objective || '',
             duration: missionData.duration || '',
             difficulty: missionData.difficulty || 'medium',
-            pay: missionData.pay || '',
-            assignedTeamId: missionData.assignedTeamId || null,
-            status: 'active',
             priority: missionData.priority || 'medium',
-            tags: missionData.tags || [],
+            pay: missionData.pay || '',
+            billing: missionData.billing || 'original',
+            assignedTeamId: missionData.assignedTeamId || null,
+            status: missionData.status || 'active',
             objectives: missionData.objectives || [],
             progress: 0,
             notes: missionData.notes || '',
+            tags: missionData.tags || [],
             createdAt: new Date().toISOString(),
             completedAt: null,
             log: []
@@ -267,7 +655,7 @@
 
         data.missions.push(mission);
         if (typeof window.logActivity === 'function') {
-            window.logActivity('Created mission: ' + mission.title);
+            window.logActivity('Created mission: ' + mission.title + ' (' + getMissionTypeLabel(mission.primaryType) + ')');
         }
         if (typeof window.saveData === 'function') {
             window.saveData().catch(function(err) { /* ignore */ });
@@ -378,6 +766,10 @@
         return mission;
     }
 
+    // ============================================================
+    // TEAM SELECTORS
+    // ============================================================
+
     function populateTeamSelectors() {
         var select = document.getElementById('mission-team');
         if (!select) return;
@@ -434,6 +826,10 @@
         }
     }
 
+    // ============================================================
+    // HELPER FUNCTIONS
+    // ============================================================
+
     function getTeamName(teamId) {
         if (!teamId) return 'Unassigned';
         var team = window.getTeamById(teamId);
@@ -482,6 +878,10 @@
         return map[difficulty] || difficulty || 'Medium';
     }
 
+    // ============================================================
+    // SHOW MISSION DETAIL
+    // ============================================================
+
     function showMissionDetail(id) {
         var mission = getMission(id);
         if (!mission) return;
@@ -497,6 +897,16 @@
         var teamType = getTeamTypeLabel(mission.assignedTeamId);
         var teamDisplay = teamName + (teamType ? ' (' + teamType + ')' : '');
         var difficultyLabel = getDifficultyLabel(mission.difficulty);
+
+        var primaryType = mission.primaryType ? MISSION_TYPES[mission.primaryType] : null;
+        var secondaryType = mission.secondaryType ? MISSION_TYPES[mission.secondaryType] : null;
+        var subtypeLabel = getSubtypeLabel(mission.subtype);
+        var primaryDisplay = primaryType ? primaryType.icon + ' ' + primaryType.label : 'Unclassified';
+        var secondaryDisplay = secondaryType ? secondaryType.icon + ' ' + secondaryType.label : 'None';
+        var subtypeDisplay = subtypeLabel || 'None';
+
+        var escalationLabel = getEscalationLabel(mission.escalation);
+        var billingLabel = getBillingLabel(mission.billing);
 
         var progressBar = mission.progress || 0;
         var createdAt = new Date(mission.createdAt).toLocaleDateString();
@@ -536,13 +946,22 @@
         }
 
         content.innerHTML = `
+            <div class="detail-row"><span class="label">Mission ID:</span> <span>${mission.missionId || 'N/A'}</span></div>
+            <div class="detail-row"><span class="label">Contract Type:</span> <span>${mission.contractType || 'N/A'}</span></div>
             <div class="detail-row"><span class="label">Status:</span> <span style="color:${statusInfo.color};font-weight:600;">${statusInfo.label}</span></div>
             <div class="detail-row"><span class="label">Priority:</span> <span style="color:${priorityInfo.color};font-weight:600;">${priorityInfo.label}</span></div>
             <div class="detail-row"><span class="label">Difficulty:</span> <span>${difficultyLabel}</span></div>
+            <div class="detail-row"><span class="label">Primary Category:</span> <span>${primaryDisplay}</span></div>
+            ${mission.subtype ? '<div class="detail-row"><span class="label">Subtype:</span> <span>' + subtypeDisplay + '</span></div>' : ''}
+            ${mission.secondaryType ? '<div class="detail-row"><span class="label">Secondary Category:</span> <span>' + secondaryDisplay + '</span></div>' : ''}
+            <div class="detail-row"><span class="label">Escalation Level:</span> <span>${escalationLabel}</span></div>
+            ${mission.threatType ? '<div class="detail-row"><span class="label">Threat Type:</span> <span>' + mission.threatType + '</span></div>' : ''}
+            ${mission.environment ? '<div class="detail-row"><span class="label">Environment:</span> <span>' + mission.environment + '</span></div>' : ''}
             <div class="detail-row"><span class="label">Team:</span> <span>${teamDisplay}</span></div>
             <div class="detail-row"><span class="label">Location:</span> <span>${mission.location || 'Not specified'}</span></div>
             <div class="detail-row"><span class="label">Duration:</span> <span>${mission.duration || 'Not specified'}</span></div>
             <div class="detail-row"><span class="label">Pay:</span> <span>${mission.pay || 'Not specified'}</span></div>
+            <div class="detail-row"><span class="label">Billing:</span> <span>${billingLabel}</span></div>
             <div class="detail-row"><span class="label">Created:</span> <span>${createdAt}</span></div>
             <div class="detail-row"><span class="label">Completed:</span> <span>${completedAt}</span></div>
             ${mission.description ? '<div class="detail-row" style="flex-direction:column;align-items:flex-start;gap:4px;"><span class="label">Description:</span><span style="padding:4px 0;">' + mission.description + '</span></div>' : ''}
@@ -575,6 +994,10 @@
         modal.classList.remove('hidden');
     }
 
+    // ============================================================
+    // SHOW MISSION FORM
+    // ============================================================
+
     function showMissionForm(editId) {
         var modal = document.getElementById('mission-form-modal');
         var title = document.getElementById('mission-form-title');
@@ -590,12 +1013,22 @@
             var mission = getMission(editId);
             if (mission) {
                 document.getElementById('mission-title').value = mission.title || '';
+                document.getElementById('mission-id').value = mission.missionId || '';
+                document.getElementById('mission-contract-type').value = mission.contractType || '';
                 document.getElementById('mission-description').value = mission.description || '';
+                document.getElementById('mission-primary-type').value = mission.primaryType || '';
+                document.getElementById('mission-subtype').value = mission.subtype || '';
+                document.getElementById('mission-secondary-type').value = mission.secondaryType || '';
+                document.getElementById('mission-escalation').value = mission.escalation || 'tier_ii';
+                document.getElementById('mission-threat-type').value = mission.threatType || '';
+                document.getElementById('mission-environment').value = mission.environment || '';
                 document.getElementById('mission-location').value = mission.location || '';
                 document.getElementById('mission-duration').value = mission.duration || '';
                 document.getElementById('mission-difficulty').value = mission.difficulty || 'medium';
                 document.getElementById('mission-priority').value = mission.priority || 'medium';
                 document.getElementById('mission-pay').value = mission.pay || '';
+                document.getElementById('mission-billing').value = mission.billing || 'original';
+                document.getElementById('mission-status').value = mission.status || 'active';
                 document.getElementById('mission-team').value = mission.assignedTeamId || '';
                 document.getElementById('mission-objective').value = '';
                 document.getElementById('mission-notes').value = mission.notes || '';
@@ -611,11 +1044,16 @@
         } else {
             title.textContent = 'Create Mission';
             form.reset();
+            document.getElementById('mission-primary-type').value = '';
+            document.getElementById('mission-subtype').value = '';
+            document.getElementById('mission-secondary-type').value = '';
+            document.getElementById('mission-escalation').value = 'tier_ii';
             document.getElementById('mission-difficulty').value = 'medium';
             document.getElementById('mission-priority').value = 'medium';
             document.getElementById('mission-team').value = '';
             delete form.dataset.editId;
         }
+        populateSubtypeSelectors();
     }
 
     function addObjectiveToList(text) {
@@ -626,7 +1064,7 @@
         div.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;align-items:center;';
         div.innerHTML = `
             <span style="flex:1;font-size:0.8rem;padding:4px 8px;background:var(--bg);border-radius:4px;">${text}</span>
-            <button type="button" class="small danger remove-objective-btn">\u2715</button>
+            <button type="button" class="small danger remove-objective-btn">✕</button>
             <input type="hidden" value="${text}">
         `;
         container.appendChild(div);
@@ -635,6 +1073,10 @@
             div.remove();
         };
     }
+
+    // ============================================================
+    // SAVE MISSION
+    // ============================================================
 
     function saveMission(e) {
         e.preventDefault();
@@ -658,18 +1100,27 @@
         var tags = document.getElementById('mission-tags').value.split(',').map(function(t) { return t.trim(); }).filter(function(t) { return t; });
 
         var missionData = {
+            missionId: document.getElementById('mission-id').value.trim(),
             title: document.getElementById('mission-title').value.trim(),
             description: document.getElementById('mission-description').value.trim(),
+            contractType: document.getElementById('mission-contract-type').value.trim(),
+            primaryType: document.getElementById('mission-primary-type').value || '',
+            subtype: document.getElementById('mission-subtype').value || '',
+            secondaryType: document.getElementById('mission-secondary-type').value || '',
+            escalation: document.getElementById('mission-escalation').value || 'tier_ii',
+            threatType: document.getElementById('mission-threat-type').value.trim(),
+            environment: document.getElementById('mission-environment').value.trim(),
             location: document.getElementById('mission-location').value.trim(),
             duration: document.getElementById('mission-duration').value.trim(),
             difficulty: document.getElementById('mission-difficulty').value,
             priority: document.getElementById('mission-priority').value,
             pay: document.getElementById('mission-pay').value.trim(),
+            billing: document.getElementById('mission-billing').value || 'original',
             assignedTeamId: document.getElementById('mission-team').value || null,
+            status: document.getElementById('mission-status').value || 'active',
             objectives: objectives,
             notes: document.getElementById('mission-notes').value.trim(),
             tags: tags,
-            status: 'active',
             progress: 0
         };
 
@@ -694,6 +1145,10 @@
         renderMissions();
     }
 
+    // ============================================================
+    // CLOSE FUNCTIONS
+    // ============================================================
+
     function closeMissionForm() {
         document.getElementById('mission-form-modal').classList.add('hidden');
     }
@@ -701,6 +1156,10 @@
     function closeMissionDetail() {
         document.getElementById('mission-detail-modal').classList.add('hidden');
     }
+
+    // ============================================================
+    // CSV EXPORT / IMPORT
+    // ============================================================
 
     function exportMissionsCSV() {
         var missions = getMissions('all');
@@ -710,15 +1169,20 @@
         }
 
         var lines = [];
-        lines.push('Title,Status,Priority,Difficulty,Team,TeamType,Location,Duration,Pay,Progress,Objectives,Notes,Tags,Created At,Completed At');
+        lines.push('Title,MissionID,ContractType,Status,Priority,Difficulty,PrimaryType,Subtype,SecondaryType,Escalation,ThreatType,Environment,Team,TeamType,Location,Duration,Pay,Billing,Progress,Objectives,Notes,Tags,CreatedAt,CompletedAt');
 
         missions.forEach(function(m) {
             var teamName = getTeamName(m.assignedTeamId);
             var teamType = getTeamTypeLabel(m.assignedTeamId);
+            var primaryType = getMissionTypeLabel(m.primaryType);
+            var secondaryType = m.secondaryType ? getMissionTypeLabel(m.secondaryType) : '';
+            var subtypeLabel = getSubtypeLabel(m.subtype);
+            var escalationLabel = getEscalationLabel(m.escalation);
+            var billingLabel = getBillingLabel(m.billing);
             var objectivesStr = '';
             if (m.objectives) {
                 objectivesStr = m.objectives.map(function(o) {
-                    return o.text + (o.done ? ' \u2713' : '');
+                    return o.text + (o.done ? ' ✓' : '');
                 }).join('; ');
             }
             var tagsStr = (m.tags || []).join('; ');
@@ -727,14 +1191,23 @@
 
             var row = [
                 csvField(m.title || ''),
+                csvField(m.missionId || ''),
+                csvField(m.contractType || ''),
                 m.status || 'active',
                 m.priority || 'medium',
                 m.difficulty || 'medium',
+                csvField(primaryType),
+                csvField(subtypeLabel),
+                csvField(secondaryType),
+                csvField(escalationLabel),
+                csvField(m.threatType || ''),
+                csvField(m.environment || ''),
                 csvField(teamName),
                 csvField(teamType),
                 csvField(m.location || ''),
                 csvField(m.duration || ''),
                 csvField(m.pay || ''),
+                csvField(billingLabel),
                 m.progress || '0',
                 csvField(objectivesStr),
                 csvField(m.notes || ''),
@@ -763,10 +1236,10 @@
 
     function exportMissionTemplateCSV() {
         var lines = [
-            'Title,Status,Priority,Difficulty,Team,TeamType,Location,Duration,Pay,Progress,Objectives,Notes,Tags,Created At,Completed At',
-            'Operation Nightfall,active,high,hard,Shadow Squad,Professional,Berlin,2 weeks,5000 credits,50,Infiltrate base;Retrieve documents \u2713;Extract intel,Use stealth approach,covert;rescue,2024-01-15,',
-            'Rescue Mission,active,medium,medium,Team Alpha,Academic,London,3 days,2000 credits,0,Find hostages;Extract safely,Proceed with caution,rescue;hostage,2024-01-20,',
-            'Supply Run,completed,low,easy,Logistics Team,Temporary,Outpost 7,1 day,500 credits,100,Deliver supplies \u2713;Check inventory \u2713,All delivered,logistics;supply,2024-01-10,2024-01-11'
+            'Title,MissionID,ContractType,Status,Priority,Difficulty,PrimaryType,Subtype,SecondaryType,Escalation,ThreatType,Environment,Team,TeamType,Location,Duration,Pay,Billing,Progress,Objectives,Notes,Tags,CreatedAt,CompletedAt',
+            'Operation Nightfall,ML-001,Investigation,active,high,hard,investigation,reconnaissance,research,Tier IV,Human/Magical,Urban,Raven Squad,Professional,Berlin,2 weeks,5000 credits,Escalated,50,Infiltrate base;Retrieve documents ✓;Extract intel,Use stealth approach,covert;rescue,2024-01-15,',
+            'Field Testing Alpha,FT-001,Research,active,medium,medium,research,field_testing,,Tier II,Magical,Lab,Team Alpha,Academic,London,3 days,2000 credits,Original,0,Test new tracking spell;Document results,Proceed with caution,testing;magic,2024-01-20,',
+            'Supply Run,SR-001,Logistics,completed,low,easy,acquisition,resources,,Tier I,,Rural,Logistics Team,Temporary,Outpost 7,1 day,500 credits,Original,100,Deliver supplies ✓;Check inventory ✓,All delivered,logistics;supply,2024-01-10,2024-01-11'
         ];
 
         var csvContent = lines.join('\n');
@@ -803,7 +1276,7 @@
                     var values = parseCSVLine(line);
 
                     if (i === 0) {
-                        var possibleHeaders = ['Title', 'Status', 'Priority', 'Difficulty', 'Team', 'TeamType', 'Location', 'Duration', 'Pay', 'Progress', 'Objectives', 'Notes', 'Tags', 'Created At', 'Completed At'];
+                        var possibleHeaders = ['Title', 'MissionID', 'ContractType', 'Status', 'Priority', 'Difficulty', 'PrimaryType', 'Subtype', 'SecondaryType', 'Escalation', 'ThreatType', 'Environment', 'Team', 'TeamType', 'Location', 'Duration', 'Pay', 'Billing', 'Progress', 'Objectives', 'Notes', 'Tags', 'CreatedAt', 'CompletedAt'];
                         var headerMatch = 0;
                         values.forEach(function(v) {
                             if (possibleHeaders.indexOf(v.trim()) !== -1) headerMatch++;
@@ -816,13 +1289,22 @@
 
                     var missionData = {
                         title: '',
+                        missionId: '',
+                        contractType: '',
                         status: 'active',
                         priority: 'medium',
                         difficulty: 'medium',
+                        primaryType: '',
+                        subtype: '',
+                        secondaryType: '',
+                        escalation: 'tier_ii',
+                        threatType: '',
+                        environment: '',
                         assignedTeamId: null,
                         location: '',
                         duration: '',
                         pay: '',
+                        billing: 'original',
                         progress: 0,
                         objectives: [],
                         notes: '',
@@ -831,13 +1313,22 @@
 
                     var headerMap = {
                         'Title': 'title',
+                        'MissionID': 'missionId',
+                        'ContractType': 'contractType',
                         'Status': 'status',
                         'Priority': 'priority',
                         'Difficulty': 'difficulty',
+                        'PrimaryType': 'primaryType',
+                        'Subtype': 'subtype',
+                        'SecondaryType': 'secondaryType',
+                        'Escalation': 'escalation',
+                        'ThreatType': 'threatType',
+                        'Environment': 'environment',
                         'Team': 'teamName',
                         'Location': 'location',
                         'Duration': 'duration',
                         'Pay': 'pay',
+                        'Billing': 'billing',
                         'Progress': 'progress',
                         'Objectives': 'objectives',
                         'Notes': 'notes',
@@ -845,7 +1336,7 @@
                     };
 
                     if (headers.length === 0) {
-                        headers = ['Title', 'Status', 'Priority', 'Difficulty', 'Team', 'TeamType', 'Location', 'Duration', 'Pay', 'Progress', 'Objectives', 'Notes', 'Tags', 'Created At', 'Completed At'];
+                        headers = ['Title', 'MissionID', 'ContractType', 'Status', 'Priority', 'Difficulty', 'PrimaryType', 'Subtype', 'SecondaryType', 'Escalation', 'ThreatType', 'Environment', 'Team', 'TeamType', 'Location', 'Duration', 'Pay', 'Billing', 'Progress', 'Objectives', 'Notes', 'Tags', 'CreatedAt', 'CompletedAt'];
                     }
 
                     headers.forEach(function(header, index) {
@@ -856,6 +1347,10 @@
 
                         if (mapped === 'title') {
                             missionData.title = value;
+                        } else if (mapped === 'missionId') {
+                            missionData.missionId = value;
+                        } else if (mapped === 'contractType') {
+                            missionData.contractType = value;
                         } else if (mapped === 'status') {
                             if (['active', 'completed', 'cancelled'].indexOf(value) !== -1) {
                                 missionData.status = value;
@@ -868,6 +1363,25 @@
                             if (['easy', 'medium', 'hard', 'expert'].indexOf(value) !== -1) {
                                 missionData.difficulty = value;
                             }
+                        } else if (mapped === 'primaryType') {
+                            if (MISSION_TYPES[value]) {
+                                missionData.primaryType = value;
+                            }
+                        } else if (mapped === 'subtype') {
+                            missionData.subtype = value;
+                        } else if (mapped === 'secondaryType') {
+                            if (MISSION_TYPES[value]) {
+                                missionData.secondaryType = value;
+                            }
+                        } else if (mapped === 'escalation') {
+                            var escalationValues = ['tier_i', 'tier_ii', 'tier_iii', 'tier_iv', 'tier_v'];
+                            if (escalationValues.indexOf(value) !== -1) {
+                                missionData.escalation = value;
+                            }
+                        } else if (mapped === 'threatType') {
+                            missionData.threatType = value;
+                        } else if (mapped === 'environment') {
+                            missionData.environment = value;
                         } else if (mapped === 'teamName') {
                             if (value) {
                                 var data = window.data || {};
@@ -884,6 +1398,11 @@
                             missionData.duration = value;
                         } else if (mapped === 'pay') {
                             missionData.pay = value;
+                        } else if (mapped === 'billing') {
+                            var billingValues = ['original', 'escalated', 'emergency', 'internal'];
+                            if (billingValues.indexOf(value) !== -1) {
+                                missionData.billing = value;
+                            }
                         } else if (mapped === 'progress') {
                             var prog = parseInt(value);
                             if (!isNaN(prog)) missionData.progress = prog;
@@ -893,8 +1412,8 @@
                                 objParts.forEach(function(part) {
                                     part = part.trim();
                                     if (part) {
-                                        var done = part.endsWith('\u2713');
-                                        var text = part.replace('\u2713', '').trim();
+                                        var done = part.endsWith('✓') || part.endsWith('✓');
+                                        var text = part.replace(/✓$/, '').trim();
                                         if (text) {
                                             missionData.objectives.push({ text: text, done: done });
                                         }
@@ -993,6 +1512,10 @@
         values.push(current.trim());
         return values;
     }
+
+    // ============================================================
+    // INIT EVENTS
+    // ============================================================
 
     function initMissionEvents() {
         var addBtn = document.getElementById('add-mission-btn');
@@ -1108,7 +1631,10 @@
         }
     }
 
-    // Register with TabManager
+    // ============================================================
+    // REGISTER WITH TABMANAGER
+    // ============================================================
+
     if (typeof window.TabManager !== 'undefined') {
         window.TabManager.register('missions', renderMissionsView);
     }
@@ -1129,6 +1655,10 @@
         }, 100);
     }
 
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
     window.renderMissionsView = renderMissionsView;
     window.renderMissions = renderMissions;
     window.showMissionForm = showMissionForm;
@@ -1136,6 +1666,14 @@
     window.deleteMission = deleteMission;
     window.getMission = getMission;
     window.getMissions = getMissions;
+    window.getMissionsByType = getMissionsByType;
+    window.getMissionTypeCounts = getMissionTypeCounts;
+    window.getMissionTypeLabel = getMissionTypeLabel;
+    window.getMissionTypeIcon = getMissionTypeIcon;
+    window.getMissionTypeColor = getMissionTypeColor;
+    window.getSubtypeLabel = getSubtypeLabel;
+    window.getEscalationLabel = getEscalationLabel;
+    window.getBillingLabel = getBillingLabel;
     window.createMission = createMission;
     window.updateMission = updateMission;
     window.addMissionLog = addMissionLog;
@@ -1151,11 +1689,13 @@
     window.getStatusInfo = getStatusInfo;
     window.getDifficultyLabel = getDifficultyLabel;
     window.populateTeamSelectors = populateTeamSelectors;
+    window.populateSubtypeSelectors = populateSubtypeSelectors;
     window.addObjectiveToList = addObjectiveToList;
     window.exportMissionsCSV = exportMissionsCSV;
     window.exportMissionTemplateCSV = exportMissionTemplateCSV;
     window.importMissionsCSV = importMissionsCSV;
     window.csvField = csvField;
     window.parseCSVLine = parseCSVLine;
+    window.MISSION_TYPES = MISSION_TYPES;
 
 })();
