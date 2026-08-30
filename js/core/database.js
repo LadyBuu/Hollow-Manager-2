@@ -30,6 +30,21 @@
  *   typical client-side persistence patterns.
  * - Callers should ensure their mutation is complete before calling saveData()
  *   if they require precise transaction boundaries.
+ * 
+ * DATA VERSION HISTORY:
+ * - Version 1: Initial character data
+ * - Version 2: Added careerStatus, eliminatedWeeks, eliminations, name fields
+ * - Version 3: Added stats and magic proficiencies
+ * - Version 4: Added team fields (nameHistory, rankingHistory, members, status, etc.)
+ * - Version 5: Added team member role, joinPeriod, leavePeriod
+ * - Version 6: Added tournament fields
+ * - Version 7: Added mission fields
+ * - Version 8: Added curriculum data
+ * - Version 9: Added social data
+ * - Version 10: Added classes, locations, locationSchedules, classLocations
+ * - Version 11: Added statsConfig
+ * - Version 12: Added personality and specialMoves to characters
+ * - Version 13: Added attraction and sexuality to characters
  */
 
 (function() {
@@ -37,7 +52,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1; // IndexedDB schema version
-    var DATA_VERSION = 12; // Application data version
+    var DATA_VERSION = 13; // Application data version (was 12)
     var STORE_NAME = 'appData';
 
     // INTERNAL: The actual IndexedDB connection (private)
@@ -406,6 +421,9 @@
                 case 11:
                     migrateToVersion12(data);
                     break;
+                case 12:
+                    migrateToVersion13(data);
+                    break;
                 default:
                     data._dataVersion = DATA_VERSION;
                     break;
@@ -596,6 +614,21 @@
         data._dataVersion = 12;
     }
 
+    /**
+     * Version 13 Migration: Add attraction and sexuality to characters
+     */
+    function migrateToVersion13(data) {
+        data.characters.forEach(function(char) {
+            if (char.attraction === undefined) {
+                char.attraction = '';
+            }
+            if (char.sexuality === undefined) {
+                char.sexuality = '';
+            }
+        });
+        data._dataVersion = 13;
+    }
+
     // ============================================================
     // ENSURE DATA STRUCTURE - Tracks repairs
     // ============================================================
@@ -641,6 +674,15 @@
                     char.specialMoves.magical = [];
                     repaired = true;
                 }
+            }
+            // Version 13 fields
+            if (char.attraction === undefined) {
+                char.attraction = '';
+                repaired = true;
+            }
+            if (char.sexuality === undefined) {
+                char.sexuality = '';
+                repaired = true;
             }
         });
 
