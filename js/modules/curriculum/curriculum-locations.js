@@ -5,12 +5,46 @@
  * This module provides location CRUD operations.
  * 
  * IMPORTANT:
- *   - All functions return { success: boolean, message?: string, data?: any }
- *   - Validation occurs BEFORE mutation
+ *   - All MUTATION operations return:
+ *     { success: true, changed: boolean, operation: string, data: object, count: number }
+ *     or { success: false, message: string }
+ *   - Query functions return their documented value types
+ *   - Invalid inputs are REJECTED (operation returns { success: false })
+ *   - Validation occurs BEFORE mutation (candidate-based approach)
  *   - This module does NOT call saveData() - callers own persistence
  *   - This module does NOT show UI - caller handles UX
+ *   - Query results are DEEP CLONED to prevent external mutation
+ *   - Malformed existing locations are REJECTED (fail closed)
  *   - Location names must be unique (case-insensitive, trimmed)
  *   - Capacity: null = unlimited, 0 = zero capacity, N = capacity N
+ *   - Generated IDs are validated for uniqueness
+ *   - All schedule entry validation uses a single canonical function
+ *   - Deletion removes ALL schedule keys belonging to the location
+ * 
+ * SCHEDULE SEMANTICS:
+ *   - Keys are canonical: locationId_week (week: 1-52, no leading zeros)
+ *   - Deletion removes ALL keys with matching prefix (including malformed)
+ *   - Usage queries count only keys matching canonical format
+ *   - Malformed schedule entries are ignored for usage-count queries
+ *   - Availability checks fail closed when the target slot contains malformed data
+ *   - Malformed schedule containers cause usage queries to return 0
+ *   - A valid schedule entry is a non-empty string (discipline ID)
+ *   - getLocationUsage() works on orphaned/location IDs intentionally (for diagnostics)
+ * 
+ * MUTATION RESULT CONTRACT:
+ *   - createLocation:
+ *     { success: true, changed: true, operation: 'created', data: { location: object }, count: 1 }
+ *   - updateLocation:
+ *     { success: true, changed: boolean, operation: 'updated' or 'unchanged', data: { location: object }, count: 1 or 0 }
+ *   - deleteLocation:
+ *     { success: true, changed: true, operation: 'deleted', data: {}, count: 1, usageCount: number }
+ *   - All failures: { success: false, message: string }
+ * 
+ * STORED LOCATION VALIDATION:
+ *   - All locations retrieved from storage are validated
+ *   - Malformed locations are skipped in query results
+ *   - Mutations validate the entire collection before proceeding
+ *   - createdAt is treated as optional metadata (not validated)
  */
 
 (function() {
@@ -111,6 +145,10 @@
         return true;
     }
 
+    function isValidDescription(value) {
+        return value === undefined || typeof value === 'string';
+    }
+
     function validateLocation(data, isPartial) {
         if (!isObject(data)) {
             return { valid: false, message: 'Location data must be an object.' };
@@ -126,6 +164,9 @@
             if (data.capacity !== undefined && !isValidCapacity(data.capacity)) {
                 return { valid: false, message: 'Capacity must be a whole number of 0 or greater.' };
             }
+            if (data.description !== undefined && !isValidDescription(data.description)) {
+                return { valid: false, message: 'Description must be a string.' };
+            }
         } else {
             if (!isNonEmptyString(data.name)) {
                 return { valid: false, message: 'Location name is required.' };
@@ -133,9 +174,105 @@
             if (!isValidCapacity(data.capacity)) {
                 return { valid: false, message: 'Capacity must be a whole number of 0 or greater.' };
             }
+            if (!isValidDescription(data.description)) {
+                return { valid: false, message: 'Description must be a string.' };
+            }
         }
 
         return { valid: true };
+    }
+
+    function isValidStoredLocation(location) {
+        if (!isObject(location)) {
+            return false;
+        }
+
+        if (!isNonEmptyString(location.id)) {
+            return false;
+        }
+
+        if (!isNonEmptyString(location.name)) {
+            return false;
+        }
+
+        if (!isValidLocationType(location.type)) {
+            return false;
+        }
+
+        if (!isValidCapacity(location.capacity)) {
+            return false;
+        }
+
+        if (!isValidDescription(location.description)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Validate a canonical schedule key.
+     * Format: locationId_week (week: 1-52, no leading zeros)
+     */
+    function isValidScheduleKey(key, locationId) {
+        if (!isNonEmptyString(key)) {
+            return false;
+        }
+
+        var prefix = locationId + '_';
+        if (key.indexOf(prefix) !== 0) {
+            return false;
+        }
+
+        var weekPart = key.substring(prefix.length);
+        var weekNum = Number(weekPart);
+
+        if (!isSafeInteger(weekNum) || weekNum < 1 || weekNum > 52) {
+            return false;
+        }
+
+        // Exact format: weekPart must be a decimal integer string without leading zeros
+        if (weekPart !== String(weekNum)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Check if a key belongs to a location (prefix match).
+     * Used for deletion to remove ALL associated keys.
+     */
+    function keyBelongsToLocation(key, locationId) {
+        if (!isNonEmptyString(key) || !isNonEmptyString(locationId)) {
+            return false;
+        }
+        var prefix = locationId + '_';
+        return key.indexOf(prefix) === 0;
+    }
+
+    /**
+     * Canonical schedule entry validator.
+     * A valid schedule entry is a non-empty string (discipline ID).
+     * Malformed entries are ignored (not rejected) for usage queries.
+     */
+    function isValidScheduleEntry(entry) {
+        return isNonEmptyString(entry);
+    }
+
+    function validateWeek(value) {
+        var num = Number(value);
+        return isSafeInteger(num) && num >= 1 && num <= 52 ? num : null;
+    }
+
+    function validateDay(value) {
+        var num = Number(value);
+        return isSafeInteger(num) && num >= 1 && num <= 7 ? num : null;
+    }
+
+    function validateHour(value) {
+        var num = Number(value);
+        return isSafeInteger(num) && num >= 0 && num <= 23 ? num : null;
     }
 
     function getLocationStore() {
@@ -146,6 +283,48 @@
         return data;
     }
 
+    function getValidLocationsFromStore() {
+        var data = getLocationStore();
+        if (!data) {
+            return [];
+        }
+
+        var result = [];
+        for (var i = 0; i < data.locations.length; i++) {
+            if (isValidStoredLocation(data.locations[i])) {
+                result.push(data.locations[i]);
+            }
+        }
+        return result;
+    }
+
+    function ensureUniqueGeneratedId(prefix, existingIds) {
+        var maxAttempts = 100;
+        for (var attempt = 0; attempt < maxAttempts; attempt++) {
+            var id = generateId(prefix);
+            var collision = false;
+            for (var i = 0; i < existingIds.length; i++) {
+                if (String(existingIds[i]) === String(id)) {
+                    collision = true;
+                    break;
+                }
+            }
+            if (!collision) {
+                return id;
+            }
+        }
+        return null;
+    }
+
+    function validateAllLocations(store) {
+        for (var i = 0; i < store.locations.length; i++) {
+            if (!isValidStoredLocation(store.locations[i])) {
+                return { success: false, message: 'Location data is malformed.' };
+            }
+        }
+        return { success: true };
+    }
+
     // ============================================================
     // RESULT HELPERS
     // ============================================================
@@ -154,24 +333,29 @@
         return { success: false, message: message };
     }
 
-    function success(data) {
-        return { success: true, data: data };
-    }
-
-    function successWithLocation(location) {
-        var cloned = deepClone(location);
-        if (cloned === null) {
-            return failure('Failed to clone location data.');
+    function successResult(operation, data, changed, count, extra) {
+        var safeData = deepClone(data || {});
+        if (safeData === null) {
+            return failure('Failed to prepare operation result.');
         }
-        return { success: true, location: cloned };
-    }
 
-    function successWithDeletion(usageCount) {
-        return {
+        var result = {
             success: true,
-            usageCount: usageCount || 0,
-            hadUsage: usageCount > 0
+            changed: changed !== undefined ? changed : true,
+            operation: operation || 'updated',
+            data: safeData,
+            count: typeof count === 'number' ? count : 1
         };
+
+        if (extra) {
+            for (var key in extra) {
+                if (Object.prototype.hasOwnProperty.call(extra, key)) {
+                    result[key] = extra[key];
+                }
+            }
+        }
+
+        return result;
     }
 
     // ============================================================
@@ -182,28 +366,41 @@
         if (!isNonEmptyString(id)) {
             return null;
         }
+
         var data = getLocationStore();
         if (!data) {
             return null;
         }
-        var location = data.locations.find(function(l) {
-            return l && String(l.id) === String(id);
-        });
-        return location ? deepClone(location) : null;
+
+        var target = String(id);
+        var location = null;
+
+        for (var i = 0; i < data.locations.length; i++) {
+            var loc = data.locations[i];
+            if (loc && String(loc.id) === target) {
+                location = loc;
+                break;
+            }
+        }
+
+        if (!location || !isValidStoredLocation(location)) {
+            return null;
+        }
+
+        return deepClone(location);
     }
 
     function getLocations() {
-        var data = getLocationStore();
-        if (!data) {
-            return [];
-        }
+        var locations = getValidLocationsFromStore();
         var result = [];
-        for (var i = 0; i < data.locations.length; i++) {
-            var cloned = deepClone(data.locations[i]);
+
+        for (var i = 0; i < locations.length; i++) {
+            var cloned = deepClone(locations[i]);
             if (cloned !== null) {
                 result.push(cloned);
             }
         }
+
         return result;
     }
 
@@ -221,23 +418,27 @@
         if (!isNonEmptyString(name)) {
             return null;
         }
-        var data = getLocationStore();
-        if (!data) {
-            return null;
-        }
+
         var target = normaliseLocationName(name);
-        var location = data.locations.find(function(l) {
-            return l && normaliseLocationName(l.name) === target;
-        });
-        return location ? deepClone(location) : null;
+        var locations = getValidLocationsFromStore();
+
+        for (var i = 0; i < locations.length; i++) {
+            var loc = locations[i];
+            if (normaliseLocationName(loc.name) === target) {
+                return deepClone(loc);
+            }
+        }
+
+        return null;
     }
 
     function getLocationOptions() {
-        var locations = getLocations();
+        var locations = getValidLocationsFromStore();
         var options = [];
+
         for (var i = 0; i < locations.length; i++) {
             var loc = locations[i];
-            if (!loc || typeof loc !== 'object' || !isNonEmptyString(loc.name)) {
+            if (!isNonEmptyString(loc.name)) {
                 continue;
             }
             options.push({
@@ -248,9 +449,11 @@
                 description: loc.description || ''
             });
         }
+
         options.sort(function(a, b) {
             return a.name.localeCompare(b.name);
         });
+
         return options;
     }
 
@@ -272,30 +475,39 @@
             return 0;
         }
 
-        var prefix = locationId + '_';
         var count = 0;
 
         for (var key in data.locationSchedules) {
             if (!Object.prototype.hasOwnProperty.call(data.locationSchedules, key)) {
                 continue;
             }
-            if (key.indexOf(prefix) === 0) {
-                var weekSchedule = data.locationSchedules[key];
-                if (isObject(weekSchedule)) {
-                    for (var day in weekSchedule) {
-                        if (!Object.prototype.hasOwnProperty.call(weekSchedule, day)) {
-                            continue;
-                        }
-                        if (isObject(weekSchedule[day])) {
-                            for (var hour in weekSchedule[day]) {
-                                if (!Object.prototype.hasOwnProperty.call(weekSchedule[day], hour)) {
-                                    continue;
-                                }
-                                if (weekSchedule[day][hour]) {
-                                    count++;
-                                }
-                            }
-                        }
+
+            // Only count canonical schedule keys
+            if (!isValidScheduleKey(key, locationId)) {
+                continue;
+            }
+
+            var weekSchedule = data.locationSchedules[key];
+            if (!isObject(weekSchedule)) {
+                continue;
+            }
+
+            for (var day in weekSchedule) {
+                if (!Object.prototype.hasOwnProperty.call(weekSchedule, day)) {
+                    continue;
+                }
+                var daySchedule = weekSchedule[day];
+                if (!isObject(daySchedule)) {
+                    continue;
+                }
+
+                for (var hour in daySchedule) {
+                    if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
+                        continue;
+                    }
+                    var entry = daySchedule[hour];
+                    if (isValidScheduleEntry(entry)) {
+                        count++;
                     }
                 }
             }
@@ -304,8 +516,63 @@
         return count;
     }
 
-    function locationExists(id) {
-        return getLocation(id) !== null;
+    function getLocationUsageByWeek(locationId, week) {
+        if (!isNonEmptyString(locationId)) {
+            return 0;
+        }
+
+        var weekNum = validateWeek(week);
+        if (weekNum === null) {
+            return 0;
+        }
+
+        var data = getDataStore();
+        if (!data) {
+            return 0;
+        }
+
+        if (data.locationSchedules === undefined || data.locationSchedules === null) {
+            return 0;
+        }
+
+        if (!isObject(data.locationSchedules)) {
+            return 0;
+        }
+
+        var key = locationId + '_' + weekNum;
+
+        if (!isValidScheduleKey(key, locationId)) {
+            return 0;
+        }
+
+        var weekSchedule = data.locationSchedules[key];
+
+        if (!isObject(weekSchedule)) {
+            return 0;
+        }
+
+        var count = 0;
+        for (var day in weekSchedule) {
+            if (!Object.prototype.hasOwnProperty.call(weekSchedule, day)) {
+                continue;
+            }
+            var daySchedule = weekSchedule[day];
+            if (!isObject(daySchedule)) {
+                continue;
+            }
+
+            for (var hour in daySchedule) {
+                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
+                    continue;
+                }
+                var entry = daySchedule[hour];
+                if (isValidScheduleEntry(entry)) {
+                    count++;
+                }
+            }
+        }
+
+        return count;
     }
 
     function getLocationCapacity(locationId) {
@@ -313,9 +580,101 @@
         if (!location) {
             return null;
         }
-        return location.capacity !== undefined && location.capacity !== null && location.capacity !== ''
-            ? Number(location.capacity)
-            : null;
+
+        var capacity = location.capacity;
+
+        if (capacity === undefined || capacity === null || capacity === '') {
+            return null;
+        }
+
+        if (!isValidCapacity(capacity)) {
+            return null;
+        }
+
+        return Number(capacity);
+    }
+
+    function isLocationAvailable(locationId, week, day, hour) {
+        // ---- PHASE 1: VALIDATE LOCATION EXISTS ----
+        if (!isNonEmptyString(locationId)) {
+            return false;
+        }
+
+        if (!getLocation(locationId)) {
+            return false;
+        }
+
+        // ---- PHASE 2: VALIDATE SCHEDULE SLOT ----
+        var weekNum = validateWeek(week);
+        if (weekNum === null) {
+            return false;
+        }
+
+        var dayNum = validateDay(day);
+        if (dayNum === null) {
+            return false;
+        }
+
+        var hourNum = validateHour(hour);
+        if (hourNum === null) {
+            return false;
+        }
+
+        // ---- PHASE 3: CHECK SCHEDULE STRUCTURE (fail closed) ----
+        var data = getDataStore();
+        if (!data) {
+            return false;
+        }
+
+        if (data.locationSchedules === undefined || data.locationSchedules === null) {
+            return true;
+        }
+
+        if (!isObject(data.locationSchedules)) {
+            return false;
+        }
+
+        var key = locationId + '_' + weekNum;
+
+        if (!isValidScheduleKey(key, locationId)) {
+            return false;
+        }
+
+        var weekSchedule = data.locationSchedules[key];
+
+        if (weekSchedule === undefined) {
+            return true;
+        }
+
+        if (!isObject(weekSchedule)) {
+            return false;
+        }
+
+        var daySchedule = weekSchedule[dayNum];
+
+        if (daySchedule === undefined) {
+            return true;
+        }
+
+        if (!isObject(daySchedule)) {
+            return false;
+        }
+
+        var entry = daySchedule[hourNum];
+
+        if (entry === undefined || entry === null || entry === '') {
+            return true;
+        }
+
+        if (!isValidScheduleEntry(entry)) {
+            return false;
+        }
+
+        return false;
+    }
+
+    function locationExists(id) {
+        return getLocation(id) !== null;
     }
 
     // ============================================================
@@ -323,6 +682,7 @@
     // ============================================================
 
     function createLocation(data) {
+        // ---- PHASE 1: VALIDATE INPUT ----
         var validation = validateLocation(data, false);
         if (!validation.valid) {
             return failure(validation.message);
@@ -335,6 +695,13 @@
             return failure('Data store is not available.');
         }
 
+        // ---- PHASE 2: VALIDATE EXISTING STORE (fail closed) ----
+        var storeValidation = validateAllLocations(store);
+        if (!storeValidation.success) {
+            return failure(storeValidation.message);
+        }
+
+        // ---- PHASE 3: CHECK DUPLICATE ----
         var existing = store.locations.find(function(l) {
             return l && normaliseLocationName(l.name) === normaliseLocationName(name);
         });
@@ -343,13 +710,28 @@
             return failure('A location with this name already exists.');
         }
 
+        // ---- PHASE 4: GENERATE UNIQUE ID ----
+        var existingIds = [];
+        for (var i = 0; i < store.locations.length; i++) {
+            var loc = store.locations[i];
+            if (loc && isNonEmptyString(loc.id)) {
+                existingIds.push(loc.id);
+            }
+        }
+
+        var newId = ensureUniqueGeneratedId('loc', existingIds);
+        if (newId === null) {
+            return failure('Failed to generate a unique location ID.');
+        }
+
+        // ---- PHASE 5: BUILD LOCATION ----
         var capacity = null;
         if (data.capacity !== undefined && data.capacity !== null && data.capacity !== '') {
             capacity = Number(data.capacity);
         }
 
         var newLocation = {
-            id: generateId('loc'),
+            id: newId,
             name: name,
             type: data.type || 'indoor',
             capacity: capacity,
@@ -357,11 +739,12 @@
             createdAt: new Date().toISOString()
         };
 
-        var resultLocation = deepClone(newLocation);
-        if (resultLocation === null) {
-            return failure('Failed to prepare location data.');
+        // ---- PHASE 6: VALIDATE BUILT OBJECT ----
+        if (!isValidStoredLocation(newLocation)) {
+            return failure('Failed to build valid location object.');
         }
 
+        // ---- PHASE 7: BUILD CANDIDATE AND COMMIT ----
         var candidate = deepClone(store.locations);
         if (candidate === null) {
             return failure('Failed to prepare location data.');
@@ -371,35 +754,52 @@
         store.locations = candidate;
 
         logActivity('Created location: ' + newLocation.name);
-        return { success: true, location: resultLocation };
+
+        return successResult('created', { location: newLocation }, true, 1);
     }
 
     function updateLocation(id, data) {
+        // ---- PHASE 1: VALIDATE ID ----
         if (!isNonEmptyString(id)) {
             return failure('Location ID is required.');
         }
 
+        // ---- PHASE 2: VALIDATE INPUT ----
         var validation = validateLocation(data, true);
         if (!validation.valid) {
             return failure(validation.message);
         }
 
+        // ---- PHASE 3: GET STORE ----
         var store = getLocationStore();
         if (!store) {
             return failure('Data store is not available.');
         }
 
-        var index = store.locations.findIndex(function(l) {
-            return l && String(l.id) === String(id);
-        });
+        // ---- PHASE 4: VALIDATE EXISTING STORE (fail closed) ----
+        var storeValidation = validateAllLocations(store);
+        if (!storeValidation.success) {
+            return failure(storeValidation.message);
+        }
+
+        // ---- PHASE 5: FIND LOCATION ----
+        var index = -1;
+        var location = null;
+
+        for (var i = 0; i < store.locations.length; i++) {
+            if (store.locations[i] && String(store.locations[i].id) === String(id)) {
+                index = i;
+                location = store.locations[i];
+                break;
+            }
+        }
 
         if (index === -1) {
             return failure('Location not found.');
         }
 
-        var location = store.locations[index];
+        // ---- PHASE 6: BUILD CANDIDATE ----
         var candidate = deepClone(location);
-
         if (candidate === null) {
             return failure('Failed to clone location data.');
         }
@@ -421,38 +821,53 @@
                 return failure('A location with this name already exists.');
             }
 
-            candidate.name = newName;
-            hasChanges = true;
+            if (candidate.name !== newName) {
+                candidate.name = newName;
+                hasChanges = true;
+            }
         }
 
         if (data.type !== undefined) {
-            candidate.type = data.type;
-            hasChanges = true;
+            if (!isValidLocationType(data.type)) {
+                return failure('Invalid location type.');
+            }
+            if (candidate.type !== data.type) {
+                candidate.type = data.type;
+                hasChanges = true;
+            }
         }
 
         if (data.capacity !== undefined) {
+            var newCapacity = null;
             if (data.capacity !== null && data.capacity !== '') {
-                candidate.capacity = Number(data.capacity);
-            } else {
-                candidate.capacity = null;
+                newCapacity = Number(data.capacity);
             }
-            hasChanges = true;
+
+            if (candidate.capacity !== newCapacity) {
+                candidate.capacity = newCapacity;
+                hasChanges = true;
+            }
         }
 
         if (data.description !== undefined) {
-            candidate.description = data.description || '';
-            hasChanges = true;
+            var newDescription = data.description || '';
+            if (candidate.description !== newDescription) {
+                candidate.description = newDescription;
+                hasChanges = true;
+            }
         }
 
+        // ---- PHASE 7: NO CHANGES ----
         if (!hasChanges) {
-            return successWithLocation(location);
+            return successResult('unchanged', { location: location }, false, 0);
         }
 
-        var resultLocation = deepClone(candidate);
-        if (resultLocation === null) {
-            return failure('Failed to prepare location data.');
+        // ---- PHASE 8: VALIDATE CANDIDATE ----
+        if (!isValidStoredLocation(candidate)) {
+            return failure('Updated location would be malformed.');
         }
 
+        // ---- PHASE 9: BUILD CANDIDATE ARRAY AND COMMIT ----
         var candidateArray = deepClone(store.locations);
         if (candidateArray === null) {
             return failure('Failed to prepare location data.');
@@ -462,14 +877,17 @@
         store.locations = candidateArray;
 
         logActivity('Updated location: ' + candidate.name);
-        return { success: true, location: resultLocation };
+
+        return successResult('updated', { location: candidate }, true, 1);
     }
 
     function deleteLocation(id) {
+        // ---- PHASE 1: VALIDATE ID ----
         if (!isNonEmptyString(id)) {
             return failure('Location ID is required.');
         }
 
+        // ---- PHASE 2: GET STORE ----
         var store = getDataStore();
         if (!store) {
             return failure('Data store is not available.');
@@ -479,19 +897,34 @@
             return failure('No locations found.');
         }
 
-        var index = store.locations.findIndex(function(l) {
-            return l && String(l.id) === String(id);
-        });
+        // ---- PHASE 3: VALIDATE EXISTING STORE (fail closed) ----
+        var storeValidation = validateAllLocations(store);
+        if (!storeValidation.success) {
+            return failure(storeValidation.message);
+        }
+
+        // ---- PHASE 4: FIND LOCATION ----
+        var index = -1;
+        var location = null;
+
+        for (var i = 0; i < store.locations.length; i++) {
+            if (store.locations[i] && String(store.locations[i].id) === String(id)) {
+                index = i;
+                location = store.locations[i];
+                break;
+            }
+        }
 
         if (index === -1) {
             return failure('Location not found.');
         }
 
-        var location = store.locations[index];
         var name = location.name;
 
+        // ---- PHASE 5: CALCULATE USAGE ----
         var usageCount = getLocationUsage(id);
 
+        // ---- PHASE 6: BUILD CANDIDATES ----
         var candidateLocations = deepClone(store.locations);
         if (candidateLocations === null) {
             return failure('Failed to prepare location data.');
@@ -511,23 +944,26 @@
             return failure('Failed to prepare schedule data.');
         }
 
-        var prefix = id + '_';
+        // ---- PHASE 7: CLEAN SCHEDULES (remove ALL keys with matching prefix) ----
         for (var key in candidateSchedules) {
             if (!Object.prototype.hasOwnProperty.call(candidateSchedules, key)) {
                 continue;
             }
-            if (key.indexOf(prefix) === 0) {
+            if (keyBelongsToLocation(key, id)) {
                 delete candidateSchedules[key];
             }
         }
 
+        // ---- PHASE 8: REMOVE LOCATION ----
         candidateLocations.splice(index, 1);
 
+        // ---- PHASE 9: COMMIT ----
         store.locations = candidateLocations;
         store.locationSchedules = candidateSchedules;
 
         logActivity('Deleted location: ' + name + ' (' + usageCount + ' schedule entries removed)');
-        return successWithDeletion(usageCount);
+
+        return successResult('deleted', {}, true, 1, { usageCount: usageCount });
     }
 
     // ============================================================
@@ -588,8 +1024,10 @@
     window.getLocationByName = getLocationByName;
     window.getLocationOptions = getLocationOptions;
     window.getLocationUsage = getLocationUsage;
+    window.getLocationUsageByWeek = getLocationUsageByWeek;
     window.locationExists = locationExists;
     window.getLocationCapacity = getLocationCapacity;
+    window.isLocationAvailable = isLocationAvailable;
 
     // Mutations
     window.createLocation = createLocation;
