@@ -42,6 +42,13 @@
     window.__charactersModuleLoaded = true;
 
     // ============================================================
+    // STATE - Single source of truth for character edit state
+    // ============================================================
+    
+    // Use a module-scoped variable instead of calling itself
+    var _currentEditId = null;
+
+    // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
 
@@ -92,7 +99,6 @@
             return;
         }
 
-        // Check dependencies
         if (!checkDependencies()) {
             container.innerHTML = '<p class="empty-state">Character dependencies not loaded. Please refresh the page.</p>';
             return;
@@ -117,7 +123,7 @@
         }
 
         // Show the current character if any
-        var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        var editId = getCurrentEditId();
         if (editId && window.CharacterForm && typeof window.CharacterForm.show === 'function') {
             window.CharacterForm.show(editId);
         }
@@ -433,32 +439,28 @@
     }
 
     // ============================================================
-    // STATE MANAGEMENT (delegated to index.js)
+    // STATE MANAGEMENT - Using module-scoped variable (no recursion)
     // ============================================================
 
     /**
-     * Get the current edit ID from the global state
+     * Get the current edit ID from the module state
      */
     function getCurrentEditId() {
-        if (typeof window.getCurrentEditId === 'function') {
-            return window.getCurrentEditId();
-        }
-        return null;
+        return _currentEditId;
     }
 
     /**
-     * Set the current edit ID in the global state
+     * Set the current edit ID in the module state
      */
     function setCurrentEditId(id) {
-        if (typeof window.setCurrentEditId === 'function') {
-            window.setCurrentEditId(id);
-        }
+        _currentEditId = id;
     }
 
     /**
      * Show the character form for a specific character
      */
     function showCharacterForm(id) {
+        setCurrentEditId(id);
         if (window.CharacterForm && typeof window.CharacterForm.show === 'function') {
             window.CharacterForm.show(id);
         }
@@ -503,7 +505,7 @@
     // Main render function
     window.renderCharacters = renderCharacters;
 
-    // State management (delegated to index.js)
+    // State management (using module-scoped variable)
     window.getCurrentEditId = getCurrentEditId;
     window.setCurrentEditId = setCurrentEditId;
     window.showCharacterForm = showCharacterForm;
