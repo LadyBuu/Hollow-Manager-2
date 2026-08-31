@@ -1,41 +1,11 @@
 /**
  * js/modules/characters/character-stats.js - Character Stats & Magic System
  * Handles physical stats, magic proficiencies, class suggestions, special moves
- * Path: js/modules/characters/character-stats.js
- * 
- * IMPORTANT:
- *   - getCharacterStats() and getCharacterMagic() are PURE getters.
- *   - They do NOT mutate characters. Default values are provided on read.
- *   - Migration/repair should happen at the data layer, not here.
- *   - All user-controlled data in special moves is inserted via textContent.
- *   - Class/magic suggestions are read-only - persistence handled by parent form.
- *   - Magic scale: 0-10, where 9-10 is Master.
- *   - Stats scale: 1-50.
- * 
- * DATA ACCESS:
- *   - Stats/magic getters are pure and never mutate characters.
- *   - Special move add/remove functions intentionally mutate the character.
- *   - All mutation functions are synchronous (in-memory only).
- *   - Persistence is handled by the parent form/data layer.
- * 
- * MAGIC CLASS SEMANTICS:
- *   - "Magic Class" is a broad magical discipline (Elementalist, Body Mage, Aether Mage)
- *   - "Magic Specialisation" is a specific type within that discipline (Pyromancer, Necromancer, etc.)
- *   - The suggestion system recommends a specific specialisation based on proficiency.
- *   - The manual selector allows choosing a broad class family.
- *   - Ties resolve according to MAGIC_TYPES declaration order (intentional and deterministic).
- * 
- * DEPENDENCIES:
- *   - No external module dependencies (pure calculations + DOM rendering)
  */
-
 (function() {
     'use strict';
 
-    // Guard against duplicate script loading
-    if (window.__characterStatsLoaded) {
-        return;
-    }
+    if (window.__characterStatsLoaded) return;
     window.__characterStatsLoaded = true;
 
     // ============================================================
@@ -56,31 +26,14 @@
 
     function showNotification(message, type) {
         type = type || 'info';
-
-        if (typeof window.AppUI !== 'undefined' &&
-            window.AppUI &&
-            typeof window.AppUI.notify === 'function') {
-            window.AppUI.notify(message, type);
+        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
+            window.NotificationSystem.notify(message, type);
             return;
         }
-
         if (typeof window.showToast === 'function') {
             window.showToast(message, type);
             return;
         }
-
-        if (typeof window.setSession === 'function') {
-            window.setSession('toast', {
-                message: message,
-                type: type,
-                timestamp: Date.now()
-            });
-            if (typeof window.renderToast === 'function') {
-                window.renderToast();
-            }
-            return;
-        }
-
         if (type === 'error') {
             alert('Error: ' + message);
         } else {
@@ -273,7 +226,6 @@
     // MAGIC DEFINITIONS
     // ============================================================
 
-    // Ties intentionally resolve according to MAGIC_TYPES declaration order.
     var MAGIC_TYPES = {
         earth: { id: 'earth', label: 'Earth Magic', category: 'elemental', color: '#8B7355' },
         water: { id: 'water', label: 'Water Magic', category: 'elemental', color: '#4A9BC7' },
@@ -322,7 +274,7 @@
     }
 
     // ============================================================
-    // STAT FUNCTIONS - PURE GETTERS (no mutation)
+    // STAT FUNCTIONS
     // ============================================================
 
     function getDefaultStats() {
@@ -346,7 +298,6 @@
         for (var i = 0; i < statKeys.length; i++) {
             var key = statKeys[i];
             var val = stats[key];
-            // Only accept valid numbers, otherwise use default
             if (typeof val === 'number' && !isNaN(val) && isFinite(val)) {
                 result[key] = clampStat(val);
             } else {
@@ -377,19 +328,11 @@
         };
     }
 
-    // ============================================================
-    // HELPER: Get DOM stat values using clampStat
-    // ============================================================
-
     function getStatFromDOM(id) {
         var el = document.getElementById(id);
         if (!el) return 10;
         return clampStat(el.value);
     }
-
-    // ============================================================
-    // HELPER: Get DOM magic values using clampMagic
-    // ============================================================
 
     function getMagicFromDOM(id) {
         var el = document.getElementById(id);
@@ -398,7 +341,7 @@
     }
 
     // ============================================================
-    // CLASS SUGGESTION - With explicit priority tie-breaker
+    // CLASS SUGGESTION
     // ============================================================
 
     function suggestClass(stats) {
@@ -439,15 +382,12 @@
 
             var normalized = totalWeight > 0 ? total / totalWeight : 0;
 
-            // Primary stats get a bonus (makes them more important)
             var primaryBonus = 0;
             cls.primaryStats.forEach(function(stat) {
                 primaryBonus += (scores[stat] - 10) * 0.1;
             });
 
             var finalScore = normalized + primaryBonus;
-
-            // Use priority as tie-breaker
             var priority = cls.priority || 0;
 
             if (finalScore > bestScore ||
@@ -501,7 +441,7 @@
     }
 
     // ============================================================
-    // MAGIC FUNCTIONS - PURE GETTERS (no mutation)
+    // MAGIC FUNCTIONS
     // ============================================================
 
     function getDefaultMagicProficiencies() {
@@ -554,7 +494,6 @@
         var maxPower = getMagicTypeKeys().length * MAGIC_MAX;
         var percentage = Math.min(100, Math.round((power / maxPower) * 100));
         
-        // 0% = 0 dots, 1-20% = 1 dot, 21-40% = 2 dots, etc.
         var filledCount = percentage === 0 
             ? 0 
             : Math.ceil(percentage / 20);
@@ -581,10 +520,6 @@
         el.textContent = getMagicPowerDisplay(tempChar);
     }
 
-    // ============================================================
-    // CHECK IF A CATEGORY IS BALANCED
-    // ============================================================
-
     function isBalancedCategory(magic, category) {
         var types = getMagicCategoryTypes(category);
         for (var i = 0; i < types.length; i++) {
@@ -594,10 +529,6 @@
         }
         return true;
     }
-
-    // ============================================================
-    // MAGIC CLASS SUGGESTION
-    // ============================================================
 
     function suggestMagicClass(char) {
         var magic = getCharacterMagic(char);
@@ -621,7 +552,6 @@
             }
         }
 
-        // Check for Balanced Mage first - requires proficiency in every type of at least two categories
         var balancedCategories = [];
         for (var cat in MAGIC_CATEGORIES) {
             if (isBalancedCategory(magic, cat)) {
@@ -630,7 +560,6 @@
         }
 
         if (balancedCategories.length >= 2) {
-            // Find the highest score among balanced categories
             var maxBalancedScore = 0;
             for (var i = 0; i < balancedCategories.length; i++) {
                 var score = categoryScores[balancedCategories[i]] || 0;
@@ -649,7 +578,6 @@
             };
         }
 
-        // Find highest category (ties resolve in MAGIC_CATEGORIES order: elemental, body, aether)
         var highestCategory = 'elemental';
         var highestScore = -1;
         for (var cat in categoryScores) {
@@ -659,7 +587,6 @@
             }
         }
 
-        // Find highest type within that category (ties resolve in MAGIC_TYPES order)
         var highestType = null;
         var highestTypeScore = -1;
         for (var key in magic) {
@@ -769,25 +696,23 @@
         }
         var categoryTypes = getMagicCategoryTypes(category);
         var magic = {};
-        // Random generation intentionally excludes 10 (Master).
-        // Master proficiency is reserved for manual assignment / progression.
         categoryTypes.forEach(function(key) {
             var roll = Math.random();
             if (roll < 0.3) {
                 magic[key] = 0;
             } else if (roll < 0.6) {
-                magic[key] = Math.floor(Math.random() * 3) + 1;  // 1-3
+                magic[key] = Math.floor(Math.random() * 3) + 1;
             } else if (roll < 0.85) {
-                magic[key] = Math.floor(Math.random() * 3) + 4;  // 4-6
+                magic[key] = Math.floor(Math.random() * 3) + 4;
             } else {
-                magic[key] = Math.floor(Math.random() * 3) + 7;  // 7-9
+                magic[key] = Math.floor(Math.random() * 3) + 7;
             }
         });
         return magic;
     }
 
     // ============================================================
-    // SPECIAL MOVES FUNCTIONS - WITH XSS PROTECTION
+    // SPECIAL MOVES FUNCTIONS
     // ============================================================
 
     function getSpecialMoves(char) {
@@ -795,7 +720,6 @@
         if (!char.specialMoves || typeof char.specialMoves !== 'object') {
             return { physical: [], magical: [] };
         }
-        // Deep copy to prevent external mutation
         var physical = Array.isArray(char.specialMoves.physical)
             ? char.specialMoves.physical.map(function(move) {
                 return {
@@ -820,18 +744,6 @@
         if (type !== 'physical' && type !== 'magical') return false;
         if (!name || typeof name !== 'string' || name.trim() === '') return false;
 
-        // Check capacity first
-        if (!char.specialMoves || typeof char.specialMoves !== 'object' || Array.isArray(char.specialMoves)) {
-            // Will be normalised below
-        } else {
-            var currentTypeArray = char.specialMoves[type];
-            if (Array.isArray(currentTypeArray) && currentTypeArray.length >= MAX_SPECIAL_MOVES) {
-                showNotification('Maximum of ' + MAX_SPECIAL_MOVES + ' ' + type + ' moves reached.', 'error');
-                return false;
-            }
-        }
-
-        // Normalise structure
         if (!char.specialMoves || typeof char.specialMoves !== 'object' || Array.isArray(char.specialMoves)) {
             char.specialMoves = { physical: [], magical: [] };
         }
@@ -844,7 +756,6 @@
             char.specialMoves.magical = [];
         }
 
-        // Check capacity again after normalisation
         if (char.specialMoves[type].length >= MAX_SPECIAL_MOVES) {
             showNotification('Maximum of ' + MAX_SPECIAL_MOVES + ' ' + type + ' moves reached.', 'error');
             return false;
@@ -860,6 +771,7 @@
             description: descTruncated
         });
 
+        renderSpecialMoves(type + '-moves-list', char.specialMoves[type], type);
         return true;
     }
 
@@ -867,7 +779,7 @@
         if (!char) return false;
         if (type !== 'physical' && type !== 'magical') return false;
 
-        if (!char.specialMoves || typeof char.specialMoves !== 'object' || Array.isArray(char.specialMoves)) {
+        if (!char.specialMoves || typeof char.specialMoves !== 'object') {
             return false;
         }
 
@@ -886,6 +798,7 @@
         }
 
         char.specialMoves[type].splice(idx, 1);
+        renderSpecialMoves(type + '-moves-list', char.specialMoves[type], type);
         return true;
     }
 
@@ -893,8 +806,9 @@
         var container = document.getElementById(containerId);
         if (!container) return;
 
+        container.textContent = '';
+
         if (!moves || moves.length === 0) {
-            container.textContent = '';
             var empty = document.createElement('p');
             empty.className = 'empty-state';
             empty.style.cssText = 'padding:4px;font-size:0.7rem;';
@@ -903,11 +817,9 @@
             return;
         }
 
-        container.textContent = '';
         var color = type === 'physical' ? 'var(--accent)' : 'var(--info)';
 
         moves.forEach(function(move, index) {
-            // Defensive: handle malformed move entries
             move = move || {};
             if (typeof move !== 'object' || Array.isArray(move)) {
                 move = { name: 'Invalid Move', description: '' };
@@ -944,8 +856,6 @@
             div.appendChild(button);
             container.appendChild(div);
         });
-
-        // Event listeners are bound via delegation in character-events.js
     }
 
     // ============================================================
@@ -972,6 +882,7 @@
                     <select id="manual-class-select" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;">
                         <option value="">Auto-suggest</option>
                     </select>
+                    <button type="button" id="apply-class-btn" class="small primary" style="font-size:0.6rem;padding:2px 8px;">Apply Class</button>
                     <button type="button" id="recalculate-class-btn" class="small secondary" style="font-size:0.6rem;padding:2px 8px;">Recalc</button>
                     <button type="button" id="random-stats-btn" class="small secondary" style="font-size:0.6rem;padding:2px 8px;">Random</button>
                 </div>
@@ -1030,6 +941,7 @@
                     <option value="body_mage">Body Mage</option>
                     <option value="aether_mage">Aether Mage</option>
                 </select>
+                <button type="button" id="apply-magic-class-btn" class="small primary" style="font-size:0.6rem;padding:2px 8px;">Apply Class</button>
                 <button type="button" id="recalculate-magic-class-btn" class="small secondary" style="font-size:0.6rem;padding:2px 8px;">Recalc</button>
             </div>
             <div class="magic-power-display" style="margin-top:6px;font-size:0.7rem;color:var(--text-dim);">
@@ -1066,23 +978,6 @@
         `;
     }
 
-    // ============================================================
-    // EVENT COMPATIBILITY STUBS
-    // Event ownership belongs exclusively to character-events.js.
-    // ============================================================
-
-    function initStatsEvents() {
-        // Events are now handled by character-events.js
-    }
-
-    function initMagicEvents() {
-        // Events are now handled by character-events.js
-    }
-
-    function initSpecialMovesEvents() {
-        // Events are now handled by character-events.js
-    }
-
     function populateClassSelect() {
         var select = document.getElementById('manual-class-select');
         if (!select) return;
@@ -1090,7 +985,6 @@
         var currentValue = select.value || '';
         select.innerHTML = '<option value="">Auto-suggest</option>';
         
-        // Sort classes by priority (higher first) then by label
         var sorted = CLASS_DEFINITIONS.slice().sort(function(a, b) {
             var priorityDiff = (b.priority || 0) - (a.priority || 0);
             if (priorityDiff !== 0) return priorityDiff;
@@ -1121,11 +1015,106 @@
     }
 
     // ============================================================
+    // APPLY CLASS - Sets stats to match the selected class
+    // ============================================================
+
+    function applyPhysicalClass() {
+        var select = document.getElementById('manual-class-select');
+        if (!select || !select.value) {
+            showNotification('Please select a class first.', 'warning');
+            return;
+        }
+
+        var classId = select.value;
+        var cls = CLASS_DEFINITIONS.find(function(c) { return c.id === classId; });
+        if (!cls) {
+            showNotification('Class not found.', 'error');
+            return;
+        }
+
+        var stats = {
+            str: getStatFromDOM('char-str'),
+            dex: getStatFromDOM('char-dex'),
+            con: getStatFromDOM('char-con'),
+            int: getStatFromDOM('char-int'),
+            wis: getStatFromDOM('char-wis'),
+            cha: getStatFromDOM('char-cha')
+        };
+
+        cls.primaryStats.forEach(function(stat) {
+            stats[stat] = Math.max(stats[stat], 14);
+        });
+
+        if (cls.secondaryStats) {
+            cls.secondaryStats.forEach(function(stat) {
+                stats[stat] = Math.max(stats[stat], 12);
+            });
+        }
+
+        document.getElementById('char-str').value = stats.str;
+        document.getElementById('char-dex').value = stats.dex;
+        document.getElementById('char-con').value = stats.con;
+        document.getElementById('char-int').value = stats.int;
+        document.getElementById('char-wis').value = stats.wis;
+        document.getElementById('char-cha').value = stats.cha;
+
+        updateClassSuggestion();
+        showNotification('Applied ' + cls.label + ' class requirements!', 'success');
+    }
+
+    function applyMagicClass() {
+        var select = document.getElementById('manual-magic-class-select');
+        if (!select || !select.value) {
+            showNotification('Please select a magic class first.', 'warning');
+            return;
+        }
+
+        var classType = select.value;
+        var magic = {};
+        var allKeys = getMagicTypeKeys();
+        allKeys.forEach(function(key) {
+            magic[key] = 0;
+        });
+
+        var category;
+        if (classType === 'elementalist') {
+            category = 'elemental';
+        } else if (classType === 'body_mage') {
+            category = 'body';
+        } else if (classType === 'aether_mage') {
+            category = 'aether';
+        } else {
+            return;
+        }
+
+        var types = getMagicCategoryTypes(category);
+        types.forEach(function(key) {
+            magic[key] = Math.floor(Math.random() * 3) + 5;
+        });
+
+        allKeys.forEach(function(key) {
+            if (magic[key] === 0) {
+                magic[key] = Math.floor(Math.random() * 3) + 1;
+            }
+        });
+
+        allKeys.forEach(function(key) {
+            var input = document.getElementById('magic-' + key);
+            if (input) {
+                input.value = magic[key];
+            }
+        });
+
+        updateMagicClassSuggestion();
+        updateMagicPowerDisplay();
+        showNotification('Applied ' + classType.replace('_', ' ') + ' magic distribution!', 'success');
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.CharacterStats = {
-        // Stat definitions
         STAT_DEFINITIONS: STAT_DEFINITIONS,
         CLASS_DEFINITIONS: CLASS_DEFINITIONS,
         MAGIC_TYPES: MAGIC_TYPES,
@@ -1135,22 +1124,18 @@
         STAT_MAX: STAT_MAX,
         BALANCED_MAGE_THRESHOLD: BALANCED_MAGE_THRESHOLD,
 
-        // Magic helpers
         getMagicTypeKeys: getMagicTypeKeys,
         getMagicCategoryTypes: getMagicCategoryTypes,
 
-        // Stat functions
         getDefaultStats: getDefaultStats,
         getCharacterStats: getCharacterStats,
         getAbilityModifier: getAbilityModifier,
         getModifierDisplay: getModifierDisplay,
         generateRandomStats: generateRandomStats,
 
-        // Class suggestion
         suggestClass: suggestClass,
         updateClassSuggestion: updateClassSuggestion,
 
-        // Magic functions
         getDefaultMagicProficiencies: getDefaultMagicProficiencies,
         getCharacterMagic: getCharacterMagic,
         calculateMagicPower: calculateMagicPower,
@@ -1162,23 +1147,18 @@
         getMagicLevelColor: getMagicLevelColor,
         generateRandomMagicCategory: generateRandomMagicCategory,
 
-        // Special moves
         getSpecialMoves: getSpecialMoves,
         addSpecialMove: addSpecialMove,
         removeSpecialMove: removeSpecialMove,
         renderSpecialMoves: renderSpecialMoves,
 
-        // HTML generation
         getStatsTabHTML: getStatsTabHTML,
         getMagicTabHTML: getMagicTabHTML,
         getSpecialMovesHTML: getSpecialMovesHTML,
 
-        // Event compatibility stubs
-        initStatsEvents: initStatsEvents,
-        initMagicEvents: initMagicEvents,
-        initSpecialMovesEvents: initSpecialMovesEvents,
-        
-        populateClassSelect: populateClassSelect
+        populateClassSelect: populateClassSelect,
+        applyPhysicalClass: applyPhysicalClass,
+        applyMagicClass: applyMagicClass
     };
 
 })();
