@@ -20,6 +20,10 @@
  *   - Progress values are clamped to 0-100 before rendering
  *   - Dates are validated before display
  * 
+ * TEAM FILTERING:
+ *   - Missions can ONLY be assigned to Professional or Temporary teams
+ *   - Academic and Civilian teams are excluded from the dropdown
+ * 
  * DEPENDENCIES:
  *   - MissionsQueries (required)
  *   - MissionsSchema (for constants ONLY via Queries)
@@ -38,6 +42,22 @@
     window.__missionsRenderLoaded = true;
 
     var Queries = window.MissionsQueries;
+
+    // ============================================================
+    // TEAM FILTERING - Only Professional and Temporary teams
+    // ============================================================
+
+    var ALLOWED_TEAM_TYPES = ['professional', 'temporary'];
+
+    function isTeamAllowedForMission(team) {
+        if (!team || typeof team !== 'object') return false;
+        return ALLOWED_TEAM_TYPES.indexOf(team.type) !== -1;
+    }
+
+    function filterTeamsForMission(teams) {
+        if (!Array.isArray(teams)) return [];
+        return teams.filter(isTeamAllowedForMission);
+    }
 
     // ============================================================
     // HTML ESCAPING
@@ -201,7 +221,7 @@
          * Render the mission form.
          * 
          * @param {object} mission - Mission object (null for new)
-         * @param {array} teams - Array of team objects
+         * @param {array} teams - Array of team objects (will be filtered)
          * @param {array} characters - Array of character objects
          * @param {array} supportIds - Array of support personnel IDs (for edit)
          * @returns {string} HTML string
@@ -224,6 +244,9 @@
             var validBillingTypes = Queries.getValidBillingTypes ? Queries.getValidBillingTypes() : ['original', 'escalated', 'emergency', 'internal'];
             var validEscalationTiers = Queries.getValidEscalationTiers ? Queries.getValidEscalationTiers() : ['tier_i', 'tier_ii', 'tier_iii', 'tier_iv', 'tier_v'];
             var missionTypes = Queries.getMissionTypes ? Queries.getMissionTypes() : {};
+
+            // Filter teams: ONLY Professional and Temporary teams
+            var filteredTeams = filterTeamsForMission(teams);
 
             var html = '<form class="mission-form" id="mission-form-inner">';
             html += '<div class="form-grid">';
@@ -398,20 +421,48 @@
             });
             html += '</select></div>';
 
-            // Assign Team
+            // Assign Team - FILTERED to Professional and Temporary only
             html += '<div class="form-group">';
             html += '<label>Assign Team</label>';
+            html += '<p class="field-hint" style="font-size:0.65rem;color:var(--text-dim);">Missions can only be assigned to Professional or Temporary teams</p>';
             html += '<select id="mission-team">';
             html += '<option value="">Unassigned</option>';
-            if (Array.isArray(teams)) {
-                var sortedTeams = teams.slice().sort(function(a, b) {
+
+            if (filteredTeams.length > 0) {
+                // Sort teams: Professional first, then Temporary
+                var sortedTeams = filteredTeams.slice().sort(function(a, b) {
+                    var typeOrder = { 'professional': 0, 'temporary': 1 };
+                    var orderA = typeOrder[a.type] !== undefined ? typeOrder[a.type] : 2;
+                    var orderB = typeOrder[b.type] !== undefined ? typeOrder[b.type] : 2;
+                    if (orderA !== orderB) return orderA - orderB;
                     return (a.name || '').localeCompare(b.name || '');
                 });
-                sortedTeams.forEach(function(team) {
-                    var selected = Queries.normaliseId(m.assignedTeamId) === Queries.normaliseId(team.id) ? 'selected' : '';
-                    html += '<option value="' + escapeHtml(team.id) + '" ' + selected + '>' + escapeHtml(team.name) + '</option>';
-                });
+
+                // Group by type for optgroups
+                var professionalTeams = sortedTeams.filter(function(t) { return t.type === 'professional'; });
+                var temporaryTeams = sortedTeams.filter(function(t) { return t.type === 'temporary'; });
+
+                if (professionalTeams.length > 0) {
+                    html += '<optgroup label="Professional Teams">';
+                    professionalTeams.forEach(function(team) {
+                        var selected = Queries.normaliseId(m.assignedTeamId) === Queries.normaliseId(team.id) ? 'selected' : '';
+                        html += '<option value="' + escapeHtml(team.id) + '" ' + selected + '>' + escapeHtml(team.name) + '</option>';
+                    });
+                    html += '</optgroup>';
+                }
+
+                if (temporaryTeams.length > 0) {
+                    html += '<optgroup label="Temporary Teams">';
+                    temporaryTeams.forEach(function(team) {
+                        var selected = Queries.normaliseId(m.assignedTeamId) === Queries.normaliseId(team.id) ? 'selected' : '';
+                        html += '<option value="' + escapeHtml(team.id) + '" ' + selected + '>' + escapeHtml(team.name) + '</option>';
+                    });
+                    html += '</optgroup>';
+                }
+            } else {
+                html += '<option value="" disabled style="color:var(--text-dim);">No Professional or Temporary teams available</option>';
             }
+
             html += '</select></div>';
 
             // Support Personnel
