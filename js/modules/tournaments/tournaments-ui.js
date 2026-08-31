@@ -708,9 +708,34 @@
 
         setupModalOutsideClick('tournament-detail-modal', closeTournamentDetail);
 
+        // FIX: Properly bind the close button
+        var closeBtn = document.getElementById('close-tournament-detail');
+        if (closeBtn) {
+            // Remove any existing listeners by cloning
+            var newCloseBtn = closeBtn.cloneNode(true);
+            closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
+            newCloseBtn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                closeTournamentDetail();
+            });
+        }
+
+        // Also handle any .close-modal inside the modal
+        var modalCloseBtns = modal.querySelectorAll('.close-modal');
+        modalCloseBtns.forEach(function(btn) {
+            if (btn.id !== 'close-tournament-detail') {
+                var newBtn = btn.cloneNode(true);
+                btn.parentNode.replaceChild(newBtn, btn);
+                newBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    closeTournamentDetail();
+                });
+            }
+        });
+
         attachDetailEvents(modal);
 
-        // Populate participant select - this is the single source of truth
+        // Populate participant select
         var select = content.querySelector('.participant-select');
         if (select) {
             populateParticipantSelect(select, tournament);
@@ -719,7 +744,14 @@
 
     function closeTournamentDetail() {
         var modal = document.getElementById('tournament-detail-modal');
-        if (modal) modal.classList.add('hidden');
+        if (modal) {
+            modal.classList.add('hidden');
+            // Clear the content to prevent stale data
+            var content = document.getElementById('tournament-detail-content');
+            if (content) {
+                content.innerHTML = '';
+            }
+        }
         state.currentTournamentId = null;
     }
 
