@@ -6,8 +6,10 @@
  * This module is responsible for:
  *   - Rendering the character list
  *   - Filtering by name, status, and class
+ *   - Hiding deceased and eliminated characters (auto-hide by default)
  *   - Highlighting the currently selected character
  *   - Populating the class filter dropdown
+ *   - Auto-scrolling to the selected character
  * 
  * IMPORTANT:
  *   - This module is for RENDERING only - all event binding is in character-events.js
@@ -65,7 +67,6 @@
             }
         });
 
-        // Optional but recommended for full functionality
         var optional = ['showCharacterForm', 'toggleCharacterList'];
         var missingOptional = [];
         optional.forEach(function(name) {
@@ -148,7 +149,20 @@
     // FILTER FUNCTIONS - PURE
     // ============================================================
 
-    function applyFilters(char, nameFilter, statusFilter, classFilter) {
+    function applyFilters(char, nameFilter, statusFilter, classFilter, hideDeceased, hideEliminated) {
+        // Hide deceased
+        if (hideDeceased && char.deceased) {
+            return false;
+        }
+
+        // Hide eliminated
+        if (hideEliminated) {
+            var hasElimination = char.eliminations && char.eliminations.length > 0;
+            if (hasElimination) {
+                return false;
+            }
+        }
+
         // Name filter
         if (nameFilter) {
             var displayName = String(typeof window.getDisplayName === 'function'
@@ -205,7 +219,6 @@
 
         var currentValue = select.value || 'all';
 
-        // Preserve current value if it still exists
         var exists = false;
         for (var i = 0; i < classes.length; i++) {
             if (String(classes[i].id) === String(currentValue)) {
@@ -214,7 +227,6 @@
             }
         }
 
-        // Rebuild options
         select.innerHTML = '<option value="all">All Classes</option>';
         classes.forEach(function(cls) {
             var option = document.createElement('option');
@@ -224,6 +236,20 @@
         });
 
         select.value = exists ? currentValue : 'all';
+    }
+
+    // ============================================================
+    // GET FILTER CHECKBOX STATES
+    // ============================================================
+
+    function getFilterCheckboxes() {
+        var hideDeceased = document.getElementById('hide-deceased');
+        var hideEliminated = document.getElementById('hide-eliminated');
+        
+        return {
+            hideDeceased: hideDeceased ? hideDeceased.checked : true,
+            hideEliminated: hideEliminated ? hideEliminated.checked : true
+        };
     }
 
     // ============================================================
@@ -254,6 +280,10 @@
         var classFilter = document.getElementById('char-class-filter')
             ? document.getElementById('char-class-filter').value
             : 'all';
+        
+        var checkboxes = getFilterCheckboxes();
+        var hideDeceased = checkboxes.hideDeceased;
+        var hideEliminated = checkboxes.hideEliminated;
 
         var data = window.data || {};
         if (!data.characters || data.characters.length === 0) {
@@ -264,7 +294,7 @@
         // Filter and sort characters
         var filteredChars = data.characters
             .filter(function(char) {
-                return applyFilters(char, nameFilter, statusFilter, classFilter);
+                return applyFilters(char, nameFilter, statusFilter, classFilter, hideDeceased, hideEliminated);
             })
             .sort(function(a, b) {
                 var nameA = String(typeof window.getDisplayName === 'function'
@@ -277,7 +307,15 @@
             });
 
         if (filteredChars.length === 0) {
-            listContainer.innerHTML = '<p class="empty-state" style="padding:10px;font-size:0.8rem;">No matches</p>';
+            var message = 'No matches';
+            if (hideDeceased && hideEliminated) {
+                message = 'No active characters found';
+            } else if (hideDeceased) {
+                message = 'No living characters found';
+            } else if (hideEliminated) {
+                message = 'No non-eliminated characters found';
+            }
+            listContainer.innerHTML = '<p class="empty-state" style="padding:10px;font-size:0.8rem;">' + message + '</p>';
             return;
         }
 
@@ -304,18 +342,21 @@
             var classNames = getCharacterClassNames(char);
             var classDisplay = classNames.length > 0 ? ' [' + classNames.join(', ') + ']' : '';
 
+            // Add eliminated badge if character has eliminations
+            var hasElimination = char.eliminations && char.eliminations.length > 0;
+            var eliminatedBadge = hasElimination ? ' <span class="eliminated-badge">⚔ Eliminated</span>' : '';
+
             html += '<div class="char-list-item' + activeClass + '" data-id="' + escapeHtml(char.id) + '">';
-            html += '<span class="char-name">' + escapeHtml(displayName) + deadMarker + escapeHtml(classDisplay) + '</span>';
+            html += '<span class="char-name">' + escapeHtml(displayName) + deadMarker + escapeHtml(classDisplay) + eliminatedBadge + '</span>';
             html += '<span class="char-status" style="font-size:0.6rem;color:' + statusColor + ';">' + statusIndicator + ' ' + escapeHtml(status) + '</span>';
             html += '</div>';
         });
 
         listContainer.innerHTML = html;
 
-        // Auto-scroll to the selected character
+        // Auto-scroll to the selected character in the list
         var activeItem = listContainer.querySelector('.char-list-item.active');
         if (activeItem) {
-            // Use setTimeout to ensure DOM is rendered before scrolling
             setTimeout(function() {
                 activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
             }, 50);
@@ -327,6 +368,7 @@
     // ============================================================
 
     function getFilterValues() {
+        var checkboxes = getFilterCheckboxes();
         return {
             nameFilter: document.getElementById('char-name-filter')
                 ? document.getElementById('char-name-filter').value.toLowerCase()
@@ -336,7 +378,9 @@
                 : 'all',
             classFilter: document.getElementById('char-class-filter')
                 ? document.getElementById('char-class-filter').value
-                : 'all'
+                : 'all',
+            hideDeceased: checkboxes.hideDeceased,
+            hideEliminated: checkboxes.hideEliminated
         };
     }
 
@@ -359,6 +403,7 @@
         populateClassFilter: populateClassFilter,
         getFilterValues: getFilterValues,
         getSelectedCharacterId: getSelectedCharacterId,
+        getFilterCheckboxes: getFilterCheckboxes,
         DEBOUNCE_DELAY: DEBOUNCE_DELAY
     };
 
