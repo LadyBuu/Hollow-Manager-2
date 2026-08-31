@@ -51,15 +51,15 @@
     'use strict';
 
     var DB_NAME = 'HollowBladesDB';
-    var DB_VERSION = 1; // IndexedDB schema version
-    var DATA_VERSION = 13; // Application data version (was 12)
+    var DB_VERSION = 13; // Updated from 1 to 13 to match existing database
+    var DATA_VERSION = 13;
     var STORE_NAME = 'appData';
 
     // INTERNAL: The actual IndexedDB connection (private)
     var _indexedDB = null;
     var _data = null;
-    var _dbOpenPromise = null; // Promise for the actual open() call
-    var _dbInitPromise = null; // Promise for ensureDatabaseReady() lifecycle
+    var _dbOpenPromise = null;
+    var _dbInitPromise = null;
     var _loadPromise = null;
     var _dataReadyDispatched = false;
     var _dbStatus = 'uninitialized';
@@ -181,7 +181,6 @@
 
         keys.forEach(function(key) {
             if (target[key] === undefined) {
-                // Deep clone defaults to avoid shared references
                 result[key] = deepClone(defaults[key]);
             } else if (
                 target[key] &&
@@ -261,8 +260,6 @@
                     _dbStatus = 'ready';
                     
                     _indexedDB.onversionchange = function() {
-                        // Database schema is being upgraded elsewhere
-                        // Close our connection to allow the upgrade
                         if (_indexedDB) {
                             _indexedDB.close();
                             _indexedDB = null;
@@ -272,7 +269,6 @@
                     };
                     
                     _indexedDB.onclose = function() {
-                        // Connection closed unexpectedly
                         _indexedDB = null;
                         _dbInitPromise = null;
                         _dbStatus = 'uninitialized';
@@ -614,9 +610,6 @@
         data._dataVersion = 12;
     }
 
-    /**
-     * Version 13 Migration: Add attraction and sexuality to characters
-     */
     function migrateToVersion13(data) {
         data.characters.forEach(function(char) {
             if (char.attraction === undefined) {
@@ -675,7 +668,6 @@
                     repaired = true;
                 }
             }
-            // Version 13 fields
             if (char.attraction === undefined) {
                 char.attraction = '';
                 repaired = true;
@@ -703,7 +695,6 @@
         } else {
             var curriculumDefaults = getDefaultCurriculumData();
             var mergedCurriculum = deepMergeDefaults(data.curriculum, curriculumDefaults);
-            // Check if any keys were added
             for (var key in curriculumDefaults) {
                 if (data.curriculum[key] === undefined) {
                     repaired = true;
@@ -775,7 +766,6 @@
             if (!_indexedDB || _dbStatus !== 'ready') {
                 var error = new Error('Database not available');
                 _loadError = error;
-                // Reset _loadPromise so future calls can retry
                 _loadPromise = null;
                 reject(error);
                 return;
@@ -867,20 +857,6 @@
     // SAVE DATA - Coalescing queue with frozen batches
     // ============================================================
 
-    /**
-     * Save data to IndexedDB.
-     * Uses a coalescing queue: multiple saves requested while one is in progress
-     * are batched into a single transaction.
-     * Returns a Promise that resolves to true on success.
-     * 
-     * IMPORTANT: The waiter batch is frozen at the start of each save.
-     * Waiters arriving during a save will be part of the NEXT save.
-     * This prevents "saved successfully" responses for unsaved data.
-     * 
-     * SNAPSHOT: The state is captured when performSave() begins executing,
-     * not necessarily when saveData() was called. Mutations that occur
-     * between the call and the snapshot may be included.
-     */
     function saveData() {
         return new Promise(function(resolve, reject) {
             _saveWaiters.push({
@@ -892,15 +868,12 @@
     }
 
     function processSaveQueue() {
-        // If already saving, waiters will be handled when the current save completes
         if (_isSaving || _saveWaiters.length === 0) {
             return;
         }
 
         _isSaving = true;
 
-        // FREEZE this batch of waiters
-        // Any new waiters that arrive during the save will be added to the NEXT save
         var currentWaiters = _saveWaiters;
         _saveWaiters = [];
 
@@ -908,7 +881,6 @@
             .then(function() {
                 _isSaving = false;
 
-                // Resolve all waiters in this batch with the successful result
                 currentWaiters.forEach(function(waiter) {
                     try {
                         waiter.resolve(true);
@@ -917,7 +889,6 @@
                     }
                 });
 
-                // If new saves were requested while we were saving, process them now
                 if (_saveWaiters.length > 0) {
                     processSaveQueue();
                 }
@@ -925,7 +896,6 @@
             .catch(function(err) {
                 _isSaving = false;
 
-                // Reject all waiters in this batch with the error
                 currentWaiters.forEach(function(waiter) {
                     try {
                         waiter.reject(err);
@@ -934,8 +904,6 @@
                     }
                 });
 
-                // If new saves were requested while we were saving, process them now
-                // This gives them a chance to retry
                 if (_saveWaiters.length > 0) {
                     processSaveQueue();
                 }
@@ -965,18 +933,15 @@
             }
 
             try {
-                // Synchronise authoritative data references
                 var sourceData = window.data || _data;
 
                 if (!sourceData) {
                     sourceData = getEmptyData();
                 }
 
-                // Ensure window.data and _data point to the same object
                 window.data = sourceData;
                 _data = sourceData;
 
-                // Ensure structure is valid before saving
                 ensureDataStructure(sourceData);
                 var safeData = createSafeCopy(sourceData);
 
@@ -1008,7 +973,6 @@
                     fail(error);
                 };
             } catch (err) {
-                // Catch synchronous errors from ensureDataStructure or createSafeCopy
                 fail(err);
             }
         });
@@ -1038,7 +1002,6 @@
     // ============================================================
 
     function autoLoadData() {
-        // Only use window.data if it was set by this module
         if (window.data && window.data === _data) {
             _dispatchDataReady(window.data);
             return Promise.resolve(window.data);
@@ -1123,7 +1086,6 @@
         })
         .catch(function(err) {
             _loadError = err;
-            // Ensure failure is dispatched even if ensureDatabaseReady fails
             _dispatchDataFailure(err);
         });
 
