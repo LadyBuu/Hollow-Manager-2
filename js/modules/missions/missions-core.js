@@ -7,10 +7,10 @@
  *   - Invalid inputs are REJECTED (operation returns null/false)
  *   - Mutations are ATOMIC: all or nothing
  *   - Uses MissionsSchema for validation
- *   - Mission ID is auto-generated on creation
  *   - Internal `id` is immutable; `missionId` is human-readable
  *   - Mutations build complete proposed state before committing
- *   - Derived fields (progress, pay, completedAt) are calculated, not stored
+ *   - Derived fields (progress, pay, completedAt) are calculated, not accepted as input
+ *   - Only whitelisted fields are updateable via updateMission()
  * 
  * MUTATION PATTERN:
  *   1. Validate inputs (reject invalid)
@@ -18,6 +18,20 @@
  *   3. Validate proposed state against Schema
  *   4. If valid, commit all changes atomically
  *   5. If any step fails, return error WITHOUT mutating
+ * 
+ * UPDATEABLE FIELDS (whitelist):
+ *   title, description, year, month, day, primaryType, subtype,
+ *   secondaryType, escalation, threatType, environment, location,
+ *   duration, difficulty, priority, basePay, surchargePay, billing,
+ *   assignedTeamId, supportPersonnel, status, objectives, notes, tags
+ * 
+ * DERIVED FIELDS (calculated, never accepted as input):
+ *   id, missionId, pay, progress, completedAt, createdAt, log
+ * 
+ * LIFECYCLE RULES:
+ *   - Active mission with 100% progress auto-completes
+ *   - Completed mission: status can be manually changed, but objectives are frozen
+ *   - Cancelled mission: status can be manually changed, objectives are frozen
  * 
  * DEPENDENCIES:
  *   - MissionsSchema (required)
@@ -41,6 +55,37 @@
     var Schema = window.MissionsSchema;
     var MISSION_TYPES = Schema.MISSION_TYPES;
     var DIFFICULTY_CODES = Schema.DIFFICULTY_CODES;
+
+    // ============================================================
+    // UPDATEABLE FIELDS WHITELIST
+    // ============================================================
+
+    var MUTABLE_FIELDS = [
+        'title',
+        'description',
+        'year',
+        'month',
+        'day',
+        'primaryType',
+        'subtype',
+        'secondaryType',
+        'escalation',
+        'threatType',
+        'environment',
+        'location',
+        'duration',
+        'difficulty',
+        'priority',
+        'basePay',
+        'surchargePay',
+        'billing',
+        'assignedTeamId',
+        'supportPersonnel',
+        'status',
+        'objectives',
+        'notes',
+        'tags'
+    ];
 
     // ============================================================
     // HELPERS
@@ -101,10 +146,6 @@
         return char.name || char.firstName || 'Unknown';
     }
 
-    function isDefined(value) {
-        return value !== undefined && value !== null;
-    }
-
     function hasOwnProperty(obj, key) {
         return Object.prototype.hasOwnProperty.call(obj, key);
     }
@@ -147,12 +188,17 @@
         var prefix = teamAbbr + '-' + yearStr + '-' + difficultyCode;
         var sequence = 1;
         
+        // Use regex for safer matching
+        var regex = new RegExp('^' + prefix + '(\\d{3})$');
+        
         missions.forEach(function(m) {
-            if (m.missionId && m.missionId.startsWith(prefix)) {
-                var numPart = m.missionId.replace(prefix, '');
-                var num = parseInt(numPart, 10);
-                if (!isNaN(num) && num >= sequence) {
-                    sequence = num + 1;
+            if (m.missionId && typeof m.missionId === 'string') {
+                var match = regex.exec(m.missionId);
+                if (match) {
+                    var num = parseInt(match[1], 10);
+                    if (!isNaN(num) && num >= sequence) {
+                        sequence = num + 1;
+                    }
                 }
             }
         });
@@ -239,6 +285,30 @@
     }
 
     // ============================================================
+    // VALIDATE TEAM REFERENCE
+    // ============================================================
+
+    function validateTeamReference(teamId) {
+        if (!teamId) return true;
+        var team = getTeamById(teamId);
+        if (!team) {
+            console.warn('MissionsCore: Team reference validation failed - team not found:', teamId);
+            return false;
+        }
+        return true;
+    }
+
+    // ============================================================
+    // VALIDATE MISSION CAN BE MODIFIED
+    // ============================================================
+
+    function isMissionMutable(mission) {
+        if (!mission) return false;
+        // Completed and cancelled missions are frozen
+        return mission.status !== 'completed' && mission.status !== 'cancelled';
+    }
+
+    // ============================================================
     // CORE API
     // ============================================================
 
@@ -313,23 +383,27 @@
             var normalised = Schema.normaliseMission(data);
             if (!normalised) return null;
 
-            // ---- PHASE 2: GENERATE MISSION ID ----
+            // ---- PHASE 2: VALIDATE TEAM REFERENCE ----
+            if (!validateTeamReference(normalised.assignedTeamId)) {
+                return null;
+            }
+
+            // ---- PHASE 3: GENERATE MISSION ID ----
             var missionId = generateMissionId(
                 normalised.assignedTeamId,
-                normalised.year,
+                normalised.year || new Date().getFullYear(),
                 normalised.difficulty
             );
 
-            // ---- PHASE 3: BUILD COMPLETE MISSION ----
-            var now = new Date();
+            // ---- PHASE 4: BUILD COMPLETE MISSION ----
             var mission = {
                 id: generateInternalId('miss'),
                 missionId: missionId,
                 title: normalised.title,
                 description: normalised.description || '',
-                year: normalised.year || now.getFullYear(),
-                month: normalised.month || now.getMonth() + 1,
-                day: normalised.day || now.getDate(),
+                year: normalised.year,
+                month: normalised.month,
+                day: normalised.day,
                 primaryType: normalised.primaryType || '',
                 subtype: normalised.subtype || '',
                 secondaryType: normalised.secondaryType || '',
@@ -356,14 +430,14 @@
                 log: []
             };
 
-            // ---- PHASE 4: VALIDATE MISSION ----
+            // ---- PHASE 5: VALIDATE MISSION ----
             var validation = Schema.validateMission(mission);
             if (!validation.valid) {
                 console.warn('MissionsCore.createMission: Validation failed:', validation.errors.join(', '));
                 return null;
             }
 
-            // ---- PHASE 5: COMMIT ----
+            // ---- PHASE 6: COMMIT ----
             var store = getDataStore();
             if (!store) {
                 if (!window.data) window.data = {};
@@ -382,9 +456,10 @@
          * Update an existing mission.
          * Atomic: builds complete proposed state before committing.
          * Validates all inputs before mutation.
+         * Only whitelisted fields are updateable.
          * 
          * @param {string} id - Internal mission ID
-         * @param {object} updates - Fields to update
+         * @param {object} updates - Fields to update (must be in MUTABLE_FIELDS)
          * @returns {object|null} Updated mission or null if invalid
          */
         updateMission: function(id, updates) {
@@ -393,34 +468,50 @@
 
             if (!updates || typeof updates !== 'object') return null;
 
-            // ---- PHASE 1: BUILD PROPOSED STATE ----
-            var proposed = cloneMission(original);
-
-            // Apply all updates (handling null as "clear this field")
+            // ---- PHASE 1: FILTER TO ONLY MUTABLE FIELDS ----
+            var validUpdates = {};
             Object.keys(updates).forEach(function(key) {
-                if (hasOwnProperty(updates, key)) {
-                    if (updates[key] === null) {
-                        // Null = clear the field
-                        if (key === 'assignedTeamId') {
-                            proposed.assignedTeamId = null;
-                        } else if (key === 'supportPersonnel') {
-                            proposed.supportPersonnel = [];
-                        } else if (key === 'tags') {
-                            proposed.tags = [];
-                        } else if (key === 'objectives') {
-                            proposed.objectives = [];
-                        } else if (key === 'notes' || key === 'description') {
-                            proposed[key] = '';
-                        } else {
-                            proposed[key] = '';
-                        }
-                    } else if (updates[key] !== undefined) {
-                        proposed[key] = updates[key];
-                    }
+                if (MUTABLE_FIELDS.indexOf(key) !== -1 && hasOwnProperty(updates, key)) {
+                    validUpdates[key] = updates[key];
                 }
             });
 
-            // ---- PHASE 2: NORMALISE OBJECTIVES ----
+            if (Object.keys(validUpdates).length === 0) {
+                console.warn('MissionsCore.updateMission: No valid updateable fields provided.');
+                return cloneMission(original);
+            }
+
+            // ---- PHASE 2: BUILD PROPOSED STATE ----
+            var proposed = cloneMission(original);
+
+            // Apply all valid updates (handling null as "clear this field")
+            Object.keys(validUpdates).forEach(function(key) {
+                if (validUpdates[key] === null) {
+                    // Null = clear the field
+                    if (key === 'assignedTeamId') {
+                        proposed.assignedTeamId = null;
+                    } else if (key === 'supportPersonnel') {
+                        proposed.supportPersonnel = [];
+                    } else if (key === 'tags') {
+                        proposed.tags = [];
+                    } else if (key === 'objectives') {
+                        proposed.objectives = [];
+                    } else if (key === 'notes' || key === 'description') {
+                        proposed[key] = '';
+                    } else {
+                        proposed[key] = '';
+                    }
+                } else if (validUpdates[key] !== undefined) {
+                    proposed[key] = validUpdates[key];
+                }
+            });
+
+            // ---- PHASE 3: VALIDATE TEAM REFERENCE ----
+            if (proposed.assignedTeamId && !validateTeamReference(proposed.assignedTeamId)) {
+                return null;
+            }
+
+            // ---- PHASE 4: NORMALISE OBJECTIVES ----
             if (Array.isArray(proposed.objectives)) {
                 proposed.objectives = proposed.objectives.map(function(o) {
                     if (!o || typeof o !== 'object') {
@@ -433,7 +524,7 @@
                 }).filter(function(o) { return o.text; });
             }
 
-            // ---- PHASE 3: RECALCULATE DERIVED FIELDS ----
+            // ---- PHASE 5: RECALCULATE DERIVED FIELDS ----
             // Progress from objectives
             var total = proposed.objectives.length;
             var completed = proposed.objectives.filter(function(o) { return o.done; }).length;
@@ -444,16 +535,16 @@
 
             // Mission ID regeneration (if team, year, or difficulty changed)
             var shouldRegenerateId = false;
-            if (hasOwnProperty(updates, 'assignedTeamId') ||
-                hasOwnProperty(updates, 'year') ||
-                hasOwnProperty(updates, 'difficulty')) {
+            if (hasOwnProperty(validUpdates, 'assignedTeamId') ||
+                hasOwnProperty(validUpdates, 'year') ||
+                hasOwnProperty(validUpdates, 'difficulty')) {
                 shouldRegenerateId = true;
             }
 
             if (shouldRegenerateId) {
                 var newId = generateMissionId(
                     proposed.assignedTeamId,
-                    proposed.year,
+                    proposed.year || new Date().getFullYear(),
                     proposed.difficulty
                 );
                 if (newId !== proposed.missionId) {
@@ -476,14 +567,14 @@
                 proposed.completedAt = new Date().toISOString();
             }
 
-            // ---- PHASE 4: VALIDATE PROPOSED STATE ----
+            // ---- PHASE 6: VALIDATE PROPOSED STATE ----
             var validation = Schema.validateMission(proposed);
             if (!validation.valid) {
                 console.warn('MissionsCore.updateMission: Validation failed:', validation.errors.join(', '));
                 return null;
             }
 
-            // ---- PHASE 5: COMMIT ----
+            // ---- PHASE 7: COMMIT ----
             var store = getDataStore();
             if (!store || !Array.isArray(store.missions)) return null;
 
@@ -497,7 +588,8 @@
             // Apply to live state
             Object.assign(store.missions[index], proposed);
 
-            logActivity('Updated mission: ' + proposed.title + ' (' + proposed.missionId + ')');
+            var changedKeys = Object.keys(validUpdates);
+            logActivity('Updated mission: ' + proposed.title + ' (' + changedKeys.join(', ') + ')');
 
             return cloneMission(store.missions[index]);
         },
@@ -531,6 +623,7 @@
         /**
          * Toggle an objective's done status.
          * Atomic: validates and recalculates progress.
+         * Completed missions cannot be modified.
          * 
          * @param {string} missionId - Internal mission ID
          * @param {number} objectiveIndex - Index of objective to toggle
@@ -539,6 +632,12 @@
         toggleObjective: function(missionId, objectiveIndex) {
             var mission = this.getMission(missionId);
             if (!mission) return null;
+
+            // ---- LIFECYCLE CHECK ----
+            if (!isMissionMutable(mission)) {
+                console.warn('MissionsCore.toggleObjective: Cannot modify ' + mission.status + ' mission.');
+                return null;
+            }
 
             if (!Array.isArray(mission.objectives) || !mission.objectives[objectiveIndex]) {
                 return null;
@@ -588,6 +687,7 @@
         /**
          * Add an objective to a mission.
          * Rejects empty text.
+         * Completed missions cannot be modified.
          * 
          * @param {string} missionId - Internal mission ID
          * @param {string} text - Objective text
@@ -599,6 +699,12 @@
 
             var mission = this.getMission(missionId);
             if (!mission) return null;
+
+            // ---- LIFECYCLE CHECK ----
+            if (!isMissionMutable(mission)) {
+                console.warn('MissionsCore.addObjective: Cannot modify ' + mission.status + ' mission.');
+                return null;
+            }
 
             // ---- BUILD PROPOSED STATE ----
             var proposed = cloneMission(mission);
@@ -639,6 +745,7 @@
 
         /**
          * Remove an objective from a mission.
+         * Completed missions cannot be modified.
          * 
          * @param {string} missionId - Internal mission ID
          * @param {number} objectiveIndex - Index of objective to remove
@@ -647,6 +754,12 @@
         removeObjective: function(missionId, objectiveIndex) {
             var mission = this.getMission(missionId);
             if (!mission) return null;
+
+            // ---- LIFECYCLE CHECK ----
+            if (!isMissionMutable(mission)) {
+                console.warn('MissionsCore.removeObjective: Cannot modify ' + mission.status + ' mission.');
+                return null;
+            }
 
             if (!Array.isArray(mission.objectives) || !mission.objectives[objectiveIndex]) {
                 return null;
