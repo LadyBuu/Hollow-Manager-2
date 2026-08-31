@@ -8,6 +8,17 @@
  *   - Uses Queries for data interpretation
  *   - Escapes all user-controlled content
  *   - Does NOT attach event handlers (UI layer handles that)
+ *   - Generates semantic HTML with CSS classes for styling
+ * 
+ * RENDER CONTRACT:
+ *   - All functions return HTML strings
+ *   - All user-controlled values are escaped
+ *   - No DOM manipulation, no event listeners
+ *   - Data interpretation is delegated to Queries
+ * 
+ * DEPENDENCIES:
+ *   - MissionsQueries (required)
+ *   - MissionsSchema (required for constants)
  */
 
 (function() {
@@ -20,15 +31,22 @@
         return;
     }
 
+    if (!window.MissionsSchema) {
+        console.error('MissionsRender: MissionsSchema required.');
+        return;
+    }
+
     window.__missionsRenderLoaded = true;
 
     var Queries = window.MissionsQueries;
     var Schema = window.MissionsSchema;
     var MISSION_TYPES = Schema.MISSION_TYPES;
     var MONTH_NAMES = Schema.MONTH_NAMES;
+    var PRIORITY_INFO = Schema.PRIORITY_INFO;
+    var STATUS_INFO = Schema.STATUS_INFO;
 
     // ============================================================
-    // HELPERS
+    // HTML ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
@@ -39,6 +57,10 @@
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
     }
+
+    // ============================================================
+    // COLOR HELPERS
+    // ============================================================
 
     function getStatusColor(status) {
         var info = Queries.getStatusInfo(status);
@@ -57,6 +79,9 @@
     var MissionsRender = {
         /**
          * Render the mission list.
+         * 
+         * @param {array} missions - Array of mission objects
+         * @returns {string} HTML string
          */
         renderList: function(missions) {
             if (!missions || missions.length === 0) {
@@ -124,8 +149,14 @@
 
         /**
          * Render the mission form.
+         * 
+         * @param {object} mission - Mission object (null for new)
+         * @param {array} teams - Array of team objects
+         * @param {array} characters - Array of character objects
+         * @param {array} supportIds - Array of support personnel IDs (for edit)
+         * @returns {string} HTML string
          */
-        renderForm: function(mission, teams, characters) {
+        renderForm: function(mission, teams, characters, supportIds) {
             var isEdit = !!mission;
             var m = mission || {};
             var now = new Date();
@@ -133,6 +164,8 @@
             var year = m.year || now.getFullYear();
             var month = m.month || now.getMonth() + 1;
             var day = m.day || now.getDate();
+
+            supportIds = Array.isArray(supportIds) ? supportIds : [];
 
             var html = '<form class="mission-form" id="mission-form-inner">';
             html += '<div class="form-grid">';
@@ -153,13 +186,14 @@
             html += '<div class="form-group">';
             html += '<label>Mission ID</label>';
             html += '<input type="text" id="mission-id" readonly placeholder="Auto-generated" style="background:var(--bg);color:var(--text-dim);" value="' + escapeHtml(m.missionId || '') + '">';
+            html += '<span style="font-size:0.6rem;color:var(--text-dim);">Auto-generated from Team, Year, Difficulty</span>';
             html += '</div>';
 
             // Date
             html += '<div class="form-group">';
             html += '<label>Date</label>';
             html += '<div style="display:flex;gap:8px;flex-wrap:wrap;">';
-            html += '<div><label style="font-size:0.65rem;color:var(--text-dim);">Year</label><input type="number" id="mission-year" value="' + escapeHtml(year) + '" style="width:80px;"></div>';
+            html += '<div><label style="font-size:0.65rem;color:var(--text-dim);">Year</label><input type="number" id="mission-year" value="' + escapeHtml(year) + '" min="1900" max="9999" style="width:80px;"></div>';
             html += '<div><label style="font-size:0.65rem;color:var(--text-dim);">Month</label><select id="mission-month" style="width:100px;">';
             MONTH_NAMES.forEach(function(name, index) {
                 var monthNum = index + 1;
@@ -313,7 +347,7 @@
             html += '<option value="">Unassigned</option>';
             if (Array.isArray(teams)) {
                 var sortedTeams = teams.slice().sort(function(a, b) {
-                    return a.name.localeCompare(b.name);
+                    return (a.name || '').localeCompare(b.name || '');
                 });
                 sortedTeams.forEach(function(team) {
                     var selected = m.assignedTeamId === team.id ? 'selected' : '';
@@ -327,10 +361,17 @@
             html += '<label>Support Personnel</label>';
             html += '<p style="font-size:0.7rem;color:var(--text-dim);margin-bottom:4px;">Individual characters assigned to support this mission</p>';
             html += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
-            html += '<select id="mission-support-select" style="flex:1;min-width:150px;"><option value="">Select character...</option>';
+            html += '<select id="mission-support-select" style="flex:1;min-width:150px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.7rem;">';
+            html += '<option value="">Select character...</option>';
             if (Array.isArray(characters)) {
-                characters.forEach(function(char) {
-                    var name = Queries.getSupportPersonnelName ? Queries.getSupportPersonnelName(char) : (char.name || char.firstName || 'Unknown');
+                var sortedChars = characters.slice().sort(function(a, b) {
+                    var nameA = a.firstName || a.name || '';
+                    var nameB = b.firstName || b.name || '';
+                    return nameA.localeCompare(nameB);
+                });
+                sortedChars.forEach(function(char) {
+                    var name = char.firstName || char.name || 'Unknown';
+                    if (char.lastName) name += ' ' + char.lastName;
                     html += '<option value="' + escapeHtml(char.id) + '">' + escapeHtml(name) + '</option>';
                 });
             }
@@ -338,9 +379,7 @@
             html += '<button type="button" id="add-support-btn" class="small primary">+ Add Support</button>';
             html += '</div>';
             html += '<div id="mission-support-list" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;">';
-            if (Array.isArray(m.supportPersonnel)) {
-                // Support tags will be populated by UI
-            }
+            // Support tags will be populated by UI
             html += '</div></div>';
 
             // Objectives
@@ -354,7 +393,7 @@
                     html += '<div style="display:flex;gap:6px;margin-bottom:4px;align-items:center;">';
                     html += '<span style="flex:1;font-size:0.8rem;padding:4px 8px;background:var(--bg);border-radius:4px;">' + escapeHtml(obj.text) + '</span>';
                     html += '<button type="button" class="small danger remove-objective-btn">✕</button>';
-                    html += '<input type="hidden" value="' + escapeHtml(obj.text) + '">';
+                    html += '<input type="hidden" class="objective-text" value="' + escapeHtml(obj.text) + '">';
                     html += '</div>';
                 });
             }
@@ -386,6 +425,9 @@
 
         /**
          * Render mission detail view.
+         * 
+         * @param {object} mission - Mission object
+         * @returns {string} HTML string
          */
         renderDetail: function(mission) {
             if (!mission) return '<p class="empty-state">Mission not found.</p>';
@@ -398,12 +440,12 @@
             var difficultyLabel = Queries.getDifficultyLabel(mission.difficulty);
             var supportPersonnel = Queries.getSupportPersonnel(mission);
             var supportNames = supportPersonnel.map(function(c) {
-                return Queries.getDisplayName ? Queries.getDisplayName(c) : (c.name || c.firstName || 'Unknown');
+                return Queries.getSupportPersonnelName(c);
             });
 
             var primaryType = mission.primaryType ? Queries.getMissionTypeLabel(mission.primaryType) : 'Unclassified';
             var secondaryType = mission.secondaryType ? Queries.getMissionTypeLabel(mission.secondaryType) : 'None';
-            var subtypeLabel = Queries.getSubtypeLabel(mission.subtype);
+            var subtypeLabel = Queries.getSubtypeLabel(mission.subtype) || 'None';
             var escalationLabel = Queries.getEscalationLabel(mission.escalation);
             var billingLabel = Queries.getBillingLabel(mission.billing);
 
@@ -519,6 +561,132 @@
 
             html += '</div>';
             return html;
+        },
+
+        /**
+         * Render the main container HTML.
+         * 
+         * @returns {string} HTML string
+         */
+        renderContainer: function() {
+            return `
+                <div class="page-header">
+                    <h2>Mission Manager</h2>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button id="add-mission-btn" class="primary">+ New Mission</button>
+                        <button id="export-missions-csv-btn" class="small">⌘ Export CSV</button>
+                        <button id="import-missions-csv-btn" class="small">⌘ Import CSV</button>
+                        <button id="template-missions-csv-btn" class="small secondary">⌘ Template CSV</button>
+                        <input type="file" id="missions-csv-file-input" accept=".csv" style="display:none" />
+                    </div>
+                </div>
+                <div class="filter-section">
+                    <label for="mission-filter">Filter:</label>
+                    <select id="mission-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
+                        <option value="all">All Missions</option>
+                        <option value="active">Active</option>
+                        <option value="completed">Completed</option>
+                        <option value="cancelled">Cancelled</option>
+                    </select>
+                    <span style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Total: <span id="mission-count">0</span></span>
+                </div>
+                <div id="missions-list"></div>
+                ${this.renderModals()}
+            `;
+        },
+
+        /**
+         * Render modal HTML.
+         * 
+         * @returns {string} HTML string
+         */
+        renderModals: function() {
+            return `
+                <div id="mission-form-modal" class="modal hidden">
+                    <div class="modal-content" style="max-width:750px;">
+                        <div class="modal-header">
+                            <h3 id="mission-form-title">Create Mission</h3>
+                            <button class="close-modal" id="close-mission-form">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <div id="mission-form-content"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="mission-detail-modal" class="modal hidden">
+                    <div class="modal-content" style="max-width:700px;">
+                        <div class="modal-header">
+                            <h3 id="detail-mission-title">Mission Details</h3>
+                            <button class="close-modal" id="close-mission-detail">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <div id="mission-detail-content"></div>
+                            <div class="form-actions" style="margin-top:16px;">
+                                <button type="button" id="edit-mission-from-detail" class="primary">Edit</button>
+                                <button type="button" id="delete-mission-from-detail" class="danger">Delete Mission</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        },
+
+        /**
+         * Render a support personnel tag.
+         * 
+         * @param {string} characterId - Character ID
+         * @param {string} characterName - Character display name
+         * @returns {string} HTML string
+         */
+        renderSupportTag: function(characterId, characterName) {
+            return `
+                <div class="support-tag" data-id="${escapeHtml(characterId)}" style="display:flex;align-items:center;gap:4px;background:var(--panel-alt);padding:2px 8px;border-radius:12px;font-size:0.7rem;border:1px solid var(--border-soft);">
+                    <span>${escapeHtml(characterName)}</span>
+                    <button type="button" class="remove-support-btn" data-id="${escapeHtml(characterId)}" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button>
+                    <input type="hidden" class="support-personnel-id" value="${escapeHtml(characterId)}">
+                </div>
+            `;
+        },
+
+        /**
+         * Render an objective list item.
+         * 
+         * @param {string} text - Objective text
+         * @param {boolean} done - Whether the objective is done
+         * @param {number} index - Objective index
+         * @param {string} missionId - Mission ID (for checkbox data)
+         * @returns {string} HTML string
+         */
+        renderObjective: function(text, done, index, missionId) {
+            var doneClass = done ? 'style="text-decoration:line-through;color:var(--text-dim);"' : '';
+            return `
+                <div style="display:flex;gap:6px;margin-bottom:4px;align-items:center;" data-index="${escapeHtml(index)}">
+                    <input type="checkbox" ${done ? 'checked' : ''} data-mission="${escapeHtml(missionId)}" data-index="${escapeHtml(index)}" class="objective-check">
+                    <span style="flex:1;font-size:0.8rem;padding:4px 8px;background:var(--bg);border-radius:4px;" ${doneClass}>${escapeHtml(text)}</span>
+                    <button type="button" class="small danger remove-objective-btn" data-index="${escapeHtml(index)}">✕</button>
+                    <input type="hidden" class="objective-text" value="${escapeHtml(text)}">
+                </div>
+            `;
+        },
+
+        /**
+         * Render an empty state message.
+         * 
+         * @param {string} message - Message to display
+         * @returns {string} HTML string
+         */
+        renderEmpty: function(message) {
+            return '<p class="empty-state">' + escapeHtml(message || 'No items found.') + '</p>';
+        },
+
+        /**
+         * Render a loading state.
+         * 
+         * @returns {string} HTML string
+         */
+        renderLoading: function() {
+            return '<p class="empty-state">Loading mission data...</p>';
         }
     };
 
