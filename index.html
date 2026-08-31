@@ -9,9 +9,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
 </head>
 <body>
-    <!-- ============================================================
-         HEADER
-         ============================================================ -->
+    <!-- HEADER -->
     <header>
         <div class="header-top">
             <h1>Hollow <span>Blades</span></h1>
@@ -37,49 +35,18 @@
         </div>
     </header>
 
-    <!-- ============================================================
-         MAIN CONTENT
-         ============================================================ -->
+    <!-- MAIN CONTENT -->
     <main>
-        <!-- Tab: Dashboard -->
-        <div id="tab-dashboard" class="tab-content active">
-            <!-- Rendered by dashboard.js -->
-        </div>
-
-        <!-- Tab: Characters -->
-        <div id="tab-characters" class="tab-content">
-            <!-- Rendered by characters/index.js -->
-        </div>
-
-        <!-- Tab: Teams -->
-        <div id="tab-teams" class="tab-content">
-            <!-- Rendered by team-manager.js -->
-        </div>
-
-        <!-- Tab: Tournaments -->
-        <div id="tab-tournaments" class="tab-content">
-            <!-- Rendered by tournaments-ui.js -->
-        </div>
-
-        <!-- Tab: Curriculum -->
-        <div id="tab-curriculum" class="tab-content">
-            <!-- Rendered by curriculum-main.js -->
-        </div>
-
-        <!-- Tab: Missions -->
-        <div id="tab-missions" class="tab-content">
-            <!-- Rendered by missions.js -->
-        </div>
-
-        <!-- Tab: Social -->
-        <div id="tab-social" class="tab-content">
-            <!-- Rendered by social.js -->
-        </div>
+        <div id="tab-dashboard" class="tab-content active"></div>
+        <div id="tab-characters" class="tab-content"></div>
+        <div id="tab-teams" class="tab-content"></div>
+        <div id="tab-tournaments" class="tab-content"></div>
+        <div id="tab-curriculum" class="tab-content"></div>
+        <div id="tab-missions" class="tab-content"></div>
+        <div id="tab-social" class="tab-content"></div>
     </main>
 
-    <!-- ============================================================
-         SHARED MODAL CONTAINER
-         ============================================================ -->
+    <!-- MODALS -->
     <div id="modal-container" class="modal hidden">
         <div class="modal-content">
             <div class="modal-header">
@@ -90,82 +57,28 @@
         </div>
     </div>
 
-    <!-- ============================================================
-         CHARACTER DETAIL MODAL
-         ============================================================ -->
     <div id="character-detail-modal" class="modal hidden">
-        <div class="modal-content wide">
-            <div class="modal-header">
-                <h3 id="detail-character-name">Character</h3>
-                <button class="close-modal" id="close-character-detail">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="detail-tabs">
-                    <button class="detail-tab-btn active" data-tab="name">Name</button>
-                    <button class="detail-tab-btn" data-tab="physical">Physical</button>
-                    <button class="detail-tab-btn" data-tab="personality">Personality</button>
-                    <button class="detail-tab-btn" data-tab="career">Career</button>
-                    <button class="detail-tab-btn" data-tab="academic">Academic</button>
-                    <button class="detail-tab-btn" data-tab="stats">Stats</button>
-                    <button class="detail-tab-btn" data-tab="social">Social</button>
-                    <button class="detail-tab-btn" data-tab="notes">Notes</button>
-                </div>
-                <div id="detail-tab-content">
-                    <div id="detail-name" class="detail-tab-panel active"></div>
-                    <div id="detail-physical" class="detail-tab-panel" style="display:none;"></div>
-                    <div id="detail-personality" class="detail-tab-panel" style="display:none;"></div>
-                    <div id="detail-career" class="detail-tab-panel" style="display:none;"></div>
-                    <div id="detail-academic" class="detail-tab-panel" style="display:none;"></div>
-                    <div id="detail-stats" class="detail-tab-panel" style="display:none;"></div>
-                    <div id="detail-social" class="detail-tab-panel" style="display:none;"></div>
-                    <div id="detail-notes" class="detail-tab-panel" style="display:none;"></div>
-                </div>
-                <div class="form-actions">
-                    <button id="edit-character-from-detail" class="primary">Edit Character</button>
-                    <button id="close-character-detail-btn" class="secondary">Close</button>
-                </div>
-            </div>
-        </div>
+        <!-- Character detail content -->
     </div>
 
     <!-- ============================================================
          SCRIPTS - LOAD ORDER IS CRITICAL
-         ============================================================
-
-         RULE: Feature modules must register their tabs with TabManager
-               BEFORE TabManager initializes. So TabManager must be
-               the LAST core module loaded, after all feature modules
-               have registered their tabs.
-
-         1. CONSTANTS - MUST BE FIRST
-         2. UTILITIES - Pure helpers
-         3. CORE DOMAIN - Business logic modules (no UI)
-         4. FEATURE MODULES - Register their tabs with TabManager
-         5. TAB MANAGER - Initializes after all tabs are registered
-         6. APP BOOTSTRAPPER - Orchestrates everything
          ============================================================ -->
 
-    <!-- ============================================================
-         1. CONSTANTS - MUST BE FIRST
-         ============================================================ -->
+    <!-- 1. CONSTANTS -->
     <script src="js/constants.js"></script>
 
-    <!-- ============================================================
-         2. UTILITIES
-         ============================================================ -->
+    <!-- 2. UTILITIES -->
     <script src="js/utils/core-utils.js"></script>
     <script src="js/utils/dom-utils.js"></script>
     <script src="js/utils/notification.js"></script>
     <script src="js/utils/calendar-utils.js"></script>
 
-    <!-- ============================================================
-         3. CORE DOMAIN MODULES (no UI, no TabManager dependency)
-         ============================================================ -->
+    <!-- 3. CORE DOMAIN MODULES -->
     <script src="js/core/state.js"></script>
     <script src="js/core/database.js"></script>
     <script src="js/core/loader.js"></script>
 
-    <!-- Core domain modules -->
     <script src="js/core/class-core.js"></script>
     <script src="js/core/calendar-core.js"></script>
     <script src="js/core/discipline-core.js"></script>
@@ -175,9 +88,7 @@
     <script src="js/core/ranking-core.js"></script>
     <script src="js/core/schedule-core.js"></script>
 
-    <!-- ============================================================
-         4. EXPORT MODULE (no TabManager dependency)
-         ============================================================ -->
+    <!-- 4. EXPORT MODULE -->
     <script src="js/export/export-utils.js"></script>
     <script src="js/export/csv-parser.js"></script>
     <script src="js/export/csv-schema.js"></script>
@@ -187,15 +98,20 @@
     <script src="js/export/index.js"></script>
 
     <!-- ============================================================
-         5. FEATURE MODULES - Register tabs with TabManager
-            Note: Dashboard is special - it's the default tab
-            and doesn't need to register (it's always available)
+         5. TAB MANAGER - MUST COME BEFORE FEATURE MODULES
+         TabManager delays initialization, giving feature modules
+         time to register their tabs.
+         ============================================================ -->
+    <script src="js/core/tab-manager.js"></script>
+
+    <!-- ============================================================
+         6. FEATURE MODULES - Register their tabs with TabManager
          ============================================================ -->
 
-    <!-- Dashboard (no registration needed, it's the default) -->
+    <!-- Dashboard -->
     <script src="js/modules/dashboard.js"></script>
 
-    <!-- Characters - registers 'characters' tab -->
+    <!-- Characters -->
     <script src="js/modules/characters/character-stats.js"></script>
     <script src="js/modules/characters/character-crud.js"></script>
     <script src="js/modules/characters/character-classes.js"></script>
@@ -207,7 +123,7 @@
     <script src="js/modules/characters/character-events.js"></script>
     <script src="js/modules/characters/index.js"></script>
 
-    <!-- Teams - registers 'teams' tab -->
+    <!-- Teams -->
     <script src="js/modules/teams/team-core.js"></script>
     <script src="js/modules/teams/team-filters.js"></script>
     <script src="js/modules/teams/team-render.js"></script>
@@ -216,11 +132,15 @@
     <script src="js/modules/teams/team-modals.js"></script>
     <script src="js/modules/teams/team-manager.js"></script>
 
-    <!-- Tournaments - registers 'tournaments' tab -->
+    <!-- Tournaments - FULL DEPENDENCY CHAIN -->
+    <script src="js/modules/tournaments/tournaments-schema.js"></script>
     <script src="js/modules/tournaments/tournaments-core.js"></script>
+    <script src="js/modules/tournaments/tournaments-queries.js"></script>
+    <script src="js/modules/tournaments/tournaments-matches.js"></script>
+    <script src="js/modules/tournaments/tournaments-render.js"></script>
     <script src="js/modules/tournaments/tournaments-ui.js"></script>
 
-    <!-- Curriculum - registers 'curriculum' tab -->
+    <!-- Curriculum -->
     <script src="js/modules/curriculum/curriculum-main.js"></script>
     <script src="js/modules/curriculum/disciplines.js"></script>
     <script src="js/modules/curriculum/groups.js"></script>
@@ -231,44 +151,22 @@
     <script src="js/modules/curriculum/ranking.js"></script>
     <script src="js/modules/curriculum/classes.js"></script>
 
-    <!-- Missions - registers 'missions' tab -->
+    <!-- Missions -->
     <script src="js/modules/missions.js"></script>
 
-    <!-- Social - registers 'social' tab -->
+    <!-- Social -->
     <script src="js/modules/social.js"></script>
 
-    <!-- Calendar - registers 'calendar' tab -->
+    <!-- Calendar -->
     <script src="js/modules/calendar/calendar-utils.js"></script>
     <script src="js/modules/calendar/calendar-modes.js"></script>
     <script src="js/modules/calendar/calendar-ui.js"></script>
     <script src="js/modules/calendar/index.js"></script>
 
     <!-- ============================================================
-         6. TAB MANAGER - INITIALIZES AFTER ALL TABS ARE REGISTERED
-            This is the KEY change: TabManager loads AFTER all
-            feature modules have registered their tabs.
-         ============================================================ -->
-    <script src="js/core/tab-manager.js"></script>
-
-    <!-- ============================================================
          7. APP BOOTSTRAPPER - MUST BE LAST
-            Initializes the app and triggers TabManager if needed
          ============================================================ -->
     <script src="js/app.js"></script>
-
-    <!-- ============================================================
-         8. FINAL SAFETY NET - In case TabManager needs a nudge
-         ============================================================ -->
-    <script>
-        // If TabManager hasn't initialized yet (shouldn't happen with the new order),
-        // but this provides a safety net.
-        (function() {
-            if (window.TabManager && !window.TabManager.isInitialized) {
-                console.log('[Safety] Initializing TabManager...');
-                window.TabManager.init();
-            }
-        })();
-    </script>
 
 </body>
 </html>
