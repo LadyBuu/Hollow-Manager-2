@@ -100,7 +100,8 @@
                 'getMagicTypeKeys',
                 'populateClassSelect',
                 'applyPhysicalClass',
-                'applyMagicClass'
+                'applyMagicClass',
+                'editSpecialMove'
             ]
         };
 
@@ -358,7 +359,7 @@
     }
 
     // ============================================================
-    // FILTERS - With single debounce timer
+    // FILTERS - With checkbox support
     // ============================================================
 
     function bindFilters(container) {
@@ -374,18 +375,29 @@
             });
         }
 
-        var statusFilter = document.getElementById('char-status-filter');
-        if (statusFilter) {
-            addSafeEventListener(statusFilter, 'change', function() {
+        var classFilter = document.getElementById('char-class-filter');
+        if (classFilter) {
+            addSafeEventListener(classFilter, 'change', function() {
                 if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                     window.CharacterList.render();
                 }
             });
         }
 
-        var classFilter = document.getElementById('char-class-filter');
-        if (classFilter) {
-            addSafeEventListener(classFilter, 'change', function() {
+        // Hide Deceased checkbox
+        var hideDeceased = document.getElementById('hide-deceased');
+        if (hideDeceased) {
+            addSafeEventListener(hideDeceased, 'change', function() {
+                if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+                    window.CharacterList.render();
+                }
+            });
+        }
+
+        // Hide Eliminated checkbox
+        var hideEliminated = document.getElementById('hide-eliminated');
+        if (hideEliminated) {
+            addSafeEventListener(hideEliminated, 'change', function() {
                 if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                     window.CharacterList.render();
                 }
@@ -396,12 +408,14 @@
         if (clearFilter) {
             addSafeEventListener(clearFilter, 'click', function() {
                 var nameEl = document.getElementById('char-name-filter');
-                var statusEl = document.getElementById('char-status-filter');
                 var classEl = document.getElementById('char-class-filter');
+                var hideDeadEl = document.getElementById('hide-deceased');
+                var hideElimEl = document.getElementById('hide-eliminated');
 
                 if (nameEl) nameEl.value = '';
-                if (statusEl) statusEl.value = 'all';
                 if (classEl) classEl.value = 'all';
+                if (hideDeadEl) hideDeadEl.checked = true;
+                if (hideElimEl) hideElimEl.checked = true;
 
                 if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                     window.CharacterList.render();
@@ -623,7 +637,7 @@
     }
 
     // ============================================================
-    // CHARACTER LIST - Event delegation
+    // CHARACTER LIST - Event delegation with scroll to form
     // ============================================================
 
     function bindCharacterList(container) {
@@ -640,6 +654,14 @@
 
             if (typeof window.showCharacterForm === 'function') {
                 window.showCharacterForm(id);
+            }
+
+            // Scroll the form into view
+            var formContainer = document.getElementById('character-form-container');
+            if (formContainer) {
+                setTimeout(function() {
+                    formContainer.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                }, 100);
             }
 
             if (window.innerWidth < window.UI_CONSTANTS.MOBILE_BREAKPOINT && typeof window.toggleCharacterList === 'function') {
@@ -926,17 +948,36 @@
             });
         }
 
+        // Handle delete and edit buttons via delegation
         var physicalList = document.getElementById('physical-moves-list');
         if (physicalList) {
             addSafeEventListener(physicalList, 'click', function(e) {
-                handleRemoveSpecialMove(e, 'physical');
+                var target = e.target.closest ? e.target.closest('.remove-special-move') : null;
+                if (target) {
+                    handleRemoveSpecialMove(e, 'physical');
+                    return;
+                }
+                var editTarget = e.target.closest ? e.target.closest('.edit-special-move') : null;
+                if (editTarget) {
+                    handleEditSpecialMove(e, 'physical');
+                    return;
+                }
             });
         }
 
         var magicalList = document.getElementById('magical-moves-list');
         if (magicalList) {
             addSafeEventListener(magicalList, 'click', function(e) {
-                handleRemoveSpecialMove(e, 'magical');
+                var target = e.target.closest ? e.target.closest('.remove-special-move') : null;
+                if (target) {
+                    handleRemoveSpecialMove(e, 'magical');
+                    return;
+                }
+                var editTarget = e.target.closest ? e.target.closest('.edit-special-move') : null;
+                if (editTarget) {
+                    handleEditSpecialMove(e, 'magical');
+                    return;
+                }
             });
         }
     }
@@ -1013,6 +1054,30 @@
         } else {
             showNotification('Special move functionality is not available.', 'error');
             return;
+        }
+    }
+
+    function handleEditSpecialMove(e, defaultType) {
+        var target = e.target.closest ? e.target.closest('.edit-special-move') : null;
+        if (!target) return;
+
+        var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!id) {
+            showNotification('Please save the character first.', 'error');
+            return;
+        }
+
+        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(id) : null;
+        if (!char) return;
+
+        var type = target.dataset.type || defaultType || 'physical';
+        var index = parseInt(target.dataset.index);
+        if (isNaN(index)) return;
+
+        if (window.CharacterStats && typeof window.CharacterStats.editSpecialMove === 'function') {
+            window.CharacterStats.editSpecialMove(char, type, index);
+        } else {
+            showNotification('Edit functionality is not available.', 'error');
         }
     }
 
