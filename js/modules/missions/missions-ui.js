@@ -5,26 +5,33 @@
  * UI PHILOSOPHY:
  *   - UI is the boundary between user and domain
  *   - All mutations go through MissionsCore
- *   - All reads go through MissionsQueries
+ *   - All reads go through MissionsQueries (NOT window.data directly)
  *   - All rendering goes through MissionsRender
  *   - Persistence is owned by the UI (calls saveData after mutations)
- *   - Event handlers use DELEGATION with CURRENT mission resolution
+ *   - Event handlers use DELEGATION from the stable tab container
  *   - Single lifecycle owner (TabManager)
  *   - UI state is private, not exposed globally
  * 
  * UI LAYER CONTRACT:
- *   - initEvents() sets up all event listeners ONCE
+ *   - initEvents() sets up event delegation ONCE on the stable container
  *   - renderMissionsView() renders the full view
  *   - showMissionDetail() opens detail modal
  *   - showMissionForm() opens form modal
  *   - All mutations call Core, then queueSave()
  *   - No direct mutation of window.data
+ *   - No direct reading of window.data (use Queries)
  * 
  * PERSISTENCE CONTRACT:
  *   - All mutation operations call queueSave() after success
  *   - saveData() MUST exist and return a Promise
  *   - The UI assumes optimistic updates (memory first, then persist)
- *   - If persistence fails, the user is notified but UI remains consistent
+ *   - If persistence fails, the user is notified
+ *   - Persistence failures are NEVER silently swallowed
+ * 
+ * EVENT DELEGATION:
+ *   - All events are delegated from #tab-missions container
+ *   - No direct event binding on dynamic elements
+ *   - Modal close buttons use delegation via data-attributes
  * 
  * DEPENDENCIES:
  *   - MissionsCore (required)
@@ -67,10 +74,9 @@
     // ============================================================
 
     var state = {
-        filter: 'all'
+        filter: 'all',
+        formEditId: null
     };
-
-    var _eventListenersInitialized = false;
 
     // ============================================================
     // PERSISTENCE QUEUE
@@ -85,6 +91,13 @@
                 return window.saveData();
             });
         return _persistenceQueue;
+    }
+
+    function queueSaveWithNotification(message) {
+        return queueSave().catch(function(err) {
+            console.error('Mission persistence failed:', err);
+            showNotification(message || 'Changes saved in memory but failed to persist.', 'warning');
+        });
     }
 
     // ============================================================
@@ -124,30 +137,15 @@
     }
 
     // ============================================================
-    // DATA HELPERS
+    // DATA HELPERS (Use Queries, not window.data directly)
     // ============================================================
 
     function getTeams() {
-        var data = window.data || {};
-        if (!Array.isArray(data.teams)) return [];
-        return data.teams.filter(function(t) {
-            return t && t.status !== 'deleted' && t.status !== 'inactive';
-        });
+        return Queries.getTeams ? Queries.getTeams() : [];
     }
 
     function getCharacters() {
-        var data = window.data || {};
-        if (!Array.isArray(data.characters)) return [];
-        return data.characters.filter(function(c) {
-            return c && !c.deceased;
-        });
-    }
-
-    function getDisplayName(char) {
-        if (typeof window.getDisplayName === 'function') {
-            return window.getDisplayName(char);
-        }
-        return char.name || char.firstName || 'Unknown';
+        return Queries.getCharacters ? Queries.getCharacters() : [];
     }
 
     // ============================================================
@@ -160,12 +158,18 @@
         }
         if (!container) return;
 
+        // Store reference to container for event delegation
+        if (!container._missionsContainer) {
+            container._missionsContainer = true;
+        }
+
         container.innerHTML = Render.renderContainer();
         renderMissions();
 
-        if (!_eventListenersInitialized) {
+        // Events are delegated from the container - only init once
+        if (!container._missionsEventsInitialized) {
             initEvents(container);
-            _eventListenersInitialized = true;
+            container._missionsEventsInitialized = true;
         }
     }
 
@@ -196,6 +200,8 @@
         if (!modal || !title || !content) return;
 
         var mission = editId ? Core.getMission(editId) : null;
+        state.formEditId = editId || null;
+
         var teams = getTeams();
         var characters = getCharacters();
 
@@ -218,15 +224,14 @@
             });
         }
 
-        // Set up objectives
+        // Set up objectives with done status preserved
         if (mission && mission.objectives) {
-            mission.objectives.forEach(function(obj, index) {
-                addObjectiveToList(obj.text, obj.done, index, mission.id);
+            mission.objectives.forEach(function(obj) {
+                addObjectiveToList(obj.text, !!obj.done);
             });
         }
 
         attachFormEvents(modal, mission);
-        setupModalOutsideClick('mission-form-modal', closeMissionForm);
     }
 
     function attachFormEvents(modal, mission) {
@@ -277,7 +282,7 @@
             addObjBtn.addEventListener('click', function() {
                 var input = document.getElementById('mission-objective');
                 if (input && input.value.trim()) {
-                    addObjectiveToList(input.value.trim(), false, -1, null);
+                    addObjectiveToList(input.value.trim(), false);
                     input.value = '';
                 }
             });
@@ -314,15 +319,13 @@
             saveMission(e);
         });
 
-        // Cancel
-        var cancelBtn = document.getElementById('cancel-mission-form');
+        // Cancel - handled by delegation, but keep direct for UX
+        var cancelBtn = form.querySelector('#cancel-mission-form');
         if (cancelBtn) {
-            cancelBtn.addEventListener('click', closeMissionForm);
-        }
-
-        var closeBtn = document.getElementById('close-mission-form');
-        if (closeBtn) {
-            closeBtn.addEventListener('click', closeMissionForm);
+            cancelBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                closeMissionForm();
+            });
         }
     }
 
@@ -332,8 +335,8 @@
 
         subtypeSelect.innerHTML = '<option value="">Select...</option>';
 
-        if (primaryType && Queries.MISSION_TYPES[primaryType]) {
-            var subtypes = Queries.MISSION_TYPES[primaryType].subtypes || [];
+        if (primaryType) {
+            var subtypes = Queries.getSubtypesForType(primaryType);
             subtypes.forEach(function(subtype) {
                 var label = Queries.getSubtypeLabel(subtype);
                 var option = document.createElement('option');
@@ -347,21 +350,46 @@
         }
     }
 
-    function addObjectiveToList(text, done, index, missionId) {
+    function addObjectiveToList(text, done) {
         var container = document.getElementById('mission-objectives-list');
         if (!container) return;
 
         var div = document.createElement('div');
+        div.className = 'objective-row';
+        div.dataset.done = done ? 'true' : 'false';
         div.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;align-items:center;';
-        div.dataset.index = index >= 0 ? index : container.children.length;
-        div.innerHTML = `
-            <span style="flex:1;font-size:0.8rem;padding:4px 8px;background:var(--bg);border-radius:4px;text-decoration:${done ? 'line-through' : 'none'};color:${done ? 'var(--text-dim)' : 'var(--text)'};">${escapeHtml(text)}</span>
-            <button type="button" class="small danger remove-objective-btn" data-index="${div.dataset.index}">✕</button>
-            <input type="hidden" class="objective-text" value="${escapeHtml(text)}">
-        `;
+
+        var textSpan = document.createElement('span');
+        textSpan.style.cssText = 'flex:1;font-size:0.8rem;padding:4px 8px;background:var(--bg);border-radius:4px;';
+        textSpan.textContent = text;
+        if (done) {
+            textSpan.style.textDecoration = 'line-through';
+            textSpan.style.color = 'var(--text-dim)';
+        }
+
+        var removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'small danger remove-objective-btn';
+        removeBtn.textContent = '✕';
+        removeBtn.style.cssText = 'padding:2px 8px;font-size:0.6rem;';
+
+        var hiddenInput = document.createElement('input');
+        hiddenInput.type = 'hidden';
+        hiddenInput.className = 'objective-text';
+        hiddenInput.value = text;
+
+        var doneInput = document.createElement('input');
+        doneInput.type = 'hidden';
+        doneInput.className = 'objective-done';
+        doneInput.value = done ? 'true' : 'false';
+
+        div.appendChild(textSpan);
+        div.appendChild(removeBtn);
+        div.appendChild(hiddenInput);
+        div.appendChild(doneInput);
         container.appendChild(div);
 
-        div.querySelector('.remove-objective-btn').onclick = function() {
+        removeBtn.onclick = function() {
             div.remove();
         };
     }
@@ -370,20 +398,37 @@
         var container = document.getElementById('mission-support-list');
         if (!container) return;
 
-        var existing = container.querySelector('[data-id="' + characterId + '"]');
+        // Use Array.from for safer lookup
+        var existing = Array.from(container.children).find(function(child) {
+            return child.dataset && child.dataset.id === String(characterId);
+        });
         if (existing) return;
 
         var div = document.createElement('div');
         div.dataset.id = characterId;
         div.style.cssText = 'display:flex;align-items:center;gap:4px;background:var(--panel-alt);padding:2px 8px;border-radius:12px;font-size:0.7rem;border:1px solid var(--border-soft);';
-        div.innerHTML = `
-            <span>${escapeHtml(characterName)}</span>
-            <button type="button" class="remove-support-btn" data-id="${characterId}" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button>
-            <input type="hidden" class="support-personnel-id" value="${characterId}">
-        `;
+
+        var nameSpan = document.createElement('span');
+        nameSpan.textContent = characterName;
+
+        var removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'remove-support-btn';
+        removeBtn.dataset.id = characterId;
+        removeBtn.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;';
+        removeBtn.textContent = '✕';
+
+        var hiddenInput = document.createElement('input');
+        hiddenInput.type = 'hidden';
+        hiddenInput.className = 'support-personnel-id';
+        hiddenInput.value = characterId;
+
+        div.appendChild(nameSpan);
+        div.appendChild(removeBtn);
+        div.appendChild(hiddenInput);
         container.appendChild(div);
 
-        div.querySelector('.remove-support-btn').onclick = function() {
+        removeBtn.onclick = function() {
             div.remove();
         };
     }
@@ -401,13 +446,20 @@
     function collectObjectives() {
         var container = document.getElementById('mission-objectives-list');
         if (!container) return [];
+
         var objectives = [];
-        container.querySelectorAll('.objective-text').forEach(function(input, index) {
-            var text = input.value.trim();
-            if (text) {
-                objectives.push({ text: text, done: false });
+        container.querySelectorAll('.objective-row').forEach(function(row) {
+            var textInput = row.querySelector('.objective-text');
+            var doneInput = row.querySelector('.objective-done');
+            if (textInput && textInput.value.trim()) {
+                var done = doneInput && doneInput.value === 'true';
+                objectives.push({
+                    text: textInput.value.trim(),
+                    done: done
+                });
             }
         });
+
         return objectives;
     }
 
@@ -432,7 +484,7 @@
     }
 
     function saveMission(e) {
-        var form = e.target;
+        e.preventDefault();
         var modal = document.getElementById('mission-form-modal');
         var editId = modal ? modal.dataset.editId : null;
 
@@ -501,16 +553,14 @@
 
         closeMissionForm();
         renderMissions();
-        queueSave().catch(function(err) {
-            console.error('Failed to save mission:', err);
-            showNotification('Mission saved in memory but failed to persist.', 'warning');
-        });
+        queueSaveWithNotification('Mission saved in memory but failed to persist.');
         showNotification('Mission saved successfully.', 'success');
     }
 
     function closeMissionForm() {
         var modal = document.getElementById('mission-form-modal');
         if (modal) modal.classList.add('hidden');
+        state.formEditId = null;
     }
 
     // ============================================================
@@ -536,64 +586,17 @@
         modal.dataset.missionId = id;
         modal.classList.remove('hidden');
 
-        setupModalOutsideClick('mission-detail-modal', closeMissionDetail);
-
         // Objective checkboxes
         content.querySelectorAll('.objective-check').forEach(function(cb) {
             cb.addEventListener('change', function() {
                 var missionId = this.dataset.mission;
                 var index = parseInt(this.dataset.index, 10);
                 Core.toggleObjective(missionId, index);
-                queueSave().catch(function() {});
+                queueSaveWithNotification('Failed to save objective change.');
                 showMissionDetail(missionId);
                 renderMissions();
             });
         });
-
-        // Edit button
-        var editBtn = document.getElementById('edit-mission-from-detail');
-        if (editBtn) {
-            var newEditBtn = editBtn.cloneNode(true);
-            editBtn.parentNode.replaceChild(newEditBtn, editBtn);
-            newEditBtn.addEventListener('click', function() {
-                var id = modal.dataset.missionId;
-                if (id) {
-                    closeMissionDetail();
-                    showMissionForm(id);
-                }
-            });
-        }
-
-        // Delete button
-        var deleteBtn = document.getElementById('delete-mission-from-detail');
-        if (deleteBtn) {
-            var newDeleteBtn = deleteBtn.cloneNode(true);
-            deleteBtn.parentNode.replaceChild(newDeleteBtn, deleteBtn);
-            newDeleteBtn.addEventListener('click', function() {
-                var id = modal.dataset.missionId;
-                if (id) {
-                    showConfirmation('Delete this mission permanently?')
-                        .then(function(confirmed) {
-                            if (confirmed) {
-                                Core.deleteMission(id);
-                                queueSave().catch(function() {});
-                                closeMissionDetail();
-                                renderMissions();
-                                showNotification('Mission deleted.', 'success');
-                            }
-                        })
-                        .catch(function() {});
-                }
-            });
-        }
-
-        // Close button
-        var closeBtn = document.getElementById('close-mission-detail');
-        if (closeBtn) {
-            var newCloseBtn = closeBtn.cloneNode(true);
-            closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
-            newCloseBtn.addEventListener('click', closeMissionDetail);
-        }
     }
 
     function closeMissionDetail() {
@@ -602,20 +605,149 @@
     }
 
     // ============================================================
-    // MODAL HELPERS
+    // EVENT INITIALIZATION (Delegation from stable container)
     // ============================================================
 
-    function setupModalOutsideClick(modalId, closeFn) {
-        var modal = document.getElementById(modalId);
-        if (!modal) return;
-        if (modal._outsideListener) return;
-        modal._outsideListener = true;
+    function initEvents(container) {
+        if (!container) {
+            container = document.getElementById('tab-missions');
+        }
+        if (!container) return;
 
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) {
-                closeFn();
+        // ---- CONTAINER-LEVEL DELEGATION ----
+        container.addEventListener('click', function(e) {
+            var target = e.target;
+
+            // ---- MISSION LIST ----
+            var missionItem = target.closest('.mission-item');
+            if (missionItem && container.contains(missionItem)) {
+                // Ignore clicks on interactive elements inside the item
+                if (target.closest('button, a, input, select, textarea')) {
+                    return;
+                }
+                var id = missionItem.dataset.id;
+                if (id) showMissionDetail(id);
+                return;
+            }
+
+            // ---- ADD MISSION BUTTON ----
+            var addBtn = target.closest('#add-mission-btn');
+            if (addBtn) {
+                e.preventDefault();
+                showMissionForm();
+                return;
+            }
+
+            // ---- FILTER CHANGE ----
+            var filterSelect = target.closest('#mission-filter');
+            if (filterSelect) {
+                renderMissions();
+                return;
+            }
+
+            // ---- EXPORT/IMPORT BUTTONS ----
+            var exportBtn = target.closest('#export-missions-csv-btn');
+            if (exportBtn) {
+                e.preventDefault();
+                exportMissionsCSV();
+                return;
+            }
+
+            var importBtn = target.closest('#import-missions-csv-btn');
+            if (importBtn) {
+                e.preventDefault();
+                document.getElementById('missions-csv-file-input').click();
+                return;
+            }
+
+            var templateBtn = target.closest('#template-missions-csv-btn');
+            if (templateBtn) {
+                e.preventDefault();
+                exportMissionTemplateCSV();
+                return;
+            }
+
+            // ---- FORM MODAL ----
+            var closeFormBtn = target.closest('#close-mission-form');
+            if (closeFormBtn) {
+                e.preventDefault();
+                closeMissionForm();
+                return;
+            }
+
+            var cancelFormBtn = target.closest('#cancel-mission-form');
+            if (cancelFormBtn) {
+                e.preventDefault();
+                closeMissionForm();
+                return;
+            }
+
+            // Form modal background click
+            var formModal = target.closest('#mission-form-modal');
+            if (formModal && target === formModal) {
+                closeMissionForm();
+                return;
+            }
+
+            // ---- DETAIL MODAL ----
+            var closeDetailBtn = target.closest('#close-mission-detail');
+            if (closeDetailBtn) {
+                e.preventDefault();
+                closeMissionDetail();
+                return;
+            }
+
+            var detailModal = target.closest('#mission-detail-modal');
+            if (detailModal && target === detailModal) {
+                closeMissionDetail();
+                return;
+            }
+
+            // ---- EDIT/DELETE FROM DETAIL ----
+            var editDetailBtn = target.closest('#edit-mission-from-detail');
+            if (editDetailBtn) {
+                e.preventDefault();
+                var modal = document.getElementById('mission-detail-modal');
+                var id = modal ? modal.dataset.missionId : null;
+                if (id) {
+                    closeMissionDetail();
+                    showMissionForm(id);
+                }
+                return;
+            }
+
+            var deleteDetailBtn = target.closest('#delete-mission-from-detail');
+            if (deleteDetailBtn) {
+                e.preventDefault();
+                var modal = document.getElementById('mission-detail-modal');
+                var id = modal ? modal.dataset.missionId : null;
+                if (id) {
+                    showConfirmation('Delete this mission permanently?')
+                        .then(function(confirmed) {
+                            if (confirmed) {
+                                Core.deleteMission(id);
+                                queueSaveWithNotification('Failed to save mission deletion.');
+                                closeMissionDetail();
+                                renderMissions();
+                                showNotification('Mission deleted.', 'success');
+                            }
+                        })
+                        .catch(function() {});
+                }
+                return;
             }
         });
+
+        // ---- FILE INPUT (separate from click delegation) ----
+        var fileInput = document.getElementById('missions-csv-file-input');
+        if (fileInput) {
+            fileInput.addEventListener('change', function(e) {
+                if (this.files.length > 0) {
+                    importMissionsCSV(this.files[0]);
+                    this.value = '';
+                }
+            });
+        }
     }
 
     // ============================================================
@@ -640,11 +772,11 @@
 
         missions.forEach(function(m) {
             var teamName = Queries.getTeamName(m.assignedTeamId);
-            var primaryType = Queries.getMissionTypeLabel(m.primaryType);
-            var secondaryType = m.secondaryType ? Queries.getMissionTypeLabel(m.secondaryType) : '';
-            var subtypeLabel = Queries.getSubtypeLabel(m.subtype);
-            var escalationLabel = Queries.getEscalationLabel(m.escalation);
-            var billingLabel = Queries.getBillingLabel(m.billing);
+            var primaryType = m.primaryType || '';  // Use internal value
+            var secondaryType = m.secondaryType || '';
+            var subtypeLabel = m.subtype || '';  // Use internal value
+            var escalationLabel = m.escalation || 'tier_ii';
+            var billingLabel = m.billing || 'original';
 
             var supportNames = Queries.getSupportPersonnelNames(m).join('; ');
             var objectivesStr = m.objectives ? m.objectives.map(function(o) {
@@ -700,11 +832,12 @@
     }
 
     function exportMissionTemplateCSV() {
+        // Use internal canonical values, not display labels
         var lines = [
             'MissionID,Title,Year,Month,Day,Status,Priority,Difficulty,PrimaryType,Subtype,SecondaryType,Escalation,ThreatType,Environment,Team,Location,Duration,BasePay,SurchargePay,TotalPay,Billing,Progress,SupportPersonnel,Objectives,Notes,Tags,CreatedAt,CompletedAt',
-            'RS-2026-H001,Operation Nightfall,2026,6,15,active,high,hard,investigation,reconnaissance,research,Tier IV,Human/Magical,Urban,Raven Squad,Berlin,2 weeks,5000,2000,7000,Escalated,50,Dr. Sarah Chen;Agent Marcus,Infiltrate base;Retrieve documents ✓;Extract intel,Use stealth approach,covert;rescue,2024-01-15T00:00:00.000Z,',
-            'AT-2026-M001,Field Testing Alpha,2026,7,20,active,medium,medium,research,field_testing,,Tier II,Magical,Lab,Team Alpha,London,3 days,2000,,2000,Original,0,,Test new tracking spell;Document results,Proceed with caution,testing;magic,2024-01-20T00:00:00.000Z,',
-            'LG-2026-E001,Supply Run,2026,8,5,completed,low,easy,acquisition,resources,,Tier I,,Rural,Logistics Team,Outpost 7,1 day,500,,500,Original,100,Cpl. Davis,Deliver supplies ✓;Check inventory ✓,All delivered,logistics;supply,2024-01-10T00:00:00.000Z,2024-01-11T00:00:00.000Z'
+            'RS-2026-H001,Operation Nightfall,2026,6,15,active,high,hard,investigation,reconnaissance,research,tier_iv,Human/Magical,Urban,Raven Squad,Berlin,2 weeks,5000,2000,7000,escalated,50,Dr. Sarah Chen;Agent Marcus,Infiltrate base;Retrieve documents ✓;Extract intel,Use stealth approach,covert;rescue,2024-01-15T00:00:00.000Z,',
+            'AT-2026-M001,Field Testing Alpha,2026,7,20,active,medium,medium,research,field_testing,,tier_ii,Magical,Lab,Team Alpha,London,3 days,2000,,2000,original,0,,Test new tracking spell;Document results,Proceed with caution,testing;magic,2024-01-20T00:00:00.000Z,',
+            'LG-2026-E001,Supply Run,2026,8,5,completed,low,easy,acquisition,resources,,tier_i,,Rural,Logistics Team,Outpost 7,1 day,500,,500,original,100,Cpl. Davis,Deliver supplies ✓;Check inventory ✓,All delivered,logistics;supply,2024-01-10T00:00:00.000Z,2024-01-11T00:00:00.000Z'
         ];
 
         var csvContent = lines.join('\n');
@@ -813,16 +946,18 @@
                             case 'status': { if (['active', 'completed', 'cancelled'].indexOf(value) !== -1) missionData.status = value; } break;
                             case 'priority': { if (['low', 'medium', 'high', 'critical'].indexOf(value) !== -1) missionData.priority = value; } break;
                             case 'difficulty': { if (['easy', 'medium', 'hard', 'expert'].indexOf(value) !== -1) missionData.difficulty = value; } break;
-                            case 'primaryType': { if (Queries.MISSION_TYPES[value]) missionData.primaryType = value; } break;
+                            case 'primaryType': { if (Queries.isValidMissionType(value)) missionData.primaryType = value; } break;
                             case 'subtype': missionData.subtype = value; break;
-                            case 'secondaryType': { if (Queries.MISSION_TYPES[value]) missionData.secondaryType = value; } break;
-                            case 'escalation': { if (['tier_i', 'tier_ii', 'tier_iii', 'tier_iv', 'tier_v'].indexOf(value) !== -1) missionData.escalation = value; } break;
+                            case 'secondaryType': { if (Queries.isValidMissionType(value)) missionData.secondaryType = value; } break;
+                            case 'escalation': { if (['tier_i','tier_ii','tier_iii','tier_iv','tier_v'].indexOf(value) !== -1) missionData.escalation = value; } break;
                             case 'threatType': missionData.threatType = value; break;
                             case 'environment': missionData.environment = value; break;
                             case 'teamName': {
                                 if (value) {
                                     var teams = getTeams();
-                                    var team = teams.find(function(t) { return t.name.toLowerCase() === value.toLowerCase(); });
+                                    var team = teams.find(function(t) {
+                                        return t && t.name && t.name.toLowerCase() === value.toLowerCase();
+                                    });
                                     if (team) missionData.assignedTeamId = team.id;
                                 }
                             } break;
@@ -885,29 +1020,16 @@
                     var newMission = Core.createMission(missionData);
                     if (newMission) {
                         importedCount++;
-                        if (missionData.status === 'completed' && !newMission.completedAt) {
-                            // Core should handle this, but ensure it's set
-                            Core.updateMission(newMission.id, { status: 'completed' });
-                        }
-                        if (missionData.progress > 0) {
-                            // Progress is derived from objectives, but we can set it directly
-                            // Core will recalculate on next objective change
-                        }
+                        // Progress is derived from objectives, Core handles it
                         Core.addLog(newMission.id, 'Imported from CSV');
                     } else {
                         errorCount++;
                     }
                 });
 
-                queueSave()
-                    .then(function() {
-                        renderMissions();
-                        showNotification('Imported ' + importedCount + ' missions. Errors: ' + errorCount, 'success');
-                    })
-                    .catch(function() {
-                        renderMissions();
-                        showNotification('Imported ' + importedCount + ' missions (save failed).', 'warning');
-                    });
+                queueSaveWithNotification('Failed to save imported missions.');
+                renderMissions();
+                showNotification('Imported ' + importedCount + ' missions. Errors: ' + errorCount, 'success');
 
             } catch (err) {
                 showNotification('Failed to import CSV: ' + err.message, 'error');
@@ -982,98 +1104,15 @@
     }
 
     // ============================================================
-    // EVENT INITIALIZATION
+    // DISPLAY NAME HELPER (Local)
     // ============================================================
 
-    function initEvents(container) {
-        if (_eventListenersInitialized) return;
-        container = container || document.getElementById('tab-missions');
-
-        if (!container) return;
-
-        // ---- MISSION LIST - Using event delegation ----
-        var listContainer = document.getElementById('missions-list');
-        if (listContainer) {
-            listContainer.addEventListener('click', function(e) {
-                var item = e.target.closest('.mission-item');
-                if (!item || !listContainer.contains(item)) return;
-
-                var id = item.dataset.id;
-                if (id) showMissionDetail(id);
-            });
+    function getDisplayName(char) {
+        if (!char) return 'Unknown';
+        if (typeof window.getDisplayName === 'function') {
+            return window.getDisplayName(char);
         }
-
-        // ---- ADD MISSION BUTTON ----
-        var addBtn = document.getElementById('add-mission-btn');
-        if (addBtn) {
-            addBtn.addEventListener('click', function() { showMissionForm(); });
-        }
-
-        // ---- FILTER ----
-        var filterSelect = document.getElementById('mission-filter');
-        if (filterSelect) {
-            filterSelect.addEventListener('change', renderMissions);
-        }
-
-        // ---- EXPORT/IMPORT ----
-        var exportBtn = document.getElementById('export-missions-csv-btn');
-        if (exportBtn) {
-            exportBtn.addEventListener('click', exportMissionsCSV);
-        }
-
-        var importBtn = document.getElementById('import-missions-csv-btn');
-        if (importBtn) {
-            importBtn.addEventListener('click', function() {
-                document.getElementById('missions-csv-file-input').click();
-            });
-        }
-
-        var fileInput = document.getElementById('missions-csv-file-input');
-        if (fileInput) {
-            fileInput.addEventListener('change', function(e) {
-                if (this.files.length > 0) {
-                    importMissionsCSV(this.files[0]);
-                    this.value = '';
-                }
-            });
-        }
-
-        var templateBtn = document.getElementById('template-missions-csv-btn');
-        if (templateBtn) {
-            templateBtn.addEventListener('click', exportMissionTemplateCSV);
-        }
-
-        // ---- MODAL CLOSE BUTTONS ----
-        var closeFormBtn = document.getElementById('close-mission-form');
-        if (closeFormBtn) {
-            closeFormBtn.addEventListener('click', closeMissionForm);
-        }
-
-        var cancelFormBtn = document.getElementById('cancel-mission-form');
-        if (cancelFormBtn) {
-            cancelFormBtn.addEventListener('click', closeMissionForm);
-        }
-
-        var formModal = document.getElementById('mission-form-modal');
-        if (formModal) {
-            formModal.addEventListener('click', function(e) {
-                if (e.target === this) closeMissionForm();
-            });
-        }
-
-        var closeDetailBtn = document.getElementById('close-mission-detail');
-        if (closeDetailBtn) {
-            closeDetailBtn.addEventListener('click', closeMissionDetail);
-        }
-
-        var detailModal = document.getElementById('mission-detail-modal');
-        if (detailModal) {
-            detailModal.addEventListener('click', function(e) {
-                if (e.target === this) closeMissionDetail();
-            });
-        }
-
-        _eventListenersInitialized = true;
+        return char.name || char.firstName || 'Unknown';
     }
 
     // ============================================================
