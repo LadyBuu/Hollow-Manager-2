@@ -42,7 +42,7 @@
     // CONSTANTS
     // ============================================================
 
-    var DEBOUNCE_DELAY = window.UI_CONSTANTS.DEBOUNCE_DELAY;
+    var DEBOUNCE_DELAY = window.UI_CONSTANTS ? window.UI_CONSTANTS.DEBOUNCE_DELAY : 300;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -110,6 +110,7 @@
         if (statusLower === 'instructor') return '◇';
         if (statusLower === 'support') return '◈';
         if (statusLower === 'civilian') return '○';
+        if (statusLower === 'deceased') return '✝';
         return '';
     }
 
@@ -119,6 +120,7 @@
         if (statusLower === 'junior' || statusLower === 'senior') return 'var(--warning)';
         if (statusLower === 'instructor' || statusLower === 'support') return 'var(--info)';
         if (statusLower === 'civilian') return 'var(--text-dim)';
+        if (statusLower === 'deceased') return 'var(--danger)';
         return 'var(--text-dim)';
     }
 
@@ -171,7 +173,6 @@
                 var status = String(typeof window.getCurrentStatus === 'function'
                     ? window.getCurrentStatus(char)
                     : '').toLowerCase();
-                // Exact match or starts with (for "(Former)" suffix)
                 if (status !== statusFilter && !status.startsWith(statusFilter + ' ')) {
                     return false;
                 }
@@ -310,6 +311,15 @@
         });
 
         listContainer.innerHTML = html;
+
+        // Auto-scroll to the selected character
+        var activeItem = listContainer.querySelector('.char-list-item.active');
+        if (activeItem) {
+            // Use setTimeout to ensure DOM is rendered before scrolling
+            setTimeout(function() {
+                activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }, 50);
+        }
     }
 
     // ============================================================
