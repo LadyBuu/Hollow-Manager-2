@@ -74,6 +74,7 @@
         // State flags
         isInitialized: false,
         isRendering: false,
+        _initializationStarted: false,
         
         // Pending operations
         pendingTab: null,
@@ -94,6 +95,11 @@
             if (this.isInitialized) {
                 return;
             }
+
+            if (this._initializationStarted) {
+                return;
+            }
+            this._initializationStarted = true;
 
             try {
                 this._findTabContentElements();
@@ -650,27 +656,29 @@
     window.TabManager = TabManager;
 
     // ============================================================
-    // AUTO-INIT
+    // AUTO-INIT - Wait for modules to register
     // ============================================================
 
+    /**
+     * Initialize TabManager after all modules have had a chance to register.
+     * Uses a short delay to allow script execution order to complete.
+     */
     function initTabManager() {
-        if (TabManager.isInitialized) {
+        if (TabManager.isInitialized || TabManager._initializationStarted) {
             return;
         }
 
-        if (document.readyState === 'complete' || document.readyState === 'interactive') {
-            setTimeout(function() {
-                TabManager.init();
-            }, SWITCH_DELAY);
-        } else {
-            document.addEventListener('DOMContentLoaded', function() {
-                setTimeout(function() {
-                    TabManager.init();
-                }, SWITCH_DELAY);
-            });
-        }
+        // Wait a short time for modules to register their tabs
+        setTimeout(function() {
+            TabManager.init();
+        }, 100);
     }
 
-    initTabManager();
+    // Start initialization after DOM is ready
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        initTabManager();
+    } else {
+        document.addEventListener('DOMContentLoaded', initTabManager);
+    }
 
 })();
