@@ -1,54 +1,12 @@
 /**
- * utils/calendar-utils.js - Calendar Utility Functions
- * Shared helper functions for calendar operations
- * Path: utils/calendar-utils.js
+ * js/utils/calendar-utils.js - Calendar Utilities
+ * Path: js/utils/calendar-utils.js
  * 
- * This module provides:
- *   - Day and hour formatting
- *   - Week calculations (based on a consistent day-of-year model)
- *   - Time slot utilities
- *   - Date comparison helpers
- *   - Schedule validation helpers (DELEGATES to CurriculumValidators)
- *   - Schedule key generation
- *   - Ranking block calculations
- * 
- * IMPORTANT:
- *   - All functions are PURE: no side effects, no data mutation
- *   - No DOM manipulation
- *   - No dependencies on window.data
- *   - Safe for use in any context
- *   - Validation functions DELEGATE to CurriculumValidators
- *   - This is the SINGLE SOURCE OF TRUTH for calendar display utilities
- * 
- * WEEK MODEL:
- *   - Week 1 = days 1-7 of the year
- *   - Week 2 = days 8-14
- *   - ... Week N = days ((N-1)*7 + 1) through min(N*7, daysInYear)
- *   - Number of weeks in a year varies (52 or 53 depending on the year)
- *   - getWeekFromDate() and getWeekStartDate() are inverses in the sense that
- *     getWeekStartDate(getWeekFromDate(date)) returns the first day of the week
- *   - All week functions take an optional year parameter
- *   - year defaults to current year if not provided
- * 
- * SCHEDULE OCCUPANCY CONVENTION:
- *   - undefined, null, or '' = empty/unoccupied
- *   - Any other value (including 0, false, "0") = occupied
- *   - This applies to all schedule-related functions
- * 
- * SCHEDULE KEY GENERATION:
- *   - getScheduleKey() generates a deterministic key for schedule entries
- *   - All parameters are stringified to avoid type-based collisions
- *   - Returns a JSON-stringified array: [studentId, week, day, hour]
- *   - This is the SINGLE SOURCE OF TRUTH for schedule key generation
- * 
- * RANKING BLOCK:
- *   - getRankingBlock() returns the block number for a period
- *   - Blocks are pairs of weeks: weeks 1-2 = block 1, weeks 3-4 = block 2, etc.
- *   - This is used for UI grouping of ranking periods
- * 
- * DEPENDENCIES:
- *   - CurriculumValidators (for validation functions)
- *   - If CurriculumValidators is not available, validation functions return null
+ * This module provides calendar-related utility functions:
+ *   - Week block calculation for academic schedules
+ *   - Week number calculation
+ *   - Day name formatting
+ *   - Period validation helpers
  */
 
 (function() {
@@ -64,920 +22,252 @@
     // CONSTANTS
     // ============================================================
 
-    var DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    var DAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    var DAY_NAMES_MIN = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
-
-    var DAY_NAMES_1_INDEXED = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-    var DAY_NAMES_SHORT_1_INDEXED = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    var DAY_NAMES_MIN_1_INDEXED = ['', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
-
-    var MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
-                       'July', 'August', 'September', 'October', 'November', 'December'];
-    var MONTH_NAMES_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                             'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-    var HOUR_FORMAT_12 = '12h';
-    var HOUR_FORMAT_24 = '24h';
-    var HOUR_FORMAT_SHORT = 'short';
-
-    var DAYS_IN_WEEK = 7;
-    var CALENDAR_START_HOUR = 5;
-    var CALENDAR_END_HOUR = 23;
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
+    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
+    var WEEKS_PER_BLOCK = 2;
 
     // ============================================================
-    // DEPENDENCY: CurriculumValidators
-    // ============================================================
-
-    var Validators = window.CurriculumValidators;
-
-    // ============================================================
-    // HELPER: Canonical year normalisation
-    // ============================================================
-
-    function _normaliseYear(year) {
-        if (year === undefined || year === null) {
-            return new Date().getFullYear();
-        }
-
-        // Try to convert to number
-        var num = Number(year);
-
-        // Reject NaN, Infinity, or out-of-range years
-        if (!Number.isFinite(num) || num < 0 || num > 9999) {
-            return new Date().getFullYear();
-        }
-
-        // Floor to integer (e.g., 2026.9 → 2026)
-        return Math.floor(num);
-    }
-
-    // ============================================================
-    // HELPER: Days in year (calendar-date based)
-    // ============================================================
-
-    function getDaysInYear(year) {
-        var y = _normaliseYear(year);
-
-        // February 29 exists if the month after February is still February
-        // i.e., new Date(y, 1, 29).getMonth() === 1 means it exists
-        return new Date(y, 1, 29).getMonth() === 1 ? 366 : 365;
-    }
-
-    function getWeeksInYear(year) {
-        var y = _normaliseYear(year);
-        return Math.ceil(getDaysInYear(y) / DAYS_IN_WEEK);
-    }
-
-    // ============================================================
-    // DAY HELPERS (1-INDEXED: Monday = 1, Sunday = 7)
-    // ============================================================
-
-    function getDayName(day, format) {
-        format = format || 'full';
-
-        if (!Number.isInteger(day) || day < 1 || day > 7) {
-            return 'Unknown';
-        }
-
-        switch (format) {
-            case 'full':
-                return DAY_NAMES_1_INDEXED[day] || 'Unknown';
-            case 'short':
-                return DAY_NAMES_SHORT_1_INDEXED[day] || 'Unknown';
-            case 'min':
-                return DAY_NAMES_MIN_1_INDEXED[day] || 'Unknown';
-            default:
-                return DAY_NAMES_1_INDEXED[day] || 'Unknown';
-        }
-    }
-
-    function getDayName0(day, format) {
-        format = format || 'full';
-
-        if (!Number.isInteger(day) || day < 0 || day > 6) {
-            return 'Unknown';
-        }
-
-        switch (format) {
-            case 'full':
-                return DAY_NAMES[day] || 'Unknown';
-            case 'short':
-                return DAY_NAMES_SHORT[day] || 'Unknown';
-            case 'min':
-                return DAY_NAMES_MIN[day] || 'Unknown';
-            default:
-                return DAY_NAMES[day] || 'Unknown';
-        }
-    }
-
-    function getDayNumber(dayName) {
-        if (typeof dayName !== 'string') return null;
-
-        var normalized = dayName.trim().toLowerCase();
-        var map = {
-            'monday': 1, 'mon': 1,
-            'tuesday': 2, 'tue': 2,
-            'wednesday': 3, 'wed': 3,
-            'thursday': 4, 'thu': 4,
-            'friday': 5, 'fri': 5,
-            'saturday': 6, 'sat': 6,
-            'sunday': 7, 'sun': 7
-        };
-
-        return map[normalized] || null;
-    }
-
-    function isWeekend(day) {
-        return day === 6 || day === 7;
-    }
-
-    function isWeekday(day) {
-        return day >= 1 && day <= 5;
-    }
-
-    function getDayRange(startDay, endDay) {
-        if (!Number.isInteger(startDay) || !Number.isInteger(endDay) ||
-            startDay < 1 || endDay > 7 || startDay > endDay) {
-            return [];
-        }
-
-        var days = [];
-        for (var d = startDay; d <= endDay; d++) {
-            days.push(d);
-        }
-        return days;
-    }
-
-    function getWeekDays() {
-        return [1, 2, 3, 4, 5, 6, 7];
-    }
-
-    function getWeekdays() {
-        return [1, 2, 3, 4, 5];
-    }
-
-    function getWeekendDays() {
-        return [6, 7];
-    }
-
-    // ============================================================
-    // HOUR HELPERS
-    // ============================================================
-
-    function formatHour(hour, format) {
-        format = format || HOUR_FORMAT_SHORT;
-
-        if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
-            return '?';
-        }
-
-        switch (format) {
-            case HOUR_FORMAT_12: {
-                var h12 = hour % 12 || 12;
-                var ampm = hour >= 12 ? 'PM' : 'AM';
-                return h12 + ':00 ' + ampm;
-            }
-            case HOUR_FORMAT_24: {
-                var h24 = String(hour).padStart(2, '0');
-                return h24 + ':00';
-            }
-            case HOUR_FORMAT_SHORT: {
-                var h = hour % 12 || 12;
-                var a = hour >= 12 ? 'PM' : 'AM';
-                return h + a;
-            }
-            default:
-                return String(hour);
-        }
-    }
-
-    function formatHourRange(startHour, endHour, format) {
-        var start = formatHour(startHour, format);
-        var end = formatHour(endHour, format);
-        return start + ' - ' + end;
-    }
-
-    function getHourDisplay(hour) {
-        return formatHour(hour, HOUR_FORMAT_SHORT);
-    }
-
-    function getHour12(hour) {
-        if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
-            return null;
-        }
-        return hour % 12 || 12;
-    }
-
-    function getAmPm(hour) {
-        if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
-            return null;
-        }
-        return hour >= 12 ? 'PM' : 'AM';
-    }
-
-    function getHourRange(startHour, endHour) {
-        if (!Number.isInteger(startHour) || !Number.isInteger(endHour) ||
-            startHour < 0 || endHour > 23 || startHour > endHour) {
-            return [];
-        }
-
-        var hours = [];
-        for (var h = startHour; h <= endHour; h++) {
-            hours.push(h);
-        }
-        return hours;
-    }
-
-    function getDefaultHours() {
-        return getHourRange(CALENDAR_START_HOUR, CALENDAR_END_HOUR);
-    }
-
-    function getSelectionHours() {
-        return getHourRange(8, 20);
-    }
-
-    function getMorningHours() {
-        return getHourRange(5, 12);
-    }
-
-    function getAfternoonHours() {
-        return getHourRange(13, 17);
-    }
-
-    function getEveningHours() {
-        return getHourRange(18, 23);
-    }
-
-    function isBusinessHour(hour) {
-        return hour >= 8 && hour <= 20;
-    }
-
-    function isMorning(hour) {
-        return hour >= 5 && hour < 12;
-    }
-
-    function isAfternoon(hour) {
-        return hour >= 12 && hour < 18;
-    }
-
-    function isEvening(hour) {
-        return hour >= 18 && hour <= 23;
-    }
-
-    // ============================================================
-    // WEEK HELPERS - Consistent day-of-year model
+    // WEEK BLOCK HELPERS
     // ============================================================
 
     /**
-     * Validate a week number.
-     * Delegates to CurriculumValidators if available.
-     * Fallback validation if validators are not loaded.
-     */
-    function validateWeek(week) {
-        if (Validators && typeof Validators.validateWeek === 'function') {
-            return Validators.validateWeek(week);
-        }
-
-        // Fallback validation
-        if (week === undefined || week === null || week === '') {
-            return null;
-        }
-        var num = Number(week);
-        if (!Number.isInteger(num) || num < 1 || num > 52) {
-            return null;
-        }
-        return num;
-    }
-
-    function getWeekLabel(week) {
-        var w = validateWeek(week);
-        return w !== null ? 'Week ' + w : 'Invalid Week';
-    }
-
-    function getWeekRange(week, year) {
-        var w = validateWeek(week);
-        if (w === null) return null;
-
-        year = _normaliseYear(year);
-        var daysInYear = getDaysInYear(year);
-        var start = (w - 1) * 7 + 1;
-
-        if (start > daysInYear) return null;
-
-        return {
-            start: start,
-            end: Math.min(start + 6, daysInYear)
-        };
-    }
-
-    /**
-     * Get the block number for a week (pair grouping).
-     * Blocks are 1-indexed: weeks 1-2 = block 1, weeks 3-4 = block 2, etc.
-     * This is used for UI grouping, not a universal calendar concept.
+     * Get the 2-week block for a given week number.
+     * Blocks are: 1-2, 3-4, 5-6, etc.
      * 
-     * Note: For weeks beyond the year's actual week count, this still returns
-     * a block value. Callers should validate the week exists first if needed.
+     * @param {number|string} weekNum - Week number (1-52)
+     * @returns {object|null} { start: number, end: number } or null if invalid
      */
-    function getWeekBlock(week) {
-        var w = validateWeek(week);
-        if (w === null) return null;
+    function getWeekBlock(weekNum) {
+        var num = parseInt(weekNum, 10);
+        if (isNaN(num) || num < MIN_WEEK || num > MAX_WEEK) {
+            return null;
+        }
 
-        var start = Math.floor((w - 1) / 2) * 2 + 1;
-        var end = start + 1;
+        // Calculate block: 1-2 -> block 1, 3-4 -> block 2, etc.
+        var blockIndex = Math.floor((num - 1) / WEEKS_PER_BLOCK);
+        var start = (blockIndex * WEEKS_PER_BLOCK) + 1;
+        var end = Math.min(start + WEEKS_PER_BLOCK - 1, MAX_WEEK);
+
         return {
             start: start,
             end: end,
-            label: start + '-' + end
+            block: blockIndex + 1,
+            label: 'Wk ' + start + '-' + end
         };
     }
 
     /**
-     * Get the ranking block for a period.
-     * Alias for getWeekBlock for ranking-specific contexts.
-     * Returns null for invalid periods.
+     * Get all week blocks for the academic year.
+     * 
+     * @returns {array} Array of block objects
      */
-    function getRankingBlock(period) {
-        return getWeekBlock(period);
+    function getAllWeekBlocks() {
+        var blocks = [];
+        for (var i = 1; i <= MAX_WEEK; i += WEEKS_PER_BLOCK) {
+            var start = i;
+            var end = Math.min(i + WEEKS_PER_BLOCK - 1, MAX_WEEK);
+            blocks.push({
+                start: start,
+                end: end,
+                block: Math.floor((i - 1) / WEEKS_PER_BLOCK) + 1,
+                label: 'Wk ' + start + '-' + end,
+                week: i // Center week for display
+            });
+        }
+        return blocks;
     }
+
+    /**
+     * Get the block number for a given week.
+     * 
+     * @param {number|string} weekNum - Week number (1-52)
+     * @returns {number|null} Block number or null if invalid
+     */
+    function getWeekBlockNumber(weekNum) {
+        var num = parseInt(weekNum, 10);
+        if (isNaN(num) || num < MIN_WEEK || num > MAX_WEEK) {
+            return null;
+        }
+        return Math.floor((num - 1) / WEEKS_PER_BLOCK) + 1;
+    }
+
+    /**
+     * Get the week range for a given block number.
+     * 
+     * @param {number} blockNum - Block number (1-26)
+     * @returns {object|null} { start: number, end: number } or null if invalid
+     */
+    function getBlockRange(blockNum) {
+        var num = parseInt(blockNum, 10);
+        if (isNaN(num) || num < 1 || num > Math.ceil(MAX_WEEK / WEEKS_PER_BLOCK)) {
+            return null;
+        }
+
+        var start = (num - 1) * WEEKS_PER_BLOCK + 1;
+        var end = Math.min(start + WEEKS_PER_BLOCK - 1, MAX_WEEK);
+
+        return {
+            start: start,
+            end: end,
+            label: 'Wk ' + start + '-' + end
+        };
+    }
+
+    // ============================================================
+    // WEEK NUMBER HELPERS
+    // ============================================================
 
     /**
      * Get the week number from a date.
-     * Uses calendar day-of-year (UTC-based) to avoid DST issues.
      * 
-     * Note: getWeekStartDate(getWeekFromDate(date)) returns the first day
-     * of the week containing the given date, not necessarily the date itself.
+     * @param {Date|string} date - Date object or ISO date string
+     * @param {number} firstDayOfWeek - 1 = Monday, 0 = Sunday (default: 1)
+     * @returns {number} Week number (1-52)
      */
-    function getWeekFromDate(date) {
-        if (!(date instanceof Date)) {
-            date = new Date(date);
-        }
-        if (isNaN(date.getTime())) return null;
-
-        var year = date.getFullYear();
-        var dayOfYear = Math.floor(
-            (Date.UTC(year, date.getMonth(), date.getDate()) -
-             Date.UTC(year, 0, 1)) / 86400000
-        ) + 1;
-
-        return Math.floor((dayOfYear - 1) / 7) + 1;
+    function getWeekNumber(date, firstDayOfWeek) {
+        firstDayOfWeek = firstDayOfWeek || 1;
+        var d = new Date(date);
+        d.setHours(0, 0, 0, 0);
+        
+        // Set to Thursday of the same week to get ISO week number
+        var dayOffset = (d.getDay() + 6) % 7; // Monday = 0, Sunday = 6
+        d.setDate(d.getDate() - dayOffset + 3);
+        
+        var week1 = new Date(d.getFullYear(), 0, 4);
+        var week1Offset = (week1.getDay() + 6) % 7;
+        week1.setDate(week1.getDate() - week1Offset);
+        
+        var diff = (d - week1) / 86400000;
+        return Math.floor(diff / 7) + 1;
     }
 
     /**
-     * Get the start date for a week.
-     * Returns the first day of the week (day-of-year calculation).
+     * Get the academic week number for a given date.
+     * Assumes the academic year starts on the first Monday of the year.
      * 
-     * Note: getWeekFromDate(getWeekStartDate(week, year)) returns week
-     * for any date in that week, not necessarily week itself for the first day.
+     * @param {Date|string} date - Date object or ISO date string
+     * @param {number} startWeek - Starting week offset (default: 1)
+     * @returns {number} Academic week number (1-52)
      */
-    function getWeekStartDate(week, year) {
-        var w = validateWeek(week);
-        if (w === null) return null;
-
-        year = _normaliseYear(year);
-        var dayOfYear = (w - 1) * 7 + 1;
-        var daysInYear = getDaysInYear(year);
-
-        if (dayOfYear > daysInYear) return null;
-
-        return new Date(year, 0, dayOfYear);
+    function getAcademicWeek(date, startWeek) {
+        startWeek = startWeek || 1;
+        var weekNum = getWeekNumber(date);
+        // Adjust so week 1 of the academic year starts at the given offset
+        return ((weekNum - startWeek) % 52) + 1;
     }
 
-    function getWeekDisplay(week, year) {
-        var w = validateWeek(week);
-        if (w === null) return 'Week ?';
+    // ============================================================
+    // DAY NAME HELPERS
+    // ============================================================
 
-        year = _normaliseYear(year);
-
-        var range = getWeekRange(w, year);
-        if (!range) return 'Week ' + w;
-
-        var startDate = new Date(year, 0, range.start);
-        var endDate = new Date(year, 0, range.end);
-
-        var startMonth = MONTH_NAMES_SHORT[startDate.getMonth()];
-        var endMonth = MONTH_NAMES_SHORT[endDate.getMonth()];
-
-        if (startMonth === endMonth) {
-            return 'Week ' + w + ' (' + startMonth + ' ' + startDate.getDate() + '-' + endDate.getDate() + ')';
-        }
-
-        return 'Week ' + w + ' (' + startMonth + ' ' + startDate.getDate() + ' - ' + endMonth + ' ' + endDate.getDate() + ')';
-    }
-
-    function getWeekNavigation(week, year) {
-        var w = validateWeek(week);
-
-        if (w === null) {
-            var defaultMax = getWeeksInYear(year);
-            return {
-                current: 1,
-                prev: null,
-                next: defaultMax > 1 ? 2 : null,
-                hasPrev: false,
-                hasNext: defaultMax > 1
-            };
-        }
-
-        year = _normaliseYear(year);
-        var maxWeek = getWeeksInYear(year);
-
-        // Clamp to valid range
-        var current = Math.min(w, maxWeek);
-
-        return {
-            current: current,
-            prev: current > 1 ? current - 1 : null,
-            next: current < maxWeek ? current + 1 : null,
-            hasPrev: current > 1,
-            hasNext: current < maxWeek,
-            maxWeek: maxWeek
+    /**
+     * Get the day name for a given day number (1-7).
+     * 1 = Monday, 7 = Sunday
+     * 
+     * @param {number} day - Day number (1-7)
+     * @param {string} format - 'long', 'short', or 'min' (default: 'long')
+     * @returns {string} Day name
+     */
+    function getDayName(day, format) {
+        format = format || 'long';
+        var names = {
+            'long': ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+            'short': ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+            'min': ['', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
         };
+        var dayNames = names[format] || names['long'];
+        var num = parseInt(day, 10);
+        if (isNaN(num) || num < 1 || num > 7) return 'Unknown';
+        return dayNames[num] || 'Unknown';
     }
 
-    // ============================================================
-    // SCHEDULE KEY GENERATION - SINGLE SOURCE OF TRUTH
-    // ============================================================
-
     /**
-     * Generate a deterministic key for schedule entries.
-     * All parameters are stringified to avoid type-based collisions.
-     * This function does NOT validate inputs; validation occurs at the setter boundary.
+     * Get the day number (1-7) from a day name.
+     * 1 = Monday, 7 = Sunday
      * 
-     * @param {string} studentId - The student's ID
-     * @param {number|string} week - The week number
-     * @param {number|string} day - The day number (1-7)
-     * @param {number|string} hour - The hour number (0-23)
-     * @returns {string} A JSON-stringified array key
+     * @param {string} dayName - Day name (e.g., 'Monday', 'Mon', 'Mo')
+     * @returns {number} Day number (1-7) or null if not found
      */
-    function getScheduleKey(studentId, week, day, hour) {
-        return JSON.stringify([
-            String(studentId),
-            String(week),
-            String(day),
-            String(hour)
-        ]);
-    }
-
-    // ============================================================
-    // SCHEDULE SLOT VALIDATION - DELEGATES TO CURRICULUMVALIDATORS
-    // ============================================================
-
-    /**
-     * Validate a schedule slot for setters.
-     * Returns normalised, validated values on success.
-     * DELEGATES to CurriculumValidators for core validation.
-     * 
-     * @param {string} studentId - The student's ID
-     * @param {number|string} week - The week number (must be 1-52)
-     * @param {number|string} day - The day number (must be 1-7)
-     * @param {number|string} hour - The hour number (must be 0-23)
-     * @returns {object} 
-     *   Success: { success: true, studentId: string, week: number, day: string, hour: string }
-     *   Failure: { success: false, message: string }
-     */
-    function validateScheduleSlot(studentId, week, day, hour) {
-        // Use CurriculumValidators if available
-        if (Validators) {
-            var weekNum = Validators.validateWeek(week);
-            if (weekNum === null) {
-                return { success: false, message: 'Valid week is required (1-52).' };
-            }
-
-            if (!Validators.isNonEmptyString(studentId)) {
-                return { success: false, message: 'Student ID is required.' };
-            }
-
-            var dayNum = Number(day);
-            if (!Number.isInteger(dayNum) || dayNum < 1 || dayNum > 7) {
-                return { success: false, message: 'Valid day is required (1-7).' };
-            }
-
-            var hourNum = Number(hour);
-            if (!Number.isInteger(hourNum) || hourNum < 0 || hourNum > 23) {
-                return { success: false, message: 'Valid hour is required (0-23).' };
-            }
-
-            return {
-                success: true,
-                studentId: String(studentId).trim(),
-                week: weekNum,
-                day: String(dayNum),
-                hour: String(hourNum)
-            };
-        }
-
-        // Fallback validation if CurriculumValidators not available
-        if (studentId === undefined || studentId === null || String(studentId).trim() === '') {
-            return { success: false, message: 'Student ID is required.' };
-        }
-        var normalisedStudentId = String(studentId).trim();
-        
-        var weekNum = Number(week);
-        if (!Number.isInteger(weekNum) || weekNum < 1 || weekNum > 52) {
-            return { success: false, message: 'Valid week is required (1-52).' };
-        }
-        
-        if (day === undefined || day === null || String(day).trim() === '') {
-            return { success: false, message: 'Day is required.' };
-        }
-        var dayNum = Number(day);
-        if (!Number.isInteger(dayNum) || dayNum < 1 || dayNum > 7) {
-            return { success: false, message: 'Valid day is required (1-7).' };
-        }
-        var normalisedDay = String(dayNum);
-        
-        if (hour === undefined || hour === null || String(hour).trim() === '') {
-            return { success: false, message: 'Hour is required.' };
-        }
-        var hourNum = Number(hour);
-        if (!Number.isInteger(hourNum) || hourNum < 0 || hourNum > 23) {
-            return { success: false, message: 'Valid hour is required (0-23).' };
-        }
-        var normalisedHour = String(hourNum);
-        
-        return {
-            success: true,
-            studentId: normalisedStudentId,
-            week: weekNum,
-            day: normalisedDay,
-            hour: normalisedHour
+    function getDayNumber(dayName) {
+        var names = {
+            'monday': 1, 'mon': 1, 'mo': 1,
+            'tuesday': 2, 'tue': 2, 'tu': 2,
+            'wednesday': 3, 'wed': 3, 'we': 3,
+            'thursday': 4, 'thu': 4, 'th': 4,
+            'friday': 5, 'fri': 5, 'fr': 5,
+            'saturday': 6, 'sat': 6, 'sa': 6,
+            'sunday': 7, 'sun': 7, 'su': 7
         };
+        var key = String(dayName).toLowerCase();
+        return names[key] || null;
     }
 
     // ============================================================
-    // TIME SLOT HELPERS
+    // PERIOD VALIDATION HELPERS
     // ============================================================
 
-    function getSlotKey(day, hour) {
-        if (!isValidSlot(day, hour)) return null;
-        return day + '_' + hour;
+    /**
+     * Check if a value is a valid week number (1-52).
+     * 
+     * @param {*} value - Value to check
+     * @returns {boolean} True if valid
+     */
+    function isValidWeek(value) {
+        var num = parseInt(value, 10);
+        return !isNaN(num) && num >= MIN_WEEK && num <= MAX_WEEK;
     }
 
-    function parseSlotKey(key) {
-        if (typeof key !== 'string') return null;
+    /**
+     * Check if a value is a valid year (1900-2100).
+     * 
+     * @param {*} value - Value to check
+     * @returns {boolean} True if valid
+     */
+    function isValidYear(value) {
+        var num = parseInt(value, 10);
+        var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
+        var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
+        return !isNaN(num) && num >= MIN_YEAR && num <= MAX_YEAR;
+    }
 
-        var parts = key.split('_');
-        if (parts.length !== 2) return null;
-
-        var day = Number(parts[0]);
-        var hour = Number(parts[1]);
-
-        if (!Number.isInteger(day) || !Number.isInteger(hour)) {
+    /**
+     * Parse a period value to a number.
+     * 
+     * @param {*} value - Value to parse
+     * @returns {number|null} Parsed number or null if invalid
+     */
+    function parsePeriod(value) {
+        if (value === undefined || value === null || value === '') {
             return null;
         }
-
-        if (day < 1 || day > 7) return null;
-        if (hour < 0 || hour > 23) return null;
-
-        return { day: day, hour: hour };
+        var num = parseInt(value, 10);
+        return !isNaN(num) ? num : null;
     }
 
-    function getSlotDurationKey(studentId, week, day, hour) {
-        return String(studentId) + '_' + String(week) + '_' + String(day) + '_' + String(hour);
-    }
-
-    function getSlotLabel(day, hour, duration, label) {
-        var parts = [];
-        parts.push(getDayName(day, 'short'));
-        parts.push(formatHour(hour, HOUR_FORMAT_SHORT));
-
-        var dur = Number(duration);
-        if (Number.isInteger(dur) && dur > 1) {
-            parts.push('(' + dur + 'h)');
-        }
-
-        if (label !== undefined && label !== null && String(label).trim() !== '') {
-            parts.push('[' + String(label).trim() + ']');
-        }
-
-        return parts.join(' ');
-    }
-
-    function getSlotDisplay(day, hour, duration) {
-        var dayName = getDayName(day, 'short');
-        var hourDisplay = formatHour(hour, HOUR_FORMAT_SHORT);
-
-        var dur = Number(duration);
-        if (Number.isInteger(dur) && dur > 1) {
-            return dayName + ' ' + hourDisplay + ' (' + dur + 'h)';
-        }
-        return dayName + ' ' + hourDisplay;
-    }
+    // ============================================================
+    // DATE FORMATTING HELPERS
+    // ============================================================
 
     /**
-     * Get continuous occupied hours of the same discipline.
-     * Uses string comparison for discipline IDs to handle numeric/string mix.
-     * Returns null if the slot is empty.
+     * Format a date as a string.
+     * 
+     * @param {Date|string} date - Date object or ISO date string
+     * @param {string} format - 'iso', 'date', or 'full' (default: 'date')
+     * @returns {string} Formatted date string
      */
-    function getContinuousSlots(schedule, day, hour) {
-        if (!schedule || !schedule[day]) {
-            return null;
-        }
+    function formatDate(date, format) {
+        format = format || 'date';
+        var d = new Date(date);
+        if (isNaN(d.getTime())) return 'Invalid Date';
 
-        var slot = schedule[day][hour];
-        if (slot === undefined || slot === null || slot === '') {
-            return null;
-        }
-
-        var disciplineId = slot;
-        var startHour = hour;
-
-        while (startHour > 0) {
-            var prev = schedule[day][startHour - 1];
-            if (prev === undefined || prev === null || prev === '') {
-                break;
-            }
-            if (String(prev) !== String(disciplineId)) {
-                break;
-            }
-            startHour--;
-        }
-
-        var endHour = hour;
-        while (endHour < 23) {
-            var next = schedule[day][endHour + 1];
-            if (next === undefined || next === null || next === '') {
-                break;
-            }
-            if (String(next) !== String(disciplineId)) {
-                break;
-            }
-            endHour++;
-        }
-
-        return {
-            disciplineId: disciplineId,
-            startHour: startHour,
-            endHour: endHour,
-            duration: endHour - startHour + 1
+        var options = {
+            'iso': { year: 'numeric', month: '2-digit', day: '2-digit' },
+            'date': { year: 'numeric', month: 'long', day: 'numeric' },
+            'full': { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }
         };
-    }
 
-    /**
-     * Get available (empty) slots in a day.
-     * Uses the occupancy convention: undefined, null, '' = empty.
-     */
-    function getAvailableSlots(schedule, day, startHour, endHour) {
-        if (startHour === undefined || startHour === null) {
-            startHour = CALENDAR_START_HOUR;
-        }
-        if (endHour === undefined || endHour === null) {
-            endHour = CALENDAR_END_HOUR;
-        }
-
-        if (!Number.isInteger(startHour) || !Number.isInteger(endHour) ||
-            startHour < 0 || endHour > 23 || startHour > endHour) {
-            return [];
-        }
-
-        var available = [];
-        if (!schedule || !schedule[day]) {
-            for (var h = startHour; h <= endHour; h++) {
-                available.push(h);
-            }
-            return available;
-        }
-
-        for (var h = startHour; h <= endHour; h++) {
-            var slot = schedule[day][h];
-            if (slot === undefined || slot === null || slot === '') {
-                available.push(h);
-            }
-        }
-        return available;
-    }
-
-    /**
-     * Check if a slot has a conflict (overlaps with existing occupied slots).
-     * Returns true if any hour in the range is occupied.
-     * Returns true if the requested range extends beyond the calendar boundary.
-     */
-    function hasSlotConflict(schedule, day, hour, duration) {
-        if (duration === undefined || duration === null) {
-            duration = 1;
-        }
-
-        if (!isValidDay(day) || !isValidHour(hour)) {
-            return true;
-        }
-
-        var durationNum = validateDuration(duration);
-        if (durationNum === null) {
-            return true;
-        }
-
-        // Check if the range extends beyond the calendar boundary
-        if (hour + durationNum - 1 > CALENDAR_END_HOUR) {
-            return true;
-        }
-
-        if (!schedule || !schedule[day]) return false;
-
-        for (var h = hour; h < hour + durationNum; h++) {
-            var slot = schedule[day][h];
-            if (slot !== undefined && slot !== null && slot !== '') {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Check if a slot range is valid (within calendar bounds).
-     */
-    function isValidSlotRange(day, hour, duration) {
-        if (!isValidDay(day)) return false;
-        if (!isValidHour(hour)) return false;
-
-        var durationNum = validateDuration(duration);
-        if (durationNum === null) return false;
-
-        return hour + durationNum - 1 <= CALENDAR_END_HOUR;
-    }
-
-    // ============================================================
-    // DATE HELPERS
-    // ============================================================
-
-    function getMonthName(month, format) {
-        format = format || 'full';
-
-        if (!Number.isInteger(month) || month < 0 || month > 11) {
-            return 'Unknown';
-        }
-
-        switch (format) {
-            case 'full':
-                return MONTH_NAMES[month] || 'Unknown';
-            case 'short':
-                return MONTH_NAMES_SHORT[month] || 'Unknown';
-            default:
-                return MONTH_NAMES[month] || 'Unknown';
-        }
-    }
-
-    function getDateDisplay(date) {
-        if (!(date instanceof Date)) {
-            date = new Date(date);
-        }
-        if (isNaN(date.getTime())) return 'Invalid Date';
-
-        var month = getMonthName(date.getMonth(), 'short');
-        var day = date.getDate();
-        var year = date.getFullYear();
-        return month + ' ' + day + ', ' + year;
-    }
-
-    function getTimeDisplay(date) {
-        if (!(date instanceof Date)) {
-            date = new Date(date);
-        }
-        if (isNaN(date.getTime())) return 'Invalid Time';
-
-        var hours = date.getHours();
-        var minutes = date.getMinutes();
-        var ampm = hours >= 12 ? 'PM' : 'AM';
-        var h12 = hours % 12 || 12;
-        var m = String(minutes).padStart(2, '0');
-        return h12 + ':' + m + ' ' + ampm;
-    }
-
-    function getDateTimeDisplay(date) {
-        return getDateDisplay(date) + ' at ' + getTimeDisplay(date);
-    }
-
-    function getRelativeTime(date) {
-        if (!(date instanceof Date)) {
-            date = new Date(date);
-        }
-        if (isNaN(date.getTime())) return 'Invalid Date';
-
-        var now = new Date();
-        var diff = Math.floor((now - date) / 1000);
-
-        if (diff < 60) return 'Just now';
-        if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-        if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-        if (diff < 604800) return Math.floor(diff / 86400) + 'd ago';
-
-        return getDateDisplay(date);
-    }
-
-    // ============================================================
-    // PERIOD HELPERS (Calendar-specific period functions)
-    // ============================================================
-
-    function formatPeriod(start, end, prefix) {
-        prefix = prefix || '';
-
-        var s = (start !== undefined && start !== null && start !== '')
-            ? String(start)
-            : '?';
-        var e = (end !== undefined && end !== null && end !== '')
-            ? String(end)
-            : '';
-
-        if (s !== '?' && e) return prefix + s + ' → ' + prefix + e;
-        if (s !== '?') return prefix + s + ' → Present';
-        if (e) return prefix + e;
-        return '?';
-    }
-
-    // ============================================================
-    // VALIDATION HELPERS - DELEGATE TO CURRICULUMVALIDATORS
-    // ============================================================
-
-    function isValidDay(day) {
-        return Number.isInteger(day) && day >= 1 && day <= 7;
-    }
-
-    function isValidHour(hour) {
-        return Number.isInteger(hour) && hour >= 0 && hour <= 23;
-    }
-
-    /**
-     * Validate duration (1-4 hours).
-     * Delegates to CurriculumValidators if available.
-     */
-    function isValidDuration(duration) {
-        if (Validators && typeof Validators.parsePositiveInteger === 'function') {
-            var num = Validators.parsePositiveInteger(duration);
-            return num !== null && num >= 1 && num <= 4;
-        }
-        return Number.isInteger(duration) && duration >= 1 && duration <= 4;
-    }
-
-    function isValidSlot(day, hour) {
-        return isValidDay(day) && isValidHour(hour);
-    }
-
-    function isValidWeekRange(startWeek, endWeek, year) {
-        var start = validateWeek(startWeek);
-        var end = validateWeek(endWeek);
-        if (start === null || end === null || start > end) return false;
-
-        if (year !== undefined && year !== null) {
-            var maxWeek = getWeeksInYear(year);
-            return end <= maxWeek;
-        }
-
-        return true;
-    }
-
-    function normalizeSlot(day, hour) {
-        if (!isValidSlot(day, hour)) return null;
-        return { day: day, hour: hour };
-    }
-
-    /**
-     * Validate duration (1-4 hours).
-     * Returns the validated duration or null.
-     * Delegates to CurriculumValidators if available.
-     */
-    function validateDuration(value) {
-        if (Validators && typeof Validators.parsePositiveInteger === 'function') {
-            var num = Validators.parsePositiveInteger(value);
-            return num !== null && num >= 1 && num <= 4 ? num : null;
-        }
-
-        var num = Number(value);
-        return Number.isInteger(num) && num >= 1 && num <= 4 ? num : null;
-    }
-
-    function isSlotEmpty(value) {
-        return value === undefined || value === null || value === '';
-    }
-
-    function isSlotOccupied(value) {
-        return !isSlotEmpty(value);
-    }
-
-    // ============================================================
-    // SORT HELPERS
-    // ============================================================
-
-    function sortByDay(a, b) {
-        return a.day - b.day;
-    }
-
-    function sortByHour(a, b) {
-        return a.hour - b.hour;
-    }
-
-    function sortByDayHour(a, b) {
-        if (a.day !== b.day) return a.day - b.day;
-        return a.hour - b.hour;
-    }
-
-    function sortByWeek(a, b) {
-        return a.week - b.week;
-    }
-
-    function sortByDateTime(a, b) {
-        if (a.week !== b.week) return a.week - b.week;
-        if (a.day !== b.day) return a.day - b.day;
-        return a.hour - b.hour;
+        return d.toLocaleDateString('en-US', options[format] || options['date']);
     }
 
     // ============================================================
@@ -985,99 +275,35 @@
     // ============================================================
 
     window.CalendarUtils = {
-        // Day helpers
-        getDayName: getDayName,
-        getDayName0: getDayName0,
-        getDayNumber: getDayNumber,
-        isWeekend: isWeekend,
-        isWeekday: isWeekday,
-        getDayRange: getDayRange,
-        getWeekDays: getWeekDays,
-        getWeekdays: getWeekdays,
-        getWeekendDays: getWeekendDays,
-
-        // Hour helpers
-        formatHour: formatHour,
-        formatHourRange: formatHourRange,
-        getHourDisplay: getHourDisplay,
-        getHour12: getHour12,
-        getAmPm: getAmPm,
-        getHourRange: getHourRange,
-        getDefaultHours: getDefaultHours,
-        getSelectionHours: getSelectionHours,
-        getMorningHours: getMorningHours,
-        getAfternoonHours: getAfternoonHours,
-        getEveningHours: getEveningHours,
-        isBusinessHour: isBusinessHour,
-        isMorning: isMorning,
-        isAfternoon: isAfternoon,
-        isEvening: isEvening,
-
-        // Week helpers
-        validateWeek: validateWeek,
-        getWeekLabel: getWeekLabel,
-        getWeekRange: getWeekRange,
+        // Week block helpers
         getWeekBlock: getWeekBlock,
-        getRankingBlock: getRankingBlock,
-        getWeekFromDate: getWeekFromDate,
-        getWeekStartDate: getWeekStartDate,
-        getWeekDisplay: getWeekDisplay,
-        getWeekNavigation: getWeekNavigation,
-        getDaysInYear: getDaysInYear,
-        getWeeksInYear: getWeeksInYear,
+        getAllWeekBlocks: getAllWeekBlocks,
+        getWeekBlockNumber: getWeekBlockNumber,
+        getBlockRange: getBlockRange,
 
-        // Schedule key generation
-        getScheduleKey: getScheduleKey,
+        // Week number helpers
+        getWeekNumber: getWeekNumber,
+        getAcademicWeek: getAcademicWeek,
 
-        // Schedule slot validation
-        validateScheduleSlot: validateScheduleSlot,
+        // Day name helpers
+        getDayName: getDayName,
+        getDayNumber: getDayNumber,
 
-        // Time slot helpers
-        getSlotKey: getSlotKey,
-        parseSlotKey: parseSlotKey,
-        getSlotDurationKey: getSlotDurationKey,
-        getSlotLabel: getSlotLabel,
-        getSlotDisplay: getSlotDisplay,
-        getContinuousSlots: getContinuousSlots,
-        getAvailableSlots: getAvailableSlots,
-        hasSlotConflict: hasSlotConflict,
-        isValidSlotRange: isValidSlotRange,
+        // Period validation
+        isValidWeek: isValidWeek,
+        isValidYear: isValidYear,
+        parsePeriod: parsePeriod,
 
-        // Date helpers
-        getMonthName: getMonthName,
-        getDateDisplay: getDateDisplay,
-        getTimeDisplay: getTimeDisplay,
-        getDateTimeDisplay: getDateTimeDisplay,
-        getRelativeTime: getRelativeTime,
-
-        // Period helpers (calendar-specific)
-        formatPeriod: formatPeriod,
-
-        // Validation
-        isValidDay: isValidDay,
-        isValidHour: isValidHour,
-        isValidDuration: isValidDuration,
-        isValidSlot: isValidSlot,
-        isValidWeekRange: isValidWeekRange,
-        normalizeSlot: normalizeSlot,
-        validateDuration: validateDuration,
-        isSlotEmpty: isSlotEmpty,
-        isSlotOccupied: isSlotOccupied,
-
-        // Sort helpers
-        sortByDay: sortByDay,
-        sortByHour: sortByHour,
-        sortByDayHour: sortByDayHour,
-        sortByWeek: sortByWeek,
-        sortByDateTime: sortByDateTime,
+        // Date formatting
+        formatDate: formatDate,
 
         // Constants
-        HOUR_FORMAT_12: HOUR_FORMAT_12,
-        HOUR_FORMAT_24: HOUR_FORMAT_24,
-        HOUR_FORMAT_SHORT: HOUR_FORMAT_SHORT,
-        DAYS_IN_WEEK: DAYS_IN_WEEK,
-        CALENDAR_START_HOUR: CALENDAR_START_HOUR,
-        CALENDAR_END_HOUR: CALENDAR_END_HOUR
+        MIN_WEEK: MIN_WEEK,
+        MAX_WEEK: MAX_WEEK,
+        WEEKS_PER_BLOCK: WEEKS_PER_BLOCK
     };
+
+    // Also expose the key function globally for backward compatibility
+    window.getWeekBlock = getWeekBlock;
 
 })();
