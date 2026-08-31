@@ -148,22 +148,20 @@
                     </div>
                     <div class="characters-filters">
                         <input type="text" id="char-name-filter" placeholder="Filter by name..." />
-                        <select id="char-status-filter">
-                            <option value="all">All Statuses</option>
-                            <option value="trainee">Trainee</option>
-                            <option value="rookie">Rookie</option>
-                            <option value="junior">Junior</option>
-                            <option value="senior">Senior</option>
-                            <option value="instructor">Instructor</option>
-                            <option value="support">Support</option>
-                            <option value="civilian">Civilian</option>
-                            <option value="deceased">Deceased</option>
-                            <option value="eliminated">Eliminated</option>
-                        </select>
                         <select id="char-class-filter">
                             <option value="all">All Classes</option>
                         </select>
-                        <button id="clear-char-filter" class="small secondary">Clear</button>
+                        <div class="filter-checkboxes" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:4px 0;">
+                            <label class="filter-check" style="display:flex;align-items:center;gap:4px;font-size:0.65rem;color:var(--text-dim);cursor:pointer;">
+                                <input type="checkbox" id="hide-deceased" checked />
+                                Hide Deceased
+                            </label>
+                            <label class="filter-check" style="display:flex;align-items:center;gap:4px;font-size:0.65rem;color:var(--text-dim);cursor:pointer;">
+                                <input type="checkbox" id="hide-eliminated" checked />
+                                Hide Eliminated
+                            </label>
+                            <button id="clear-char-filter" class="small secondary" style="font-size:0.55rem;padding:2px 8px;">Clear</button>
+                        </div>
                     </div>
                     <div id="char-list-panel">
                         <div id="characters-container"></div>
