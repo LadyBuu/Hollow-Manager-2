@@ -542,7 +542,10 @@
                     return;
                 }
 
-                container.innerHTML = '<p class="empty-state">Tab content not available.</p>';
+                // Keep existing placeholder content if it's not empty
+                if (!container.innerHTML || container.innerHTML.trim() === '') {
+                    container.innerHTML = '<p class="empty-state">Tab content not available.</p>';
+                }
                 return;
             }
 
@@ -627,6 +630,14 @@
         var hash = window.location.hash.slice(1);
         if (hash && TabManager.tabs[hash]) {
             TabManager.switchTo(hash, false);
+        } else if (hash) {
+            // Unknown tab in URL - show placeholder
+            console.warn('[TabManager] Unknown tab in URL: "' + hash + '"');
+            // Don't switch, just update the container to show placeholder
+            var container = TabManager.tabContentElements[hash];
+            if (container) {
+                container.innerHTML = '<p class="empty-state">Module coming soon...</p>';
+            }
         }
     });
 
