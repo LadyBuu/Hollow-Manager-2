@@ -82,14 +82,13 @@
     var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
 
     // ============================================================
-    // HTML ESCAPING - Use DomUtils when available
+    // HTML ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
         if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
             return window.DomUtils.escapeHtml(value);
         }
-        // Fallback
         return String(value == null ? '' : value)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
@@ -114,7 +113,7 @@
     };
 
     // ============================================================
-    // NOTIFICATION - Use NotificationSystem when available
+    // NOTIFICATION
     // ============================================================
 
     function showNotification(message, type) {
@@ -130,26 +129,15 @@
             return;
         }
 
-        if (typeof window.setSession === 'function') {
-            window.setSession('toast', {
-                message: message,
-                type: type,
-                timestamp: Date.now()
-            });
-            if (typeof window.renderToast === 'function') {
-                window.renderToast();
-            }
-            return;
-        }
-
-        // Only use alert for errors and confirmations
-        if (type === 'error' || type === 'confirm') {
+        if (type === 'error') {
+            alert('Error: ' + message);
+        } else {
             alert(message);
         }
     }
 
     // ============================================================
-    // PERSISTENCE HELPER - Centralises save boilerplate
+    // PERSISTENCE HELPER
     // ============================================================
 
     function persistMutation(options) {
@@ -216,28 +204,21 @@
 
         // Update tab button labels
         var tabButtons = container.querySelectorAll('.tab-btn');
+        var tabMap = {
+            'academic': allAcad,
+            'professional': allProf,
+            'temporary': allTemp,
+            'civilian': allCiv
+        };
         tabButtons.forEach(function(btn) {
             var tab = btn.dataset.tab;
-            var count = 0;
-            if (tab === 'all') {
-                count = visibleTeams.length;
-            } else if (tab === 'academic') {
-                count = allAcad;
-            } else if (tab === 'professional') {
-                count = allProf;
-            } else if (tab === 'temporary') {
-                count = allTemp;
-            } else if (tab === 'civilian') {
-                count = allCiv;
-            }
-            // Update the label text - preserve the icon/name part
+            var count = tabMap[tab] || 0;
             var label = btn.textContent.replace(/\(\d+\)$/, '').trim();
             btn.textContent = label + ' (' + count + ')';
         });
 
         // Update stat cards
         var statCards = container.querySelectorAll('.stat-card .stat-number');
-        // There are 4 stat cards in order: Academic, Professional, Temporary, Civilian
         var counts = [allAcad, allProf, allTemp, allCiv];
         statCards.forEach(function(el, index) {
             if (index < counts.length) {
@@ -265,7 +246,7 @@
     }
 
     // ============================================================
-    // RENDER TEAM MANAGER - Full rebuild (initial render)
+    // RENDER TEAM MANAGER - Full rebuild
     // ============================================================
 
     function renderTeamManager(container) {
@@ -284,21 +265,18 @@
     }
 
     // ============================================================
-    // RENDER FULL MANAGER - Initial render only
+    // RENDER FULL MANAGER
     // ============================================================
 
     function renderFullManager(container) {
-        // Read-only access to data - no mutation
         var allTeams = Array.isArray(window.data.teams)
             ? window.data.teams
             : [];
 
-        // Exclude deleted teams from counts (they are hidden from UI)
         var visibleTeams = allTeams.filter(function(t) {
             return t && t.status !== 'deleted';
         });
 
-        // Count visible teams by type
         var allAcad = visibleTeams.filter(function(t) {
             return t.type === 'academic';
         }).length;
@@ -330,7 +308,6 @@
 
         // Tab buttons
         html += '<div class="tab-nav" style="display:flex;gap:4px;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:12px;flex-wrap:wrap;">';
-        html += '<button class="tab-btn ' + (teamState.currentTab === 'all' ? 'active' : '') + '" data-tab="all" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'all' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'all' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">All Teams (' + visibleTeams.length + ')</button>';
         html += '<button class="tab-btn ' + (teamState.currentTab === 'academic' ? 'active' : '') + '" data-tab="academic" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'academic' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'academic' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">Academic (' + allAcad + ')</button>';
         html += '<button class="tab-btn ' + (teamState.currentTab === 'professional' ? 'active' : '') + '" data-tab="professional" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'professional' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'professional' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">Professional (' + allProf + ')</button>';
         html += '<button class="tab-btn ' + (teamState.currentTab === 'temporary' ? 'active' : '') + '" data-tab="temporary" style="background:transparent;border:none;border-bottom:2px solid ' + (teamState.currentTab === 'temporary' ? 'var(--accent)' : 'transparent') + ';color:' + (teamState.currentTab === 'temporary' ? 'var(--accent)' : 'var(--text-dim)') + ';padding:6px 12px;cursor:pointer;font-size:0.75rem;">Temporary (' + allTemp + ')</button>';
@@ -345,53 +322,57 @@
         // Team list container
         html += '<div id="team-list-container"></div>';
 
-        // Modals (hidden by default)
+        // Modals
         html += getModalsHTML();
 
         container.innerHTML = html;
 
-        // Render teams for current tab using TeamFilters
+        // Render teams for current tab
         var filteredTeams = getFilteredTeamsForTab(teamState.currentTab);
         renderTeamList(filteredTeams, container);
     }
 
     // ============================================================
-    // BUILD FILTER HTML - Uses TeamFilters
+    // BUILD FILTER HTML
     // ============================================================
 
     function buildFilterHTML(tab) {
         var filter = teamState.filters[tab] || teamState.filters.academic;
         var classes = typeof window.getClasses === 'function' ? window.getClasses() : [];
 
-        if (tab === 'all') {
-            return '<div class="filter-section"><span style="font-size:0.75rem;color:var(--text-dim);">All teams shown</span></div>';
+        if (tab === 'academic') {
+            return window.TeamFilters.buildFilterHTML('academic', filter, classes);
+        } else if (tab === 'professional') {
+            return window.TeamFilters.buildFilterHTML('professional', filter, classes);
+        } else if (tab === 'temporary') {
+            return window.TeamFilters.buildFilterHTML('temporary', filter, classes);
+        } else if (tab === 'civilian') {
+            return window.TeamFilters.buildFilterHTML('civilian', filter, classes);
         }
-
-        if (tab === 'academic' || tab === 'professional' || tab === 'temporary' || tab === 'civilian') {
-            return window.TeamFilters.buildFilterHTML(tab, filter, classes);
-        }
-
         return '';
     }
 
     // ============================================================
-    // GET FILTERED TEAMS - Uses TeamFilters
+    // GET FILTERED TEAMS
     // ============================================================
 
     function getFilteredTeamsForTab(tab) {
-        if (tab === 'all') {
-            var allTeams = window.data && Array.isArray(window.data.teams) ? window.data.teams : [];
-            return allTeams.filter(function(t) {
-                return t && t.status !== 'deleted';
-            });
-        }
-
         var filter = teamState.filters[tab] || teamState.filters.academic;
-        return window.TeamFilters.filterTeams(tab, filter);
+
+        if (tab === 'academic') {
+            return window.TeamFilters.filterTeams('academic', filter);
+        } else if (tab === 'professional') {
+            return window.TeamFilters.filterTeams('professional', filter);
+        } else if (tab === 'temporary') {
+            return window.TeamFilters.filterTeams('temporary', filter);
+        } else if (tab === 'civilian') {
+            return window.TeamFilters.filterTeams('civilian', filter);
+        }
+        return [];
     }
 
     // ============================================================
-    // RENDER TEAM LIST ONLY - For updates after mutations
+    // RENDER TEAM LIST ONLY - For updates
     // ============================================================
 
     function renderTeamListOnly(container) {
@@ -407,7 +388,6 @@
         var listContainer = container.querySelector('#team-list-container');
         if (!listContainer) return;
 
-        // Only rebuild the list, not the entire manager
         var tempContainer = document.createElement('div');
         renderTeamList(filteredTeams, tempContainer);
         listContainer.innerHTML = tempContainer.innerHTML;
@@ -423,30 +403,38 @@
             listContainer = container;
         }
 
-        if (teams.length === 0) {
-            listContainer.innerHTML = '<p class="empty-state" style="padding:20px;">No teams found.</p>';
+        if (!teams || teams.length === 0) {
+            var labels = {
+                'academic': 'academic teams',
+                'professional': 'professional teams',
+                'temporary': 'temporary teams',
+                'civilian': 'civilian teams'
+            };
+            listContainer.innerHTML = '<p class="empty-state" style="padding:20px;">No ' + (labels[teamState.currentTab] || 'teams') + ' found.</p>';
             return;
         }
 
         var html = '';
-        // Header matches actual row data: Team Name | Period | Rank | Active | Actions
+        // Header: Team Name | Period | Rank | Members | Actions
         html += '<div class="list-header team-header" style="display:grid;grid-template-columns:1.2fr 0.8fr 0.6fr 0.6fr 1fr;gap:8px;padding:8px 12px;background:var(--panel-alt);border-radius:6px 6px 0 0;border:1px solid var(--border);border-bottom:none;font-weight:600;font-size:0.7rem;color:var(--text-dim);">';
         html += '<span>Team Name</span>';
         html += '<span>Period</span>';
         html += '<span>Rank</span>';
-        html += '<span>Active</span>';
+        html += '<span>Members</span>';
         html += '<span>Actions</span>';
         html += '</div>';
+
+        var periodNum = teamState.currentTab === 'academic' 
+            ? (teamState.filters.academic.filterWeek || 1) 
+            : 1;
 
         teams.forEach(function(team) {
             if (!team || typeof team !== 'object') return;
 
             var periodDisplay = window.TeamCore.getPeriodDisplay(team);
+            var typeLabel = window.TeamCore.getTypeLabel(team.type);
 
-            // Use team.type for period calculation, not the tab
-            var period = getCurrentPeriodForType(team.type);
-            var activeMembers = window.TeamCore.getActiveMembers(team, period);
-            // Show active member count, not total historical
+            var activeMembers = window.TeamCore.getActiveMembers(team, periodNum);
             var memberCount = activeMembers.length;
 
             var isExpanded = (teamState.expandedTeamId === team.id);
@@ -469,29 +457,30 @@
             }
 
             // Team row
-            html += '<div class="list-item team-item ' + inactiveClass + '" data-id="' + escapeHtml(team.id) + '" style="display:grid;grid-template-columns:1.2fr 0.8fr 0.6fr 0.6fr 1fr;">';
+            html += '<div class="list-item team-item ' + inactiveClass + '" data-id="' + escapeHtml(team.id) + '" style="display:grid;grid-template-columns:1.2fr 0.8fr 0.6fr 0.6fr 1fr;padding:6px 12px;background:var(--panel);border:1px solid var(--border);border-top:none;align-items:center;">';
             html += '<span><strong>' + escapeHtml(team.name) + '</strong>' + classDisplay;
             if (isInactive) {
-                html += ' <span class="team-status-inactive">(Inactive)</span>';
+                html += ' <span class="team-status-inactive" style="color:var(--text-dim);font-size:0.65rem;">(Inactive)</span>';
             }
             html += '</span>';
-            html += '<span class="team-period">' + escapeHtml(periodDisplay) + '</span>';
-            html += '<span class="team-rank">' + escapeHtml(rankDisplay) + '</span>';
+            html += '<span class="team-period" style="font-size:0.75rem;color:var(--text-dim);">' + escapeHtml(periodDisplay) + '</span>';
+            html += '<span class="team-rank" style="font-weight:600;color:var(--accent);">' + escapeHtml(rankDisplay) + '</span>';
             html += '<span class="team-member-count">' + memberCount + '</span>';
-            html += '<span class="actions">' +
-                '<button class="small toggle-members" data-id="' + escapeHtml(team.id) + '">' + (isExpanded ? '▾' : '▸') + '</button>' +
-                '<button class="small manage-members" data-id="' + escapeHtml(team.id) + '">Members</button>' +
-                '<button class="small manage-rankings" data-id="' + escapeHtml(team.id) + '">Rankings</button>' +
-                '<button class="small edit-team" data-id="' + escapeHtml(team.id) + '">Edit</button>' +
-                '<button class="small danger delete-team" data-id="' + escapeHtml(team.id) + '">Delete</button>' +
+            html += '<span class="actions" style="display:flex;gap:4px;flex-wrap:wrap;">' +
+                '<button class="small toggle-members" data-id="' + escapeHtml(team.id) + '" style="padding:2px 6px;font-size:0.65rem;">' + (isExpanded ? '▾' : '▸') + '</button>' +
+                '<button class="small manage-members" data-id="' + escapeHtml(team.id) + '" style="padding:2px 6px;font-size:0.65rem;">Members</button>' +
+                '<button class="small manage-rankings" data-id="' + escapeHtml(team.id) + '" style="padding:2px 6px;font-size:0.65rem;">Rankings</button>' +
+                '<button class="small edit-team" data-id="' + escapeHtml(team.id) + '" style="padding:2px 6px;font-size:0.65rem;">Edit</button>' +
+                '<button class="small danger delete-team" data-id="' + escapeHtml(team.id) + '" style="padding:2px 6px;font-size:0.65rem;">Delete</button>' +
                 '</span>';
             html += '</div>';
 
             if (isExpanded) {
-                html += renderExpandedMembers(team, period);
+                html += renderExpandedMembers(team, periodNum);
             }
         });
 
+        // Make sure the last item has rounded bottom corners
         listContainer.innerHTML = html;
     }
 
@@ -509,10 +498,10 @@
             ? 'Active Members at Week ' + escapeHtml(String(periodNum)) + ':'
             : 'Active Members in ' + escapeHtml(String(periodNum)) + ':';
 
-        var html = '<div class="team-members-expanded" data-team-id="' + escapeHtml(team.id) + '">';
+        var html = '<div class="team-members-expanded" data-team-id="' + escapeHtml(team.id) + '" style="grid-column:1/-1;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius) var(--radius);margin-bottom:2px;">';
 
         if (activeMembers.length > 0) {
-            html += '<div class="members-expanded-header">' + labelText + '</div>';
+            html += '<div class="members-expanded-header" style="font-size:0.7rem;font-weight:600;color:var(--text-dim);margin-bottom:6px;">' + labelText + '</div>';
             activeMembers.forEach(function(member) {
                 if (!member || typeof member !== 'object') return;
 
@@ -529,16 +518,13 @@
                     statusInfo = window.TeamCore.getMemberStatusInfo(status);
                 }
 
-                // Status label is internal, but escape it anyway for safety
-                var escapedStatusLabel = escapeHtml(statusInfo.label);
-
-                html += '<div class="member-entry" style="border-left:3px solid ' + statusInfo.color + ';padding-left:8px;">';
-                html += '<span>' + escapeHtml(name) + deadMarker + ' <span class="role">(' + escapeHtml(member.role || 'Member') + ')</span></span>';
-                html += '<span style="color:var(--text-dim);font-size:0.75rem;">Age: ' + escapeHtml(age) + ' | Joined: ' + escapeHtml(member.joinPeriod || '?') + (member.leavePeriod ? ' → ' + escapeHtml(member.leavePeriod) : '') + ' | <span style="color:' + statusInfo.color + ';">' + escapedStatusLabel + '</span></span>';
+                html += '<div class="member-entry" style="display:flex;justify-content:space-between;align-items:center;padding:3px 8px;border-bottom:1px solid var(--border-soft);font-size:0.75rem;border-left:3px solid ' + statusInfo.color + ';padding-left:8px;">';
+                html += '<span>' + escapeHtml(name) + deadMarker + ' <span class="role" style="color:var(--accent);font-size:0.7rem;">(' + escapeHtml(member.role || 'Member') + ')</span></span>';
+                html += '<span style="color:var(--text-dim);font-size:0.7rem;">Age: ' + escapeHtml(age) + ' | Joined: ' + escapeHtml(member.joinPeriod || '?') + (member.leavePeriod ? ' → ' + escapeHtml(member.leavePeriod) : '') + ' | <span style="color:' + statusInfo.color + ';">' + escapeHtml(statusInfo.label) + '</span></span>';
                 html += '</div>';
             });
         } else {
-            html += '<div class="member-entry empty">No active members this ' + periodLabel.toLowerCase() + '</div>';
+            html += '<div class="member-entry empty" style="padding:6px;font-size:0.75rem;color:var(--text-dim);">No active members this ' + periodLabel.toLowerCase() + '</div>';
         }
 
         html += '</div>';
@@ -743,7 +729,6 @@
                 document.getElementById('team-type').value = team.type || 'academic';
                 document.getElementById('team-start').value = team.startPeriod || '';
                 document.getElementById('team-end').value = team.endPeriod || '';
-                // Ranking field is DISPLAY ONLY - disabled by HTML
                 var rankingInput = document.getElementById('team-ranking');
                 if (rankingInput) {
                     var currentRank = window.TeamRankings && typeof window.TeamRankings.getCurrentRank === 'function'
@@ -848,21 +833,18 @@
 
         var type = document.getElementById('team-type').value;
 
-        // Current rank is read-only; ignore the input value
         var teamData = {
             name: document.getElementById('team-name').value.trim(),
             type: type,
             startPeriod: document.getElementById('team-start').value || '',
             endPeriod: document.getElementById('team-end').value || '',
             status: document.getElementById('team-status').value || 'active',
-            // Only include academic-specific fields if team is academic
             classId: type === 'academic'
                 ? (document.getElementById('team-class').value || null)
                 : null,
             teamNumber: type === 'academic'
                 ? (document.getElementById('team-number').value.trim() || '')
                 : '',
-            // Only include mission field if team is temporary or professional
             temporaryMission: (type === 'temporary' || type === 'professional')
                 ? (document.getElementById('team-mission').value || null)
                 : null,
@@ -889,23 +871,19 @@
             }
         }
 
-        // Close modal immediately (mutation succeeded)
         var modal = document.getElementById('team-form-modal');
         if (modal) {
             modal.classList.add('hidden');
         }
 
-        // Refresh UI immediately to reflect in-memory change
         refreshTeamList();
         refreshTeamStats();
         safeUpdateDashboardStats();
 
-        // Log activity
         if (typeof window.logActivity === 'function') {
             window.logActivity(editId ? 'Updated team: ' + teamData.name : 'Created team: ' + teamData.name);
         }
 
-        // Then persist (with no UI dependency)
         persistMutation({
             successMessage: editId ? 'Team updated successfully!' : 'Team created successfully!',
             errorMessage: 'Failed to save team changes to persistent storage. Your changes have been applied in memory.',
@@ -919,12 +897,10 @@
             return;
         }
 
-        // Confirm before mutation
         if (!confirm('Delete "' + team.name + '"? The team will be removed from the manager.')) {
             return;
         }
 
-        // MUTATE: Actually delete the team
         var result = window.TeamCore.deleteTeam(id);
 
         if (!result) {
@@ -932,12 +908,10 @@
             return;
         }
 
-        // Log activity
         if (typeof window.logActivity === 'function') {
             window.logActivity('Deleted team: ' + team.name);
         }
 
-        // Refresh UI immediately to reflect in-memory change
         if (teamState.expandedTeamId === id) {
             teamState.expandedTeamId = null;
         }
@@ -945,15 +919,9 @@
         refreshTeamStats();
         safeUpdateDashboardStats();
 
-        // Then persist
         persistMutation({
             successMessage: 'Team deleted successfully!',
             errorMessage: 'Failed to save team deletion to persistent storage. The team has been removed from memory.',
-            onSuccess: function() {
-                refreshTeamList();
-                refreshTeamStats();
-                safeUpdateDashboardStats();
-            }
         });
     }
 
@@ -1091,14 +1059,12 @@
             return;
         }
 
-        // Log activity
         var char = window.getCharacterById ? window.getCharacterById(charId) : null;
         var charName = char ? (window.getDisplayName ? window.getDisplayName(char) : 'character') : 'character';
         if (typeof window.logActivity === 'function') {
             window.logActivity('Added ' + charName + ' to team');
         }
 
-        // Refresh UI immediately to reflect in-memory change
         var updatedTeam = getTeam(teamId);
         if (updatedTeam) {
             renderMembers(updatedTeam);
@@ -1106,14 +1072,12 @@
         refreshTeamList();
         refreshTeamStats();
 
-        // Clear form fields
         document.getElementById('member-character').value = '';
         document.getElementById('member-role').value = '';
         document.getElementById('member-join').value = '';
         document.getElementById('member-leave').value = '';
         populateMemberCharacterSelect(teamId);
 
-        // Then persist
         persistMutation({
             successMessage: 'Member added successfully!',
             errorMessage: 'Failed to save member addition to persistent storage. The member has been added in memory.',
@@ -1127,14 +1091,12 @@
             return;
         }
 
-        // Log activity
         var char = window.getCharacterById ? window.getCharacterById(charId) : null;
         var charName = char ? (window.getDisplayName ? window.getDisplayName(char) : 'character') : 'character';
         if (typeof window.logActivity === 'function') {
             window.logActivity('Removed ' + charName + ' from team');
         }
 
-        // Refresh UI immediately to reflect in-memory change
         var updatedTeam = getTeam(teamId);
         if (updatedTeam) {
             renderMembers(updatedTeam);
@@ -1142,7 +1104,6 @@
         refreshTeamList();
         refreshTeamStats();
 
-        // Then persist
         persistMutation({
             successMessage: 'Member removed successfully!',
             errorMessage: 'Failed to save member removal to persistent storage. The member has been removed from memory.',
@@ -1196,14 +1157,12 @@
             return;
         }
 
-        // Log activity
         var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
         var charName = char ? (window.getDisplayName ? window.getDisplayName(char) : 'character') : 'character';
         if (typeof window.logActivity === 'function') {
             window.logActivity('Updated member ' + charName + ' in team');
         }
 
-        // Refresh UI immediately to reflect in-memory change
         var updatedTeam = getTeam(teamId);
         if (updatedTeam) {
             renderMembers(updatedTeam);
@@ -1211,10 +1170,8 @@
         refreshTeamList();
         refreshTeamStats();
 
-        // Close modal immediately
         document.getElementById('edit-member-modal').classList.add('hidden');
 
-        // Then persist
         persistMutation({
             successMessage: 'Member updated successfully!',
             errorMessage: 'Failed to save member update to persistent storage. The member has been updated in memory.',
@@ -1274,7 +1231,6 @@
     }
 
     function addRanking(e) {
-        // Prevent form submission if inside a form
         if (e && e.preventDefault) {
             e.preventDefault();
         }
@@ -1303,13 +1259,11 @@
             return;
         }
 
-        // Log activity
         if (typeof window.logActivity === 'function') {
             var team = getTeam(teamId);
             window.logActivity('Added ranking #' + rank + ' for ' + (team ? team.name : 'team'));
         }
 
-        // Refresh UI immediately to reflect in-memory change
         var updatedTeam = getTeam(teamId);
         if (updatedTeam) {
             renderRankings(updatedTeam);
@@ -1317,11 +1271,9 @@
         refreshTeamList();
         refreshTeamStats();
 
-        // Clear form fields
         document.getElementById('ranking-period').value = '';
         if (rankInput) rankInput.value = '';
 
-        // Then persist
         persistMutation({
             successMessage: 'Ranking added successfully!',
             errorMessage: 'Failed to save ranking to persistent storage. The ranking has been added in memory.',
@@ -1335,13 +1287,11 @@
             return;
         }
 
-        // Log activity
         if (typeof window.logActivity === 'function') {
             var team = getTeam(teamId);
             window.logActivity('Removed ranking for ' + (team ? team.name : 'team') + ' (' + period + ')');
         }
 
-        // Refresh UI immediately to reflect in-memory change
         var updatedTeam = getTeam(teamId);
         if (updatedTeam) {
             renderRankings(updatedTeam);
@@ -1349,7 +1299,6 @@
         refreshTeamList();
         refreshTeamStats();
 
-        // Then persist
         persistMutation({
             successMessage: 'Ranking removed successfully!',
             errorMessage: 'Failed to save ranking removal to persistent storage. The ranking has been removed from memory.',
@@ -1434,7 +1383,7 @@
     }
 
     // ============================================================
-    // EVENT INITIALIZATION - Using event delegation where possible
+    // EVENT INITIALIZATION
     // ============================================================
 
     function initTeamManagerEvents(container) {
@@ -1446,6 +1395,8 @@
                 if (!btn) return;
 
                 var tab = btn.dataset.tab;
+                if (!tab) return;
+
                 teamState.currentTab = tab;
 
                 // Update tab buttons
@@ -1462,7 +1413,7 @@
                 var filterContainer = document.getElementById('filter-container');
                 if (filterContainer) {
                     filterContainer.innerHTML = buildFilterHTML(tab);
-                    // Re-bind filter apply button if present
+                    // Re-bind filter apply button
                     var applyBtn = filterContainer.querySelector('#apply-filter-btn');
                     if (applyBtn) {
                         applyBtn.addEventListener('click', function() {
@@ -1502,14 +1453,14 @@
                 if (!teamId && button.closest('.list-item')) {
                     teamId = button.closest('.list-item').dataset.id;
                 }
+                if (!teamId) return;
 
                 // Toggle members
                 if (button.classList.contains('toggle-members')) {
-                    var id = button.dataset.id;
-                    if (teamState.expandedTeamId === id) {
+                    if (teamState.expandedTeamId === teamId) {
                         teamState.expandedTeamId = null;
                     } else {
-                        teamState.expandedTeamId = id;
+                        teamState.expandedTeamId = teamId;
                     }
                     refreshTeamList();
                     refreshTeamStats();
@@ -1518,25 +1469,25 @@
 
                 // Manage members
                 if (button.classList.contains('manage-members')) {
-                    openMemberModal(button.dataset.id);
+                    openMemberModal(teamId);
                     return;
                 }
 
                 // Manage rankings
                 if (button.classList.contains('manage-rankings')) {
-                    openRankingModal(button.dataset.id);
+                    openRankingModal(teamId);
                     return;
                 }
 
                 // Edit team
                 if (button.classList.contains('edit-team')) {
-                    showTeamForm(button.dataset.id);
+                    showTeamForm(teamId);
                     return;
                 }
 
                 // Delete team
                 if (button.classList.contains('delete-team')) {
-                    deleteTeam(button.dataset.id);
+                    deleteTeam(teamId);
                     return;
                 }
             });
@@ -1644,7 +1595,6 @@
         // Ranking modal
         var addRankBtn = document.getElementById('add-ranking-btn');
         if (addRankBtn) {
-            // Remove any existing listener and attach new one
             addRankBtn.removeEventListener('click', addRanking);
             addRankBtn.addEventListener('click', addRanking);
         }
