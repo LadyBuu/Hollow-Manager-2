@@ -483,31 +483,140 @@
         return result;
     }
 
+    // ============================================================
+    // MAGIC POWER CALCULATION - ADVANCED FORMULA
+    // ============================================================
+
     function calculateMagicPower(char) {
         var magic = getCharacterMagic(char);
-        var total = 0;
-        var keys = getMagicTypeKeys();
-        keys.forEach(function(key) {
-            total += magic[key] || 0;
+        if (!magic) return 0;
+
+        // Category difficulty multipliers
+        // Elemental: base (easy to learn)
+        // Body: 1.2x (moderate)
+        // Aether: 1.5x (hardest)
+        var categoryMultipliers = {
+            'elemental': 1.0,
+            'body': 1.2,
+            'aether': 1.5
+        };
+
+        // Track per-category stats
+        var categoryStats = {
+            'elemental': { total: 0, max: 0, count: 0, types: [] },
+            'body': { total: 0, max: 0, count: 0, types: [] },
+            'aether': { total: 0, max: 0, count: 0, types: [] }
+        };
+
+        // Collect data per category
+        var allKeys = getMagicTypeKeys();
+        allKeys.forEach(function(key) {
+            var typeInfo = MAGIC_TYPES[key];
+            if (!typeInfo) return;
+            var category = typeInfo.category;
+            var value = magic[key] || 0;
+
+            if (categoryStats[category]) {
+                categoryStats[category].total += value;
+                categoryStats[category].max = Math.max(categoryStats[category].max, value);
+                categoryStats[category].count++;
+                categoryStats[category].types.push({ key: key, value: value });
+            }
         });
-        return total;
+
+        // Calculate score per category
+        var totalScore = 0;
+        var totalWeight = 0;
+
+        for (var cat in categoryStats) {
+            var stats = categoryStats[cat];
+            if (stats.count === 0) continue;
+
+            var multiplier = categoryMultipliers[cat] || 1.0;
+            var avg = stats.total / stats.count;
+            var maxVal = stats.max;
+
+            // SPECIALIZATION BONUS: Having one high stat is valuable
+            // The higher your max, the more bonus you get
+            var specializationBonus = 0;
+            if (maxVal >= 8) {
+                // Master level (8-10) gets significant bonus
+                specializationBonus = (maxVal - 7) * 2.5;
+            } else if (maxVal >= 5) {
+                // Adept level (5-7) gets moderate bonus
+                specializationBonus = (maxVal - 4) * 1.5;
+            } else if (maxVal >= 3) {
+                // Apprentice level (3-4) gets small bonus
+                specializationBonus = (maxVal - 2) * 0.8;
+            }
+
+            // BALANCED BONUS: Having all types in a category at decent levels
+            var balancedBonus = 0;
+            var allAboveThreshold = true;
+            var threshold = 3; // All types should be at least 3 for balanced bonus
+            stats.types.forEach(function(t) {
+                if (t.value < threshold) allAboveThreshold = false;
+            });
+            if (allAboveThreshold && stats.count >= 3) {
+                // Balanced bonus scales with average
+                balancedBonus = avg * 0.3;
+            }
+
+            // Category score = (average * multiplier) + specialization + balanced
+            var categoryScore = (avg * multiplier) + specializationBonus + balancedBonus;
+            
+            // Weight: categories with higher total get more weight
+            var weight = 1 + (stats.total / 20); // More points = more weight
+
+            totalScore += categoryScore * weight;
+            totalWeight += weight;
+        }
+
+        // Final score: weighted average, scaled to a reasonable range (0-100)
+        var rawScore = totalWeight > 0 ? totalScore / totalWeight : 0;
+        
+        // Scale: raw score is roughly 0-20, scale to 0-100
+        var scaledScore = Math.min(100, Math.round(rawScore * 5));
+
+        // Add a small bonus for having at least one type at master level (9-10)
+        var hasMaster = false;
+        allKeys.forEach(function(key) {
+            if ((magic[key] || 0) >= 9) hasMaster = true;
+        });
+        if (hasMaster) {
+            scaledScore = Math.min(100, scaledScore + 10);
+        }
+
+        return Math.max(0, scaledScore);
     }
 
     function getMagicPowerDisplay(char) {
         var power = calculateMagicPower(char);
-        var maxPower = getMagicTypeKeys().length * MAGIC_MAX;
-        var percentage = Math.min(100, Math.round((power / maxPower) * 100));
         
-        var filledCount = percentage === 0 
-            ? 0 
-            : Math.ceil(percentage / 20);
+        // Determine star rating based on power
+        var stars = '';
+        var starCount = 0;
+        if (power >= 90) starCount = 5;
+        else if (power >= 70) starCount = 4;
+        else if (power >= 50) starCount = 3;
+        else if (power >= 30) starCount = 2;
+        else if (power >= 10) starCount = 1;
+        else starCount = 0;
 
-        var display = '';
         for (var i = 0; i < 5; i++) {
-            display += i < filledCount ? '●' : '○';
+            stars += i < starCount ? '★' : '☆';
         }
 
-        return display + ' (' + power + '/' + maxPower + ')';
+        // Get rank label
+        var rank = '';
+        if (power >= 90) rank = 'Archmage';
+        else if (power >= 70) rank = 'Master';
+        else if (power >= 50) rank = 'Adept';
+        else if (power >= 30) rank = 'Apprentice';
+        else if (power >= 10) rank = 'Novice';
+        else rank = 'Untrained';
+
+        return stars + ' (' + power + '/100) - ' + rank;
     }
 
     function updateMagicPowerDisplay() {
@@ -974,7 +1083,7 @@
                 <button type="button" id="recalculate-magic-class-btn" class="small secondary" style="font-size:0.6rem;padding:2px 8px;">Recalc</button>
             </div>
             <div class="magic-power-display" style="margin-top:6px;font-size:0.7rem;color:var(--text-dim);">
-                Magic Power: <span id="magic-power-display-text">○○○○○ (0/${getMagicTypeKeys().length * MAGIC_MAX})</span>
+                Magic Power: <span id="magic-power-display-text">☆☆☆☆☆ (0/100) - Untrained</span>
             </div>
             ${getSpecialMovesHTML()}
         `;
