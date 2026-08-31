@@ -9,8 +9,9 @@
  *   - Uses MissionsSchema for validation
  *   - Internal `id` is immutable; `missionId` is derived/human-readable
  *   - Mutations build complete proposed state before committing
- *   - Derived fields (progress, pay, completedAt) are calculated, not accepted as input
+ *   - Derived fields (progress, pay, completedAt) are CALCULATED, never accepted as input
  *   - Only whitelisted fields are updateable via updateMission()
+ *   - undefined values are ignored; null values explicitly clear fields
  * 
  * UPDATEABLE FIELDS (whitelist):
  *   title, description, year, month, day, primaryType, subtype,
@@ -22,14 +23,15 @@
  *   id, missionId, pay, progress, completedAt, createdAt, log
  * 
  * LIFECYCLE RULES:
- *   - Active mission with 100% progress auto-completes
- *   - Completed mission: status can be manually changed, but objectives are frozen
- *   - Cancelled mission: status can be manually changed, but objectives are frozen
+ *   - Active mission with 100% progress auto-completes (creation AND update)
+ *   - Completed/Cancelled missions: status can be manually changed, but objectives are frozen
  *   - Objective modifications are rejected for completed/cancelled missions
+ *   - Cannot modify objectives in the same transaction that sets status to completed/cancelled
  * 
  * ID SEMANTICS:
  *   - id: immutable internal identity (never changes)
  *   - missionId: derived human-readable identifier; may change when team/year/difficulty changes
+ *   - missionId sequence is stateful (scans existing missions for next number)
  * 
  * DEPENDENCIES:
  *   - MissionsSchema (required)
@@ -95,7 +97,10 @@
     }
 
     function normaliseId(id) {
-        return Schema.normaliseId(id);
+        if (id === undefined || id === null) return null;
+        if (typeof id === 'object') return null;
+        var normalised = String(id).trim();
+        return normalised !== '' ? normalised : null;
     }
 
     function generateInternalId(prefix) {
@@ -174,6 +179,10 @@
         var baseNum = parsePayValue(basePay);
         var surchargeNum = parsePayValue(surchargePay);
 
+        // Negative pay is rejected (mission compensation cannot be negative)
+        if (baseNum !== null && baseNum < 0) return '';
+        if (surchargeNum !== null && surchargeNum < 0) return '';
+
         if (baseNum !== null && surchargeNum !== null) {
             return (baseNum + surchargeNum).toFixed(2) + ' credits';
         }
@@ -187,6 +196,22 @@
         }
 
         return '';
+    }
+
+    // ============================================================
+    // PROGRESS CALCULATION
+    // ============================================================
+
+    function calculateProgress(objectives) {
+        if (!Array.isArray(objectives) || objectives.length === 0) {
+            return 0;
+        }
+
+        var completed = objectives.filter(function(o) {
+            return o && o.done;
+        }).length;
+
+        return Math.round((completed / objectives.length) * 100);
     }
 
     // ============================================================
@@ -321,6 +346,46 @@
         return mission.status !== 'completed' && mission.status !== 'cancelled';
     }
 
+    function canModifyObjectives(originalStatus, proposedStatus, hasObjectiveUpdate) {
+        // If no objective update, no need to check
+        if (!hasObjectiveUpdate) return true;
+
+        // If original is already completed/cancelled, objectives are frozen
+        if (originalStatus === 'completed' || originalStatus === 'cancelled') {
+            return false;
+        }
+
+        // If the proposed status is completed/cancelled, cannot modify objectives
+        if (proposedStatus === 'completed' || proposedStatus === 'cancelled') {
+            return false;
+        }
+
+        return true;
+    }
+
+    // ============================================================
+    // COMMIT MISSION (Shared helper)
+    // ============================================================
+
+    function commitMission(id, proposed) {
+        var store = getDataStore();
+        if (!store || !Array.isArray(store.missions)) return null;
+
+        var target = normaliseId(id);
+        if (target === null) return null;
+
+        var index = store.missions.findIndex(function(m) {
+            return m && normaliseId(m.id) === target;
+        });
+
+        if (index === -1) return null;
+
+        // Replace the entire mission with the proposed state
+        store.missions[index] = proposed;
+
+        return cloneMission(proposed);
+    }
+
     // ============================================================
     // CORE API
     // ============================================================
@@ -385,6 +450,7 @@
          * Create a new mission.
          * Validates all inputs before mutation.
          * Atomic: builds complete proposed state before committing.
+         * Derived fields (progress, pay, completedAt) are CALCULATED.
          * 
          * @param {object} data - Mission data
          * @returns {object|null} Created mission or null if invalid
@@ -401,14 +467,24 @@
                 return null;
             }
 
-            // ---- PHASE 3: GENERATE MISSION ID ----
+            // ---- PHASE 3: CALCULATE DERIVED FIELDS ----
+            var objectives = normalised.objectives || [];
+            var progress = calculateProgress(objectives);
+            var status = normalised.status || 'active';
+
+            // Auto-complete if progress reaches 100%
+            if (progress === 100 && status === 'active') {
+                status = 'completed';
+            }
+
+            // ---- PHASE 4: GENERATE MISSION ID ----
             var missionId = generateMissionId(
                 normalised.assignedTeamId,
                 normalised.year || new Date().getFullYear(),
                 normalised.difficulty
             );
 
-            // ---- PHASE 4: BUILD COMPLETE MISSION ----
+            // ---- PHASE 5: BUILD COMPLETE MISSION ----
             var mission = {
                 id: generateInternalId('miss'),
                 missionId: missionId,
@@ -433,24 +509,24 @@
                 billing: normalised.billing || 'original',
                 assignedTeamId: normalised.assignedTeamId || null,
                 supportPersonnel: normalised.supportPersonnel || [],
-                status: normalised.status || 'active',
-                objectives: normalised.objectives || [],
-                progress: normalised.progress || 0,
+                status: status,
+                objectives: objectives,
+                progress: progress,
                 notes: normalised.notes || '',
                 tags: normalised.tags || [],
                 createdAt: new Date().toISOString(),
-                completedAt: normalised.status === 'completed' ? new Date().toISOString() : null,
+                completedAt: status === 'completed' ? new Date().toISOString() : null,
                 log: []
             };
 
-            // ---- PHASE 5: VALIDATE MISSION ----
+            // ---- PHASE 6: VALIDATE MISSION ----
             var validation = Schema.validateMission(mission);
             if (!validation.valid) {
                 console.warn('MissionsCore.createMission: Validation failed:', validation.errors.join(', '));
                 return null;
             }
 
-            // ---- PHASE 6: COMMIT ----
+            // ---- PHASE 7: COMMIT ----
             var store = getDataStore();
             if (!store) {
                 if (!window.data) window.data = {};
@@ -470,6 +546,8 @@
          * Atomic: builds complete proposed state before committing.
          * Validates all inputs before mutation.
          * Only whitelisted fields are updateable.
+         * Derived fields are CALCULATED, never accepted as input.
+         * undefined values are ignored; null values explicitly clear fields.
          * 
          * @param {string} id - Internal mission ID
          * @param {object} updates - Fields to update (must be in MUTABLE_FIELDS)
@@ -481,25 +559,34 @@
 
             if (!updates || typeof updates !== 'object') return null;
 
-            // ---- PHASE 1: FILTER TO ONLY MUTABLE FIELDS ----
+            // ---- PHASE 1: FILTER TO ONLY MUTABLE FIELDS (ignore undefined) ----
             var validUpdates = {};
             Object.keys(updates).forEach(function(key) {
-                if (MUTABLE_FIELDS.indexOf(key) !== -1 && hasOwnProperty(updates, key)) {
+                if (MUTABLE_FIELDS.indexOf(key) !== -1 &&
+                    hasOwnProperty(updates, key) &&
+                    updates[key] !== undefined) {
                     validUpdates[key] = updates[key];
                 }
             });
 
             if (Object.keys(validUpdates).length === 0) {
-                console.warn('MissionsCore.updateMission: No valid updateable fields provided.');
+                // No valid updates - return clone of original
                 return cloneMission(original);
             }
 
             // ---- PHASE 2: CHECK OBJECTIVES MUTABILITY ----
-            var isFrozen = !areObjectivesMutable(original);
-            if (isFrozen && hasOwnProperty(validUpdates, 'objectives')) {
+            var proposedStatus = validUpdates.status !== undefined
+                ? validUpdates.status
+                : original.status;
+
+            if (!canModifyObjectives(
+                original.status,
+                proposedStatus,
+                hasOwnProperty(validUpdates, 'objectives')
+            )) {
                 console.warn(
-                    'MissionsCore.updateMission: Cannot modify objectives of ' +
-                    original.status + ' mission.'
+                    'MissionsCore.updateMission: Cannot modify objectives for ' +
+                    original.status + ' mission or when transitioning to ' + proposedStatus + '.'
                 );
                 return null;
             }
@@ -549,9 +636,7 @@
 
             // ---- PHASE 6: RECALCULATE DERIVED FIELDS ----
             // Progress from objectives
-            var total = proposed.objectives.length;
-            var completed = proposed.objectives.filter(function(o) { return o.done; }).length;
-            proposed.progress = total > 0 ? Math.round((completed / total) * 100) : 0;
+            proposed.progress = calculateProgress(proposed.objectives);
 
             // Pay from base + surcharge
             proposed.pay = calculatePay(proposed.basePay, proposed.surchargePay);
@@ -599,23 +684,13 @@
             }
 
             // ---- PHASE 8: COMMIT ----
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.missions)) return null;
-
-            var target = normaliseId(id);
-            var index = store.missions.findIndex(function(m) {
-                return m && normaliseId(m.id) === target;
-            });
-
-            if (index === -1) return null;
-
-            // Apply to live state
-            Object.assign(store.missions[index], proposed);
+            var committed = commitMission(id, proposed);
+            if (!committed) return null;
 
             var changedKeys = Object.keys(validUpdates);
-            logActivity('Updated mission: ' + proposed.title + ' (' + changedKeys.join(', ') + ')');
+            logActivity('Updated mission: ' + committed.title + ' (' + changedKeys.join(', ') + ')');
 
-            return cloneMission(store.missions[index]);
+            return committed;
         },
 
         /**
@@ -672,9 +747,7 @@
             proposed.objectives[objectiveIndex].done = !proposed.objectives[objectiveIndex].done;
 
             // Recalculate progress
-            var total = proposed.objectives.length;
-            var completed = proposed.objectives.filter(function(o) { return o.done; }).length;
-            proposed.progress = total > 0 ? Math.round((completed / total) * 100) : 0;
+            proposed.progress = calculateProgress(proposed.objectives);
 
             // Auto-complete if progress reaches 100%
             if (proposed.progress === 100 && proposed.status === 'active') {
@@ -690,22 +763,13 @@
             }
 
             // ---- COMMIT ----
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.missions)) return null;
+            var committed = commitMission(missionId, proposed);
+            if (!committed) return null;
 
-            var target = normaliseId(missionId);
-            var index = store.missions.findIndex(function(m) {
-                return m && normaliseId(m.id) === target;
-            });
+            var statusMsg = committed.status === 'completed' ? ' (auto-completed)' : '';
+            logActivity('Toggled objective for mission: ' + committed.title + statusMsg);
 
-            if (index === -1) return null;
-
-            Object.assign(store.missions[index], proposed);
-
-            var statusMsg = proposed.status === 'completed' ? ' (auto-completed)' : '';
-            logActivity('Toggled objective for mission: ' + proposed.title + statusMsg);
-
-            return cloneMission(store.missions[index]);
+            return committed;
         },
 
         /**
@@ -738,9 +802,7 @@
             });
 
             // Recalculate progress
-            var total = proposed.objectives.length;
-            var completed = proposed.objectives.filter(function(o) { return o.done; }).length;
-            proposed.progress = total > 0 ? Math.round((completed / total) * 100) : 0;
+            proposed.progress = calculateProgress(proposed.objectives);
 
             // ---- VALIDATE ----
             var validation = Schema.validateMission(proposed);
@@ -750,21 +812,12 @@
             }
 
             // ---- COMMIT ----
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.missions)) return null;
+            var committed = commitMission(missionId, proposed);
+            if (!committed) return null;
 
-            var target = normaliseId(missionId);
-            var index = store.missions.findIndex(function(m) {
-                return m && normaliseId(m.id) === target;
-            });
+            logActivity('Added objective to mission: ' + committed.title);
 
-            if (index === -1) return null;
-
-            Object.assign(store.missions[index], proposed);
-
-            logActivity('Added objective to mission: ' + proposed.title);
-
-            return cloneMission(store.missions[index]);
+            return committed;
         },
 
         /**
@@ -794,14 +847,7 @@
             proposed.objectives.splice(objectiveIndex, 1);
 
             // Recalculate progress
-            var total = proposed.objectives.length;
-            var completed = proposed.objectives.filter(function(o) { return o.done; }).length;
-            proposed.progress = total > 0 ? Math.round((completed / total) * 100) : 0;
-
-            // If no objectives left, set progress to 0
-            if (total === 0) {
-                proposed.progress = 0;
-            }
+            proposed.progress = calculateProgress(proposed.objectives);
 
             // ---- VALIDATE ----
             var validation = Schema.validateMission(proposed);
@@ -811,21 +857,12 @@
             }
 
             // ---- COMMIT ----
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.missions)) return null;
+            var committed = commitMission(missionId, proposed);
+            if (!committed) return null;
 
-            var target = normaliseId(missionId);
-            var index = store.missions.findIndex(function(m) {
-                return m && normaliseId(m.id) === target;
-            });
+            logActivity('Removed objective from mission: ' + committed.title);
 
-            if (index === -1) return null;
-
-            Object.assign(store.missions[index], proposed);
-
-            logActivity('Removed objective from mission: ' + proposed.title);
-
-            return cloneMission(store.missions[index]);
+            return committed;
         },
 
         /**
@@ -859,19 +896,10 @@
             }
 
             // ---- COMMIT ----
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.missions)) return null;
+            var committed = commitMission(missionId, proposed);
+            if (!committed) return null;
 
-            var target = normaliseId(missionId);
-            var index = store.missions.findIndex(function(m) {
-                return m && normaliseId(m.id) === target;
-            });
-
-            if (index === -1) return null;
-
-            Object.assign(store.missions[index], proposed);
-
-            return cloneMission(store.missions[index]);
+            return committed;
         },
 
         /**
@@ -919,22 +947,13 @@
             }
 
             // ---- COMMIT ----
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.missions)) return null;
-
-            var id = normaliseId(missionId);
-            var index = store.missions.findIndex(function(m) {
-                return m && normaliseId(m.id) === id;
-            });
-
-            if (index === -1) return null;
-
-            Object.assign(store.missions[index], proposed);
+            var committed = commitMission(missionId, proposed);
+            if (!committed) return null;
 
             var charName = getDisplayName(character);
-            logActivity('Added ' + charName + ' as support to mission: ' + proposed.title);
+            logActivity('Added ' + charName + ' as support to mission: ' + committed.title);
 
-            return cloneMission(store.missions[index]);
+            return committed;
         },
 
         /**
@@ -967,31 +986,30 @@
             }
 
             // ---- COMMIT ----
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.missions)) return null;
+            var committed = commitMission(missionId, proposed);
+            if (!committed) return null;
 
-            var id = normaliseId(missionId);
-            var index = store.missions.findIndex(function(m) {
-                return m && normaliseId(m.id) === id;
-            });
+            logActivity('Removed support personnel from mission: ' + committed.title);
 
-            if (index === -1) return null;
-
-            Object.assign(store.missions[index], proposed);
-
-            logActivity('Removed support personnel from mission: ' + proposed.title);
-
-            return cloneMission(store.missions[index]);
+            return committed;
         },
 
         /**
          * Get support personnel as character objects for a mission.
+         * Handles both mission objects and mission IDs.
          * 
          * @param {object|string} mission - Mission object or mission ID
          * @returns {array} Array of character objects
          */
         getSupportPersonnel: function(mission) {
-            var missionObj = typeof mission === 'string' ? this.getMission(mission) : mission;
+            var missionObj;
+
+            if (mission && typeof mission === 'object') {
+                missionObj = mission;
+            } else {
+                missionObj = this.getMission(mission);
+            }
+
             if (!missionObj || !missionObj.supportPersonnel) return [];
 
             var characters = [];
