@@ -9,19 +9,21 @@
  *   - Return DEFENSIVE COPIES (clones) where appropriate
  *   - Use normaliseId() consistently for all ID comparisons
  *   - Do NOT expose live references that can be mutated
+ *   - Do NOT access window.data directly; use Core/helpers
  * 
  * QUERY LAYER CONTRACT:
- *   - getMission() returns a CLONE - safe for reading, not a live reference
+ *   - getMission() returns a CLONE - safe for reading
  *   - getMissions() returns CLONES - safe for reading
  *   - All display helpers are pure functions
- *   - ID comparisons use Schema.normaliseId() for consistency
+ *   - ID comparisons use normaliseId() for consistency
+ *   - Team/character lookups use normaliseId() consistently
+ *   - Exposes defensive getters for constants (not live references)
+ *   - getTeams() and getCharacters() are the canonical team/character data sources
  * 
  * DEPENDENCIES:
  *   - MissionsCore (required)
  *   - MissionsSchema (required)
  *   - window.getDisplayName (optional, for character names)
- *   - window.getCharacterById (optional, for character lookup)
- *   - window.getTeamById (optional, for team lookup)
  */
 
 (function() {
@@ -89,6 +91,64 @@
         return char.name || char.firstName || 'Unknown';
     }
 
+    function cloneCharacter(char) {
+        if (!char) return null;
+        return {
+            id: char.id,
+            firstName: char.firstName || '',
+            lastName: char.lastName || '',
+            middleName: char.middleName || '',
+            nickname: char.nickname || '',
+            name: char.name || char.firstName || 'Unknown',
+            deceased: !!char.deceased,
+            status: char.status || 'active',
+            classIds: Array.isArray(char.classIds) ? char.classIds.slice() : []
+        };
+    }
+
+    function cloneTeam(team) {
+        if (!team) return null;
+        return {
+            id: team.id,
+            name: team.name || '',
+            type: team.type || '',
+            status: team.status || 'active',
+            members: Array.isArray(team.members) ? team.members.slice() : []
+        };
+    }
+
+    // ============================================================
+    // CANONICAL TEAM/CHARACTER SOURCES
+    // ============================================================
+
+    /**
+     * Get all active teams (excluding deleted/inactive).
+     * Returns defensive copies.
+     */
+    function getTeams() {
+        var data = getDataStore();
+        if (!data || !Array.isArray(data.teams)) return [];
+        return data.teams
+            .filter(function(t) {
+                return t && t.status !== 'deleted' && t.status !== 'inactive';
+            })
+            .map(cloneTeam);
+    }
+
+    /**
+     * Get all active characters (excluding deceased).
+     * Returns defensive copies.
+     */
+    function getCharacters() {
+        var data = getDataStore();
+        if (!data || !Array.isArray(data.characters)) return [];
+        return data.characters
+            .filter(function(c) {
+                return c && !c.deceased;
+            })
+            .map(cloneCharacter);
+    }
+
     // ============================================================
     // QUERIES API
     // ============================================================
@@ -143,6 +203,22 @@
         generateMissionId: function(teamId, year, difficulty) {
             return Core.generateMissionId(teamId, year, difficulty);
         },
+
+        // ============================================================
+        // CANONICAL TEAM/CHARACTER SOURCES
+        // ============================================================
+
+        /**
+         * Get all active teams.
+         * Returns defensive copies.
+         */
+        getTeams: getTeams,
+
+        /**
+         * Get all active characters.
+         * Returns defensive copies.
+         */
+        getCharacters: getCharacters,
 
         // ============================================================
         // TEAM INFO HELPERS
@@ -203,28 +279,16 @@
 
         /**
          * Get support personnel names as an array of strings.
+         * Uses canonical route: mission → support IDs → character objects → names.
          * 
          * @param {object|string} mission - Mission object or mission ID
          * @returns {array} Array of character names
          */
         getSupportPersonnelNames: function(mission) {
-            var missionObj = typeof mission === 'string' ? this.getMission(mission) : mission;
-            if (!missionObj || !missionObj.supportPersonnel) return [];
-
-            var names = [];
-            var data = getDataStore();
-            if (!data || !Array.isArray(data.characters)) return names;
-
-            missionObj.supportPersonnel.forEach(function(id) {
-                var char = data.characters.find(function(c) {
-                    return c && normaliseId(c.id) === normaliseId(id);
-                });
-                if (char) {
-                    names.push(getDisplayName(char));
-                }
+            var characters = this.getSupportPersonnel(mission);
+            return characters.map(function(char) {
+                return getDisplayName(char);
             });
-
-            return names;
         },
 
         /**
@@ -252,40 +316,21 @@
         /**
          * Get a character by ID.
          * Uses normaliseId() for consistent comparison.
-         * Returns a CLONE - safe for reading.
+         * Returns a defensive clone.
          */
         getCharacter: function(id) {
             var char = getCharacterById(id);
-            if (!char) return null;
-            // Return a shallow clone
-            return {
-                id: char.id,
-                firstName: char.firstName || '',
-                lastName: char.lastName || '',
-                middleName: char.middleName || '',
-                nickname: char.nickname || '',
-                name: char.name || char.firstName || 'Unknown',
-                deceased: !!char.deceased,
-                status: char.status || 'active',
-                classIds: Array.isArray(char.classIds) ? char.classIds.slice() : []
-            };
+            return char ? cloneCharacter(char) : null;
         },
 
         /**
          * Get a team by ID.
          * Uses normaliseId() for consistent comparison.
-         * Returns a CLONE - safe for reading.
+         * Returns a defensive clone.
          */
         getTeam: function(id) {
             var team = getTeamById(id);
-            if (!team) return null;
-            return {
-                id: team.id,
-                name: team.name || '',
-                type: team.type || '',
-                status: team.status || 'active',
-                members: Array.isArray(team.members) ? team.members.slice() : []
-            };
+            return team ? cloneTeam(team) : null;
         },
 
         // ============================================================
@@ -295,7 +340,7 @@
         /**
          * Get mission statistics.
          * 
-         * @returns {object} { total, active, completed, cancelled, byPriority, byDifficulty }
+         * @returns {object} { total, active, completed, cancelled, byPriority, byDifficulty, byType }
          */
         getStatistics: function() {
             var missions = this.getMissions('all');
@@ -399,6 +444,7 @@
 
         /**
          * Get missions assigned to a specific team.
+         * Uses normaliseId() for consistent comparison.
          * 
          * @param {string} teamId - Team ID
          * @param {string} filter - Optional status filter
@@ -416,6 +462,7 @@
 
         /**
          * Get missions with a specific tag.
+         * Handles malformed tags defensively.
          * 
          * @param {string} tag - Tag to search for
          * @param {string} filter - Optional status filter
@@ -430,7 +477,7 @@
             return missions.filter(function(m) {
                 if (!Array.isArray(m.tags)) return false;
                 return m.tags.some(function(t) {
-                    return t.toLowerCase() === searchTag;
+                    return typeof t === 'string' && t.toLowerCase().trim() === searchTag;
                 });
             });
         },
@@ -456,6 +503,66 @@
             });
 
             return Object.keys(tagSet).sort();
+        },
+
+        // ============================================================
+        // DEFENSIVE GETTERS (Copies, not live references)
+        // ============================================================
+
+        /**
+         * Get all mission types as a defensive copy.
+         */
+        getMissionTypes: function() {
+            return Schema.getMissionTypes();
+        },
+
+        /**
+         * Get subtypes for a mission type.
+         */
+        getSubtypesForType: function(typeId) {
+            return Schema.getSubtypesForType(typeId);
+        },
+
+        /**
+         * Get all subtype labels as a defensive copy.
+         */
+        getSubtypeLabels: function() {
+            return Schema.getSubtypeLabels();
+        },
+
+        /**
+         * Get valid difficulty values.
+         */
+        getValidDifficulties: function() {
+            return Schema.getValidDifficulties();
+        },
+
+        /**
+         * Get valid priority values.
+         */
+        getValidPriorities: function() {
+            return Schema.getValidPriorities();
+        },
+
+        /**
+         * Get valid status values.
+         */
+        getValidStatuses: function() {
+            return Schema.getValidStatuses();
+        },
+
+        /**
+         * Get valid billing types.
+         */
+        getValidBillingTypes: function() {
+            return Schema.getValidBillingTypes();
+        },
+
+        /**
+         * Get valid escalation tiers.
+         */
+        getValidEscalationTiers: function() {
+            return Schema.getValidEscalationTiers();
         },
 
         // ============================================================
@@ -500,44 +607,6 @@
         normaliseId: Schema.normaliseId,
 
         // ============================================================
-        // MISSION TYPE HELPERS
-        // ============================================================
-
-        /**
-         * Get all available mission types.
-         */
-        getMissionTypes: function() {
-            var types = {};
-            Object.keys(Schema.MISSION_TYPES).forEach(function(key) {
-                var type = Schema.MISSION_TYPES[key];
-                types[key] = {
-                    id: type.id,
-                    label: type.label,
-                    icon: type.icon,
-                    color: type.color,
-                    description: type.description,
-                    subtypes: type.subtypes.slice()
-                };
-            });
-            return types;
-        },
-
-        /**
-         * Get subtypes for a mission type.
-         */
-        getSubtypesForType: function(typeId) {
-            var type = Schema.getMissionType(typeId);
-            return type ? type.subtypes.slice() : [];
-        },
-
-        /**
-         * Get all subtype labels.
-         */
-        getSubtypeLabels: function() {
-            return Object.assign({}, Schema.SUBTYPE_LABELS);
-        },
-
-        // ============================================================
         // MISSION ID FORMATTING
         // ============================================================
 
@@ -551,23 +620,16 @@
 
         /**
          * Parse a mission ID into components.
-         * Returns { team, year, difficulty, sequence } or null.
+         * Validates the format using regex.
+         * Returns { team, year, difficulty, difficultyCode, sequence } or null.
          */
         parseMissionId: function(missionId) {
             if (!missionId || typeof missionId !== 'string') return null;
-            // Format: TEAM-YY-D999
-            var parts = missionId.split('-');
-            if (parts.length !== 3) return null;
+            
+            // Format: TEAM-YY-D999 where D is E/M/H/X
+            var match = /^([^-]+)-(\d{2})-([EMHX])(\d+)$/.exec(missionId);
+            if (!match) return null;
 
-            var team = parts[0] || '';
-            var year = parts[1] || '';
-            var rest = parts[2] || '';
-
-            // Difficulty is first char of rest, sequence is rest
-            var difficultyCode = rest.charAt(0) || '';
-            var sequence = rest.substring(1) || '';
-
-            // Map difficulty code back to label
             var difficultyMap = {
                 'E': 'easy',
                 'M': 'medium',
@@ -576,27 +638,22 @@
             };
 
             return {
-                team: team,
-                year: year,
-                difficultyCode: difficultyCode,
-                difficulty: difficultyMap[difficultyCode] || null,
-                sequence: sequence,
+                team: match[1],
+                year: match[2],
+                difficultyCode: match[3],
+                difficulty: difficultyMap[match[3]] || null,
+                sequence: match[4],
                 full: missionId
             };
         },
 
         // ============================================================
-        // CONSTANTS ACCESS
+        // CONSTANTS ACCESS (Defensive)
         // ============================================================
 
-        MISSION_TYPES: Schema.MISSION_TYPES,
-        VALID_STATUSES: Schema.VALID_STATUSES,
-        VALID_PRIORITIES: Schema.VALID_PRIORITIES,
-        VALID_DIFFICULTIES: Schema.VALID_DIFFICULTIES,
-        VALID_BILLING_TYPES: Schema.VALID_BILLING_TYPES,
-        VALID_ESCALATION_TIERS: Schema.VALID_ESCALATION_TIERS,
-        DIFFICULTY_CODES: Schema.DIFFICULTY_CODES,
-        MONTH_NAMES: Schema.MONTH_NAMES
+        // MONTH_NAMES is safe to expose as it's frozen in Schema
+        MONTH_NAMES: Schema.MONTH_NAMES,
+        DIFFICULTY_CODES: Schema.DIFFICULTY_CODES
     };
 
     // ============================================================
