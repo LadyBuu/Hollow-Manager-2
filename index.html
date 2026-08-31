@@ -39,7 +39,7 @@
     <main>
         <div id="tab-dashboard" class="tab-content active"></div>
         <div id="tab-characters" class="tab-content"></div>
-        <div id="tab-teams" class="tab-content"><p class="empty-state">Teams module coming soon...</p></div>
+        <div id="tab-teams" class="tab-content"></div>
         <div id="tab-tournaments" class="tab-content"><p class="empty-state">Tournaments module coming soon...</p></div>
         <div id="tab-curriculum" class="tab-content"><p class="empty-state">Curriculum module coming soon...</p></div>
         <div id="tab-missions" class="tab-content"><p class="empty-state">Missions module coming soon...</p></div>
@@ -57,9 +57,7 @@
         </div>
     </div>
 
-    <div id="character-detail-modal" class="modal hidden">
-        <!-- Character detail content -->
-    </div>
+    <div id="character-detail-modal" class="modal hidden"></div>
 
     <!-- ============================================================
          SCRIPTS - LOAD ORDER IS CRITICAL
@@ -97,7 +95,16 @@
     <script src="js/modules/characters/character-events.js"></script>
     <script src="js/modules/characters/index.js"></script>
 
-    <!-- 7. APP BOOTSTRAPPER -->
+    <!-- 7. TEAM MODULES -->
+    <script src="js/modules/teams/team-core.js"></script>
+    <script src="js/modules/teams/team-filters.js"></script>
+    <script src="js/modules/teams/team-rankings.js"></script>
+    <script src="js/modules/teams/team-members.js"></script>
+    <script src="js/modules/teams/team-render.js"></script>
+    <script src="js/modules/teams/team-modals.js"></script>
+    <script src="js/modules/teams/team-manager.js"></script>
+
+    <!-- 8. APP BOOTSTRAPPER -->
     <script src="js/app.js"></script>
 
 </body>
