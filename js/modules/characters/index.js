@@ -318,10 +318,6 @@
                             <textarea id="char-appearance-notes" rows="2" placeholder="Scars, tattoos..."></textarea>
                         </div>
                         <div class="form-group full-width section-divider">
-                            <label>Attraction</label>
-                            <input type="text" id="char-attraction" placeholder="Women, Men, All, None, Other" />
-                        </div>
-                        <div class="form-group full-width">
                             <label>Sexuality</label>
                             <input type="text" id="char-sexuality" placeholder="Heterosexual, Homosexual, Bisexual, Pansexual, Asexual, Questioning, Other" />
                         </div>
