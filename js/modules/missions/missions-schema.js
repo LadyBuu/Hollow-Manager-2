@@ -9,6 +9,7 @@
  *   - PURE: no side effects, no mutation
  *   - CRASH-SAFE: never throws on malformed input; returns errors
  *   - Validates STRUCTURE and CONTENTS, not just container types
+ *   - Complete dates are validated; incomplete dates are preserved
  * 
  * MISSION TYPE TAXONOMY:
  *   1. Combat - Elimination, Defence, Protection
@@ -27,8 +28,13 @@
  * 
  * DATE VALIDATION:
  *   - Validates actual calendar dates (no Feb 31)
- *   - Accepts incomplete dates (year only, year+month, etc.)
- *   - Returns true if all components are valid together
+ *   - Preserves incomplete dates (year only, year+month, etc.)
+ *   - Does NOT invent missing date components
+ * 
+ * DERIVED FIELDS:
+ *   - progress: ALWAYS calculated from objectives. Input progress is ignored.
+ *   - pay: ALWAYS calculated from basePay + surchargePay.
+ *   - completedAt: ALWAYS derived from status transitions.
  */
 
 (function() {
@@ -153,6 +159,17 @@
         }
     };
 
+    // Freeze the schema constants to prevent mutation
+    Object.freeze(MISSION_TYPES);
+    Object.freeze(VALID_STATUSES);
+    Object.freeze(VALID_PRIORITIES);
+    Object.freeze(VALID_DIFFICULTIES);
+    Object.freeze(VALID_BILLING_TYPES);
+    Object.freeze(VALID_ESCALATION_TIERS);
+    Object.freeze(DIFFICULTY_CODES);
+    Object.freeze(MONTH_NAMES);
+    Object.freeze(DAYS_IN_MONTH);
+
     // Subtype labels for display
     var SUBTYPE_LABELS = {
         'elimination': 'Elimination',
@@ -186,6 +203,7 @@
         'representation': 'Representation',
         'targeted_elimination': 'Targeted Elimination'
     };
+    Object.freeze(SUBTYPE_LABELS);
 
     var ESCALATION_LABELS = {
         'tier_i': 'Tier I - Routine',
@@ -194,6 +212,7 @@
         'tier_iv': 'Tier IV - Critical',
         'tier_v': 'Tier V - Catastrophic'
     };
+    Object.freeze(ESCALATION_LABELS);
 
     var BILLING_LABELS = {
         'original': 'Original Contract',
@@ -201,6 +220,7 @@
         'emergency': 'Emergency Intervention',
         'internal': 'Internal / Research'
     };
+    Object.freeze(BILLING_LABELS);
 
     var PRIORITY_INFO = {
         'critical': { label: 'Critical', color: 'var(--danger)' },
@@ -208,12 +228,14 @@
         'medium': { label: 'Medium', color: 'var(--warning)' },
         'low': { label: 'Low', color: 'var(--accent)' }
     };
+    Object.freeze(PRIORITY_INFO);
 
     var STATUS_INFO = {
         'active': { label: 'Active', color: 'var(--accent)' },
         'completed': { label: 'Completed', color: 'var(--info)' },
         'cancelled': { label: 'Cancelled', color: 'var(--danger)' }
     };
+    Object.freeze(STATUS_INFO);
 
     var DIFFICULTY_LABELS = {
         'easy': 'Easy',
@@ -221,6 +243,7 @@
         'hard': 'Hard',
         'expert': 'Expert'
     };
+    Object.freeze(DIFFICULTY_LABELS);
 
     // ============================================================
     // TYPE HELPERS
@@ -306,11 +329,18 @@
     }
 
     function isValidCalendarDate(year, month, day) {
-        // If any component is undefined, that's okay (incomplete date)
-        // Only validate if all three are provided
-        if (year === undefined || month === undefined || day === undefined) {
-            return true;
-        }
+        // If any component is null/undefined, that's an incomplete date
+        // Only validate if all three are provided and not null
+        var hasYear = year !== undefined && year !== null;
+        var hasMonth = month !== undefined && month !== null;
+        var hasDay = day !== undefined && day !== null;
+
+        if (!hasYear && !hasMonth && !hasDay) return true;
+        if (!hasYear && hasMonth) return true;
+        if (!hasYear && !hasMonth && hasDay) return true;
+
+        // All three must be present for full validation
+        if (!hasYear || !hasMonth || !hasDay) return true;
 
         var y = Number(year);
         var m = Number(month);
@@ -553,8 +583,12 @@
             }
         }
 
-        // Actual date validation (if all components present)
-        if (mission.year !== undefined && mission.month !== undefined && mission.day !== undefined) {
+        // Actual date validation (if all components present and non-null)
+        var hasYear = mission.year !== undefined && mission.year !== null;
+        var hasMonth = mission.month !== undefined && mission.month !== null;
+        var hasDay = mission.day !== undefined && mission.day !== null;
+
+        if (hasYear && hasMonth && hasDay) {
             if (!isValidCalendarDate(mission.year, mission.month, mission.day)) {
                 errors.push('Invalid calendar date.');
             }
@@ -605,10 +639,11 @@
         }
 
         // ---- PROGRESS ----
+        // Progress is DERIVED from objectives. Input progress is validated but ignored.
         if (mission.progress !== undefined) {
             var prog = Number(mission.progress);
-            if (!Number.isInteger(prog) || prog < 0 || prog > 100) {
-                errors.push('Progress must be an integer between 0 and 100.');
+            if (!Number.isFinite(prog) || prog < 0 || prog > 100) {
+                errors.push('Progress must be a number between 0 and 100.');
             }
         }
 
@@ -633,6 +668,13 @@
             }
         }
 
+        // ---- ID ----
+        if (mission.id !== undefined && mission.id !== null) {
+            if (!isNonEmptyString(mission.id)) {
+                errors.push('ID must be a non-empty string.');
+            }
+        }
+
         return { valid: errors.length === 0, errors: errors };
     }
 
@@ -642,21 +684,135 @@
 
     /**
      * Normalise a mission object to canonical form.
-     * Applies defaults and cleans up nested structures.
-     * Returns a clean object ready for validation.
+     * 
+     * IMPORTANT SEMANTICS:
+     *   - Preserves id and missionId if present (does not invent them)
+     *   - Does NOT invent missing date components (preserves incomplete dates)
+     *   - Cleans up nested structures (objectives, supportPersonnel, tags, log)
+     *   - progress is DERIVED from objectives (input progress is ignored)
+     *   - pay is DERIVED from basePay + surchargePay
+     *   - completedAt is DERIVED from status
+     * 
+     * This is a DESTRUCTIVE normaliser: fields not in the canonical set are dropped.
+     * If you need to preserve additional fields, add them to the canonical set.
      */
     function normaliseMission(input) {
         if (!input || typeof input !== 'object') {
             return null;
         }
 
-        var now = new Date();
+        // ---- PRESERVE ID AND MISSION ID ----
+        var id = input.id !== undefined && input.id !== null && isNonEmptyString(input.id)
+            ? String(input.id).trim()
+            : null;
 
-        var normalised = {
+        var missionId = input.missionId !== undefined && input.missionId !== null && isNonEmptyString(input.missionId)
+            ? String(input.missionId).trim()
+            : null;
+
+        // ---- PRESERVE INCOMPLETE DATES (no defaults) ----
+        var year = input.year !== undefined && input.year !== null
+            ? Number(input.year)
+            : null;
+
+        var month = input.month !== undefined && input.month !== null
+            ? Number(input.month)
+            : null;
+
+        var day = input.day !== undefined && input.day !== null
+            ? Number(input.day)
+            : null;
+
+        // Validate number conversions
+        if (year !== null && (!Number.isInteger(year) || year < 1000 || year > 9999)) {
+            year = null;
+        }
+        if (month !== null && (!Number.isInteger(month) || month < 1 || month > 12)) {
+            month = null;
+        }
+        if (day !== null && (!Number.isInteger(day) || day < 1 || day > 31)) {
+            day = null;
+        }
+
+        // ---- CLEAN OBJECTIVES ----
+        var objectives = Array.isArray(input.objectives)
+            ? input.objectives.map(function(o) {
+                if (!o || typeof o !== 'object') {
+                    return { text: '', done: false };
+                }
+                return {
+                    text: String(o.text || '').trim(),
+                    done: !!o.done
+                };
+            }).filter(function(o) { return o.text; })
+            : [];
+
+        // ---- CLEAN SUPPORT PERSONNEL ----
+        var supportPersonnel = Array.isArray(input.supportPersonnel)
+            ? input.supportPersonnel
+                .map(function(id) { return normaliseId(id); })
+                .filter(function(id) { return id !== null; })
+            : [];
+
+        // ---- CLEAN TAGS ----
+        var tags = Array.isArray(input.tags)
+            ? input.tags
+                .map(function(t) { return typeof t === 'string' ? t.trim() : ''; })
+                .filter(function(t) { return t; })
+            : [];
+
+        // ---- CLEAN LOG ----
+        var log = Array.isArray(input.log)
+            ? input.log.map(function(entry) {
+                if (!entry || typeof entry !== 'object') {
+                    return { timestamp: new Date().toISOString(), message: '' };
+                }
+                return {
+                    timestamp: entry.timestamp || new Date().toISOString(),
+                    message: String(entry.message || '').trim()
+                };
+            }).filter(function(entry) { return entry.message; })
+            : [];
+
+        // ---- DERIVE PROGRESS ----
+        var total = objectives.length;
+        var completed = objectives.filter(function(o) { return o.done; }).length;
+        var progress = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+        // ---- DERIVE PAY ----
+        var baseNum = parseFloat(String(input.basePay || '').replace(/[^0-9.]/g, ''));
+        var surchargeNum = parseFloat(String(input.surchargePay || '').replace(/[^0-9.]/g, ''));
+        var pay = '';
+
+        if (!isNaN(baseNum) && !isNaN(surchargeNum)) {
+            pay = (baseNum + surchargeNum).toFixed(2) + ' credits';
+        } else if (!isNaN(baseNum)) {
+            pay = baseNum.toFixed(2) + ' credits';
+        } else if (!isNaN(surchargeNum)) {
+            pay = surchargeNum.toFixed(2) + ' credits';
+        }
+
+        // ---- DERIVE COMPLETED AT ----
+        var status = input.status || 'active';
+        var completedAt = input.completedAt !== undefined && input.completedAt !== null
+            ? input.completedAt
+            : null;
+
+        if (status === 'completed' && !completedAt) {
+            completedAt = new Date().toISOString();
+        } else if (status !== 'completed') {
+            completedAt = null;
+        }
+
+        // ---- BUILD CANONICAL OBJECT ----
+        return {
+            id: id,
+            missionId: missionId,
             title: input.title && typeof input.title === 'string' ? input.title.trim() : '',
-            year: input.year !== undefined && input.year !== null ? Number(input.year) : now.getFullYear(),
-            month: input.month !== undefined && input.month !== null ? Number(input.month) : now.getMonth() + 1,
-            day: input.day !== undefined && input.day !== null ? Number(input.day) : now.getDate(),
+            description: input.description && typeof input.description === 'string' ? input.description.trim() : '',
+            year: year,
+            month: month,
+            day: day,
             primaryType: input.primaryType || '',
             subtype: input.subtype || '',
             secondaryType: input.secondaryType || '',
@@ -667,65 +823,70 @@
             duration: input.duration || '',
             difficulty: input.difficulty || 'medium',
             priority: input.priority || 'medium',
-            basePay: input.basePay || '',
-            surchargePay: input.surchargePay || '',
+            basePay: input.basePay !== undefined && input.basePay !== null ? String(input.basePay) : '',
+            surchargePay: input.surchargePay !== undefined && input.surchargePay !== null ? String(input.surchargePay) : '',
+            pay: pay,
             billing: input.billing || 'original',
             assignedTeamId: input.assignedTeamId || null,
-            supportPersonnel: Array.isArray(input.supportPersonnel) ? input.supportPersonnel.slice() : [],
-            status: input.status || 'active',
+            supportPersonnel: supportPersonnel,
+            status: status,
+            objectives: objectives,
+            progress: progress,
             notes: input.notes || '',
-            tags: Array.isArray(input.tags) ? input.tags.map(function(t) { return String(t).trim(); }).filter(function(t) { return t; }) : [],
-            description: input.description || '',
-            objectives: Array.isArray(input.objectives) ? input.objectives.map(function(o) {
-                if (!o || typeof o !== 'object') {
-                    return { text: '', done: false };
-                }
-                return {
-                    text: String(o.text || '').trim(),
-                    done: !!o.done
-                };
-            }).filter(function(o) { return o.text; }) : [],
-            progress: 0,
+            tags: tags,
             createdAt: input.createdAt || new Date().toISOString(),
-            completedAt: input.completedAt || null,
-            log: Array.isArray(input.log) ? input.log.map(function(entry) {
-                if (!entry || typeof entry !== 'object') {
-                    return { timestamp: new Date().toISOString(), message: '' };
-                }
-                return {
-                    timestamp: entry.timestamp || new Date().toISOString(),
-                    message: String(entry.message || '').trim()
-                };
-            }).filter(function(entry) { return entry.message; }) : []
+            completedAt: completedAt,
+            log: log
         };
+    }
 
-        // Calculate progress from objectives
-        var total = normalised.objectives.length;
-        var completed = normalised.objectives.filter(function(o) { return o.done; }).length;
-        normalised.progress = total > 0 ? Math.round((completed / total) * 100) : 0;
+    // ============================================================
+    // GETTER HELPERS FOR QUERIES (Defensive copies)
+    // ============================================================
 
-        // Calculate pay from base + surcharge
-        var baseNum = parseFloat(String(normalised.basePay).replace(/[^0-9.]/g, ''));
-        var surchargeNum = parseFloat(String(normalised.surchargePay).replace(/[^0-9.]/g, ''));
+    function getMissionTypes() {
+        var result = {};
+        Object.keys(MISSION_TYPES).forEach(function(key) {
+            var type = MISSION_TYPES[key];
+            result[key] = {
+                id: type.id,
+                label: type.label,
+                icon: type.icon,
+                color: type.color,
+                description: type.description,
+                subtypes: type.subtypes.slice()
+            };
+        });
+        return result;
+    }
 
-        if (!isNaN(baseNum) && !isNaN(surchargeNum)) {
-            normalised.pay = (baseNum + surchargeNum).toFixed(2) + ' credits';
-        } else if (!isNaN(baseNum)) {
-            normalised.pay = baseNum.toFixed(2) + ' credits';
-        } else if (!isNaN(surchargeNum)) {
-            normalised.pay = surchargeNum.toFixed(2) + ' credits';
-        } else {
-            normalised.pay = '';
-        }
+    function getSubtypesForType(typeId) {
+        var type = getMissionType(typeId);
+        return type ? type.subtypes.slice() : [];
+    }
 
-        // Ensure completedAt is consistent with status
-        if (normalised.status === 'completed' && !normalised.completedAt) {
-            normalised.completedAt = new Date().toISOString();
-        } else if (normalised.status !== 'completed') {
-            normalised.completedAt = null;
-        }
+    function getSubtypeLabels() {
+        return Object.assign({}, SUBTYPE_LABELS);
+    }
 
-        return normalised;
+    function getValidDifficulties() {
+        return VALID_DIFFICULTIES.slice();
+    }
+
+    function getValidPriorities() {
+        return VALID_PRIORITIES.slice();
+    }
+
+    function getValidStatuses() {
+        return VALID_STATUSES.slice();
+    }
+
+    function getValidBillingTypes() {
+        return VALID_BILLING_TYPES.slice();
+    }
+
+    function getValidEscalationTiers() {
+        return VALID_ESCALATION_TIERS.slice();
     }
 
     // ============================================================
@@ -733,7 +894,7 @@
     // ============================================================
 
     window.MissionsSchema = {
-        // Constants
+        // Constants (frozen, read-only)
         SCHEMA_VERSION: SCHEMA_VERSION,
         VALID_STATUSES: VALID_STATUSES,
         VALID_PRIORITIES: VALID_PRIORITIES,
@@ -750,6 +911,16 @@
         PRIORITY_INFO: PRIORITY_INFO,
         STATUS_INFO: STATUS_INFO,
         DIFFICULTY_LABELS: DIFFICULTY_LABELS,
+
+        // Defensive getters (copies, not live references)
+        getMissionTypes: getMissionTypes,
+        getSubtypesForType: getSubtypesForType,
+        getSubtypeLabels: getSubtypeLabels,
+        getValidDifficulties: getValidDifficulties,
+        getValidPriorities: getValidPriorities,
+        getValidStatuses: getValidStatuses,
+        getValidBillingTypes: getValidBillingTypes,
+        getValidEscalationTiers: getValidEscalationTiers,
 
         // Type helpers
         isObject: isObject,
