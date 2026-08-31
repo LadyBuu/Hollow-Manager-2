@@ -258,7 +258,6 @@ header nav a.active {
     background: var(--accent-soft);
 }
 
-/* Desktop Header */
 @media (min-width: 768px) {
     header {
         flex-direction: row;
@@ -318,7 +317,6 @@ header nav a.active {
     }
 }
 
-/* Small mobile header fixes */
 @media (max-width: 480px) {
     header {
         padding: 4px 6px;
@@ -1131,6 +1129,705 @@ main {
 }
 
 /* ============================================================
+   TEAM MODULE STYLES
+   ============================================================ */
+
+/* Team List Headers */
+.list-header.team-header {
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr 0.6fr 0.6fr 1fr;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--panel-alt);
+    border-radius: 6px 6px 0 0;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    font-weight: 600;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+.list-item.team-item {
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr 0.6fr 0.6fr 1fr;
+    padding: 6px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: none;
+    align-items: center;
+}
+.list-item.team-item:last-child {
+    border-radius: 0 0 var(--radius) var(--radius);
+}
+.list-item.team-item.inactive {
+    opacity: 0.6;
+}
+.list-item.team-item .actions {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.team-status-inactive {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+}
+.team-class {
+    color: var(--info);
+    font-size: 0.65rem;
+}
+.team-type-label {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+.team-period {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+}
+.team-rank {
+    font-weight: 600;
+    color: var(--accent);
+}
+.team-member-count {
+    font-size: 0.75rem;
+    color: var(--text);
+}
+
+/* Team Members Expanded */
+.team-members-expanded {
+    grid-column: 1 / -1;
+    padding: 8px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--radius) var(--radius);
+    margin-bottom: 2px;
+}
+.members-expanded-header {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+}
+.member-entry {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 3px 8px;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 0.75rem;
+    border-left: 3px solid var(--accent);
+    padding-left: 8px;
+}
+.member-entry:last-child {
+    border-bottom: none;
+}
+.member-entry .role {
+    color: var(--accent);
+    font-size: 0.7rem;
+}
+.member-entry .member-details {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+}
+.member-entry .member-status {
+    font-weight: 600;
+}
+.member-entry.empty {
+    padding: 6px;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    border-left-color: var(--border);
+}
+.member-entry .member-actions {
+    display: flex;
+    gap: 4px;
+}
+
+/* Status Classes for Members */
+.member-entry.status-active {
+    border-left-color: var(--accent);
+}
+.member-entry.status-left {
+    border-left-color: var(--text-dim);
+    opacity: 0.7;
+}
+.member-entry.status-deceased {
+    border-left-color: var(--danger);
+    opacity: 0.6;
+}
+.member-entry.status-eliminated {
+    border-left-color: var(--danger);
+}
+.member-entry.status-future {
+    border-left-color: var(--warning);
+}
+.member-entry.status-unknown {
+    border-left-color: var(--border);
+    opacity: 0.5;
+}
+
+/* Team Cards */
+.team-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px;
+    margin-bottom: 8px;
+    box-shadow: var(--shadow);
+}
+.team-card.inactive {
+    opacity: 0.6;
+}
+.team-card-header {
+    font-size: 0.9rem;
+    margin-bottom: 4px;
+}
+.team-card-details {
+    display: flex;
+    gap: 12px;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    flex-wrap: wrap;
+}
+.team-card-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+}
+
+/* Team Filters */
+.filter-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border-radius: var(--radius);
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+    border: 1px solid var(--border);
+}
+.filter-section label {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+.filter-section input,
+.filter-section select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-size: 0.6rem;
+    font-family: 'Inter', sans-serif;
+}
+.filter-section input:focus,
+.filter-section select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+.filter-section .filter-check {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    cursor: pointer;
+}
+.filter-section .filter-check input[type="checkbox"] {
+    width: auto;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+/* Team Modals */
+.modal-content.modal-form-content {
+    max-width: 600px;
+}
+.modal-content.modal-detail-content {
+    max-width: 900px;
+}
+.modal-content.modal-match-content {
+    max-width: 700px;
+}
+
+/* Name History */
+.name-history-entry {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 4px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+.name-history-entry input {
+    flex: 1;
+    min-width: 60px;
+    padding: 4px 6px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.7rem;
+}
+
+/* ============================================================
+   TOURNAMENT MODULE STYLES
+   ============================================================ */
+
+/* Tournament List */
+.list-header.tourn-header {
+    display: grid;
+    grid-template-columns: 1.2fr 0.6fr 0.6fr 0.8fr 0.6fr 1.2fr;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--panel-alt);
+    border-radius: 6px 6px 0 0;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    font-weight: 600;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+.list-item.tourn-item {
+    display: grid;
+    grid-template-columns: 1.2fr 0.6fr 0.6fr 0.8fr 0.6fr 1.2fr;
+    padding: 6px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: none;
+    align-items: center;
+}
+.list-item.tourn-item:last-child {
+    border-radius: 0 0 var(--radius) var(--radius);
+}
+.list-item.tourn-item .actions {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+.tourn-mode {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+.tourn-rounds {
+    font-size: 0.75rem;
+}
+.tourn-participants {
+    font-size: 0.75rem;
+}
+.tourn-status {
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+.tourn-status.status-draft {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+}
+.tourn-status.status-active {
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+.tourn-status.status-completed {
+    color: var(--info);
+    background: var(--info-soft);
+}
+.tourn-status.status-unknown {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+}
+
+/* Tournament Detail */
+.tourn-info {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 8px 12px;
+    background: var(--panel-alt);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    margin-bottom: 12px;
+    font-size: 0.75rem;
+}
+.tourn-info-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.tourn-info-item strong {
+    color: var(--accent);
+}
+.tourn-winner-badge {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.tourn-section {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px;
+    margin-bottom: 10px;
+}
+.tourn-section .section-title {
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin-bottom: 8px;
+}
+.tourn-section .section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.tourn-section .empty-message {
+    color: var(--text-dim);
+    font-size: 0.75rem;
+}
+.tourn-section .pending-message {
+    color: var(--warning);
+    font-size: 0.75rem;
+}
+.tourn-section .rounds-count {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+/* Participants */
+.participant-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.participant-tag {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 0.7rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.participant-tag.eliminated {
+    opacity: 0.5;
+    border-color: var(--danger);
+}
+.participant-tag.winner {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+.participant-tag .remove-participant-btn {
+    background: none;
+    border: none;
+    color: var(--danger);
+    cursor: pointer;
+    font-size: 0.5rem;
+    padding: 0 2px;
+}
+
+.add-participant-form {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+.add-participant-form select {
+    flex: 1;
+    min-width: 150px;
+    padding: 4px 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.7rem;
+}
+.add-participant-form button {
+    font-size: 0.65rem;
+    padding: 4px 12px;
+}
+
+/* Rounds */
+.round-item {
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    padding: 8px;
+    margin-bottom: 6px;
+}
+.round-item:last-child {
+    margin-bottom: 0;
+}
+.round-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 4px;
+}
+.round-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.round-title strong {
+    font-size: 0.8rem;
+}
+.round-matches {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+.round-status {
+    font-size: 0.6rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+.round-status.status-pending {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+}
+.round-status.status-in-progress {
+    color: var(--warning);
+    background: var(--warning-soft);
+}
+.round-status.status-completed {
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+.round-status.status-empty {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+}
+.round-status.status-unknown {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+}
+.round-actions {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+.round-actions button {
+    font-size: 0.6rem;
+    padding: 2px 8px;
+}
+
+/* Matches */
+.match-list {
+    margin-top: 4px;
+    padding-left: 8px;
+}
+.match-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    background: var(--panel-alt);
+    border-radius: 4px;
+    margin-bottom: 3px;
+    flex-wrap: wrap;
+    font-size: 0.7rem;
+    cursor: pointer;
+    transition: 0.15s;
+}
+.match-item:hover {
+    background: var(--panel);
+    border-color: var(--accent);
+}
+.match-item .match-participants {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+.match-item .match-participant {
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+.match-item .match-participant.outcome-winner {
+    color: var(--accent);
+    font-weight: 600;
+}
+.match-item .match-participant.outcome-advancing {
+    color: var(--info);
+}
+.match-item .match-participant.outcome-eliminated {
+    color: var(--danger);
+    text-decoration: line-through;
+}
+.match-item .match-participant.outcome-passed {
+    color: var(--accent);
+}
+.match-item .match-participant.outcome-failed {
+    color: var(--danger);
+}
+.match-item .match-participant.outcome-pending {
+    color: var(--text-dim);
+}
+.match-item .match-participant.outcome-unknown {
+    color: var(--text-dim);
+    font-style: italic;
+}
+.match-item .match-vs {
+    color: var(--text-dim);
+    font-size: 0.6rem;
+}
+.match-item .match-type-badge {
+    font-size: 0.5rem;
+    background: var(--info-soft);
+    color: var(--info);
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+.match-item .match-status {
+    font-size: 0.55rem;
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+.match-item .match-status.status-pending {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+}
+.match-item .match-status.status-in-progress {
+    color: var(--warning);
+    background: var(--warning-soft);
+}
+.match-item .match-status.status-completed {
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+.match-item button {
+    font-size: 0.55rem;
+    padding: 1px 6px;
+}
+.add-match-btn {
+    font-size: 0.6rem;
+    padding: 2px 8px;
+    margin-top: 4px;
+}
+
+/* Eliminations */
+.elimination-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.elimination-tag {
+    background: var(--danger-soft);
+    border: 1px solid var(--danger);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 0.7rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.elimination-tag .elimination-detail {
+    color: var(--text-dim);
+    font-size: 0.6rem;
+}
+.elimination-tag .uneliminate-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 0.6rem;
+    padding: 0 2px;
+}
+.elimination-tag .uneliminate-btn:hover {
+    color: var(--accent);
+}
+
+/* Winner Display */
+.winner-display {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+}
+.winner-display .winner-name {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--accent);
+}
+.winner-display .winner-type {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+/* Match Form */
+.match-form .participant-slot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    background: var(--panel);
+    border-radius: 4px;
+    margin-bottom: 3px;
+}
+.match-form .participant-slot span {
+    font-size: 0.7rem;
+    flex: 1;
+}
+.match-form .participant-slot button {
+    font-size: 0.55rem;
+    padding: 1px 6px;
+}
+.match-form .match-participant-select {
+    width: 100%;
+    padding: 4px 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.7rem;
+    margin-bottom: 3px;
+}
+.match-form .exam-result-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    background: var(--panel);
+    border-radius: 4px;
+    margin-bottom: 3px;
+}
+.match-form .exam-result-row span {
+    font-size: 0.7rem;
+    flex: 1;
+}
+.match-form .exam-result-row select {
+    padding: 2px 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 0.65rem;
+}
+.match-form .hidden {
+    display: none;
+}
+.match-form .form-actions {
+    margin-top: 12px;
+}
+
+/* ============================================================
    MODAL
    ============================================================ */
 .modal {
@@ -1302,5 +1999,51 @@ main {
     }
     .characters-form-container {
         max-height: 500px;
+    }
+
+    /* Team responsive */
+    .list-header.team-header {
+        grid-template-columns: 0.8fr 0.5fr 0.4fr 0.4fr 0.8fr;
+        font-size: 0.45rem;
+        gap: 2px;
+        padding: 3px 4px;
+    }
+    .list-item.team-item {
+        grid-template-columns: 0.8fr 0.5fr 0.4fr 0.4fr 0.8fr;
+        gap: 2px;
+        padding: 3px 4px;
+        font-size: 0.55rem;
+    }
+    .list-item.team-item .actions button {
+        font-size: 0.45rem;
+        padding: 1px 3px;
+    }
+
+    /* Tournament responsive */
+    .list-header.tourn-header {
+        grid-template-columns: 0.8fr 0.4fr 0.4fr 0.5fr 0.4fr 0.8fr;
+        font-size: 0.45rem;
+        gap: 2px;
+        padding: 3px 4px;
+    }
+    .list-item.tourn-item {
+        grid-template-columns: 0.8fr 0.4fr 0.4fr 0.5fr 0.4fr 0.8fr;
+        gap: 2px;
+        padding: 3px 4px;
+        font-size: 0.55rem;
+    }
+    .list-item.tourn-item .actions button {
+        font-size: 0.45rem;
+        padding: 1px 3px;
+    }
+    .tourn-info {
+        flex-direction: column;
+        gap: 4px;
+        padding: 6px 8px;
+    }
+    .match-item {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
     }
 }
