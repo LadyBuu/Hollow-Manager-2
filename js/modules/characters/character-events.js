@@ -32,7 +32,6 @@
  *   - window.setCurrentEditId (from index.js)
  *   - window.showCharacterForm (from index.js)
  *   - window.toggleCharacterList (from index.js)
- *   - window.AppUI.notify (optional, for notifications)
  *   - window.UI_CONSTANTS (from constants.js)
  *   - window.MAGIC_CONSTANTS (from constants.js)
  *   - window.NotificationSystem (from notification.js)
@@ -98,7 +97,10 @@
                 'updateMagicPowerDisplay',
                 'generateRandomStats',
                 'generateRandomMagicCategory',
-                'getMagicTypeKeys'
+                'getMagicTypeKeys',
+                'populateClassSelect',
+                'applyPhysicalClass',
+                'applyMagicClass'
             ]
         };
 
@@ -307,7 +309,7 @@
     }
 
     // ============================================================
-    // FORM SUBMIT - Fixed ID to match index.js
+    // FORM SUBMIT
     // ============================================================
 
     function bindFormSubmit(container) {
@@ -503,7 +505,6 @@
 
                     if (window.CharacterClasses && typeof window.CharacterClasses.addClassByName === 'function') {
                         var result = window.CharacterClasses.addClassByName(name);
-                        // Only clear on successful mutation
                         if (result && typeof result.then === 'function') {
                             result.then(function(success) {
                                 if (success && classInput) {
@@ -513,7 +514,6 @@
                                 // Don't clear on failure - user can retry
                             });
                         } else {
-                            // Synchronous success - clear
                             if (classInput) classInput.value = '';
                         }
                     } else {
@@ -717,6 +717,16 @@
             });
         }
 
+        // Apply Physical Class button
+        var applyClassBtn = document.getElementById('apply-class-btn');
+        if (applyClassBtn) {
+            addSafeEventListener(applyClassBtn, 'click', function() {
+                if (window.CharacterStats && typeof window.CharacterStats.applyPhysicalClass === 'function') {
+                    window.CharacterStats.applyPhysicalClass();
+                }
+            });
+        }
+
         var recalcBtn = document.getElementById('recalculate-class-btn');
         if (recalcBtn) {
             addSafeEventListener(recalcBtn, 'click', function() {
@@ -804,6 +814,16 @@
                     if (window.CharacterStats && typeof window.CharacterStats.updateMagicClassSuggestion === 'function') {
                         window.CharacterStats.updateMagicClassSuggestion();
                     }
+                }
+            });
+        }
+
+        // Apply Magic Class button
+        var applyMagicClassBtn = document.getElementById('apply-magic-class-btn');
+        if (applyMagicClassBtn) {
+            addSafeEventListener(applyMagicClassBtn, 'click', function() {
+                if (window.CharacterStats && typeof window.CharacterStats.applyMagicClass === 'function') {
+                    window.CharacterStats.applyMagicClass();
                 }
             });
         }
@@ -949,9 +969,7 @@
         if (window.CharacterStats && typeof window.CharacterStats.addSpecialMove === 'function') {
             var result = window.CharacterStats.addSpecialMove(char, type, moveName, moveDesc);
 
-            // Handle both synchronous and Promise-based returns
             if (result && typeof result.then === 'function') {
-                // Async - clear only on success
                 result.then(function(success) {
                     if (success !== false) {
                         if (nameInput) nameInput.value = '';
@@ -961,7 +979,6 @@
                     // Don't clear on failure - user can retry
                 });
             } else if (result !== false) {
-                // Synchronous success
                 if (nameInput) nameInput.value = '';
                 if (descInput) descInput.value = '';
             }
