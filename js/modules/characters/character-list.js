@@ -149,7 +149,7 @@
     // FILTER FUNCTIONS - PURE
     // ============================================================
 
-    function applyFilters(char, nameFilter, statusFilter, classFilter, hideDeceased, hideEliminated) {
+    function applyFilters(char, nameFilter, classFilter, hideDeceased, hideEliminated) {
         // Hide deceased
         if (hideDeceased && char.deceased) {
             return false;
@@ -173,23 +173,6 @@
                 : '').toLowerCase();
             if (displayName.indexOf(nameFilter) === -1 && fullName.indexOf(nameFilter) === -1) {
                 return false;
-            }
-        }
-
-        // Status filter
-        if (statusFilter !== 'all') {
-            if (statusFilter === 'deceased') {
-                if (!char.deceased) return false;
-            } else if (statusFilter === 'eliminated') {
-                var hasElimination = char.eliminations && char.eliminations.length > 0;
-                if (!hasElimination) return false;
-            } else {
-                var status = String(typeof window.getCurrentStatus === 'function'
-                    ? window.getCurrentStatus(char)
-                    : '').toLowerCase();
-                if (status !== statusFilter && !status.startsWith(statusFilter + ' ')) {
-                    return false;
-                }
             }
         }
 
@@ -271,9 +254,6 @@
         // Populate filter BEFORE reading values
         populateClassFilter();
 
-        var statusFilter = document.getElementById('char-status-filter')
-            ? document.getElementById('char-status-filter').value
-            : 'all';
         var nameFilter = document.getElementById('char-name-filter')
             ? document.getElementById('char-name-filter').value.toLowerCase()
             : '';
@@ -294,7 +274,7 @@
         // Filter and sort characters
         var filteredChars = data.characters
             .filter(function(char) {
-                return applyFilters(char, nameFilter, statusFilter, classFilter, hideDeceased, hideEliminated);
+                return applyFilters(char, nameFilter, classFilter, hideDeceased, hideEliminated);
             })
             .sort(function(a, b) {
                 var nameA = String(typeof window.getDisplayName === 'function'
@@ -373,9 +353,6 @@
             nameFilter: document.getElementById('char-name-filter')
                 ? document.getElementById('char-name-filter').value.toLowerCase()
                 : '',
-            statusFilter: document.getElementById('char-status-filter')
-                ? document.getElementById('char-status-filter').value
-                : 'all',
             classFilter: document.getElementById('char-class-filter')
                 ? document.getElementById('char-class-filter').value
                 : 'all',
