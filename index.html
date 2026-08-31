@@ -39,11 +39,11 @@
     <main>
         <div id="tab-dashboard" class="tab-content active"></div>
         <div id="tab-characters" class="tab-content"></div>
-        <div id="tab-teams" class="tab-content"></div>
-        <div id="tab-tournaments" class="tab-content"></div>
-        <div id="tab-curriculum" class="tab-content"></div>
-        <div id="tab-missions" class="tab-content"></div>
-        <div id="tab-social" class="tab-content"></div>
+        <div id="tab-teams" class="tab-content"><p class="empty-state">Teams module coming soon...</p></div>
+        <div id="tab-tournaments" class="tab-content"><p class="empty-state">Tournaments module coming soon...</p></div>
+        <div id="tab-curriculum" class="tab-content"><p class="empty-state">Curriculum module coming soon...</p></div>
+        <div id="tab-missions" class="tab-content"><p class="empty-state">Missions module coming soon...</p></div>
+        <div id="tab-social" class="tab-content"><p class="empty-state">Social module coming soon...</p></div>
     </main>
 
     <!-- MODALS -->
@@ -79,39 +79,13 @@
     <script src="js/core/database.js"></script>
     <script src="js/core/loader.js"></script>
 
-    <script src="js/core/class-core.js"></script>
-    <script src="js/core/calendar-core.js"></script>
-    <script src="js/core/discipline-core.js"></script>
-    <script src="js/core/grade-core.js"></script>
-    <script src="js/core/group-core.js"></script>
-    <script src="js/core/location-core.js"></script>
-    <script src="js/core/ranking-core.js"></script>
-    <script src="js/core/schedule-core.js"></script>
-
-    <!-- 4. EXPORT MODULE -->
-    <script src="js/export/export-utils.js"></script>
-    <script src="js/export/csv-parser.js"></script>
-    <script src="js/export/csv-schema.js"></script>
-    <script src="js/export/csv-io.js"></script>
-    <script src="js/export/json-io.js"></script>
-    <script src="js/export/template.js"></script>
-    <script src="js/export/index.js"></script>
-
-    <!-- ============================================================
-         5. TAB MANAGER - MUST COME BEFORE FEATURE MODULES
-         TabManager delays initialization, giving feature modules
-         time to register their tabs.
-         ============================================================ -->
+    <!-- 4. TAB MANAGER -->
     <script src="js/core/tab-manager.js"></script>
 
-    <!-- ============================================================
-         6. FEATURE MODULES - Register their tabs with TabManager
-         ============================================================ -->
-
-    <!-- Dashboard -->
+    <!-- 5. DASHBOARD -->
     <script src="js/modules/dashboard.js"></script>
 
-    <!-- Characters -->
+    <!-- 6. CHARACTER MODULES -->
     <script src="js/modules/characters/character-stats.js"></script>
     <script src="js/modules/characters/character-crud.js"></script>
     <script src="js/modules/characters/character-classes.js"></script>
@@ -123,49 +97,7 @@
     <script src="js/modules/characters/character-events.js"></script>
     <script src="js/modules/characters/index.js"></script>
 
-    <!-- Teams -->
-    <script src="js/modules/teams/team-core.js"></script>
-    <script src="js/modules/teams/team-filters.js"></script>
-    <script src="js/modules/teams/team-render.js"></script>
-    <script src="js/modules/teams/team-members.js"></script>
-    <script src="js/modules/teams/team-rankings.js"></script>
-    <script src="js/modules/teams/team-modals.js"></script>
-    <script src="js/modules/teams/team-manager.js"></script>
-
-    <!-- Tournaments - FULL DEPENDENCY CHAIN -->
-    <script src="js/modules/tournaments/tournaments-schema.js"></script>
-    <script src="js/modules/tournaments/tournaments-core.js"></script>
-    <script src="js/modules/tournaments/tournaments-queries.js"></script>
-    <script src="js/modules/tournaments/tournaments-matches.js"></script>
-    <script src="js/modules/tournaments/tournaments-render.js"></script>
-    <script src="js/modules/tournaments/tournaments-ui.js"></script>
-
-    <!-- Curriculum -->
-    <script src="js/modules/curriculum/curriculum-main.js"></script>
-    <script src="js/modules/curriculum/disciplines.js"></script>
-    <script src="js/modules/curriculum/groups.js"></script>
-    <script src="js/modules/curriculum/class-view.js"></script>
-    <script src="js/modules/curriculum/instructor-calendar.js"></script>
-    <script src="js/modules/curriculum/schedule.js"></script>
-    <script src="js/modules/curriculum/grades.js"></script>
-    <script src="js/modules/curriculum/ranking.js"></script>
-    <script src="js/modules/curriculum/classes.js"></script>
-
-    <!-- Missions -->
-    <script src="js/modules/missions.js"></script>
-
-    <!-- Social -->
-    <script src="js/modules/social.js"></script>
-
-    <!-- Calendar -->
-    <script src="js/modules/calendar/calendar-utils.js"></script>
-    <script src="js/modules/calendar/calendar-modes.js"></script>
-    <script src="js/modules/calendar/calendar-ui.js"></script>
-    <script src="js/modules/calendar/index.js"></script>
-
-    <!-- ============================================================
-         7. APP BOOTSTRAPPER - MUST BE LAST
-         ============================================================ -->
+    <!-- 7. APP BOOTSTRAPPER -->
     <script src="js/app.js"></script>
 
 </body>
