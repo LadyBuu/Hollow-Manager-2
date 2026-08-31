@@ -99,7 +99,7 @@
         if (typeof window.getDisplayName === 'function') {
             return window.getDisplayName(char);
         }
-        return char.name || 'Unknown Character';
+        return char.name || char.firstName || 'Unknown Character';
     }
 
     /**
@@ -170,18 +170,17 @@
 
             // 1. Tournament context is authoritative
             if (tournament) {
-                var canonicalType = getCanonicalParticipantType(tournament.mode);
+                var canonicalType = this.getCanonicalParticipantType(tournament.mode);
                 if (canonicalType) {
                     // Verify the participant exists with this type
-                    var record = getParticipantRecord(tournament, idStr);
+                    var record = this.getParticipantRecord(tournament, idStr);
                     if (record && record.type === canonicalType) {
                         type = canonicalType;
                     } else if (record) {
                         // Participant exists but type doesn't match canonical - data is malformed
-                        // Return "Unknown" rather than silently using wrong type
                         return 'Unknown (' + idStr + ')';
                     }
-                    // If no record, participant is not in tournament - unknown
+                    // If no record, participant is not in tournament
                 }
             }
 
@@ -194,33 +193,46 @@
 
             // 3. Legacy datastore inference (only if no tournament context)
             if (!type) {
-                var data = getDataStore();
+                var data = this.getDataStore();
                 if (data) {
-                    if (Array.isArray(data.characters) && data.characters.some(function(c) {
-                        return c && normaliseId(c.id) === idStr;
-                    })) {
-                        type = 'character';
-                    } else if (Array.isArray(data.teams) && data.teams.some(function(t) {
+                    // Check teams first (legacy)
+                    if (Array.isArray(data.teams) && data.teams.some(function(t) {
                         return t && normaliseId(t.id) === idStr;
                     })) {
                         type = 'team';
+                    } else if (Array.isArray(data.characters) && data.characters.some(function(c) {
+                        return c && normaliseId(c.id) === idStr;
+                    })) {
+                        type = 'character';
                     }
                 }
             }
 
-            if (!type) return 'Unknown';
+            if (!type) return 'Unknown (ID: ' + idStr + ')';
 
             // ---- LOOK UP ENTITY ----
+            var data = this.getDataStore();
+            if (!data) return 'Unknown';
+
             if (type === 'team') {
-                var team = getTeamById(idStr);
-                if (team) return team.name || 'Unknown Team';
-                return 'Unknown Team';
+                var team = data.teams ? data.teams.find(function(t) {
+                    return t && normaliseId(t.id) === idStr;
+                }) : null;
+                if (team) {
+                    // Return team name, fallback to ID
+                    return team.name || team.id || 'Unknown Team';
+                }
+                return 'Unknown Team (ID: ' + idStr + ')';
             }
 
             if (type === 'character') {
-                var char = getCharacterById(idStr);
-                if (char) return getCharacterName(char);
-                return 'Unknown Character';
+                var char = data.characters ? data.characters.find(function(c) {
+                    return c && normaliseId(c.id) === idStr;
+                }) : null;
+                if (char) {
+                    return getCharacterName(char);
+                }
+                return 'Unknown Character (ID: ' + idStr + ')';
             }
 
             return 'Unknown';
@@ -242,7 +254,6 @@
             var idStr = null;
             var suppliedType = null;
 
-            // Extract ID and type from participant
             if (typeof participant === 'object' && participant !== null) {
                 idStr = normaliseId(participant.id);
                 if (participant.type !== undefined) {
@@ -254,21 +265,17 @@
 
             if (idStr === null) return 'unknown';
 
-            // ---- DETERMINE TYPE ----
             // 1. Tournament context is authoritative
             if (tournament) {
-                var canonicalType = getCanonicalParticipantType(tournament.mode);
+                var canonicalType = this.getCanonicalParticipantType(tournament.mode);
                 if (canonicalType) {
-                    // Verify the participant exists with this type
-                    var record = getParticipantRecord(tournament, idStr);
+                    var record = this.getParticipantRecord(tournament, idStr);
                     if (record && record.type === canonicalType) {
                         return canonicalType;
                     }
-                    // If participant exists but type doesn't match canonical, data is malformed
                     if (record && record.type !== canonicalType) {
                         return 'unknown';
                     }
-                    // If no record, participant is not in tournament
                     return 'unknown';
                 }
             }
@@ -281,20 +288,20 @@
                 return 'unknown';
             }
 
-            // 3. Legacy datastore inference (only if no tournament context)
-            var data = getDataStore();
+            // 3. Legacy datastore inference
+            var data = this.getDataStore();
             if (!data) return 'unknown';
-
-            if (Array.isArray(data.characters) && data.characters.some(function(c) {
-                return c && normaliseId(c.id) === idStr;
-            })) {
-                return 'character';
-            }
 
             if (Array.isArray(data.teams) && data.teams.some(function(t) {
                 return t && normaliseId(t.id) === idStr;
             })) {
                 return 'team';
+            }
+
+            if (Array.isArray(data.characters) && data.characters.some(function(c) {
+                return c && normaliseId(c.id) === idStr;
+            })) {
+                return 'character';
             }
 
             return 'unknown';
@@ -320,6 +327,20 @@
             var id = normaliseId(participantId);
             if (id === null) return 'unknown';
             return this.getParticipantType({ id: id }, tournament);
+        },
+
+        /**
+         * Get participant record from tournament.
+         */
+        getParticipantRecord: function(tournament, id) {
+            return getParticipantRecord(tournament, id);
+        },
+
+        /**
+         * Get data store helper.
+         */
+        getDataStore: function() {
+            return getDataStore();
         },
 
         /**
@@ -395,7 +416,6 @@
                     var result = match.results && match.results[target];
                     if (result === 'pass') return 'passed';
                     if (result === 'fail') return 'failed';
-                    // Completed group exam with missing result → unknown
                     return match.status === 'completed' ? 'unknown' : 'pending';
                 }
 
@@ -415,7 +435,6 @@
                     if (isAdvancing) return 'advancing';
                 }
 
-                // For completed matches, return 'unknown' rather than inferring elimination
                 if (match.status === 'completed') {
                     return 'unknown';
                 }
@@ -559,7 +578,6 @@
                     } else if (resultValue === 'fail') {
                         display.outcome = 'failed';
                     } else if (match.status === 'completed') {
-                        // Completed group exam with missing result → unknown
                         display.outcome = 'unknown';
                     } else {
                         display.outcome = 'pending';
@@ -574,8 +592,6 @@
                     })) {
                         display.outcome = 'advancing';
                     } else if (match.status === 'completed') {
-                        // For completed matches without explicit outcome, return 'unknown'
-                        // Do NOT infer elimination from incomplete data
                         display.outcome = 'unknown';
                     } else {
                         display.outcome = 'pending';
@@ -712,7 +728,9 @@
         /**
          * Get the canonical participant type for a tournament mode.
          */
-        getCanonicalParticipantType: getCanonicalParticipantType
+        getCanonicalParticipantType: function(mode) {
+            return getCanonicalParticipantType(mode);
+        }
     };
 
     // ============================================================
