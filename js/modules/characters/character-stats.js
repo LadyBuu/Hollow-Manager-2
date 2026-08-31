@@ -331,13 +331,17 @@
     function getStatFromDOM(id) {
         var el = document.getElementById(id);
         if (!el) return 10;
-        return clampStat(el.value);
+        var val = parseInt(el.value);
+        if (isNaN(val)) return 10;
+        return Math.max(STAT_MIN, Math.min(STAT_MAX, val));
     }
 
     function getMagicFromDOM(id) {
         var el = document.getElementById(id);
         if (!el) return 0;
-        return clampMagic(el.value);
+        var val = parseInt(el.value);
+        if (isNaN(val)) return 0;
+        return Math.max(0, Math.min(MAGIC_MAX, val));
     }
 
     // ============================================================
@@ -931,15 +935,40 @@
 
         magicHTML += '</div>';
 
+        // Magic class selector with ALL options
         magicHTML += `
             <div class="magic-actions" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;border:1px solid var(--border-soft);">
                 <label class="stat-label" style="font-size:0.7rem;color:var(--text-dim);">Magic Class:</label>
                 <span id="suggested-magic-class" class="suggested-class empty" style="background:transparent;border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:0.7rem;color:var(--text-dim);font-weight:600;">—</span>
                 <select id="manual-magic-class-select" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;">
                     <option value="">Auto-suggest</option>
-                    <option value="elementalist">Elementalist</option>
-                    <option value="body_mage">Body Mage</option>
-                    <option value="aether_mage">Aether Mage</option>
+                    <optgroup label="Elemental Magic">
+                        <option value="elementalist">Elementalist (General)</option>
+                        <option value="geomancer">Geomancer (Earth)</option>
+                        <option value="hydromancer">Hydromancer (Water)</option>
+                        <option value="pyromancer">Pyromancer (Fire)</option>
+                        <option value="aeromancer">Aeromancer (Air)</option>
+                        <option value="ferromancer">Ferromancer (Metal)</option>
+                        <option value="dendromancer">Dendromancer (Wood)</option>
+                    </optgroup>
+                    <optgroup label="Body Magic">
+                        <option value="body_mage">Body Mage (General)</option>
+                        <option value="hemomancer">Hemomancer (Blood)</option>
+                        <option value="osteomancer">Osteomancer (Bone)</option>
+                        <option value="psychomancer">Psychomancer (Mind)</option>
+                        <option value="morphomancer">Morphomancer (Morphic)</option>
+                        <option value="vitalmancer">Vitalmancer (Life)</option>
+                        <option value="necromancer">Necromancer (Death)</option>
+                    </optgroup>
+                    <optgroup label="Aether Magic">
+                        <option value="aether_mage">Aether Mage (General)</option>
+                        <option value="spatiomancer">Spatiomancer (Space)</option>
+                        <option value="chronomancer">Chronomancer (Time)</option>
+                        <option value="dimensionist">Dimensionist (Dimension)</option>
+                        <option value="voidmancer">Voidmancer (Void)</option>
+                        <option value="reality_weaver">Reality Weaver (Reality)</option>
+                        <option value="transference_mage">Transference Mage (Transference)</option>
+                    </optgroup>
                 </select>
                 <button type="button" id="apply-magic-class-btn" class="small primary" style="font-size:0.6rem;padding:2px 8px;">Apply Class</button>
                 <button type="button" id="recalculate-magic-class-btn" class="small secondary" style="font-size:0.6rem;padding:2px 8px;">Recalc</button>
@@ -1032,25 +1061,58 @@
             return;
         }
 
+        // Start with base stats (10 each)
         var stats = {
-            str: getStatFromDOM('char-str'),
-            dex: getStatFromDOM('char-dex'),
-            con: getStatFromDOM('char-con'),
-            int: getStatFromDOM('char-int'),
-            wis: getStatFromDOM('char-wis'),
-            cha: getStatFromDOM('char-cha')
+            str: 10,
+            dex: 10,
+            con: 10,
+            int: 10,
+            wis: 10,
+            cha: 10
         };
 
+        // Set primary stats to 14
         cls.primaryStats.forEach(function(stat) {
-            stats[stat] = Math.max(stats[stat], 14);
+            stats[stat] = 14;
         });
 
+        // Set secondary stats to 12
         if (cls.secondaryStats) {
             cls.secondaryStats.forEach(function(stat) {
-                stats[stat] = Math.max(stats[stat], 12);
+                stats[stat] = 12;
             });
         }
 
+        // Add some variation (1-3 points distributed)
+        var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+        var remainingPoints = 6;
+        
+        // Prioritize primary stats for extra points
+        var priorityStats = cls.primaryStats.slice();
+        if (cls.secondaryStats) {
+            cls.secondaryStats.forEach(function(s) {
+                if (priorityStats.indexOf(s) === -1) {
+                    priorityStats.push(s);
+                }
+            });
+        }
+        // Add remaining stats
+        statKeys.forEach(function(s) {
+            if (priorityStats.indexOf(s) === -1) {
+                priorityStats.push(s);
+            }
+        });
+
+        while (remainingPoints > 0) {
+            for (var i = 0; i < priorityStats.length && remainingPoints > 0; i++) {
+                var stat = priorityStats[i];
+                var bonus = Math.min(remainingPoints, Math.floor(Math.random() * 2) + 1);
+                stats[stat] += bonus;
+                remainingPoints -= bonus;
+            }
+        }
+
+        // Apply the stats
         document.getElementById('char-str').value = stats.str;
         document.getElementById('char-dex').value = stats.dex;
         document.getElementById('char-con').value = stats.con;
@@ -1076,28 +1138,59 @@
             magic[key] = 0;
         });
 
-        var category;
-        if (classType === 'elementalist') {
-            category = 'elemental';
-        } else if (classType === 'body_mage') {
-            category = 'body';
-        } else if (classType === 'aether_mage') {
-            category = 'aether';
-        } else {
+        // Map class to category and primary type
+        var classMap = {
+            'elementalist': { category: 'elemental', primary: null, label: 'Elementalist' },
+            'geomancer': { category: 'elemental', primary: 'earth', label: 'Geomancer' },
+            'hydromancer': { category: 'elemental', primary: 'water', label: 'Hydromancer' },
+            'pyromancer': { category: 'elemental', primary: 'fire', label: 'Pyromancer' },
+            'aeromancer': { category: 'elemental', primary: 'air', label: 'Aeromancer' },
+            'ferromancer': { category: 'elemental', primary: 'metal', label: 'Ferromancer' },
+            'dendromancer': { category: 'elemental', primary: 'wood', label: 'Dendromancer' },
+            'body_mage': { category: 'body', primary: null, label: 'Body Mage' },
+            'hemomancer': { category: 'body', primary: 'blood', label: 'Hemomancer' },
+            'osteomancer': { category: 'body', primary: 'bone', label: 'Osteomancer' },
+            'psychomancer': { category: 'body', primary: 'mind', label: 'Psychomancer' },
+            'morphomancer': { category: 'body', primary: 'morphic', label: 'Morphomancer' },
+            'vitalmancer': { category: 'body', primary: 'life', label: 'Vitalmancer' },
+            'necromancer': { category: 'body', primary: 'death', label: 'Necromancer' },
+            'aether_mage': { category: 'aether', primary: null, label: 'Aether Mage' },
+            'spatiomancer': { category: 'aether', primary: 'space', label: 'Spatiomancer' },
+            'chronomancer': { category: 'aether', primary: 'time', label: 'Chronomancer' },
+            'dimensionist': { category: 'aether', primary: 'dimension', label: 'Dimensionist' },
+            'voidmancer': { category: 'aether', primary: 'void', label: 'Voidmancer' },
+            'reality_weaver': { category: 'aether', primary: 'reality', label: 'Reality Weaver' },
+            'transference_mage': { category: 'aether', primary: 'transference', label: 'Transference Mage' }
+        };
+
+        var config = classMap[classType];
+        if (!config) {
+            showNotification('Unknown magic class.', 'error');
             return;
         }
 
+        var category = config.category;
+        var primary = config.primary;
         var types = getMagicCategoryTypes(category);
+
+        // Give 5-7 in each type of the category
         types.forEach(function(key) {
             magic[key] = Math.floor(Math.random() * 3) + 5;
         });
 
+        // If there's a primary type, boost it to 8-10
+        if (primary && magic[primary] !== undefined) {
+            magic[primary] = Math.floor(Math.random() * 3) + 8;
+        }
+
+        // Give 1-3 in other types
         allKeys.forEach(function(key) {
             if (magic[key] === 0) {
                 magic[key] = Math.floor(Math.random() * 3) + 1;
             }
         });
 
+        // Apply the magic values
         allKeys.forEach(function(key) {
             var input = document.getElementById('magic-' + key);
             if (input) {
@@ -1107,7 +1200,7 @@
 
         updateMagicClassSuggestion();
         updateMagicPowerDisplay();
-        showNotification('Applied ' + classType.replace('_', ' ') + ' magic distribution!', 'success');
+        showNotification('Applied ' + config.label + ' magic distribution!', 'success');
     }
 
     // ============================================================
