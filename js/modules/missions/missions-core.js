@@ -7,17 +7,10 @@
  *   - Invalid inputs are REJECTED (operation returns null/false)
  *   - Mutations are ATOMIC: all or nothing
  *   - Uses MissionsSchema for validation
- *   - Internal `id` is immutable; `missionId` is human-readable
+ *   - Internal `id` is immutable; `missionId` is derived/human-readable
  *   - Mutations build complete proposed state before committing
  *   - Derived fields (progress, pay, completedAt) are calculated, not accepted as input
  *   - Only whitelisted fields are updateable via updateMission()
- * 
- * MUTATION PATTERN:
- *   1. Validate inputs (reject invalid)
- *   2. Build complete proposed state with all derived fields
- *   3. Validate proposed state against Schema
- *   4. If valid, commit all changes atomically
- *   5. If any step fails, return error WITHOUT mutating
  * 
  * UPDATEABLE FIELDS (whitelist):
  *   title, description, year, month, day, primaryType, subtype,
@@ -31,7 +24,12 @@
  * LIFECYCLE RULES:
  *   - Active mission with 100% progress auto-completes
  *   - Completed mission: status can be manually changed, but objectives are frozen
- *   - Cancelled mission: status can be manually changed, objectives are frozen
+ *   - Cancelled mission: status can be manually changed, but objectives are frozen
+ *   - Objective modifications are rejected for completed/cancelled missions
+ * 
+ * ID SEMANTICS:
+ *   - id: immutable internal identity (never changes)
+ *   - missionId: derived human-readable identifier; may change when team/year/difficulty changes
  * 
  * DEPENDENCIES:
  *   - MissionsSchema (required)
@@ -150,6 +148,47 @@
         return Object.prototype.hasOwnProperty.call(obj, key);
     }
 
+    function escapeRegExp(value) {
+        return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    // ============================================================
+    // PAY PARSING
+    // ============================================================
+
+    function parsePayValue(value) {
+        if (value === null || value === undefined || value === '') {
+            return null;
+        }
+
+        var text = String(value).trim();
+        var match = text.match(/^-?\d+(?:\.\d+)?$/);
+
+        if (!match) return null;
+
+        var num = Number(text);
+        return Number.isFinite(num) ? num : null;
+    }
+
+    function calculatePay(basePay, surchargePay) {
+        var baseNum = parsePayValue(basePay);
+        var surchargeNum = parsePayValue(surchargePay);
+
+        if (baseNum !== null && surchargeNum !== null) {
+            return (baseNum + surchargeNum).toFixed(2) + ' credits';
+        }
+
+        if (baseNum !== null) {
+            return baseNum.toFixed(2) + ' credits';
+        }
+
+        if (surchargeNum !== null) {
+            return surchargeNum.toFixed(2) + ' credits';
+        }
+
+        return '';
+    }
+
     // ============================================================
     // MISSION ID GENERATION
     // ============================================================
@@ -188,8 +227,8 @@
         var prefix = teamAbbr + '-' + yearStr + '-' + difficultyCode;
         var sequence = 1;
         
-        // Use regex for safer matching
-        var regex = new RegExp('^' + prefix + '(\\d{3})$');
+        // Use regex for safer matching with escaped prefix
+        var regex = new RegExp('^' + escapeRegExp(prefix) + '(\\d{3})$');
         
         missions.forEach(function(m) {
             if (m.missionId && typeof m.missionId === 'string') {
@@ -204,32 +243,6 @@
         });
 
         return prefix + String(sequence).padStart(3, '0');
-    }
-
-    // ============================================================
-    // PAY CALCULATION (Shared helper)
-    // ============================================================
-
-    function calculatePay(basePay, surchargePay) {
-        var baseNum = parseFloat(String(basePay || '').replace(/[^0-9.]/g, ''));
-        var surchargeNum = parseFloat(String(surchargePay || '').replace(/[^0-9.]/g, ''));
-
-        var hasBase = !isNaN(baseNum);
-        var hasSurcharge = !isNaN(surchargeNum);
-
-        if (hasBase && hasSurcharge) {
-            return (baseNum + surchargeNum).toFixed(2) + ' credits';
-        }
-
-        if (hasBase) {
-            return baseNum.toFixed(2) + ' credits';
-        }
-
-        if (hasSurcharge) {
-            return surchargeNum.toFixed(2) + ' credits';
-        }
-
-        return '';
     }
 
     // ============================================================
@@ -273,11 +286,11 @@
             progress: mission.progress || 0,
             notes: mission.notes || '',
             tags: Array.isArray(mission.tags) ? mission.tags.slice() : [],
-            createdAt: mission.createdAt || new Date().toISOString(),
+            createdAt: mission.createdAt || null,
             completedAt: mission.completedAt || null,
             log: Array.isArray(mission.log) ? mission.log.map(function(entry) {
                 return {
-                    timestamp: entry.timestamp || new Date().toISOString(),
+                    timestamp: entry.timestamp || null,
                     message: entry.message || ''
                 };
             }) : []
@@ -299,12 +312,12 @@
     }
 
     // ============================================================
-    // VALIDATE MISSION CAN BE MODIFIED
+    // OBJECTIVES MUTABILITY CHECK
     // ============================================================
 
-    function isMissionMutable(mission) {
+    function areObjectivesMutable(mission) {
         if (!mission) return false;
-        // Completed and cancelled missions are frozen
+        // Completed and cancelled missions have frozen objectives
         return mission.status !== 'completed' && mission.status !== 'cancelled';
     }
 
@@ -481,7 +494,17 @@
                 return cloneMission(original);
             }
 
-            // ---- PHASE 2: BUILD PROPOSED STATE ----
+            // ---- PHASE 2: CHECK OBJECTIVES MUTABILITY ----
+            var isFrozen = !areObjectivesMutable(original);
+            if (isFrozen && hasOwnProperty(validUpdates, 'objectives')) {
+                console.warn(
+                    'MissionsCore.updateMission: Cannot modify objectives of ' +
+                    original.status + ' mission.'
+                );
+                return null;
+            }
+
+            // ---- PHASE 3: BUILD PROPOSED STATE ----
             var proposed = cloneMission(original);
 
             // Apply all valid updates (handling null as "clear this field")
@@ -506,12 +529,12 @@
                 }
             });
 
-            // ---- PHASE 3: VALIDATE TEAM REFERENCE ----
+            // ---- PHASE 4: VALIDATE TEAM REFERENCE ----
             if (proposed.assignedTeamId && !validateTeamReference(proposed.assignedTeamId)) {
                 return null;
             }
 
-            // ---- PHASE 4: NORMALISE OBJECTIVES ----
+            // ---- PHASE 5: NORMALISE OBJECTIVES ----
             if (Array.isArray(proposed.objectives)) {
                 proposed.objectives = proposed.objectives.map(function(o) {
                     if (!o || typeof o !== 'object') {
@@ -524,7 +547,7 @@
                 }).filter(function(o) { return o.text; });
             }
 
-            // ---- PHASE 5: RECALCULATE DERIVED FIELDS ----
+            // ---- PHASE 6: RECALCULATE DERIVED FIELDS ----
             // Progress from objectives
             var total = proposed.objectives.length;
             var completed = proposed.objectives.filter(function(o) { return o.done; }).length;
@@ -533,13 +556,14 @@
             // Pay from base + surcharge
             proposed.pay = calculatePay(proposed.basePay, proposed.surchargePay);
 
-            // Mission ID regeneration (if team, year, or difficulty changed)
-            var shouldRegenerateId = false;
-            if (hasOwnProperty(validUpdates, 'assignedTeamId') ||
-                hasOwnProperty(validUpdates, 'year') ||
-                hasOwnProperty(validUpdates, 'difficulty')) {
-                shouldRegenerateId = true;
-            }
+            // Mission ID regeneration (only if values actually changed)
+            var originalTeamId = normaliseId(original.assignedTeamId);
+            var proposedTeamId = normaliseId(proposed.assignedTeamId);
+
+            var shouldRegenerateId =
+                originalTeamId !== proposedTeamId ||
+                original.year !== proposed.year ||
+                original.difficulty !== proposed.difficulty;
 
             if (shouldRegenerateId) {
                 var newId = generateMissionId(
@@ -567,14 +591,14 @@
                 proposed.completedAt = new Date().toISOString();
             }
 
-            // ---- PHASE 6: VALIDATE PROPOSED STATE ----
+            // ---- PHASE 7: VALIDATE PROPOSED STATE ----
             var validation = Schema.validateMission(proposed);
             if (!validation.valid) {
                 console.warn('MissionsCore.updateMission: Validation failed:', validation.errors.join(', '));
                 return null;
             }
 
-            // ---- PHASE 7: COMMIT ----
+            // ---- PHASE 8: COMMIT ----
             var store = getDataStore();
             if (!store || !Array.isArray(store.missions)) return null;
 
@@ -623,7 +647,7 @@
         /**
          * Toggle an objective's done status.
          * Atomic: validates and recalculates progress.
-         * Completed missions cannot be modified.
+         * Completed/cancelled missions cannot be modified.
          * 
          * @param {string} missionId - Internal mission ID
          * @param {number} objectiveIndex - Index of objective to toggle
@@ -634,8 +658,8 @@
             if (!mission) return null;
 
             // ---- LIFECYCLE CHECK ----
-            if (!isMissionMutable(mission)) {
-                console.warn('MissionsCore.toggleObjective: Cannot modify ' + mission.status + ' mission.');
+            if (!areObjectivesMutable(mission)) {
+                console.warn('MissionsCore.toggleObjective: Cannot modify objectives of ' + mission.status + ' mission.');
                 return null;
             }
 
@@ -687,7 +711,7 @@
         /**
          * Add an objective to a mission.
          * Rejects empty text.
-         * Completed missions cannot be modified.
+         * Completed/cancelled missions cannot be modified.
          * 
          * @param {string} missionId - Internal mission ID
          * @param {string} text - Objective text
@@ -701,8 +725,8 @@
             if (!mission) return null;
 
             // ---- LIFECYCLE CHECK ----
-            if (!isMissionMutable(mission)) {
-                console.warn('MissionsCore.addObjective: Cannot modify ' + mission.status + ' mission.');
+            if (!areObjectivesMutable(mission)) {
+                console.warn('MissionsCore.addObjective: Cannot modify objectives of ' + mission.status + ' mission.');
                 return null;
             }
 
@@ -745,7 +769,7 @@
 
         /**
          * Remove an objective from a mission.
-         * Completed missions cannot be modified.
+         * Completed/cancelled missions cannot be modified.
          * 
          * @param {string} missionId - Internal mission ID
          * @param {number} objectiveIndex - Index of objective to remove
@@ -756,8 +780,8 @@
             if (!mission) return null;
 
             // ---- LIFECYCLE CHECK ----
-            if (!isMissionMutable(mission)) {
-                console.warn('MissionsCore.removeObjective: Cannot modify ' + mission.status + ' mission.');
+            if (!areObjectivesMutable(mission)) {
+                console.warn('MissionsCore.removeObjective: Cannot modify objectives of ' + mission.status + ' mission.');
                 return null;
             }
 
