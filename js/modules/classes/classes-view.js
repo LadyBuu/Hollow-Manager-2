@@ -22,19 +22,18 @@
     // ============================================================
 
     function renderClassesView(container) {
-        console.log('[ClassesView] renderClassesView called with container:', container);
+        console.log('[ClassesView] renderClassesView called');
         
         if (!container) {
             container = document.getElementById('classes-content');
-            console.log('[ClassesView] Using container from DOM:', container);
         }
+        
         if (!container) {
             console.warn('[ClassesView] Container not found');
             return;
         }
 
         if (!window.data) {
-            console.warn('[ClassesView] No data available');
             container.innerHTML = '<p class="empty-state">Loading class data...</p>';
             return;
         }
@@ -44,7 +43,7 @@
             window.data.graduatingClasses = [];
         }
 
-        console.log('[ClassesView] Rendering classes view...');
+        // Render the view
         container.innerHTML = getClassesHTML();
         renderClassList();
         renderClassDetail();
@@ -147,15 +146,9 @@
         var classes = [];
         if (typeof window.getGraduatingClasses === 'function') {
             classes = window.getGraduatingClasses();
-        } else {
-            console.warn('[ClassesView] getGraduatingClasses not available');
-            // Fallback: use data directly
-            if (window.data && window.data.graduatingClasses) {
-                classes = window.data.graduatingClasses;
-            }
+        } else if (window.data && window.data.graduatingClasses) {
+            classes = window.data.graduatingClasses;
         }
-
-        console.log('[ClassesView] Found ' + classes.length + ' classes');
 
         if (classes.length === 0) {
             listContainer.innerHTML = '<p class="empty-state">No graduating classes created yet. Click "Add Class" to create one.</p>';
@@ -292,24 +285,32 @@
 
         detailContainer.innerHTML = html;
 
-        // Bind buttons
+        // Bind buttons - Using event delegation to ensure they work
         var manageBtn = detailContainer.querySelector('#manage-members-btn');
         if (manageBtn) {
-            manageBtn.addEventListener('click', function() {
+            // Remove any existing listeners by cloning
+            var newManageBtn = manageBtn.cloneNode(true);
+            manageBtn.parentNode.replaceChild(newManageBtn, manageBtn);
+            newManageBtn.addEventListener('click', function() {
+                console.log('[ClassesView] Manage Members button clicked for class:', state.selectedClassId);
                 showMemberModal(state.selectedClassId);
             });
         }
 
         var editBtn = detailContainer.querySelector('#edit-class-btn');
         if (editBtn) {
-            editBtn.addEventListener('click', function() {
+            var newEditBtn = editBtn.cloneNode(true);
+            editBtn.parentNode.replaceChild(newEditBtn, editBtn);
+            newEditBtn.addEventListener('click', function() {
                 showClassForm(state.selectedClassId);
             });
         }
 
         var deleteBtn = detailContainer.querySelector('#delete-class-btn');
         if (deleteBtn) {
-            deleteBtn.addEventListener('click', function() {
+            var newDeleteBtn = deleteBtn.cloneNode(true);
+            deleteBtn.parentNode.replaceChild(newDeleteBtn, deleteBtn);
+            newDeleteBtn.addEventListener('click', function() {
                 deleteClassHandler(state.selectedClassId);
             });
         }
@@ -322,7 +323,6 @@
     function renderMembersList(trainees, instructors) {
         var allMembers = [];
 
-        // Add trainees
         for (var i = 0; i < trainees.length; i++) {
             allMembers.push({
                 char: trainees[i],
@@ -330,7 +330,6 @@
             });
         }
 
-        // Add instructors
         for (var i = 0; i < instructors.length; i++) {
             allMembers.push({
                 char: instructors[i],
@@ -338,7 +337,6 @@
             });
         }
 
-        // Sort by name
         allMembers.sort(function(a, b) {
             var nameA = typeof window.getDisplayName === 'function' ? window.getDisplayName(a.char) : (a.char.name || 'Unknown');
             var nameB = typeof window.getDisplayName === 'function' ? window.getDisplayName(b.char) : (b.char.name || 'Unknown');
@@ -376,166 +374,41 @@
     }
 
     // ============================================================
-    // CLASS FORM
-    // ============================================================
-
-    function showClassForm(editId) {
-        var modal = document.getElementById('class-form-modal');
-        var title = document.getElementById('class-form-title');
-        var nameInput = document.getElementById('class-name');
-        var form = document.getElementById('class-form-inner');
-
-        if (!modal || !title || !nameInput || !form) {
-            console.warn('[ClassesView] Form elements not found');
-            showNotification('Form elements not found. Please refresh.', 'error');
-            return;
-        }
-
-        modal.classList.remove('hidden');
-
-        if (editId) {
-            title.textContent = 'Edit Class';
-            var cls = typeof window.getGraduatingClass === 'function' ? window.getGraduatingClass(editId) : null;
-            if (cls) {
-                nameInput.value = cls.name;
-                form.dataset.editId = editId;
-            } else {
-                showNotification('Class not found.', 'error');
-                modal.classList.add('hidden');
-                return;
-            }
-        } else {
-            title.textContent = 'Add Class';
-            nameInput.value = '';
-            delete form.dataset.editId;
-        }
-
-        nameInput.focus();
-    }
-
-    function saveClass(e) {
-        e.preventDefault();
-
-        var form = e.target;
-        var editId = form.dataset.editId;
-        var name = document.getElementById('class-name').value.trim();
-
-        if (!name) {
-            showNotification('Class name is required.', 'error');
-            return;
-        }
-
-        var result;
-        if (editId) {
-            if (typeof window.updateGraduatingClass === 'function') {
-                result = window.updateGraduatingClass(editId, name);
-            } else {
-                showNotification('updateGraduatingClass not available.', 'error');
-                return;
-            }
-        } else {
-            if (typeof window.createGraduatingClass === 'function') {
-                result = window.createGraduatingClass(name);
-            } else {
-                showNotification('createGraduatingClass not available.', 'error');
-                return;
-            }
-        }
-
-        if (!result || !result.success) {
-            showNotification(result && result.message ? result.message : 'Failed to save class.', 'error');
-            return;
-        }
-
-        document.getElementById('class-form-modal').classList.add('hidden');
-
-        if (result.data && result.data.graduatingClass) {
-            state.selectedClassId = result.data.graduatingClass.id;
-        }
-
-        renderClassList();
-        renderClassDetail();
-
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    showNotification(editId ? 'Class updated successfully.' : 'Class created successfully.', 'success');
-                })
-                .catch(function() {
-                    showNotification('Class saved in memory, but persistence failed.', 'error');
-                });
-        } else {
-            showNotification(editId ? 'Class updated successfully.' : 'Class created successfully.', 'success');
-        }
-    }
-
-    function deleteClassHandler(classId) {
-        var cls = typeof window.getGraduatingClass === 'function' ? window.getGraduatingClass(classId) : null;
-        if (!cls) {
-            showNotification('Class not found.', 'error');
-            return;
-        }
-
-        var trainees = typeof window.getCharactersByGraduatingClass === 'function' ? window.getCharactersByGraduatingClass(classId) : [];
-        var instructors = typeof window.getInstructorsByGraduatingClass === 'function' ? window.getInstructorsByGraduatingClass(classId) : [];
-        var totalMembers = trainees.length + instructors.length;
-
-        var message = 'Delete "' + cls.name + '" permanently?';
-        if (totalMembers > 0) {
-            message += '\n\nThis class has ' + totalMembers + ' members (' + trainees.length + ' trainees, ' + instructors.length + ' instructors).';
-            message += '\nAll members will be unassigned from this class.';
-        }
-        message += '\n\nThis action cannot be undone.';
-
-        if (!confirm(message)) {
-            return;
-        }
-
-        if (typeof window.deleteGraduatingClass !== 'function') {
-            showNotification('deleteGraduatingClass not available.', 'error');
-            return;
-        }
-
-        var result = window.deleteGraduatingClass(classId);
-        if (!result || !result.success) {
-            showNotification(result && result.message ? result.message : 'Failed to delete class.', 'error');
-            return;
-        }
-
-        state.selectedClassId = null;
-        renderClassList();
-        renderClassDetail();
-
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    showNotification('Class deleted successfully.', 'success');
-                })
-                .catch(function() {
-                    showNotification('Class deleted in memory, but persistence failed.', 'error');
-                });
-        } else {
-            showNotification('Class deleted successfully.', 'success');
-        }
-    }
-
-    // ============================================================
-    // MEMBER MANAGEMENT MODAL
+    // SHOW MEMBER MODAL - Fixed to ensure it works
     // ============================================================
 
     function showMemberModal(classId) {
+        console.log('[ClassesView] showMemberModal called for class:', classId);
+        
+        // Get or create the modal
         var modal = document.getElementById('member-modal');
+        if (!modal) {
+            console.error('[ClassesView] member-modal not found in DOM');
+            // Create the modal if it doesn't exist
+            modal = createMemberModal();
+            if (!modal) {
+                alert('Member management modal could not be created. Please refresh the page.');
+                return;
+            }
+        }
+
         var content = document.getElementById('member-modal-content');
         var title = document.getElementById('member-modal-title');
 
-        if (!modal || !content || !title) {
-            console.warn('[ClassesView] Member modal elements not found');
-            return;
+        if (!content || !title) {
+            console.error('[ClassesView] Modal content or title not found');
+            // Try to find them inside the modal
+            content = modal.querySelector('#member-modal-content');
+            title = modal.querySelector('#member-modal-title');
+            if (!content || !title) {
+                alert('Modal elements not found. Please refresh the page.');
+                return;
+            }
         }
 
         var cls = typeof window.getGraduatingClass === 'function' ? window.getGraduatingClass(classId) : null;
         if (!cls) {
-            showNotification('Class not found.', 'error');
+            alert('Class not found.');
             return;
         }
 
@@ -623,7 +496,7 @@
 
                 if (typeof window.assignCharacterToGraduatingClass !== 'function' || 
                     typeof window.removeCharacterFromGraduatingClass !== 'function') {
-                    showNotification('Member management functions not available.', 'error');
+                    alert('Member management functions not available.');
                     return;
                 }
 
@@ -639,7 +512,7 @@
                             });
                         }
                     } else {
-                        showNotification(result && result.message ? result.message : 'Failed to remove character.', 'error');
+                        alert(result && result.message ? result.message : 'Failed to remove character.');
                     }
                 } else {
                     var result = window.assignCharacterToGraduatingClass(charId, classId, isInstructor);
@@ -653,17 +526,22 @@
                             });
                         }
                     } else {
-                        showNotification(result && result.message ? result.message : 'Failed to add character.', 'error');
+                        alert(result && result.message ? result.message : 'Failed to add character.');
                     }
                 }
             });
         }
+
+        // Show modal
+        modal.classList.remove('hidden');
+        modal.style.display = 'flex';
 
         // Bind close buttons
         var closeBtn = document.getElementById('close-member-modal-btn');
         if (closeBtn) {
             closeBtn.addEventListener('click', function() {
                 modal.classList.add('hidden');
+                modal.style.display = 'none';
             });
         }
 
@@ -671,14 +549,191 @@
         if (closeX) {
             closeX.addEventListener('click', function() {
                 modal.classList.add('hidden');
+                modal.style.display = 'none';
             });
         }
 
+        // Close on backdrop click
         modal.addEventListener('click', function(e) {
             if (e.target === this) {
                 this.classList.add('hidden');
+                this.style.display = 'none';
             }
         });
+    }
+
+    // ============================================================
+    // CREATE MEMBER MODAL - Fallback if modal doesn't exist
+    // ============================================================
+
+    function createMemberModal() {
+        console.log('[ClassesView] Creating member modal');
+        
+        var modal = document.createElement('div');
+        modal.id = 'member-modal';
+        modal.className = 'modal hidden';
+        modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:1000;';
+        
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width:650px;max-height:80vh;overflow-y:auto;background:var(--panel);border-radius:var(--radius);padding:20px;position:relative;">
+                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                    <h3 id="member-modal-title" style="margin:0;">Manage Members</h3>
+                    <button class="close-modal" id="close-member-modal" style="background:none;border:none;font-size:1.5rem;cursor:pointer;color:var(--text-dim);">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="member-modal-content"></div>
+                    <div class="form-actions" style="margin-top:16px;">
+                        <button type="button" id="close-member-modal-btn" class="secondary">Close</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        console.log('[ClassesView] Member modal created');
+        return modal;
+    }
+
+    // ============================================================
+    // CLASS FORM
+    // ============================================================
+
+    function showClassForm(editId) {
+        var modal = document.getElementById('class-form-modal');
+        var title = document.getElementById('class-form-title');
+        var nameInput = document.getElementById('class-name');
+        var form = document.getElementById('class-form-inner');
+
+        if (!modal || !title || !nameInput || !form) {
+            alert('Form elements not found. Please refresh.');
+            return;
+        }
+
+        modal.classList.remove('hidden');
+        modal.style.display = 'flex';
+
+        if (editId) {
+            title.textContent = 'Edit Class';
+            var cls = typeof window.getGraduatingClass === 'function' ? window.getGraduatingClass(editId) : null;
+            if (cls) {
+                nameInput.value = cls.name;
+                form.dataset.editId = editId;
+            } else {
+                alert('Class not found.');
+                modal.classList.add('hidden');
+                modal.style.display = 'none';
+                return;
+            }
+        } else {
+            title.textContent = 'Add Class';
+            nameInput.value = '';
+            delete form.dataset.editId;
+        }
+
+        nameInput.focus();
+    }
+
+    function saveClass(e) {
+        e.preventDefault();
+
+        var form = e.target;
+        var editId = form.dataset.editId;
+        var name = document.getElementById('class-name').value.trim();
+
+        if (!name) {
+            alert('Class name is required.');
+            return;
+        }
+
+        var result;
+        if (editId) {
+            if (typeof window.updateGraduatingClass === 'function') {
+                result = window.updateGraduatingClass(editId, name);
+            } else {
+                alert('updateGraduatingClass not available.');
+                return;
+            }
+        } else {
+            if (typeof window.createGraduatingClass === 'function') {
+                result = window.createGraduatingClass(name);
+            } else {
+                alert('createGraduatingClass not available.');
+                return;
+            }
+        }
+
+        if (!result || !result.success) {
+            alert(result && result.message ? result.message : 'Failed to save class.');
+            return;
+        }
+
+        document.getElementById('class-form-modal').classList.add('hidden');
+        document.getElementById('class-form-modal').style.display = 'none';
+
+        if (result.data && result.data.graduatingClass) {
+            state.selectedClassId = result.data.graduatingClass.id;
+        }
+
+        renderClassList();
+        renderClassDetail();
+
+        if (typeof window.saveData === 'function') {
+            window.saveData()
+                .then(function() {
+                    console.log(editId ? 'Class updated successfully.' : 'Class created successfully.');
+                })
+                .catch(function() {
+                    console.warn('Class saved in memory, but persistence failed.');
+                });
+        }
+    }
+
+    function deleteClassHandler(classId) {
+        var cls = typeof window.getGraduatingClass === 'function' ? window.getGraduatingClass(classId) : null;
+        if (!cls) {
+            alert('Class not found.');
+            return;
+        }
+
+        var trainees = typeof window.getCharactersByGraduatingClass === 'function' ? window.getCharactersByGraduatingClass(classId) : [];
+        var instructors = typeof window.getInstructorsByGraduatingClass === 'function' ? window.getInstructorsByGraduatingClass(classId) : [];
+        var totalMembers = trainees.length + instructors.length;
+
+        var message = 'Delete "' + cls.name + '" permanently?';
+        if (totalMembers > 0) {
+            message += '\n\nThis class has ' + totalMembers + ' members (' + trainees.length + ' trainees, ' + instructors.length + ' instructors).';
+            message += '\nAll members will be unassigned from this class.';
+        }
+        message += '\n\nThis action cannot be undone.';
+
+        if (!confirm(message)) {
+            return;
+        }
+
+        if (typeof window.deleteGraduatingClass !== 'function') {
+            alert('deleteGraduatingClass not available.');
+            return;
+        }
+
+        var result = window.deleteGraduatingClass(classId);
+        if (!result || !result.success) {
+            alert(result && result.message ? result.message : 'Failed to delete class.');
+            return;
+        }
+
+        state.selectedClassId = null;
+        renderClassList();
+        renderClassDetail();
+
+        if (typeof window.saveData === 'function') {
+            window.saveData()
+                .then(function() {
+                    console.log('Class deleted successfully.');
+                })
+                .catch(function() {
+                    console.warn('Class deleted in memory, but persistence failed.');
+                });
+        }
     }
 
     // ============================================================
@@ -696,25 +751,6 @@
     }
 
     // ============================================================
-    // NOTIFICATION HELPER
-    // ============================================================
-
-    function showNotification(message, type) {
-        type = type || 'info';
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
-        }
-        if (type === 'error') {
-            alert('Error: ' + message);
-        } else if (type === 'success') {
-            alert(message);
-        } else {
-            console.log('[ClassesView]', message);
-        }
-    }
-
-    // ============================================================
     // EVENT INITIALISATION
     // ============================================================
 
@@ -723,25 +759,30 @@
         
         var addBtn = document.getElementById('add-class-btn');
         if (addBtn) {
-            addBtn.addEventListener('click', function() {
+            // Remove existing listeners by cloning
+            var newAddBtn = addBtn.cloneNode(true);
+            addBtn.parentNode.replaceChild(newAddBtn, addBtn);
+            newAddBtn.addEventListener('click', function() {
                 console.log('[ClassesView] Add class button clicked');
                 showClassForm();
             });
-        } else {
-            console.warn('[ClassesView] add-class-btn not found');
         }
 
         var closeFormBtn = document.getElementById('close-class-form');
         if (closeFormBtn) {
             closeFormBtn.addEventListener('click', function() {
-                document.getElementById('class-form-modal').classList.add('hidden');
+                var modal = document.getElementById('class-form-modal');
+                modal.classList.add('hidden');
+                modal.style.display = 'none';
             });
         }
 
         var cancelFormBtn = document.getElementById('cancel-class-form');
         if (cancelFormBtn) {
             cancelFormBtn.addEventListener('click', function() {
-                document.getElementById('class-form-modal').classList.add('hidden');
+                var modal = document.getElementById('class-form-modal');
+                modal.classList.add('hidden');
+                modal.style.display = 'none';
             });
         }
 
@@ -755,15 +796,7 @@
             formModal.addEventListener('click', function(e) {
                 if (e.target === this) {
                     this.classList.add('hidden');
-                }
-            });
-        }
-
-        var memberModal = document.getElementById('member-modal');
-        if (memberModal) {
-            memberModal.addEventListener('click', function(e) {
-                if (e.target === this) {
-                    this.classList.add('hidden');
+                    this.style.display = 'none';
                 }
             });
         }
