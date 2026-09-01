@@ -2,6 +2,7 @@
  * js/modules/academia/academia-main.js - Academia Main Entry Point
  * Uses existing character list with class filter extension
  * Auto-detects student/instructor role for schedule view
+ * Mobile-friendly with collapsible sidebar
  * Path: js/modules/academia/academia-main.js
  */
 
@@ -23,7 +24,8 @@
         filterName: '',
         activeTab: 'schedule',
         currentWeek: 1,
-        viewMode: null // 'student', 'instructor', or null (auto-detect)
+        viewMode: null, // 'student', 'instructor', or null (auto-detect)
+        sidebarCollapsed: false
     };
 
     window.academiaState = state;
@@ -103,7 +105,6 @@
         var isStudent = false;
         var isInstructor = false;
 
-        // Check if character has a student status (trainee, rookie, junior, etc.)
         var studentStatuses = ['trainee', 'rookie', 'junior', 'student'];
         for (var i = 0; i < studentStatuses.length; i++) {
             if (status === studentStatuses[i] || status.indexOf(studentStatuses[i]) !== -1) {
@@ -112,7 +113,6 @@
             }
         }
 
-        // Check if character has an instructor status
         var instructorStatuses = ['instructor', 'teacher', 'professor', 'senior'];
         for (var i = 0; i < instructorStatuses.length; i++) {
             if (status === instructorStatuses[i] || status.indexOf(instructorStatuses[i]) !== -1) {
@@ -121,7 +121,6 @@
             }
         }
 
-        // Also check careerStatus for historical data
         if (char.careerStatus && Array.isArray(char.careerStatus)) {
             for (var i = 0; i < char.careerStatus.length; i++) {
                 var entry = char.careerStatus[i];
@@ -152,37 +151,12 @@
 
     function getDefaultViewMode(char) {
         var role = detectCharacterRole(char);
-        
-        if (role.role === 'both') {
-            // If both, default to student (user can switch via dropdown)
-            return 'student';
-        } else if (role.role === 'student') {
+        if (role.role === 'both' || role.role === 'student') {
             return 'student';
         } else if (role.role === 'instructor') {
             return 'instructor';
-        } else {
-            // No role detected, default to student
-            return 'student';
         }
-    }
-
-    function getAvailableViewModes(char) {
-        var role = detectCharacterRole(char);
-        var modes = [];
-        
-        if (role.isStudent) {
-            modes.push({ value: 'student', label: 'Student Schedule' });
-        }
-        if (role.isInstructor) {
-            modes.push({ value: 'instructor', label: 'Instructor Schedule' });
-        }
-        
-        // If no modes detected, default to student
-        if (modes.length === 0) {
-            modes.push({ value: 'student', label: 'Schedule' });
-        }
-        
-        return modes;
+        return 'student';
     }
 
     // ============================================================
@@ -217,13 +191,8 @@
 
         container.innerHTML = getAcademiaHTML();
 
-        // Render the character list
         renderCharacterList(container);
-
-        // Render the detail panel
         renderDetail(container);
-
-        // Bind events
         bindEvents(container);
 
         console.log('[Academia] Rendered successfully');
@@ -267,7 +236,6 @@
 
         var html = '';
 
-        // Class filter
         html += '<div class="academia-filters" style="margin-bottom:8px;">';
         html += '<select id="academia-class-filter" style="width:100%;padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;margin-bottom:4px;">';
         html += '<option value="all">All Classes</option>';
@@ -283,12 +251,9 @@
         }
 
         html += '</select>';
-
-        // Name filter
         html += '<input type="text" id="academia-name-filter" value="' + escapeHtml(state.filterName || '') + '" placeholder="Search characters..." style="width:100%;padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;">';
         html += '</div>';
 
-        // Character list
         html += '<div id="academia-characters-list" style="display:flex;flex-direction:column;gap:2px;max-height:450px;overflow-y:auto;">';
 
         var filteredStudents = students.filter(function(char) {
@@ -298,14 +263,12 @@
                     return false;
                 }
             }
-
             if (state.filterClass !== 'all') {
                 var classIds = Array.isArray(char.classIds) ? char.classIds : [];
                 if (!classIds.some(function(id) { return String(id) === String(state.filterClass); })) {
                     return false;
                 }
             }
-
             return true;
         });
 
@@ -325,7 +288,6 @@
                 var isSelected = String(char.id) === String(selectedId);
                 var isDeceased = char.deceased || false;
 
-                // Show role indicator
                 var role = detectCharacterRole(char);
                 var roleIcon = '';
                 if (role.role === 'both') {
@@ -358,19 +320,16 @@
 
         listContainer.innerHTML = html;
 
-        // Bind list click events
         var items = listContainer.querySelectorAll('.academia-list-item');
         for (var i = 0; i < items.length; i++) {
             var el = items[i];
             el.addEventListener('click', function() {
                 state.selectedCharacterId = this.dataset.id;
-                // Reset view mode when changing character (will auto-detect)
                 state.viewMode = null;
                 renderAcademia(container);
             });
         }
 
-        // Bind filter events
         var classFilter = listContainer.querySelector('#academia-class-filter');
         if (classFilter) {
             classFilter.addEventListener('change', function() {
@@ -414,41 +373,13 @@
 
         var characterName = window.getDisplayName(char);
         var activeTab = state.activeTab || 'schedule';
-        
-        // Auto-detect view mode
-        var role = detectCharacterRole(char);
-        var availableModes = getAvailableViewModes(char);
-        
-        // Determine current view mode
-        var currentViewMode = state.viewMode;
-        if (!currentViewMode || !availableModes.some(function(m) { return m.value === currentViewMode; })) {
-            // Auto-detect: if both, default to student; otherwise use the only available
-            if (role.role === 'both') {
-                currentViewMode = 'student';
-            } else if (availableModes.length === 1) {
-                currentViewMode = availableModes[0].value;
-            } else {
-                currentViewMode = 'student';
-            }
-            state.viewMode = currentViewMode;
-        }
+        var currentViewMode = state.viewMode || getDefaultViewMode(char);
+        state.viewMode = currentViewMode;
 
         var html = '';
         html += '<div class="academia-detail-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border-soft);">';
         html += '<h3 style="color:var(--accent);margin:0;">' + escapeHtml(characterName) + '</h3>';
         html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">';
-        
-        // View mode dropdown (only show if multiple modes available)
-        if (availableModes.length > 1) {
-            html += '<select id="academia-view-mode" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;">';
-            for (var i = 0; i < availableModes.length; i++) {
-                var mode = availableModes[i];
-                var selected = mode.value === currentViewMode ? ' selected' : '';
-                html += '<option value="' + escapeHtml(mode.value) + '"' + selected + '>' + escapeHtml(mode.label) + '</option>';
-            }
-            html += '</select>';
-        }
-        
         html += '<button class="academia-tab-btn small ' + (activeTab === 'schedule' ? 'primary' : 'secondary') + '" data-tab="schedule">Schedule</button>';
         html += '<button class="academia-tab-btn small ' + (activeTab === 'grades' ? 'primary' : 'secondary') + '" data-tab="grades">Grades</button>';
         html += '</div>';
@@ -464,23 +395,12 @@
 
         detailContainer.innerHTML = html;
 
-        // Bind view mode change
-        var viewModeSelect = detailContainer.querySelector('#academia-view-mode');
-        if (viewModeSelect) {
-            viewModeSelect.addEventListener('change', function() {
-                state.viewMode = this.value;
-                renderDetail(container);
-            });
-        }
-
-        // Render schedule or grades
         if (activeTab === 'schedule') {
             renderScheduleTab(detailContainer, char, currentViewMode);
         } else {
             renderGradesTab(detailContainer, char);
         }
 
-        // Bind tab switching
         var tabBtns = detailContainer.querySelectorAll('.academia-tab-btn');
         tabBtns.forEach(function(btn) {
             btn.addEventListener('click', function() {
@@ -491,7 +411,7 @@
     }
 
     // ============================================================
-    // SCHEDULE TAB - Using CalendarUI with auto-detected mode
+    // SCHEDULE TAB - With Copy Week and Collapsible Sidebar
     // ============================================================
 
     function renderScheduleTab(container, char, viewMode) {
@@ -510,12 +430,8 @@
             return;
         }
 
-        // Determine which mode to use
         var modeToUse = viewMode || 'student';
-        
-        // Check if the mode is available
         if (!window.CalendarModes.hasMode(modeToUse)) {
-            // Fallback to student
             modeToUse = 'student';
             if (!window.CalendarModes.hasMode(modeToUse)) {
                 scheduleContainer.innerHTML = '<p class="empty-state">No calendar modes available.</p>';
@@ -523,7 +439,7 @@
             }
         }
 
-        // Create a container for the calendar
+        // Create calendar container
         var calendarContainer = document.createElement('div');
         calendarContainer.id = 'academia-calendar-container';
         calendarContainer.style.width = '100%';
@@ -531,10 +447,75 @@
         scheduleContainer.innerHTML = '';
         scheduleContainer.appendChild(calendarContainer);
 
-        // Get current week from state
+        // Add copy week controls
+        var controlsContainer = document.createElement('div');
+        controlsContainer.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;padding:8px 12px;background:var(--panel-alt);border-radius:6px;border:1px solid var(--border-soft);';
+        controlsContainer.innerHTML = `
+            <span style="font-size:0.75rem;color:var(--text-dim);">Week ${state.currentWeek}</span>
+            <button id="copy-week-btn" class="small primary" style="margin-left:auto;">Copy Week</button>
+            <div id="copy-week-target" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;">
+                <span style="font-size:0.75rem;color:var(--text-dim);">to:</span>
+                <input type="number" id="copy-week-target-input" value="${state.currentWeek + 1}" min="1" max="52" style="width:60px;padding:2px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">
+                <button id="copy-week-confirm" class="small success">Confirm</button>
+                <button id="copy-week-cancel" class="small secondary">Cancel</button>
+            </div>
+            <button id="toggle-sidebar-btn" class="small secondary" style="margin-left:4px;">${state.sidebarCollapsed ? 'Show' : 'Hide'} Sidebar</button>
+        `;
+        scheduleContainer.insertBefore(controlsContainer, calendarContainer);
+
+        // Copy week controls
+        var copyBtn = controlsContainer.querySelector('#copy-week-btn');
+        var targetDiv = controlsContainer.querySelector('#copy-week-target');
+        var confirmBtn = controlsContainer.querySelector('#copy-week-confirm');
+        var cancelBtn = controlsContainer.querySelector('#copy-week-cancel');
+        var targetInput = controlsContainer.querySelector('#copy-week-target-input');
+
+        if (copyBtn) {
+            copyBtn.addEventListener('click', function() {
+                targetDiv.style.display = 'flex';
+                copyBtn.style.display = 'none';
+            });
+        }
+
+        if (cancelBtn) {
+            cancelBtn.addEventListener('click', function() {
+                targetDiv.style.display = 'none';
+                copyBtn.style.display = 'inline-block';
+            });
+        }
+
+        if (confirmBtn) {
+            confirmBtn.addEventListener('click', function() {
+                var targetWeek = parseInt(targetInput.value, 10);
+                if (isNaN(targetWeek) || targetWeek < 1 || targetWeek > 52) {
+                    showNotification('Please enter a valid week (1-52).', 'error');
+                    return;
+                }
+                if (targetWeek === state.currentWeek) {
+                    showNotification('Cannot copy to the same week.', 'error');
+                    return;
+                }
+                copyWeek(char.id, state.currentWeek, targetWeek, calendarContainer);
+                targetDiv.style.display = 'none';
+                copyBtn.style.display = 'inline-block';
+            });
+        }
+
+        // Toggle sidebar
+        var toggleBtn = controlsContainer.querySelector('#toggle-sidebar-btn');
+        if (toggleBtn) {
+            toggleBtn.addEventListener('click', function() {
+                state.sidebarCollapsed = !state.sidebarCollapsed;
+                this.textContent = state.sidebarCollapsed ? 'Show Sidebar' : 'Hide Sidebar';
+                var sidebar = calendarContainer.querySelector('.schedule-sidebar');
+                if (sidebar) {
+                    sidebar.style.display = state.sidebarCollapsed ? 'none' : 'flex';
+                }
+            });
+        }
+
         var week = state.currentWeek || 1;
 
-        // Initialize CalendarUI
         try {
             window.CalendarUI.init(calendarContainer, {
                 mode: modeToUse,
@@ -544,6 +525,15 @@
                 onStateChange: function(newState) {
                     if (newState && newState.week) {
                         state.currentWeek = newState.week;
+                        // Update week display
+                        var weekDisplay = controlsContainer.querySelector('span');
+                        if (weekDisplay) {
+                            weekDisplay.textContent = 'Week ' + state.currentWeek;
+                        }
+                        // Update target input
+                        if (targetInput) {
+                            targetInput.value = state.currentWeek + 1;
+                        }
                     }
                 }
             });
@@ -552,6 +542,50 @@
         } catch (e) {
             console.error('[Academia] Failed to initialize CalendarUI:', e);
             scheduleContainer.innerHTML = '<p class="empty-state">Error loading calendar. Please refresh.</p>';
+        }
+    }
+
+    // ============================================================
+    // COPY WEEK
+    // ============================================================
+
+    function copyWeek(studentId, sourceWeek, targetWeek, container) {
+        if (typeof window.duplicateStudentSchedule !== 'function') {
+            showNotification('Copy week function not available.', 'error');
+            return;
+        }
+
+        // Show loading state
+        var originalHtml = container.innerHTML;
+        container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-dim);">Copying schedule...</div>';
+
+        var result = window.duplicateStudentSchedule(studentId, sourceWeek, targetWeek, true);
+
+        if (result && result.success) {
+            // Re-render
+            if (typeof window.saveData === 'function') {
+                window.saveData()
+                    .then(function() {
+                        showNotification('Schedule copied from week ' + sourceWeek + ' to week ' + targetWeek + '.', 'success');
+                        // Re-initialize calendar
+                        var calendarContainer = container.querySelector('#academia-calendar-container');
+                        if (calendarContainer) {
+                            // Re-render will happen via state change
+                            window.CalendarUI.setState({ week: targetWeek });
+                            window.CalendarUI.render();
+                        }
+                    })
+                    .catch(function() {
+                        showNotification('Schedule copied in memory, but persistence failed.', 'error');
+                        window.CalendarUI.render();
+                    });
+            } else {
+                showNotification('Schedule copied from week ' + sourceWeek + ' to week ' + targetWeek + '.', 'success');
+                window.CalendarUI.render();
+            }
+        } else {
+            container.innerHTML = originalHtml;
+            showNotification(result && result.message ? result.message : 'Failed to copy schedule.', 'error');
         }
     }
 
@@ -565,13 +599,11 @@
             return;
         }
 
-        // Use the existing grades view if available
         if (typeof window.renderAcademiaGrades === 'function') {
             window.renderAcademiaGrades(gradesContainer, char.id);
             return;
         }
 
-        // Fallback: render simple grades view
         renderSimpleGradesView(gradesContainer, char);
     }
 
@@ -594,7 +626,6 @@
         if (disciplines.length === 0) {
             html += '<p class="empty-state">No disciplines available for week ' + week + '.</p>';
         } else {
-            // Get student's schedule to know which disciplines they're enrolled in
             var schedule = window.getStudentSchedule(studentId, week) || {};
             var enrolledDisciplineIds = [];
             for (var day in schedule) {
@@ -623,7 +654,6 @@
                 var d = disciplines[i];
                 var isEnrolled = enrolledDisciplineIds.some(function(id) { return String(id) === String(d.id); });
                 
-                // Only show disciplines the student is enrolled in (has schedule)
                 if (enrolledDisciplineIds.length > 0 && !isEnrolled) {
                     continue;
                 }
@@ -667,27 +697,23 @@
             html += '<div style="margin-top:12px;"><button id="save-grades-btn" class="primary small">Save Grades</button></div>';
         }
 
-        // Summary
-        if (typeof window.calculateGradeSummary === 'function') {
-            var summary = window.calculateGradeSummary(studentId, week);
-            if (summary) {
-                html += '<div class="grades-summary" style="margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;">';
-                html += '<h5 style="margin:0 0 8px 0;color:var(--text-dim);">Summary</h5>';
-                html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">';
-                html += '<div><span style="color:var(--text-dim);">Average:</span> <strong>' + (summary.average !== null ? summary.average.toFixed(1) : '--') + '</strong></div>';
-                html += '<div><span style="color:var(--text-dim);">Graded:</span> <strong>' + summary.gradedCount + '/' + summary.scheduledCount + '</strong></div>';
-                html += '<div><span style="color:var(--text-dim);">Mandatory:</span> <strong>' + summary.mandatoryGraded + '/' + summary.mandatoryScheduled + '</strong></div>';
-                html += '<div><span style="color:var(--text-dim);">Optional:</span> <strong>' + summary.optionalGraded + '/' + summary.optionalScheduled + '</strong></div>';
-                html += '</div>';
-                html += '</div>';
-            }
+        var summary = window.calculateGradeSummary(studentId, week);
+        if (summary) {
+            html += '<div class="grades-summary" style="margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;">';
+            html += '<h5 style="margin:0 0 8px 0;color:var(--text-dim);">Summary</h5>';
+            html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">';
+            html += '<div><span style="color:var(--text-dim);">Average:</span> <strong>' + (summary.average !== null ? summary.average.toFixed(1) : '--') + '</strong></div>';
+            html += '<div><span style="color:var(--text-dim);">Graded:</span> <strong>' + summary.gradedCount + '/' + summary.scheduledCount + '</strong></div>';
+            html += '<div><span style="color:var(--text-dim);">Mandatory:</span> <strong>' + summary.mandatoryGraded + '/' + summary.mandatoryScheduled + '</strong></div>';
+            html += '<div><span style="color:var(--text-dim);">Optional:</span> <strong>' + summary.optionalGraded + '/' + summary.optionalScheduled + '</strong></div>';
+            html += '</div>';
+            html += '</div>';
         }
 
         html += '</div>';
 
         container.innerHTML = html;
 
-        // Bind grade input events for live preview
         var inputs = container.querySelectorAll('.grade-input');
         for (var i = 0; i < inputs.length; i++) {
             var input = inputs[i];
@@ -719,7 +745,6 @@
             });
         }
 
-        // Bind save button
         var saveBtn = container.querySelector('#save-grades-btn');
         if (saveBtn) {
             saveBtn.addEventListener('click', function() {
@@ -727,7 +752,6 @@
             });
         }
 
-        // Bind week navigation
         var prevBtn = container.querySelector('#grades-prev-week');
         var nextBtn = container.querySelector('#grades-next-week');
 
@@ -799,7 +823,6 @@
                         console.warn('Persistence failed, but grades saved in memory.');
                     });
                 }
-                // Re-render
                 var char = window.getCharacterById(studentId);
                 if (char) {
                     renderSimpleGradesView(container, char);
@@ -809,6 +832,27 @@
             }
         } else {
             alert('saveGrades function not available. Grades saved in memory only.');
+        }
+    }
+
+    // ============================================================
+    // NOTIFICATION HELPER
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+        if (typeof window.showToast === 'function') {
+            window.showToast(message, type);
+            return;
+        }
+        if (typeof window.notify === 'function') {
+            window.notify(message, type);
+            return;
+        }
+        if (type === 'error') {
+            alert('Error: ' + message);
+        } else if (type === 'success') {
+            alert(message);
         }
     }
 
