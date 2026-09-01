@@ -94,6 +94,26 @@
     }
 
     // ============================================================
+    // FORMAT HOUR - Use CalendarUtils
+    // ============================================================
+
+    function formatHour(hour, includeMinutes) {
+        if (window.CalendarUtils && typeof window.CalendarUtils.formatHour === 'function') {
+            return window.CalendarUtils.formatHour(hour, includeMinutes);
+        }
+        // Fallback
+        includeMinutes = includeMinutes !== false;
+        var num = parseInt(hour, 10);
+        if (isNaN(num) || num < 0 || num > 23) {
+            return String(hour);
+        }
+        var displayHour = num > 12 ? num - 12 : num;
+        if (num === 0) displayHour = 12;
+        var ampm = num >= 12 ? 'PM' : 'AM';
+        return displayHour + (includeMinutes ? ':00 ' : ' ') + ampm;
+    }
+
+    // ============================================================
     // CALENDAR GRID RENDERER
     // ============================================================
 
@@ -108,7 +128,6 @@
      * @param {function} data.getDiscipline - Function to get discipline by ID
      * @param {function} data.getDuration - Function to get class duration
      * @param {function} data.getLabel - Function to get class label
-     * @param {function} data.getGroupLabel - Function to get class group label
      * @param {function} data.getInstructorName - Function to get instructor name
      * @param {function} data.getEntityDisplayName - Function to get entity display name
      * @param {array} data.availableItems - Available items for sidebar (optional)
@@ -139,94 +158,102 @@
             }
         }
 
-        var html = '<div class="calendar-grid-container">';
-        html += '<div class="calendar-header">';
-        html += '<h3>' + escapeHtml(entityName) + ' - Week ' + state.week + '</h3>';
+        var html = '<div class="calendar-grid-container" style="display:grid;grid-template-columns:1fr 250px;gap:16px;">';
+        html += '<div class="calendar-grid-wrapper">';
+        html += '<div class="calendar-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
+        html += '<h3 style="margin:0;">' + escapeHtml(entityName) + ' - Week ' + state.week + '</h3>';
         html += '</div>';
 
-        html += '<div class="schedule-grid">';
+        html += '<div class="schedule-grid" style="display:grid;grid-template-columns:50px repeat(7,1fr);gap:2px;font-size:0.7rem;">';
 
+        // Header row
+        html += '<div class="schedule-cell schedule-time" style="font-weight:600;color:var(--text-dim);padding:4px;text-align:right;">Time</div>';
         for (var day = 1; day <= 7; day++) {
             var isRestDay = restDays.indexOf(day) !== -1;
             var dayName = DAY_NAMES[day] || 'Day ' + day;
+            html += '<div class="schedule-cell schedule-day" style="font-weight:600;color:' + (isRestDay ? 'var(--danger)' : 'var(--text-dim)') + ';text-align:center;padding:4px;">' + escapeHtml(dayName) + (isRestDay ? ' [R]' : '') + '</div>';
+        }
 
-            html += '<div class="day-column' + (isRestDay ? ' rest-day' : '') + '" data-day="' + day + '">';
-            html += '<div class="day-header">' + escapeHtml(dayName) + (isRestDay ? ' [R]' : '') + '</div>';
-            html += '<div class="day-slots">';
+        // Body rows
+        for (var h = 0; h < hours.length; h++) {
+            var hour = hours[h];
+            var hourDisplay = formatHour(hour);
 
-            var occupiedHours = {};
+            html += '<div class="schedule-cell schedule-time" style="font-size:0.6rem;color:var(--text-dim);padding:4px;text-align:right;">' + escapeHtml(hourDisplay) + '</div>';
 
-            for (var i = 0; i < hours.length; i++) {
-                var hour = hours[i];
+            for (var day = 1; day <= 7; day++) {
+                var isRestDay = restDays.indexOf(day) !== -1;
+                var disciplineId = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
+                var isOccupied = !!disciplineId;
 
-                if (occupiedHours[hour]) {
-                    continue;
-                }
+                var classes = 'schedule-cell schedule-slot';
+                classes += isOccupied ? ' occupied' : ' empty';
+                if (isRestDay) classes += ' rest-day';
 
-                var disciplineId = null;
-                if (schedule[day] && schedule[day][hour]) {
-                    disciplineId = schedule[day][hour];
-                }
-
-                if (disciplineId) {
+                var dataAttrs = 'data-day="' + day + '" data-hour="' + hour + '"';
+                if (isOccupied) {
+                    dataAttrs += ' data-discipline="' + escapeHtml(disciplineId) + '"';
                     var duration = data.getDuration ? data.getDuration(day, hour) : 1;
-                    var label = data.getLabel ? data.getLabel(day, hour) : '';
-                    var groupLabel = data.getGroupLabel ? data.getGroupLabel(day, hour) : '';
-                    var instructorName = data.getInstructorName ? data.getInstructorName(day, hour) : '';
-                    var isBlock = data.isBlock ? data.isBlock(day, hour) : false;
+                    dataAttrs += ' data-duration="' + duration + '"';
+                }
+
+                var style = 'min-height:30px;padding:2px;border:1px solid var(--border-soft);border-radius:3px;cursor:pointer;transition:0.15s;';
+                if (isRestDay) {
+                    style += 'background:var(--danger-soft);border-color:var(--danger);opacity:0.4;';
+                } else if (isOccupied) {
+                    style += 'background:var(--accent-soft);border-color:var(--accent);';
+                }
+
+                html += '<div class="' + classes + '" ' + dataAttrs + ' style="' + style + '">';
+
+                if (isOccupied && !isRestDay) {
                     var discipline = data.getDiscipline ? data.getDiscipline(disciplineId) : null;
                     var disciplineName = discipline ? discipline.name : 'Unknown';
+                    var label = data.getLabel ? data.getLabel(day, hour) : '';
+                    var duration = data.getDuration ? data.getDuration(day, hour) : 1;
+                    var instructorName = data.getInstructorName ? data.getInstructorName(day, hour) : '';
+                    var isBlock = data.isBlock ? data.isBlock(day, hour) : false;
 
-                    for (var h = hour; h < hour + duration && h <= CALENDAR_END_HOUR; h++) {
-                        occupiedHours[h] = true;
+                    html += '<div style="font-weight:600;font-size:0.65rem;color:var(--accent);">' + escapeHtml(disciplineName) + '</div>';
+                    if (label) {
+                        html += '<div style="font-size:0.5rem;color:var(--text-dim);">[' + escapeHtml(label) + ']</div>';
+                    }
+                    if (instructorName) {
+                        html += '<div style="font-size:0.5rem;color:var(--text-dim);">' + escapeHtml(instructorName) + '</div>';
+                    }
+                    if (duration > 1) {
+                        html += '<div style="font-size:0.5rem;color:var(--text-dim);">' + duration + 'h</div>';
+                    }
+                    if (isBlock) {
+                        html += '<div style="font-size:0.5rem;color:var(--danger);">[BLOCKED]</div>';
                     }
 
-                    var labelDisplay = label ? ' [' + escapeHtml(label) + ']' : '';
-                    var groupDisplay = groupLabel ? ' (G' + escapeHtml(groupLabel) + ')' : '';
-                    var durationDisplay = duration > 1 ? ' (' + duration + 'h)' : '';
-                    var blockDisplay = isBlock ? ' [B]' : '';
-                    var instructorDisplay = instructorName ? ' (' + escapeHtml(instructorName) + ')' : '';
-
-                    var classNames = 'time-slot occupied';
-                    if (isBlock) classNames += ' blocked';
-
-                    // Additional metadata for slot
-                    var extraMetadata = '';
+                    // Additional metadata
                     if (data.slotMetadata) {
                         var meta = data.slotMetadata(day, hour);
                         if (meta) {
-                            extraMetadata = meta;
+                            html += '<div style="font-size:0.5rem;color:var(--text-dim);">' + meta + '</div>';
                         }
                     }
 
-                    html += '<div class="' + classNames + '" data-day="' + day + '" data-hour="' + hour + '" data-duration="' + duration + '" style="min-height:' + (30 * duration) + 'px;height:' + (30 * duration) + 'px;">';
-                    html += '<span class="slot-time">' + CalendarUtils.formatHour(hour) + '</span>';
-                    html += '<span class="slot-label">' + escapeHtml(disciplineName) + labelDisplay + groupDisplay + durationDisplay + blockDisplay + instructorDisplay + extraMetadata + '</span>';
-                    html += '</div>';
+                    // Remove button (X) for occupied slots
+                    html += '<div style="font-size:0.5rem;color:var(--danger);cursor:pointer;" class="schedule-remove-slot" data-day="' + day + '" data-hour="' + hour + '">✕</div>';
 
-                } else if (isRestDay) {
-                    html += '<div class="time-slot empty rest-slot" data-day="' + day + '" data-hour="' + hour + '">';
-                    html += '<span class="slot-time">' + CalendarUtils.formatHour(hour) + '</span>';
-                    html += '</div>';
-
-                } else {
-                    html += '<div class="time-slot empty" data-day="' + day + '" data-hour="' + hour + '">';
-                    html += '<span class="slot-time">' + CalendarUtils.formatHour(hour) + '</span>';
-                    html += '<span class="slot-label">+</span>';
-                    html += '</div>';
+                } else if (!isRestDay) {
+                    html += '<div style="font-size:0.5rem;color:var(--text-dim);text-align:center;padding:4px 0;">+</div>';
                 }
-            }
 
-            html += '</div>';
-            html += '</div>';
+                html += '</div>';
+            }
         }
 
         html += '</div>';
+        html += '</div>'; // end calendar-grid-wrapper
 
         // Sidebar
         html += getSidebarHTML(data, state);
 
-        html += '</div>';
+        html += '</div>'; // end calendar-grid-container
 
         container.innerHTML = html;
     }
@@ -236,30 +263,33 @@
     // ============================================================
 
     function getSidebarHTML(data, state) {
-        var html = '<div class="schedule-sidebar">';
+        var html = '<div class="schedule-sidebar" style="display:flex;flex-direction:column;gap:12px;">';
 
         // Rest Days
         if (data.restDays !== undefined) {
-            html += '<div class="sidebar-section">';
-            html += '<h4>Rest Days</h4>';
-            html += '<div class="rest-day-controls">';
+            html += '<div class="sidebar-section" style="background:var(--panel-alt);padding:10px;border-radius:6px;border:1px solid var(--border-soft);">';
+            html += '<h4 style="margin:0 0 8px 0;font-size:0.8rem;color:var(--text-dim);">Rest Days</h4>';
+            html += '<div class="rest-day-controls" style="display:flex;flex-wrap:wrap;gap:4px;">';
             for (var d = 1; d <= 7; d++) {
                 var checked = data.restDays.indexOf(d) !== -1 ? 'checked' : '';
-                html += '<label><input type="checkbox" class="rest-day-check" data-day="' + d + '" ' + checked + '> ' + DAY_NAMES[d] + '</label>';
+                html += '<label style="font-size:0.7rem;cursor:pointer;display:flex;align-items:center;gap:3px;">';
+                html += '<input type="checkbox" class="rest-day-check" data-day="' + d + '" ' + checked + ' style="accent-color:var(--accent);">';
+                html += DAY_NAMES[d];
+                html += '</label>';
             }
             html += '</div>';
-            html += '<button id="save-rest-days-btn" class="small primary">Save Rest Days</button>';
+            html += '<button id="save-rest-days-btn" class="small primary" style="margin-top:8px;">Save Rest Days</button>';
             html += '</div>';
         }
 
         // Available Items
         if (data.availableItems && data.availableItems.length > 0) {
-            html += '<div class="sidebar-section">';
-            html += '<h4>' + (data.availableLabel || 'Available Items') + '</h4>';
-            html += '<div id="available-items">';
+            html += '<div class="sidebar-section" style="background:var(--panel-alt);padding:10px;border-radius:6px;border:1px solid var(--border-soft);">';
+            html += '<h4 style="margin:0 0 8px 0;font-size:0.8rem;color:var(--text-dim);">' + (data.availableLabel || 'Available Items') + '</h4>';
+            html += '<div id="available-items" style="display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;">';
             for (var i = 0; i < data.availableItems.length; i++) {
                 var item = data.availableItems[i];
-                html += '<div class="available-item" data-id="' + escapeHtml(item.id) + '">';
+                html += '<div class="available-item" data-id="' + escapeHtml(item.id) + '" style="padding:4px 8px;background:var(--bg);border-radius:4px;cursor:pointer;font-size:0.7rem;border:1px solid var(--border-soft);transition:0.15s;">';
                 html += escapeHtml(item.label);
                 if (item.subtitle) {
                     html += ' <span style="font-size:0.6rem;color:var(--text-dim);">' + escapeHtml(item.subtitle) + '</span>';
@@ -297,6 +327,7 @@
      * @param {function} callbacks.onBlockClick - Called when block is clicked
      * @param {function} callbacks.onBlockRightClick - Called when block is right-clicked
      * @param {function} callbacks.onClearWeek - Called when clear week button is clicked
+     * @param {function} callbacks.onRemoveSlot - Called when remove slot (X) is clicked
      */
     function bindEvents(container, state, callbacks) {
         if (!container) {
@@ -306,7 +337,7 @@
         callbacks = callbacks || {};
 
         // Empty slots - Click to add
-        var emptySlots = container.querySelectorAll('.time-slot.empty:not(.rest-slot)');
+        var emptySlots = container.querySelectorAll('.time-slot.empty:not(.rest-day)');
         for (var i = 0; i < emptySlots.length; i++) {
             var slot = emptySlots[i];
             slot.addEventListener('click', function() {
@@ -336,6 +367,25 @@
                 var hour = parseInt(this.dataset.hour, 10);
                 if (callbacks.onSlotRightClick) {
                     callbacks.onSlotRightClick(day, hour);
+                }
+            });
+        }
+
+        // Remove slot buttons (X)
+        var removeBtns = container.querySelectorAll('.schedule-remove-slot');
+        for (var r = 0; r < removeBtns.length; r++) {
+            var btn = removeBtns[r];
+            btn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                var day = parseInt(this.dataset.day, 10);
+                var hour = parseInt(this.dataset.hour, 10);
+                if (callbacks.onRemoveSlot) {
+                    callbacks.onRemoveSlot(day, hour);
+                } else if (confirm('Remove this class from the schedule?')) {
+                    // Fallback - just call right-click handler
+                    if (callbacks.onSlotRightClick) {
+                        callbacks.onSlotRightClick(day, hour);
+                    }
                 }
             });
         }
@@ -446,23 +496,19 @@
                 '<div class="modal-body">' +
                     '<div class="form-group">' +
                         '<label>Discipline:</label>' +
-                        '<select id="add-class-select" style="width:100%;padding:8px;margin-bottom:8px;">' +
+                        '<select id="add-class-select" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;">' +
                             optionsHTML +
                         '</select>' +
                     '</div>' +
                     '<div class="form-group">' +
                         '<label>Duration:</label>' +
-                        '<select id="add-class-duration" style="width:100%;padding:8px;">' +
+                        '<select id="add-class-duration" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;">' +
                             durationOptionsHTML +
                         '</select>' +
                     '</div>' +
                     '<div class="form-group">' +
                         '<label>Label (optional):</label>' +
-                        '<input type="text" id="add-class-label" placeholder="e.g., A, B, Group 1..." style="width:100%;padding:8px;">' +
-                    '</div>' +
-                    '<div class="form-group">' +
-                        '<label>Group Label (optional):</label>' +
-                        '<input type="text" id="add-class-group" placeholder="e.g., 1, 2, 3..." style="width:100%;padding:8px;">' +
+                        '<input type="text" id="add-class-label" placeholder="e.g., A, B, Group 1..." style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;">' +
                     '</div>' +
                     '<div class="form-actions" style="margin-top:16px;">' +
                         '<button type="button" id="cancel-add-class" class="secondary">Cancel</button>' +
@@ -496,7 +542,6 @@
             var disciplineId = select ? select.value : null;
             var duration = parseInt(document.getElementById('add-class-duration').value, 10) || 1;
             var label = document.getElementById('add-class-label').value.trim();
-            var groupLabel = document.getElementById('add-class-group').value.trim();
 
             if (!disciplineId) {
                 showNotification('Please select a discipline.', 'error');
@@ -504,7 +549,7 @@
             }
 
             if (options.onConfirm) {
-                options.onConfirm(disciplineId, duration, label, groupLabel, closeModal);
+                options.onConfirm(disciplineId, duration, label, closeModal);
             }
         };
 
@@ -532,7 +577,7 @@
         var detailsHTML = '';
         for (var i = 0; i < details.length; i++) {
             var d = details[i];
-            detailsHTML += '<div class="detail-row"><span class="label">' + escapeHtml(d.label) + ':</span> <span><strong>' + escapeHtml(d.value) + '</strong></span></div>';
+            detailsHTML += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);flex-wrap:wrap;gap:4px;"><span class="label" style="color:var(--text-dim);">' + escapeHtml(d.label) + ':</span> <span><strong>' + escapeHtml(d.value) + '</strong></span></div>';
         }
 
         var actionsHTML = '';
@@ -612,7 +657,7 @@
             var s = students[i];
             studentsHTML += (
                 '<label style="display:block;padding:4px 0;font-size:0.8rem;cursor:pointer;border-bottom:1px solid var(--border-soft);">' +
-                    '<input type="checkbox" class="student-checkbox" value="' + escapeHtml(s.id) + '" ' + (s.assigned ? 'checked' : '') + '> ' +
+                    '<input type="checkbox" class="student-checkbox" value="' + escapeHtml(s.id) + '" ' + (s.assigned ? 'checked' : '') + ' style="accent-color:var(--accent);"> ' +
                     escapeHtml(s.name) +
                     (s.assigned ? ' <span style="color:var(--accent);font-size:0.7rem;">[assigned]</span>' : '') +
                 '</label>'
