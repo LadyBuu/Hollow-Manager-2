@@ -1,7 +1,7 @@
 /**
  * js/modules/classes/classes-view.js - Graduating Classes View
  * Handles graduating class CRUD and member management
- * Mobile-responsive with vertical stacking
+ * Mobile-responsive with birth year filters and age display
  */
 
 (function() {
@@ -16,7 +16,9 @@
     var state = {
         selectedClassId: null,
         selectedCharacterId: null,
-        isMobile: window.innerWidth < 768
+        isMobile: window.innerWidth < 768,
+        minBirthYear: null,
+        maxBirthYear: null
     };
 
     // ============================================================
@@ -72,6 +74,47 @@
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    }
+
+    // ============================================================
+    // AGE CALCULATION
+    // ============================================================
+
+    function calculateAge(char) {
+        if (!char || !char.birthYear) {
+            return null;
+        }
+        var birthYear = parseInt(char.birthYear, 10);
+        if (isNaN(birthYear)) {
+            return null;
+        }
+        var currentYear = new Date().getFullYear();
+        var age = currentYear - birthYear;
+        return age;
+    }
+
+    function getAgeDisplay(char) {
+        var age = calculateAge(char);
+        if (age === null) {
+            return '';
+        }
+        return age + ' yrs';
+    }
+
+    function getAgeColor(char) {
+        var age = calculateAge(char);
+        if (age === null) {
+            return 'var(--text-dim)';
+        }
+        if (age < 18) {
+            return 'var(--warning)';
+        } else if (age < 25) {
+            return 'var(--accent)';
+        } else if (age < 40) {
+            return 'var(--info)';
+        } else {
+            return 'var(--text-dim)';
+        }
     }
 
     // ============================================================
@@ -137,7 +180,7 @@
 
                 <!-- Member Management Modal -->
                 <div id="member-modal" class="modal hidden">
-                    <div class="modal-content" style="max-width:550px;max-height:80vh;overflow-y:auto;">
+                    <div class="modal-content" style="max-width:600px;max-height:80vh;overflow-y:auto;">
                         <div class="modal-header">
                             <h3 id="member-modal-title">Manage Members</h3>
                             <button class="close-modal" id="close-member-modal">&times;</button>
@@ -218,7 +261,6 @@
         var items = listContainer.querySelectorAll('.class-list-item');
         for (var i = 0; i < items.length; i++) {
             var el = items[i];
-            // Remove old listeners by cloning
             var newEl = el.cloneNode(true);
             el.parentNode.replaceChild(newEl, el);
             newEl.addEventListener('click', function() {
@@ -241,14 +283,12 @@
         
         if (!container || !select) return;
 
-        // Show on mobile
         if (state.isMobile) {
             container.style.display = 'block';
         } else {
             container.style.display = 'none';
         }
 
-        // Populate
         select.innerHTML = '<option value="">Select a class...</option>';
         
         for (var i = 0; i < classes.length; i++) {
@@ -259,7 +299,6 @@
             select.appendChild(option);
         }
 
-        // Remove old listener
         var newSelect = select.cloneNode(true);
         select.parentNode.replaceChild(newSelect, select);
         
@@ -334,11 +373,14 @@
         html += '</div>';
         html += '</div>';
 
-        // Stats
-        html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:12px;">';
+        // Stats with age info
+        var totalMembers = trainees.length + instructors.length;
+        var avgAge = getAverageAge(trainees.concat(instructors));
+        
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;margin-bottom:12px;">';
         html += '<div style="background:var(--bg);padding:6px;border-radius:4px;text-align:center;">';
         html += '<span style="font-size:0.55rem;color:var(--text-dim);">Total</span>';
-        html += '<div style="font-size:1rem;font-weight:700;color:var(--accent);">' + (trainees.length + instructors.length) + '</div>';
+        html += '<div style="font-size:1rem;font-weight:700;color:var(--accent);">' + totalMembers + '</div>';
         html += '</div>';
         html += '<div style="background:var(--bg);padding:6px;border-radius:4px;text-align:center;">';
         html += '<span style="font-size:0.55rem;color:var(--text-dim);">Trainees</span>';
@@ -348,9 +390,13 @@
         html += '<span style="font-size:0.55rem;color:var(--text-dim);">Instructors</span>';
         html += '<div style="font-size:1rem;font-weight:700;color:var(--info);">' + instructors.length + '</div>';
         html += '</div>';
+        html += '<div style="background:var(--bg);padding:6px;border-radius:4px;text-align:center;">';
+        html += '<span style="font-size:0.55rem;color:var(--text-dim);">Avg Age</span>';
+        html += '<div style="font-size:1rem;font-weight:700;color:var(--text);">' + (avgAge !== null ? avgAge.toFixed(1) : '--') + '</div>';
+        html += '</div>';
         html += '</div>';
 
-        // Character list with remove buttons
+        // Character list with age
         html += '<div style="margin-top:12px;">';
         html += '<h4 style="color:var(--text-dim);font-size:0.75rem;margin-bottom:6px;">Members</h4>';
         html += '<div id="class-members-list" style="max-height:250px;overflow-y:auto;">';
@@ -360,7 +406,7 @@
 
         detailContainer.innerHTML = html;
 
-        // Bind buttons with cloning to remove old listeners
+        // Bind buttons
         var manageBtn = detailContainer.querySelector('#manage-members-btn');
         if (manageBtn) {
             var newManageBtn = manageBtn.cloneNode(true);
@@ -391,7 +437,29 @@
     }
 
     // ============================================================
-    // RENDER MEMBERS LIST - With remove buttons
+    // AVERAGE AGE CALCULATION
+    // ============================================================
+
+    function getAverageAge(chars) {
+        var ages = [];
+        for (var i = 0; i < chars.length; i++) {
+            var age = calculateAge(chars[i]);
+            if (age !== null) {
+                ages.push(age);
+            }
+        }
+        if (ages.length === 0) {
+            return null;
+        }
+        var sum = 0;
+        for (var i = 0; i < ages.length; i++) {
+            sum += ages[i];
+        }
+        return sum / ages.length;
+    }
+
+    // ============================================================
+    // RENDER MEMBERS LIST - With age display
     // ============================================================
 
     function renderMembersList(trainees, instructors) {
@@ -430,16 +498,25 @@
             var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
             var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char) : '';
             var isDeceased = char.deceased || false;
+            var age = calculateAge(char);
+            var ageDisplay = age !== null ? age + ' yrs' : '?';
+            var ageColor = getAgeColor(char);
 
             var roleColor = role === 'instructor' ? 'var(--info)' : 'var(--accent)';
             var roleLabel = role === 'instructor' ? 'Instructor' : 'Trainee';
 
             html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 6px;border-radius:4px;border-bottom:1px solid var(--border-soft);' +
                 (isDeceased ? 'opacity:0.4;' : '') + '">';
-            html += '<span style="font-size:0.7rem;">' + escapeHtml(name) + 
-                ' <span style="font-size:0.5rem;color:' + roleColor + ';">[' + roleLabel + ']</span>' +
-                (isDeceased ? ' <span style="font-size:0.5rem;color:var(--danger);">[Deceased]</span>' : '') +
-                '</span>';
+            html += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">';
+            html += '<span style="font-size:0.7rem;">' + escapeHtml(name) + '</span>';
+            html += '<span style="font-size:0.5rem;color:' + roleColor + ';">[' + roleLabel + ']</span>';
+            if (age !== null) {
+                html += '<span style="font-size:0.5rem;color:' + ageColor + ';">(' + ageDisplay + ')</span>';
+            }
+            if (isDeceased) {
+                html += '<span style="font-size:0.5rem;color:var(--danger);">[Deceased]</span>';
+            }
+            html += '</div>';
             html += '<span style="font-size:0.55rem;color:var(--text-dim);">' + escapeHtml(status) + '</span>';
             html += '</div>';
         }
@@ -448,7 +525,7 @@
     }
 
     // ============================================================
-    // SHOW MEMBER MODAL - Teams-style dropdown
+    // SHOW MEMBER MODAL - With birth year filters
     // ============================================================
 
     function showMemberModal(classId) {
@@ -507,36 +584,24 @@
         html += 'Add or remove members from this graduating class.';
         html += '</p>';
 
-        // === ADD MEMBER SECTION - Teams-style dropdown ===
+        // === ADD MEMBER SECTION ===
         html += '<div style="background:var(--bg);padding:12px;border-radius:6px;margin-bottom:12px;border:1px solid var(--border-soft);">';
         html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">';
         html += '<span style="font-size:0.75rem;color:var(--text-dim);">Add member:</span>';
         
+        // Birth year filters
+        html += '<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;">';
+        html += '<span style="font-size:0.65rem;color:var(--text-dim);">Birth Year:</span>';
+        html += '<input type="number" id="filter-min-year" placeholder="Min" style="width:60px;padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
+        html += '<span style="font-size:0.65rem;color:var(--text-dim);">-</span>';
+        html += '<input type="number" id="filter-max-year" placeholder="Max" style="width:60px;padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
+        html += '<button id="apply-year-filter" class="small" style="font-size:0.6rem;padding:2px 8px;">Apply</button>';
+        html += '<button id="clear-year-filter" class="small secondary" style="font-size:0.6rem;padding:2px 8px;">Clear</button>';
+        html += '</div>';
+        
         // Character dropdown
         html += '<select id="add-member-select" style="flex:1;min-width:150px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">';
         html += '<option value="">Select a character...</option>';
-        
-        // Get all characters not already in the class
-        var availableChars = allChars.filter(function(char) {
-            return !traineeIds[char.id] && !instructorIds[char.id];
-        });
-        
-        // Sort by name
-        availableChars.sort(function(a, b) {
-            var nameA = typeof window.getDisplayName === 'function' ? window.getDisplayName(a) : (a.name || 'Unknown');
-            var nameB = typeof window.getDisplayName === 'function' ? window.getDisplayName(b) : (b.name || 'Unknown');
-            return nameA.localeCompare(nameB);
-        });
-        
-        for (var i = 0; i < availableChars.length; i++) {
-            var char = availableChars[i];
-            var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
-            var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char) : '';
-            html += '<option value="' + escapeHtml(char.id) + '" data-role="' + (isInstructor(char) ? 'instructor' : 'trainee') + '">' + 
-                escapeHtml(name) + ' (' + escapeHtml(status) + ')' + 
-                '</option>';
-        }
-        
         html += '</select>';
         
         // Role selector
@@ -567,8 +632,10 @@
             for (var i = 0; i < currentTrainees.length; i++) {
                 var char = currentTrainees[i];
                 var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
+                var age = calculateAge(char);
+                var ageDisplay = age !== null ? age + ' yrs' : '?';
                 html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border-soft);">';
-                html += escapeHtml(name);
+                html += escapeHtml(name) + ' <span style="font-size:0.5rem;color:var(--text-dim);">(' + ageDisplay + ')</span>';
                 html += ' <button class="remove-member-btn" data-id="' + escapeHtml(char.id) + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button>';
                 html += '</span>';
             }
@@ -584,8 +651,10 @@
             for (var i = 0; i < currentInstructors.length; i++) {
                 var char = currentInstructors[i];
                 var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
+                var age = calculateAge(char);
+                var ageDisplay = age !== null ? age + ' yrs' : '?';
                 html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border-soft);">';
-                html += escapeHtml(name);
+                html += escapeHtml(name) + ' <span style="font-size:0.5rem;color:var(--text-dim);">(' + ageDisplay + ')</span>';
                 html += ' <button class="remove-member-btn" data-id="' + escapeHtml(char.id) + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button>';
                 html += '</span>';
             }
@@ -600,15 +669,49 @@
 
         content.innerHTML = html;
 
-        // === BIND EVENTS ===
+        // === POPULATE DROPDOWN WITH FILTERS ===
+        populateMemberDropdown(classId, allChars, traineeIds, instructorIds);
 
-        // Add member
+        // === BIND FILTER EVENTS ===
+        var applyFilterBtn = content.querySelector('#apply-year-filter');
+        var clearFilterBtn = content.querySelector('#clear-year-filter');
+        var minYearInput = content.querySelector('#filter-min-year');
+        var maxYearInput = content.querySelector('#filter-max-year');
+
+        if (applyFilterBtn) {
+            applyFilterBtn.addEventListener('click', function() {
+                var minYear = parseInt(minYearInput.value, 10);
+                var maxYear = parseInt(maxYearInput.value, 10);
+                if (!isNaN(minYear)) {
+                    state.minBirthYear = minYear;
+                } else {
+                    state.minBirthYear = null;
+                }
+                if (!isNaN(maxYear)) {
+                    state.maxBirthYear = maxYear;
+                } else {
+                    state.maxBirthYear = null;
+                }
+                populateMemberDropdown(classId, allChars, traineeIds, instructorIds);
+            });
+        }
+
+        if (clearFilterBtn) {
+            clearFilterBtn.addEventListener('click', function() {
+                minYearInput.value = '';
+                maxYearInput.value = '';
+                state.minBirthYear = null;
+                state.maxBirthYear = null;
+                populateMemberDropdown(classId, allChars, traineeIds, instructorIds);
+            });
+        }
+
+        // === BIND ADD MEMBER ===
         var addBtn = content.querySelector('#add-member-btn');
         var select = content.querySelector('#add-member-select');
         var roleSelect = content.querySelector('#add-member-role');
 
         if (addBtn && select) {
-            // Remove old listener by cloning
             var newAddBtn = addBtn.cloneNode(true);
             addBtn.parentNode.replaceChild(newAddBtn, addBtn);
             
@@ -643,11 +746,10 @@
             });
         }
 
-        // Remove member
+        // === BIND REMOVE MEMBER ===
         var removeBtns = content.querySelectorAll('.remove-member-btn');
         for (var i = 0; i < removeBtns.length; i++) {
             var btn = removeBtns[i];
-            // Remove old listener by cloning
             var newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
             
@@ -678,11 +780,10 @@
             });
         }
 
-        // Show modal
+        // === BIND CLOSE ===
         modal.classList.remove('hidden');
         modal.style.display = 'flex';
 
-        // Close buttons
         var closeBtn = document.getElementById('close-member-modal-btn');
         if (closeBtn) {
             var newCloseBtn = closeBtn.cloneNode(true);
@@ -712,6 +813,84 @@
     }
 
     // ============================================================
+    // POPULATE MEMBER DROPDOWN - With birth year filter
+    // ============================================================
+
+    function populateMemberDropdown(classId, allChars, traineeIds, instructorIds) {
+        var select = document.getElementById('add-member-select');
+        if (!select) return;
+
+        // Get available characters not already in the class
+        var availableChars = allChars.filter(function(char) {
+            return !traineeIds[char.id] && !instructorIds[char.id];
+        });
+
+        // Apply birth year filters
+        if (state.minBirthYear !== null || state.maxBirthYear !== null) {
+            availableChars = availableChars.filter(function(char) {
+                var birthYear = parseInt(char.birthYear, 10);
+                if (isNaN(birthYear)) {
+                    return false;
+                }
+                if (state.minBirthYear !== null && birthYear < state.minBirthYear) {
+                    return false;
+                }
+                if (state.maxBirthYear !== null && birthYear > state.maxBirthYear) {
+                    return false;
+                }
+                return true;
+            });
+        }
+
+        // Sort by name
+        availableChars.sort(function(a, b) {
+            var nameA = typeof window.getDisplayName === 'function' ? window.getDisplayName(a) : (a.name || 'Unknown');
+            var nameB = typeof window.getDisplayName === 'function' ? window.getDisplayName(b) : (b.name || 'Unknown');
+            return nameA.localeCompare(nameB);
+        });
+
+        // Clear and populate
+        select.innerHTML = '<option value="">Select a character...</option>';
+        
+        for (var i = 0; i < availableChars.length; i++) {
+            var char = availableChars[i];
+            var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
+            var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char) : '';
+            var age = calculateAge(char);
+            var ageDisplay = age !== null ? ' (' + age + ' yrs)' : '';
+            var birthYear = char.birthYear ? ' (' + char.birthYear + ')' : '';
+            
+            var option = document.createElement('option');
+            option.value = char.id;
+            option.textContent = name + ' - ' + status + ageDisplay + birthYear;
+            option.dataset.role = isInstructor(char) ? 'instructor' : 'trainee';
+            select.appendChild(option);
+        }
+
+        // Show filter status
+        var filterStatus = document.getElementById('filter-status');
+        if (!filterStatus) {
+            var statusDiv = document.createElement('div');
+            statusDiv.id = 'filter-status';
+            statusDiv.style.cssText = 'font-size:0.6rem;color:var(--text-dim);margin-top:4px;';
+            select.parentNode.appendChild(statusDiv);
+        }
+        
+        var statusEl = document.getElementById('filter-status');
+        if (statusEl) {
+            if (state.minBirthYear !== null || state.maxBirthYear !== null) {
+                var minText = state.minBirthYear !== null ? '≥' + state.minBirthYear : '';
+                var maxText = state.maxBirthYear !== null ? '≤' + state.maxBirthYear : '';
+                statusEl.textContent = 'Filter: ' + (minText + ' ' + maxText).trim() + ' (' + availableChars.length + ' characters)';
+                statusEl.style.color = 'var(--accent)';
+            } else {
+                statusEl.textContent = 'No filter applied (' + availableChars.length + ' characters available)';
+                statusEl.style.color = 'var(--text-dim)';
+            }
+        }
+    }
+
+    // ============================================================
     // CREATE MEMBER MODAL
     // ============================================================
 
@@ -724,7 +903,7 @@
         modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:1000;';
         
         modal.innerHTML = `
-            <div class="modal-content" style="max-width:550px;max-height:80vh;overflow-y:auto;background:var(--panel);border-radius:var(--radius);padding:20px;position:relative;">
+            <div class="modal-content" style="max-width:600px;max-height:80vh;overflow-y:auto;background:var(--panel);border-radius:var(--radius);padding:20px;position:relative;">
                 <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
                     <h3 id="member-modal-title" style="margin:0;font-size:1rem;">Manage Members</h3>
                     <button class="close-modal" id="close-member-modal" style="background:none;border:none;font-size:1.5rem;cursor:pointer;color:var(--text-dim);">&times;</button>
@@ -903,7 +1082,6 @@
     function initClassEvents() {
         console.log('[ClassesView] Initializing events...');
         
-        // Add class button
         var addBtn = document.getElementById('add-class-btn');
         if (addBtn) {
             var newAddBtn = addBtn.cloneNode(true);
@@ -914,7 +1092,6 @@
             });
         }
 
-        // Close form buttons
         var closeFormBtn = document.getElementById('close-class-form');
         if (closeFormBtn) {
             closeFormBtn.addEventListener('click', function() {
@@ -948,12 +1125,10 @@
             });
         }
 
-        // Handle resize for mobile
         window.addEventListener('resize', function() {
             var wasMobile = state.isMobile;
             state.isMobile = window.innerWidth < 768;
             if (wasMobile !== state.isMobile) {
-                // Re-render on mobile/desktop switch
                 var container = document.getElementById('classes-content');
                 if (container) {
                     renderClassesView(container);
