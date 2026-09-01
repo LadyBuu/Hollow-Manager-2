@@ -999,7 +999,49 @@
     }
 
     // ============================================================
-    // EXPOSE
+    // GRADE LETTER - SINGLE SOURCE OF TRUTH
+    // ============================================================
+
+    function getMin(grade) {
+        var min = Number(grade && grade.min);
+        return isFinite(min) ? min : -Infinity;
+    }
+
+    /**
+     * Get grade letter from a discipline's grading system.
+     * This is the SINGLE source of truth for grade letter calculation.
+     * Exposed globally for use by UI modules.
+     */
+    function getGradeLetter(discipline, score) {
+        if (!discipline || !Array.isArray(discipline.gradingSystem) || discipline.gradingSystem.length === 0) {
+            return '';
+        }
+
+        var numScore = Number(score);
+        if (!isFinite(numScore) || numScore < 0 || numScore > 100) {
+            return '';
+        }
+
+        // Sort by min descending (highest grade first) - with safe min extraction
+        var sorted = discipline.gradingSystem.slice().sort(function(a, b) {
+            return getMin(b) - getMin(a);
+        });
+
+        for (var i = 0; i < sorted.length; i++) {
+            var grade = sorted[i];
+            var min = Number(grade.min);
+            var max = Number(grade.max);
+
+            if (isFinite(min) && isFinite(max) && numScore >= min && numScore <= max) {
+                return grade.label || grade.letter || '';
+            }
+        }
+
+        return '';
+    }
+
+    // ============================================================
+    // EXPOSE - ALL PUBLIC FUNCTIONS
     // ============================================================
 
     // Queries
@@ -1019,5 +1061,24 @@
     // Summary
     window.calculateGradeSummary = calculateGradeSummary;
     window.calculateGradeLetter = calculateGradeLetter;
+
+    // Letter grade - SINGLE SOURCE OF TRUTH
+    window.getGradeLetter = getGradeLetter;
+
+    // Constants
+    window.GRADE_CONSTANTS = {
+        MIN_SCORE: 0,
+        MAX_SCORE: 100,
+        PASSING_THRESHOLD: 70,
+        STATUSES: {
+            UNKNOWN: 'unknown',
+            UNGRADED: 'ungraded',
+            UNWEIGHTED: 'unweighted',
+            PASSING: 'passing',
+            NEEDS_WORK: 'needs_work'
+        }
+    };
+
+    console.log('[CurriculumGrades] Initialized successfully');
 
 })();
