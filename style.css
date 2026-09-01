@@ -402,6 +402,24 @@ main {
 }
 
 /* ============================================================
+   EMPTY STATE
+   ============================================================ */
+.empty-state {
+    padding: 12px;
+    text-align: center;
+    color: var(--text-dim);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.75rem;
+}
+@media (min-width: 768px) {
+    .empty-state {
+        padding: 20px;
+    }
+}
+
+/* ============================================================
    DASHBOARD
    ============================================================ */
 .stats-grid {
@@ -507,21 +525,56 @@ main {
 }
 
 /* ============================================================
-   EMPTY STATE
+   FILTER SECTION
    ============================================================ */
-.empty-state {
-    padding: 12px;
-    text-align: center;
-    color: var(--text-dim);
-    background: var(--panel);
-    border: 1px solid var(--border);
+.filter-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
     border-radius: var(--radius);
-    font-size: 0.75rem;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+    border: 1px solid var(--border);
 }
-@media (min-width: 768px) {
-    .empty-state {
-        padding: 20px;
-    }
+.filter-section label {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+.filter-section input,
+.filter-section select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-size: 0.6rem;
+    font-family: 'Inter', sans-serif;
+}
+.filter-section input:focus,
+.filter-section select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+.filter-section .filter-check {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    cursor: pointer;
+}
+.filter-section .filter-check input[type="checkbox"] {
+    width: auto;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+.filter-section .mission-count {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-left: 8px;
 }
 
 /* ============================================================
@@ -807,6 +860,11 @@ main {
 .form-group textarea {
     resize: vertical;
     min-height: 40px;
+}
+.form-group .field-hint {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    margin-top: 2px;
 }
 
 /* Section Dividers */
@@ -1300,52 +1358,6 @@ main {
     flex-wrap: wrap;
 }
 
-/* Team Filters */
-.filter-section {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 10px;
-    background: var(--panel-alt);
-    border-radius: var(--radius);
-    margin-bottom: 8px;
-    flex-wrap: wrap;
-    border: 1px solid var(--border);
-}
-.filter-section label {
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    font-weight: 500;
-}
-.filter-section input,
-.filter-section select {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    padding: 2px 6px;
-    font-size: 0.6rem;
-    font-family: 'Inter', sans-serif;
-}
-.filter-section input:focus,
-.filter-section select:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-.filter-section .filter-check {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    cursor: pointer;
-}
-.filter-section .filter-check input[type="checkbox"] {
-    width: auto;
-    accent-color: var(--accent);
-    cursor: pointer;
-}
-
 /* Team Modals */
 .modal-content.modal-form-content {
     max-width: 600px;
@@ -1825,6 +1837,398 @@ main {
 }
 .match-form .form-actions {
     margin-top: 12px;
+}
+
+/* ============================================================
+   MISSION MODULE STYLES
+   ============================================================ */
+
+/* Mission List */
+.mission-item {
+    display: grid;
+    grid-template-columns: 0.8fr 0.8fr 1.2fr 0.8fr 0.5fr 0.5fr 0.5fr 0.5fr 0.6fr 0.5fr;
+    padding: 6px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: none;
+    align-items: center;
+    cursor: pointer;
+    transition: 0.15s;
+    gap: 8px;
+}
+.mission-item:hover {
+    background: var(--panel-alt);
+}
+.mission-item:last-child {
+    border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.mission-id {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-family: monospace;
+}
+.mission-date {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+.mission-title {
+    font-size: 0.8rem;
+}
+.mission-title strong {
+    font-weight: 600;
+}
+.mission-type {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+.mission-escalation {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+.mission-priority {
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+.mission-difficulty {
+    font-size: 0.75rem;
+}
+.mission-status {
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+.mission-team {
+    font-size: 0.75rem;
+}
+.mission-progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.mission-progress .progress-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--bg);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.mission-progress .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width 0.3s;
+}
+.mission-progress .progress-label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    min-width: 35px;
+}
+
+.mission-completed-badge {
+    color: var(--info);
+    font-size: 0.6rem;
+}
+.mission-support-badge {
+    color: var(--accent);
+    font-size: 0.6rem;
+}
+
+/* Mission Detail */
+.mission-detail .detail-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.mission-detail .detail-row .label {
+    color: var(--text-dim);
+    font-weight: 500;
+    font-size: 0.75rem;
+    min-width: 120px;
+}
+.mission-detail .detail-row .mission-id-display {
+    font-family: monospace;
+    font-weight: bold;
+    color: var(--accent);
+}
+.mission-detail .detail-row .status-display {
+    font-weight: 600;
+}
+.mission-detail .detail-row .priority-display {
+    font-weight: 600;
+}
+.mission-detail .detail-row.description-row,
+.mission-detail .detail-row.notes-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+}
+.mission-detail .detail-row .description-text,
+.mission-detail .detail-row .notes-text {
+    padding: 4px 0;
+    white-space: pre-wrap;
+}
+.mission-detail .detail-row.tags-row {
+    flex-wrap: wrap;
+}
+.mission-detail .detail-row .tags-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.mission-detail .detail-row .tag {
+    background: var(--panel-alt);
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+.mission-detail .progress-section {
+    margin-top: 12px;
+}
+.mission-detail .progress-section strong {
+    font-size: 0.8rem;
+}
+.mission-detail .progress-bar-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+}
+.mission-detail .progress-bar-container .progress-bar {
+    flex: 1;
+    height: 8px;
+    background: var(--bg);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.mission-detail .progress-bar-container .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 4px;
+}
+.mission-detail .progress-bar-container .progress-label {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    min-width: 40px;
+}
+
+.mission-detail .objectives-section {
+    margin-top: 12px;
+}
+.mission-detail .objectives-section strong {
+    font-size: 0.8rem;
+}
+.mission-detail .objectives-list {
+    list-style: none;
+    padding: 0;
+    margin: 4px 0;
+}
+.mission-detail .objective-item {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border-soft);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.mission-detail .objective-item.objective-done {
+    text-decoration: line-through;
+    color: var(--text-dim);
+}
+.mission-detail .objective-item input[type="checkbox"] {
+    accent-color: var(--accent);
+    cursor: pointer;
+    width: auto;
+}
+
+.mission-detail .log-section {
+    margin-top: 12px;
+    max-height: 150px;
+    overflow-y: auto;
+    font-size: 0.75rem;
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 8px;
+}
+.mission-detail .log-section strong {
+    font-size: 0.8rem;
+    display: block;
+    margin-bottom: 4px;
+}
+.mission-detail .log-entry {
+    padding: 2px 0;
+    border-bottom: 1px solid var(--border-soft);
+    color: var(--text-dim);
+}
+.mission-detail .log-entry:last-child {
+    border-bottom: none;
+}
+
+/* Mission Form */
+.mission-form .date-input-group {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.mission-form .date-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.mission-form .date-label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+.mission-form .date-year {
+    width: 80px;
+}
+.mission-form .date-month {
+    width: 100px;
+}
+.mission-form .date-day {
+    width: 60px;
+}
+
+.mission-form .mission-id-preview {
+    background: var(--bg);
+    color: var(--text-dim);
+}
+.mission-form .total-pay-display {
+    background: var(--bg);
+    color: var(--accent);
+    font-weight: bold;
+}
+
+.mission-form .support-input-group {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.mission-form .support-select {
+    flex: 1;
+    min-width: 150px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 0.7rem;
+}
+.mission-form .support-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 8px;
+}
+
+.mission-form .objective-input-group {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.mission-form .objective-input {
+    flex: 1;
+    min-width: 150px;
+    padding: 4px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.7rem;
+}
+.mission-form .objectives-list {
+    margin-top: 8px;
+}
+.mission-form .objective-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 4px;
+    align-items: center;
+}
+
+.support-tag {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--panel-alt);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.7rem;
+    border: 1px solid var(--border-soft);
+}
+.support-tag .remove-support-btn {
+    background: none;
+    border: none;
+    color: var(--danger);
+    cursor: pointer;
+    font-size: 0.6rem;
+    padding: 0 2px;
+}
+
+/* Modal Form Content */
+.modal-content.modal-form-content {
+    max-width: 750px;
+}
+.modal-content.modal-detail-content {
+    max-width: 700px;
+}
+
+/* Responsive Mission List */
+@media (max-width: 768px) {
+    .mission-item {
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+        padding: 8px;
+    }
+    .mission-item .mission-id {
+        grid-column: 1 / -1;
+        font-size: 0.6rem;
+    }
+    .mission-item .mission-title {
+        grid-column: 1 / -1;
+        font-size: 0.85rem;
+    }
+    .mission-item .mission-progress {
+        grid-column: 1 / -1;
+    }
+    .mission-item .mission-date,
+    .mission-item .mission-type,
+    .mission-item .mission-escalation,
+    .mission-item .mission-priority,
+    .mission-item .mission-difficulty,
+    .mission-item .mission-status,
+    .mission-item .mission-team {
+        font-size: 0.65rem;
+    }
+}
+
+@media (max-width: 480px) {
+    .mission-item {
+        grid-template-columns: 1fr;
+        gap: 2px;
+    }
+    .mission-item .mission-id {
+        font-size: 0.55rem;
+    }
+    .mission-item .mission-title {
+        font-size: 0.8rem;
+    }
+    .mission-item .mission-date,
+    .mission-item .mission-type,
+    .mission-item .mission-escalation,
+    .mission-item .mission-priority,
+    .mission-item .mission-difficulty,
+    .mission-item .mission-status,
+    .mission-item .mission-team {
+        font-size: 0.6rem;
+    }
+    .mission-item .mission-progress .progress-label {
+        font-size: 0.6rem;
+        min-width: 30px;
+    }
 }
 
 /* ============================================================
