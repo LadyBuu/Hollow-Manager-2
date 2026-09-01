@@ -21,7 +21,8 @@
         filterClass: 'all',
         filterName: '',
         activeTab: 'schedule',
-        currentWeek: 1
+        currentWeek: 1,
+        viewMode: null // 'student', 'instructor', or null (auto-detect)
     };
 
     window.academiaState = state;
@@ -61,6 +62,101 @@
         }
 
         return true;
+    }
+
+    // ============================================================
+    // ROLE DETECTION
+    // ============================================================
+
+    function detectCharacterRole(char) {
+        if (!char) {
+            return { isStudent: false, isInstructor: false, role: 'none' };
+        }
+
+        var status = window.getCurrentStatus ? window.getCurrentStatus(char).toLowerCase() : '';
+        var isStudent = false;
+        var isInstructor = false;
+
+        // Check if character has a student status (trainee, rookie, junior, etc.)
+        var studentStatuses = ['trainee', 'rookie', 'junior', 'student'];
+        for (var i = 0; i < studentStatuses.length; i++) {
+            if (status === studentStatuses[i] || status.indexOf(studentStatuses[i]) !== -1) {
+                isStudent = true;
+                break;
+            }
+        }
+
+        // Check if character has an instructor status
+        var instructorStatuses = ['instructor', 'teacher', 'professor', 'senior'];
+        for (var i = 0; i < instructorStatuses.length; i++) {
+            if (status === instructorStatuses[i] || status.indexOf(instructorStatuses[i]) !== -1) {
+                isInstructor = true;
+                break;
+            }
+        }
+
+        // Also check careerStatus for historical data
+        if (char.careerStatus && Array.isArray(char.careerStatus)) {
+            for (var i = 0; i < char.careerStatus.length; i++) {
+                var entry = char.careerStatus[i];
+                if (!entry || !entry.status) continue;
+                var entryStatus = String(entry.status).toLowerCase();
+                
+                for (var j = 0; j < studentStatuses.length; j++) {
+                    if (entryStatus === studentStatuses[j] || entryStatus.indexOf(studentStatuses[j]) !== -1) {
+                        isStudent = true;
+                        break;
+                    }
+                }
+                for (var j = 0; j < instructorStatuses.length; j++) {
+                    if (entryStatus === instructorStatuses[j] || entryStatus.indexOf(instructorStatuses[j]) !== -1) {
+                        isInstructor = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        return {
+            isStudent: isStudent,
+            isInstructor: isInstructor,
+            role: isStudent && isInstructor ? 'both' : (isStudent ? 'student' : (isInstructor ? 'instructor' : 'none'))
+        };
+    }
+
+    function getDefaultViewMode(char) {
+        var role = detectCharacterRole(char);
+        
+        if (role.role === 'both') {
+            // If both, default to student (user can switch via dropdown)
+            return 'student';
+        } else if (role.role === 'student') {
+            return 'student';
+        } else if (role.role === 'instructor') {
+            return 'instructor';
+        } else {
+            // No role detected, default to student
+            return 'student';
+        }
+    }
+
+    function getAvailableViewModes(char) {
+        var role = detectCharacterRole(char);
+        var modes = [];
+        
+        if (role.isStudent) {
+            modes.push({ value: 'student', label: 'Student Schedule' });
+        }
+        if (role.isInstructor) {
+            modes.push({ value: 'instructor', label: 'Instructor Schedule' });
+        }
+        
+        // If no modes detected, default to student
+        if (modes.length === 0) {
+            modes.push({ value: 'student', label: 'Schedule' });
+        }
+        
+        return modes;
     }
 
     // ============================================================
@@ -203,6 +299,17 @@
                 var isSelected = String(char.id) === String(selectedId);
                 var isDeceased = char.deceased || false;
 
+                // Show role indicator
+                var role = detectCharacterRole(char);
+                var roleIcon = '';
+                if (role.role === 'both') {
+                    roleIcon = ' <span style="font-size:0.5rem;color:var(--warning);">[S/I]</span>';
+                } else if (role.role === 'student') {
+                    roleIcon = ' <span style="font-size:0.5rem;color:var(--accent);">[S]</span>';
+                } else if (role.role === 'instructor') {
+                    roleIcon = ' <span style="font-size:0.5rem;color:var(--info);">[I]</span>';
+                }
+
                 var classesDisplay = '';
                 if (char.classIds && char.classIds.length > 0) {
                     var classNames = char.classIds.map(function(id) {
@@ -215,7 +322,7 @@
                 }
 
                 html += '<div class="academia-list-item" data-id="' + escapeHtml(char.id) + '" style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-radius:4px;cursor:pointer;transition:0.15s;border-bottom:1px solid var(--border-soft);' + (isSelected ? 'background:var(--accent-soft);border-left:3px solid var(--accent);' : '') + (isDeceased ? 'opacity:0.4;' : '') + '">';
-                html += '<span class="char-name" style="font-size:0.75rem;font-weight:500;">' + escapeHtml(name) + classesDisplay + '</span>';
+                html += '<span class="char-name" style="font-size:0.75rem;font-weight:500;">' + escapeHtml(name) + roleIcon + classesDisplay + '</span>';
                 html += '<span class="char-status" style="font-size:0.55rem;color:var(--text-dim);">' + escapeHtml(status) + '</span>';
                 html += '</div>';
             }
@@ -231,6 +338,8 @@
             var el = items[i];
             el.addEventListener('click', function() {
                 state.selectedCharacterId = this.dataset.id;
+                // Reset view mode when changing character (will auto-detect)
+                state.viewMode = null;
                 renderAcademia(container);
             });
         }
@@ -279,11 +388,41 @@
 
         var characterName = window.getDisplayName(char);
         var activeTab = state.activeTab || 'schedule';
+        
+        // Auto-detect view mode
+        var role = detectCharacterRole(char);
+        var availableModes = getAvailableViewModes(char);
+        
+        // Determine current view mode
+        var currentViewMode = state.viewMode;
+        if (!currentViewMode || !availableModes.some(function(m) { return m.value === currentViewMode; })) {
+            // Auto-detect: if both, default to student; otherwise use the only available
+            if (role.role === 'both') {
+                currentViewMode = 'student';
+            } else if (availableModes.length === 1) {
+                currentViewMode = availableModes[0].value;
+            } else {
+                currentViewMode = 'student';
+            }
+            state.viewMode = currentViewMode;
+        }
 
         var html = '';
         html += '<div class="academia-detail-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border-soft);">';
         html += '<h3 style="color:var(--accent);margin:0;">' + escapeHtml(characterName) + '</h3>';
-        html += '<div style="display:flex;gap:4px;">';
+        html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">';
+        
+        // View mode dropdown (only show if multiple modes available)
+        if (availableModes.length > 1) {
+            html += '<select id="academia-view-mode" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;">';
+            for (var i = 0; i < availableModes.length; i++) {
+                var mode = availableModes[i];
+                var selected = mode.value === currentViewMode ? ' selected' : '';
+                html += '<option value="' + escapeHtml(mode.value) + '"' + selected + '>' + escapeHtml(mode.label) + '</option>';
+            }
+            html += '</select>';
+        }
+        
         html += '<button class="academia-tab-btn small ' + (activeTab === 'schedule' ? 'primary' : 'secondary') + '" data-tab="schedule">Schedule</button>';
         html += '<button class="academia-tab-btn small ' + (activeTab === 'grades' ? 'primary' : 'secondary') + '" data-tab="grades">Grades</button>';
         html += '</div>';
@@ -299,9 +438,18 @@
 
         detailContainer.innerHTML = html;
 
+        // Bind view mode change
+        var viewModeSelect = detailContainer.querySelector('#academia-view-mode');
+        if (viewModeSelect) {
+            viewModeSelect.addEventListener('change', function() {
+                state.viewMode = this.value;
+                renderDetail(container);
+            });
+        }
+
         // Render schedule or grades
         if (activeTab === 'schedule') {
-            renderScheduleTab(detailContainer, char);
+            renderScheduleTab(detailContainer, char, currentViewMode);
         } else {
             renderGradesTab(detailContainer, char);
         }
@@ -317,10 +465,10 @@
     }
 
     // ============================================================
-    // SCHEDULE TAB - Using CalendarUI
+    // SCHEDULE TAB - Using CalendarUI with auto-detected mode
     // ============================================================
 
-    function renderScheduleTab(container, char) {
+    function renderScheduleTab(container, char, viewMode) {
         var scheduleContainer = container.querySelector('#academia-schedule-container');
         if (!scheduleContainer) {
             return;
@@ -336,16 +484,17 @@
             return;
         }
 
-        if (!window.CalendarModes.hasMode('student')) {
-            scheduleContainer.innerHTML = '<p class="empty-state">Student calendar mode not loaded.</p>';
-            return;
-        }
-
-        // Check if student mode is registered
-        var studentMode = window.CalendarModes.getMode('student');
-        if (!studentMode) {
-            scheduleContainer.innerHTML = '<p class="empty-state">Student calendar mode not available.</p>';
-            return;
+        // Determine which mode to use
+        var modeToUse = viewMode || 'student';
+        
+        // Check if the mode is available
+        if (!window.CalendarModes.hasMode(modeToUse)) {
+            // Fallback to student
+            modeToUse = 'student';
+            if (!window.CalendarModes.hasMode(modeToUse)) {
+                scheduleContainer.innerHTML = '<p class="empty-state">No calendar modes available.</p>';
+                return;
+            }
         }
 
         // Create a container for the calendar
@@ -362,7 +511,7 @@
         // Initialize CalendarUI
         try {
             window.CalendarUI.init(calendarContainer, {
-                mode: 'student',
+                mode: modeToUse,
                 selectedId: char.id,
                 week: week
             }, {
@@ -373,7 +522,7 @@
                 }
             });
 
-            console.log('[Academia] CalendarUI initialized for student:', char.id);
+            console.log('[Academia] CalendarUI initialized for ' + modeToUse + ':', char.id);
         } catch (e) {
             console.error('[Academia] Failed to initialize CalendarUI:', e);
             scheduleContainer.innerHTML = '<p class="empty-state">Error loading calendar. Please refresh.</p>';
@@ -381,7 +530,7 @@
     }
 
     // ============================================================
-    // GRADES TAB - FIXED
+    // GRADES TAB
     // ============================================================
 
     function renderGradesTab(container, char) {
@@ -449,7 +598,6 @@
                 var isEnrolled = enrolledDisciplineIds.some(function(id) { return String(id) === String(d.id); });
                 
                 // Only show disciplines the student is enrolled in (has schedule)
-                // Or all disciplines if no schedule (show all)
                 if (enrolledDisciplineIds.length > 0 && !isEnrolled) {
                     continue;
                 }
