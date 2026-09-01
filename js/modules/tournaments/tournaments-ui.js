@@ -1194,6 +1194,7 @@
     // LIFECYCLE MANAGEMENT
     // ============================================================
 
+    // Register with TabManager for the top-level 'tournaments' tab (legacy)
     if (typeof window.TabManager !== 'undefined') {
         window.TabManager.register('tournaments', renderTournaments);
     }
@@ -1228,8 +1229,20 @@
     // EXPOSE
     // ============================================================
 
+    // Main render function
     window.renderTournaments = renderTournaments;
+
+    // View functions
     window.viewTournament = viewTournament;
     window.closeTournamentDetail = closeTournamentDetail;
+
+    // UI object for Classes tab integration
+    window.TournamentsUI = {
+        render: renderTournaments,
+        viewTournament: viewTournament,
+        closeTournamentDetail: closeTournamentDetail,
+        showTournamentForm: showTournamentForm,
+        renderTournamentList: renderTournamentList
+    };
 
 })();
