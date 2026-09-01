@@ -92,10 +92,13 @@
                 this._updateUrlHash(initialTab, false);
                 this._pendingInitialTab = initialTab;
 
-                if (this._isDataReady) {
+                // Check if data is already ready
+                if (this._isDataReady || window.data) {
+                    this._isDataReady = true;
                     this._processInitialTab();
                 }
 
+                // If the tab isn't registered yet, wait for it
                 if (!this.tabs[initialTab]) {
                     console.log('[TabManager] Waiting for tab "' + initialTab + '" to load...');
                     this._waitingForModules[initialTab] = {
@@ -168,6 +171,7 @@
 
             console.log('[TabManager] Registered tab: "' + key + '"');
 
+            // If the tab manager is already initialized, render the tab immediately if it's the current tab
             if (this.isInitialized) {
                 if (this.currentTab === key) {
                     var container = this.tabContentElements[key];
@@ -218,6 +222,7 @@
 
             var key = tabName.trim();
 
+            // If the tab isn't registered yet, check if it's pending
             if (!this.tabs[key]) {
                 if (this._registeredModules[key]) {
                     console.log('[TabManager] Tab "' + key + '" is registered but not yet loaded. Waiting...');
@@ -236,6 +241,7 @@
             }
 
             if (key === this.currentTab && this.isInitialized) {
+                // Refresh the current tab
                 this._renderTab(key);
                 return;
             }
@@ -303,6 +309,7 @@
                 if (id && id.startsWith('tab-')) {
                     var tabName = id.replace('tab-', '');
                     this.tabContentElements[tabName] = el;
+                    console.log('[TabManager] Found tab container: "' + tabName + '"');
                 }
             }, this);
         },
@@ -350,11 +357,8 @@
                 return DEFAULT_TAB;
             }
 
-            if (this.tabs[hash]) {
-                return hash;
-            }
-
-            if (this._registeredModules[hash]) {
+            // Check if the tab exists or is registered
+            if (this.tabs[hash] || this._registeredModules[hash]) {
                 return hash;
             }
 
@@ -398,10 +402,12 @@
                 this._updateUrlHash(tabName, true);
             }
 
+            // Render the tab content
             this._renderTab(tabName);
 
             this.isRendering = false;
 
+            // Process any pending tab switch
             var pending = this.pendingTab;
             var pendingUpdateHistory = this.pendingUpdateHistory;
             this.pendingTab = null;
@@ -434,6 +440,7 @@
                     return;
                 }
 
+                // Show a placeholder message
                 if (!container.innerHTML || container.innerHTML.trim() === '' || container.innerHTML.trim() === '<p class="empty-state">Module coming soon...</p>') {
                     container.innerHTML = '<p class="empty-state">Module coming soon...</p>';
                 }
@@ -441,7 +448,9 @@
             }
 
             try {
+                console.log('[TabManager] Rendering tab: "' + tabName + '"');
                 renderFn(container);
+                console.log('[TabManager] Tab "' + tabName + '" rendered successfully');
             } catch (e) {
                 console.error('[TabManager] Error rendering tab "' + tabName + '":', e);
                 this._failedModules[tabName] = true;
@@ -549,6 +558,13 @@
         if (window.data) {
             TabManager._isDataReady = true;
         }
+
+        // Find all tab containers and register them with TabManager
+        TabManager._findTabContentElements();
+
+        // Bind navigation links
+        TabManager._bindNavLinks();
+        TabManager._bindQuickLinks();
 
         setTimeout(function() {
             TabManager.init();
