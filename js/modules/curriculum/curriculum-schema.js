@@ -1,6 +1,6 @@
 /**
- * js/core/curriculum/curriculum-schema.js - Curriculum Schema Initialisation
- * Path: js/core/curriculum/curriculum-schema.js
+ * js/modules/curriculum/curriculum-schema.js - Curriculum Schema Initialisation
+ * Path: js/modules/curriculum/curriculum-schema.js
  * 
  * This module provides schema initialisation and repair functions.
  * 
@@ -175,6 +175,22 @@
             data.curriculum.currentWeek < 1 ||
             data.curriculum.currentWeek > 52) {
             data.curriculum.currentWeek = 1;
+        }
+
+        // ============================================================
+        // GRADES STORE (ensure empty object if missing)
+        // ============================================================
+
+        if (!data.curriculum.grades || typeof data.curriculum.grades !== 'object') {
+            data.curriculum.grades = {};
+        }
+
+        // ============================================================
+        // RANKINGS STORE (ensure empty object if missing)
+        // ============================================================
+
+        if (!data.curriculum.rankings || typeof data.curriculum.rankings !== 'object') {
+            data.curriculum.rankings = {};
         }
 
         return { success: true };
