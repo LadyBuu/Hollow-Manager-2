@@ -7,6 +7,7 @@
  *   - Week number calculation
  *   - Day name formatting
  *   - Period validation helpers
+ *   - Hour formatting helpers
  */
 
 (function() {
@@ -204,6 +205,110 @@
     }
 
     // ============================================================
+    // HOUR FORMATTING HELPERS
+    // ============================================================
+
+    /**
+     * Format an hour number to a display string (e.g., 9 -> "9:00 AM", 14 -> "2:00 PM")
+     * 
+     * @param {number} hour - Hour number (0-23)
+     * @param {boolean} includeMinutes - Whether to include ":00" (default: true)
+     * @returns {string} Formatted hour string
+     */
+    function formatHour(hour, includeMinutes) {
+        includeMinutes = includeMinutes !== false;
+        
+        var num = parseInt(hour, 10);
+        if (isNaN(num) || num < 0 || num > 23) {
+            return String(hour);
+        }
+        
+        var displayHour = num > 12 ? num - 12 : num;
+        if (num === 0) displayHour = 12;
+        var ampm = num >= 12 ? 'PM' : 'AM';
+        
+        return displayHour + (includeMinutes ? ':00 ' : ' ') + ampm;
+    }
+
+    /**
+     * Parse a time string to hour number.
+     * 
+     * @param {string} timeStr - Time string (e.g., "9:00 AM", "14:00")
+     * @returns {number|null} Hour number (0-23) or null if invalid
+     */
+    function parseHour(timeStr) {
+        if (!timeStr || typeof timeStr !== 'string') {
+            return null;
+        }
+        
+        var trimmed = timeStr.trim().toUpperCase();
+        
+        // Try 24-hour format first
+        var match24 = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+        if (match24) {
+            var hour = parseInt(match24[1], 10);
+            var minute = parseInt(match24[2], 10);
+            if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+                return hour;
+            }
+        }
+        
+        // Try 12-hour format
+        var match12 = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
+        if (match12) {
+            var hour = parseInt(match12[1], 10);
+            var minute = parseInt(match12[2], 10);
+            var ampm = match12[3];
+            if (minute >= 0 && minute <= 59) {
+                if (ampm === 'PM' && hour < 12) hour += 12;
+                if (ampm === 'AM' && hour === 12) hour = 0;
+                return hour;
+            }
+        }
+        
+        // Try without minutes
+        var matchSimple = trimmed.match(/^(\d{1,2})\s*(AM|PM)?$/);
+        if (matchSimple) {
+            var hour = parseInt(matchSimple[1], 10);
+            if (matchSimple[2]) {
+                var ampm = matchSimple[2];
+                if (ampm === 'PM' && hour < 12) hour += 12;
+                if (ampm === 'AM' && hour === 12) hour = 0;
+                return hour;
+            }
+            // 24-hour without AM/PM
+            if (hour >= 0 && hour <= 23) {
+                return hour;
+            }
+        }
+        
+        return null;
+    }
+
+    /**
+     * Get a list of hour options for select dropdowns.
+     * 
+     * @param {number} startHour - Start hour (default: 5)
+     * @param {number} endHour - End hour (default: 23)
+     * @param {boolean} includeMinutes - Whether to include ":00" (default: true)
+     * @returns {Array<{value: number, label: string}>} Array of hour options
+     */
+    function getHourOptions(startHour, endHour, includeMinutes) {
+        startHour = startHour || 5;
+        endHour = endHour || 23;
+        includeMinutes = includeMinutes !== false;
+        
+        var options = [];
+        for (var h = startHour; h <= endHour; h++) {
+            options.push({
+                value: h,
+                label: formatHour(h, includeMinutes)
+            });
+        }
+        return options;
+    }
+
+    // ============================================================
     // PERIOD VALIDATION HELPERS
     // ============================================================
 
@@ -288,6 +393,11 @@
         // Day name helpers
         getDayName: getDayName,
         getDayNumber: getDayNumber,
+
+        // Hour formatting helpers
+        formatHour: formatHour,
+        parseHour: parseHour,
+        getHourOptions: getHourOptions,
 
         // Period validation
         isValidWeek: isValidWeek,
