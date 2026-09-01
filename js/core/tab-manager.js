@@ -81,6 +81,27 @@
             } catch (error) {
                 console.error('[TabManager] Initialization failed:', error);
             }
+            
+            // Dispatch ready event after initialization
+            this._dispatchReady();
+        },
+
+        _dispatchReady: function() {
+            try {
+                var event = new CustomEvent('tabManagerReady', {
+                    detail: { 
+                        isInitialized: this.isInitialized,
+                        currentTab: this.currentTab,
+                        tabs: Object.keys(this.tabs)
+                    },
+                    bubbles: true,
+                    cancelable: false
+                });
+                document.dispatchEvent(event);
+                console.log('[TabManager] tabManagerReady event dispatched');
+            } catch (e) {
+                console.warn('[TabManager] Failed to dispatch ready event:', e);
+            }
         },
 
         onDataReady: function() {
@@ -384,6 +405,9 @@
                 console.warn('[TabManager] Container not found for tab:', tabName);
                 return;
             }
+
+            // Make container visible
+            container.style.display = 'block';
 
             if (!renderFn) {
                 if (this._registeredModules[tabName]) {
