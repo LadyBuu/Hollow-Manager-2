@@ -199,24 +199,24 @@
 
     function getClassesHTML() {
         return `
-            <div class="tab-container">
+            <div class="classes-module-container">
                 <div class="tab-nav" id="classes-tab-nav" style="display:flex;gap:4px;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:12px;flex-wrap:wrap;">
-                    <button class="tab-btn" data-tab="classes" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Classes</button>
-                    <button class="tab-btn" data-tab="rankings" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Rankings</button>
-                    <button class="tab-btn" data-tab="groups" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Groups</button>
-                    <button class="tab-btn" data-tab="tournaments" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Tournaments</button>
+                    <button class="tab-btn" data-tab="classes-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Classes</button>
+                    <button class="tab-btn" data-tab="rankings-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Rankings</button>
+                    <button class="tab-btn" data-tab="groups-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Groups</button>
+                    <button class="tab-btn" data-tab="tournaments-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Tournaments</button>
                 </div>
                 <div class="tab-content" id="classes-tab-content">
-                    <div id="tab-classes" class="tab-panel">
+                    <div id="classes-panel" class="tab-panel" style="display:block;">
                         <div id="classes-content"></div>
                     </div>
-                    <div id="tab-rankings" class="tab-panel">
+                    <div id="rankings-panel" class="tab-panel" style="display:none;">
                         <div id="rankings-content"></div>
                     </div>
-                    <div id="tab-groups" class="tab-panel">
+                    <div id="groups-panel" class="tab-panel" style="display:none;">
                         <div id="groups-content"></div>
                     </div>
-                    <div id="tab-tournaments" class="tab-panel">
+                    <div id="tournaments-panel" class="tab-panel" style="display:none;">
                         <div id="tournaments-content"></div>
                     </div>
                 </div>
@@ -237,15 +237,36 @@
             return;
         }
 
-        var panels = rootContainer.querySelectorAll('.tab-panel');
+        var panels = {
+            'classes-panel': rootContainer.querySelector('#classes-panel'),
+            'rankings-panel': rootContainer.querySelector('#rankings-panel'),
+            'groups-panel': rootContainer.querySelector('#groups-panel'),
+            'tournaments-panel': rootContainer.querySelector('#tournaments-panel')
+        };
+
+        // Map display names to panel IDs
+        var tabMap = {
+            'classes': 'classes-panel',
+            'rankings': 'rankings-panel',
+            'groups': 'groups-panel',
+            'tournaments': 'tournaments-panel'
+        };
+
         var activeTabName = initialTab || 'classes';
+        var activePanelId = tabMap[activeTabName] || 'classes-panel';
+        var activeBtn = tabContainer.querySelector('.tab-btn[data-tab="' + activePanelId + '"]');
         
-        // Find active button
-        var activeBtn = tabContainer.querySelector('.tab-btn[data-tab="' + activeTabName + '"]');
         if (!activeBtn) {
             activeBtn = tabContainer.querySelector('.tab-btn');
             if (activeBtn) {
-                activeTabName = activeBtn.dataset.tab;
+                activePanelId = activeBtn.dataset.tab;
+                // Extract the base tab name from panel ID
+                for (var key in tabMap) {
+                    if (tabMap[key] === activePanelId) {
+                        activeTabName = key;
+                        break;
+                    }
+                }
             }
         }
 
@@ -253,13 +274,14 @@
 
         // Apply active styles
         tabContainer.querySelectorAll('.tab-btn').forEach(function(btn) {
-            var isActive = btn.dataset.tab === activeTabName;
+            var isActive = btn.dataset.tab === activePanelId;
             btn.classList.toggle('active', isActive);
             btn.style.color = isActive ? 'var(--accent)' : 'var(--text-dim)';
             btn.style.borderBottomColor = isActive ? 'var(--accent)' : 'transparent';
         });
 
-        showTab(activeTabName, panels, rootContainer);
+        // Show the active panel
+        showPanel(activePanelId, panels, rootContainer);
 
         // Bind click events
         tabContainer.addEventListener('click', function(e) {
@@ -267,75 +289,105 @@
             if (!tab) return;
             
             e.preventDefault();
-            var tabName = tab.dataset.tab;
-            if (!tabName) return;
+            var panelId = tab.dataset.tab;
+            if (!panelId) return;
+            
+            // Find the base tab name
+            var tabName = activeTabName;
+            for (var key in tabMap) {
+                if (tabMap[key] === panelId) {
+                    tabName = key;
+                    break;
+                }
+            }
             
             state.currentTab = tabName;
             
             tabContainer.querySelectorAll('.tab-btn').forEach(function(btn) {
-                var isActive = btn.dataset.tab === tabName;
+                var isActive = btn.dataset.tab === panelId;
                 btn.classList.toggle('active', isActive);
                 btn.style.color = isActive ? 'var(--accent)' : 'var(--text-dim)';
                 btn.style.borderBottomColor = isActive ? 'var(--accent)' : 'transparent';
             });
             
-            showTab(tabName, panels, rootContainer);
+            showPanel(panelId, panels, rootContainer);
         });
     }
 
-    function showTab(tabName, panels, rootContainer) {
-        panels.forEach(function(panel) {
-            panel.style.display = 'none';
-            panel.classList.remove('active');
-        });
+    function showPanel(panelId, panels, rootContainer) {
+        // Hide all panels
+        for (var key in panels) {
+            if (panels[key]) {
+                panels[key].style.display = 'none';
+                panels[key].classList.remove('active');
+            }
+        }
 
-        var activePanel = rootContainer.querySelector('#tab-' + tabName);
+        // Show the active panel
+        var activePanel = panels[panelId];
         if (activePanel) {
             activePanel.style.display = 'block';
             activePanel.classList.add('active');
         }
 
-        renderTabContent(tabName, rootContainer);
+        // Render the content
+        renderPanelContent(panelId, rootContainer);
     }
 
-    function renderTabContent(tabName, rootContainer) {
-        console.log('[Classes] renderTabContent:', tabName);
+    function renderPanelContent(panelId, rootContainer) {
+        console.log('[Classes] renderPanelContent:', panelId);
         
-        var contentId = tabName + '-content';
-        var content = rootContainer.querySelector('#' + contentId);
-        
+        // Map panel IDs to content IDs and renderers
+        var panelMap = {
+            'classes-panel': {
+                contentId: 'classes-content',
+                renderer: window.renderClassesView,
+                fallback: 'Classes module not loaded.'
+            },
+            'rankings-panel': {
+                contentId: 'rankings-content',
+                renderer: renderRankingsPlaceholder,
+                fallback: 'Rankings module not loaded.'
+            },
+            'groups-panel': {
+                contentId: 'groups-content',
+                renderer: renderGroupsPlaceholder,
+                fallback: 'Groups module not loaded.'
+            },
+            'tournaments-panel': {
+                contentId: 'tournaments-content',
+                renderer: renderTournamentsPlaceholder,
+                fallback: 'Tournaments module not loaded.'
+            }
+        };
+
+        var config = panelMap[panelId];
+        if (!config) {
+            console.warn('[Classes] Unknown panel:', panelId);
+            return;
+        }
+
+        var content = rootContainer.querySelector('#' + config.contentId);
         if (!content) {
-            console.warn('[Classes] Content not found:', contentId);
+            console.warn('[Classes] Content not found:', config.contentId);
             return;
         }
 
         // Make content visible
         content.style.display = 'block';
 
-        // Get renderer
-        var renderer = null;
-        
-        if (tabName === 'classes') {
-            renderer = window.renderClassesView;
-        } else if (tabName === 'rankings') {
-            renderer = renderRankingsPlaceholder;
-        } else if (tabName === 'groups') {
-            renderer = renderGroupsPlaceholder;
-        } else if (tabName === 'tournaments') {
-            renderer = renderTournamentsPlaceholder;
-        }
+        var renderer = config.renderer;
 
         if (typeof renderer !== 'function') {
-            console.warn('[Classes] No renderer for tab:', tabName);
-            content.innerHTML = '<p class="empty-state">Content coming soon...</p>';
+            content.innerHTML = '<p class="empty-state">' + config.fallback + '</p>';
             return;
         }
 
-        console.log('[Classes] Calling renderer for', tabName);
+        console.log('[Classes] Calling renderer for', panelId);
         try {
             renderer(content);
         } catch (e) {
-            console.error('[Classes] Error rendering tab:', e);
+            console.error('[Classes] Error rendering panel:', e);
             content.innerHTML = '<p class="empty-state">Error loading content. Please refresh.</p>';
         }
     }
@@ -405,6 +457,5 @@
     window.renderClasses = renderClasses;
     window.classesState = state;
 
-    console.log('[Classes] Module loaded successfully');
 
 })();
