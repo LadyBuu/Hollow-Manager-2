@@ -130,13 +130,18 @@
     <script src="js/modules/curriculum/curriculum-location-schedule.js"></script>
     <script src="js/modules/curriculum/curriculum-index.js"></script>
 
-    <!-- 10. CALENDAR MODULES -->
+    <!-- 10. CALENDAR MODULES - CORRECT ORDER -->
+    <!-- Registry first -->
     <script src="js/modules/calendar/modes/index.js"></script>
+    <!-- Renderer (required by modes) -->
+    <script src="js/modules/calendar/calendar-renderer.js"></script>
+    <!-- UI Controller -->
+    <script src="js/modules/calendar/calendar-ui.js"></script>
+    <!-- Modes (depend on renderer) -->
     <script src="js/modules/calendar/modes/student.js"></script>
     <script src="js/modules/calendar/modes/instructor.js"></script>
     <script src="js/modules/calendar/modes/location.js"></script>
-    <script src="js/modules/calendar/calendar-renderer.js"></script>
-    <script src="js/modules/calendar/calendar-ui.js"></script>
+    <!-- Entry Point -->
     <script src="js/modules/calendar/index.js"></script>
 
     <!-- 11. CURRICULUM UI MODULES -->
@@ -150,7 +155,8 @@
     <script src="js/modules/curriculum/class-view.js"></script>
     <script src="js/modules/curriculum/groups-view.js"></script>
     <script src="js/modules/curriculum/ranking-view.js"></script>
-    <script src="js/modules/curriculum/location-schedule.js"></script>
+    <!-- location-schedule.js is missing - comment out for now -->
+    <!-- <script src="js/modules/curriculum/location-schedule.js"></script> -->
 
     <!-- 13. ACADEMIA UI MODULES -->
     <script src="js/modules/academia/academia-main.js"></script>
