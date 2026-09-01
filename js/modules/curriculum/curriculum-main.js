@@ -8,7 +8,6 @@
  *   - Tab navigation with state persistence
  *   - Delegating rendering to child modules
  *   - Providing shared utility functions for child modules
- *   - Integrating with the calendar system
  * 
  * IMPORTANT: 
  *   - This module owns ONLY curriculum-level tab navigation state.
@@ -16,7 +15,6 @@
  *   - This module does NOT initialise child module events.
  *   - Each child module is responsible for its own event lifecycle.
  *   - Schema initialisation is delegated to ensureCurriculum().
- *   - Calendar integration is handled via window.renderCalendar.
  * 
  * LIFECYCLE:
  *   TabManager registers 'curriculum' → renderCurriculum() → initCurriculumTabs()
@@ -24,7 +22,6 @@
  * 
  * DEPENDENCIES:
  *   - Curriculum core modules (curriculum-*.js)
- *   - Calendar module (js/modules/calendar/index.js)
  *   - TabManager (js/core/tab-manager.js)
  *   - DataLoader (js/core/loader.js)
  */
@@ -148,7 +145,7 @@
     }
 
     // ============================================================
-    // CURRICULUM HTML
+    // CURRICULUM HTML - Only tabs that exist
     // ============================================================
 
     function getCurriculumHTML() {
@@ -158,13 +155,10 @@
                     <button class="tab-btn" data-tab="disciplines">Disciplines</button>
                     <button class="tab-btn" data-tab="groups">Auto-Groups</button>
                     <button class="tab-btn" data-tab="class-view">Class View</button>
-                    <button class="tab-btn" data-tab="instructor-calendar">Instructor Calendar</button>
-                    <button class="tab-btn" data-tab="schedule">Schedule</button>
                     <button class="tab-btn" data-tab="grades">Grades</button>
                     <button class="tab-btn" data-tab="ranking">Ranking</button>
                     <button class="tab-btn" data-tab="classes">Classes</button>
                     <button class="tab-btn" data-tab="locations">Locations</button>
-                    <button class="tab-btn" data-tab="location-schedule">Location Schedule</button>
                     <button class="tab-btn" data-tab="calendar">Calendar</button>
                 </div>
                 <div class="tab-content" id="curriculum-tab-content">
@@ -177,12 +171,6 @@
                     <div id="tab-class-view" class="tab-panel">
                         <div id="class-view-content"></div>
                     </div>
-                    <div id="tab-instructor-calendar" class="tab-panel">
-                        <div id="instructor-calendar-content"></div>
-                    </div>
-                    <div id="tab-schedule" class="tab-panel">
-                        <div id="schedule-content"></div>
-                    </div>
                     <div id="tab-grades" class="tab-panel">
                         <div id="grades-content"></div>
                     </div>
@@ -194,9 +182,6 @@
                     </div>
                     <div id="tab-locations" class="tab-panel">
                         <div id="locations-content"></div>
-                    </div>
-                    <div id="tab-location-schedule" class="tab-panel">
-                        <div id="location-schedule-content"></div>
                     </div>
                     <div id="tab-calendar" class="tab-panel">
                         <div id="calendar-content"></div>
@@ -347,26 +332,6 @@
                 renderer: window.renderClassView,
                 fallback: 'Class View module not loaded.'
             },
-            'instructor-calendar': {
-                contentId: 'instructor-calendar-content',
-                renderer: window.renderInstructorCalendar,
-                fallback: 'Instructor Calendar module not loaded.'
-            },
-            'schedule': {
-                contentId: 'schedule-content',
-                renderer: window.renderStudentScheduleView,
-                fallback: function() {
-                    // Fallback for legacy naming
-                    if (typeof window.renderStudentSchedule === 'function') {
-                        return window.renderStudentSchedule;
-                    }
-                    if (typeof window.renderScheduleView === 'function') {
-                        return window.renderScheduleView;
-                    }
-                    return null;
-                }(),
-                fallbackMessage: 'Schedule module not loaded.'
-            },
             'grades': {
                 contentId: 'grades-content',
                 renderer: window.renderGradesView,
@@ -386,11 +351,6 @@
                 contentId: 'locations-content',
                 renderer: window.renderLocationsView,
                 fallback: 'Locations module not loaded.'
-            },
-            'location-schedule': {
-                contentId: 'location-schedule-content',
-                renderer: window.renderLocationSchedule,
-                fallback: 'Location Schedule module not loaded.'
             },
             'calendar': {
                 contentId: 'calendar-content',
@@ -431,15 +391,10 @@
 
     // ============================================================
     // SHARED UTILITY FUNCTIONS
-    // These are genuinely shared across multiple curriculum modules.
     // ============================================================
 
     /**
      * Populate a student selector dropdown with all students.
-     * Used by schedule and grades modules.
-     * 
-     * Note: This is a global document utility. If you need scoped
-     * lookup, pass a root container as an optional second argument.
      */
     function populateStudentSelector(id, rootContainer) {
         var select = rootContainer ? 
@@ -465,7 +420,6 @@
 
     /**
      * Get instructor names for a discipline.
-     * Used by disciplines, grades, and class-view modules.
      */
     function getInstructorNames(discipline) {
         var names = [];
@@ -481,49 +435,7 @@
     }
 
     /**
-     * Get all instructor templates for a given week.
-     * Used by instructor-calendar module.
-     * 
-     * NOTE: This is the SINGLE authoritative implementation.
-     * The instructor-calendar module should use this via window.
-     */
-    function getAllInstructorTemplatesForWeek(week) {
-        var results = {};
-        var weekNum = parseInt(week) || 1;
-        var data = window.data || {};
-        
-        if (data.curriculum && data.curriculum.instructorTemplates) {
-            var suffix = '_' + weekNum;
-            for (var templateKey in data.curriculum.instructorTemplates) {
-                if (templateKey.endsWith(suffix)) {
-                    var instructorId = templateKey.slice(0, templateKey.length - suffix.length);
-                    results[instructorId] = data.curriculum.instructorTemplates[templateKey];
-                }
-            }
-        }
-        return results;
-    }
-
-    /**
-     * Get instructor templates for a specific instructor and week.
-     * Used by instructor-calendar module.
-     * 
-     * NOTE: This is the SINGLE authoritative implementation.
-     * The instructor-calendar module should use this via window.
-     */
-    function getInstructorTemplatesForWeek(instructorId, week) {
-        var templateKey = instructorId + '_' + week;
-        var data = window.data || {};
-        if (data.curriculum && data.curriculum.instructorTemplates && 
-            data.curriculum.instructorTemplates[templateKey]) {
-            return data.curriculum.instructorTemplates[templateKey];
-        }
-        return {};
-    }
-
-    /**
      * Refresh the current curriculum tab.
-     * Useful after data mutations that affect multiple views.
      */
     function refreshCurrentTab() {
         if (!state.currentTab) {
@@ -535,7 +447,6 @@
             return;
         }
 
-        // Find the curriculum root
         var curriculumRoot = container.querySelector('.tab-container');
         if (!curriculumRoot) {
             curriculumRoot = container;
@@ -590,7 +501,6 @@
     // LIFECYCLE EVENTS
     // ============================================================
 
-    // Refresh current tab when data is ready
     document.addEventListener('dataReady', function() {
         if (state.currentTab) {
             setTimeout(function() {
@@ -599,7 +509,6 @@
         }
     });
 
-    // Refresh current tab when curriculum data changes
     document.addEventListener('curriculumDataChanged', function() {
         refreshCurrentTab();
     });
@@ -613,8 +522,6 @@
     window.renderTabContent = renderTabContent;
     window.populateStudentSelector = populateStudentSelector;
     window.getInstructorNames = getInstructorNames;
-    window.getAllInstructorTemplatesForWeek = getAllInstructorTemplatesForWeek;
-    window.getInstructorTemplatesForWeek = getInstructorTemplatesForWeek;
     window.refreshCurrentTab = refreshCurrentTab;
     window.getCurrentTab = getCurrentTab;
     window.switchTab = switchTab;
