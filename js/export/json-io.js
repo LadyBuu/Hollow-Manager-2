@@ -69,7 +69,7 @@
                 var backup = utils.cloneData(window.data);
                 var persisted = false;
 
-                // saveData must exist and return true on success
+                // saveData must exist
                 if (typeof window.saveData !== 'function') {
                     alert(
                         'Cannot import JSON: saveData() is unavailable.\n\n' +
@@ -79,15 +79,18 @@
                     return;
                 }
 
-                Promise.resolve(window.saveData(imported))
+                // Apply imported data to global state
+                window.data = imported;
+                
+                // Now save the current state (which is the imported data)
+                Promise.resolve(window.saveData())
                     .then(function(result) {
-                        // Strict contract: result must be exactly true
+                        // saveData() returns true on success
                         if (result !== true) {
                             throw new Error('saveData did not confirm successful persistence.');
                         }
                         
                         persisted = true;
-                        window.data = imported;
 
                         try {
                             onImportSuccess(imported, true, 'JSON');
@@ -100,6 +103,7 @@
                         }
                     })
                     .catch(function(err) {
+                        // Roll back on persistence failure
                         if (!persisted && backup) {
                             window.data = backup;
                         }
