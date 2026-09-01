@@ -38,7 +38,6 @@
             { name: 'getCharacterById', fn: window.getCharacterById },
             { name: 'getDisplayName', fn: window.getDisplayName },
             { name: 'getCurrentStatus', fn: window.getCurrentStatus },
-            { name: 'getAllCharacters', fn: window.getAllCharacters || function() { return window.data?.characters || []; } },
             { name: 'saveData', fn: window.saveData }
         ];
 
@@ -50,7 +49,7 @@
 
         if (missing.length > 0) {
             if (container) {
-                container.innerHTML = '<p class="empty-state">Classes dependencies not loaded: ' + missing.join(', ') + '. Please refresh.</p>';
+                container.innerHTML = '<p class="empty-state">Classes view dependencies not loaded: ' + missing.join(', ') + '. Please refresh.</p>';
             }
             return false;
         }
@@ -59,20 +58,41 @@
     }
 
     // ============================================================
-    // RENDER CLASSES VIEW
+    // RENDER CLASSES VIEW - Public API
     // ============================================================
 
     function renderClassesView(container) {
+        console.log('[ClassesView] renderClassesView called');
+        
         if (!container) {
             container = document.getElementById('classes-content');
         }
         if (!container) {
+            console.warn('[ClassesView] Container not found');
             return;
         }
 
         if (!window.data) {
             container.innerHTML = '<p class="empty-state">Loading class data...</p>';
             return;
+        }
+
+        // Ensure graduating classes exist
+        if (!window.data.graduatingClasses) {
+            window.data.graduatingClasses = [];
+        }
+
+        // Ensure characters have graduating class fields
+        if (window.data.characters) {
+            for (var i = 0; i < window.data.characters.length; i++) {
+                var char = window.data.characters[i];
+                if (char.graduatingClassId === undefined) {
+                    char.graduatingClassId = null;
+                }
+                if (char.graduatingClassInstructor === undefined) {
+                    char.graduatingClassInstructor = false;
+                }
+            }
         }
 
         if (!validateDependencies(container)) {
@@ -83,6 +103,8 @@
         renderClassList();
         renderClassDetail();
         initClassEvents();
+        
+        console.log('[ClassesView] Render complete');
     }
 
     // ============================================================
@@ -278,7 +300,7 @@
         html += '</div>';
         html += '</div>';
 
-        // Character list using existing component
+        // Character list
         html += '<div style="margin-top:12px;">';
         html += '<h4 style="color:var(--text-dim);font-size:0.8rem;margin-bottom:8px;">Members</h4>';
         html += '<div id="class-members-list" style="max-height:300px;overflow-y:auto;">';
@@ -316,7 +338,6 @@
             var el = memberItems[i];
             el.addEventListener('click', function() {
                 state.selectedCharacterId = this.dataset.id;
-                // Could navigate to character detail here
                 renderClassDetail();
             });
         }
@@ -394,6 +415,7 @@
         var form = document.getElementById('class-form-inner');
 
         if (!modal || !title || !nameInput || !form) {
+            console.warn('[ClassesView] Form elements not found');
             return;
         }
 
@@ -520,6 +542,7 @@
         var title = document.getElementById('member-modal-title');
 
         if (!modal || !content || !title) {
+            console.warn('[ClassesView] Member modal elements not found');
             return;
         }
 
@@ -616,7 +639,7 @@
                         renderClassDetail();
                         if (typeof window.saveData === 'function') {
                             window.saveData().catch(function() {
-                                showNotification('Membership removed in memory, but persistence failed.', 'error');
+                                console.warn('[ClassesView] Persistence failed after removing member');
                             });
                         }
                     } else {
@@ -631,7 +654,7 @@
                         renderClassDetail();
                         if (typeof window.saveData === 'function') {
                             window.saveData().catch(function() {
-                                showNotification('Membership added in memory, but persistence failed.', 'error');
+                                console.warn('[ClassesView] Persistence failed after adding member');
                             });
                         }
                     } else {
@@ -696,6 +719,8 @@
             alert('Error: ' + message);
         } else if (type === 'success') {
             alert(message);
+        } else {
+            console.log('[ClassesView]', message);
         }
     }
 
@@ -738,6 +763,15 @@
                 }
             });
         }
+
+        var memberModal = document.getElementById('member-modal');
+        if (memberModal) {
+            memberModal.addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.classList.add('hidden');
+                }
+            });
+        }
     }
 
     // ============================================================
@@ -746,4 +780,5 @@
 
     window.renderClassesView = renderClassesView;
 
+    console.log('[ClassesView] Module loaded');
 })();
