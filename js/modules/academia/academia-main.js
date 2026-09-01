@@ -1,6 +1,7 @@
 /**
  * js/modules/academia/academia-main.js - Academia Main Entry Point
  * Uses existing character list with class filter extension
+ * Auto-detects student/instructor role for schedule view
  * Path: js/modules/academia/academia-main.js
  */
 
@@ -45,7 +46,6 @@
             'getGrades',
             'saveGrades',
             'calculateGradeSummary',
-            'getGradeLetter',
             'CalendarUI',
             'CalendarModes'
         ];
@@ -55,6 +55,32 @@
                 missing.push(name);
             }
         });
+
+        // getGradeLetter is OPTIONAL - create fallback if missing
+        if (typeof window.getGradeLetter === 'undefined') {
+            window.getGradeLetter = function(discipline, score) {
+                if (!discipline || !discipline.gradingSystem || discipline.gradingSystem.length === 0) {
+                    return '';
+                }
+                var numScore = Number(score);
+                if (!isFinite(numScore) || numScore < 0 || numScore > 100) {
+                    return '';
+                }
+                var sorted = discipline.gradingSystem.slice().sort(function(a, b) {
+                    return (b.min || 0) - (a.min || 0);
+                });
+                for (var i = 0; i < sorted.length; i++) {
+                    var grade = sorted[i];
+                    var min = Number(grade.min);
+                    var max = Number(grade.max);
+                    if (isFinite(min) && isFinite(max) && numScore >= min && numScore <= max) {
+                        return grade.label || grade.letter || '';
+                    }
+                }
+                return '';
+            };
+            console.log('[Academia] getGradeLetter fallback created');
+        }
 
         if (missing.length > 0) {
             console.warn('[Academia] Missing dependencies:', missing.join(', '));
