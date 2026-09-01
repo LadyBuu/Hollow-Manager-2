@@ -32,6 +32,10 @@
         return typeof value === 'string' && value.trim() !== '';
     }
 
+    function isObject(value) {
+        return value !== null && typeof value === 'object' && !Array.isArray(value);
+    }
+
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
             return null;
@@ -42,7 +46,11 @@
     function logActivity(message, type) {
         type = type || 'info';
         if (typeof window.logActivity === 'function') {
-            window.logActivity(message, type);
+            try {
+                window.logActivity(message, type);
+            } catch (e) {
+                console.error('GraduatingClassCore: activity logging failed:', e);
+            }
         }
     }
 
@@ -119,8 +127,13 @@
         }
 
         var data = getDataStore();
-        if (!data || !Array.isArray(data.graduatingClasses)) {
+        if (!data) {
             return null;
+        }
+
+        // Initialize graduatingClasses array if it doesn't exist
+        if (!Array.isArray(data.graduatingClasses)) {
+            data.graduatingClasses = [];
         }
 
         var cls = data.graduatingClasses.find(function(c) {
@@ -132,7 +145,12 @@
 
     function getGraduatingClasses() {
         var data = getDataStore();
-        if (!data || !Array.isArray(data.graduatingClasses)) {
+        if (!data) {
+            return [];
+        }
+
+        if (!Array.isArray(data.graduatingClasses)) {
+            data.graduatingClasses = [];
             return [];
         }
 
@@ -152,7 +170,12 @@
         }
 
         var data = getDataStore();
-        if (!data || !Array.isArray(data.graduatingClasses)) {
+        if (!data) {
+            return null;
+        }
+
+        if (!Array.isArray(data.graduatingClasses)) {
+            data.graduatingClasses = [];
             return null;
         }
 
@@ -457,23 +480,22 @@
     // EXPOSE
     // ============================================================
 
-    window.GraduatingClassCore = {
-        // CRUD
-        getGraduatingClass: getGraduatingClass,
-        getGraduatingClasses: getGraduatingClasses,
-        getGraduatingClassByName: getGraduatingClassByName,
-        createGraduatingClass: createGraduatingClass,
-        updateGraduatingClass: updateGraduatingClass,
-        deleteGraduatingClass: deleteGraduatingClass,
+    // CRUD
+    window.getGraduatingClass = getGraduatingClass;
+    window.getGraduatingClasses = getGraduatingClasses;
+    window.getGraduatingClassByName = getGraduatingClassByName;
+    window.createGraduatingClass = createGraduatingClass;
+    window.updateGraduatingClass = updateGraduatingClass;
+    window.deleteGraduatingClass = deleteGraduatingClass;
 
-        // Character assignment
-        assignCharacterToGraduatingClass: assignCharacterToGraduatingClass,
-        removeCharacterFromGraduatingClass: removeCharacterFromGraduatingClass,
+    // Character assignment
+    window.assignCharacterToGraduatingClass = assignCharacterToGraduatingClass;
+    window.removeCharacterFromGraduatingClass = removeCharacterFromGraduatingClass;
 
-        // Queries
-        getGraduatingClassMembers: getGraduatingClassMembers,
-        getCharactersByGraduatingClass: getCharactersByGraduatingClass,
-        getInstructorsByGraduatingClass: getInstructorsByGraduatingClass
-    };
+    // Queries
+    window.getGraduatingClassMembers = getGraduatingClassMembers;
+    window.getCharactersByGraduatingClass = getCharactersByGraduatingClass;
+    window.getInstructorsByGraduatingClass = getInstructorsByGraduatingClass;
+
 
 })();
