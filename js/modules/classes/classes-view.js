@@ -1,13 +1,12 @@
 /**
  * js/modules/classes/classes-view.js - Graduating Classes View
  * Handles graduating class CRUD and member management
- * Path: js/modules/classes/classes-view.js
- * 
- * This module reuses the existing character list component
  */
 
 (function() {
     'use strict';
+
+    console.log('[ClassesView] Module loading...');
 
     // ============================================================
     // STATE
@@ -19,53 +18,15 @@
     };
 
     // ============================================================
-    // DEPENDENCY VALIDATION
-    // ============================================================
-
-    function validateDependencies(container) {
-        var missing = [];
-
-        var required = [
-            { name: 'getGraduatingClasses', fn: window.getGraduatingClasses },
-            { name: 'getGraduatingClass', fn: window.getGraduatingClass },
-            { name: 'createGraduatingClass', fn: window.createGraduatingClass },
-            { name: 'updateGraduatingClass', fn: window.updateGraduatingClass },
-            { name: 'deleteGraduatingClass', fn: window.deleteGraduatingClass },
-            { name: 'getCharactersByGraduatingClass', fn: window.getCharactersByGraduatingClass },
-            { name: 'getInstructorsByGraduatingClass', fn: window.getInstructorsByGraduatingClass },
-            { name: 'assignCharacterToGraduatingClass', fn: window.assignCharacterToGraduatingClass },
-            { name: 'removeCharacterFromGraduatingClass', fn: window.removeCharacterFromGraduatingClass },
-            { name: 'getCharacterById', fn: window.getCharacterById },
-            { name: 'getDisplayName', fn: window.getDisplayName },
-            { name: 'getCurrentStatus', fn: window.getCurrentStatus },
-            { name: 'saveData', fn: window.saveData }
-        ];
-
-        for (var i = 0; i < required.length; i++) {
-            if (typeof required[i].fn !== 'function') {
-                missing.push(required[i].name);
-            }
-        }
-
-        if (missing.length > 0) {
-            if (container) {
-                container.innerHTML = '<p class="empty-state">Classes view dependencies not loaded: ' + missing.join(', ') + '. Please refresh.</p>';
-            }
-            return false;
-        }
-
-        return true;
-    }
-
-    // ============================================================
     // RENDER CLASSES VIEW - Public API
     // ============================================================
 
     function renderClassesView(container) {
-        console.log('[ClassesView] renderClassesView called');
+        console.log('[ClassesView] renderClassesView called with container:', container);
         
         if (!container) {
             container = document.getElementById('classes-content');
+            console.log('[ClassesView] Using container from DOM:', container);
         }
         if (!container) {
             console.warn('[ClassesView] Container not found');
@@ -73,6 +34,7 @@
         }
 
         if (!window.data) {
+            console.warn('[ClassesView] No data available');
             container.innerHTML = '<p class="empty-state">Loading class data...</p>';
             return;
         }
@@ -82,23 +44,7 @@
             window.data.graduatingClasses = [];
         }
 
-        // Ensure characters have graduating class fields
-        if (window.data.characters) {
-            for (var i = 0; i < window.data.characters.length; i++) {
-                var char = window.data.characters[i];
-                if (char.graduatingClassId === undefined) {
-                    char.graduatingClassId = null;
-                }
-                if (char.graduatingClassInstructor === undefined) {
-                    char.graduatingClassInstructor = false;
-                }
-            }
-        }
-
-        if (!validateDependencies(container)) {
-            return;
-        }
-
+        console.log('[ClassesView] Rendering classes view...');
         container.innerHTML = getClassesHTML();
         renderClassList();
         renderClassDetail();
@@ -194,13 +140,25 @@
     function renderClassList() {
         var listContainer = document.getElementById('class-list');
         if (!listContainer) {
+            console.warn('[ClassesView] class-list not found');
             return;
         }
 
-        var classes = window.getGraduatingClasses();
+        var classes = [];
+        if (typeof window.getGraduatingClasses === 'function') {
+            classes = window.getGraduatingClasses();
+        } else {
+            console.warn('[ClassesView] getGraduatingClasses not available');
+            // Fallback: use data directly
+            if (window.data && window.data.graduatingClasses) {
+                classes = window.data.graduatingClasses;
+            }
+        }
+
+        console.log('[ClassesView] Found ' + classes.length + ' classes');
 
         if (classes.length === 0) {
-            listContainer.innerHTML = '<p class="empty-state">No graduating classes created yet.</p>';
+            listContainer.innerHTML = '<p class="empty-state">No graduating classes created yet. Click "Add Class" to create one.</p>';
             return;
         }
 
@@ -209,18 +167,24 @@
 
         // Sort classes by name
         classes.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
+            return (a.name || '').localeCompare(b.name || '');
         });
 
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
             var isSelected = String(cls.id) === String(selectedId);
-            var safeName = escapeHtml(cls.name);
+            var safeName = escapeHtml(cls.name || 'Unnamed Class');
             var safeId = escapeHtml(cls.id);
 
             // Count members
-            var trainees = window.getCharactersByGraduatingClass(cls.id);
-            var instructors = window.getInstructorsByGraduatingClass(cls.id);
+            var trainees = [];
+            var instructors = [];
+            if (typeof window.getCharactersByGraduatingClass === 'function') {
+                trainees = window.getCharactersByGraduatingClass(cls.id);
+            }
+            if (typeof window.getInstructorsByGraduatingClass === 'function') {
+                instructors = window.getInstructorsByGraduatingClass(cls.id);
+            }
             var total = trainees.length + instructors.length;
 
             html += '<div class="class-list-item" style="padding:8px 12px;border-bottom:1px solid var(--border-soft);cursor:pointer;' +
@@ -255,6 +219,7 @@
     function renderClassDetail() {
         var detailContainer = document.getElementById('class-detail');
         if (!detailContainer) {
+            console.warn('[ClassesView] class-detail not found');
             return;
         }
 
@@ -263,7 +228,18 @@
             return;
         }
 
-        var cls = window.getGraduatingClass(state.selectedClassId);
+        var cls = null;
+        if (typeof window.getGraduatingClass === 'function') {
+            cls = window.getGraduatingClass(state.selectedClassId);
+        } else if (window.data && window.data.graduatingClasses) {
+            for (var i = 0; i < window.data.graduatingClasses.length; i++) {
+                if (String(window.data.graduatingClasses[i].id) === String(state.selectedClassId)) {
+                    cls = window.data.graduatingClasses[i];
+                    break;
+                }
+            }
+        }
+
         if (!cls) {
             detailContainer.innerHTML = '<p class="empty-state">Class not found.</p>';
             state.selectedClassId = null;
@@ -271,8 +247,14 @@
             return;
         }
 
-        var trainees = window.getCharactersByGraduatingClass(state.selectedClassId);
-        var instructors = window.getInstructorsByGraduatingClass(state.selectedClassId);
+        var trainees = [];
+        var instructors = [];
+        if (typeof window.getCharactersByGraduatingClass === 'function') {
+            trainees = window.getCharactersByGraduatingClass(state.selectedClassId);
+        }
+        if (typeof window.getInstructorsByGraduatingClass === 'function') {
+            instructors = window.getInstructorsByGraduatingClass(state.selectedClassId);
+        }
 
         var html = '';
         html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
@@ -331,16 +313,6 @@
                 deleteClassHandler(state.selectedClassId);
             });
         }
-
-        // Bind member click events
-        var memberItems = detailContainer.querySelectorAll('.member-item');
-        for (var i = 0; i < memberItems.length; i++) {
-            var el = memberItems[i];
-            el.addEventListener('click', function() {
-                state.selectedCharacterId = this.dataset.id;
-                renderClassDetail();
-            });
-        }
     }
 
     // ============================================================
@@ -368,7 +340,9 @@
 
         // Sort by name
         allMembers.sort(function(a, b) {
-            return window.getDisplayName(a.char).localeCompare(window.getDisplayName(b.char));
+            var nameA = typeof window.getDisplayName === 'function' ? window.getDisplayName(a.char) : (a.char.name || 'Unknown');
+            var nameB = typeof window.getDisplayName === 'function' ? window.getDisplayName(b.char) : (b.char.name || 'Unknown');
+            return nameA.localeCompare(nameB);
         });
 
         if (allMembers.length === 0) {
@@ -376,22 +350,19 @@
         }
 
         var html = '';
-        var selectedId = state.selectedCharacterId;
 
         for (var i = 0; i < allMembers.length; i++) {
             var item = allMembers[i];
             var char = item.char;
             var role = item.role;
-            var name = window.getDisplayName(char);
-            var status = window.getCurrentStatus(char);
-            var isSelected = String(char.id) === String(selectedId);
+            var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
+            var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char) : '';
             var isDeceased = char.deceased || false;
 
             var roleColor = role === 'instructor' ? 'var(--info)' : 'var(--accent)';
             var roleLabel = role === 'instructor' ? 'Instructor' : 'Trainee';
 
-            html += '<div class="member-item" data-id="' + escapeHtml(char.id) + '" style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-radius:4px;cursor:pointer;transition:0.15s;border-bottom:1px solid var(--border-soft);' +
-                (isSelected ? 'background:var(--accent-soft);border-left:3px solid var(--accent);' : '') +
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-radius:4px;border-bottom:1px solid var(--border-soft);' +
                 (isDeceased ? 'opacity:0.4;' : '') + '">';
             html += '<span style="font-size:0.75rem;">' + escapeHtml(name) + 
                 ' <span style="font-size:0.55rem;color:' + roleColor + ';">[' + roleLabel + ']</span>' +
@@ -416,6 +387,7 @@
 
         if (!modal || !title || !nameInput || !form) {
             console.warn('[ClassesView] Form elements not found');
+            showNotification('Form elements not found. Please refresh.', 'error');
             return;
         }
 
@@ -423,7 +395,7 @@
 
         if (editId) {
             title.textContent = 'Edit Class';
-            var cls = window.getGraduatingClass(editId);
+            var cls = typeof window.getGraduatingClass === 'function' ? window.getGraduatingClass(editId) : null;
             if (cls) {
                 nameInput.value = cls.name;
                 form.dataset.editId = editId;
@@ -455,9 +427,19 @@
 
         var result;
         if (editId) {
-            result = window.updateGraduatingClass(editId, name);
+            if (typeof window.updateGraduatingClass === 'function') {
+                result = window.updateGraduatingClass(editId, name);
+            } else {
+                showNotification('updateGraduatingClass not available.', 'error');
+                return;
+            }
         } else {
-            result = window.createGraduatingClass(name);
+            if (typeof window.createGraduatingClass === 'function') {
+                result = window.createGraduatingClass(name);
+            } else {
+                showNotification('createGraduatingClass not available.', 'error');
+                return;
+            }
         }
 
         if (!result || !result.success) {
@@ -488,14 +470,14 @@
     }
 
     function deleteClassHandler(classId) {
-        var cls = window.getGraduatingClass(classId);
+        var cls = typeof window.getGraduatingClass === 'function' ? window.getGraduatingClass(classId) : null;
         if (!cls) {
             showNotification('Class not found.', 'error');
             return;
         }
 
-        var trainees = window.getCharactersByGraduatingClass(classId);
-        var instructors = window.getInstructorsByGraduatingClass(classId);
+        var trainees = typeof window.getCharactersByGraduatingClass === 'function' ? window.getCharactersByGraduatingClass(classId) : [];
+        var instructors = typeof window.getInstructorsByGraduatingClass === 'function' ? window.getInstructorsByGraduatingClass(classId) : [];
         var totalMembers = trainees.length + instructors.length;
 
         var message = 'Delete "' + cls.name + '" permanently?';
@@ -506,6 +488,11 @@
         message += '\n\nThis action cannot be undone.';
 
         if (!confirm(message)) {
+            return;
+        }
+
+        if (typeof window.deleteGraduatingClass !== 'function') {
+            showNotification('deleteGraduatingClass not available.', 'error');
             return;
         }
 
@@ -546,7 +533,7 @@
             return;
         }
 
-        var cls = window.getGraduatingClass(classId);
+        var cls = typeof window.getGraduatingClass === 'function' ? window.getGraduatingClass(classId) : null;
         if (!cls) {
             showNotification('Class not found.', 'error');
             return;
@@ -555,9 +542,13 @@
         title.textContent = 'Manage Members - ' + cls.name;
 
         // Get all characters
-        var allChars = getAllCharacters();
-        var currentTrainees = window.getCharactersByGraduatingClass(classId);
-        var currentInstructors = window.getInstructorsByGraduatingClass(classId);
+        var allChars = [];
+        if (window.data && window.data.characters) {
+            allChars = window.data.characters;
+        }
+
+        var currentTrainees = typeof window.getCharactersByGraduatingClass === 'function' ? window.getCharactersByGraduatingClass(classId) : [];
+        var currentInstructors = typeof window.getInstructorsByGraduatingClass === 'function' ? window.getInstructorsByGraduatingClass(classId) : [];
 
         // Build lookup maps
         var traineeIds = {};
@@ -582,7 +573,7 @@
             var char = allChars[i];
             if (isStudent(char)) {
                 var isInClass = !!traineeIds[char.id];
-                var name = window.getDisplayName(char);
+                var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
                 html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;cursor:pointer;' +
                     (isInClass ? 'border:1px solid var(--accent);' : 'border:1px solid var(--border-soft);opacity:0.6;') +
                     '" data-id="' + escapeHtml(char.id) + '" data-role="trainee" class="member-toggle">' +
@@ -604,7 +595,7 @@
             var char = allChars[i];
             if (isInstructor(char)) {
                 var isInClass = !!instructorIds[char.id];
-                var name = window.getDisplayName(char);
+                var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
                 html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;cursor:pointer;' +
                     (isInClass ? 'border:1px solid var(--accent);' : 'border:1px solid var(--border-soft);opacity:0.6;') +
                     '" data-id="' + escapeHtml(char.id) + '" data-role="instructor" class="member-toggle">' +
@@ -630,8 +621,13 @@
                 var isInstructor = role === 'instructor';
                 var isInClass = this.textContent.includes('✓');
 
+                if (typeof window.assignCharacterToGraduatingClass !== 'function' || 
+                    typeof window.removeCharacterFromGraduatingClass !== 'function') {
+                    showNotification('Member management functions not available.', 'error');
+                    return;
+                }
+
                 if (isInClass) {
-                    // Remove from class
                     var result = window.removeCharacterFromGraduatingClass(charId);
                     if (result && result.success) {
                         showMemberModal(classId);
@@ -646,7 +642,6 @@
                         showNotification(result && result.message ? result.message : 'Failed to remove character.', 'error');
                     }
                 } else {
-                    // Add to class
                     var result = window.assignCharacterToGraduatingClass(charId, classId, isInstructor);
                     if (result && result.success) {
                         showMemberModal(classId);
@@ -691,18 +686,13 @@
     // ============================================================
 
     function isStudent(char) {
-        var status = window.getCurrentStatus(char).toLowerCase();
+        var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char).toLowerCase() : '';
         return status === 'trainee' || status === 'rookie' || status === 'junior' || status === 'student';
     }
 
     function isInstructor(char) {
-        var status = window.getCurrentStatus(char).toLowerCase();
+        var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char).toLowerCase() : '';
         return status === 'instructor' || status === 'teacher' || status === 'professor' || status === 'senior';
-    }
-
-    function getAllCharacters() {
-        var data = window.data || {};
-        return data.characters || [];
     }
 
     // ============================================================
@@ -729,11 +719,16 @@
     // ============================================================
 
     function initClassEvents() {
+        console.log('[ClassesView] Initializing events...');
+        
         var addBtn = document.getElementById('add-class-btn');
         if (addBtn) {
             addBtn.addEventListener('click', function() {
+                console.log('[ClassesView] Add class button clicked');
                 showClassForm();
             });
+        } else {
+            console.warn('[ClassesView] add-class-btn not found');
         }
 
         var closeFormBtn = document.getElementById('close-class-form');
@@ -780,5 +775,6 @@
 
     window.renderClassesView = renderClassesView;
 
-    console.log('[ClassesView] Module loaded');
+    console.log('[ClassesView] Module loaded successfully');
+
 })();
