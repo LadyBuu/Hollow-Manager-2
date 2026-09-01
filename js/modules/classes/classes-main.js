@@ -102,21 +102,14 @@
     }
 
     // ============================================================
-    // RENDER CLASSES - With brutal debug logging
+    // RENDER CLASSES
     // ============================================================
 
     function renderClasses(container) {
-        console.log('========================================');
         console.log('[Classes] renderClasses() CALLED');
-        console.log('[Classes] container:', container);
-        console.log('[Classes] data exists:', !!window.data);
-        console.log('[Classes] TabManager:', typeof window.TabManager);
-        console.log('[Classes] renderClassesView:', typeof window.renderClassesView);
-        console.log('========================================');
 
         if (!container) {
             container = document.getElementById('tab-classes');
-            console.log('[Classes] Found container by ID:', container);
         }
         
         if (!container) {
@@ -130,7 +123,6 @@
         container.style.minHeight = '400px';
 
         if (!window.data) {
-            console.warn('[Classes] No data available');
             container.innerHTML = '<p class="empty-state">Loading classes data...</p>';
             return;
         }
@@ -154,7 +146,6 @@
 
         // Render the container
         container.innerHTML = getClassesHTML();
-        console.log('[Classes] Container HTML set, length:', container.innerHTML.length);
         
         // Initialize tabs
         initClassesTabs(container, state.currentTab);
@@ -194,29 +185,32 @@
     }
 
     // ============================================================
-    // CLASSES HTML - Tab navigation with sub-tabs
+    // CLASSES HTML - WITH FIXED CLASS NAMES (no .tab-content conflict)
     // ============================================================
 
     function getClassesHTML() {
         return `
             <div class="classes-module-container">
-                <div class="tab-nav" id="classes-tab-nav" style="display:flex;gap:4px;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:12px;flex-wrap:wrap;">
-                    <button class="tab-btn" data-tab="classes-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Classes</button>
-                    <button class="tab-btn" data-tab="rankings-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Rankings</button>
-                    <button class="tab-btn" data-tab="groups-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Groups</button>
-                    <button class="tab-btn" data-tab="tournaments-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Tournaments</button>
+                <!-- Tab navigation -->
+                <div class="classes-tab-nav" id="classes-tab-nav" style="display:flex;gap:4px;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:12px;flex-wrap:wrap;">
+                    <button class="classes-tab-btn active" data-panel="classes-panel" style="background:transparent;border:none;border-bottom:2px solid var(--accent);color:var(--accent);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Classes</button>
+                    <button class="classes-tab-btn" data-panel="rankings-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Rankings</button>
+                    <button class="classes-tab-btn" data-panel="groups-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Groups</button>
+                    <button class="classes-tab-btn" data-panel="tournaments-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Tournaments</button>
                 </div>
-                <div class="tab-content" id="classes-tab-content">
-                    <div id="classes-panel" class="tab-panel" style="display:block;">
+                
+                <!-- Panel container - NOT using .tab-content to avoid global CSS hiding it -->
+                <div class="classes-panels" id="classes-panels">
+                    <div id="classes-panel" class="classes-panel active" style="display:block;">
                         <div id="classes-content"></div>
                     </div>
-                    <div id="rankings-panel" class="tab-panel" style="display:none;">
+                    <div id="rankings-panel" class="classes-panel" style="display:none;">
                         <div id="rankings-content"></div>
                     </div>
-                    <div id="groups-panel" class="tab-panel" style="display:none;">
+                    <div id="groups-panel" class="classes-panel" style="display:none;">
                         <div id="groups-content"></div>
                     </div>
-                    <div id="tournaments-panel" class="tab-panel" style="display:none;">
+                    <div id="tournaments-panel" class="classes-panel" style="display:none;">
                         <div id="tournaments-content"></div>
                     </div>
                 </div>
@@ -237,13 +231,6 @@
             return;
         }
 
-        var panels = {
-            'classes-panel': rootContainer.querySelector('#classes-panel'),
-            'rankings-panel': rootContainer.querySelector('#rankings-panel'),
-            'groups-panel': rootContainer.querySelector('#groups-panel'),
-            'tournaments-panel': rootContainer.querySelector('#tournaments-panel')
-        };
-
         // Map display names to panel IDs
         var tabMap = {
             'classes': 'classes-panel',
@@ -254,42 +241,20 @@
 
         var activeTabName = initialTab || 'classes';
         var activePanelId = tabMap[activeTabName] || 'classes-panel';
-        var activeBtn = tabContainer.querySelector('.tab-btn[data-tab="' + activePanelId + '"]');
-        
-        if (!activeBtn) {
-            activeBtn = tabContainer.querySelector('.tab-btn');
-            if (activeBtn) {
-                activePanelId = activeBtn.dataset.tab;
-                // Extract the base tab name from panel ID
-                for (var key in tabMap) {
-                    if (tabMap[key] === activePanelId) {
-                        activeTabName = key;
-                        break;
-                    }
-                }
-            }
-        }
-
-        state.currentTab = activeTabName;
-
-        // Apply active styles
-        tabContainer.querySelectorAll('.tab-btn').forEach(function(btn) {
-            var isActive = btn.dataset.tab === activePanelId;
-            btn.classList.toggle('active', isActive);
-            btn.style.color = isActive ? 'var(--accent)' : 'var(--text-dim)';
-            btn.style.borderBottomColor = isActive ? 'var(--accent)' : 'transparent';
-        });
 
         // Show the active panel
-        showPanel(activePanelId, panels, rootContainer);
+        showPanel(activePanelId, rootContainer);
+
+        // Update button styles
+        updateTabButtons(tabContainer, activePanelId);
 
         // Bind click events
         tabContainer.addEventListener('click', function(e) {
-            var tab = e.target.closest('.tab-btn');
+            var tab = e.target.closest('.classes-tab-btn');
             if (!tab) return;
             
             e.preventDefault();
-            var panelId = tab.dataset.tab;
+            var panelId = tab.dataset.panel;
             if (!panelId) return;
             
             // Find the base tab name
@@ -303,28 +268,31 @@
             
             state.currentTab = tabName;
             
-            tabContainer.querySelectorAll('.tab-btn').forEach(function(btn) {
-                var isActive = btn.dataset.tab === panelId;
-                btn.classList.toggle('active', isActive);
-                btn.style.color = isActive ? 'var(--accent)' : 'var(--text-dim)';
-                btn.style.borderBottomColor = isActive ? 'var(--accent)' : 'transparent';
-            });
-            
-            showPanel(panelId, panels, rootContainer);
+            updateTabButtons(tabContainer, panelId);
+            showPanel(panelId, rootContainer);
         });
     }
 
-    function showPanel(panelId, panels, rootContainer) {
+    function updateTabButtons(tabContainer, activePanelId) {
+        var buttons = tabContainer.querySelectorAll('.classes-tab-btn');
+        buttons.forEach(function(btn) {
+            var isActive = btn.dataset.panel === activePanelId;
+            btn.classList.toggle('active', isActive);
+            btn.style.color = isActive ? 'var(--accent)' : 'var(--text-dim)';
+            btn.style.borderBottomColor = isActive ? 'var(--accent)' : 'transparent';
+        });
+    }
+
+    function showPanel(panelId, rootContainer) {
         // Hide all panels
-        for (var key in panels) {
-            if (panels[key]) {
-                panels[key].style.display = 'none';
-                panels[key].classList.remove('active');
-            }
-        }
+        var panels = rootContainer.querySelectorAll('.classes-panel');
+        panels.forEach(function(panel) {
+            panel.style.display = 'none';
+            panel.classList.remove('active');
+        });
 
         // Show the active panel
-        var activePanel = panels[panelId];
+        var activePanel = rootContainer.querySelector('#' + panelId);
         if (activePanel) {
             activePanel.style.display = 'block';
             activePanel.classList.add('active');
@@ -457,5 +425,6 @@
     window.renderClasses = renderClasses;
     window.classesState = state;
 
+    console.log('[Classes] Module loaded successfully');
 
 })();
