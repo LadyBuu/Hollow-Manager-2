@@ -74,7 +74,7 @@
     <script src="js/utils/notification.js"></script>
     <script src="js/utils/calendar-utils.js"></script>
 
-    <!-- 3. CORE DOMAIN MODULES -->
+    <!-- 3. CORE DOMAIN MODULES - These must load BEFORE any UI modules -->
     <script src="js/core/state.js"></script>
     <script src="js/core/database.js"></script>
     <script src="js/core/loader.js"></script>
@@ -130,18 +130,13 @@
     <script src="js/modules/curriculum/curriculum-location-schedule.js"></script>
     <script src="js/modules/curriculum/curriculum-index.js"></script>
 
-    <!-- 10. CALENDAR MODULES - CORRECT ORDER -->
-    <!-- Registry first -->
+    <!-- 10. CALENDAR MODULES -->
     <script src="js/modules/calendar/modes/index.js"></script>
-    <!-- Renderer (required by modes) -->
     <script src="js/modules/calendar/calendar-renderer.js"></script>
-    <!-- UI Controller -->
     <script src="js/modules/calendar/calendar-ui.js"></script>
-    <!-- Modes (depend on renderer) -->
     <script src="js/modules/calendar/modes/student.js"></script>
     <script src="js/modules/calendar/modes/instructor.js"></script>
     <script src="js/modules/calendar/modes/location.js"></script>
-    <!-- Entry Point -->
     <script src="js/modules/calendar/index.js"></script>
 
     <!-- 11. CURRICULUM UI MODULES -->
