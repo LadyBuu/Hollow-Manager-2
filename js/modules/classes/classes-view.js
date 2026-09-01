@@ -122,10 +122,8 @@
     // ============================================================
 
     function getClassesHTML() {
-        var mobileClass = state.isMobile ? 'mobile' : 'desktop';
-        
         return `
-            <div class="classes-view ${mobileClass}">
+            <div class="classes-view">
                 <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
                     <h2 style="margin:0;font-size:1.1rem;">Graduating Classes</h2>
                     <button id="add-class-btn" class="primary" style="font-size:0.75rem;padding:4px 12px;">+ New Class</button>
@@ -257,20 +255,17 @@
 
         listContainer.innerHTML = html;
 
-        // Bind click events
-        var items = listContainer.querySelectorAll('.class-list-item');
-        for (var i = 0; i < items.length; i++) {
-            var el = items[i];
-            var newEl = el.cloneNode(true);
-            el.parentNode.replaceChild(newEl, el);
-            newEl.addEventListener('click', function() {
-                state.selectedClassId = this.dataset.id;
+        // Bind click events using event delegation
+        listContainer.addEventListener('click', function(e) {
+            var item = e.target.closest('.class-list-item');
+            if (item) {
+                state.selectedClassId = item.dataset.id;
                 state.selectedCharacterId = null;
                 renderClassList();
                 renderClassDetail();
                 updateMobileSelectorValue(state.selectedClassId);
-            });
-        }
+            }
+        });
     }
 
     // ============================================================
@@ -299,6 +294,7 @@
             select.appendChild(option);
         }
 
+        // Remove old listener
         var newSelect = select.cloneNode(true);
         select.parentNode.replaceChild(newSelect, select);
         
@@ -406,9 +402,10 @@
 
         detailContainer.innerHTML = html;
 
-        // Bind buttons
-        var manageBtn = detailContainer.querySelector('#manage-members-btn');
+        // Bind buttons using direct event listeners
+        var manageBtn = document.getElementById('manage-members-btn');
         if (manageBtn) {
+            // Remove old listener by replacing with clone
             var newManageBtn = manageBtn.cloneNode(true);
             manageBtn.parentNode.replaceChild(newManageBtn, manageBtn);
             newManageBtn.addEventListener('click', function() {
@@ -417,7 +414,7 @@
             });
         }
 
-        var editBtn = detailContainer.querySelector('#edit-class-btn');
+        var editBtn = document.getElementById('edit-class-btn');
         if (editBtn) {
             var newEditBtn = editBtn.cloneNode(true);
             editBtn.parentNode.replaceChild(newEditBtn, editBtn);
@@ -426,7 +423,7 @@
             });
         }
 
-        var deleteBtn = detailContainer.querySelector('#delete-class-btn');
+        var deleteBtn = document.getElementById('delete-class-btn');
         if (deleteBtn) {
             var newDeleteBtn = deleteBtn.cloneNode(true);
             deleteBtn.parentNode.replaceChild(newDeleteBtn, deleteBtn);
@@ -579,6 +576,47 @@
             instructorIds[currentInstructors[i].id] = true;
         }
 
+        // Build the modal content
+        buildMemberModalContent(content, classId, allChars, traineeIds, instructorIds);
+
+        // Show modal
+        modal.classList.remove('hidden');
+        modal.style.display = 'flex';
+
+        // Bind close buttons
+        var closeBtn = document.getElementById('close-member-modal-btn');
+        if (closeBtn) {
+            var newCloseBtn = closeBtn.cloneNode(true);
+            closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
+            newCloseBtn.addEventListener('click', function() {
+                modal.classList.add('hidden');
+                modal.style.display = 'none';
+            });
+        }
+
+        var closeX = document.getElementById('close-member-modal');
+        if (closeX) {
+            var newCloseX = closeX.cloneNode(true);
+            closeX.parentNode.replaceChild(newCloseX, closeX);
+            newCloseX.addEventListener('click', function() {
+                modal.classList.add('hidden');
+                modal.style.display = 'none';
+            });
+        }
+
+        modal.addEventListener('click', function(e) {
+            if (e.target === this) {
+                this.classList.add('hidden');
+                this.style.display = 'none';
+            }
+        });
+    }
+
+    // ============================================================
+    // BUILD MEMBER MODAL CONTENT
+    // ============================================================
+
+    function buildMemberModalContent(content, classId, allChars, traineeIds, instructorIds) {
         var html = '';
         html += '<p style="color:var(--text-dim);font-size:0.8rem;margin-bottom:12px;">';
         html += 'Add or remove members from this graduating class.';
@@ -669,17 +707,19 @@
 
         content.innerHTML = html;
 
-        // === POPULATE DROPDOWN WITH FILTERS ===
+        // === POPULATE DROPDOWN ===
         populateMemberDropdown(classId, allChars, traineeIds, instructorIds);
 
         // === BIND FILTER EVENTS ===
-        var applyFilterBtn = content.querySelector('#apply-year-filter');
-        var clearFilterBtn = content.querySelector('#clear-year-filter');
-        var minYearInput = content.querySelector('#filter-min-year');
-        var maxYearInput = content.querySelector('#filter-max-year');
+        var applyFilterBtn = document.getElementById('apply-year-filter');
+        var clearFilterBtn = document.getElementById('clear-year-filter');
+        var minYearInput = document.getElementById('filter-min-year');
+        var maxYearInput = document.getElementById('filter-max-year');
 
         if (applyFilterBtn) {
-            applyFilterBtn.addEventListener('click', function() {
+            var newApplyBtn = applyFilterBtn.cloneNode(true);
+            applyFilterBtn.parentNode.replaceChild(newApplyBtn, applyFilterBtn);
+            newApplyBtn.addEventListener('click', function() {
                 var minYear = parseInt(minYearInput.value, 10);
                 var maxYear = parseInt(maxYearInput.value, 10);
                 if (!isNaN(minYear)) {
@@ -697,7 +737,9 @@
         }
 
         if (clearFilterBtn) {
-            clearFilterBtn.addEventListener('click', function() {
+            var newClearBtn = clearFilterBtn.cloneNode(true);
+            clearFilterBtn.parentNode.replaceChild(newClearBtn, clearFilterBtn);
+            newClearBtn.addEventListener('click', function() {
                 minYearInput.value = '';
                 maxYearInput.value = '';
                 state.minBirthYear = null;
@@ -707,9 +749,9 @@
         }
 
         // === BIND ADD MEMBER ===
-        var addBtn = content.querySelector('#add-member-btn');
-        var select = content.querySelector('#add-member-select');
-        var roleSelect = content.querySelector('#add-member-role');
+        var addBtn = document.getElementById('add-member-btn');
+        var select = document.getElementById('add-member-select');
+        var roleSelect = document.getElementById('add-member-role');
 
         if (addBtn && select) {
             var newAddBtn = addBtn.cloneNode(true);
@@ -732,9 +774,23 @@
 
                 var result = window.assignCharacterToGraduatingClass(charId, classId, isInstructor);
                 if (result && result.success) {
-                    showMemberModal(classId);
+                    // Rebuild the modal content to show updated members
+                    var currentTrainees2 = typeof window.getCharactersByGraduatingClass === 'function' ? window.getCharactersByGraduatingClass(classId) : [];
+                    var currentInstructors2 = typeof window.getInstructorsByGraduatingClass === 'function' ? window.getInstructorsByGraduatingClass(classId) : [];
+                    
+                    var traineeIds2 = {};
+                    var instructorIds2 = {};
+                    for (var i = 0; i < currentTrainees2.length; i++) {
+                        traineeIds2[currentTrainees2[i].id] = true;
+                    }
+                    for (var i = 0; i < currentInstructors2.length; i++) {
+                        instructorIds2[currentInstructors2[i].id] = true;
+                    }
+                    
+                    buildMemberModalContent(content, classId, allChars, traineeIds2, instructorIds2);
                     renderClassList();
                     renderClassDetail();
+                    
                     if (typeof window.saveData === 'function') {
                         window.saveData().catch(function() {
                             console.warn('[ClassesView] Persistence failed after adding member');
@@ -746,15 +802,11 @@
             });
         }
 
-        // === BIND REMOVE MEMBER ===
-        var removeBtns = content.querySelectorAll('.remove-member-btn');
-        for (var i = 0; i < removeBtns.length; i++) {
-            var btn = removeBtns[i];
-            var newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            
-            newBtn.addEventListener('click', function() {
-                var charId = this.dataset.id;
+        // === BIND REMOVE MEMBER ===        // Use event delegation for remove buttons
+        content.addEventListener('click', function(e) {
+            var removeBtn = e.target.closest('.remove-member-btn');
+            if (removeBtn) {
+                var charId = removeBtn.dataset.id;
                 if (!charId) return;
 
                 if (!confirm('Remove this member from the class?')) return;
@@ -766,9 +818,23 @@
 
                 var result = window.removeCharacterFromGraduatingClass(charId);
                 if (result && result.success) {
-                    showMemberModal(classId);
+                    // Rebuild the modal content
+                    var currentTrainees3 = typeof window.getCharactersByGraduatingClass === 'function' ? window.getCharactersByGraduatingClass(classId) : [];
+                    var currentInstructors3 = typeof window.getInstructorsByGraduatingClass === 'function' ? window.getInstructorsByGraduatingClass(classId) : [];
+                    
+                    var traineeIds3 = {};
+                    var instructorIds3 = {};
+                    for (var i = 0; i < currentTrainees3.length; i++) {
+                        traineeIds3[currentTrainees3[i].id] = true;
+                    }
+                    for (var i = 0; i < currentInstructors3.length; i++) {
+                        instructorIds3[currentInstructors3[i].id] = true;
+                    }
+                    
+                    buildMemberModalContent(content, classId, allChars, traineeIds3, instructorIds3);
                     renderClassList();
                     renderClassDetail();
+                    
                     if (typeof window.saveData === 'function') {
                         window.saveData().catch(function() {
                             console.warn('[ClassesView] Persistence failed after removing member');
@@ -777,37 +843,6 @@
                 } else {
                     alert(result && result.message ? result.message : 'Failed to remove character.');
                 }
-            });
-        }
-
-        // === BIND CLOSE ===
-        modal.classList.remove('hidden');
-        modal.style.display = 'flex';
-
-        var closeBtn = document.getElementById('close-member-modal-btn');
-        if (closeBtn) {
-            var newCloseBtn = closeBtn.cloneNode(true);
-            closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
-            newCloseBtn.addEventListener('click', function() {
-                modal.classList.add('hidden');
-                modal.style.display = 'none';
-            });
-        }
-
-        var closeX = document.getElementById('close-member-modal');
-        if (closeX) {
-            var newCloseX = closeX.cloneNode(true);
-            closeX.parentNode.replaceChild(newCloseX, closeX);
-            newCloseX.addEventListener('click', function() {
-                modal.classList.add('hidden');
-                modal.style.display = 'none';
-            });
-        }
-
-        modal.addEventListener('click', function(e) {
-            if (e.target === this) {
-                this.classList.add('hidden');
-                this.style.display = 'none';
             }
         });
     }
@@ -867,26 +902,24 @@
             select.appendChild(option);
         }
 
-        // Show filter status
-        var filterStatus = document.getElementById('filter-status');
-        if (!filterStatus) {
+        // Update filter status
+        var statusEl = document.getElementById('filter-status');
+        if (!statusEl) {
             var statusDiv = document.createElement('div');
             statusDiv.id = 'filter-status';
             statusDiv.style.cssText = 'font-size:0.6rem;color:var(--text-dim);margin-top:4px;';
             select.parentNode.appendChild(statusDiv);
+            statusEl = statusDiv;
         }
         
-        var statusEl = document.getElementById('filter-status');
-        if (statusEl) {
-            if (state.minBirthYear !== null || state.maxBirthYear !== null) {
-                var minText = state.minBirthYear !== null ? '≥' + state.minBirthYear : '';
-                var maxText = state.maxBirthYear !== null ? '≤' + state.maxBirthYear : '';
-                statusEl.textContent = 'Filter: ' + (minText + ' ' + maxText).trim() + ' (' + availableChars.length + ' characters)';
-                statusEl.style.color = 'var(--accent)';
-            } else {
-                statusEl.textContent = 'No filter applied (' + availableChars.length + ' characters available)';
-                statusEl.style.color = 'var(--text-dim)';
-            }
+        if (state.minBirthYear !== null || state.maxBirthYear !== null) {
+            var minText = state.minBirthYear !== null ? '≥' + state.minBirthYear : '';
+            var maxText = state.maxBirthYear !== null ? '≤' + state.maxBirthYear : '';
+            statusEl.textContent = 'Filter: ' + (minText + ' ' + maxText).trim() + ' (' + availableChars.length + ' characters)';
+            statusEl.style.color = 'var(--accent)';
+        } else {
+            statusEl.textContent = 'No filter applied (' + availableChars.length + ' characters available)';
+            statusEl.style.color = 'var(--text-dim)';
         }
     }
 
