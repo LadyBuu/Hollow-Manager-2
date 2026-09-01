@@ -44,6 +44,7 @@
             'getGrades',
             'saveGrades',
             'calculateGradeSummary',
+            'getGradeLetter',
             'CalendarUI',
             'CalendarModes'
         ];
@@ -380,7 +381,7 @@
     }
 
     // ============================================================
-    // GRADES TAB
+    // GRADES TAB - FIXED
     // ============================================================
 
     function renderGradesTab(container, char) {
@@ -400,31 +401,62 @@
     }
 
     function renderSimpleGradesView(container, char) {
+        var studentId = char.id;
         var week = state.currentWeek || 1;
-        var grades = window.getGrades(char.id, week) || {};
+        var grades = window.getGrades(studentId, week) || {};
         var disciplines = window.getAvailableDisciplines(week) || [];
 
         var html = '<div class="grades-view">';
-        html += '<div class="week-nav" style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">';
+        html += '<div class="grades-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
+        html += '<h4 style="margin:0;">' + escapeHtml(window.getDisplayName(char)) + ' - Week ' + week + '</h4>';
+        html += '<div style="display:flex;gap:8px;align-items:center;">';
         html += '<button id="grades-prev-week" class="small">[<]</button>';
         html += '<span style="font-weight:600;">Week ' + week + '</span>';
         html += '<button id="grades-next-week" class="small">[>]</button>';
+        html += '</div>';
         html += '</div>';
 
         if (disciplines.length === 0) {
             html += '<p class="empty-state">No disciplines available for week ' + week + '.</p>';
         } else {
+            // Get student's schedule to know which disciplines they're enrolled in
+            var schedule = window.getStudentSchedule(studentId, week) || {};
+            var enrolledDisciplineIds = [];
+            for (var day in schedule) {
+                if (!Object.prototype.hasOwnProperty.call(schedule, day)) continue;
+                var daySchedule = schedule[day];
+                if (!daySchedule || typeof daySchedule !== 'object') continue;
+                for (var hour in daySchedule) {
+                    if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
+                    var discId = daySchedule[hour];
+                    if (discId && enrolledDisciplineIds.indexOf(discId) === -1) {
+                        enrolledDisciplineIds.push(discId);
+                    }
+                }
+            }
+
             html += '<table class="grades-table" style="width:100%;border-collapse:collapse;font-size:0.8rem;">';
             html += '<thead><tr style="background:var(--panel-alt);border-bottom:1px solid var(--border);">';
             html += '<th style="padding:6px 8px;text-align:left;">Discipline</th>';
+            html += '<th style="padding:6px 8px;text-align:left;">Instructor</th>';
             html += '<th style="padding:6px 8px;text-align:center;">Score</th>';
             html += '<th style="padding:6px 8px;text-align:center;">Grade</th>';
+            html += '<th style="padding:6px 8px;text-align:center;">Weighted</th>';
             html += '</tr></thead><tbody>';
 
             for (var i = 0; i < disciplines.length; i++) {
                 var d = disciplines[i];
+                var isEnrolled = enrolledDisciplineIds.some(function(id) { return String(id) === String(d.id); });
+                
+                // Only show disciplines the student is enrolled in (has schedule)
+                // Or all disciplines if no schedule (show all)
+                if (enrolledDisciplineIds.length > 0 && !isEnrolled) {
+                    continue;
+                }
+
                 var score = grades[d.id] !== undefined ? grades[d.id] : '';
                 var letter = '';
+                var weighted = '';
 
                 if (score !== '' && score !== undefined && score !== null) {
                     var numericScore = Number(score);
@@ -432,18 +464,49 @@
                         if (typeof window.getGradeLetter === 'function') {
                             letter = window.getGradeLetter(d, numericScore);
                         }
+                        if (d.weight) {
+                            weighted = (numericScore * d.weight).toFixed(1);
+                        }
+                    }
+                }
+
+                var instructorNames = [];
+                if (d.instructorIds) {
+                    for (var j = 0; j < d.instructorIds.length; j++) {
+                        var inst = window.getCharacterById(d.instructorIds[j]);
+                        if (inst) {
+                            instructorNames.push(window.getDisplayName(inst));
+                        }
                     }
                 }
 
                 html += '<tr style="border-bottom:1px solid var(--border-soft);">';
                 html += '<td style="padding:4px 8px;">' + escapeHtml(d.name) + '</td>';
+                html += '<td style="padding:4px 8px;font-size:0.7rem;color:var(--text-dim);">' + escapeHtml(instructorNames.join(', ') || 'Not assigned') + '</td>';
                 html += '<td style="padding:4px 8px;text-align:center;"><input type="number" class="grade-input" data-discipline="' + escapeHtml(d.id) + '" value="' + escapeHtml(String(score)) + '" min="0" max="100" step="0.5" style="width:70px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:2px 4px;text-align:center;"></td>';
                 html += '<td style="padding:4px 8px;text-align:center;font-weight:600;" class="grade-letter">' + escapeHtml(letter) + '</td>';
+                html += '<td style="padding:4px 8px;text-align:center;font-weight:600;" class="weighted-score">' + escapeHtml(weighted) + '</td>';
                 html += '</tr>';
             }
 
             html += '</tbody></table>';
             html += '<div style="margin-top:12px;"><button id="save-grades-btn" class="primary small">Save Grades</button></div>';
+        }
+
+        // Summary
+        if (typeof window.calculateGradeSummary === 'function') {
+            var summary = window.calculateGradeSummary(studentId, week);
+            if (summary) {
+                html += '<div class="grades-summary" style="margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;">';
+                html += '<h5 style="margin:0 0 8px 0;color:var(--text-dim);">Summary</h5>';
+                html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">';
+                html += '<div><span style="color:var(--text-dim);">Average:</span> <strong>' + (summary.average !== null ? summary.average.toFixed(1) : '--') + '</strong></div>';
+                html += '<div><span style="color:var(--text-dim);">Graded:</span> <strong>' + summary.gradedCount + '/' + summary.scheduledCount + '</strong></div>';
+                html += '<div><span style="color:var(--text-dim);">Mandatory:</span> <strong>' + summary.mandatoryGraded + '/' + summary.mandatoryScheduled + '</strong></div>';
+                html += '<div><span style="color:var(--text-dim);">Optional:</span> <strong>' + summary.optionalGraded + '/' + summary.optionalScheduled + '</strong></div>';
+                html += '</div>';
+                html += '</div>';
+            }
         }
 
         html += '</div>';
@@ -460,17 +523,24 @@
                 var disciplineId = this.dataset.discipline;
                 var value = this.value.trim();
                 var letterEl = row.querySelector('.grade-letter');
+                var weightedEl = row.querySelector('.weighted-score');
 
                 if (value !== '' && !isNaN(Number(value))) {
                     var numericScore = Number(value);
                     if (numericScore >= 0 && numericScore <= 100) {
                         var discipline = window.getDiscipline(disciplineId);
-                        if (discipline && typeof window.getGradeLetter === 'function') {
-                            letterEl.textContent = window.getGradeLetter(discipline, numericScore);
+                        if (discipline) {
+                            if (typeof window.getGradeLetter === 'function') {
+                                letterEl.textContent = window.getGradeLetter(discipline, numericScore);
+                            }
+                            if (discipline.weight && weightedEl) {
+                                weightedEl.textContent = (numericScore * discipline.weight).toFixed(1);
+                            }
                         }
                     }
                 } else if (value === '') {
                     letterEl.textContent = '';
+                    if (weightedEl) weightedEl.textContent = '';
                 }
             });
         }
@@ -479,7 +549,7 @@
         var saveBtn = container.querySelector('#save-grades-btn');
         if (saveBtn) {
             saveBtn.addEventListener('click', function() {
-                saveGrades(container, char.id);
+                saveGrades(container, studentId);
             });
         }
 
@@ -491,7 +561,7 @@
             prevBtn.addEventListener('click', function() {
                 if (state.currentWeek > 1) {
                     state.currentWeek--;
-                    renderGradesTab(container, char);
+                    renderSimpleGradesView(container, char);
                 }
             });
         }
@@ -500,7 +570,7 @@
             nextBtn.addEventListener('click', function() {
                 if (state.currentWeek < 52) {
                     state.currentWeek++;
-                    renderGradesTab(container, char);
+                    renderSimpleGradesView(container, char);
                 }
             });
         }
@@ -509,6 +579,7 @@
     function saveGrades(container, studentId) {
         var grades = {};
         var hasChanges = false;
+        var invalidInputs = [];
 
         var inputs = container.querySelectorAll('.grade-input');
         for (var i = 0; i < inputs.length; i++) {
@@ -524,8 +595,19 @@
                 if (numericScore >= 0 && numericScore <= 100) {
                     grades[disciplineId] = numericScore;
                     hasChanges = true;
+                } else {
+                    invalidInputs.push(disciplineId);
                 }
             }
+        }
+
+        if (invalidInputs.length > 0) {
+            var names = invalidInputs.map(function(id) {
+                var d = window.getDiscipline(id);
+                return d ? d.name : id;
+            });
+            alert('Invalid scores for: ' + names.join(', ') + '. Please enter values between 0 and 100.');
+            return;
         }
 
         if (!hasChanges) {
@@ -534,10 +616,20 @@
         }
 
         if (typeof window.saveGrades === 'function') {
-            var result = window.saveGrades(studentId, state.currentWeek, grades);
+            var week = state.currentWeek || 1;
+            var result = window.saveGrades(studentId, week, grades);
             if (result && result.success) {
                 alert('Grades saved successfully!');
-                renderGradesTab(container, window.getCharacterById(studentId));
+                if (typeof window.saveData === 'function') {
+                    window.saveData().catch(function() {
+                        console.warn('Persistence failed, but grades saved in memory.');
+                    });
+                }
+                // Re-render
+                var char = window.getCharacterById(studentId);
+                if (char) {
+                    renderSimpleGradesView(container, char);
+                }
             } else {
                 alert('Failed to save grades: ' + (result && result.message ? result.message : 'Unknown error'));
             }
