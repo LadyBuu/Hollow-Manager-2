@@ -12,17 +12,18 @@
  *   - The order of script tags in HTML determines load order:
  * 
  * SCRIPT LOAD ORDER:
- *   1. curriculum-validators.js
- *   2. curriculum-schema.js
- *   3. curriculum-classes.js
- *   4. curriculum-disciplines.js
- *   5. curriculum-groups.js
- *   6. curriculum-schedule.js
- *   7. curriculum-ranking.js
- *   8. curriculum-instructor.js
- *   9. curriculum-grades.js
- *   10. curriculum-locations.js
- *   11. curriculum-location-schedule.js
+ *   1. curriculum-helpers.js
+ *   2. curriculum-validators.js
+ *   3. curriculum-schema.js
+ *   4. curriculum-classes.js
+ *   5. curriculum-disciplines.js
+ *   6. curriculum-groups.js
+ *   7. curriculum-schedule.js
+ *   8. curriculum-ranking.js
+ *   9. curriculum-instructor.js
+ *   10. curriculum-grades.js
+ *   11. curriculum-locations.js
+ *   12. curriculum-location-schedule.js
  * 
  * PUBLIC API:
  *   - All functions are exposed via window.xxx
@@ -79,9 +80,11 @@
  *   └── addInstructorBlock() / removeInstructorBlock()
  * 
  *   curriculum-grades.js
- *   ├── getGrades() / getGrade()
+ *   ├── getGrades() / getGrade() / hasGrade() / getWeekGrades()
  *   ├── saveGrades() / saveGrade() / deleteGrade()
- *   └── calculateGradeSummary()
+ *   ├── deleteWeekGrades() / deleteStudentGrades()
+ *   ├── calculateGradeSummary() / calculateGradeLetter()
+ *   └── getGradeLetter()
  * 
  *   curriculum-locations.js
  *   ├── getLocation() / getLocations() / getLocationOptions()
@@ -111,44 +114,67 @@
     window.__curriculumCoreManifestLoaded = true;
 
     // ============================================================
+    // HELPER: Safe function check
+    // ============================================================
+
+    function isFunction(name) {
+        return typeof window[name] === 'function';
+    }
+
+    // ============================================================
     // VERIFY REQUIRED DEPENDENCIES
     // ============================================================
     // This manifest does not load modules, but it can verify
     // that the expected core modules are available.
 
     var requiredFunctions = [
+        // Schema
         'ensureCurriculum',
+        
+        // Classes
         'createClass',
         'updateClass',
         'deleteClass',
         'getClass',
         'getClasses',
+        'getClassByName',
+        'getClassDisplayName',
+        'getClassOptions',
+        'getCharactersByClass',
+        'getTeamsByClass',
+        'getTeamCountByClass',
+        'getCharacterCountByClass',
+        'getCharacterClasses',
+        'getCharacterClassNames',
+        'classExists',
+        'addCharacterToClass',
+        'removeCharacterFromClass',
+        
+        // Disciplines
         'createDiscipline',
         'updateDiscipline',
         'deleteDiscipline',
         'getDiscipline',
         'getDisciplines',
         'getAvailableDisciplines',
-        'getStudentSchedule',
-        'setStudentScheduleClass',
-        'removeStudentScheduleClass',
-        'getRankings',
-        'setRankings',
-        'updateStudentRank',
-        'autoGenerateRankings',
-        'calculateGradeSummary',
-        'getGrades',
-        'saveGrades',
-        'getLocation',
-        'getLocations',
-        'createLocation',
-        'updateLocation',
-        'deleteLocation',
-        'getLocationSchedule',
-        'setLocationClass',
-        'removeLocationClass',
-        'clearLocationSchedule',
+        'disciplineExists',
+        'getDisciplineInstructors',
+        'getDisciplineInstructorNames',
+        'isDisciplineInstructor',
+        'isValidDisciplineType',
+        'getDisciplineTypeLabel',
+        'getDisciplineTypeColor',
+        
+        // Groups
         'getAllAutoGroups',
+        'getAutoGroup',
+        'getGroupsByDiscipline',
+        'getGroupsByInstructor',
+        'getGroupStudents',
+        'getGroupSlots',
+        'getGroupStudentCount',
+        'getGroupSlotCount',
+        'isStudentInGroup',
         'createAutoGroup',
         'deleteAutoGroup',
         'addStudentToGroup',
@@ -156,10 +182,93 @@
         'addSlotToGroup',
         'removeSlotFromGroup',
         'rebuildGroupsFromSchedules',
+        
+        // Schedule
+        'getStudentSchedule',
+        'getStudentScheduleWeek',
+        'getStudentScheduleClass',
+        'getStudentRestDays',
+        'getStudentDisciplineHourUsage',
+        'hasScheduleConflict',
+        'setStudentScheduleClass',
+        'removeStudentScheduleClass',
+        'clearStudentSchedule',
+        'duplicateStudentSchedule',
+        'setStudentRestDays',
+        'getClassMetadata',
+        'getClassInstructor',
+        'getClassLabel',
+        'getClassGroupLabel',
+        'getClassDuration',
+        'getClassLocation',
+        'setClassInstructor',
+        'setClassLabel',
+        'setClassGroupLabel',
+        'setClassDuration',
+        'setClassLocation',
+        'getScheduleKey',
+        'findClassStart',
+        
+        // Ranking
+        'getRankings',
+        'getStudentRank',
+        'hasRankings',
+        'getRankingCount',
+        'setRankings',
+        'updateStudentRank',
+        'removeStudentFromRankings',
+        'autoGenerateRankings',
+        
+        // Instructor
+        'getInstructorTemplates',
         'addInstructorClassTemplate',
         'removeInstructorClassTemplate',
+        'getInstructorBlocks',
         'addInstructorBlock',
-        'removeInstructorBlock'
+        'removeInstructorBlock',
+        
+        // Grades
+        'getGrades',
+        'getGrade',
+        'hasGrade',
+        'getWeekGrades',
+        'getStudentDisciplineIds',
+        'saveGrades',
+        'saveGrade',
+        'deleteGrade',
+        'deleteWeekGrades',
+        'deleteStudentGrades',
+        'calculateGradeSummary',
+        'calculateGradeLetter',
+        'getGradeLetter',
+        
+        // Locations
+        'getLocation',
+        'getLocations',
+        'getLocationsByType',
+        'getLocationByName',
+        'getLocationOptions',
+        'getLocationUsage',
+        'getLocationUsageByWeek',
+        'locationExists',
+        'getLocationCapacity',
+        'isLocationAvailable',
+        'createLocation',
+        'updateLocation',
+        'deleteLocation',
+        'getLocationTypeLabel',
+        'getLocationTypeColor',
+        'getLocationTypeIcon',
+        'getLocationTypes',
+        
+        // Location Schedule
+        'getLocationSchedule',
+        'getClassLocation',
+        'getLocationClassDuration',
+        'setLocationClass',
+        'removeLocationClass',
+        'clearLocationSchedule',
+        'setClassLocation'
     ];
 
     var missing = [];
@@ -171,44 +280,156 @@
         }
     }
 
-    if (missing.length > 0) {
-        // Only log in development to avoid noise
-        if (typeof console !== 'undefined' && console.warn) {
-            console.warn('[CurriculumCore] Some core modules appear to be missing:', missing.join(', '));
-            console.warn('[CurriculumCore] Check script load order. Expected order:');
-            console.warn('  1. curriculum-validators.js');
-            console.warn('  2. curriculum-schema.js');
-            console.warn('  3. curriculum-classes.js');
-            console.warn('  4. curriculum-disciplines.js');
-            console.warn('  5. curriculum-groups.js');
-            console.warn('  6. curriculum-schedule.js');
-            console.warn('  7. curriculum-ranking.js');
-            console.warn('  8. curriculum-instructor.js');
-            console.warn('  9. curriculum-grades.js');
-            console.warn('  10. curriculum-locations.js');
-            console.warn('  11. curriculum-location-schedule.js');
+    // ============================================================
+    // CHECK FOR OPTIONAL FUNCTIONS (warn if missing)
+    // ============================================================
+
+    var optionalFunctions = [
+        'getInstructorTemplates',
+        'addInstructorClassTemplate',
+        'removeInstructorClassTemplate',
+        'getInstructorBlocks',
+        'addInstructorBlock',
+        'removeInstructorBlock',
+        'getLocationUsageByWeek',
+        'getLocationCapacity',
+        'isLocationAvailable',
+        'getLocationTypeIcon',
+        'getLocationTypes',
+        'getClassMetadata',
+        'getScheduleKey',
+        'findClassStart'
+    ];
+
+    var optionalMissing = [];
+
+    for (var i = 0; i < optionalFunctions.length; i++) {
+        var fnName = optionalFunctions[i];
+        if (typeof window[fnName] !== 'function') {
+            optionalMissing.push(fnName);
         }
     }
 
     // ============================================================
-    // EXPOSE MODULE REFERENCE (optional)
+    // LOG STATUS
+    // ============================================================
+
+    if (missing.length > 0) {
+        console.warn('[CurriculumCore] Missing required functions:', missing.join(', '));
+        console.warn('[CurriculumCore] Check script load order. Expected order:');
+        console.warn('  1. curriculum-helpers.js');
+        console.warn('  2. curriculum-validators.js');
+        console.warn('  3. curriculum-schema.js');
+        console.warn('  4. curriculum-classes.js');
+        console.warn('  5. curriculum-disciplines.js');
+        console.warn('  6. curriculum-groups.js');
+        console.warn('  7. curriculum-schedule.js');
+        console.warn('  8. curriculum-ranking.js');
+        console.warn('  9. curriculum-instructor.js');
+        console.warn('  10. curriculum-grades.js');
+        console.warn('  11. curriculum-locations.js');
+        console.warn('  12. curriculum-location-schedule.js');
+    }
+
+    if (optionalMissing.length > 0) {
+        console.warn('[CurriculumCore] Optional functions missing:', optionalMissing.join(', '));
+    }
+
+    if (missing.length === 0) {
+        console.log('[CurriculumCore] All required functions loaded successfully.');
+    }
+
+    // ============================================================
+    // EXPOSE MODULE REFERENCE
     // ============================================================
 
     window.CurriculumCore = {
         version: '1.0.0',
+        status: {
+            allRequiredLoaded: missing.length === 0,
+            missingRequired: missing,
+            missingOptional: optionalMissing
+        },
         modules: {
+            helpers: !!window.CurriculumHelpers,
             validators: !!window.CurriculumValidators,
-            schema: typeof window.ensureCurriculum === 'function',
-            classes: typeof window.createClass === 'function',
-            disciplines: typeof window.createDiscipline === 'function',
-            groups: typeof window.createAutoGroup === 'function',
-            schedule: typeof window.setStudentScheduleClass === 'function',
-            ranking: typeof window.setRankings === 'function',
-            instructor: typeof window.addInstructorClassTemplate === 'function',
-            grades: typeof window.saveGrades === 'function',
-            locations: typeof window.createLocation === 'function',
-            locationSchedule: typeof window.setLocationClass === 'function'
+            schema: isFunction('ensureCurriculum'),
+            classes: isFunction('createClass'),
+            disciplines: isFunction('createDiscipline'),
+            groups: isFunction('createAutoGroup'),
+            schedule: isFunction('setStudentScheduleClass'),
+            ranking: isFunction('setRankings'),
+            instructor: isFunction('addInstructorClassTemplate'),
+            grades: isFunction('saveGrades'),
+            locations: isFunction('createLocation'),
+            locationSchedule: isFunction('setLocationClass')
+        },
+        // Helper to check if all core modules are ready
+        isReady: function() {
+            return this.status.allRequiredLoaded;
+        },
+        // Helper to get missing functions
+        getMissing: function() {
+            return this.status.missingRequired;
         }
+    };
+
+    // ============================================================
+    // ADD HELPER FOR MODULE READINESS
+    // ============================================================
+
+    /**
+     * Check if a specific curriculum module is loaded.
+     * @param {string} moduleName - Module name (e.g., 'grades', 'classes')
+     * @returns {boolean} True if the module is loaded
+     */
+    window.isCurriculumModuleLoaded = function(moduleName) {
+        var moduleMap = {
+            'classes': isFunction('createClass') && isFunction('getClasses'),
+            'disciplines': isFunction('createDiscipline') && isFunction('getDisciplines'),
+            'groups': isFunction('createAutoGroup') && isFunction('getAllAutoGroups'),
+            'schedule': isFunction('setStudentScheduleClass') && isFunction('getStudentSchedule'),
+            'ranking': isFunction('setRankings') && isFunction('getRankings'),
+            'instructor': isFunction('addInstructorClassTemplate') && isFunction('getInstructorTemplates'),
+            'grades': isFunction('saveGrades') && isFunction('getGrades') && isFunction('getGradeLetter'),
+            'locations': isFunction('createLocation') && isFunction('getLocations'),
+            'locationSchedule': isFunction('setLocationClass') && isFunction('getLocationSchedule'),
+            'schema': isFunction('ensureCurriculum')
+        };
+
+        if (moduleMap[moduleName] === undefined) {
+            return false;
+        }
+
+        return moduleMap[moduleName];
+    };
+
+    /**
+     * Get a list of all loaded curriculum modules.
+     * @returns {Array} Array of loaded module names
+     */
+    window.getLoadedCurriculumModules = function() {
+        var loaded = [];
+        var moduleMap = {
+            'classes': isFunction('createClass') && isFunction('getClasses'),
+            'disciplines': isFunction('createDiscipline') && isFunction('getDisciplines'),
+            'groups': isFunction('createAutoGroup') && isFunction('getAllAutoGroups'),
+            'schedule': isFunction('setStudentScheduleClass') && isFunction('getStudentSchedule'),
+            'ranking': isFunction('setRankings') && isFunction('getRankings'),
+            'instructor': isFunction('addInstructorClassTemplate') && isFunction('getInstructorTemplates'),
+            'grades': isFunction('saveGrades') && isFunction('getGrades') && isFunction('getGradeLetter'),
+            'locations': isFunction('createLocation') && isFunction('getLocations'),
+            'locationSchedule': isFunction('setLocationClass') && isFunction('getLocationSchedule'),
+            'schema': isFunction('ensureCurriculum')
+        };
+
+        for (var name in moduleMap) {
+            if (Object.prototype.hasOwnProperty.call(moduleMap, name) && moduleMap[name]) {
+                loaded.push(name);
+            }
+        }
+
+        return loaded;
     };
 
 })();
