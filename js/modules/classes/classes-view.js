@@ -2,10 +2,21 @@
  * js/modules/classes/classes-view.js - Graduating Classes View
  * Handles graduating class CRUD and member management
  * Path: js/modules/classes/classes-view.js
+ * 
+ * This module reuses the existing character list component
  */
 
 (function() {
     'use strict';
+
+    // ============================================================
+    // STATE
+    // ============================================================
+
+    var state = {
+        selectedClassId: null,
+        selectedCharacterId: null
+    };
 
     // ============================================================
     // DEPENDENCY VALIDATION
@@ -26,8 +37,8 @@
             { name: 'removeCharacterFromGraduatingClass', fn: window.removeCharacterFromGraduatingClass },
             { name: 'getCharacterById', fn: window.getCharacterById },
             { name: 'getDisplayName', fn: window.getDisplayName },
-            { name: 'getStudents', fn: window.getStudents },
-            { name: 'getInstructors', fn: window.getInstructors },
+            { name: 'getCurrentStatus', fn: window.getCurrentStatus },
+            { name: 'getAllCharacters', fn: window.getAllCharacters || function() { return window.data?.characters || []; } },
             { name: 'saveData', fn: window.saveData }
         ];
 
@@ -70,6 +81,7 @@
 
         container.innerHTML = getClassesHTML();
         renderClassList();
+        renderClassDetail();
         initClassEvents();
     }
 
@@ -95,55 +107,62 @@
     // ============================================================
 
     function getClassesHTML() {
-        return (
-            '<div class="page-header">' +
-                '<h2>Graduating Classes</h2>' +
-                '<button id="add-class-btn" class="primary">+ New Class</button>' +
-            '</div>' +
-            '<div class="classes-layout" style="display:grid;grid-template-columns:1fr 2fr;gap:16px;">' +
-                '<div id="class-list-container" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;max-height:500px;overflow-y:auto;">' +
-                    '<div id="class-list">' +
-                        '<p class="empty-state">No classes created yet.</p>' +
-                    '</div>' +
-                '</div>' +
-                '<div id="class-detail-container" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;">' +
-                    '<div id="class-detail">' +
-                        '<p class="empty-state">Select a class to view details.</p>' +
-                    '</div>' +
-                '</div>' +
-            '</div>' +
-            '<div id="class-form-modal" class="modal hidden">' +
-                '<div class="modal-content" style="max-width:450px;">' +
-                    '<div class="modal-header">' +
-                        '<h3 id="class-form-title">Add Class</h3>' +
-                        '<button class="close-modal" id="close-class-form">&times;</button>' +
-                    '</div>' +
-                    '<div class="modal-body">' +
-                        '<form id="class-form-inner">' +
-                            '<div class="form-group">' +
-                                '<label>Class Name *</label>' +
-                                '<input type="text" id="class-name" placeholder="e.g., Spring 2024, Class of 89" required>' +
-                            '</div>' +
-                            '<div class="form-actions">' +
-                                '<button type="button" id="cancel-class-form" class="secondary">Cancel</button>' +
-                                '<button type="submit" id="save-class-btn" class="primary">Save Class</button>' +
-                            '</div>' +
-                        '</form>' +
-                    '</div>' +
-                '</div>' +
-            '</div>' +
-            '<div id="member-modal" class="modal hidden">' +
-                '<div class="modal-content" style="max-width:550px;">' +
-                    '<div class="modal-header">' +
-                        '<h3 id="member-modal-title">Manage Members</h3>' +
-                        '<button class="close-modal" id="close-member-modal">&times;</button>' +
-                    '</div>' +
-                    '<div class="modal-body">' +
-                        '<div id="member-modal-content"></div>' +
-                    '</div>' +
-                '</div>' +
-            '</div>'
-        );
+        return `
+            <div class="page-header">
+                <h2>Graduating Classes</h2>
+                <button id="add-class-btn" class="primary">+ New Class</button>
+            </div>
+            <div class="classes-layout" style="display:grid;grid-template-columns:280px 1fr;gap:16px;">
+                <div id="class-list-container" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;max-height:500px;overflow-y:auto;">
+                    <div id="class-list">
+                        <p class="empty-state">No classes created yet.</p>
+                    </div>
+                </div>
+                <div id="class-detail-container" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;overflow-y:auto;max-height:500px;">
+                    <div id="class-detail">
+                        <p class="empty-state">Select a class to view details.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Class Form Modal -->
+            <div id="class-form-modal" class="modal hidden">
+                <div class="modal-content" style="max-width:450px;">
+                    <div class="modal-header">
+                        <h3 id="class-form-title">Add Class</h3>
+                        <button class="close-modal" id="close-class-form">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <form id="class-form-inner">
+                            <div class="form-group">
+                                <label>Class Name *</label>
+                                <input type="text" id="class-name" placeholder="e.g., Spring 2024, Class of 89" required>
+                            </div>
+                            <div class="form-actions">
+                                <button type="button" id="cancel-class-form" class="secondary">Cancel</button>
+                                <button type="submit" id="save-class-btn" class="primary">Save Class</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Member Management Modal -->
+            <div id="member-modal" class="modal hidden">
+                <div class="modal-content" style="max-width:650px;max-height:80vh;overflow-y:auto;">
+                    <div class="modal-header">
+                        <h3 id="member-modal-title">Manage Members</h3>
+                        <button class="close-modal" id="close-member-modal">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="member-modal-content"></div>
+                        <div class="form-actions" style="margin-top:16px;">
+                            <button type="button" id="close-member-modal-btn" class="secondary">Close</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
     }
 
     // ============================================================
@@ -164,7 +183,12 @@
         }
 
         var html = '';
-        var selectedId = getSelectedClassId();
+        var selectedId = state.selectedClassId;
+
+        // Sort classes by name
+        classes.sort(function(a, b) {
+            return a.name.localeCompare(b.name);
+        });
 
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
@@ -172,10 +196,18 @@
             var safeName = escapeHtml(cls.name);
             var safeId = escapeHtml(cls.id);
 
+            // Count members
+            var trainees = window.getCharactersByGraduatingClass(cls.id);
+            var instructors = window.getInstructorsByGraduatingClass(cls.id);
+            var total = trainees.length + instructors.length;
+
             html += '<div class="class-list-item" style="padding:8px 12px;border-bottom:1px solid var(--border-soft);cursor:pointer;' +
                 (isSelected ? 'background:var(--accent-soft);border-left:3px solid var(--accent);' : '') +
                 '" data-id="' + safeId + '">';
-            html += '<span style="font-weight:600;">' + safeName + '</span>';
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;">';
+            html += '<span style="font-weight:600;font-size:0.8rem;">' + safeName + '</span>';
+            html += '<span style="font-size:0.6rem;color:var(--text-dim);">' + total + ' members</span>';
+            html += '</div>';
             html += '</div>';
         }
 
@@ -186,25 +218,12 @@
         for (var i = 0; i < items.length; i++) {
             var el = items[i];
             el.addEventListener('click', function() {
-                setSelectedClassId(this.dataset.id);
+                state.selectedClassId = this.dataset.id;
+                state.selectedCharacterId = null;
                 renderClassList();
                 renderClassDetail();
             });
         }
-    }
-
-    // ============================================================
-    // SELECTION STATE
-    // ============================================================
-
-    var selectedClassId = null;
-
-    function getSelectedClassId() {
-        return selectedClassId;
-    }
-
-    function setSelectedClassId(id) {
-        selectedClassId = id;
     }
 
     // ============================================================
@@ -217,25 +236,25 @@
             return;
         }
 
-        if (!selectedClassId) {
+        if (!state.selectedClassId) {
             detailContainer.innerHTML = '<p class="empty-state">Select a class to view details.</p>';
             return;
         }
 
-        var cls = window.getGraduatingClass(selectedClassId);
+        var cls = window.getGraduatingClass(state.selectedClassId);
         if (!cls) {
             detailContainer.innerHTML = '<p class="empty-state">Class not found.</p>';
-            selectedClassId = null;
+            state.selectedClassId = null;
             renderClassList();
             return;
         }
 
-        var trainees = window.getCharactersByGraduatingClass(selectedClassId);
-        var instructors = window.getInstructorsByGraduatingClass(selectedClassId);
+        var trainees = window.getCharactersByGraduatingClass(state.selectedClassId);
+        var instructors = window.getInstructorsByGraduatingClass(state.selectedClassId);
 
         var html = '';
         html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
-        html += '<h3 style="color:var(--accent);">' + escapeHtml(cls.name) + '</h3>';
+        html += '<h3 style="color:var(--accent);margin:0;">' + escapeHtml(cls.name) + '</h3>';
         html += '<div style="display:flex;gap:4px;">';
         html += '<button id="manage-members-btn" class="primary small">Manage Members</button>';
         html += '<button id="edit-class-btn" class="secondary small">Edit</button>';
@@ -259,37 +278,13 @@
         html += '</div>';
         html += '</div>';
 
-        // Trainees list
-        html += '<h4 style="color:var(--text-dim);font-size:0.8rem;margin-bottom:4px;">Trainees (' + trainees.length + ')</h4>';
-        if (trainees.length === 0) {
-            html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No trainees in this class.</p>';
-        } else {
-            html += '<div style="display:flex;flex-wrap:wrap;gap:4px;padding:4px;background:var(--bg);border-radius:4px;max-height:150px;overflow-y:auto;">';
-            for (var i = 0; i < trainees.length; i++) {
-                var char = trainees[i];
-                var name = window.getDisplayName(char);
-                var status = getCurrentStatus(char);
-                html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;">' +
-                    escapeHtml(name) + ' <span style="color:var(--text-dim);font-size:0.6rem;">(' + escapeHtml(status) + ')</span></span>';
-            }
-            html += '</div>';
-        }
-
-        // Instructors list
-        html += '<h4 style="color:var(--text-dim);font-size:0.8rem;margin:8px 0 4px 0;">Instructors (' + instructors.length + ')</h4>';
-        if (instructors.length === 0) {
-            html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No instructors in this class.</p>';
-        } else {
-            html += '<div style="display:flex;flex-wrap:wrap;gap:4px;padding:4px;background:var(--bg);border-radius:4px;max-height:150px;overflow-y:auto;">';
-            for (var i = 0; i < instructors.length; i++) {
-                var char = instructors[i];
-                var name = window.getDisplayName(char);
-                var status = getCurrentStatus(char);
-                html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;">' +
-                    escapeHtml(name) + ' <span style="color:var(--text-dim);font-size:0.6rem;">(' + escapeHtml(status) + ')</span></span>';
-            }
-            html += '</div>';
-        }
+        // Character list using existing component
+        html += '<div style="margin-top:12px;">';
+        html += '<h4 style="color:var(--text-dim);font-size:0.8rem;margin-bottom:8px;">Members</h4>';
+        html += '<div id="class-members-list" style="max-height:300px;overflow-y:auto;">';
+        html += renderMembersList(trainees, instructors);
+        html += '</div>';
+        html += '</div>';
 
         detailContainer.innerHTML = html;
 
@@ -297,34 +292,95 @@
         var manageBtn = detailContainer.querySelector('#manage-members-btn');
         if (manageBtn) {
             manageBtn.addEventListener('click', function() {
-                showMemberModal(selectedClassId);
+                showMemberModal(state.selectedClassId);
             });
         }
 
         var editBtn = detailContainer.querySelector('#edit-class-btn');
         if (editBtn) {
             editBtn.addEventListener('click', function() {
-                showClassForm(selectedClassId);
+                showClassForm(state.selectedClassId);
             });
         }
 
         var deleteBtn = detailContainer.querySelector('#delete-class-btn');
         if (deleteBtn) {
             deleteBtn.addEventListener('click', function() {
-                deleteClassHandler(selectedClassId);
+                deleteClassHandler(state.selectedClassId);
+            });
+        }
+
+        // Bind member click events
+        var memberItems = detailContainer.querySelectorAll('.member-item');
+        for (var i = 0; i < memberItems.length; i++) {
+            var el = memberItems[i];
+            el.addEventListener('click', function() {
+                state.selectedCharacterId = this.dataset.id;
+                // Could navigate to character detail here
+                renderClassDetail();
             });
         }
     }
 
     // ============================================================
-    // GET CURRENT STATUS HELPER
+    // RENDER MEMBERS LIST
     // ============================================================
 
-    function getCurrentStatus(char) {
-        if (typeof window.getCurrentStatus === 'function') {
-            return window.getCurrentStatus(char);
+    function renderMembersList(trainees, instructors) {
+        var allMembers = [];
+
+        // Add trainees
+        for (var i = 0; i < trainees.length; i++) {
+            allMembers.push({
+                char: trainees[i],
+                role: 'trainee'
+            });
         }
-        return '';
+
+        // Add instructors
+        for (var i = 0; i < instructors.length; i++) {
+            allMembers.push({
+                char: instructors[i],
+                role: 'instructor'
+            });
+        }
+
+        // Sort by name
+        allMembers.sort(function(a, b) {
+            return window.getDisplayName(a.char).localeCompare(window.getDisplayName(b.char));
+        });
+
+        if (allMembers.length === 0) {
+            return '<p class="empty-state" style="padding:8px;font-size:0.75rem;">No members in this class.</p>';
+        }
+
+        var html = '';
+        var selectedId = state.selectedCharacterId;
+
+        for (var i = 0; i < allMembers.length; i++) {
+            var item = allMembers[i];
+            var char = item.char;
+            var role = item.role;
+            var name = window.getDisplayName(char);
+            var status = window.getCurrentStatus(char);
+            var isSelected = String(char.id) === String(selectedId);
+            var isDeceased = char.deceased || false;
+
+            var roleColor = role === 'instructor' ? 'var(--info)' : 'var(--accent)';
+            var roleLabel = role === 'instructor' ? 'Instructor' : 'Trainee';
+
+            html += '<div class="member-item" data-id="' + escapeHtml(char.id) + '" style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-radius:4px;cursor:pointer;transition:0.15s;border-bottom:1px solid var(--border-soft);' +
+                (isSelected ? 'background:var(--accent-soft);border-left:3px solid var(--accent);' : '') +
+                (isDeceased ? 'opacity:0.4;' : '') + '">';
+            html += '<span style="font-size:0.75rem;">' + escapeHtml(name) + 
+                ' <span style="font-size:0.55rem;color:' + roleColor + ';">[' + roleLabel + ']</span>' +
+                (isDeceased ? ' <span style="font-size:0.55rem;color:var(--danger);">[Deceased]</span>' : '') +
+                '</span>';
+            html += '<span style="font-size:0.55rem;color:var(--text-dim);">' + escapeHtml(status) + '</span>';
+            html += '</div>';
+        }
+
+        return html;
     }
 
     // ============================================================
@@ -390,7 +446,7 @@
         document.getElementById('class-form-modal').classList.add('hidden');
 
         if (result.data && result.data.graduatingClass) {
-            selectedClassId = result.data.graduatingClass.id;
+            state.selectedClassId = result.data.graduatingClass.id;
         }
 
         renderClassList();
@@ -437,7 +493,7 @@
             return;
         }
 
-        selectedClassId = null;
+        state.selectedClassId = null;
         renderClassList();
         renderClassDetail();
 
@@ -475,10 +531,12 @@
 
         title.textContent = 'Manage Members - ' + cls.name;
 
-        var allCharacters = getAllCharacters();
+        // Get all characters
+        var allChars = getAllCharacters();
         var currentTrainees = window.getCharactersByGraduatingClass(classId);
         var currentInstructors = window.getInstructorsByGraduatingClass(classId);
 
+        // Build lookup maps
         var traineeIds = {};
         var instructorIds = {};
         for (var i = 0; i < currentTrainees.length; i++) {
@@ -490,15 +548,15 @@
 
         var html = '';
         html += '<p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:12px;">';
-        html += 'Add or remove characters from this graduating class. Characters can belong to multiple classes.';
+        html += 'Add or remove characters from this graduating class. Click a name to toggle membership.';
         html += '</p>';
 
         // Trainees section
         html += '<h4 style="color:var(--accent);margin:12px 0 8px 0;">Trainees</h4>';
-        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;padding:8px;background:var(--bg);border-radius:4px;min-height:40px;">';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;padding:8px;background:var(--bg);border-radius:4px;min-height:40px;max-height:150px;overflow-y:auto;">';
         var traineeAdded = false;
-        for (var i = 0; i < allCharacters.length; i++) {
-            var char = allCharacters[i];
+        for (var i = 0; i < allChars.length; i++) {
+            var char = allChars[i];
             if (isStudent(char)) {
                 var isInClass = !!traineeIds[char.id];
                 var name = window.getDisplayName(char);
@@ -517,10 +575,10 @@
 
         // Instructors section
         html += '<h4 style="color:var(--info);margin:12px 0 8px 0;">Instructors</h4>';
-        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;padding:8px;background:var(--bg);border-radius:4px;min-height:40px;">';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;padding:8px;background:var(--bg);border-radius:4px;min-height:40px;max-height:150px;overflow-y:auto;">';
         var instructorAdded = false;
-        for (var i = 0; i < allCharacters.length; i++) {
-            var char = allCharacters[i];
+        for (var i = 0; i < allChars.length; i++) {
+            var char = allChars[i];
             if (isInstructor(char)) {
                 var isInClass = !!instructorIds[char.id];
                 var name = window.getDisplayName(char);
@@ -537,16 +595,7 @@
         }
         html += '</div>';
 
-        html += '<div style="margin-top:12px;font-size:0.7rem;color:var(--text-dim);">';
-        html += 'Click a name to toggle membership.';
-        html += '</div>';
-
-        html += '<div class="form-actions" style="margin-top:16px;">';
-        html += '<button type="button" id="close-member-modal-btn" class="secondary">Close</button>';
-        html += '</div>';
-
         content.innerHTML = html;
-        modal.classList.remove('hidden');
 
         // Bind member toggle events
         var toggles = content.querySelectorAll('.member-toggle');
@@ -592,6 +641,7 @@
             });
         }
 
+        // Bind close buttons
         var closeBtn = document.getElementById('close-member-modal-btn');
         if (closeBtn) {
             closeBtn.addEventListener('click', function() {
@@ -618,19 +668,16 @@
     // ============================================================
 
     function isStudent(char) {
-        var status = getCurrentStatus(char);
+        var status = window.getCurrentStatus(char).toLowerCase();
         return status === 'trainee' || status === 'rookie' || status === 'junior' || status === 'student';
     }
 
     function isInstructor(char) {
-        var status = getCurrentStatus(char);
+        var status = window.getCurrentStatus(char).toLowerCase();
         return status === 'instructor' || status === 'teacher' || status === 'professor' || status === 'senior';
     }
 
     function getAllCharacters() {
-        if (typeof window.getCharacters === 'function') {
-            return window.getCharacters();
-        }
         var data = window.data || {};
         return data.characters || [];
     }
