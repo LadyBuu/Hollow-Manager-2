@@ -9,9 +9,9 @@
  * 
  * TABS:
  *   - Classes: Create/manage graduating classes, add members
- *   - Rankings: Class-based rankings
- *   - Groups: Auto-groups scoped to graduating classes
- *   - Tournaments: Class-based tournaments
+ *   - Rankings: Class-based rankings (placeholder)
+ *   - Groups: Auto-groups scoped to graduating classes (placeholder)
+ *   - Tournaments: Class-based tournaments (placeholder)
  */
 
 (function() {
@@ -148,19 +148,13 @@
                         <div id="classes-content"></div>
                     </div>
                     <div id="tab-rankings" class="tab-panel">
-                        <div id="rankings-content">
-                            <p class="empty-state">Rankings module coming soon...</p>
-                        </div>
+                        <div id="rankings-content"></div>
                     </div>
                     <div id="tab-groups" class="tab-panel">
-                        <div id="groups-content">
-                            <p class="empty-state">Groups module coming soon...</p>
-                        </div>
+                        <div id="groups-content"></div>
                     </div>
                     <div id="tab-tournaments" class="tab-panel">
-                        <div id="tournaments-content">
-                            <p class="empty-state">Tournaments module coming soon...</p>
-                        </div>
+                        <div id="tournaments-content"></div>
                     </div>
                 </div>
             </div>
@@ -294,17 +288,17 @@
             },
             'rankings': {
                 contentId: 'rankings-content',
-                renderer: window.renderRankingsView,
+                renderer: renderRankingsPlaceholder,
                 fallback: 'Rankings module not loaded.'
             },
             'groups': {
                 contentId: 'groups-content',
-                renderer: window.renderGroupsView,
+                renderer: renderGroupsPlaceholder,
                 fallback: 'Groups module not loaded.'
             },
             'tournaments': {
                 contentId: 'tournaments-content',
-                renderer: window.renderTournamentsView,
+                renderer: renderTournamentsPlaceholder,
                 fallback: 'Tournaments module not loaded.'
             }
         };
@@ -336,6 +330,241 @@
         } catch (e) {
             console.error('[Classes] Error rendering tab "' + tabName + '":', e);
             content.innerHTML = '<p class="empty-state">Unable to load this section. Please try again.</p>';
+        }
+    }
+
+    // ============================================================
+    // PLACEHOLDER RENDERERS
+    // ============================================================
+
+    function renderRankingsPlaceholder(container) {
+        if (!container) return;
+        
+        container.innerHTML = `
+            <div class="page-header">
+                <h2>Class Rankings</h2>
+            </div>
+            <div class="ranking-controls" style="margin-bottom:12px;">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <label style="font-size:0.75rem;color:var(--text-dim);">Class:</label>
+                    <select id="rankings-class-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
+                        <option value="all">All Classes</option>
+                    </select>
+                    <label style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Week:</label>
+                    <select id="rankings-week-select" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
+                        ${getWeekOptions()}
+                    </select>
+                    <button id="auto-rank-btn" class="primary small">Generate Rankings</button>
+                </div>
+            </div>
+            <div id="rankings-container">
+                <p class="empty-state">Select a class to view rankings.</p>
+            </div>
+        `;
+
+        populateClassFilter('rankings-class-filter');
+        
+        var classFilter = document.getElementById('rankings-class-filter');
+        if (classFilter) {
+            classFilter.addEventListener('change', function() {
+                renderRankingsTable();
+            });
+        }
+
+        var weekSelect = document.getElementById('rankings-week-select');
+        if (weekSelect) {
+            weekSelect.addEventListener('change', function() {
+                renderRankingsTable();
+            });
+        }
+
+        var autoBtn = document.getElementById('auto-rank-btn');
+        if (autoBtn) {
+            autoBtn.addEventListener('click', function() {
+                showNotification('Auto-rank functionality coming soon.', 'info');
+            });
+        }
+
+        renderRankingsTable();
+    }
+
+    function renderRankingsTable() {
+        var container = document.getElementById('rankings-container');
+        if (!container) return;
+        container.innerHTML = '<p class="empty-state">Rankings module coming soon. Select a class to view rankings.</p>';
+    }
+
+    function renderGroupsPlaceholder(container) {
+        if (!container) return;
+
+        container.innerHTML = `
+            <div class="page-header">
+                <h2>Auto-Groups</h2>
+                <div style="display:flex;gap:4px;">
+                    <button id="rebuild-groups-btn" class="primary small">Rebuild Groups</button>
+                    <button id="refresh-groups-btn" class="secondary small">Refresh</button>
+                </div>
+            </div>
+            <div class="groups-controls" style="margin-bottom:12px;">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <label style="font-size:0.75rem;color:var(--text-dim);">Class:</label>
+                    <select id="groups-class-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
+                        <option value="all">All Classes</option>
+                    </select>
+                    <label style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Discipline:</label>
+                    <select id="groups-discipline-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
+                        <option value="all">All Disciplines</option>
+                    </select>
+                </div>
+            </div>
+            <div id="groups-container">
+                <p class="empty-state">No auto-groups found. Groups are auto-created when students share the same discipline, instructor, and time slot.</p>
+            </div>
+        `;
+
+        populateClassFilter('groups-class-filter');
+        populateDisciplineFilter();
+
+        var classFilter = document.getElementById('groups-class-filter');
+        if (classFilter) {
+            classFilter.addEventListener('change', function() {
+                renderGroupsList();
+            });
+        }
+
+        var disciplineFilter = document.getElementById('groups-discipline-filter');
+        if (disciplineFilter) {
+            disciplineFilter.addEventListener('change', function() {
+                renderGroupsList();
+            });
+        }
+
+        var rebuildBtn = document.getElementById('rebuild-groups-btn');
+        if (rebuildBtn) {
+            rebuildBtn.addEventListener('click', function() {
+                showNotification('Rebuild groups functionality coming soon.', 'info');
+            });
+        }
+
+        var refreshBtn = document.getElementById('refresh-groups-btn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', function() {
+                renderGroupsList();
+            });
+        }
+
+        renderGroupsList();
+    }
+
+    function renderGroupsList() {
+        var container = document.getElementById('groups-container');
+        if (!container) return;
+        container.innerHTML = '<p class="empty-state">Groups module coming soon. Groups will auto-generate based on discipline, instructor, and time slot combinations.</p>';
+    }
+
+    function renderTournamentsPlaceholder(container) {
+        if (!container) return;
+
+        container.innerHTML = `
+            <div class="page-header">
+                <h2>Tournaments</h2>
+                <button id="create-tournament-btn" class="primary">+ New Tournament</button>
+            </div>
+            <div class="tournaments-controls" style="margin-bottom:12px;">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <label style="font-size:0.75rem;color:var(--text-dim);">Class:</label>
+                    <select id="tournaments-class-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
+                        <option value="all">All Classes</option>
+                    </select>
+                </div>
+            </div>
+            <div id="tournaments-container">
+                <p class="empty-state">No tournaments created yet. Create your first tournament!</p>
+            </div>
+        `;
+
+        populateClassFilter('tournaments-class-filter');
+
+        var classFilter = document.getElementById('tournaments-class-filter');
+        if (classFilter) {
+            classFilter.addEventListener('change', function() {
+                renderTournamentsList();
+            });
+        }
+
+        var createBtn = document.getElementById('create-tournament-btn');
+        if (createBtn) {
+            createBtn.addEventListener('click', function() {
+                showNotification('Tournament creation coming soon.', 'info');
+            });
+        }
+
+        renderTournamentsList();
+    }
+
+    function renderTournamentsList() {
+        var container = document.getElementById('tournaments-container');
+        if (!container) return;
+        container.innerHTML = '<p class="empty-state">Tournaments module coming soon. Create tournaments for specific graduating classes.</p>';
+    }
+
+    // ============================================================
+    // HELPER FUNCTIONS
+    // ============================================================
+
+    function getWeekOptions() {
+        var html = '';
+        var currentWeek = window.data?.currentWeek || 1;
+        for (var w = 1; w <= 52; w++) {
+            html += '<option value="' + w + '"' + (w === currentWeek ? ' selected' : '') + '>Week ' + w + '</option>';
+        }
+        return html;
+    }
+
+    function populateClassFilter(selectId) {
+        var select = document.getElementById(selectId);
+        if (!select) return;
+
+        var classes = window.getGraduatingClasses ? window.getGraduatingClasses() : [];
+        select.innerHTML = '<option value="all">All Classes</option>';
+        
+        for (var i = 0; i < classes.length; i++) {
+            var cls = classes[i];
+            var option = document.createElement('option');
+            option.value = cls.id;
+            option.textContent = cls.name;
+            select.appendChild(option);
+        }
+    }
+
+    function populateDisciplineFilter() {
+        var select = document.getElementById('groups-discipline-filter');
+        if (!select) return;
+
+        var disciplines = window.getDisciplines ? window.getDisciplines() : [];
+        select.innerHTML = '<option value="all">All Disciplines</option>';
+        
+        for (var i = 0; i < disciplines.length; i++) {
+            var d = disciplines[i];
+            var option = document.createElement('option');
+            option.value = d.id;
+            option.textContent = d.name;
+            select.appendChild(option);
+        }
+    }
+
+    function showNotification(message, type) {
+        type = type || 'info';
+        if (typeof window.showToast === 'function') {
+            window.showToast(message, type);
+            return;
+        }
+        if (type === 'error') {
+            alert('Error: ' + message);
+        } else if (type === 'success') {
+            alert(message);
+        } else {
+            console.log('[Classes]', message);
         }
     }
 
