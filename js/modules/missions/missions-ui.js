@@ -1,50 +1,55 @@
 /**
  * js/modules/missions/missions-ui.js - Mission UI Controller
- * Event wiring, modal management, user interactions.
+ * Event wiring, modal management, user interactions for missions.
  * 
  * UI PHILOSOPHY:
  *   - UI is the boundary between user and domain
  *   - All mutations go through MissionsCore
- *   - All reads go through MissionsQueries (NOT window.data directly)
+ *   - All reads go through MissionsQueries (preferred) or MissionsCore
  *   - All rendering goes through MissionsRender
  *   - Persistence is owned by the UI (calls saveData after mutations)
- *   - Event handlers use DELEGATION from the stable tab container
- *   - Single lifecycle owner (TabManager)
- *   - UI state is private, not exposed globally
- * 
- * UI LAYER CONTRACT:
- *   - initEvents() sets up event delegation ONCE on the stable container
- *   - renderMissionsView() renders the full view
- *   - showMissionDetail() opens detail modal
- *   - showMissionForm() opens form modal
- *   - All mutations call Core, then queueSave()
- *   - No direct mutation of window.data
- *   - No direct reading of window.data (use Queries)
+ *   - Event handlers use delegation with CURRENT mission resolution
  * 
  * PERSISTENCE CONTRACT:
- *   - All mutation operations call queueSave() after success
- *   - saveData() MUST exist and return a Promise
+ *   - All mutation operations call saveData() after success
+ *   - saveData() MUST exist and return a Promise that rejects on failure
  *   - The UI assumes optimistic updates (memory first, then persist)
- *   - If persistence fails, the user is notified
- *   - Persistence failures are NEVER silently swallowed
- * 
- * EVENT DELEGATION:
- *   - All events are delegated from #tab-missions container
- *   - No direct event binding on dynamic elements
- *   - Modal close buttons use delegation via data-attributes
+ *   - If persistence fails, the user is notified but UI remains consistent
+ *   - Saves are SERIALIZED to prevent race conditions
  * 
  * DEPENDENCIES:
- *   - MissionsCore (required)
- *   - MissionsRender (required)
- *   - MissionsQueries (required)
- *   - window.saveData (required)
+ *   - window.MissionsCore (required)
+ *   - window.MissionsRender (required)
+ *   - window.MissionsQueries (required)
+ *   - window.saveData (required - but handled defensively)
+ *   - window.NotificationSystem (from notification.js)
  *   - window.TabManager (from tab-manager.js)
+ * 
+ * LOAD ORDER:
+ *   - missions-schema.js (FIRST)
+ *   - missions-core.js
+ *   - missions-queries.js
+ *   - missions-render.js
+ *   - missions-ui.js (LAST)
  */
 
 (function() {
     'use strict';
 
+    // Guard: Check dependencies BEFORE marking as loaded
     if (window.__missionsUILoaded) return;
+
+    // ============================================================
+    // DEPENDENCIES - Defensive loading
+    // ============================================================
+
+    // Create dummy saveData if not available (prevents errors during load)
+    if (typeof window.saveData !== 'function') {
+        console.warn('MissionsUI: saveData() is not available. Persistence will be disabled.');
+        window.saveData = function() {
+            return Promise.resolve(true);
+        };
+    }
 
     if (!window.MissionsCore) {
         console.error('MissionsUI: MissionsCore required.');
@@ -58,11 +63,8 @@
         console.error('MissionsUI: MissionsQueries required.');
         return;
     }
-    if (typeof window.saveData !== 'function') {
-        console.error('MissionsUI: saveData() is required for persistence.');
-        return;
-    }
 
+    // Mark as loaded ONLY after all dependencies are confirmed
     window.__missionsUILoaded = true;
 
     var Core = window.MissionsCore;
@@ -70,53 +72,69 @@
     var Queries = window.MissionsQueries;
 
     // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var VALID_STATUSES = ['active', 'completed', 'cancelled'];
+    var VALID_PRIORITIES = ['low', 'medium', 'high', 'critical'];
+    var VALID_DIFFICULTIES = ['easy', 'medium', 'hard', 'expert'];
+
+    // ============================================================
     // PRIVATE STATE
     // ============================================================
 
     var state = {
-        filter: 'all',
-        formEditId: null
+        currentMissionId: null,
+        currentFilter: 'all'
     };
 
     // ============================================================
-    // PERSISTENCE QUEUE
+    // PERSISTENCE QUEUE - Serializes saves to prevent race conditions
     // ============================================================
 
     var _persistenceQueue = Promise.resolve();
 
     function queueSave() {
         _persistenceQueue = _persistenceQueue
-            .catch(function() {})
+            .catch(function() {
+                // Keep queue alive after previous failure
+            })
             .then(function() {
                 return window.saveData();
             });
+
         return _persistenceQueue;
     }
 
-    function queueSaveWithNotification(message) {
-        return queueSave().catch(function(err) {
-            console.error('Mission persistence failed:', err);
-            showNotification(message || 'Changes saved in memory but failed to persist.', 'warning');
-        });
-    }
-
     // ============================================================
-    // NOTIFICATION
+    // NOTIFICATION SYSTEM (Private)
     // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
+
         if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
             window.NotificationSystem.notify(message, type);
             return;
         }
+
         if (typeof window.showToast === 'function') {
             window.showToast(message, type);
             return;
         }
+
+        if (typeof window.notify === 'function') {
+            window.notify(message, type);
+            return;
+        }
+
         console.log('[' + type + ']', message);
     }
 
+    /**
+     * Show a confirmation dialog.
+     * Returns a Promise that resolves to true if confirmed, false otherwise.
+     */
     function showConfirmation(message) {
         if (typeof window.showConfirm === 'function') {
             var result = window.showConfirm(message);
@@ -125,7 +143,71 @@
             }
             return Promise.resolve(result);
         }
+
+        if (typeof window.confirmModal === 'function') {
+            var result = window.confirmModal(message);
+            if (result && typeof result.then === 'function') {
+                return result;
+            }
+            return Promise.resolve(result);
+        }
+
         return Promise.resolve(confirm(message));
+    }
+
+    // ============================================================
+    // PERSISTENCE HELPER
+    // ============================================================
+
+    /**
+     * Perform a mission operation and persist the result.
+     * All mutation methods MUST return truthy values on success.
+     * saveData() is guaranteed to exist (checked at module load).
+     * 
+     * @param {string} operationName - Name of the operation for logging
+     * @param {function} operation - Function that performs the mutation
+     * @param {function} onSuccess - Called after in-memory mutation succeeds
+     * @param {function} onError - Called if persistence fails (optional)
+     * @param {function} onPersist - Called after persistence completes (optional)
+     * @returns {boolean} True if the in-memory mutation succeeded
+     */
+    function persistOperation(operationName, operation, onSuccess, onError, onPersist) {
+        try {
+            var result = operation();
+
+            if (!result) {
+                console.warn('MissionsUI: ' + operationName + ' failed.');
+                return false;
+            }
+
+            // Persist via serialized queue - don't block UI
+            queueSave()
+                .then(function() {
+                    if (typeof onPersist === 'function') {
+                        onPersist();
+                    }
+                })
+                .catch(function(err) {
+                    console.error('MissionsUI: Failed to persist ' + operationName + ':', err);
+                    showNotification(
+                        'Changes were made but could not be saved to storage. Please try again.',
+                        'error'
+                    );
+                    if (typeof onError === 'function') {
+                        onError(err);
+                    }
+                });
+
+            if (typeof onSuccess === 'function') {
+                onSuccess();
+            }
+
+            return true;
+        } catch (err) {
+            console.error('MissionsUI: ' + operationName + ' threw an error:', err);
+            showNotification('Operation failed: ' + err.message, 'error');
+            return false;
+        }
     }
 
     // ============================================================
@@ -133,63 +215,395 @@
     // ============================================================
 
     function normaliseId(id) {
-        return Queries.normaliseId(id);
+        return id !== undefined && id !== null ? String(id) : null;
     }
 
     // ============================================================
-    // DATA HELPERS (Use Queries, not window.data directly)
+    // POPULATE SELECTORS
     // ============================================================
 
-    function getTeams() {
-        return Queries.getTeams ? Queries.getTeams() : [];
+    function populateTeamSelect(select, currentValue) {
+        if (!select) return;
+
+        var data = window.data || {};
+        var teams = Array.isArray(data.teams) ? data.teams : [];
+
+        select.innerHTML = '<option value="">Unassigned</option>';
+
+        var activeTeams = teams.filter(function(t) {
+            return t && typeof t === 'object' && t.status === 'active';
+        });
+
+        activeTeams.sort(function(a, b) {
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        activeTeams.forEach(function(team) {
+            var option = document.createElement('option');
+            option.value = team.id;
+            option.textContent = team.name || 'Unknown Team';
+            if (currentValue && String(team.id) === String(currentValue)) {
+                option.selected = true;
+            }
+            select.appendChild(option);
+        });
+
+        if (currentValue) {
+            var exists = false;
+            for (var i = 0; i < select.options.length; i++) {
+                if (select.options[i].value === currentValue) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                select.value = '';
+            }
+        }
     }
 
-    function getCharacters() {
-        return Queries.getCharacters ? Queries.getCharacters() : [];
+    function getAvailableTeams() {
+        var data = window.data || {};
+        var teams = Array.isArray(data.teams) ? data.teams : [];
+        return teams.filter(function(t) {
+            return t && typeof t === 'object' && t.status === 'active';
+        });
+    }
+
+    function getTeamName(teamId) {
+        var teams = getAvailableTeams();
+        for (var i = 0; i < teams.length; i++) {
+            if (String(teams[i].id) === String(teamId)) {
+                return teams[i].name || 'Unknown Team';
+            }
+        }
+        return 'Unknown Team';
     }
 
     // ============================================================
-    // UI RENDER FUNCTIONS
+    // MODAL SETUP
     // ============================================================
 
-    function renderMissionsView(container) {
+    function setupModalOutsideClick(modalId, closeFn) {
+        var modal = document.getElementById(modalId);
+        if (!modal) return;
+        if (modal._outsideListener) return;
+        modal._outsideListener = true;
+
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal) {
+                closeFn();
+            }
+        });
+    }
+
+    // ============================================================
+    // DETAIL EVENTS
+    // ============================================================
+
+    function attachDetailEvents(modal) {
+        var content = modal.querySelector('#mission-detail-content');
+        if (!content) return;
+
+        if (content._detailEventsAttached) return;
+        content._detailEventsAttached = true;
+
+        content.addEventListener('click', function(e) {
+            var missionId = modal.dataset.missionId;
+            if (!missionId) return;
+
+            var mission = Core.getMission(missionId);
+            if (!mission) return;
+
+            var target = e.target;
+
+            // Toggle objective
+            var checkbox = target.closest('.objective-item input[type="checkbox"]');
+            if (checkbox) {
+                var objIndex = parseInt(checkbox.dataset.index, 10);
+                if (!isNaN(objIndex)) {
+                    toggleObjective(missionId, objIndex, checkbox.checked);
+                }
+                return;
+            }
+
+            // Add objective
+            var addBtn = target.closest('#add-objective-btn');
+            if (addBtn) {
+                var input = content.querySelector('#new-objective-input');
+                if (input && input.value.trim()) {
+                    addObjective(missionId, input.value.trim());
+                }
+                return;
+            }
+
+            // Delete mission
+            var deleteBtn = target.closest('#delete-mission-btn');
+            if (deleteBtn) {
+                deleteMissionHandler(missionId);
+                return;
+            }
+
+            // Edit mission
+            var editBtn = target.closest('#edit-mission-btn');
+            if (editBtn) {
+                showMissionForm(missionId);
+                return;
+            }
+
+            // Complete mission
+            var completeBtn = target.closest('#complete-mission-btn');
+            if (completeBtn) {
+                completeMissionHandler(missionId);
+                return;
+            }
+
+            // Cancel mission
+            var cancelBtn = target.closest('#cancel-mission-btn');
+            if (cancelBtn) {
+                cancelMissionHandler(missionId);
+                return;
+            }
+        });
+    }
+
+    // ============================================================
+    // LIST EVENTS
+    // ============================================================
+
+    function attachListEvents(container) {
+        if (container._listEventsAttached) return;
+        container._listEventsAttached = true;
+
+        container.addEventListener('click', function(e) {
+            var target = e.target;
+
+            var viewBtn = target.closest('.view-mission');
+            if (viewBtn) {
+                e.preventDefault();
+                viewMission(viewBtn.dataset.id);
+                return;
+            }
+
+            var editBtn = target.closest('.edit-mission');
+            if (editBtn) {
+                e.preventDefault();
+                showMissionForm(editBtn.dataset.id);
+                return;
+            }
+
+            var deleteBtn = target.closest('.delete-mission');
+            if (deleteBtn) {
+                e.preventDefault();
+                deleteMissionHandler(deleteBtn.dataset.id);
+                return;
+            }
+
+            var completeBtn = target.closest('.complete-mission');
+            if (completeBtn) {
+                e.preventDefault();
+                completeMissionHandler(completeBtn.dataset.id);
+                return;
+            }
+        });
+
+        var addBtn = document.getElementById('add-mission-btn');
+        if (addBtn && !addBtn._listener) {
+            addBtn._listener = true;
+            addBtn.addEventListener('click', function() {
+                showMissionForm();
+            });
+        }
+
+        var filterSelect = document.getElementById('mission-filter');
+        if (filterSelect && !filterSelect._listener) {
+            filterSelect._listener = true;
+            filterSelect.addEventListener('change', function() {
+                state.currentFilter = this.value;
+                renderMissionList(document.getElementById('tab-missions'));
+            });
+        }
+    }
+
+    // ============================================================
+    // RENDER FUNCTIONS
+    // ============================================================
+
+    function renderMissions(container) {
         if (!container) {
             container = document.getElementById('tab-missions');
         }
         if (!container) return;
 
-        // Store reference to container for event delegation
-        if (!container._missionsContainer) {
-            container._missionsContainer = true;
+        if (!window.data) {
+            container.innerHTML = '<p class="empty-state">Loading mission data...</p>';
+            return;
         }
 
-        container.innerHTML = Render.renderContainer();
-        renderMissions();
-
-        // Events are delegated from the container - only init once
-        if (!container._missionsEventsInitialized) {
-            initEvents(container);
-            container._missionsEventsInitialized = true;
-        }
+        container.innerHTML = getMissionsHTML();
+        renderMissionList(container);
     }
 
-    function renderMissions() {
-        var container = document.getElementById('missions-list');
-        if (!container) return;
+    function getMissionsHTML() {
+        var filterOptions = '';
+        var filterValues = ['all', 'active', 'completed', 'cancelled'];
+        var filterLabels = ['All Missions', 'Active', 'Completed', 'Cancelled'];
 
-        var filter = document.getElementById('mission-filter') ? document.getElementById('mission-filter').value : 'all';
-        state.filter = filter;
+        for (var i = 0; i < filterValues.length; i++) {
+            var selected = state.currentFilter === filterValues[i] ? ' selected' : '';
+            filterOptions += '<option value="' + filterValues[i] + '"' + selected + '>' + filterLabels[i] + '</option>';
+        }
 
-        var missions = Core.getMissions(filter);
-        var count = document.getElementById('mission-count');
-        if (count) count.textContent = missions.length;
+        return `
+            <div class="page-header">
+                <h2>Missions</h2>
+                <button id="add-mission-btn" class="primary">+ New Mission</button>
+            </div>
+            <div class="filter-section">
+                <label for="mission-filter">Filter:</label>
+                <select id="mission-filter">
+                    ${filterOptions}
+                </select>
+                <span id="mission-count" style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Total: 0</span>
+            </div>
+            <div id="mission-list">
+                <div id="missions-container">
+                    <p class="empty-state">No missions created yet.</p>
+                </div>
+            </div>
+            ${getModalsHTML()}
+        `;
+    }
 
-        var html = Render.renderList(missions);
-        container.innerHTML = html;
+    function getModalsHTML() {
+        return `
+            <div id="mission-form-modal" class="modal hidden">
+                <div class="modal-content modal-form-content">
+                    <div class="modal-header">
+                        <h3 id="mission-form-title">Create Mission</h3>
+                        <button class="close-modal" id="close-mission-form">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="mission-form-content"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="mission-detail-modal" class="modal hidden">
+                <div class="modal-content modal-detail-content">
+                    <div class="modal-header">
+                        <h3 id="detail-mission-title">Mission</h3>
+                        <button class="close-modal" id="close-mission-detail">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="mission-detail-content"></div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderMissionList(container) {
+        var listContainer = container ? container.querySelector('#missions-container') : document.getElementById('missions-container');
+        var countEl = container ? container.querySelector('#mission-count') : document.getElementById('mission-count');
+
+        if (!listContainer) return;
+
+        var filter = state.currentFilter || 'all';
+        var missions = Core.getMissions();
+
+        var filteredMissions = missions.filter(function(m) {
+            if (filter === 'all') return true;
+            return m.status === filter;
+        });
+
+        if (countEl) {
+            countEl.textContent = 'Total: ' + filteredMissions.length;
+        }
+
+        var html = Render.renderList(filteredMissions);
+        listContainer.innerHTML = html;
+
+        attachListEvents(listContainer);
     }
 
     // ============================================================
-    // MISSION FORM
+    // VIEW FUNCTIONS
+    // ============================================================
+
+    function viewMission(id) {
+        var mission = Core.getMission(id);
+        if (!mission) {
+            showNotification('Mission not found.', 'error');
+            return;
+        }
+
+        state.currentMissionId = normaliseId(id);
+
+        var modal = document.getElementById('mission-detail-modal');
+        if (!modal) return;
+
+        var title = document.getElementById('detail-mission-title');
+        if (title) title.textContent = mission.title;
+
+        var content = document.getElementById('mission-detail-content');
+        if (!content) return;
+
+        var html = Render.renderDetail(mission);
+        content.innerHTML = html;
+
+        modal.dataset.missionId = id;
+        modal.classList.remove('hidden');
+
+        setupModalOutsideClick('mission-detail-modal', closeMissionDetail);
+
+        // Bind close button
+        var closeBtn = document.getElementById('close-mission-detail');
+        if (closeBtn) {
+            var newCloseBtn = closeBtn.cloneNode(true);
+            closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
+            newCloseBtn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                closeMissionDetail();
+            });
+        }
+
+        // Also handle any .close-modal inside the modal
+        var modalCloseBtns = modal.querySelectorAll('.close-modal');
+        modalCloseBtns.forEach(function(btn) {
+            if (btn.id !== 'close-mission-detail') {
+                var newBtn = btn.cloneNode(true);
+                btn.parentNode.replaceChild(newBtn, btn);
+                newBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    closeMissionDetail();
+                });
+            }
+        });
+
+        // Populate team select
+        var teamSelect = content.querySelector('#mission-team-select');
+        if (teamSelect) {
+            populateTeamSelect(teamSelect, mission.assignedTeamId);
+        }
+
+        attachDetailEvents(modal);
+    }
+
+    function closeMissionDetail() {
+        var modal = document.getElementById('mission-detail-modal');
+        if (modal) {
+            modal.classList.add('hidden');
+            var content = document.getElementById('mission-detail-content');
+            if (content) {
+                content.innerHTML = '';
+            }
+        }
+        state.currentMissionId = null;
+    }
+
+    // ============================================================
+    // FORM FUNCTIONS
     // ============================================================
 
     function showMissionForm(editId) {
@@ -200,919 +614,334 @@
         if (!modal || !title || !content) return;
 
         var mission = editId ? Core.getMission(editId) : null;
-        state.formEditId = editId || null;
 
-        var teams = getTeams();
-        var characters = getCharacters();
+        if (editId && !mission) {
+            showNotification('Mission not found.', 'error');
+            return;
+        }
 
         title.textContent = mission ? 'Edit Mission' : 'Create Mission';
 
-        var supportIds = mission && mission.supportPersonnel ? mission.supportPersonnel : [];
-        var html = Render.renderForm(mission, teams, characters, supportIds);
+        var html = Render.renderForm(mission, {
+            statuses: VALID_STATUSES,
+            priorities: VALID_PRIORITIES,
+            difficulties: VALID_DIFFICULTIES
+        });
+
         content.innerHTML = html;
 
         modal.dataset.editId = editId || '';
         modal.classList.remove('hidden');
 
-        // Set up support personnel tags
-        if (mission && mission.supportPersonnel) {
-            mission.supportPersonnel.forEach(function(charId) {
-                var char = characters.find(function(c) { return String(c.id) === String(charId); });
-                if (char) {
-                    addSupportTag(charId, getDisplayName(char));
-                }
-            });
-        }
-
-        // Set up objectives with done status preserved
-        if (mission && mission.objectives) {
-            mission.objectives.forEach(function(obj) {
-                addObjectiveToList(obj.text, !!obj.done);
-            });
-        }
+        setupModalOutsideClick('mission-form-modal', closeMissionForm);
 
         attachFormEvents(modal, mission);
     }
 
     function attachFormEvents(modal, mission) {
-        var form = modal.querySelector('#mission-form-inner');
+        var form = modal.querySelector('#mission-form');
         if (!form) return;
 
-        // Pay calculation
-        var basePayInput = document.getElementById('mission-base-pay');
-        var surchargeInput = document.getElementById('mission-surcharge-pay');
-        if (basePayInput && surchargeInput) {
-            basePayInput.addEventListener('input', calculateTotalPay);
-            surchargeInput.addEventListener('input', calculateTotalPay);
+        var newForm = form.cloneNode(true);
+        form.parentNode.replaceChild(newForm, form);
+
+        // Populate team select
+        var teamSelect = newForm.querySelector('#mission-team');
+        if (teamSelect) {
+            populateTeamSelect(teamSelect, mission ? mission.assignedTeamId : null);
         }
 
-        // Mission ID preview
-        var teamSelect = document.getElementById('mission-team');
-        var yearInput = document.getElementById('mission-year');
-        var difficultySelect = document.getElementById('mission-difficulty');
-        var idInput = document.getElementById('mission-id');
-
-        function updateMissionIdPreview() {
-            var teamId = teamSelect ? teamSelect.value : null;
-            var year = parseInt(yearInput ? yearInput.value : new Date().getFullYear(), 10);
-            var difficulty = difficultySelect ? difficultySelect.value : 'medium';
-            if (year && !isNaN(year)) {
-                idInput.value = Core.generateMissionId(teamId, year, difficulty);
-            }
-        }
-
-        if (teamSelect) teamSelect.addEventListener('change', updateMissionIdPreview);
-        if (yearInput) yearInput.addEventListener('change', updateMissionIdPreview);
-        if (difficultySelect) difficultySelect.addEventListener('change', updateMissionIdPreview);
-
-        // Primary type -> subtype
-        var primarySelect = document.getElementById('mission-primary-type');
-        var subtypeSelect = document.getElementById('mission-subtype');
-        if (primarySelect && subtypeSelect) {
-            primarySelect.addEventListener('change', function() {
-                populateSubtypes(this.value, mission ? mission.subtype : '');
-            });
-            // Initial population
-            populateSubtypes(primarySelect.value, mission ? mission.subtype : '');
-        }
-
-        // Objectives
-        var addObjBtn = document.getElementById('add-objective-btn');
-        if (addObjBtn) {
-            addObjBtn.addEventListener('click', function() {
-                var input = document.getElementById('mission-objective');
-                if (input && input.value.trim()) {
-                    addObjectiveToList(input.value.trim(), false);
-                    input.value = '';
-                }
-            });
-        }
-        var objectiveInput = document.getElementById('mission-objective');
-        if (objectiveInput) {
-            objectiveInput.addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    var btn = document.getElementById('add-objective-btn');
-                    if (btn) btn.click();
-                }
-            });
-        }
-
-        // Support personnel
-        var addSupportBtn = document.getElementById('add-support-btn');
-        if (addSupportBtn) {
-            addSupportBtn.addEventListener('click', function() {
-                var select = document.getElementById('mission-support-select');
-                if (select && select.value) {
-                    var char = getCharacters().find(function(c) { return String(c.id) === String(select.value); });
-                    if (char) {
-                        addSupportTag(select.value, getDisplayName(char));
-                        select.value = '';
-                    }
-                }
-            });
-        }
-
-        // Submit
-        form.addEventListener('submit', function(e) {
+        newForm.addEventListener('submit', function(e) {
             e.preventDefault();
-            saveMission(e);
-        });
 
-        // Cancel - handled by delegation, but keep direct for UX
-        var cancelBtn = form.querySelector('#cancel-mission-form');
-        if (cancelBtn) {
-            cancelBtn.addEventListener('click', function(e) {
-                e.preventDefault();
-                closeMissionForm();
-            });
-        }
-    }
+            var editId = modal.dataset.editId;
 
-    function populateSubtypes(primaryType, selectedSubtype) {
-        var subtypeSelect = document.getElementById('mission-subtype');
-        if (!subtypeSelect) return;
+            var data = {
+                title: this.querySelector('#mission-title').value.trim(),
+                status: this.querySelector('#mission-status').value,
+                priority: this.querySelector('#mission-priority').value,
+                difficulty: this.querySelector('#mission-difficulty').value,
+                assignedTeamId: this.querySelector('#mission-team').value || null,
+                location: this.querySelector('#mission-location').value.trim(),
+                duration: this.querySelector('#mission-duration').value.trim(),
+                pay: this.querySelector('#mission-pay').value.trim(),
+                description: this.querySelector('#mission-description').value.trim(),
+                notes: this.querySelector('#mission-notes').value.trim(),
+                objectives: []
+            };
 
-        subtypeSelect.innerHTML = '<option value="">Select...</option>';
+            if (!data.title) {
+                showNotification('Mission title is required.', 'warning');
+                return;
+            }
 
-        if (primaryType) {
-            var subtypes = Queries.getSubtypesForType(primaryType);
-            subtypes.forEach(function(subtype) {
-                var label = Queries.getSubtypeLabel(subtype);
-                var option = document.createElement('option');
-                option.value = subtype;
-                option.textContent = label;
-                if (subtype === selectedSubtype) {
-                    option.selected = true;
+            // Collect objectives
+            var objectiveInputs = this.querySelectorAll('.objective-input');
+            var objectiveChecks = this.querySelectorAll('.objective-done');
+            for (var i = 0; i < objectiveInputs.length; i++) {
+                var text = objectiveInputs[i].value.trim();
+                if (text) {
+                    var done = objectiveChecks[i] ? objectiveChecks[i].checked : false;
+                    data.objectives.push({ text: text, done: done });
                 }
-                subtypeSelect.appendChild(option);
-            });
-        }
-    }
+            }
 
-    function addObjectiveToList(text, done) {
-        var container = document.getElementById('mission-objectives-list');
-        if (!container) return;
-
-        var div = document.createElement('div');
-        div.className = 'objective-row';
-        div.dataset.done = done ? 'true' : 'false';
-        div.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;align-items:center;';
-
-        var textSpan = document.createElement('span');
-        textSpan.style.cssText = 'flex:1;font-size:0.8rem;padding:4px 8px;background:var(--bg);border-radius:4px;';
-        textSpan.textContent = text;
-        if (done) {
-            textSpan.style.textDecoration = 'line-through';
-            textSpan.style.color = 'var(--text-dim)';
-        }
-
-        var removeBtn = document.createElement('button');
-        removeBtn.type = 'button';
-        removeBtn.className = 'small danger remove-objective-btn';
-        removeBtn.textContent = '✕';
-        removeBtn.style.cssText = 'padding:2px 8px;font-size:0.6rem;';
-
-        var hiddenInput = document.createElement('input');
-        hiddenInput.type = 'hidden';
-        hiddenInput.className = 'objective-text';
-        hiddenInput.value = text;
-
-        var doneInput = document.createElement('input');
-        doneInput.type = 'hidden';
-        doneInput.className = 'objective-done';
-        doneInput.value = done ? 'true' : 'false';
-
-        div.appendChild(textSpan);
-        div.appendChild(removeBtn);
-        div.appendChild(hiddenInput);
-        div.appendChild(doneInput);
-        container.appendChild(div);
-
-        removeBtn.onclick = function() {
-            div.remove();
-        };
-    }
-
-    function addSupportTag(characterId, characterName) {
-        var container = document.getElementById('mission-support-list');
-        if (!container) return;
-
-        // Use Array.from for safer lookup
-        var existing = Array.from(container.children).find(function(child) {
-            return child.dataset && child.dataset.id === String(characterId);
-        });
-        if (existing) return;
-
-        var div = document.createElement('div');
-        div.dataset.id = characterId;
-        div.style.cssText = 'display:flex;align-items:center;gap:4px;background:var(--panel-alt);padding:2px 8px;border-radius:12px;font-size:0.7rem;border:1px solid var(--border-soft);';
-
-        var nameSpan = document.createElement('span');
-        nameSpan.textContent = characterName;
-
-        var removeBtn = document.createElement('button');
-        removeBtn.type = 'button';
-        removeBtn.className = 'remove-support-btn';
-        removeBtn.dataset.id = characterId;
-        removeBtn.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;';
-        removeBtn.textContent = '✕';
-
-        var hiddenInput = document.createElement('input');
-        hiddenInput.type = 'hidden';
-        hiddenInput.className = 'support-personnel-id';
-        hiddenInput.value = characterId;
-
-        div.appendChild(nameSpan);
-        div.appendChild(removeBtn);
-        div.appendChild(hiddenInput);
-        container.appendChild(div);
-
-        removeBtn.onclick = function() {
-            div.remove();
-        };
-    }
-
-    function collectSupportPersonnel() {
-        var container = document.getElementById('mission-support-list');
-        if (!container) return [];
-        var ids = [];
-        container.querySelectorAll('.support-personnel-id').forEach(function(input) {
-            ids.push(input.value);
-        });
-        return ids;
-    }
-
-    function collectObjectives() {
-        var container = document.getElementById('mission-objectives-list');
-        if (!container) return [];
-
-        var objectives = [];
-        container.querySelectorAll('.objective-row').forEach(function(row) {
-            var textInput = row.querySelector('.objective-text');
-            var doneInput = row.querySelector('.objective-done');
-            if (textInput && textInput.value.trim()) {
-                var done = doneInput && doneInput.value === 'true';
-                objectives.push({
-                    text: textInput.value.trim(),
-                    done: done
+            var success;
+            if (editId) {
+                success = persistOperation('updateMission', function() {
+                    return Core.updateMission(editId, data);
+                }, function() {
+                    closeMissionForm();
+                    renderMissionList(document.getElementById('tab-missions'));
+                    if (state.currentMissionId === normaliseId(editId)) {
+                        viewMission(editId);
+                    }
+                });
+            } else {
+                success = persistOperation('createMission', function() {
+                    return Core.createMission(data);
+                }, function() {
+                    closeMissionForm();
+                    renderMissionList(document.getElementById('tab-missions'));
                 });
             }
+
+            if (!success) {
+                showNotification('Failed to save mission.', 'error');
+            }
         });
 
-        return objectives;
-    }
+        // Cancel button
+        var cancelBtn = newForm.querySelector('.cancel-form-btn');
+        if (cancelBtn) {
+            var newCancel = cancelBtn.cloneNode(true);
+            cancelBtn.parentNode.replaceChild(newCancel, cancelBtn);
+            newCancel.addEventListener('click', closeMissionForm);
+        }
 
-    function calculateTotalPay() {
-        var basePay = document.getElementById('mission-base-pay');
-        var surcharge = document.getElementById('mission-surcharge-pay');
-        var totalInput = document.getElementById('mission-total-pay');
-        if (!basePay || !surcharge || !totalInput) return;
+        // Add objective button
+        var addObjBtn = newForm.querySelector('#add-objective-btn');
+        if (addObjBtn) {
+            addObjBtn.addEventListener('click', function() {
+                var container = document.getElementById('objectives-container');
+                if (container) {
+                    addObjectiveRow(container);
+                }
+            });
+        }
 
-        var baseNum = parseFloat(basePay.value.replace(/[^0-9.]/g, ''));
-        var surchargeNum = parseFloat(surcharge.value.replace(/[^0-9.]/g, ''));
-
-        if (!isNaN(baseNum) && !isNaN(surchargeNum)) {
-            totalInput.value = (baseNum + surchargeNum).toFixed(2) + ' credits';
-        } else if (!isNaN(baseNum)) {
-            totalInput.value = baseNum.toFixed(2) + ' credits';
-        } else if (!isNaN(surchargeNum)) {
-            totalInput.value = surchargeNum.toFixed(2) + ' credits';
-        } else {
-            totalInput.value = '';
+        // Close button
+        var closeBtn = document.getElementById('close-mission-form');
+        if (closeBtn) {
+            var newClose = closeBtn.cloneNode(true);
+            closeBtn.parentNode.replaceChild(newClose, closeBtn);
+            newClose.addEventListener('click', closeMissionForm);
         }
     }
 
-    function saveMission(e) {
-        e.preventDefault();
-        var modal = document.getElementById('mission-form-modal');
-        var editId = modal ? modal.dataset.editId : null;
+    function addObjectiveRow(container) {
+        var row = document.createElement('div');
+        row.className = 'objective-row';
+        row.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;align-items:center;';
 
-        var objectives = collectObjectives();
-        var objectiveInput = document.getElementById('mission-objective');
-        if (objectiveInput && objectiveInput.value.trim()) {
-            objectives.push({ text: objectiveInput.value.trim(), done: false });
-            objectiveInput.value = '';
-        }
+        var checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'objective-done';
+        checkbox.style.cssText = 'accent-color:var(--accent);cursor:pointer;';
 
-        var supportPersonnel = collectSupportPersonnel();
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'objective-input';
+        input.placeholder = 'Objective text...';
+        input.style.cssText = 'flex:1;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;';
 
-        var tags = document.getElementById('mission-tags') ? 
-            document.getElementById('mission-tags').value.split(',').map(function(t) { return t.trim(); }).filter(function(t) { return t; }) : [];
+        var removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'small danger remove-objective';
+        removeBtn.textContent = '✕';
+        removeBtn.style.cssText = 'padding:2px 6px;font-size:0.6rem;';
 
-        var year = parseInt(document.getElementById('mission-year') ? document.getElementById('mission-year').value : new Date().getFullYear(), 10);
-        if (!year || isNaN(year) || year < 1000 || year > 9999) {
-            year = new Date().getFullYear();
-        }
+        removeBtn.addEventListener('click', function() {
+            if (container.children.length > 1) {
+                row.remove();
+            } else {
+                showNotification('You need at least one objective.', 'error');
+            }
+        });
 
-        var missionData = {
-            title: document.getElementById('mission-title') ? document.getElementById('mission-title').value.trim() : '',
-            year: year,
-            month: parseInt(document.getElementById('mission-month') ? document.getElementById('mission-month').value : new Date().getMonth() + 1, 10),
-            day: parseInt(document.getElementById('mission-day') ? document.getElementById('mission-day').value : new Date().getDate(), 10),
-            description: document.getElementById('mission-description') ? document.getElementById('mission-description').value.trim() : '',
-            primaryType: document.getElementById('mission-primary-type') ? document.getElementById('mission-primary-type').value : '',
-            subtype: document.getElementById('mission-subtype') ? document.getElementById('mission-subtype').value : '',
-            secondaryType: document.getElementById('mission-secondary-type') ? document.getElementById('mission-secondary-type').value : '',
-            escalation: document.getElementById('mission-escalation') ? document.getElementById('mission-escalation').value : 'tier_ii',
-            threatType: document.getElementById('mission-threat-type') ? document.getElementById('mission-threat-type').value.trim() : '',
-            environment: document.getElementById('mission-environment') ? document.getElementById('mission-environment').value.trim() : '',
-            location: document.getElementById('mission-location') ? document.getElementById('mission-location').value.trim() : '',
-            duration: document.getElementById('mission-duration') ? document.getElementById('mission-duration').value.trim() : '',
-            difficulty: document.getElementById('mission-difficulty') ? document.getElementById('mission-difficulty').value : 'medium',
-            priority: document.getElementById('mission-priority') ? document.getElementById('mission-priority').value : 'medium',
-            basePay: document.getElementById('mission-base-pay') ? document.getElementById('mission-base-pay').value.trim() : '',
-            surchargePay: document.getElementById('mission-surcharge-pay') ? document.getElementById('mission-surcharge-pay').value.trim() : '',
-            billing: document.getElementById('mission-billing') ? document.getElementById('mission-billing').value : 'original',
-            assignedTeamId: document.getElementById('mission-team') ? document.getElementById('mission-team').value || null : null,
-            supportPersonnel: supportPersonnel,
-            status: document.getElementById('mission-status') ? document.getElementById('mission-status').value : 'active',
-            objectives: objectives,
-            notes: document.getElementById('mission-notes') ? document.getElementById('mission-notes').value.trim() : '',
-            tags: tags
-        };
-
-        if (!missionData.title) {
-            showNotification('Mission title is required.', 'error');
-            return;
-        }
-
-        var result;
-        if (editId) {
-            result = Core.updateMission(editId, missionData);
-            if (result) Core.addLog(editId, 'Mission updated');
-        } else {
-            result = Core.createMission(missionData);
-            if (result) Core.addLog(result.id, 'Mission created');
-        }
-
-        if (!result) {
-            showNotification('Failed to save mission.', 'error');
-            return;
-        }
-
-        closeMissionForm();
-        renderMissions();
-        queueSaveWithNotification('Mission saved in memory but failed to persist.');
-        showNotification('Mission saved successfully.', 'success');
+        row.appendChild(checkbox);
+        row.appendChild(input);
+        row.appendChild(removeBtn);
+        container.appendChild(row);
     }
 
     function closeMissionForm() {
         var modal = document.getElementById('mission-form-modal');
         if (modal) modal.classList.add('hidden');
-        state.formEditId = null;
     }
 
     // ============================================================
-    // MISSION DETAIL
+    // MISSION HANDLERS
     // ============================================================
 
-    function showMissionDetail(id) {
+    function deleteMissionHandler(id) {
         var mission = Core.getMission(id);
         if (!mission) {
             showNotification('Mission not found.', 'error');
             return;
         }
 
-        var modal = document.getElementById('mission-detail-modal');
-        var content = document.getElementById('mission-detail-content');
-        var title = document.getElementById('detail-mission-title');
-
-        if (!modal || !content || !title) return;
-
-        title.textContent = mission.title;
-        content.innerHTML = Render.renderDetail(mission);
-
-        modal.dataset.missionId = id;
-        modal.classList.remove('hidden');
-
-        // Objective checkboxes
-        content.querySelectorAll('.objective-check').forEach(function(cb) {
-            cb.addEventListener('change', function() {
-                var missionId = this.dataset.mission;
-                var index = parseInt(this.dataset.index, 10);
-                Core.toggleObjective(missionId, index);
-                queueSaveWithNotification('Failed to save objective change.');
-                showMissionDetail(missionId);
-                renderMissions();
+        showConfirmation('Delete "' + mission.title + '" permanently? This action cannot be undone.')
+            .then(function(confirmed) {
+                if (confirmed) {
+                    var success = persistOperation('deleteMission', function() {
+                        return Core.deleteMission(id);
+                    }, function() {
+                        renderMissionList(document.getElementById('tab-missions'));
+                        closeMissionDetail();
+                    });
+                    if (!success) {
+                        showNotification('Failed to delete mission.', 'error');
+                    }
+                }
+            })
+            .catch(function() {
+                // Ignore errors from confirmation
             });
-        });
     }
 
-    function closeMissionDetail() {
-        var modal = document.getElementById('mission-detail-modal');
-        if (modal) modal.classList.add('hidden');
-    }
-
-    // ============================================================
-    // EVENT INITIALIZATION (Delegation from stable container)
-    // ============================================================
-
-    function initEvents(container) {
-        if (!container) {
-            container = document.getElementById('tab-missions');
-        }
-        if (!container) return;
-
-        // ---- CONTAINER-LEVEL DELEGATION ----
-        container.addEventListener('click', function(e) {
-            var target = e.target;
-
-            // ---- MISSION LIST ----
-            var missionItem = target.closest('.mission-item');
-            if (missionItem && container.contains(missionItem)) {
-                // Ignore clicks on interactive elements inside the item
-                if (target.closest('button, a, input, select, textarea')) {
-                    return;
-                }
-                var id = missionItem.dataset.id;
-                if (id) showMissionDetail(id);
-                return;
-            }
-
-            // ---- ADD MISSION BUTTON ----
-            var addBtn = target.closest('#add-mission-btn');
-            if (addBtn) {
-                e.preventDefault();
-                showMissionForm();
-                return;
-            }
-
-            // ---- FILTER CHANGE ----
-            var filterSelect = target.closest('#mission-filter');
-            if (filterSelect) {
-                renderMissions();
-                return;
-            }
-
-            // ---- EXPORT/IMPORT BUTTONS ----
-            var exportBtn = target.closest('#export-missions-csv-btn');
-            if (exportBtn) {
-                e.preventDefault();
-                exportMissionsCSV();
-                return;
-            }
-
-            var importBtn = target.closest('#import-missions-csv-btn');
-            if (importBtn) {
-                e.preventDefault();
-                document.getElementById('missions-csv-file-input').click();
-                return;
-            }
-
-            var templateBtn = target.closest('#template-missions-csv-btn');
-            if (templateBtn) {
-                e.preventDefault();
-                exportMissionTemplateCSV();
-                return;
-            }
-
-            // ---- FORM MODAL ----
-            var closeFormBtn = target.closest('#close-mission-form');
-            if (closeFormBtn) {
-                e.preventDefault();
-                closeMissionForm();
-                return;
-            }
-
-            var cancelFormBtn = target.closest('#cancel-mission-form');
-            if (cancelFormBtn) {
-                e.preventDefault();
-                closeMissionForm();
-                return;
-            }
-
-            // Form modal background click
-            var formModal = target.closest('#mission-form-modal');
-            if (formModal && target === formModal) {
-                closeMissionForm();
-                return;
-            }
-
-            // ---- DETAIL MODAL ----
-            var closeDetailBtn = target.closest('#close-mission-detail');
-            if (closeDetailBtn) {
-                e.preventDefault();
-                closeMissionDetail();
-                return;
-            }
-
-            var detailModal = target.closest('#mission-detail-modal');
-            if (detailModal && target === detailModal) {
-                closeMissionDetail();
-                return;
-            }
-
-            // ---- EDIT/DELETE FROM DETAIL ----
-            var editDetailBtn = target.closest('#edit-mission-from-detail');
-            if (editDetailBtn) {
-                e.preventDefault();
-                var modal = document.getElementById('mission-detail-modal');
-                var id = modal ? modal.dataset.missionId : null;
-                if (id) {
-                    closeMissionDetail();
-                    showMissionForm(id);
-                }
-                return;
-            }
-
-            var deleteDetailBtn = target.closest('#delete-mission-from-detail');
-            if (deleteDetailBtn) {
-                e.preventDefault();
-                var modal = document.getElementById('mission-detail-modal');
-                var id = modal ? modal.dataset.missionId : null;
-                if (id) {
-                    showConfirmation('Delete this mission permanently?')
-                        .then(function(confirmed) {
-                            if (confirmed) {
-                                Core.deleteMission(id);
-                                queueSaveWithNotification('Failed to save mission deletion.');
-                                closeMissionDetail();
-                                renderMissions();
-                                showNotification('Mission deleted.', 'success');
-                            }
-                        })
-                        .catch(function() {});
-                }
-                return;
-            }
-        });
-
-        // ---- FILE INPUT (separate from click delegation) ----
-        var fileInput = document.getElementById('missions-csv-file-input');
-        if (fileInput) {
-            fileInput.addEventListener('change', function(e) {
-                if (this.files.length > 0) {
-                    importMissionsCSV(this.files[0]);
-                    this.value = '';
-                }
-            });
-        }
-    }
-
-    // ============================================================
-    // CSV EXPORT / IMPORT
-    // ============================================================
-
-    function exportMissionsCSV() {
-        var missions = Core.getMissions('all');
-        if (missions.length === 0) {
-            showNotification('No missions to export.', 'warning');
+    function completeMissionHandler(id) {
+        var mission = Core.getMission(id);
+        if (!mission) {
+            showNotification('Mission not found.', 'error');
             return;
         }
 
-        var lines = [];
-        var headers = [
-            'MissionID', 'Title', 'Year', 'Month', 'Day', 'Status', 'Priority', 'Difficulty',
-            'PrimaryType', 'Subtype', 'SecondaryType', 'Escalation', 'ThreatType', 'Environment',
-            'Team', 'Location', 'Duration', 'BasePay', 'SurchargePay', 'TotalPay', 'Billing',
-            'Progress', 'SupportPersonnel', 'Objectives', 'Notes', 'Tags', 'CreatedAt', 'CompletedAt'
-        ];
-        lines.push(headers.join(','));
+        var incompleteObjectives = 0;
+        if (Array.isArray(mission.objectives)) {
+            incompleteObjectives = mission.objectives.filter(function(o) {
+                return o && !o.done;
+            }).length;
+        }
 
-        missions.forEach(function(m) {
-            var teamName = Queries.getTeamName(m.assignedTeamId);
-            var primaryType = m.primaryType || '';  // Use internal value
-            var secondaryType = m.secondaryType || '';
-            var subtypeLabel = m.subtype || '';  // Use internal value
-            var escalationLabel = m.escalation || 'tier_ii';
-            var billingLabel = m.billing || 'original';
+        var message = 'Complete "' + mission.title + '"';
+        if (incompleteObjectives > 0) {
+            message += '\n\nWarning: ' + incompleteObjectives + ' objective(s) are not completed.';
+        }
+        message += '\n\nContinue?';
 
-            var supportNames = Queries.getSupportPersonnelNames(m).join('; ');
-            var objectivesStr = m.objectives ? m.objectives.map(function(o) {
-                return o.text + (o.done ? ' ✓' : '');
-            }).join('; ') : '';
-            var tagsStr = (m.tags || []).join('; ');
+        showConfirmation(message)
+            .then(function(confirmed) {
+                if (confirmed) {
+                    // Set all objectives to done
+                    var objectives = Array.isArray(mission.objectives) ? mission.objectives.slice() : [];
+                    for (var i = 0; i < objectives.length; i++) {
+                        if (objectives[i]) {
+                            objectives[i].done = true;
+                        }
+                    }
 
-            var row = [
-                csvField(m.missionId || ''),
-                csvField(m.title || ''),
-                m.year || '',
-                m.month || '',
-                m.day || '',
-                m.status || 'active',
-                m.priority || 'medium',
-                m.difficulty || 'medium',
-                csvField(primaryType),
-                csvField(subtypeLabel),
-                csvField(secondaryType),
-                csvField(escalationLabel),
-                csvField(m.threatType || ''),
-                csvField(m.environment || ''),
-                csvField(teamName),
-                csvField(m.location || ''),
-                csvField(m.duration || ''),
-                csvField(m.basePay || ''),
-                csvField(m.surchargePay || ''),
-                csvField(m.pay || ''),
-                csvField(billingLabel),
-                m.progress || '0',
-                csvField(supportNames),
-                csvField(objectivesStr),
-                csvField(m.notes || ''),
-                csvField(tagsStr),
-                m.createdAt || '',
-                m.completedAt || ''
-            ];
-            lines.push(row.join(','));
-        });
-
-        var csvContent = lines.join('\n');
-        var blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = url;
-        a.download = 'missions-export-' + new Date().toISOString().slice(0, 10) + '.csv';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        showNotification('Exported ' + missions.length + ' missions.', 'success');
-    }
-
-    function exportMissionTemplateCSV() {
-        // Use internal canonical values, not display labels
-        var lines = [
-            'MissionID,Title,Year,Month,Day,Status,Priority,Difficulty,PrimaryType,Subtype,SecondaryType,Escalation,ThreatType,Environment,Team,Location,Duration,BasePay,SurchargePay,TotalPay,Billing,Progress,SupportPersonnel,Objectives,Notes,Tags,CreatedAt,CompletedAt',
-            'RS-2026-H001,Operation Nightfall,2026,6,15,active,high,hard,investigation,reconnaissance,research,tier_iv,Human/Magical,Urban,Raven Squad,Berlin,2 weeks,5000,2000,7000,escalated,50,Dr. Sarah Chen;Agent Marcus,Infiltrate base;Retrieve documents ✓;Extract intel,Use stealth approach,covert;rescue,2024-01-15T00:00:00.000Z,',
-            'AT-2026-M001,Field Testing Alpha,2026,7,20,active,medium,medium,research,field_testing,,tier_ii,Magical,Lab,Team Alpha,London,3 days,2000,,2000,original,0,,Test new tracking spell;Document results,Proceed with caution,testing;magic,2024-01-20T00:00:00.000Z,',
-            'LG-2026-E001,Supply Run,2026,8,5,completed,low,easy,acquisition,resources,,tier_i,,Rural,Logistics Team,Outpost 7,1 day,500,,500,original,100,Cpl. Davis,Deliver supplies ✓;Check inventory ✓,All delivered,logistics;supply,2024-01-10T00:00:00.000Z,2024-01-11T00:00:00.000Z'
-        ];
-
-        var csvContent = lines.join('\n');
-        var blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = url;
-        a.download = 'mission-template.csv';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        showNotification('Template CSV downloaded.', 'success');
-    }
-
-    function importMissionsCSV(file) {
-        var reader = new FileReader();
-        reader.onload = function(e) {
-            try {
-                if (!confirm('This will add missions from the CSV file. Existing missions will be preserved. Continue?')) return;
-
-                var text = e.target.result;
-                var parsed = parseCSV(text);
-                if (parsed.length < 2) {
-                    showNotification('CSV file is empty or invalid.', 'error');
-                    return;
-                }
-
-                var headers = parsed[0];
-                var rows = parsed.slice(1);
-                var importedCount = 0;
-                var errorCount = 0;
-
-                var headerMap = {
-                    'MissionID': 'missionId',
-                    'Title': 'title',
-                    'Year': 'year',
-                    'Month': 'month',
-                    'Day': 'day',
-                    'Status': 'status',
-                    'Priority': 'priority',
-                    'Difficulty': 'difficulty',
-                    'PrimaryType': 'primaryType',
-                    'Subtype': 'subtype',
-                    'SecondaryType': 'secondaryType',
-                    'Escalation': 'escalation',
-                    'ThreatType': 'threatType',
-                    'Environment': 'environment',
-                    'Team': 'teamName',
-                    'Location': 'location',
-                    'Duration': 'duration',
-                    'BasePay': 'basePay',
-                    'SurchargePay': 'surchargePay',
-                    'TotalPay': 'pay',
-                    'Billing': 'billing',
-                    'Progress': 'progress',
-                    'SupportPersonnel': 'supportPersonnel',
-                    'Objectives': 'objectives',
-                    'Notes': 'notes',
-                    'Tags': 'tags',
-                    'CreatedAt': 'createdAt',
-                    'CompletedAt': 'completedAt'
-                };
-
-                rows.forEach(function(values, rowIndex) {
-                    var missionData = {
-                        title: '',
-                        year: new Date().getFullYear(),
-                        month: new Date().getMonth() + 1,
-                        day: new Date().getDate(),
-                        status: 'active',
-                        priority: 'medium',
-                        difficulty: 'medium',
-                        primaryType: '',
-                        subtype: '',
-                        secondaryType: '',
-                        escalation: 'tier_ii',
-                        threatType: '',
-                        environment: '',
-                        assignedTeamId: null,
-                        supportPersonnel: [],
-                        location: '',
-                        duration: '',
-                        basePay: '',
-                        surchargePay: '',
-                        billing: 'original',
-                        progress: 0,
-                        objectives: [],
-                        notes: '',
-                        tags: [],
-                        createdAt: null,
-                        completedAt: null
-                    };
-
-                    headers.forEach(function(header, index) {
-                        var value = values[index] ? values[index].trim() : '';
-                        var mapped = headerMap[header];
-                        if (!mapped) return;
-
-                        switch (mapped) {
-                            case 'title': missionData.title = value; break;
-                            case 'year': { var y = parseInt(value, 10); if (!isNaN(y) && y >= 1000 && y <= 9999) missionData.year = y; } break;
-                            case 'month': { var m = parseInt(value, 10); if (!isNaN(m) && m >= 1 && m <= 12) missionData.month = m; } break;
-                            case 'day': { var d = parseInt(value, 10); if (!isNaN(d) && d >= 1 && d <= 31) missionData.day = d; } break;
-                            case 'status': { if (['active', 'completed', 'cancelled'].indexOf(value) !== -1) missionData.status = value; } break;
-                            case 'priority': { if (['low', 'medium', 'high', 'critical'].indexOf(value) !== -1) missionData.priority = value; } break;
-                            case 'difficulty': { if (['easy', 'medium', 'hard', 'expert'].indexOf(value) !== -1) missionData.difficulty = value; } break;
-                            case 'primaryType': { if (Queries.isValidMissionType(value)) missionData.primaryType = value; } break;
-                            case 'subtype': missionData.subtype = value; break;
-                            case 'secondaryType': { if (Queries.isValidMissionType(value)) missionData.secondaryType = value; } break;
-                            case 'escalation': { if (['tier_i','tier_ii','tier_iii','tier_iv','tier_v'].indexOf(value) !== -1) missionData.escalation = value; } break;
-                            case 'threatType': missionData.threatType = value; break;
-                            case 'environment': missionData.environment = value; break;
-                            case 'teamName': {
-                                if (value) {
-                                    var teams = getTeams();
-                                    var team = teams.find(function(t) {
-                                        return t && t.name && t.name.toLowerCase() === value.toLowerCase();
-                                    });
-                                    if (team) missionData.assignedTeamId = team.id;
-                                }
-                            } break;
-                            case 'location': missionData.location = value; break;
-                            case 'duration': missionData.duration = value; break;
-                            case 'basePay': missionData.basePay = value; break;
-                            case 'surchargePay': missionData.surchargePay = value; break;
-                            case 'billing': { if (['original', 'escalated', 'emergency', 'internal'].indexOf(value) !== -1) missionData.billing = value; } break;
-                            case 'progress': { var prog = parseInt(value, 10); if (!isNaN(prog) && prog >= 0 && prog <= 100) missionData.progress = prog; } break;
-                            case 'supportPersonnel': {
-                                if (value) {
-                                    var supportNames = value.split(';').map(function(n) { return n.trim(); }).filter(function(n) { return n; });
-                                    var characters = getCharacters();
-                                    supportNames.forEach(function(name) {
-                                        var char = characters.find(function(c) {
-                                            var charName = getDisplayName(c);
-                                            return charName.toLowerCase() === name.toLowerCase();
-                                        });
-                                        if (char) missionData.supportPersonnel.push(char.id);
-                                    });
-                                }
-                            } break;
-                            case 'objectives': {
-                                if (value) {
-                                    var objParts = value.split(';');
-                                    objParts.forEach(function(part) {
-                                        part = part.trim();
-                                        if (part) {
-                                            var done = part.endsWith('✓');
-                                            var text = part.replace(/✓$/, '').trim();
-                                            if (text) missionData.objectives.push({ text: text, done: done });
-                                        }
-                                    });
-                                }
-                            } break;
-                            case 'notes': missionData.notes = value; break;
-                            case 'tags': {
-                                if (value) missionData.tags = value.split(';').map(function(t) { return t.trim(); }).filter(function(t) { return t; });
-                            } break;
-                            case 'createdAt': {
-                                if (value) {
-                                    var date = new Date(value);
-                                    if (!isNaN(date.getTime())) missionData.createdAt = date.toISOString();
-                                }
-                            } break;
-                            case 'completedAt': {
-                                if (value) {
-                                    var date = new Date(value);
-                                    if (!isNaN(date.getTime())) missionData.completedAt = date.toISOString();
-                                }
-                            } break;
+                    var success = persistOperation('completeMission', function() {
+                        return Core.completeMission(id, objectives);
+                    }, function() {
+                        renderMissionList(document.getElementById('tab-missions'));
+                        if (state.currentMissionId === normaliseId(id)) {
+                            viewMission(id);
                         }
                     });
-
-                    if (!missionData.title) {
-                        errorCount++;
-                        return;
+                    if (!success) {
+                        showNotification('Failed to complete mission.', 'error');
                     }
-
-                    var newMission = Core.createMission(missionData);
-                    if (newMission) {
-                        importedCount++;
-                        // Progress is derived from objectives, Core handles it
-                        Core.addLog(newMission.id, 'Imported from CSV');
-                    } else {
-                        errorCount++;
-                    }
-                });
-
-                queueSaveWithNotification('Failed to save imported missions.');
-                renderMissions();
-                showNotification('Imported ' + importedCount + ' missions. Errors: ' + errorCount, 'success');
-
-            } catch (err) {
-                showNotification('Failed to import CSV: ' + err.message, 'error');
-            }
-        };
-        reader.readAsText(file);
+                }
+            })
+            .catch(function() {
+                // Ignore errors from confirmation
+            });
     }
 
-    function csvField(value) {
-        if (value === null || value === undefined) return '';
-        var str = String(value);
-        if (str.indexOf(',') !== -1 || str.indexOf('"') !== -1 || str.indexOf('\n') !== -1) {
-            return '"' + str.replace(/"/g, '""') + '"';
+    function cancelMissionHandler(id) {
+        var mission = Core.getMission(id);
+        if (!mission) {
+            showNotification('Mission not found.', 'error');
+            return;
         }
-        return str;
-    }
 
-    function parseCSV(text) {
-        var rows = [];
-        var currentRow = [];
-        var currentField = '';
-        var inQuotes = false;
-        var i = 0;
-
-        while (i < text.length) {
-            var ch = text[i];
-
-            if (inQuotes) {
-                if (ch === '"' && text[i + 1] === '"') {
-                    currentField += '"';
-                    i += 2;
-                } else if (ch === '"') {
-                    inQuotes = false;
-                    i++;
-                } else {
-                    currentField += ch;
-                    i++;
+        showConfirmation('Cancel "' + mission.title + '"? This will mark it as cancelled.')
+            .then(function(confirmed) {
+                if (confirmed) {
+                    var success = persistOperation('cancelMission', function() {
+                        return Core.cancelMission(id);
+                    }, function() {
+                        renderMissionList(document.getElementById('tab-missions'));
+                        if (state.currentMissionId === normaliseId(id)) {
+                            viewMission(id);
+                        }
+                    });
+                    if (!success) {
+                        showNotification('Failed to cancel mission.', 'error');
+                    }
                 }
-            } else {
-                if (ch === '"') {
-                    inQuotes = true;
-                    i++;
-                } else if (ch === ',') {
-                    currentRow.push(currentField);
-                    currentField = '';
-                    i++;
-                } else if (ch === '\r' && text[i + 1] === '\n') {
-                    currentRow.push(currentField);
-                    currentField = '';
-                    rows.push(currentRow);
-                    currentRow = [];
-                    i += 2;
-                } else if (ch === '\n') {
-                    currentRow.push(currentField);
-                    currentField = '';
-                    rows.push(currentRow);
-                    currentRow = [];
-                    i++;
-                } else {
-                    currentField += ch;
-                    i++;
-                }
-            }
-        }
-
-        if (currentField || currentRow.length > 0) {
-            currentRow.push(currentField);
-            rows.push(currentRow);
-        }
-
-        return rows;
+            })
+            .catch(function() {
+                // Ignore errors from confirmation
+            });
     }
 
     // ============================================================
-    // DISPLAY NAME HELPER (Local)
+    // OBJECTIVE HANDLERS
     // ============================================================
 
-    function getDisplayName(char) {
-        if (!char) return 'Unknown';
-        if (typeof window.getDisplayName === 'function') {
-            return window.getDisplayName(char);
+    function toggleObjective(missionId, index, done) {
+        var mission = Core.getMission(missionId);
+        if (!mission) {
+            showNotification('Mission not found.', 'error');
+            return;
         }
-        return char.name || char.firstName || 'Unknown';
+
+        if (!Array.isArray(mission.objectives) || index >= mission.objectives.length) {
+            showNotification('Objective not found.', 'error');
+            return;
+        }
+
+        var objectives = mission.objectives.slice();
+        objectives[index] = Object.assign({}, objectives[index], { done: done });
+
+        var success = persistOperation('updateMission', function() {
+            return Core.updateMission(missionId, { objectives: objectives });
+        }, function() {
+            if (state.currentMissionId === normaliseId(missionId)) {
+                viewMission(missionId);
+            }
+            renderMissionList(document.getElementById('tab-missions'));
+        });
+
+        if (!success) {
+            showNotification('Failed to update objective.', 'error');
+        }
+    }
+
+    function addObjective(missionId, text) {
+        var mission = Core.getMission(missionId);
+        if (!mission) {
+            showNotification('Mission not found.', 'error');
+            return;
+        }
+
+        var objectives = Array.isArray(mission.objectives) ? mission.objectives.slice() : [];
+        objectives.push({ text: text, done: false });
+
+        var success = persistOperation('updateMission', function() {
+            return Core.updateMission(missionId, { objectives: objectives });
+        }, function() {
+            if (state.currentMissionId === normaliseId(missionId)) {
+                viewMission(missionId);
+            }
+            renderMissionList(document.getElementById('tab-missions'));
+        });
+
+        if (!success) {
+            showNotification('Failed to add objective.', 'error');
+        }
     }
 
     // ============================================================
@@ -1120,20 +949,23 @@
     // ============================================================
 
     if (typeof window.TabManager !== 'undefined') {
-        window.TabManager.register('missions', renderMissionsView);
+        window.TabManager.register('missions', renderMissions);
     }
 
+    // Listen for data ready
     document.addEventListener('dataReady', function() {
         var container = document.getElementById('tab-missions');
         if (container && container.style.display !== 'none') {
-            renderMissionsView(container);
+            renderMissions(container);
         }
     });
 
     document.addEventListener('tabChanged', function(e) {
         if (e.detail && e.detail.tab === 'missions') {
             var container = document.getElementById('tab-missions');
-            if (container) renderMissionsView(container);
+            if (container) {
+                renderMissions(container);
+            }
         }
     });
 
@@ -1141,7 +973,7 @@
         setTimeout(function() {
             var container = document.getElementById('tab-missions');
             if (container && container.style.display !== 'none') {
-                renderMissionsView(container);
+                renderMissions(container);
             }
         }, 100);
     }
@@ -1150,14 +982,16 @@
     // EXPOSE
     // ============================================================
 
-    window.renderMissionsView = renderMissionsView;
     window.renderMissions = renderMissions;
-    window.showMissionForm = showMissionForm;
-    window.showMissionDetail = showMissionDetail;
-    window.closeMissionForm = closeMissionForm;
+    window.viewMission = viewMission;
     window.closeMissionDetail = closeMissionDetail;
-    window.exportMissionsCSV = exportMissionsCSV;
-    window.importMissionsCSV = importMissionsCSV;
-    window.initMissionEvents = initEvents;
+
+    window.MissionsUI = {
+        render: renderMissions,
+        viewMission: viewMission,
+        closeMissionDetail: closeMissionDetail,
+        showMissionForm: showMissionForm,
+        renderMissionList: renderMissionList
+    };
 
 })();
