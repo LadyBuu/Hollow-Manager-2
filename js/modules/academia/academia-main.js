@@ -20,7 +20,8 @@
         selectedCharacterId: null,
         filterClass: 'all',
         filterName: '',
-        activeTab: 'schedule'
+        activeTab: 'schedule',
+        currentWeek: 1
     };
 
     window.academiaState = state;
@@ -93,7 +94,7 @@
 
         container.innerHTML = getAcademiaHTML();
 
-        // Render the character list using existing CharacterList with class filter
+        // Render the character list
         renderCharacterList(container);
 
         // Render the detail panel
@@ -101,6 +102,8 @@
 
         // Bind events
         bindEvents(container);
+
+        console.log('[Academia] Rendered successfully');
     }
 
     // ============================================================
@@ -127,7 +130,7 @@
     }
 
     // ============================================================
-    // CHARACTER LIST - Using existing style
+    // CHARACTER LIST
     // ============================================================
 
     function renderCharacterList(container) {
@@ -139,7 +142,6 @@
         var students = window.getStudents();
         var classes = window.getClasses();
 
-        // Build filter HTML
         var html = '';
 
         // Class filter
@@ -166,9 +168,7 @@
         // Character list
         html += '<div id="academia-characters-list" style="display:flex;flex-direction:column;gap:2px;max-height:450px;overflow-y:auto;">';
 
-        // Filter students
         var filteredStudents = students.filter(function(char) {
-            // Name filter
             if (state.filterName) {
                 var name = window.getDisplayName(char);
                 if (!name.toLowerCase().includes(state.filterName.toLowerCase())) {
@@ -176,7 +176,6 @@
                 }
             }
 
-            // Class filter
             if (state.filterClass !== 'all') {
                 var classIds = Array.isArray(char.classIds) ? char.classIds : [];
                 if (!classIds.some(function(id) { return String(id) === String(state.filterClass); })) {
@@ -257,7 +256,7 @@
     }
 
     // ============================================================
-    // DETAIL PANEL - Using CalendarUI
+    // DETAIL PANEL
     // ============================================================
 
     function renderDetail(container) {
@@ -336,33 +335,52 @@
             return;
         }
 
-        // Check if student mode is registered
         if (!window.CalendarModes.hasMode('student')) {
             scheduleContainer.innerHTML = '<p class="empty-state">Student calendar mode not loaded.</p>';
             return;
         }
 
-        // Initialize CalendarUI
-        if (window.CalendarUI) {
-            // Get current week from state
-            var week = window.academiaScheduleState ? window.academiaScheduleState.currentWeek || 1 : 1;
+        // Check if student mode is registered
+        var studentMode = window.CalendarModes.getMode('student');
+        if (!studentMode) {
+            scheduleContainer.innerHTML = '<p class="empty-state">Student calendar mode not available.</p>';
+            return;
+        }
 
-            // If we already have a calendar instance, just update state
-            window.CalendarUI.setState({
+        // Create a container for the calendar
+        var calendarContainer = document.createElement('div');
+        calendarContainer.id = 'academia-calendar-container';
+        calendarContainer.style.width = '100%';
+        calendarContainer.style.minHeight = '400px';
+        scheduleContainer.innerHTML = '';
+        scheduleContainer.appendChild(calendarContainer);
+
+        // Get current week from state
+        var week = state.currentWeek || 1;
+
+        // Initialize CalendarUI
+        try {
+            window.CalendarUI.init(calendarContainer, {
                 mode: 'student',
                 selectedId: char.id,
                 week: week
+            }, {
+                onStateChange: function(newState) {
+                    if (newState && newState.week) {
+                        state.currentWeek = newState.week;
+                    }
+                }
             });
 
-            // Render the calendar
-            window.CalendarUI.render();
-        } else {
-            scheduleContainer.innerHTML = '<p class="empty-state">Calendar UI not available.</p>';
+            console.log('[Academia] CalendarUI initialized for student:', char.id);
+        } catch (e) {
+            console.error('[Academia] Failed to initialize CalendarUI:', e);
+            scheduleContainer.innerHTML = '<p class="empty-state">Error loading calendar. Please refresh.</p>';
         }
     }
 
     // ============================================================
-    // GRADES TAB - Using existing grades view
+    // GRADES TAB
     // ============================================================
 
     function renderGradesTab(container, char) {
@@ -371,10 +389,160 @@
             return;
         }
 
+        // Use the existing grades view if available
         if (typeof window.renderAcademiaGrades === 'function') {
             window.renderAcademiaGrades(gradesContainer, char.id);
+            return;
+        }
+
+        // Fallback: render simple grades view
+        renderSimpleGradesView(gradesContainer, char);
+    }
+
+    function renderSimpleGradesView(container, char) {
+        var week = state.currentWeek || 1;
+        var grades = window.getGrades(char.id, week) || {};
+        var disciplines = window.getAvailableDisciplines(week) || [];
+
+        var html = '<div class="grades-view">';
+        html += '<div class="week-nav" style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">';
+        html += '<button id="grades-prev-week" class="small">[<]</button>';
+        html += '<span style="font-weight:600;">Week ' + week + '</span>';
+        html += '<button id="grades-next-week" class="small">[>]</button>';
+        html += '</div>';
+
+        if (disciplines.length === 0) {
+            html += '<p class="empty-state">No disciplines available for week ' + week + '.</p>';
         } else {
-            gradesContainer.innerHTML = '<p class="empty-state">Grades module not loaded.</p>';
+            html += '<table class="grades-table" style="width:100%;border-collapse:collapse;font-size:0.8rem;">';
+            html += '<thead><tr style="background:var(--panel-alt);border-bottom:1px solid var(--border);">';
+            html += '<th style="padding:6px 8px;text-align:left;">Discipline</th>';
+            html += '<th style="padding:6px 8px;text-align:center;">Score</th>';
+            html += '<th style="padding:6px 8px;text-align:center;">Grade</th>';
+            html += '</tr></thead><tbody>';
+
+            for (var i = 0; i < disciplines.length; i++) {
+                var d = disciplines[i];
+                var score = grades[d.id] !== undefined ? grades[d.id] : '';
+                var letter = '';
+
+                if (score !== '' && score !== undefined && score !== null) {
+                    var numericScore = Number(score);
+                    if (!isNaN(numericScore)) {
+                        if (typeof window.getGradeLetter === 'function') {
+                            letter = window.getGradeLetter(d, numericScore);
+                        }
+                    }
+                }
+
+                html += '<tr style="border-bottom:1px solid var(--border-soft);">';
+                html += '<td style="padding:4px 8px;">' + escapeHtml(d.name) + '</td>';
+                html += '<td style="padding:4px 8px;text-align:center;"><input type="number" class="grade-input" data-discipline="' + escapeHtml(d.id) + '" value="' + escapeHtml(String(score)) + '" min="0" max="100" step="0.5" style="width:70px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:2px 4px;text-align:center;"></td>';
+                html += '<td style="padding:4px 8px;text-align:center;font-weight:600;" class="grade-letter">' + escapeHtml(letter) + '</td>';
+                html += '</tr>';
+            }
+
+            html += '</tbody></table>';
+            html += '<div style="margin-top:12px;"><button id="save-grades-btn" class="primary small">Save Grades</button></div>';
+        }
+
+        html += '</div>';
+
+        container.innerHTML = html;
+
+        // Bind grade input events for live preview
+        var inputs = container.querySelectorAll('.grade-input');
+        for (var i = 0; i < inputs.length; i++) {
+            var input = inputs[i];
+            input.addEventListener('input', function() {
+                var row = this.closest('tr');
+                if (!row) return;
+                var disciplineId = this.dataset.discipline;
+                var value = this.value.trim();
+                var letterEl = row.querySelector('.grade-letter');
+
+                if (value !== '' && !isNaN(Number(value))) {
+                    var numericScore = Number(value);
+                    if (numericScore >= 0 && numericScore <= 100) {
+                        var discipline = window.getDiscipline(disciplineId);
+                        if (discipline && typeof window.getGradeLetter === 'function') {
+                            letterEl.textContent = window.getGradeLetter(discipline, numericScore);
+                        }
+                    }
+                } else if (value === '') {
+                    letterEl.textContent = '';
+                }
+            });
+        }
+
+        // Bind save button
+        var saveBtn = container.querySelector('#save-grades-btn');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', function() {
+                saveGrades(container, char.id);
+            });
+        }
+
+        // Bind week navigation
+        var prevBtn = container.querySelector('#grades-prev-week');
+        var nextBtn = container.querySelector('#grades-next-week');
+
+        if (prevBtn) {
+            prevBtn.addEventListener('click', function() {
+                if (state.currentWeek > 1) {
+                    state.currentWeek--;
+                    renderGradesTab(container, char);
+                }
+            });
+        }
+
+        if (nextBtn) {
+            nextBtn.addEventListener('click', function() {
+                if (state.currentWeek < 52) {
+                    state.currentWeek++;
+                    renderGradesTab(container, char);
+                }
+            });
+        }
+    }
+
+    function saveGrades(container, studentId) {
+        var grades = {};
+        var hasChanges = false;
+
+        var inputs = container.querySelectorAll('.grade-input');
+        for (var i = 0; i < inputs.length; i++) {
+            var input = inputs[i];
+            var disciplineId = input.dataset.discipline;
+            var value = input.value.trim();
+
+            if (value === '') {
+                grades[disciplineId] = undefined;
+                hasChanges = true;
+            } else if (!isNaN(Number(value))) {
+                var numericScore = Number(value);
+                if (numericScore >= 0 && numericScore <= 100) {
+                    grades[disciplineId] = numericScore;
+                    hasChanges = true;
+                }
+            }
+        }
+
+        if (!hasChanges) {
+            alert('No changes to save.');
+            return;
+        }
+
+        if (typeof window.saveGrades === 'function') {
+            var result = window.saveGrades(studentId, state.currentWeek, grades);
+            if (result && result.success) {
+                alert('Grades saved successfully!');
+                renderGradesTab(container, window.getCharacterById(studentId));
+            } else {
+                alert('Failed to save grades: ' + (result && result.message ? result.message : 'Unknown error'));
+            }
+        } else {
+            alert('saveGrades function not available. Grades saved in memory only.');
         }
     }
 
