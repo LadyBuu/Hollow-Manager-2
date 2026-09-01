@@ -1,7 +1,7 @@
 /**
  * js/modules/classes/classes-view.js - Graduating Classes View
  * Handles graduating class CRUD and member management
- * Mobile-responsive with dropdown-based member management
+ * Mobile-responsive with vertical stacking
  */
 
 (function() {
@@ -75,68 +75,76 @@
     }
 
     // ============================================================
-    // CLASSES HTML - Mobile-first responsive
+    // CLASSES HTML - Mobile-first vertical layout
     // ============================================================
 
     function getClassesHTML() {
+        var mobileClass = state.isMobile ? 'mobile' : 'desktop';
+        
         return `
-            <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
-                <h2 style="margin:0;font-size:1.1rem;">Graduating Classes</h2>
-                <button id="add-class-btn" class="primary" style="font-size:0.75rem;padding:4px 12px;">+ New Class</button>
-            </div>
-            
-            <!-- Mobile: Class selector dropdown -->
-            <div id="mobile-class-selector" style="display:none;margin-bottom:12px;">
-                <select id="mobile-class-select" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.8rem;">
-                    <option value="">Select a class...</option>
-                </select>
-            </div>
+            <div class="classes-view ${mobileClass}">
+                <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
+                    <h2 style="margin:0;font-size:1.1rem;">Graduating Classes</h2>
+                    <button id="add-class-btn" class="primary" style="font-size:0.75rem;padding:4px 12px;">+ New Class</button>
+                </div>
+                
+                <!-- Mobile: Class selector dropdown -->
+                <div id="mobile-class-selector" style="display:none;margin-bottom:12px;">
+                    <select id="mobile-class-select" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.8rem;">
+                        <option value="">Select a class...</option>
+                    </select>
+                </div>
 
-            <!-- Desktop: Two-column layout -->
-            <div class="classes-layout" style="display:grid;grid-template-columns:280px 1fr;gap:16px;">
-                <div id="class-list-container" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;max-height:500px;overflow-y:auto;">
-                    <div id="class-list">
-                        <p class="empty-state" style="font-size:0.75rem;padding:10px;">No classes created yet.</p>
+                <!-- Layout: Vertical on mobile, horizontal on desktop -->
+                <div class="classes-layout" style="display:flex;flex-direction:column;gap:16px;">
+                    <!-- Class List -->
+                    <div id="class-list-container" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;max-height:${state.isMobile ? '200px' : '500px'};overflow-y:auto;">
+                        <div style="font-size:0.7rem;color:var(--text-dim);margin-bottom:6px;">Classes</div>
+                        <div id="class-list">
+                            <p class="empty-state" style="font-size:0.75rem;padding:10px;">No classes created yet.</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Class Detail -->
+                    <div id="class-detail-container" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;overflow-y:auto;max-height:${state.isMobile ? '400px' : '500px'};">
+                        <div id="class-detail">
+                            <p class="empty-state" style="font-size:0.75rem;padding:10px;">Select a class to view details.</p>
+                        </div>
                     </div>
                 </div>
-                <div id="class-detail-container" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;overflow-y:auto;max-height:500px;">
-                    <div id="class-detail">
-                        <p class="empty-state" style="font-size:0.75rem;padding:10px;">Select a class to view details.</p>
+
+                <!-- Class Form Modal -->
+                <div id="class-form-modal" class="modal hidden">
+                    <div class="modal-content" style="max-width:450px;">
+                        <div class="modal-header">
+                            <h3 id="class-form-title">Add Class</h3>
+                            <button class="close-modal" id="close-class-form">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <form id="class-form-inner">
+                                <div class="form-group">
+                                    <label>Class Name *</label>
+                                    <input type="text" id="class-name" placeholder="e.g., Spring 2024, Class of 89" required>
+                                </div>
+                                <div class="form-actions">
+                                    <button type="button" id="cancel-class-form" class="secondary">Cancel</button>
+                                    <button type="submit" id="save-class-btn" class="primary">Save Class</button>
+                                </div>
+                            </form>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Class Form Modal -->
-            <div id="class-form-modal" class="modal hidden">
-                <div class="modal-content" style="max-width:450px;">
-                    <div class="modal-header">
-                        <h3 id="class-form-title">Add Class</h3>
-                        <button class="close-modal" id="close-class-form">&times;</button>
-                    </div>
-                    <div class="modal-body">
-                        <form id="class-form-inner">
-                            <div class="form-group">
-                                <label>Class Name *</label>
-                                <input type="text" id="class-name" placeholder="e.g., Spring 2024, Class of 89" required>
-                            </div>
-                            <div class="form-actions">
-                                <button type="button" id="cancel-class-form" class="secondary">Cancel</button>
-                                <button type="submit" id="save-class-btn" class="primary">Save Class</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Member Management Modal - Teams-style dropdown -->
-            <div id="member-modal" class="modal hidden">
-                <div class="modal-content" style="max-width:550px;max-height:80vh;overflow-y:auto;">
-                    <div class="modal-header">
-                        <h3 id="member-modal-title">Manage Members</h3>
-                        <button class="close-modal" id="close-member-modal">&times;</button>
-                    </div>
-                    <div class="modal-body">
-                        <div id="member-modal-content"></div>
+                <!-- Member Management Modal -->
+                <div id="member-modal" class="modal hidden">
+                    <div class="modal-content" style="max-width:550px;max-height:80vh;overflow-y:auto;">
+                        <div class="modal-header">
+                            <h3 id="member-modal-title">Manage Members</h3>
+                            <button class="close-modal" id="close-member-modal">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <div id="member-modal-content"></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -210,7 +218,10 @@
         var items = listContainer.querySelectorAll('.class-list-item');
         for (var i = 0; i < items.length; i++) {
             var el = items[i];
-            el.addEventListener('click', function() {
+            // Remove old listeners by cloning
+            var newEl = el.cloneNode(true);
+            el.parentNode.replaceChild(newEl, el);
+            newEl.addEventListener('click', function() {
                 state.selectedClassId = this.dataset.id;
                 state.selectedCharacterId = null;
                 renderClassList();
@@ -280,23 +291,8 @@
             return;
         }
 
-        // On mobile, show a back button
-        var backButton = '';
-        if (state.isMobile && state.selectedClassId) {
-            backButton = '<button id="back-to-class-list" class="small secondary" style="margin-bottom:8px;">← Back to Classes</button>';
-        }
-
         if (!state.selectedClassId) {
-            detailContainer.innerHTML = backButton + '<p class="empty-state" style="font-size:0.75rem;padding:10px;">Select a class to view details.</p>';
-            // Bind back button if it exists
-            var backBtn = detailContainer.querySelector('#back-to-class-list');
-            if (backBtn) {
-                backBtn.addEventListener('click', function() {
-                    state.selectedClassId = null;
-                    renderClassList();
-                    renderClassDetail();
-                });
-            }
+            detailContainer.innerHTML = '<p class="empty-state" style="font-size:0.75rem;padding:10px;">Select a class to view details.</p>';
             return;
         }
 
@@ -313,7 +309,7 @@
         }
 
         if (!cls) {
-            detailContainer.innerHTML = backButton + '<p class="empty-state">Class not found.</p>';
+            detailContainer.innerHTML = '<p class="empty-state">Class not found.</p>';
             state.selectedClassId = null;
             renderClassList();
             return;
@@ -328,7 +324,7 @@
             instructors = window.getInstructorsByGraduatingClass(state.selectedClassId);
         }
 
-        var html = backButton;
+        var html = '';
         html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
         html += '<h3 style="color:var(--accent);margin:0;font-size:1rem;">' + escapeHtml(cls.name) + '</h3>';
         html += '<div style="display:flex;gap:4px;flex-wrap:wrap;">';
@@ -363,16 +359,6 @@
         html += '</div>';
 
         detailContainer.innerHTML = html;
-
-        // Bind back button
-        var backBtn = detailContainer.querySelector('#back-to-class-list');
-        if (backBtn) {
-            backBtn.addEventListener('click', function() {
-                state.selectedClassId = null;
-                renderClassList();
-                renderClassDetail();
-            });
-        }
 
         // Bind buttons with cloning to remove old listeners
         var manageBtn = detailContainer.querySelector('#manage-members-btn');
@@ -583,7 +569,7 @@
                 var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
                 html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border-soft);">';
                 html += escapeHtml(name);
-                html += ' <button class="remove-member-btn small" data-id="' + escapeHtml(char.id) + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button>';
+                html += ' <button class="remove-member-btn" data-id="' + escapeHtml(char.id) + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button>';
                 html += '</span>';
             }
             html += '</div>';
@@ -600,7 +586,7 @@
                 var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
                 html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border-soft);">';
                 html += escapeHtml(name);
-                html += ' <button class="remove-member-btn small" data-id="' + escapeHtml(char.id) + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button>';
+                html += ' <button class="remove-member-btn" data-id="' + escapeHtml(char.id) + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button>';
                 html += '</span>';
             }
             html += '</div>';
@@ -622,7 +608,11 @@
         var roleSelect = content.querySelector('#add-member-role');
 
         if (addBtn && select) {
-            addBtn.addEventListener('click', function() {
+            // Remove old listener by cloning
+            var newAddBtn = addBtn.cloneNode(true);
+            addBtn.parentNode.replaceChild(newAddBtn, addBtn);
+            
+            newAddBtn.addEventListener('click', function() {
                 var charId = select.value;
                 var role = roleSelect ? roleSelect.value : 'trainee';
                 var isInstructor = role === 'instructor';
@@ -657,7 +647,11 @@
         var removeBtns = content.querySelectorAll('.remove-member-btn');
         for (var i = 0; i < removeBtns.length; i++) {
             var btn = removeBtns[i];
-            btn.addEventListener('click', function() {
+            // Remove old listener by cloning
+            var newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            
+            newBtn.addEventListener('click', function() {
                 var charId = this.dataset.id;
                 if (!charId) return;
 
@@ -691,7 +685,9 @@
         // Close buttons
         var closeBtn = document.getElementById('close-member-modal-btn');
         if (closeBtn) {
-            closeBtn.addEventListener('click', function() {
+            var newCloseBtn = closeBtn.cloneNode(true);
+            closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
+            newCloseBtn.addEventListener('click', function() {
                 modal.classList.add('hidden');
                 modal.style.display = 'none';
             });
@@ -699,7 +695,9 @@
 
         var closeX = document.getElementById('close-member-modal');
         if (closeX) {
-            closeX.addEventListener('click', function() {
+            var newCloseX = closeX.cloneNode(true);
+            closeX.parentNode.replaceChild(newCloseX, closeX);
+            newCloseX.addEventListener('click', function() {
                 modal.classList.add('hidden');
                 modal.style.display = 'none';
             });
