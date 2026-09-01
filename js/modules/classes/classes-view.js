@@ -1,6 +1,7 @@
 /**
  * js/modules/classes/classes-view.js - Graduating Classes View
  * Handles graduating class CRUD and member management
+ * Mobile-responsive with dropdown-based member management
  */
 
 (function() {
@@ -14,7 +15,8 @@
 
     var state = {
         selectedClassId: null,
-        selectedCharacterId: null
+        selectedCharacterId: null,
+        isMobile: window.innerWidth < 768
     };
 
     // ============================================================
@@ -43,6 +45,9 @@
             window.data.graduatingClasses = [];
         }
 
+        // Check mobile state
+        state.isMobile = window.innerWidth < 768;
+
         // Render the view
         container.innerHTML = getClassesHTML();
         renderClassList();
@@ -70,24 +75,33 @@
     }
 
     // ============================================================
-    // CLASSES HTML
+    // CLASSES HTML - Mobile-first responsive
     // ============================================================
 
     function getClassesHTML() {
         return `
-            <div class="page-header">
-                <h2>Graduating Classes</h2>
-                <button id="add-class-btn" class="primary">+ New Class</button>
+            <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
+                <h2 style="margin:0;font-size:1.1rem;">Graduating Classes</h2>
+                <button id="add-class-btn" class="primary" style="font-size:0.75rem;padding:4px 12px;">+ New Class</button>
             </div>
+            
+            <!-- Mobile: Class selector dropdown -->
+            <div id="mobile-class-selector" style="display:none;margin-bottom:12px;">
+                <select id="mobile-class-select" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.8rem;">
+                    <option value="">Select a class...</option>
+                </select>
+            </div>
+
+            <!-- Desktop: Two-column layout -->
             <div class="classes-layout" style="display:grid;grid-template-columns:280px 1fr;gap:16px;">
                 <div id="class-list-container" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;max-height:500px;overflow-y:auto;">
                     <div id="class-list">
-                        <p class="empty-state">No classes created yet.</p>
+                        <p class="empty-state" style="font-size:0.75rem;padding:10px;">No classes created yet.</p>
                     </div>
                 </div>
                 <div id="class-detail-container" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;overflow-y:auto;max-height:500px;">
                     <div id="class-detail">
-                        <p class="empty-state">Select a class to view details.</p>
+                        <p class="empty-state" style="font-size:0.75rem;padding:10px;">Select a class to view details.</p>
                     </div>
                 </div>
             </div>
@@ -114,18 +128,15 @@
                 </div>
             </div>
 
-            <!-- Member Management Modal -->
+            <!-- Member Management Modal - Teams-style dropdown -->
             <div id="member-modal" class="modal hidden">
-                <div class="modal-content" style="max-width:650px;max-height:80vh;overflow-y:auto;">
+                <div class="modal-content" style="max-width:550px;max-height:80vh;overflow-y:auto;">
                     <div class="modal-header">
                         <h3 id="member-modal-title">Manage Members</h3>
                         <button class="close-modal" id="close-member-modal">&times;</button>
                     </div>
                     <div class="modal-body">
                         <div id="member-modal-content"></div>
-                        <div class="form-actions" style="margin-top:16px;">
-                            <button type="button" id="close-member-modal-btn" class="secondary">Close</button>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -150,8 +161,11 @@
             classes = window.data.graduatingClasses;
         }
 
+        // Update mobile selector
+        updateMobileSelector(classes);
+
         if (classes.length === 0) {
-            listContainer.innerHTML = '<p class="empty-state">No graduating classes created yet. Click "Add Class" to create one.</p>';
+            listContainer.innerHTML = '<p class="empty-state" style="font-size:0.75rem;padding:10px;">No graduating classes created yet. Click "Add Class" to create one.</p>';
             return;
         }
 
@@ -180,12 +194,12 @@
             }
             var total = trainees.length + instructors.length;
 
-            html += '<div class="class-list-item" style="padding:8px 12px;border-bottom:1px solid var(--border-soft);cursor:pointer;' +
+            html += '<div class="class-list-item" style="padding:6px 10px;border-bottom:1px solid var(--border-soft);cursor:pointer;' +
                 (isSelected ? 'background:var(--accent-soft);border-left:3px solid var(--accent);' : '') +
                 '" data-id="' + safeId + '">';
             html += '<div style="display:flex;justify-content:space-between;align-items:center;">';
-            html += '<span style="font-weight:600;font-size:0.8rem;">' + safeName + '</span>';
-            html += '<span style="font-size:0.6rem;color:var(--text-dim);">' + total + ' members</span>';
+            html += '<span style="font-weight:600;font-size:0.75rem;">' + safeName + '</span>';
+            html += '<span style="font-size:0.55rem;color:var(--text-dim);">' + total + ' members</span>';
             html += '</div>';
             html += '</div>';
         }
@@ -201,7 +215,57 @@
                 state.selectedCharacterId = null;
                 renderClassList();
                 renderClassDetail();
+                updateMobileSelectorValue(state.selectedClassId);
             });
+        }
+    }
+
+    // ============================================================
+    // MOBILE SELECTOR
+    // ============================================================
+
+    function updateMobileSelector(classes) {
+        var container = document.getElementById('mobile-class-selector');
+        var select = document.getElementById('mobile-class-select');
+        
+        if (!container || !select) return;
+
+        // Show on mobile
+        if (state.isMobile) {
+            container.style.display = 'block';
+        } else {
+            container.style.display = 'none';
+        }
+
+        // Populate
+        select.innerHTML = '<option value="">Select a class...</option>';
+        
+        for (var i = 0; i < classes.length; i++) {
+            var cls = classes[i];
+            var option = document.createElement('option');
+            option.value = cls.id;
+            option.textContent = cls.name;
+            select.appendChild(option);
+        }
+
+        // Remove old listener
+        var newSelect = select.cloneNode(true);
+        select.parentNode.replaceChild(newSelect, select);
+        
+        newSelect.addEventListener('change', function() {
+            if (this.value) {
+                state.selectedClassId = this.value;
+                state.selectedCharacterId = null;
+                renderClassList();
+                renderClassDetail();
+            }
+        });
+    }
+
+    function updateMobileSelectorValue(classId) {
+        var select = document.getElementById('mobile-class-select');
+        if (select) {
+            select.value = classId || '';
         }
     }
 
@@ -216,8 +280,23 @@
             return;
         }
 
+        // On mobile, show a back button
+        var backButton = '';
+        if (state.isMobile && state.selectedClassId) {
+            backButton = '<button id="back-to-class-list" class="small secondary" style="margin-bottom:8px;">← Back to Classes</button>';
+        }
+
         if (!state.selectedClassId) {
-            detailContainer.innerHTML = '<p class="empty-state">Select a class to view details.</p>';
+            detailContainer.innerHTML = backButton + '<p class="empty-state" style="font-size:0.75rem;padding:10px;">Select a class to view details.</p>';
+            // Bind back button if it exists
+            var backBtn = detailContainer.querySelector('#back-to-class-list');
+            if (backBtn) {
+                backBtn.addEventListener('click', function() {
+                    state.selectedClassId = null;
+                    renderClassList();
+                    renderClassDetail();
+                });
+            }
             return;
         }
 
@@ -234,7 +313,7 @@
         }
 
         if (!cls) {
-            detailContainer.innerHTML = '<p class="empty-state">Class not found.</p>';
+            detailContainer.innerHTML = backButton + '<p class="empty-state">Class not found.</p>';
             state.selectedClassId = null;
             renderClassList();
             return;
@@ -249,46 +328,55 @@
             instructors = window.getInstructorsByGraduatingClass(state.selectedClassId);
         }
 
-        var html = '';
+        var html = backButton;
         html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
-        html += '<h3 style="color:var(--accent);margin:0;">' + escapeHtml(cls.name) + '</h3>';
-        html += '<div style="display:flex;gap:4px;">';
-        html += '<button id="manage-members-btn" class="primary small">Manage Members</button>';
-        html += '<button id="edit-class-btn" class="secondary small">Edit</button>';
-        html += '<button id="delete-class-btn" class="danger small">Delete</button>';
+        html += '<h3 style="color:var(--accent);margin:0;font-size:1rem;">' + escapeHtml(cls.name) + '</h3>';
+        html += '<div style="display:flex;gap:4px;flex-wrap:wrap;">';
+        html += '<button id="manage-members-btn" class="primary small" style="font-size:0.7rem;padding:3px 8px;">Manage Members</button>';
+        html += '<button id="edit-class-btn" class="secondary small" style="font-size:0.7rem;padding:3px 8px;">Edit</button>';
+        html += '<button id="delete-class-btn" class="danger small" style="font-size:0.7rem;padding:3px 8px;">Delete</button>';
         html += '</div>';
         html += '</div>';
 
         // Stats
-        html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;">';
-        html += '<div style="background:var(--bg);padding:8px;border-radius:4px;text-align:center;">';
-        html += '<span style="font-size:0.6rem;color:var(--text-dim);">Total Members</span>';
-        html += '<div style="font-size:1.2rem;font-weight:700;color:var(--accent);">' + (trainees.length + instructors.length) + '</div>';
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:12px;">';
+        html += '<div style="background:var(--bg);padding:6px;border-radius:4px;text-align:center;">';
+        html += '<span style="font-size:0.55rem;color:var(--text-dim);">Total</span>';
+        html += '<div style="font-size:1rem;font-weight:700;color:var(--accent);">' + (trainees.length + instructors.length) + '</div>';
         html += '</div>';
-        html += '<div style="background:var(--bg);padding:8px;border-radius:4px;text-align:center;">';
-        html += '<span style="font-size:0.6rem;color:var(--text-dim);">Trainees</span>';
-        html += '<div style="font-size:1.2rem;font-weight:700;color:var(--accent);">' + trainees.length + '</div>';
+        html += '<div style="background:var(--bg);padding:6px;border-radius:4px;text-align:center;">';
+        html += '<span style="font-size:0.55rem;color:var(--text-dim);">Trainees</span>';
+        html += '<div style="font-size:1rem;font-weight:700;color:var(--accent);">' + trainees.length + '</div>';
         html += '</div>';
-        html += '<div style="background:var(--bg);padding:8px;border-radius:4px;text-align:center;">';
-        html += '<span style="font-size:0.6rem;color:var(--text-dim);">Instructors</span>';
-        html += '<div style="font-size:1.2rem;font-weight:700;color:var(--info);">' + instructors.length + '</div>';
+        html += '<div style="background:var(--bg);padding:6px;border-radius:4px;text-align:center;">';
+        html += '<span style="font-size:0.55rem;color:var(--text-dim);">Instructors</span>';
+        html += '<div style="font-size:1rem;font-weight:700;color:var(--info);">' + instructors.length + '</div>';
         html += '</div>';
         html += '</div>';
 
-        // Character list
+        // Character list with remove buttons
         html += '<div style="margin-top:12px;">';
-        html += '<h4 style="color:var(--text-dim);font-size:0.8rem;margin-bottom:8px;">Members</h4>';
-        html += '<div id="class-members-list" style="max-height:300px;overflow-y:auto;">';
+        html += '<h4 style="color:var(--text-dim);font-size:0.75rem;margin-bottom:6px;">Members</h4>';
+        html += '<div id="class-members-list" style="max-height:250px;overflow-y:auto;">';
         html += renderMembersList(trainees, instructors);
         html += '</div>';
         html += '</div>';
 
         detailContainer.innerHTML = html;
 
-        // Bind buttons - Using event delegation to ensure they work
+        // Bind back button
+        var backBtn = detailContainer.querySelector('#back-to-class-list');
+        if (backBtn) {
+            backBtn.addEventListener('click', function() {
+                state.selectedClassId = null;
+                renderClassList();
+                renderClassDetail();
+            });
+        }
+
+        // Bind buttons with cloning to remove old listeners
         var manageBtn = detailContainer.querySelector('#manage-members-btn');
         if (manageBtn) {
-            // Remove any existing listeners by cloning
             var newManageBtn = manageBtn.cloneNode(true);
             manageBtn.parentNode.replaceChild(newManageBtn, manageBtn);
             newManageBtn.addEventListener('click', function() {
@@ -317,7 +405,7 @@
     }
 
     // ============================================================
-    // RENDER MEMBERS LIST
+    // RENDER MEMBERS LIST - With remove buttons
     // ============================================================
 
     function renderMembersList(trainees, instructors) {
@@ -344,7 +432,7 @@
         });
 
         if (allMembers.length === 0) {
-            return '<p class="empty-state" style="padding:8px;font-size:0.75rem;">No members in this class.</p>';
+            return '<p class="empty-state" style="padding:6px;font-size:0.7rem;">No members in this class.</p>';
         }
 
         var html = '';
@@ -360,11 +448,11 @@
             var roleColor = role === 'instructor' ? 'var(--info)' : 'var(--accent)';
             var roleLabel = role === 'instructor' ? 'Instructor' : 'Trainee';
 
-            html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-radius:4px;border-bottom:1px solid var(--border-soft);' +
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 6px;border-radius:4px;border-bottom:1px solid var(--border-soft);' +
                 (isDeceased ? 'opacity:0.4;' : '') + '">';
-            html += '<span style="font-size:0.75rem;">' + escapeHtml(name) + 
-                ' <span style="font-size:0.55rem;color:' + roleColor + ';">[' + roleLabel + ']</span>' +
-                (isDeceased ? ' <span style="font-size:0.55rem;color:var(--danger);">[Deceased]</span>' : '') +
+            html += '<span style="font-size:0.7rem;">' + escapeHtml(name) + 
+                ' <span style="font-size:0.5rem;color:' + roleColor + ';">[' + roleLabel + ']</span>' +
+                (isDeceased ? ' <span style="font-size:0.5rem;color:var(--danger);">[Deceased]</span>' : '') +
                 '</span>';
             html += '<span style="font-size:0.55rem;color:var(--text-dim);">' + escapeHtml(status) + '</span>';
             html += '</div>';
@@ -374,17 +462,14 @@
     }
 
     // ============================================================
-    // SHOW MEMBER MODAL - Fixed to ensure it works
+    // SHOW MEMBER MODAL - Teams-style dropdown
     // ============================================================
 
     function showMemberModal(classId) {
         console.log('[ClassesView] showMemberModal called for class:', classId);
         
-        // Get or create the modal
         var modal = document.getElementById('member-modal');
         if (!modal) {
-            console.error('[ClassesView] member-modal not found in DOM');
-            // Create the modal if it doesn't exist
             modal = createMemberModal();
             if (!modal) {
                 alert('Member management modal could not be created. Please refresh the page.');
@@ -396,8 +481,6 @@
         var title = document.getElementById('member-modal-title');
 
         if (!content || !title) {
-            console.error('[ClassesView] Modal content or title not found');
-            // Try to find them inside the modal
             content = modal.querySelector('#member-modal-content');
             title = modal.querySelector('#member-modal-title');
             if (!content || !title) {
@@ -434,100 +517,169 @@
         }
 
         var html = '';
-        html += '<p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:12px;">';
-        html += 'Add or remove characters from this graduating class. Click a name to toggle membership.';
+        html += '<p style="color:var(--text-dim);font-size:0.8rem;margin-bottom:12px;">';
+        html += 'Add or remove members from this graduating class.';
         html += '</p>';
 
-        // Trainees section
-        html += '<h4 style="color:var(--accent);margin:12px 0 8px 0;">Trainees</h4>';
-        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;padding:8px;background:var(--bg);border-radius:4px;min-height:40px;max-height:150px;overflow-y:auto;">';
-        var traineeAdded = false;
-        for (var i = 0; i < allChars.length; i++) {
-            var char = allChars[i];
-            if (isStudent(char)) {
-                var isInClass = !!traineeIds[char.id];
-                var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
-                html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;cursor:pointer;' +
-                    (isInClass ? 'border:1px solid var(--accent);' : 'border:1px solid var(--border-soft);opacity:0.6;') +
-                    '" data-id="' + escapeHtml(char.id) + '" data-role="trainee" class="member-toggle">' +
-                    escapeHtml(name) + (isInClass ? ' ✓' : ' +') +
-                    '</span>';
-                traineeAdded = true;
-            }
+        // === ADD MEMBER SECTION - Teams-style dropdown ===
+        html += '<div style="background:var(--bg);padding:12px;border-radius:6px;margin-bottom:12px;border:1px solid var(--border-soft);">';
+        html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">';
+        html += '<span style="font-size:0.75rem;color:var(--text-dim);">Add member:</span>';
+        
+        // Character dropdown
+        html += '<select id="add-member-select" style="flex:1;min-width:150px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">';
+        html += '<option value="">Select a character...</option>';
+        
+        // Get all characters not already in the class
+        var availableChars = allChars.filter(function(char) {
+            return !traineeIds[char.id] && !instructorIds[char.id];
+        });
+        
+        // Sort by name
+        availableChars.sort(function(a, b) {
+            var nameA = typeof window.getDisplayName === 'function' ? window.getDisplayName(a) : (a.name || 'Unknown');
+            var nameB = typeof window.getDisplayName === 'function' ? window.getDisplayName(b) : (b.name || 'Unknown');
+            return nameA.localeCompare(nameB);
+        });
+        
+        for (var i = 0; i < availableChars.length; i++) {
+            var char = availableChars[i];
+            var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
+            var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char) : '';
+            html += '<option value="' + escapeHtml(char.id) + '" data-role="' + (isInstructor(char) ? 'instructor' : 'trainee') + '">' + 
+                escapeHtml(name) + ' (' + escapeHtml(status) + ')' + 
+                '</option>';
         }
-        if (!traineeAdded) {
-            html += '<span style="color:var(--text-dim);font-size:0.7rem;">No trainees available.</span>';
-        }
+        
+        html += '</select>';
+        
+        // Role selector
+        html += '<select id="add-member-role" style="padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;width:120px;">';
+        html += '<option value="trainee">Trainee</option>';
+        html += '<option value="instructor">Instructor</option>';
+        html += '</select>';
+        
+        // Add button
+        html += '<button id="add-member-btn" class="primary small" style="font-size:0.7rem;padding:4px 12px;">Add</button>';
+        html += '</div>';
+        
+        // Show current members count
+        html += '<div style="margin-top:6px;font-size:0.65rem;color:var(--text-dim);">';
+        html += currentTrainees.length + ' trainees, ' + currentInstructors.length + ' instructors';
+        html += '</div>';
         html += '</div>';
 
-        // Instructors section
-        html += '<h4 style="color:var(--info);margin:12px 0 8px 0;">Instructors</h4>';
-        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;padding:8px;background:var(--bg);border-radius:4px;min-height:40px;max-height:150px;overflow-y:auto;">';
-        var instructorAdded = false;
-        for (var i = 0; i < allChars.length; i++) {
-            var char = allChars[i];
-            if (isInstructor(char)) {
-                var isInClass = !!instructorIds[char.id];
+        // === CURRENT MEMBERS SECTION ===
+        html += '<div style="max-height:300px;overflow-y:auto;">';
+        
+        // Trainees
+        html += '<h4 style="color:var(--accent);font-size:0.75rem;margin:8px 0 4px 0;">Trainees</h4>';
+        if (currentTrainees.length === 0) {
+            html += '<p style="color:var(--text-dim);font-size:0.7rem;margin:4px 0;">No trainees.</p>';
+        } else {
+            html += '<div style="display:flex;flex-wrap:wrap;gap:4px;">';
+            for (var i = 0; i < currentTrainees.length; i++) {
+                var char = currentTrainees[i];
                 var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
-                html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;cursor:pointer;' +
-                    (isInClass ? 'border:1px solid var(--accent);' : 'border:1px solid var(--border-soft);opacity:0.6;') +
-                    '" data-id="' + escapeHtml(char.id) + '" data-role="instructor" class="member-toggle">' +
-                    escapeHtml(name) + (isInClass ? ' ✓' : ' +') +
-                    '</span>';
-                instructorAdded = true;
+                html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border-soft);">';
+                html += escapeHtml(name);
+                html += ' <button class="remove-member-btn small" data-id="' + escapeHtml(char.id) + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button>';
+                html += '</span>';
             }
+            html += '</div>';
         }
-        if (!instructorAdded) {
-            html += '<span style="color:var(--text-dim);font-size:0.7rem;">No instructors available.</span>';
+
+        // Instructors
+        html += '<h4 style="color:var(--info);font-size:0.75rem;margin:8px 0 4px 0;">Instructors</h4>';
+        if (currentInstructors.length === 0) {
+            html += '<p style="color:var(--text-dim);font-size:0.7rem;margin:4px 0;">No instructors.</p>';
+        } else {
+            html += '<div style="display:flex;flex-wrap:wrap;gap:4px;">';
+            for (var i = 0; i < currentInstructors.length; i++) {
+                var char = currentInstructors[i];
+                var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
+                html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border-soft);">';
+                html += escapeHtml(name);
+                html += ' <button class="remove-member-btn small" data-id="' + escapeHtml(char.id) + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button>';
+                html += '</span>';
+            }
+            html += '</div>';
         }
+        
+        html += '</div>';
+
+        html += '<div class="form-actions" style="margin-top:12px;">';
+        html += '<button type="button" id="close-member-modal-btn" class="secondary" style="font-size:0.75rem;">Close</button>';
         html += '</div>';
 
         content.innerHTML = html;
 
-        // Bind member toggle events
-        var toggles = content.querySelectorAll('.member-toggle');
-        for (var i = 0; i < toggles.length; i++) {
-            var el = toggles[i];
-            el.addEventListener('click', function() {
-                var charId = this.dataset.id;
-                var role = this.dataset.role;
-                var isInstructor = role === 'instructor';
-                var isInClass = this.textContent.includes('✓');
+        // === BIND EVENTS ===
 
-                if (typeof window.assignCharacterToGraduatingClass !== 'function' || 
-                    typeof window.removeCharacterFromGraduatingClass !== 'function') {
+        // Add member
+        var addBtn = content.querySelector('#add-member-btn');
+        var select = content.querySelector('#add-member-select');
+        var roleSelect = content.querySelector('#add-member-role');
+
+        if (addBtn && select) {
+            addBtn.addEventListener('click', function() {
+                var charId = select.value;
+                var role = roleSelect ? roleSelect.value : 'trainee';
+                var isInstructor = role === 'instructor';
+
+                if (!charId) {
+                    alert('Please select a character.');
+                    return;
+                }
+
+                if (typeof window.assignCharacterToGraduatingClass !== 'function') {
                     alert('Member management functions not available.');
                     return;
                 }
 
-                if (isInClass) {
-                    var result = window.removeCharacterFromGraduatingClass(charId);
-                    if (result && result.success) {
-                        showMemberModal(classId);
-                        renderClassList();
-                        renderClassDetail();
-                        if (typeof window.saveData === 'function') {
-                            window.saveData().catch(function() {
-                                console.warn('[ClassesView] Persistence failed after removing member');
-                            });
-                        }
-                    } else {
-                        alert(result && result.message ? result.message : 'Failed to remove character.');
+                var result = window.assignCharacterToGraduatingClass(charId, classId, isInstructor);
+                if (result && result.success) {
+                    showMemberModal(classId);
+                    renderClassList();
+                    renderClassDetail();
+                    if (typeof window.saveData === 'function') {
+                        window.saveData().catch(function() {
+                            console.warn('[ClassesView] Persistence failed after adding member');
+                        });
                     }
                 } else {
-                    var result = window.assignCharacterToGraduatingClass(charId, classId, isInstructor);
-                    if (result && result.success) {
-                        showMemberModal(classId);
-                        renderClassList();
-                        renderClassDetail();
-                        if (typeof window.saveData === 'function') {
-                            window.saveData().catch(function() {
-                                console.warn('[ClassesView] Persistence failed after adding member');
-                            });
-                        }
-                    } else {
-                        alert(result && result.message ? result.message : 'Failed to add character.');
+                    alert(result && result.message ? result.message : 'Failed to add character.');
+                }
+            });
+        }
+
+        // Remove member
+        var removeBtns = content.querySelectorAll('.remove-member-btn');
+        for (var i = 0; i < removeBtns.length; i++) {
+            var btn = removeBtns[i];
+            btn.addEventListener('click', function() {
+                var charId = this.dataset.id;
+                if (!charId) return;
+
+                if (!confirm('Remove this member from the class?')) return;
+
+                if (typeof window.removeCharacterFromGraduatingClass !== 'function') {
+                    alert('Member management functions not available.');
+                    return;
+                }
+
+                var result = window.removeCharacterFromGraduatingClass(charId);
+                if (result && result.success) {
+                    showMemberModal(classId);
+                    renderClassList();
+                    renderClassDetail();
+                    if (typeof window.saveData === 'function') {
+                        window.saveData().catch(function() {
+                            console.warn('[ClassesView] Persistence failed after removing member');
+                        });
                     }
+                } else {
+                    alert(result && result.message ? result.message : 'Failed to remove character.');
                 }
             });
         }
@@ -536,7 +688,7 @@
         modal.classList.remove('hidden');
         modal.style.display = 'flex';
 
-        // Bind close buttons
+        // Close buttons
         var closeBtn = document.getElementById('close-member-modal-btn');
         if (closeBtn) {
             closeBtn.addEventListener('click', function() {
@@ -553,7 +705,6 @@
             });
         }
 
-        // Close on backdrop click
         modal.addEventListener('click', function(e) {
             if (e.target === this) {
                 this.classList.add('hidden');
@@ -563,7 +714,7 @@
     }
 
     // ============================================================
-    // CREATE MEMBER MODAL - Fallback if modal doesn't exist
+    // CREATE MEMBER MODAL
     // ============================================================
 
     function createMemberModal() {
@@ -575,16 +726,13 @@
         modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:1000;';
         
         modal.innerHTML = `
-            <div class="modal-content" style="max-width:650px;max-height:80vh;overflow-y:auto;background:var(--panel);border-radius:var(--radius);padding:20px;position:relative;">
+            <div class="modal-content" style="max-width:550px;max-height:80vh;overflow-y:auto;background:var(--panel);border-radius:var(--radius);padding:20px;position:relative;">
                 <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-                    <h3 id="member-modal-title" style="margin:0;">Manage Members</h3>
+                    <h3 id="member-modal-title" style="margin:0;font-size:1rem;">Manage Members</h3>
                     <button class="close-modal" id="close-member-modal" style="background:none;border:none;font-size:1.5rem;cursor:pointer;color:var(--text-dim);">&times;</button>
                 </div>
                 <div class="modal-body">
                     <div id="member-modal-content"></div>
-                    <div class="form-actions" style="margin-top:16px;">
-                        <button type="button" id="close-member-modal-btn" class="secondary">Close</button>
-                    </div>
                 </div>
             </div>
         `;
@@ -757,9 +905,9 @@
     function initClassEvents() {
         console.log('[ClassesView] Initializing events...');
         
+        // Add class button
         var addBtn = document.getElementById('add-class-btn');
         if (addBtn) {
-            // Remove existing listeners by cloning
             var newAddBtn = addBtn.cloneNode(true);
             addBtn.parentNode.replaceChild(newAddBtn, addBtn);
             newAddBtn.addEventListener('click', function() {
@@ -768,6 +916,7 @@
             });
         }
 
+        // Close form buttons
         var closeFormBtn = document.getElementById('close-class-form');
         if (closeFormBtn) {
             closeFormBtn.addEventListener('click', function() {
@@ -800,6 +949,19 @@
                 }
             });
         }
+
+        // Handle resize for mobile
+        window.addEventListener('resize', function() {
+            var wasMobile = state.isMobile;
+            state.isMobile = window.innerWidth < 768;
+            if (wasMobile !== state.isMobile) {
+                // Re-render on mobile/desktop switch
+                var container = document.getElementById('classes-content');
+                if (container) {
+                    renderClassesView(container);
+                }
+            }
+        });
     }
 
     // ============================================================
