@@ -193,18 +193,32 @@
             data.curriculum.rankings = {};
         }
 
+        // ============================================================
+        // AUTO-GROUPS STORE (ensure empty object if missing)
+        // ============================================================
+
+        if (!data.curriculum.autoGroups || typeof data.curriculum.autoGroups !== 'object') {
+            data.curriculum.autoGroups = {};
+        }
+
         return { success: true };
     }
 
     // ============================================================
-    // EXPOSE
+    // EXPOSE - Ensure these are available globally
     // ============================================================
 
+    // Expose ensureCurriculum to the global scope
     window.ensureCurriculum = ensureCurriculum;
 
     window.CurriculumSchema = {
         ensureCurriculum: ensureCurriculum,
         getDefaultCurriculum: getDefaultCurriculum
     };
+
+    // Also expose getDefaultCurriculum for other modules
+    window.getDefaultCurriculum = getDefaultCurriculum;
+
+    console.log('[CurriculumSchema] Initialized successfully');
 
 })();
