@@ -1,39 +1,13 @@
 /**
  * js/modules/academia/academia-schedule.js - Academia Schedule View
- * Student and Instructor schedule viewer
- * Path: js/modules/academia/academia-schedule.js
- * 
- * This module is responsible for:
- *   - Rendering the schedule view
- *   - Switching between Student and Instructor views
- *   - Displaying schedule grid for the selected character
- *   - Showing class details (discipline, instructor, duration)
- * 
- * LIFECYCLE:
- *   This module is rendered by academia-main.js via TabManager.
- * 
- * DEPENDENCIES:
- *   - window.getStudents (from core-utils.js)
- *   - window.getInstructors (from core-utils.js)
- *   - window.getCharacterById (from core-utils.js)
- *   - window.getDisplayName (from core-utils.js)
- *   - window.getStudentSchedule (from curriculum-schedule.js)
- *   - window.getAvailableDisciplines (from curriculum-disciplines.js)
- *   - window.getDiscipline (from curriculum-disciplines.js)
- *   - window.getClassInstructor (from curriculum-schedule.js)
- *   - window.getClassDuration (from curriculum-schedule.js)
- *   - window.getClassLocation (from curriculum-schedule.js)
+ * Fixed: var student bug in instructor renderer
  */
 
 (function() {
     'use strict';
 
-    // ============================================================
-    // STATE - Schedule UI state
-    // ============================================================
-
     var state = window.academiaScheduleState || {
-        viewMode: 'student', // 'student' | 'instructor'
+        viewMode: 'student',
         selectedCharacterId: null,
         currentWeek: 1
     };
@@ -44,110 +18,12 @@
 
     window.academiaScheduleState = state;
 
-    // ============================================================
-    // CONSTANTS
-    // ============================================================
-
     var DAY_NAMES = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
     var DAY_NAMES_SHORT = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     var HOURS = [];
     for (var h = 8; h <= 20; h++) {
         HOURS.push(h);
     }
-
-    // ============================================================
-    // DEPENDENCY VALIDATION
-    // ============================================================
-
-    function validateDependencies(container) {
-        var missing = [];
-
-        if (typeof window.getStudents !== 'function') {
-            missing.push('getStudents');
-        }
-
-        if (typeof window.getInstructors !== 'function') {
-            missing.push('getInstructors');
-        }
-
-        if (typeof window.getCharacterById !== 'function') {
-            missing.push('getCharacterById');
-        }
-
-        if (typeof window.getDisplayName !== 'function') {
-            missing.push('getDisplayName');
-        }
-
-        if (typeof window.getStudentSchedule !== 'function') {
-            missing.push('getStudentSchedule');
-        }
-
-        if (typeof window.getAvailableDisciplines !== 'function') {
-            missing.push('getAvailableDisciplines');
-        }
-
-        if (typeof window.getDiscipline !== 'function') {
-            missing.push('getDiscipline');
-        }
-
-        if (typeof window.getClassInstructor !== 'function') {
-            missing.push('getClassInstructor');
-        }
-
-        if (typeof window.getClassDuration !== 'function') {
-            missing.push('getClassDuration');
-        }
-
-        if (typeof window.getClassLocation !== 'function') {
-            missing.push('getClassLocation');
-        }
-
-        if (typeof window.ensureCurriculum !== 'function') {
-            missing.push('ensureCurriculum');
-        }
-
-        if (missing.length > 0) {
-            if (container) {
-                container.innerHTML = '<p class="empty-state">Schedule dependencies not loaded. Please refresh the page.</p>';
-            }
-            return false;
-        }
-
-        return true;
-    }
-
-    // ============================================================
-    // RENDER ACADEMIA SCHEDULE - Public API
-    // ============================================================
-
-    function renderAcademiaSchedule(container) {
-        if (!container) {
-            container = document.getElementById('schedule-content');
-        }
-        if (!container) {
-            return;
-        }
-
-        if (!window.data) {
-            container.innerHTML = '<p class="empty-state">Loading schedule data...</p>';
-            return;
-        }
-
-        if (!validateDependencies(container)) {
-            return;
-        }
-
-        window.ensureCurriculum();
-
-        container.innerHTML = getScheduleHTML();
-        populateCharacterSelectors(container);
-        renderSchedule(container);
-        initScheduleEvents(container);
-    }
-
-    // ============================================================
-    // HTML ESCAPING
-    // ============================================================
 
     function escapeHtml(value) {
         if (value === undefined || value === null) {
@@ -162,29 +38,49 @@
             .replace(/'/g, '&#039;');
     }
 
-    // ============================================================
-    // SCHEDULE HTML
-    // ============================================================
+    function renderAcademiaSchedule(container) {
+        if (!container) {
+            container = document.getElementById('schedule-content');
+        }
+        if (!container) {
+            return;
+        }
+
+        if (!window.data) {
+            container.innerHTML = '<p class="empty-state">Loading schedule data...</p>';
+            return;
+        }
+
+        try {
+            if (typeof window.ensureCurriculum === 'function') {
+                window.ensureCurriculum();
+            }
+        } catch (e) {
+            console.warn('[AcademiaSchedule] ensureCurriculum() failed:', e);
+        }
+
+        container.innerHTML = getScheduleHTML();
+        populateCharacterSelectors(container);
+        renderSchedule(container);
+        initScheduleEvents(container);
+    }
 
     function getScheduleHTML() {
         return `
-            <div class="page-header">
-                <h2>Schedule</h2>
-            </div>
-            <div class="schedule-controls">
-                <div class="view-mode-selector">
+            <div class="schedule-controls" style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:12px;">
+                <div class="view-mode-selector" style="display:flex;gap:4px;">
                     <button class="view-mode-btn ${state.viewMode === 'student' ? 'active' : ''}" data-mode="student" style="background:${state.viewMode === 'student' ? 'var(--accent-soft)' : 'transparent'};border:1px solid ${state.viewMode === 'student' ? 'var(--accent)' : 'var(--border)'};color:${state.viewMode === 'student' ? 'var(--accent)' : 'var(--text-dim)'};padding:4px 12px;border-radius:4px;cursor:pointer;font-size:0.75rem;">Student</button>
                     <button class="view-mode-btn ${state.viewMode === 'instructor' ? 'active' : ''}" data-mode="instructor" style="background:${state.viewMode === 'instructor' ? 'var(--accent-soft)' : 'transparent'};border:1px solid ${state.viewMode === 'instructor' ? 'var(--accent)' : 'var(--border)'};color:${state.viewMode === 'instructor' ? 'var(--accent)' : 'var(--text-dim)'};padding:4px 12px;border-radius:4px;cursor:pointer;font-size:0.75rem;">Instructor</button>
                 </div>
-                <div class="character-selector">
-                    <label for="schedule-character">${state.viewMode === 'student' ? 'Student:' : 'Instructor:'}</label>
-                    <select id="schedule-character">
+                <div class="character-selector" style="display:flex;align-items:center;gap:6px;">
+                    <label for="schedule-character" style="font-size:0.75rem;color:var(--text-dim);">${state.viewMode === 'student' ? 'Student:' : 'Instructor:'}</label>
+                    <select id="schedule-character" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;min-width:150px;">
                         <option value="">Select...</option>
                     </select>
                 </div>
-                <div class="week-nav">
+                <div class="week-nav" style="display:flex;align-items:center;gap:6px;">
                     <button id="prev-schedule-week" class="small">[<]</button>
-                    <span id="schedule-week-display" style="font-weight:600;min-width:80px;text-align:center;">Week 1</span>
+                    <span id="schedule-week-display" style="font-weight:600;min-width:80px;text-align:center;">Week ${state.currentWeek}</span>
                     <button id="next-schedule-week" class="small">[>]</button>
                 </div>
             </div>
@@ -193,10 +89,6 @@
             </div>
         `;
     }
-
-    // ============================================================
-    // POPULATE CHARACTER SELECTORS
-    // ============================================================
 
     function populateCharacterSelectors(container) {
         var select = container ? container.querySelector('#schedule-character') : document.getElementById('schedule-character');
@@ -224,31 +116,15 @@
             select.appendChild(option);
         }
 
-        // Restore selection
-        if (currentValue) {
+        if (state.selectedCharacterId) {
             var exists = false;
             for (var i = 0; i < select.options.length; i++) {
-                if (select.options[i].value === currentValue) {
+                if (select.options[i].value === state.selectedCharacterId) {
                     exists = true;
                     break;
                 }
             }
             if (exists) {
-                select.value = currentValue;
-            } else {
-                state.selectedCharacterId = null;
-            }
-        }
-
-        if (state.selectedCharacterId) {
-            var exists2 = false;
-            for (var i = 0; i < select.options.length; i++) {
-                if (select.options[i].value === state.selectedCharacterId) {
-                    exists2 = true;
-                    break;
-                }
-            }
-            if (exists2) {
                 select.value = state.selectedCharacterId;
             } else {
                 state.selectedCharacterId = null;
@@ -260,10 +136,6 @@
             state.selectedCharacterId = select.value;
         }
     }
-
-    // ============================================================
-    // RENDER SCHEDULE
-    // ============================================================
 
     function renderSchedule(container) {
         var gridContainer = container ? container.querySelector('#schedule-grid-container') : document.getElementById('schedule-grid-container');
@@ -303,10 +175,6 @@
         }
     }
 
-    // ============================================================
-    // RENDER STUDENT SCHEDULE
-    // ============================================================
-
     function renderStudentSchedule(container, student, studentName) {
         var schedule = window.getStudentSchedule(student.id, state.currentWeek);
 
@@ -316,7 +184,7 @@
         }
 
         var html = '<h3 style="color:var(--accent);margin-bottom:8px;">' + escapeHtml(studentName) + ' - Week ' + state.currentWeek + '</h3>';
-        html += '<div class="schedule-grid">';
+        html += '<div class="schedule-grid" style="display:grid;grid-template-columns:auto repeat(5,1fr);gap:2px;font-size:0.7rem;">';
         html += getGridHeaderHTML();
         html += getGridBodyHTML(schedule);
         html += '</div>';
@@ -324,12 +192,7 @@
         container.innerHTML = html;
     }
 
-    // ============================================================
-    // RENDER INSTRUCTOR SCHEDULE
-    // ============================================================
-
     function renderInstructorSchedule(container, instructor, instructorName) {
-        // Get all students
         var students = window.getStudents();
         var scheduleData = {};
 
@@ -379,7 +242,9 @@
                             day: dayNum,
                             hour: hourNum,
                             disciplineId: disciplineId,
-                            students: []
+                            students: [],
+                            // FIX: Store the student ID for metadata lookup
+                            sourceStudentId: student.id
                         };
                     }
 
@@ -424,8 +289,9 @@
             var entry = scheduleData[key];
             var discipline = window.getDiscipline(entry.disciplineId);
 
-            var duration = window.getClassDuration(student.id, state.currentWeek, entry.day, entry.hour);
-            var location = window.getClassLocation(student.id, state.currentWeek, entry.day, entry.hour);
+            // FIX: Use the stored source student ID for metadata lookup
+            var duration = window.getClassDuration(entry.sourceStudentId, state.currentWeek, entry.day, entry.hour);
+            var location = window.getClassLocation(entry.sourceStudentId, state.currentWeek, entry.day, entry.hour);
 
             var hourDisplay = entry.hour > 12 ? entry.hour - 12 : entry.hour;
             var ampm = entry.hour >= 12 ? 'PM' : 'AM';
@@ -468,16 +334,12 @@
         container.innerHTML = html;
     }
 
-    // ============================================================
-    // SCHEDULE GRID HELPERS
-    // ============================================================
-
     function getGridHeaderHTML() {
-        var html = '<div class="schedule-row schedule-header">';
-        html += '<div class="schedule-cell schedule-time" style="font-weight:600;font-size:0.7rem;color:var(--text-dim);">Time</div>';
+        var html = '<div class="schedule-row" style="display:contents;">';
+        html += '<div class="schedule-cell schedule-time" style="font-weight:600;font-size:0.7rem;color:var(--text-dim);padding:4px;text-align:right;">Time</div>';
 
         for (var d = 1; d <= 5; d++) {
-            html += '<div class="schedule-cell schedule-day" style="font-weight:600;font-size:0.7rem;color:var(--text-dim);text-align:center;">' + escapeHtml(DAY_NAMES_SHORT[d]) + '</div>';
+            html += '<div class="schedule-cell schedule-day" style="font-weight:600;font-size:0.7rem;color:var(--text-dim);text-align:center;padding:4px;">' + escapeHtml(DAY_NAMES_SHORT[d]) + '</div>';
         }
 
         html += '</div>';
@@ -499,8 +361,8 @@
                 ampm = 'PM';
             }
 
-            html += '<div class="schedule-row">';
-            html += '<div class="schedule-cell schedule-time" style="font-size:0.65rem;color:var(--text-dim);">' + hourDisplay + ':00 ' + ampm + '</div>';
+            html += '<div class="schedule-row" style="display:contents;">';
+            html += '<div class="schedule-cell schedule-time" style="font-size:0.65rem;color:var(--text-dim);padding:4px;text-align:right;">' + hourDisplay + ':00 ' + ampm + '</div>';
 
             for (var d = 1; d <= 5; d++) {
                 var content = '';
@@ -539,10 +401,6 @@
         return html;
     }
 
-    // ============================================================
-    // EVENT INITIALISATION
-    // ============================================================
-
     function initScheduleEvents(container) {
         var viewModeBtns = container ? container.querySelectorAll('.view-mode-btn') : document.querySelectorAll('.view-mode-btn');
 
@@ -555,7 +413,6 @@
                 if (mode && mode !== state.viewMode) {
                     state.viewMode = mode;
 
-                    // Update button styles
                     var btns = this.parentElement.querySelectorAll('.view-mode-btn');
                     btns.forEach(function(b) {
                         var isActive = b.dataset.mode === state.viewMode;
@@ -564,12 +421,11 @@
                         b.style.color = isActive ? 'var(--accent)' : 'var(--text-dim)';
                     });
 
-                    var label = document.querySelector('label[for="schedule-character"]');
+                    var label = container ? container.querySelector('label[for="schedule-character"]') : document.querySelector('label[for="schedule-character"]');
                     if (label) {
                         label.textContent = state.viewMode === 'student' ? 'Student:' : 'Instructor:';
                     }
 
-                    // Reset selection
                     state.selectedCharacterId = null;
                     populateCharacterSelectors(container);
                     renderSchedule(container);
@@ -611,7 +467,6 @@
             });
         }
 
-        // Auto-select first character if none selected
         if (!state.selectedCharacterId) {
             var select = container ? container.querySelector('#schedule-character') : document.getElementById('schedule-character');
             if (select && select.options.length > 1) {
@@ -623,10 +478,6 @@
             }
         }
     }
-
-    // ============================================================
-    // EXPOSE FUNCTIONS
-    // ============================================================
 
     window.renderAcademiaSchedule = renderAcademiaSchedule;
     window.academiaScheduleState = state;
