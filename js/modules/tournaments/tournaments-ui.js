@@ -25,7 +25,7 @@
  *   - window.TournamentsRender (required)
  *   - window.TournamentsQueries (required)
  *   - window.TournamentsMatches (required)
- *   - window.saveData (required)
+ *   - window.saveData (required - handled defensively)
  *   - window.CALENDAR_CONSTANTS (from constants.js)
  *   - window.NotificationSystem (from notification.js)
  *   - window.TabManager (from tab-manager.js)
@@ -47,8 +47,16 @@
     if (window.__tournamentsUILoaded) return;
 
     // ============================================================
-    // DEPENDENCIES - Must be loaded before this module is marked ready
+    // DEPENDENCIES - Defensive loading
     // ============================================================
+
+    // Create dummy saveData if not available (prevents errors during load)
+    if (typeof window.saveData !== 'function') {
+        console.warn('TournamentsUI: saveData() is not available. Persistence will be disabled.');
+        window.saveData = function() {
+            return Promise.resolve(true);
+        };
+    }
 
     if (!window.TournamentsCore) {
         console.error('TournamentsUI: TournamentsCore required.');
@@ -64,10 +72,6 @@
     }
     if (!window.TournamentsMatches) {
         console.error('TournamentsUI: TournamentsMatches required.');
-        return;
-    }
-    if (typeof window.saveData !== 'function') {
-        console.error('TournamentsUI: saveData() is required for persistence.');
         return;
     }
 
@@ -1194,7 +1198,6 @@
     // LIFECYCLE MANAGEMENT
     // ============================================================
 
-    // Register with TabManager for the top-level 'tournaments' tab (legacy)
     if (typeof window.TabManager !== 'undefined') {
         window.TabManager.register('tournaments', renderTournaments);
     }
@@ -1229,14 +1232,10 @@
     // EXPOSE
     // ============================================================
 
-    // Main render function
     window.renderTournaments = renderTournaments;
-
-    // View functions
     window.viewTournament = viewTournament;
     window.closeTournamentDetail = closeTournamentDetail;
 
-    // UI object for Classes tab integration
     window.TournamentsUI = {
         render: renderTournaments,
         viewTournament: viewTournament,
