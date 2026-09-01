@@ -124,9 +124,13 @@
             return;
         }
 
+        // Build the full HTML structure
         container.innerHTML = getCurriculumHTML();
+        
+        // Initialize tabs and render content
         initCurriculumTabs(container, state.currentTab);
 
+        // Dispatch event for any listeners
         var event = new CustomEvent('curriculumRendered', {
             detail: { tab: state.currentTab }
         });
@@ -168,7 +172,7 @@
             
         if (!tabContainer) {
             console.warn('[Curriculum] Tab nav not found.');
-            return;
+            return false;
         }
 
         var curriculumRoot = tabContainer.closest('.tab-container');
@@ -188,7 +192,7 @@
             activeBtn = tabContainer.querySelector('.tab-btn');
             if (!activeBtn) {
                 console.warn('[Curriculum] No tab buttons found.');
-                return;
+                return false;
             }
             activeTabName = activeBtn.dataset.tab;
         }
@@ -203,8 +207,10 @@
             btn.style.borderBottomColor = isActive ? 'var(--accent)' : 'transparent';
         });
 
+        // Show the active tab
         showTab(activeTabName, panels, tabContainer, curriculumRoot);
 
+        // Tab switching
         tabContainer.addEventListener('click', function(e) {
             var tab = e.target.closest('.tab-btn');
             if (!tab) return;
@@ -225,6 +231,8 @@
             
             showTab(tabName, panels, tabContainer, curriculumRoot);
         });
+
+        return true;
     }
 
     // ============================================================
@@ -232,22 +240,27 @@
     // ============================================================
 
     function showTab(tabName, panels, tabContainer, curriculumRoot) {
+        // Hide all panels
         panels.forEach(function(panel) {
             panel.style.display = 'none';
             panel.classList.remove('active');
         });
 
+        // Show the active panel
         var activePanel = curriculumRoot ? 
             curriculumRoot.querySelector('#tab-' + tabName) : 
             document.getElementById('tab-' + tabName);
-            
+
         if (activePanel) {
             activePanel.style.display = 'block';
             activePanel.classList.add('active');
+            console.log('[Curriculum] Showing panel for:', tabName);
         } else {
             console.warn('[Curriculum] Panel not found for tab:', tabName);
+            return;
         }
 
+        // Update tab button styles
         if (tabContainer) {
             tabContainer.querySelectorAll('.tab-btn').forEach(function(btn) {
                 var isActive = btn.dataset.tab === tabName;
@@ -257,11 +270,12 @@
             });
         }
 
+        // RENDER THE TAB CONTENT
         renderTabContent(tabName, curriculumRoot);
     }
 
     // ============================================================
-    // RENDER TAB CONTENT - Centralised renderer registry
+    // RENDER TAB CONTENT - This actually calls the render functions
     // ============================================================
 
     function renderTabContent(tabName, curriculumRoot) {
@@ -269,9 +283,12 @@
         var renderer = null;
 
         function getContentElement(id) {
+            // Try scoped query first
             if (curriculumRoot) {
-                return curriculumRoot.querySelector('#' + id);
+                var el = curriculumRoot.querySelector('#' + id);
+                if (el) return el;
             }
+            // Fallback to global
             return document.getElementById(id);
         }
 
@@ -307,12 +324,15 @@
         renderer = config.renderer;
 
         if (typeof renderer !== 'function') {
+            console.warn('[Curriculum] Renderer not a function for tab:', tabName);
             content.innerHTML = '<p class="empty-state">' + (config.fallbackMessage || config.fallback || 'Module not loaded. Please refresh the page.') + '</p>';
             return;
         }
 
         try {
+            console.log('[Curriculum] Calling renderer for:', tabName);
             renderer(content);
+            console.log('[Curriculum] Renderer completed for:', tabName);
         } catch (e) {
             console.error('[Curriculum] Error rendering tab "' + tabName + '":', e);
             content.innerHTML = '<p class="empty-state">Unable to load this section. Please try again.</p>';
@@ -399,7 +419,9 @@
     // ============================================================
 
     if (typeof window.TabManager !== 'undefined') {
-        window.TabManager.register('curriculum', renderCurriculum);
+        window.TabManager.register('curriculum', function(container) {
+            renderCurriculum(container);
+        });
     }
 
     // ============================================================
@@ -417,6 +439,25 @@
     document.addEventListener('curriculumDataChanged', function() {
         refreshCurrentTab();
     });
+
+    document.addEventListener('tabChanged', function(e) {
+        if (e.detail && e.detail.tab === 'curriculum') {
+            var container = document.getElementById('tab-curriculum');
+            if (container) {
+                renderCurriculum(container);
+            }
+        }
+    });
+
+    // Auto-initialize if data is already loaded
+    if (window.data) {
+        setTimeout(function() {
+            var container = document.getElementById('tab-curriculum');
+            if (container && container.style.display !== 'none') {
+                renderCurriculum(container);
+            }
+        }, 200);
+    }
 
     // ============================================================
     // EXPOSE FUNCTIONS
