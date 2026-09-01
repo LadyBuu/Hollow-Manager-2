@@ -170,6 +170,8 @@
             html += '</div>';
 
             tournaments.forEach(function(tourn) {
+                // FIX: Get tournament name with fallback
+                var tournName = tourn.name || 'Unknown Tournament';
                 var winnerName = queries.getWinnerName ? queries.getWinnerName(tourn) : 'Not determined';
                 var participantCount = queries.getParticipantCount ? queries.getParticipantCount(tourn) : 0;
                 var roundCount = queries.getRoundCount ? queries.getRoundCount(tourn) : 0;
@@ -177,10 +179,10 @@
                 var statusDisplay = getTournamentStatusDisplay(tourn.status);
 
                 html += '<div class="list-item tourn-item" data-id="' + escapeHtml(tourn.id) + '">';
-                html += '<span><strong>' + escapeHtml(tourn.name) + '</strong>' +
+                html += '<span><strong>' + escapeHtml(tournName) + '</strong>' +
                     (isComplete && winnerName !== 'Not determined' ? ' ★ ' + escapeHtml(winnerName) : '') + '</span>';
-                html += '<span class="tourn-mode">' + escapeHtml(tourn.mode) + '</span>';
-                html += '<span class="tourn-rounds">' + roundCount + '/' + escapeHtml(tourn.totalRounds) + '</span>';
+                html += '<span class="tourn-mode">' + escapeHtml(tourn.mode || 'teams') + '</span>';
+                html += '<span class="tourn-rounds">' + roundCount + '/' + escapeHtml(tourn.totalRounds || 1) + '</span>';
                 html += '<span class="tourn-participants">' + participantCount + '</span>';
                 html += '<span class="tourn-status ' + statusDisplay.class + '">' + escapeHtml(statusDisplay.text) + '</span>';
                 html += '<span class="actions">';
@@ -208,16 +210,20 @@
         },
 
         renderInfo: function(tournament) {
+            if (!tournament) return '';
+            
+            var tournName = tournament.name || 'Unknown Tournament';
             var winnerName = queries.getWinnerName ? queries.getWinnerName(tournament) : 'Not determined';
             var isComplete = queries.isTournamentComplete ? queries.isTournamentComplete(tournament) : false;
             var statusDisplay = getTournamentStatusDisplay(tournament.status);
             var weekRange = this.getWeekRange();
 
             return '<div class="tourn-info">' +
-                '<span class="tourn-info-item">Mode: <strong>' + escapeHtml(tournament.mode) + '</strong></span>' +
-                '<span class="tourn-info-item">Weeks ' + escapeHtml(tournament.startWeek) + ' - ' + escapeHtml(tournament.endWeek) +
+                '<span class="tourn-info-item">' + escapeHtml(tournName) + '</span>' +
+                '<span class="tourn-info-item">Mode: <strong>' + escapeHtml(tournament.mode || 'teams') + '</strong></span>' +
+                '<span class="tourn-info-item">Weeks ' + escapeHtml(tournament.startWeek || 1) + ' - ' + escapeHtml(tournament.endWeek || 52) +
                 ' (' + escapeHtml(weekRange.min) + '-' + escapeHtml(weekRange.max) + ')</span>' +
-                '<span class="tourn-info-item">Rounds: ' + (queries.getRoundCount ? queries.getRoundCount(tournament) : 0) + '/' + escapeHtml(tournament.totalRounds) + '</span>' +
+                '<span class="tourn-info-item">Rounds: ' + (queries.getRoundCount ? queries.getRoundCount(tournament) : 0) + '/' + escapeHtml(tournament.totalRounds || 1) + '</span>' +
                 '<span class="tourn-info-item">Status: <span class="tourn-status ' + statusDisplay.class + '">' + escapeHtml(statusDisplay.text) + '</span></span>' +
                 (isComplete && winnerName !== 'Not determined' ?
                     '<span class="tourn-info-item tourn-winner-badge">Winner: ' + escapeHtml(winnerName) + '</span>' :
@@ -267,7 +273,7 @@
 
             if (!isComplete) {
                 html += '<div class="add-participant-form">';
-                html += '<select class="participant-select" data-mode="' + escapeHtml(tournament.mode) + '">';
+                html += '<select class="participant-select" data-mode="' + escapeHtml(tournament.mode || 'teams') + '">';
                 html += '<option value="">Add participant...</option>';
                 html += '</select>';
                 html += '<button class="add-participant-btn primary small">Add</button>';
@@ -439,10 +445,13 @@
             modeOptions = modeOptions || ['teams', 'individuals'];
             statusOptions = statusOptions || ['draft', 'active', 'completed'];
 
+            // FIX: Get tournament name with fallback
+            var tournName = t.name || '';
+
             var html = '<form class="tournament-form" id="tournament-form">';
             html += '<div class="form-group">';
             html += '<label>Tournament Name *</label>';
-            html += '<input type="text" id="tourn-name" value="' + escapeHtml(t.name || '') + '" required>';
+            html += '<input type="text" id="tourn-name" value="' + escapeHtml(tournName) + '" required>';
             html += '</div>';
 
             html += '<div class="form-group">';
