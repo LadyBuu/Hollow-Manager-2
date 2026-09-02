@@ -11,7 +11,7 @@
  *   - Classes: Create/manage graduating classes, add members
  *   - Rankings: Class-based rankings (placeholder)
  *   - Groups: Auto-groups scoped to graduating classes (placeholder)
- *   - Tournaments: Class-based tournaments
+ *   - Tournaments: Class-based tournaments with filtering
  */
 
 (function() {
@@ -129,6 +129,9 @@
         var data = window.data || {};
         if (!data.graduatingClasses) {
             data.graduatingClasses = [];
+        }
+        if (!data.tournaments) {
+            data.tournaments = [];
         }
     }
 
@@ -447,16 +450,18 @@
     }
 
     // ============================================================
-    // TOURNAMENTS - Using existing tournament module
+    // TOURNAMENTS - Full integration with class filtering
     // ============================================================
 
     function renderTournamentsContent(container) {
         if (!container) return;
 
-        // Try to use the actual tournament module
+        // Check if tournament modules are loaded
         if (typeof window.TournamentsUI !== 'undefined' && 
             typeof window.TournamentsUI.render === 'function') {
-            window.TournamentsUI.render(container);
+            
+            // Wrap the tournament render with class filter support
+            renderTournamentsWithClassFilter(container);
             return;
         }
         
@@ -465,7 +470,7 @@
             return;
         }
 
-        // Fallback if tournament module not loaded
+        // Fallback placeholder
         container.innerHTML = `
             <div class="page-header">
                 <h2>Tournaments</h2>
@@ -483,52 +488,204 @@
                 <p class="empty-state">Tournaments module not loaded. Please refresh.</p>
             </div>
         `;
+    }
 
-        populateClassFilter('tournaments-class-filter');
-
-        var classFilter = document.getElementById('tournaments-class-filter');
-        if (classFilter) {
-            classFilter.addEventListener('change', function() {
-                renderTournamentsList();
+    function renderTournamentsWithClassFilter(container) {
+        // Get the class filter
+        var classFilter = getClassFilterValue();
+        
+        // Create a wrapper that filters tournaments by class
+        var allTournaments = window.TournamentsCore ? window.TournamentsCore.getTournaments() : [];
+        
+        var filteredTournaments = allTournaments;
+        if (classFilter && classFilter !== 'all') {
+            filteredTournaments = allTournaments.filter(function(t) {
+                return t && String(t.graduatingClassId) === String(classFilter);
             });
         }
 
-        var createBtn = document.getElementById('create-tournament-btn');
+        // Render the tournaments UI with filter
+        var html = getTournamentsWithFilterHTML(classFilter, filteredTournaments);
+        container.innerHTML = html;
+        
+        // Bind events
+        bindTournamentEvents(container, classFilter);
+        
+        // If TournamentsUI is available, use it for detail rendering
+        if (typeof window.TournamentsUI !== 'undefined' && 
+            typeof window.TournamentsUI.render === 'function') {
+            // The detail view will be handled by the UI module
+        }
+    }
+
+    function getTournamentsWithFilterHTML(classFilter, tournaments) {
+        var classFilterOptions = getClassFilterOptions(classFilter);
+        
+        var html = `
+            <div class="page-header">
+                <h2>Tournaments</h2>
+                <button id="create-tournament-btn" class="primary">+ New Tournament</button>
+            </div>
+            <div class="tournaments-controls" style="margin-bottom:12px;">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <label style="font-size:0.75rem;color:var(--text-dim);">Class:</label>
+                    <select id="tournaments-class-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
+                        ${classFilterOptions}
+                    </select>
+                    <button id="refresh-tournaments-btn" class="small secondary">Refresh</button>
+                </div>
+            </div>
+            <div id="tournaments-container">
+                ${renderTournamentList(tournaments)}
+            </div>
+        `;
+        
+        return html;
+    }
+
+    function getClassFilterOptions(selected) {
+        var classes = window.getGraduatingClasses ? window.getGraduatingClasses() : [];
+        var html = '<option value="all"' + (selected === 'all' ? ' selected' : '') + '>All Classes</option>';
+        
+        for (var i = 0; i < classes.length; i++) {
+            var cls = classes[i];
+            var isSelected = String(cls.id) === String(selected);
+            html += '<option value="' + escapeHtml(cls.id) + '"' + (isSelected ? ' selected' : '') + '>' + 
+                escapeHtml(cls.name) + '</option>';
+        }
+        return html;
+    }
+
+    function renderTournamentList(tournaments) {
+        if (!tournaments || tournaments.length === 0) {
+            return '<p class="empty-state">No tournaments found for this class.</p>';
+        }
+
+        var html = '';
+        html += '<div class="list-header tourn-header" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr;gap:8px;padding:8px 12px;background:var(--panel-alt);border-radius:6px 6px 0 0;border:1px solid var(--border);border-bottom:none;font-weight:600;font-size:0.7rem;color:var(--text-dim);">';
+        html += '<span>Name</span>';
+        html += '<span>Class</span>';
+        html += '<span>Mode</span>';
+        html += '<span>Rounds</span>';
+        html += '<span>Participants</span>';
+        html += '<span>Status</span>';
+        html += '</div>';
+
+        tournaments.forEach(function(tourn) {
+            var className = 'None';
+            if (tourn.graduatingClassId) {
+                var cls = window.getGraduatingClass ? window.getGraduatingClass(tourn.graduatingClassId) : null;
+                if (cls) {
+                    className = cls.name;
+                }
+            }
+            
+            var participantCount = Array.isArray(tourn.participants) ? tourn.participants.length : 0;
+            var roundCount = Array.isArray(tourn.rounds) ? tourn.rounds.length : 0;
+            var statusDisplay = getStatusDisplay(tourn.status);
+            var isComplete = tourn.status === 'completed';
+
+            html += '<div class="list-item tourn-item" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr;gap:8px;padding:8px 12px;background:var(--panel);border:1px solid var(--border);border-top:none;" data-id="' + escapeHtml(tourn.id) + '">';
+            html += '<span><strong>' + escapeHtml(tourn.name || 'Unnamed') + '</strong>' +
+                (isComplete ? ' ★' : '') + '</span>';
+            html += '<span style="font-size:0.7rem;color:var(--text-dim);">' + escapeHtml(className) + '</span>';
+            html += '<span style="font-size:0.7rem;">' + escapeHtml(tourn.mode || 'teams') + '</span>';
+            html += '<span style="font-size:0.7rem;">' + roundCount + '/' + escapeHtml(tourn.totalRounds || 1) + '</span>';
+            html += '<span style="font-size:0.7rem;">' + participantCount + '</span>';
+            html += '<span style="font-size:0.7rem;color:' + statusDisplay.color + ';">' + escapeHtml(statusDisplay.label) + '</span>';
+            html += '</div>';
+        });
+
+        return html;
+    }
+
+    function getStatusDisplay(status) {
+        var map = {
+            'draft': { label: 'Draft', color: 'var(--text-dim)' },
+            'active': { label: 'Active', color: 'var(--accent)' },
+            'completed': { label: 'Completed', color: 'var(--info)' }
+        };
+        return map[status] || { label: status || 'Unknown', color: 'var(--text-dim)' };
+    }
+
+    function getClassFilterValue() {
+        var select = document.getElementById('tournaments-class-filter');
+        return select ? select.value : 'all';
+    }
+
+    function bindTournamentEvents(container, classFilter) {
+        // Class filter change
+        var classFilterEl = container.querySelector('#tournaments-class-filter');
+        if (classFilterEl) {
+            var newFilter = classFilterEl.cloneNode(true);
+            classFilterEl.parentNode.replaceChild(newFilter, classFilterEl);
+            newFilter.addEventListener('change', function() {
+                renderTournamentsContent(container);
+            });
+        }
+
+        // Refresh button
+        var refreshBtn = container.querySelector('#refresh-tournaments-btn');
+        if (refreshBtn) {
+            var newRefresh = refreshBtn.cloneNode(true);
+            refreshBtn.parentNode.replaceChild(newRefresh, refreshBtn);
+            newRefresh.addEventListener('click', function() {
+                renderTournamentsContent(container);
+            });
+        }
+
+        // Create tournament button - use the tournament module if available
+        var createBtn = container.querySelector('#create-tournament-btn');
         if (createBtn) {
-            createBtn.addEventListener('click', function() {
+            var newCreate = createBtn.cloneNode(true);
+            createBtn.parentNode.replaceChild(newCreate, createBtn);
+            newCreate.addEventListener('click', function() {
                 if (typeof window.TournamentsUI !== 'undefined' && 
-                    typeof window.TournamentsUI.showCreateModal === 'function') {
-                    window.TournamentsUI.showCreateModal();
+                    typeof window.TournamentsUI.showTournamentForm === 'function') {
+                    window.TournamentsUI.showTournamentForm();
+                } else if (typeof window.showTournamentForm === 'function') {
+                    window.showTournamentForm();
                 } else {
                     alert('Tournament creation coming soon.');
                 }
             });
         }
 
-        renderTournamentsList();
-    }
-
-    function renderTournamentsList() {
-        var container = document.getElementById('tournaments-container');
-        if (!container) return;
-        
-        // If the actual module exists, use it
-        if (typeof window.TournamentsUI !== 'undefined' && 
-            typeof window.TournamentsUI.render === 'function') {
-            return;
-        }
-        
-        // Try to use renderTournaments if available
-        if (typeof window.renderTournaments === 'function') {
-            return;
-        }
-        
-        container.innerHTML = '<p class="empty-state">Tournaments module not loaded. Please refresh.</p>';
+        // Click on tournament items to view details
+        var items = container.querySelectorAll('.tourn-item');
+        items.forEach(function(item) {
+            var newItem = item.cloneNode(true);
+            item.parentNode.replaceChild(newItem, item);
+            newItem.addEventListener('click', function() {
+                var id = this.dataset.id;
+                if (id && typeof window.TournamentsUI !== 'undefined' && 
+                    typeof window.TournamentsUI.viewTournament === 'function') {
+                    window.TournamentsUI.viewTournament(id);
+                } else if (typeof window.viewTournament === 'function') {
+                    window.viewTournament(id);
+                } else {
+                    alert('Tournament details coming soon.');
+                }
+            });
+        });
     }
 
     // ============================================================
     // HELPER FUNCTIONS
     // ============================================================
+
+    function escapeHtml(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+        var str = String(value);
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
 
     function getWeekOptions() {
         var html = '';
