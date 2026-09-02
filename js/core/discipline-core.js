@@ -50,6 +50,12 @@
  *   - Grading systems are normalised: input accepts 'letter' or 'label',
  *     but storage uses 'label' as canonical
  *   - getGradeLetter() supports legacy 'letter' fields for backward compatibility
+ * 
+ * DEPENDENCIES:
+ *   - window.data (global state)
+ *   - window.getCharacterById (from core-utils.js)
+ *   - window.CoreUtils (from core-utils.js)
+ *   - window.MutationUtils (from mutation-utils.js)
  */
 
 (function() {
@@ -60,6 +66,33 @@
         return;
     }
     window.__disciplineCoreLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
+
+    function checkDependencies() {
+        var missing = [];
+
+        // Core dependencies
+        var required = ['getCharacterById'];
+        required.forEach(function(name) {
+            if (typeof window[name] !== 'function') {
+                missing.push(name);
+            }
+        });
+
+        // Check for CoreUtils
+        if (!window.CoreUtils || typeof window.CoreUtils.deepClone !== 'function') {
+            missing.push('CoreUtils.deepClone');
+        }
+
+        if (missing.length > 0) {
+            console.warn('DisciplineCore: Missing dependencies:', missing.join(', '));
+            return false;
+        }
+        return true;
+    }
 
     // ============================================================
     // PRIVATE HELPERS
@@ -151,6 +184,9 @@
     }
 
     function generateId(prefix) {
+        if (window.CoreUtils && typeof window.CoreUtils.generateId === 'function') {
+            return window.CoreUtils.generateId(prefix || 'disc');
+        }
         prefix = prefix || 'disc';
         if (window.crypto && typeof window.crypto.randomUUID === 'function') {
             return prefix + '_' + window.crypto.randomUUID();
@@ -163,11 +199,14 @@
      * This guarantees that query results are never live references.
      */
     function deepClone(value) {
+        if (window.CoreUtils && typeof window.CoreUtils.deepClone === 'function') {
+            return window.CoreUtils.deepClone(value);
+        }
+
         if (value === null || typeof value !== 'object') {
             return value;
         }
 
-        // Use structuredClone if available
         if (typeof structuredClone === 'function') {
             try {
                 return structuredClone(value);
@@ -177,7 +216,6 @@
             }
         }
 
-        // Fallback to JSON
         try {
             return JSON.parse(JSON.stringify(value));
         } catch (e) {
@@ -408,10 +446,6 @@
                 var endResult = validateWeek(data.endWeek, 'End week');
                 if (!endResult.success) return endResult;
             }
-            // NOTE: Cross-field check (startWeek <= endWeek) is NOT performed
-            // in partial validation. This is intentional - callers must use
-            // full validation via validateDiscipline(data, false) for complete
-            // candidates before mutation.
         }
 
         // Weekly hours validation
@@ -512,7 +546,6 @@
 
         if (!discipline) return null;
 
-        // deepClone returns null on failure, which is safe
         return deepClone(discipline);
     }
 
@@ -526,8 +559,6 @@
         for (var i = 0; i < disciplines.length; i++) {
             var cloned = deepClone(disciplines[i]);
             if (cloned === null) {
-                // A corrupted discipline exists - fail the entire query
-                // rather than silently dropping data
                 console.error('DisciplineCore: Failed to clone discipline at index ' + i);
                 return [];
             }
@@ -639,8 +670,16 @@
             return failure('Internal validation failed: ' + builtValidation.message);
         }
 
-        // ---- PHASE 7: APPLY ----
-        store.curriculum.disciplines.push(discipline);
+        // ---- PHASE 7: BUILD CANDIDATE ----
+        var candidate = deepClone(store.curriculum.disciplines);
+        if (candidate === null) {
+            return failure('Failed to prepare discipline data.');
+        }
+
+        candidate.push(discipline);
+
+        // ---- PHASE 8: COMMIT ----
+        store.curriculum.disciplines = candidate;
 
         logActivity('Created discipline: ' + discipline.name);
         return successWithDiscipline(discipline);
@@ -763,11 +802,19 @@
             return failure(builtValidation.message);
         }
 
-        // ---- PHASE 6: APPLY (ONLY NOW DO WE MUTATE) ----
-        Object.assign(discipline, candidate);
+        // ---- PHASE 6: BUILD FULL CANDIDATE ARRAY ----
+        var candidateArray = deepClone(store.curriculum.disciplines);
+        if (candidateArray === null) {
+            return failure('Failed to prepare discipline data.');
+        }
 
-        logActivity('Updated discipline: ' + discipline.name);
-        return successWithDiscipline(discipline);
+        candidateArray[index] = candidate;
+
+        // ---- PHASE 7: COMMIT ----
+        store.curriculum.disciplines = candidateArray;
+
+        logActivity('Updated discipline: ' + candidate.name);
+        return successWithDiscipline(candidate);
     }
 
     // ============================================================
