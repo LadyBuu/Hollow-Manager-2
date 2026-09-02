@@ -1,6 +1,13 @@
 /**
  * js/modules/characters/character-stats.js - Character Stats & Magic System
  * Handles physical stats, magic proficiencies, class suggestions, special moves
+ * 
+ * IMPORTANT:
+ *   - All MUTATIONS now follow VALIDATE → SNAPSHOT → MUTATE → PERSIST → LOG → UI
+ *   - Special moves now use the full mutation pipeline with rollback
+ *   - All mutation APIs accept characterId, not live character objects
+ *   - Uses CharacterConstants for all definitions (single source of truth)
+ *   - Uses MutationUtils for backup and persistence
  */
 (function() {
     'use strict';
@@ -9,16 +16,63 @@
     window.__characterStatsLoaded = true;
 
     // ============================================================
-    // CONSTANTS
+    // DEPENDENCY CHECK
     // ============================================================
 
-    var MAGIC_MAX = 10;
-    var STAT_MIN = 1;
-    var STAT_MAX = 50;
-    var MAX_MOVE_NAME_LENGTH = 100;
-    var MAX_MOVE_DESCRIPTION_LENGTH = 500;
-    var MAX_SPECIAL_MOVES = 20;
-    var BALANCED_MAGE_THRESHOLD = 3;
+    function checkDependencies() {
+        var missing = [];
+
+        // Core dependencies
+        var required = [
+            'getCharacterById',
+            'getDisplayName',
+            'getCurrentEditId',
+            'saveData'
+        ];
+
+        required.forEach(function(name) {
+            if (name === 'saveData' && typeof window.saveData !== 'function') {
+                missing.push('saveData');
+            } else if (typeof window[name] !== 'function') {
+                missing.push(name);
+            }
+        });
+
+        // Check for MutationUtils
+        if (!window.MutationUtils || typeof window.MutationUtils.createSafeBackup !== 'function') {
+            missing.push('MutationUtils.createSafeBackup');
+        }
+
+        // Check for CharacterConstants
+        if (!window.CharacterConstants) {
+            missing.push('CharacterConstants');
+        }
+
+        if (missing.length > 0) {
+            console.warn('CharacterStats: Missing dependencies:', missing.join(', '));
+            return false;
+        }
+        return true;
+    }
+
+    // ============================================================
+    // CONSTANTS - Use centralised sources
+    // ============================================================
+
+    var MAGIC_MAX = window.CharacterConstants ? window.CharacterConstants.MAGIC_MAX : 10;
+    var STAT_MIN = window.CharacterConstants ? window.CharacterConstants.STAT_MIN : 1;
+    var STAT_MAX = window.CharacterConstants ? window.CharacterConstants.STAT_MAX : 50;
+    var MAX_SPECIAL_MOVES = window.CharacterConstants ? window.CharacterConstants.MAX_SPECIAL_MOVES : 20;
+    var MAX_MOVE_NAME_LENGTH = window.CharacterConstants ? window.CharacterConstants.MAX_MOVE_NAME_LENGTH : 100;
+    var MAX_MOVE_DESCRIPTION_LENGTH = window.CharacterConstants ? window.CharacterConstants.MAX_MOVE_DESCRIPTION_LENGTH : 500;
+    var BALANCED_MAGE_THRESHOLD = window.CharacterConstants ? window.CharacterConstants.BALANCED_MAGE_THRESHOLD : 3;
+
+    var MAGIC_TYPES = window.CharacterConstants ? window.CharacterConstants.MAGIC_TYPES : {};
+    var MAGIC_TYPE_KEYS = window.CharacterConstants ? window.CharacterConstants.MAGIC_TYPE_KEYS : [];
+    var MAGIC_CATEGORIES = window.CharacterConstants ? window.CharacterConstants.MAGIC_CATEGORIES : {};
+    var STAT_DEFINITIONS = window.CharacterConstants ? window.CharacterConstants.STAT_DEFINITIONS : {};
+    var STAT_KEYS = window.CharacterConstants ? window.CharacterConstants.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    var CLASS_DEFINITIONS = window.CharacterConstants ? window.CharacterConstants.CLASS_DEFINITIONS : [];
 
     // ============================================================
     // NOTIFICATION
@@ -26,14 +80,29 @@
 
     function showNotification(message, type) {
         type = type || 'info';
+
         if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
             window.NotificationSystem.notify(message, type);
             return;
         }
+
         if (typeof window.showToast === 'function') {
             window.showToast(message, type);
             return;
         }
+
+        if (typeof window.setSession === 'function') {
+            window.setSession('toast', {
+                message: message,
+                type: type,
+                timestamp: Date.now()
+            });
+            if (typeof window.renderToast === 'function') {
+                window.renderToast();
+            }
+            return;
+        }
+
         if (type === 'error') {
             alert('Error: ' + message);
         } else {
@@ -42,235 +111,55 @@
     }
 
     // ============================================================
-    // STAT DEFINITIONS
+    // SAFE BACKUP - Delegate to MutationUtils
     // ============================================================
 
-    var STAT_DEFINITIONS = {
-        'str': { label: 'Strength', abbr: 'STR' },
-        'dex': { label: 'Dexterity', abbr: 'DEX' },
-        'con': { label: 'Constitution', abbr: 'CON' },
-        'int': { label: 'Intelligence', abbr: 'INT' },
-        'wis': { label: 'Wisdom', abbr: 'WIS' },
-        'cha': { label: 'Charisma', abbr: 'CHA' }
-    };
-
-    var CLASS_DEFINITIONS = [
-        { 
-            id: 'warrior', 
-            label: 'Warrior', 
-            icon: '⚔', 
-            primaryStats: ['str', 'con'], 
-            secondaryStats: ['dex'], 
-            statWeights: { str: 0.5, con: 0.3, dex: 0.15, wis: 0.05 }, 
-            minStats: { str: 14, con: 12 }, 
-            priority: 5,
-            description: 'Masters of combat who rely on strength and endurance to overpower their foes.' 
-        },
-        { 
-            id: 'skirmisher', 
-            label: 'Skirmisher', 
-            icon: '🏹', 
-            primaryStats: ['dex', 'wis'], 
-            secondaryStats: ['con', 'str'], 
-            statWeights: { dex: 0.45, wis: 0.25, con: 0.15, str: 0.1, int: 0.05 }, 
-            minStats: { dex: 14, wis: 12 }, 
-            priority: 4,
-            description: 'Agile fighters who excel at ranged combat and hit-and-run tactics.' 
-        },
-        { 
-            id: 'protector', 
-            label: 'Protector', 
-            icon: '🛡', 
-            primaryStats: ['str', 'con'], 
-            secondaryStats: ['wis', 'cha'], 
-            statWeights: { str: 0.35, con: 0.35, wis: 0.15, cha: 0.1, dex: 0.05 }, 
-            minStats: { str: 14, con: 14 }, 
-            priority: 4,
-            description: 'Defenders who shield others from harm and stand firm against any threat.' 
-        },
-        { 
-            id: 'sage', 
-            label: 'Sage', 
-            icon: '📚', 
-            primaryStats: ['int', 'wis'], 
-            secondaryStats: ['con', 'dex'], 
-            statWeights: { int: 0.4, wis: 0.3, con: 0.15, dex: 0.1, cha: 0.05 }, 
-            minStats: { int: 14, wis: 12 }, 
-            priority: 4,
-            description: 'Scholars and keepers of ancient knowledge who wield intellect as their weapon.' 
-        },
-        { 
-            id: 'mystic', 
-            label: 'Mystic', 
-            icon: '✦', 
-            primaryStats: ['wis', 'cha'], 
-            secondaryStats: ['con', 'int'], 
-            statWeights: { wis: 0.4, cha: 0.3, con: 0.15, int: 0.1, dex: 0.05 }, 
-            minStats: { wis: 14, cha: 12 }, 
-            priority: 4,
-            description: 'Channelers of spiritual and arcane forces who draw power from within.' 
-        },
-        { 
-            id: 'stalker', 
-            label: 'Stalker', 
-            icon: '🗡', 
-            primaryStats: ['dex', 'int'], 
-            secondaryStats: ['cha', 'wis'], 
-            statWeights: { dex: 0.4, int: 0.25, cha: 0.2, wis: 0.1, str: 0.05 }, 
-            minStats: { dex: 14, int: 12 }, 
-            priority: 4,
-            description: 'Masters of stealth and subterfuge who strike from the shadows.' 
-        },
-        { 
-            id: 'spellblade', 
-            label: 'Spellblade', 
-            icon: '⚡', 
-            primaryStats: ['str', 'int'], 
-            secondaryStats: ['dex', 'con'], 
-            statWeights: { str: 0.35, int: 0.35, dex: 0.15, con: 0.1, wis: 0.05 }, 
-            minStats: { str: 13, int: 13 }, 
-            priority: 4,
-            description: 'Warriors who weave magic into combat, blending steel and sorcery.' 
-        },
-        { 
-            id: 'channeler', 
-            label: 'Channeler', 
-            icon: '✦', 
-            primaryStats: ['cha', 'con'], 
-            secondaryStats: ['dex', 'int'], 
-            statWeights: { cha: 0.4, con: 0.25, dex: 0.2, int: 0.1, wis: 0.05 }, 
-            minStats: { cha: 14, con: 12 }, 
-            priority: 4,
-            description: 'Mages who channel raw magical energy through force of personality.' 
-        },
-        { 
-            id: 'warden', 
-            label: 'Warden', 
-            icon: '⚔', 
-            primaryStats: ['str', 'wis'], 
-            secondaryStats: ['con', 'dex'], 
-            statWeights: { str: 0.35, wis: 0.3, con: 0.2, dex: 0.1, cha: 0.05 }, 
-            minStats: { str: 13, wis: 13 }, 
-            priority: 4,
-            description: 'Guardians of nature and natural order who protect the wild places.' 
-        },
-        { 
-            id: 'adept', 
-            label: 'Adept', 
-            icon: '✦', 
-            primaryStats: ['dex', 'wis'], 
-            secondaryStats: ['con', 'str'], 
-            statWeights: { dex: 0.4, wis: 0.35, con: 0.15, str: 0.1, int: 0.05 }, 
-            minStats: { dex: 14, wis: 14 }, 
-            priority: 5,
-            description: 'Masters of mind-body discipline who achieve perfection through training.' 
-        },
-        { 
-            id: 'artificer', 
-            label: 'Artificer', 
-            icon: '⚙', 
-            primaryStats: ['int', 'dex'], 
-            secondaryStats: ['con', 'wis'], 
-            statWeights: { int: 0.4, dex: 0.25, con: 0.2, wis: 0.1, cha: 0.05 }, 
-            minStats: { int: 14, dex: 12 }, 
-            priority: 4,
-            description: 'Inventors and creators of wondrous devices who blend magic with craft.' 
-        },
-        { 
-            id: 'occultist', 
-            label: 'Occultist', 
-            icon: '✦', 
-            primaryStats: ['int', 'cha'], 
-            secondaryStats: ['con', 'dex'], 
-            statWeights: { int: 0.35, cha: 0.35, con: 0.15, dex: 0.1, wis: 0.05 }, 
-            minStats: { int: 14, cha: 14 }, 
-            priority: 5,
-            description: 'Seekers of forbidden and hidden knowledge who bargain with dark powers.' 
-        },
-        { 
-            id: 'blade_dancer', 
-            label: 'Blade Dancer', 
-            icon: '🗡', 
-            primaryStats: ['dex', 'cha'], 
-            secondaryStats: ['str', 'con'], 
-            statWeights: { dex: 0.4, cha: 0.3, str: 0.15, con: 0.1, wis: 0.05 }, 
-            minStats: { dex: 14, cha: 12 }, 
-            priority: 4,
-            description: 'Graceful warriors who move like the wind, turning combat into art.' 
-        },
-        { 
-            id: 'elementalist', 
-            label: 'Elementalist', 
-            icon: '✦', 
-            primaryStats: ['int', 'wis'], 
-            secondaryStats: ['con', 'dex'], 
-            statWeights: { int: 0.45, wis: 0.25, con: 0.15, dex: 0.1, cha: 0.05 }, 
-            minStats: { int: 14, wis: 12 }, 
-            priority: 4,
-            description: 'Masters of the primal elements who command fire, water, earth, and air.' 
-        },
-        { 
-            id: 'sentinel', 
-            label: 'Sentinel', 
-            icon: '🛡', 
-            primaryStats: ['str', 'con'], 
-            secondaryStats: ['wis', 'dex'], 
-            statWeights: { str: 0.3, con: 0.35, wis: 0.2, dex: 0.1, cha: 0.05 }, 
-            minStats: { str: 14, con: 14 }, 
-            priority: 5,
-            description: 'Unyielding guardians and protectors who never retreat from their duty.' 
+    function createSafeBackup(data) {
+        if (window.MutationUtils && typeof window.MutationUtils.createSafeBackup === 'function') {
+            return window.MutationUtils.createSafeBackup(data);
         }
-    ];
 
-    // ============================================================
-    // MAGIC DEFINITIONS
-    // ============================================================
-
-    var MAGIC_TYPES = {
-        earth: { id: 'earth', label: 'Earth Magic', category: 'elemental', color: '#8B7355' },
-        water: { id: 'water', label: 'Water Magic', category: 'elemental', color: '#4A9BC7' },
-        fire: { id: 'fire', label: 'Fire Magic', category: 'elemental', color: '#E67E22' },
-        air: { id: 'air', label: 'Air Magic', category: 'elemental', color: '#A8D5E2' },
-        metal: { id: 'metal', label: 'Metal Magic', category: 'elemental', color: '#95A5A6' },
-        wood: { id: 'wood', label: 'Wood Magic', category: 'elemental', color: '#27AE60' },
-        blood: { id: 'blood', label: 'Blood Magic', category: 'body', color: '#C0392B' },
-        bone: { id: 'bone', label: 'Bone Magic', category: 'body', color: '#F5F5DC' },
-        mind: { id: 'mind', label: 'Mind Magic', category: 'body', color: '#8E44AD' },
-        morphic: { id: 'morphic', label: 'Morphic Magic', category: 'body', color: '#1ABC9C' },
-        life: { id: 'life', label: 'Life Magic', category: 'body', color: '#2ECC71' },
-        death: { id: 'death', label: 'Death Magic', category: 'body', color: '#2C3E50' },
-        space: { id: 'space', label: 'Space Magic', category: 'aether', color: '#3498DB' },
-        time: { id: 'time', label: 'Time Magic', category: 'aether', color: '#F39C12' },
-        dimension: { id: 'dimension', label: 'Dimension Magic', category: 'aether', color: '#9B59B6' },
-        void: { id: 'void', label: 'Void Magic', category: 'aether', color: '#1A1A2E' },
-        reality: { id: 'reality', label: 'Reality Magic', category: 'aether', color: '#F1C40F' },
-        transference: { id: 'transference', label: 'Transference Magic', category: 'aether', color: '#E74C3C' }
-    };
-
-    var MAGIC_CATEGORIES = {
-        elemental: { label: 'Elemental Magic', color: '#8cbb3a' },
-        body: { label: 'Body Magic', color: '#c1453c' },
-        aether: { label: 'Aether Magic', color: '#4a9bc7' }
-    };
-
-    // ============================================================
-    // MAGIC TYPE HELPERS
-    // ============================================================
-
-    function getMagicTypeKeys() {
-        return Object.keys(MAGIC_TYPES);
+        try {
+            if (window.db && typeof window.db.createSafeCopy === 'function') {
+                return window.db.createSafeCopy(data);
+            }
+            if (typeof structuredClone === 'function') {
+                return structuredClone(data);
+            }
+            return JSON.parse(JSON.stringify(data));
+        } catch (err) {
+            console.warn('CharacterStats: Failed to create backup:', err);
+            return null;
+        }
     }
 
-    function getMagicCategoryTypes(category) {
-        var keys = Object.keys(MAGIC_TYPES);
-        var result = [];
-        for (var i = 0; i < keys.length; i++) {
-            var key = keys[i];
-            if (MAGIC_TYPES[key].category === category) {
-                result.push(key);
-            }
+    // ============================================================
+    // SAFE RENDER HELPERS
+    // ============================================================
+
+    function safeRenderCharacterList() {
+        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+            window.CharacterList.render();
         }
-        return result;
+    }
+
+    function safeShowCharacterForm(id) {
+        if (typeof window.showCharacterForm === 'function') {
+            window.showCharacterForm(id);
+        }
+    }
+
+    function safeUpdateDashboardStats() {
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
+        }
+    }
+
+    function getCurrentEditId() {
+        if (typeof window.getCurrentEditId === 'function') {
+            return window.getCurrentEditId();
+        }
+        return null;
     }
 
     // ============================================================
@@ -293,17 +182,15 @@
             return getDefaultStats();
         }
         var stats = char.stats;
-        var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
         var result = {};
-        for (var i = 0; i < statKeys.length; i++) {
-            var key = statKeys[i];
+        STAT_KEYS.forEach(function(key) {
             var val = stats[key];
             if (typeof val === 'number' && !isNaN(val) && isFinite(val)) {
                 result[key] = clampStat(val);
             } else {
                 result[key] = 10;
             }
-        }
+        });
         return result;
     }
 
@@ -351,14 +238,10 @@
     function suggestClass(stats) {
         if (!stats) return null;
 
-        var scores = {
-            str: clampStat(stats.str),
-            dex: clampStat(stats.dex),
-            con: clampStat(stats.con),
-            int: clampStat(stats.int),
-            wis: clampStat(stats.wis),
-            cha: clampStat(stats.cha)
-        };
+        var scores = {};
+        STAT_KEYS.forEach(function(key) {
+            scores[key] = clampStat(stats[key]);
+        });
 
         var bestClass = null;
         var bestScore = -Infinity;
@@ -406,14 +289,10 @@
     }
 
     function updateClassSuggestion() {
-        var stats = {
-            str: getStatFromDOM('char-str'),
-            dex: getStatFromDOM('char-dex'),
-            con: getStatFromDOM('char-con'),
-            int: getStatFromDOM('char-int'),
-            wis: getStatFromDOM('char-wis'),
-            cha: getStatFromDOM('char-cha')
-        };
+        var stats = {};
+        STAT_KEYS.forEach(function(key) {
+            stats[key] = getStatFromDOM('char-' + key);
+        });
 
         var suggested = suggestClass(stats);
         var display = document.getElementById('suggested-class');
@@ -450,8 +329,7 @@
 
     function getDefaultMagicProficiencies() {
         var proficiencies = {};
-        var keys = getMagicTypeKeys();
-        keys.forEach(function(key) {
+        MAGIC_TYPE_KEYS.forEach(function(key) {
             proficiencies[key] = 0;
         });
         return proficiencies;
@@ -469,22 +347,20 @@
             return getDefaultMagicProficiencies();
         }
         var magic = char.magic;
-        var keys = getMagicTypeKeys();
         var result = {};
-        for (var i = 0; i < keys.length; i++) {
-            var key = keys[i];
+        MAGIC_TYPE_KEYS.forEach(function(key) {
             var val = magic[key];
             if (typeof val === 'number' && !isNaN(val) && isFinite(val)) {
                 result[key] = clampMagic(val);
             } else {
                 result[key] = 0;
             }
-        }
+        });
         return result;
     }
 
     // ============================================================
-    // MAGIC POWER CALCULATION - ADVANCED FORMULA
+    // MAGIC POWER CALCULATION
     // ============================================================
 
     function calculateMagicPower(char) {
@@ -503,8 +379,7 @@
             'aether': { total: 0, max: 0, count: 0, types: [] }
         };
 
-        var allKeys = getMagicTypeKeys();
-        allKeys.forEach(function(key) {
+        MAGIC_TYPE_KEYS.forEach(function(key) {
             var typeInfo = MAGIC_TYPES[key];
             if (!typeInfo) return;
             var category = typeInfo.category;
@@ -540,9 +415,8 @@
 
             var balancedBonus = 0;
             var allAboveThreshold = true;
-            var threshold = 3;
             stats.types.forEach(function(t) {
-                if (t.value < threshold) allAboveThreshold = false;
+                if (t.value < BALANCED_MAGE_THRESHOLD) allAboveThreshold = false;
             });
             if (allAboveThreshold && stats.count >= 3) {
                 balancedBonus = avg * 0.3;
@@ -559,7 +433,7 @@
         var scaledScore = Math.min(100, Math.round(rawScore * 5));
 
         var hasMaster = false;
-        allKeys.forEach(function(key) {
+        MAGIC_TYPE_KEYS.forEach(function(key) {
             if ((magic[key] || 0) >= 9) hasMaster = true;
         });
         if (hasMaster) {
@@ -601,8 +475,7 @@
         if (!el) return;
 
         var magic = {};
-        var keys = getMagicTypeKeys();
-        keys.forEach(function(key) {
+        MAGIC_TYPE_KEYS.forEach(function(key) {
             magic[key] = getMagicFromDOM('magic-' + key);
         });
 
@@ -622,9 +495,8 @@
 
     function suggestMagicClass(char) {
         var magic = getCharacterMagic(char);
-        var keys = getMagicTypeKeys();
         var totalPower = 0;
-        keys.forEach(function(key) {
+        MAGIC_TYPE_KEYS.forEach(function(key) {
             totalPower += magic[key] || 0;
         });
 
@@ -738,8 +610,7 @@
 
     function updateMagicClassSuggestion() {
         var magic = {};
-        var keys = getMagicTypeKeys();
-        keys.forEach(function(key) {
+        MAGIC_TYPE_KEYS.forEach(function(key) {
             magic[key] = getMagicFromDOM('magic-' + key);
         });
 
@@ -802,7 +673,7 @@
     }
 
     // ============================================================
-    // SPECIAL MOVES FUNCTIONS - WITH EDITING
+    // SPECIAL MOVES - FIXED: Now use full mutation pipeline with save
     // ============================================================
 
     function getSpecialMoves(char) {
@@ -829,11 +700,40 @@
         return { physical: physical, magical: magical };
     }
 
-    function addSpecialMove(char, type, name, description) {
-        if (!char) return false;
-        if (type !== 'physical' && type !== 'magical') return false;
-        if (!name || typeof name !== 'string' || name.trim() === '') return false;
+    /**
+     * Add a special move to a character.
+     * FIXED: Now uses full mutation pipeline with save.
+     * API: accepts characterId, not live object.
+     */
+    function addSpecialMove(charId, type, name, description) {
+        if (!checkDependencies()) {
+            showNotification('Dependencies not loaded. Please refresh the page.', 'error');
+            return Promise.resolve(false);
+        }
 
+        if (!charId) {
+            showNotification('Character ID is required.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (type !== 'physical' && type !== 'magical') {
+            showNotification('Invalid move type.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!name || typeof name !== 'string' || name.trim() === '') {
+            showNotification('Move name is required.', 'error');
+            return Promise.resolve(false);
+        }
+
+        // ---- PHASE 1: VALIDATE CHARACTER ----
+        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        if (!char) {
+            showNotification('Character not found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        // ---- PHASE 2: VALIDATE MOVE LIMITS ----
         if (!char.specialMoves || typeof char.specialMoves !== 'object' || Array.isArray(char.specialMoves)) {
             char.specialMoves = { physical: [], magical: [] };
         }
@@ -848,7 +748,7 @@
 
         if (char.specialMoves[type].length >= MAX_SPECIAL_MOVES) {
             showNotification('Maximum of ' + MAX_SPECIAL_MOVES + ' ' + type + ' moves reached.', 'error');
-            return false;
+            return Promise.resolve(false);
         }
 
         var nameTruncated = name.trim().slice(0, MAX_MOVE_NAME_LENGTH);
@@ -856,75 +756,369 @@
             ? description.trim().slice(0, MAX_MOVE_DESCRIPTION_LENGTH)
             : '';
 
-        char.specialMoves[type].push({
+        // ---- PHASE 3: SNAPSHOT ----
+        var data = window.data || {};
+        var backup = createSafeBackup(data);
+        if (!backup) {
+            showNotification('Unable to safely add move. Please try again.', 'error');
+            return Promise.resolve(false);
+        }
+
+        // ---- PHASE 4: MUTATE ----
+        // Re-fetch character from data (in case it was modified)
+        var currentChar = data.characters.find(function(c) {
+            return c && String(c.id) === String(charId);
+        });
+
+        if (!currentChar) {
+            showNotification('Character not found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!currentChar.specialMoves || typeof currentChar.specialMoves !== 'object') {
+            currentChar.specialMoves = { physical: [], magical: [] };
+        }
+
+        if (!Array.isArray(currentChar.specialMoves.physical)) {
+            currentChar.specialMoves.physical = [];
+        }
+
+        if (!Array.isArray(currentChar.specialMoves.magical)) {
+            currentChar.specialMoves.magical = [];
+        }
+
+        currentChar.specialMoves[type].push({
             name: nameTruncated,
             description: descTruncated
         });
 
-        renderSpecialMoves(type + '-moves-list', char.specialMoves[type], type);
-        return true;
+        // ---- PHASE 5: PERSIST ----
+        var savePromise;
+        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
+            savePromise = window.MutationUtils.saveWithPromise();
+        } else {
+            savePromise = Promise.resolve().then(function() { return window.saveData(); });
+        }
+
+        return savePromise
+            .then(function() {
+                // LOG - failure-safe
+                try {
+                    if (typeof window.logActivity === 'function') {
+                        var charName = typeof window.getDisplayName === 'function'
+                            ? window.getDisplayName(currentChar)
+                            : currentChar.firstName || 'Character';
+                        window.logActivity('Added ' + type + ' move "' + nameTruncated + '" to ' + charName);
+                    }
+                } catch (logErr) {
+                    // Ignore logging errors
+                }
+
+                // UI COMMIT
+                renderSpecialMoves(type + '-moves-list', currentChar.specialMoves[type], type);
+                showNotification(type.charAt(0).toUpperCase() + type.slice(1) + ' move added!', 'success');
+                return true;
+            })
+            .catch(function(err) {
+                // ROLLBACK
+                if (backup) {
+                    window.data = backup;
+                    safeRenderCharacterList();
+                    safeShowCharacterForm(charId);
+                }
+                showNotification('Failed to add move. Please try again.', 'error');
+                return false;
+            });
     }
 
-    function updateSpecialMove(char, type, index, name, description) {
-        if (!char) return false;
-        if (type !== 'physical' && type !== 'magical') return false;
-        if (!char.specialMoves || typeof char.specialMoves !== 'object') {
-            return false;
+    /**
+     * Update a special move.
+     * FIXED: Now uses full mutation pipeline with save.
+     * API: accepts characterId, not live object.
+     */
+    function updateSpecialMove(charId, type, index, name, description) {
+        if (!checkDependencies()) {
+            showNotification('Dependencies not loaded. Please refresh the page.', 'error');
+            return Promise.resolve(false);
         }
-        if (!Array.isArray(char.specialMoves.physical) || !Array.isArray(char.specialMoves.magical)) {
-            return false;
+
+        if (!charId) {
+            showNotification('Character ID is required.', 'error');
+            return Promise.resolve(false);
         }
-        if (!char.specialMoves[type] || !Array.isArray(char.specialMoves[type])) {
-            return false;
+
+        if (type !== 'physical' && type !== 'magical') {
+            showNotification('Invalid move type.', 'error');
+            return Promise.resolve(false);
         }
 
         var idx = Number(index);
-        if (!Number.isInteger(idx)) return false;
+        if (!Number.isInteger(idx) || idx < 0) {
+            showNotification('Invalid move index.', 'error');
+            return Promise.resolve(false);
+        }
+
+        // ---- PHASE 1: VALIDATE CHARACTER ----
+        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        if (!char) {
+            showNotification('Character not found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!char.specialMoves || typeof char.specialMoves !== 'object') {
+            showNotification('No special moves found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!Array.isArray(char.specialMoves.physical) || !Array.isArray(char.specialMoves.magical)) {
+            showNotification('Special moves data is corrupted.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!char.specialMoves[type] || !Array.isArray(char.specialMoves[type])) {
+            showNotification('No ' + type + ' moves found.', 'error');
+            return Promise.resolve(false);
+        }
+
         if (idx < 0 || idx >= char.specialMoves[type].length) {
-            return false;
+            showNotification('Move not found.', 'error');
+            return Promise.resolve(false);
         }
 
         var move = char.specialMoves[type][idx];
-        if (name !== undefined && name !== null) {
-            var newName = String(name).trim();
-            if (newName) {
-                move.name = newName.slice(0, MAX_MOVE_NAME_LENGTH);
-            }
-        }
-        if (description !== undefined) {
-            move.description = String(description).trim().slice(0, MAX_MOVE_DESCRIPTION_LENGTH);
+        var newName = name !== undefined && name !== null ? String(name).trim() : move.name;
+        var newDesc = description !== undefined ? String(description).trim() : move.description;
+
+        if (!newName) {
+            showNotification('Move name is required.', 'error');
+            return Promise.resolve(false);
         }
 
-        renderSpecialMoves(type + '-moves-list', char.specialMoves[type], type);
-        return true;
+        // ---- PHASE 2: SNAPSHOT ----
+        var data = window.data || {};
+        var backup = createSafeBackup(data);
+        if (!backup) {
+            showNotification('Unable to safely update move. Please try again.', 'error');
+            return Promise.resolve(false);
+        }
+
+        // ---- PHASE 3: MUTATE ----
+        var currentChar = data.characters.find(function(c) {
+            return c && String(c.id) === String(charId);
+        });
+
+        if (!currentChar) {
+            showNotification('Character not found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!currentChar.specialMoves || typeof currentChar.specialMoves !== 'object') {
+            showNotification('Special moves data is corrupted.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!Array.isArray(currentChar.specialMoves.physical) || !Array.isArray(currentChar.specialMoves.magical)) {
+            showNotification('Special moves data is corrupted.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!currentChar.specialMoves[type] || !Array.isArray(currentChar.specialMoves[type])) {
+            showNotification('No ' + type + ' moves found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (idx < 0 || idx >= currentChar.specialMoves[type].length) {
+            showNotification('Move not found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        currentChar.specialMoves[type][idx] = {
+            name: newName.slice(0, MAX_MOVE_NAME_LENGTH),
+            description: newDesc.slice(0, MAX_MOVE_DESCRIPTION_LENGTH)
+        };
+
+        // ---- PHASE 4: PERSIST ----
+        var savePromise;
+        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
+            savePromise = window.MutationUtils.saveWithPromise();
+        } else {
+            savePromise = Promise.resolve().then(function() { return window.saveData(); });
+        }
+
+        return savePromise
+            .then(function() {
+                // LOG - failure-safe
+                try {
+                    if (typeof window.logActivity === 'function') {
+                        var charName = typeof window.getDisplayName === 'function'
+                            ? window.getDisplayName(currentChar)
+                            : currentChar.firstName || 'Character';
+                        window.logActivity('Updated ' + type + ' move on ' + charName);
+                    }
+                } catch (logErr) {
+                    // Ignore logging errors
+                }
+
+                // UI COMMIT
+                renderSpecialMoves(type + '-moves-list', currentChar.specialMoves[type], type);
+                showNotification(type.charAt(0).toUpperCase() + type.slice(1) + ' move updated!', 'success');
+                return true;
+            })
+            .catch(function(err) {
+                // ROLLBACK
+                if (backup) {
+                    window.data = backup;
+                    safeRenderCharacterList();
+                    safeShowCharacterForm(charId);
+                }
+                showNotification('Failed to update move. Please try again.', 'error');
+                return false;
+            });
     }
 
-    function removeSpecialMove(char, type, index) {
-        if (!char) return false;
-        if (type !== 'physical' && type !== 'magical') return false;
-
-        if (!char.specialMoves || typeof char.specialMoves !== 'object') {
-            return false;
+    /**
+     * Remove a special move.
+     * FIXED: Now uses full mutation pipeline with save.
+     * API: accepts characterId, not live object.
+     */
+    function removeSpecialMove(charId, type, index) {
+        if (!checkDependencies()) {
+            showNotification('Dependencies not loaded. Please refresh the page.', 'error');
+            return Promise.resolve(false);
         }
 
-        if (!Array.isArray(char.specialMoves.physical) || !Array.isArray(char.specialMoves.magical)) {
-            return false;
+        if (!charId) {
+            showNotification('Character ID is required.', 'error');
+            return Promise.resolve(false);
         }
 
-        if (!char.specialMoves[type] || !Array.isArray(char.specialMoves[type])) {
-            return false;
+        if (type !== 'physical' && type !== 'magical') {
+            showNotification('Invalid move type.', 'error');
+            return Promise.resolve(false);
         }
 
         var idx = Number(index);
-        if (!Number.isInteger(idx)) return false;
-        if (idx < 0 || idx >= char.specialMoves[type].length) {
-            return false;
+        if (!Number.isInteger(idx) || idx < 0) {
+            showNotification('Invalid move index.', 'error');
+            return Promise.resolve(false);
         }
 
-        char.specialMoves[type].splice(idx, 1);
-        renderSpecialMoves(type + '-moves-list', char.specialMoves[type], type);
-        return true;
+        // ---- PHASE 1: VALIDATE CHARACTER ----
+        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        if (!char) {
+            showNotification('Character not found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!char.specialMoves || typeof char.specialMoves !== 'object') {
+            showNotification('No special moves found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!Array.isArray(char.specialMoves.physical) || !Array.isArray(char.specialMoves.magical)) {
+            showNotification('Special moves data is corrupted.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!char.specialMoves[type] || !Array.isArray(char.specialMoves[type])) {
+            showNotification('No ' + type + ' moves found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (idx < 0 || idx >= char.specialMoves[type].length) {
+            showNotification('Move not found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        var move = char.specialMoves[type][idx];
+        var moveName = move && move.name ? move.name : 'Unnamed move';
+
+        if (!confirm('Remove "' + moveName + '" from ' + type + ' moves?')) {
+            return Promise.resolve(false);
+        }
+
+        // ---- PHASE 2: SNAPSHOT ----
+        var data = window.data || {};
+        var backup = createSafeBackup(data);
+        if (!backup) {
+            showNotification('Unable to safely remove move. Please try again.', 'error');
+            return Promise.resolve(false);
+        }
+
+        // ---- PHASE 3: MUTATE ----
+        var currentChar = data.characters.find(function(c) {
+            return c && String(c.id) === String(charId);
+        });
+
+        if (!currentChar) {
+            showNotification('Character not found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!currentChar.specialMoves || typeof currentChar.specialMoves !== 'object') {
+            showNotification('Special moves data is corrupted.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!Array.isArray(currentChar.specialMoves.physical) || !Array.isArray(currentChar.specialMoves.magical)) {
+            showNotification('Special moves data is corrupted.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (!currentChar.specialMoves[type] || !Array.isArray(currentChar.specialMoves[type])) {
+            showNotification('No ' + type + ' moves found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        if (idx < 0 || idx >= currentChar.specialMoves[type].length) {
+            showNotification('Move not found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        currentChar.specialMoves[type].splice(idx, 1);
+
+        // ---- PHASE 4: PERSIST ----
+        var savePromise;
+        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
+            savePromise = window.MutationUtils.saveWithPromise();
+        } else {
+            savePromise = Promise.resolve().then(function() { return window.saveData(); });
+        }
+
+        return savePromise
+            .then(function() {
+                // LOG - failure-safe
+                try {
+                    if (typeof window.logActivity === 'function') {
+                        var charName = typeof window.getDisplayName === 'function'
+                            ? window.getDisplayName(currentChar)
+                            : currentChar.firstName || 'Character';
+                        window.logActivity('Removed ' + type + ' move "' + moveName + '" from ' + charName);
+                    }
+                } catch (logErr) {
+                    // Ignore logging errors
+                }
+
+                // UI COMMIT
+                renderSpecialMoves(type + '-moves-list', currentChar.specialMoves[type], type);
+                showNotification(type.charAt(0).toUpperCase() + type.slice(1) + ' move removed.', 'success');
+                return true;
+            })
+            .catch(function(err) {
+                // ROLLBACK
+                if (backup) {
+                    window.data = backup;
+                    safeRenderCharacterList();
+                    safeShowCharacterForm(charId);
+                }
+                showNotification('Failed to remove move. Please try again.', 'error');
+                return false;
+            });
     }
+
+    // ============================================================
+    // RENDER SPECIAL MOVES
+    // ============================================================
 
     function renderSpecialMoves(containerId, moves, type) {
         var container = document.getElementById(containerId);
@@ -1002,20 +1196,52 @@
     // EDIT SPECIAL MOVE - Opens edit modal
     // ============================================================
 
-    function editSpecialMove(char, type, index) {
-        if (!char) return;
-        if (type !== 'physical' && type !== 'magical') return;
-        if (!char.specialMoves || typeof char.specialMoves !== 'object') return;
-        if (!Array.isArray(char.specialMoves.physical) || !Array.isArray(char.specialMoves.magical)) return;
-        if (!char.specialMoves[type] || !Array.isArray(char.specialMoves[type])) return;
+    function editSpecialMove(charId, type, index) {
+        if (!charId) {
+            showNotification('Character ID is required.', 'error');
+            return;
+        }
+
+        if (type !== 'physical' && type !== 'magical') {
+            showNotification('Invalid move type.', 'error');
+            return;
+        }
 
         var idx = Number(index);
-        if (!Number.isInteger(idx)) return;
-        if (idx < 0 || idx >= char.specialMoves[type].length) return;
+        if (!Number.isInteger(idx) || idx < 0) {
+            showNotification('Invalid move index.', 'error');
+            return;
+        }
+
+        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        if (!char) {
+            showNotification('Character not found.', 'error');
+            return;
+        }
+
+        if (!char.specialMoves || typeof char.specialMoves !== 'object') {
+            showNotification('No special moves found.', 'error');
+            return;
+        }
+
+        if (!Array.isArray(char.specialMoves.physical) || !Array.isArray(char.specialMoves.magical)) {
+            showNotification('Special moves data is corrupted.', 'error');
+            return;
+        }
+
+        if (!char.specialMoves[type] || !Array.isArray(char.specialMoves[type])) {
+            showNotification('No ' + type + ' moves found.', 'error');
+            return;
+        }
+
+        if (idx < 0 || idx >= char.specialMoves[type].length) {
+            showNotification('Move not found.', 'error');
+            return;
+        }
 
         var move = char.specialMoves[type][idx];
-        var moveName = move.name || '';
-        var moveDesc = move.description || '';
+        var moveName = move && move.name ? move.name : '';
+        var moveDesc = move && move.description ? move.description : '';
 
         var modal = document.createElement('div');
         modal.className = 'modal';
@@ -1106,15 +1332,16 @@
                 return;
             }
 
-            if (window.CharacterStats && typeof window.CharacterStats.updateSpecialMove === 'function') {
-                var result = window.CharacterStats.updateSpecialMove(char, type, idx, newName, newDesc);
-                if (result) {
-                    closeModal();
-                    if (window.CharacterForm && typeof window.CharacterForm.refreshForm === 'function') {
-                        window.CharacterForm.refreshForm();
+            // Use the ID-based update API
+            updateSpecialMove(charId, type, idx, newName, newDesc)
+                .then(function(success) {
+                    if (success) {
+                        closeModal();
                     }
-                }
-            }
+                })
+                .catch(function() {
+                    // Error already shown by updateSpecialMove
+                });
         }
 
         closeBtn.onclick = closeModal;
@@ -1142,7 +1369,7 @@
     function getStatsTabHTML() {
         return `
             <div class="stat-input-group" style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px;">
-                ${['str','dex','con','int','wis','cha'].map(function(stat) {
+                ${STAT_KEYS.map(function(stat) {
                     return `
                         <div class="form-group">
                             <label style="font-size:0.55rem;text-align:center;display:block;">${stat.toUpperCase()}</label>
@@ -1342,19 +1569,16 @@
             cha: 10
         };
 
-        cls.primaryStats.forEach(function(stat) {
-            stats[stat] = 14;
-        });
-
-        if (cls.secondaryStats) {
-            cls.secondaryStats.forEach(function(stat) {
-                stats[stat] = 12;
-            });
+        // Use minStats as source of truth
+        for (var stat in cls.minStats) {
+            stats[stat] = cls.minStats[stat];
         }
 
-        var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+        // Distribute remaining points
+        var statKeys = STAT_KEYS.slice();
         var remainingPoints = 6;
         
+        // Prioritise primary stats
         var priorityStats = cls.primaryStats.slice();
         if (cls.secondaryStats) {
             cls.secondaryStats.forEach(function(s) {
@@ -1398,7 +1622,7 @@
 
         var classType = select.value;
         var magic = {};
-        var allKeys = getMagicTypeKeys();
+        var allKeys = MAGIC_TYPE_KEYS.slice();
         allKeys.forEach(function(key) {
             magic[key] = 0;
         });
@@ -1464,12 +1688,30 @@
     }
 
     // ============================================================
+    // MAGIC TYPE HELPERS (delegate to constants if available)
+    // ============================================================
+
+    function getMagicTypeKeys() {
+        if (window.CharacterConstants && typeof window.CharacterConstants.getMagicTypeKeys === 'function') {
+            return window.CharacterConstants.getMagicTypeKeys();
+        }
+        return MAGIC_TYPE_KEYS.slice();
+    }
+
+    function getMagicCategoryTypes(category) {
+        if (window.CharacterConstants && typeof window.CharacterConstants.getMagicCategoryTypes === 'function') {
+            return window.CharacterConstants.getMagicCategoryTypes(category);
+        }
+        var cat = MAGIC_CATEGORIES[category];
+        return cat ? cat.types.slice() : [];
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.CharacterStats = {
-        STAT_DEFINITIONS: STAT_DEFINITIONS,
-        CLASS_DEFINITIONS: CLASS_DEFINITIONS,
+        // Definitions (read-only, from constants)
         MAGIC_TYPES: MAGIC_TYPES,
         MAGIC_CATEGORIES: MAGIC_CATEGORIES,
         MAGIC_MAX: MAGIC_MAX,
@@ -1477,18 +1719,22 @@
         STAT_MAX: STAT_MAX,
         BALANCED_MAGE_THRESHOLD: BALANCED_MAGE_THRESHOLD,
 
+        // Magic type helpers
         getMagicTypeKeys: getMagicTypeKeys,
         getMagicCategoryTypes: getMagicCategoryTypes,
 
+        // Stats
         getDefaultStats: getDefaultStats,
         getCharacterStats: getCharacterStats,
         getAbilityModifier: getAbilityModifier,
         getModifierDisplay: getModifierDisplay,
         generateRandomStats: generateRandomStats,
 
+        // Class suggestion
         suggestClass: suggestClass,
         updateClassSuggestion: updateClassSuggestion,
 
+        // Magic
         getDefaultMagicProficiencies: getDefaultMagicProficiencies,
         getCharacterMagic: getCharacterMagic,
         calculateMagicPower: calculateMagicPower,
@@ -1500,20 +1746,24 @@
         getMagicLevelColor: getMagicLevelColor,
         generateRandomMagicCategory: generateRandomMagicCategory,
 
+        // Special moves - FIXED: ID-based APIs with save
         getSpecialMoves: getSpecialMoves,
-        addSpecialMove: addSpecialMove,
-        updateSpecialMove: updateSpecialMove,
-        removeSpecialMove: removeSpecialMove,
+        addSpecialMove: addSpecialMove,        // Now accepts charId
+        updateSpecialMove: updateSpecialMove,  // Now accepts charId
+        removeSpecialMove: removeSpecialMove,  // Now accepts charId
         renderSpecialMoves: renderSpecialMoves,
-        editSpecialMove: editSpecialMove,
+        editSpecialMove: editSpecialMove,      // Now accepts charId
 
+        // UI
         getStatsTabHTML: getStatsTabHTML,
         getMagicTabHTML: getMagicTabHTML,
         getSpecialMovesHTML: getSpecialMovesHTML,
 
+        // Class application
         populateClassSelect: populateClassSelect,
         applyPhysicalClass: applyPhysicalClass,
         applyMagicClass: applyMagicClass
     };
+
 
 })();
