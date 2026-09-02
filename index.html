@@ -65,7 +65,7 @@
          SCRIPTS - LOAD ORDER IS CRITICAL
          ============================================================ -->
 
-    <!-- 1. CONSTANTS -->
+    <!-- 1. CONSTANTS - MUST BE FIRST -->
     <script src="js/constants.js"></script>
 
     <!-- 2. UTILITIES -->
@@ -74,13 +74,14 @@
     <script src="js/utils/notification.js"></script>
     <script src="js/utils/calendar-utils.js"></script>
 
-    <!-- 3. CORE DOMAIN MODULES - These must load BEFORE any UI modules -->
+    <!-- 3. SHARED MODULES - NEW -->
+    <script src="js/modules/shared/mutation-utils.js"></script>
+    <script src="js/modules/shared/character-constants.js"></script>
+
+    <!-- 4. CORE DOMAIN MODULES -->
     <script src="js/core/state.js"></script>
     <script src="js/core/database.js"></script>
     <script src="js/core/loader.js"></script>
-
-    <!-- 4. GRADUATING CLASS CORE - Loads before UI modules -->
-    <script src="js/core/graduating-class-core.js"></script>
 
     <!-- 5. TAB MANAGER -->
     <script src="js/core/tab-manager.js"></script>
@@ -89,18 +90,56 @@
     <script src="js/modules/dashboard.js"></script>
 
     <!-- 7. CHARACTER MODULES -->
+    <!-- 7a. Character Generator (NEW) -->
+    <script src="js/modules/characters/character-generator.js"></script>
+    
+    <!-- 7b. Character Stats (Domain Logic) -->
     <script src="js/modules/characters/character-stats.js"></script>
+    
+    <!-- 7c. Character Stats View (Rendering - NEW) -->
+    <script src="js/modules/characters/character-stats-view.js"></script>
+    
+    <!-- 7d. Character CRUD -->
     <script src="js/modules/characters/character-crud.js"></script>
+    
+    <!-- 7e. Character Classes -->
     <script src="js/modules/characters/character-classes.js"></script>
+    
+    <!-- 7f. Character Eliminations -->
     <script src="js/modules/characters/character-eliminations.js"></script>
+    
+    <!-- 7g. Character Views -->
     <script src="js/modules/characters/character-views.js"></script>
+    
+    <!-- 7h. Character List -->
     <script src="js/modules/characters/character-list.js"></script>
+    
+    <!-- 7i. Character Form -->
     <script src="js/modules/characters/character-form.js"></script>
+    
+    <!-- 7j. Character Detail -->
     <script src="js/modules/characters/character-detail.js"></script>
+    
+    <!-- 7k. Character Events -->
     <script src="js/modules/characters/character-events.js"></script>
+    
+    <!-- 7l. Characters Module Entry Point -->
     <script src="js/modules/characters/index.js"></script>
 
-    <!-- 8. TEAM MODULES -->
+    <!-- 8. CLASSES MODULES (Refactored) -->
+    <!-- 8a. Classes Core (NEW - replaces graduating-class-core.js) -->
+    <script src="js/modules/classes/classes-core.js"></script>
+    
+    <!-- 8b. Classes View (RENDER ONLY) -->
+    <script src="js/modules/classes/classes-view.js"></script>
+    
+    <!-- 8c. Classes Events (NEW) -->
+    <script src="js/modules/classes/classes-events.js"></script>
+    
+    <!-- 8d. Classes Main Entry Point -->
+    <script src="js/modules/classes/classes-main.js"></script>
+
+    <!-- 9. TEAM MODULES -->
     <script src="js/modules/teams/team-core.js"></script>
     <script src="js/modules/teams/team-filters.js"></script>
     <script src="js/modules/teams/team-rankings.js"></script>
@@ -109,7 +148,7 @@
     <script src="js/modules/teams/team-modals.js"></script>
     <script src="js/modules/teams/team-manager.js"></script>
 
-    <!-- 9. TOURNAMENT MODULES -->
+    <!-- 10. TOURNAMENT MODULES -->
     <script src="js/modules/tournaments/tournaments-schema.js"></script>
     <script src="js/modules/tournaments/tournaments-core.js"></script>
     <script src="js/modules/tournaments/tournaments-queries.js"></script>
@@ -118,7 +157,7 @@
     <script src="js/modules/tournaments/tournaments-repair.js"></script>
     <script src="js/modules/tournaments/tournaments-ui.js"></script>
 
-    <!-- 10. CURRICULUM CORE MODULES -->
+    <!-- 11. CURRICULUM CORE MODULES -->
     <script src="js/modules/curriculum/curriculum-helpers.js"></script>
     <script src="js/modules/curriculum/curriculum-validators.js"></script>
     <script src="js/modules/curriculum/curriculum-schema.js"></script>
@@ -133,7 +172,7 @@
     <script src="js/modules/curriculum/curriculum-location-schedule.js"></script>
     <script src="js/modules/curriculum/curriculum-index.js"></script>
 
-    <!-- 11. CALENDAR MODULES -->
+    <!-- 12. CALENDAR MODULES -->
     <script src="js/modules/calendar/modes/index.js"></script>
     <script src="js/modules/calendar/calendar-renderer.js"></script>
     <script src="js/modules/calendar/calendar-ui.js"></script>
@@ -142,16 +181,12 @@
     <script src="js/modules/calendar/modes/location.js"></script>
     <script src="js/modules/calendar/index.js"></script>
 
-    <!-- 12. CURRICULUM UI MODULES -->
+    <!-- 13. CURRICULUM UI MODULES -->
     <script src="js/modules/curriculum/curriculum-main.js"></script>
     <script src="js/modules/curriculum/disciplines-view.js"></script>
     <script src="js/modules/curriculum/locations.js"></script>
     <script src="js/modules/curriculum/ranking-view.js"></script>
     <script src="js/modules/curriculum/groups-view.js"></script>
-
-    <!-- 13. CLASSES UI MODULES -->
-    <script src="js/modules/classes/classes-view.js"></script>
-    <script src="js/modules/classes/classes-main.js"></script>
 
     <!-- 14. SCHOOL YEAR UI MODULES -->
     <script src="js/modules/school-year/school-year-characters.js"></script>
