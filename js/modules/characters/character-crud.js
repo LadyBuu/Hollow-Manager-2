@@ -6,7 +6,7 @@
  * - Clean persistence boundary (mutates window.data, then saves)
  * - Proper rollback on save failure
  * - Consistent state management via getCurrentEditId/setCurrentEditId
- * - Defensive cloning for backups using database module's clone
+ * - Defensive cloning for backups using MutationUtils
  * - Explicit notification rendering
  * - Returns Promises for composition
  * 
@@ -40,7 +40,9 @@
  *   - window.getCharacterById (from core-utils.js)
  *   - window.getDisplayName (from core-utils.js)
  *   - window.saveData (from database.js)
- *   - window.db.createSafeCopy (from database.js)
+ *   - window.CharacterConstants (from character-constants.js)
+ *   - window.MutationUtils (from mutation-utils.js)
+ *   - window.DomUtils (from dom-utils.js)
  *   - window.CharacterStats (for magic schema, optional but recommended)
  *   - window.logActivity (optional, for activity logging)
  *   - window.MAGIC_CONSTANTS (from constants.js)
@@ -58,11 +60,36 @@
     window.__characterCrudLoaded = true;
 
     // ============================================================
-    // CONSTANTS
+    // CONSTANTS - Use centralised sources
     // ============================================================
 
-    var MIN_WEEK = window.CALENDAR_CONSTANTS.MIN_WEEK;
-    var MAX_WEEK = window.CALENDAR_CONSTANTS.MAX_WEEK;
+    var MIN_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MIN_WEEK : 1;
+    var MAX_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MAX_WEEK : 52;
+
+    // Use CharacterConstants for magic/stat definitions if available
+    var MAGIC_TYPE_KEYS = window.CharacterConstants
+        ? window.CharacterConstants.MAGIC_TYPE_KEYS
+        : (window.MAGIC_CONSTANTS ? window.MAGIC_CONSTANTS.TYPES : [
+            'earth', 'water', 'fire', 'air', 'metal', 'wood',
+            'blood', 'bone', 'mind', 'morphic', 'life', 'death',
+            'space', 'time', 'dimension', 'void', 'reality', 'transference'
+          ]);
+
+    var MAGIC_MAX = window.CharacterConstants
+        ? window.CharacterConstants.MAGIC_MAX
+        : (window.MAGIC_CONSTANTS ? window.MAGIC_CONSTANTS.MAX : 10);
+
+    var STAT_KEYS = window.CharacterConstants
+        ? window.CharacterConstants.STAT_KEYS
+        : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+
+    var STAT_MIN = window.CharacterConstants
+        ? window.CharacterConstants.STAT_MIN
+        : 1;
+
+    var STAT_MAX = window.CharacterConstants
+        ? window.CharacterConstants.STAT_MAX
+        : 50;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -85,6 +112,16 @@
                 missing.push(name);
             }
         });
+
+        // Check for MutationUtils
+        if (!window.MutationUtils || typeof window.MutationUtils.createSafeBackup !== 'function') {
+            missing.push('MutationUtils.createSafeBackup');
+        }
+
+        // Check for DomUtils
+        if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
+            missing.push('DomUtils.escapeHtml');
+        }
 
         if (missing.length > 0) {
             console.warn('CharacterCRUD: Missing dependencies:', missing.join(', '));
@@ -133,22 +170,54 @@
     }
 
     // ============================================================
-    // NOTIFICATION - Explicit rendering
+    // NOTIFICATION - Use DomUtils or fallback
     // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
 
+        // Prefer DomUtils
+        if (window.DomUtils) {
+            switch (type) {
+                case 'success':
+                    if (typeof window.DomUtils.showSuccess === 'function') {
+                        window.DomUtils.showSuccess(message);
+                        return;
+                    }
+                    break;
+                case 'error':
+                    if (typeof window.DomUtils.showError === 'function') {
+                        window.DomUtils.showError(message);
+                        return;
+                    }
+                    break;
+                case 'warning':
+                    if (typeof window.DomUtils.showWarning === 'function') {
+                        window.DomUtils.showWarning(message);
+                        return;
+                    }
+                    break;
+                default:
+                    if (typeof window.DomUtils.showInfo === 'function') {
+                        window.DomUtils.showInfo(message);
+                        return;
+                    }
+            }
+        }
+
+        // Fallback to NotificationSystem
         if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
             window.NotificationSystem.notify(message, type);
             return;
         }
 
+        // Fallback to showToast
         if (typeof window.showToast === 'function') {
             window.showToast(message, type);
             return;
         }
 
+        // Fallback to session toast
         if (typeof window.setSession === 'function') {
             window.setSession('toast', {
                 message: message,
@@ -161,6 +230,7 @@
             return;
         }
 
+        // Last resort
         if (type === 'error') {
             alert('Error: ' + message);
         } else {
@@ -169,10 +239,15 @@
     }
 
     // ============================================================
-    // SAFE CLONE - Use database module's clone (synchronous)
+    // SAFE CLONE - Delegate to MutationUtils
     // ============================================================
 
     function createSafeBackup(data) {
+        if (window.MutationUtils && typeof window.MutationUtils.createSafeBackup === 'function') {
+            return window.MutationUtils.createSafeBackup(data);
+        }
+
+        // Fallback implementation (should not be needed after Phase 0)
         try {
             if (window.db && typeof window.db.createSafeCopy === 'function') {
                 return window.db.createSafeCopy(data);
@@ -251,25 +326,33 @@
     }
 
     function getMagicTypeKeys() {
-        if (window.CharacterStats &&
-            typeof window.CharacterStats.getMagicTypeKeys === 'function') {
+        // Use CharacterConstants first
+        if (window.CharacterConstants && typeof window.CharacterConstants.getMagicTypeKeys === 'function') {
+            return window.CharacterConstants.getMagicTypeKeys();
+        }
+
+        // Fallback to CharacterStats
+        if (window.CharacterStats && typeof window.CharacterStats.getMagicTypeKeys === 'function') {
             var keys = window.CharacterStats.getMagicTypeKeys();
             if (Array.isArray(keys) && keys.length > 0) {
                 return keys;
             }
         }
 
-        // Use constants as fallback
-        return window.MAGIC_CONSTANTS.TYPES.slice();
+        // Use constants as final fallback
+        return MAGIC_TYPE_KEYS.slice();
     }
 
     function getMagicMax() {
-        if (window.CharacterStats &&
-            typeof window.CharacterStats.MAGIC_MAX !== 'undefined' &&
-            typeof window.CharacterStats.MAGIC_MAX === 'number') {
+        if (window.CharacterConstants && typeof window.CharacterConstants.MAGIC_MAX !== 'undefined') {
+            return window.CharacterConstants.MAGIC_MAX;
+        }
+
+        if (window.CharacterStats && typeof window.CharacterStats.MAGIC_MAX !== 'undefined') {
             return window.CharacterStats.MAGIC_MAX;
         }
-        return window.MAGIC_CONSTANTS.MAX;
+
+        return MAGIC_MAX;
     }
 
     function getMagic() {
@@ -326,7 +409,8 @@
             var el = document.getElementById(id);
             if (!el) return fallback;
             var val = parseInt(el.value, 10);
-            return isNaN(val) ? fallback : Math.max(1, Math.min(30, val));
+            if (isNaN(val)) return fallback;
+            return Math.max(1, Math.min(30, val));
         };
 
         var finalDeathYear = isDeceased ? deathYear : '';
@@ -451,7 +535,7 @@
     }
 
     // ============================================================
-    // SAVE CHARACTER - Returns Promise
+    // SAVE CHARACTER - Uses MutationUtils pattern
     // ============================================================
 
     function save() {
@@ -537,48 +621,53 @@
             name = charData.firstName + ' ' + charData.lastName;
         }
 
-        // PERSIST
-        if (typeof window.saveData === 'function') {
-            return window.saveData()
-                .then(function() {
-                    // POST-PERSIST SIDE EFFECTS - failure-safe
-                    try {
-                        if (typeof window.logActivity === 'function') {
-                            window.logActivity(
-                                isEditing
-                                    ? 'Updated character: ' + name
-                                    : 'Created character: ' + name
-                            );
-                        }
-                    } catch (logErr) {
-                        // Ignore logging errors
-                    }
-
-                    // UI COMMIT
-                    onSaveSuccess(newId, isEditing);
-                    return true;
-                })
-                .catch(function(err) {
-                    // ROLLBACK
-                    window.data = backup;
-                    safeRenderCharacterList();
-
-                    if (isEditing) {
-                        setCurrentEditId(editId);
-                        safeShowCharacterForm(editId);
-                    } else {
-                        setCurrentEditId(null);
-                        safeShowCharacterForm(null);
-                    }
-
-                    showNotification('Failed to save character. Please try again.', 'error');
-                    return false;
-                });
+        // PERSIST - Use saveWithPromise from MutationUtils if available
+        var savePromise;
+        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
+            savePromise = window.MutationUtils.saveWithPromise();
         } else {
-            // This should be unreachable because checkDependencies requires saveData
-            onSaveSuccess(newId, isEditing);
-            return Promise.resolve(true);
+            // Fallback
+            savePromise = Promise.resolve()
+                .then(function() {
+                    return window.saveData();
+                });
         }
+
+        return savePromise
+            .then(function() {
+                // POST-PERSIST SIDE EFFECTS - failure-safe
+                try {
+                    if (typeof window.logActivity === 'function') {
+                        window.logActivity(
+                            isEditing
+                                ? 'Updated character: ' + name
+                                : 'Created character: ' + name
+                        );
+                    }
+                } catch (logErr) {
+                    // Ignore logging errors
+                }
+
+                // UI COMMIT
+                onSaveSuccess(newId, isEditing);
+                return true;
+            })
+            .catch(function(err) {
+                // ROLLBACK
+                window.data = backup;
+                safeRenderCharacterList();
+
+                if (isEditing) {
+                    setCurrentEditId(editId);
+                    safeShowCharacterForm(editId);
+                } else {
+                    setCurrentEditId(null);
+                    safeShowCharacterForm(null);
+                }
+
+                showNotification('Failed to save character. Please try again.', 'error');
+                return false;
+            });
     }
 
     function onSaveSuccess(id, isEditing) {
@@ -588,7 +677,7 @@
     }
 
     // ============================================================
-    // DELETE CHARACTER - Returns Promise
+    // DELETE CHARACTER - Uses MutationUtils pattern
     // ============================================================
 
     function deleteCharacter(id) {
@@ -647,37 +736,42 @@
             return c && String(c.id) !== String(id);
         });
 
-        // PERSIST
-        if (typeof window.saveData === 'function') {
-            return window.saveData()
-                .then(function() {
-                    // POST-PERSIST SIDE EFFECTS - failure-safe
-                    try {
-                        if (typeof window.logActivity === 'function') {
-                            window.logActivity('Deleted character: ' + name);
-                        }
-                    } catch (logErr) {
-                        // Ignore logging errors
-                    }
-
-                    // UI COMMIT
-                    onDeleteSuccess();
-                    return true;
-                })
-                .catch(function(err) {
-                    // ROLLBACK
-                    window.data = backup;
-                    safeRenderCharacterList();
-                    setCurrentEditId(id);
-                    safeShowCharacterForm(id);
-                    showNotification('Failed to delete character. Please try again.', 'error');
-                    return false;
-                });
+        // PERSIST - Use saveWithPromise from MutationUtils if available
+        var savePromise;
+        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
+            savePromise = window.MutationUtils.saveWithPromise();
         } else {
-            // This should be unreachable because checkDependencies requires saveData
-            onDeleteSuccess();
-            return Promise.resolve(true);
+            // Fallback
+            savePromise = Promise.resolve()
+                .then(function() {
+                    return window.saveData();
+                });
         }
+
+        return savePromise
+            .then(function() {
+                // POST-PERSIST SIDE EFFECTS - failure-safe
+                try {
+                    if (typeof window.logActivity === 'function') {
+                        window.logActivity('Deleted character: ' + name);
+                    }
+                } catch (logErr) {
+                    // Ignore logging errors
+                }
+
+                // UI COMMIT
+                onDeleteSuccess();
+                return true;
+            })
+            .catch(function(err) {
+                // ROLLBACK
+                window.data = backup;
+                safeRenderCharacterList();
+                setCurrentEditId(id);
+                safeShowCharacterForm(id);
+                showNotification('Failed to delete character. Please try again.', 'error');
+                return false;
+            });
     }
 
     function onDeleteSuccess() {
@@ -705,5 +799,6 @@
         getCurrentEditId: getCurrentEditId,
         setCurrentEditId: setCurrentEditId
     };
+
 
 })();
