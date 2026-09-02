@@ -331,13 +331,14 @@
         html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
         html += '<h3 style="color:var(--accent);margin:0;font-size:1rem;">' + escapeHtml(cls.name) + '</h3>';
         html += '<div style="display:flex;gap:4px;flex-wrap:wrap;">';
-        html += '<button id="manage-members-btn" class="primary small" style="font-size:0.7rem;padding:3px 8px;">Manage Members</button>';
-        html += '<button id="edit-class-btn" class="secondary small" style="font-size:0.7rem;padding:3px 8px;">Edit</button>';
-        html += '<button id="delete-class-btn" class="danger small" style="font-size:0.7rem;padding:3px 8px;">Delete</button>';
+        // Use inline onclick for the manage members button
+        html += '<button id="manage-members-btn" class="primary small" style="font-size:0.7rem;padding:3px 8px;" onclick="window._manageMembersClick(\'' + state.selectedClassId + '\')">Manage Members</button>';
+        html += '<button id="edit-class-btn" class="secondary small" style="font-size:0.7rem;padding:3px 8px;" onclick="window._editClassClick(\'' + state.selectedClassId + '\')">Edit</button>';
+        html += '<button id="delete-class-btn" class="danger small" style="font-size:0.7rem;padding:3px 8px;" onclick="window._deleteClassClick(\'' + state.selectedClassId + '\')">Delete</button>';
         html += '</div>';
         html += '</div>';
 
-        // Stats (removed average age)
+        // Stats
         var totalMembers = trainees.length + instructors.length;
         
         html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:12px;">';
@@ -364,41 +365,6 @@
         html += '</div>';
 
         detailContainer.innerHTML = html;
-
-        // Bind buttons using simple direct event binding after a small delay
-        // This ensures the DOM is fully updated
-        setTimeout(function() {
-            var manageBtn = document.getElementById('manage-members-btn');
-            if (manageBtn) {
-                // Remove all listeners by cloning
-                var newBtn = manageBtn.cloneNode(true);
-                manageBtn.parentNode.replaceChild(newBtn, manageBtn);
-                newBtn.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    console.log('[ClassesView] Manage Members clicked for class:', state.selectedClassId);
-                    showMemberModal(state.selectedClassId);
-                });
-            }
-
-            var editBtn = document.getElementById('edit-class-btn');
-            if (editBtn) {
-                var newEditBtn = editBtn.cloneNode(true);
-                editBtn.parentNode.replaceChild(newEditBtn, editBtn);
-                newEditBtn.addEventListener('click', function() {
-                    showClassForm(state.selectedClassId);
-                });
-            }
-
-            var deleteBtn = document.getElementById('delete-class-btn');
-            if (deleteBtn) {
-                var newDeleteBtn = deleteBtn.cloneNode(true);
-                deleteBtn.parentNode.replaceChild(newDeleteBtn, deleteBtn);
-                newDeleteBtn.addEventListener('click', function() {
-                    deleteClassHandler(state.selectedClassId);
-                });
-            }
-        }, 50);
     }
 
     // ============================================================
@@ -467,13 +433,40 @@
     }
 
     // ============================================================
-    // SHOW MEMBER MODAL - Completely rewritten for reliability
+    // GLOBAL CLICK HANDLERS - Using window to avoid listener issues
+    // ============================================================
+
+    // Manage Members
+    window._manageMembersClick = function(classId) {
+        console.log('[ClassesView] _manageMembersClick called for class:', classId);
+        if (classId) {
+            showMemberModal(classId);
+        }
+    };
+
+    // Edit Class
+    window._editClassClick = function(classId) {
+        console.log('[ClassesView] _editClassClick called for class:', classId);
+        if (classId) {
+            showClassForm(classId);
+        }
+    };
+
+    // Delete Class
+    window._deleteClassClick = function(classId) {
+        console.log('[ClassesView] _deleteClassClick called for class:', classId);
+        if (classId) {
+            deleteClassHandler(classId);
+        }
+    };
+
+    // ============================================================
+    // SHOW MEMBER MODAL
     // ============================================================
 
     function showMemberModal(classId) {
         console.log('[ClassesView] showMemberModal called for class:', classId);
         
-        // Get or create modal
         var modal = document.getElementById('member-modal');
         if (!modal) {
             modal = createMemberModal();
@@ -528,7 +521,7 @@
         modal.classList.remove('hidden');
         modal.style.display = 'flex';
 
-        // Bind close buttons
+        // Bind close buttons with onclick
         var closeBtn = document.getElementById('close-member-modal-btn');
         if (closeBtn) {
             closeBtn.onclick = function() {
@@ -574,7 +567,6 @@
 
                 var result = window.removeCharacterFromGraduatingClass(charId);
                 if (result && result.success) {
-                    // Refresh the modal
                     showMemberModal(classId);
                     renderClassList();
                     renderClassDetail();
