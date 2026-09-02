@@ -28,6 +28,8 @@
  *   - addedAt: if present, must be a valid canonical JavaScript ISO timestamp in UTC
  *   - rounds.length <= totalRounds (actual rounds cannot exceed configured maximum)
  *   - advancing semantics are structural only; business rules belong in Core
+ *   - graduatingClassId: optional, null or non-empty string (valid graduating class ID)
+ *   - classFilterEnabled: optional, boolean (defaults to true in UI)
  * 
  * STRICTNESS SEMANTICS:
  *   - strict: false → "Is this structurally understandable tournament data?"
@@ -51,6 +53,8 @@
  *   - No duplicate advancing IDs
  *   - rounds.length <= totalRounds
  *   - Completed rounds MUST have all matches completed
+ *   - graduatingClassId: must be a valid ID or null
+ *   - classFilterEnabled: must be a boolean
  * 
  * SCHEMA VERSIONING:
  *   - SCHEMA_VERSION is the current version
@@ -72,7 +76,7 @@
     // CONSTANTS
     // ============================================================
 
-    var SCHEMA_VERSION = 1;
+    var SCHEMA_VERSION = 2;
     var VALID_MODES = ['teams', 'individuals'];
     var VALID_STATUSES = ['draft', 'active', 'completed'];
     var VALID_PARTICIPANT_TYPES = ['character', 'team'];
@@ -510,6 +514,25 @@
                     }
                 }
 
+                // ---- GRADUATING CLASS FIELDS ----
+                // graduatingClassId: optional, null or non-empty string
+                if (tournament.graduatingClassId !== undefined &&
+                    tournament.graduatingClassId !== null) {
+
+                    if (!isStrictId(tournament.graduatingClassId)) {
+                        errors.push(
+                            'Graduating class ID must be a non-empty string with no surrounding whitespace, or null.'
+                        );
+                    }
+                }
+
+                // classFilterEnabled: optional, boolean
+                if (tournament.classFilterEnabled !== undefined &&
+                    typeof tournament.classFilterEnabled !== 'boolean') {
+
+                    errors.push('Class filter enabled must be a boolean.');
+                }
+
                 // Legacy fields: NOT part of canonical schema
                 if (tournament.teams !== undefined) {
                     errors.push('Legacy property "teams" is not part of the canonical schema.');
@@ -554,6 +577,21 @@
                     if (isNaN(date.getTime())) {
                         errors.push('Created at must be a valid date.');
                     }
+                }
+
+                // ---- GRADUATING CLASS FIELDS (LENIENT) ----
+                if (tournament.graduatingClassId !== undefined &&
+                    tournament.graduatingClassId !== null) {
+
+                    if (normaliseId(tournament.graduatingClassId) === null) {
+                        errors.push('Graduating class ID must be a non-empty ID or null.');
+                    }
+                }
+
+                if (tournament.classFilterEnabled !== undefined &&
+                    typeof tournament.classFilterEnabled !== 'boolean') {
+
+                    errors.push('Class filter enabled must be a boolean.');
                 }
 
                 // Validate legacy fields if present
@@ -751,7 +789,9 @@
             if (strict) {
                 var strictKnownKeys = [
                     'id', 'name', 'mode', 'startWeek', 'endWeek', 'totalRounds',
-                    'status', 'participants', 'rounds', 'eliminations', 'winner', 'createdAt', '_schemaVersion'
+                    'status', 'participants', 'rounds', 'eliminations', 'winner',
+                    'createdAt', '_schemaVersion',
+                    'graduatingClassId', 'classFilterEnabled'
                 ];
                 Object.keys(tournament).forEach(function(key) {
                     if (strictKnownKeys.indexOf(key) === -1) {
@@ -1280,7 +1320,9 @@
                         status: tournament && tournament.status ? String(tournament.status) : null,
                         startWeek: tournament && tournament.startWeek !== undefined ? Number(tournament.startWeek) : null,
                         endWeek: tournament && tournament.endWeek !== undefined ? Number(tournament.endWeek) : null,
-                        totalRounds: tournament && tournament.totalRounds !== undefined ? Number(tournament.totalRounds) : null
+                        totalRounds: tournament && tournament.totalRounds !== undefined ? Number(tournament.totalRounds) : null,
+                        graduatingClassId: tournament && tournament.graduatingClassId !== undefined ? String(tournament.graduatingClassId) : null,
+                        classFilterEnabled: tournament && tournament.classFilterEnabled !== undefined ? Boolean(tournament.classFilterEnabled) : null
                     },
                     participants: [],
                     rounds: [],
@@ -1299,6 +1341,8 @@
                 if (tournament.startWeek !== undefined) details.startWeek = Number(tournament.startWeek);
                 if (tournament.endWeek !== undefined) details.endWeek = Number(tournament.endWeek);
                 if (tournament.totalRounds !== undefined) details.totalRounds = Number(tournament.totalRounds);
+                if (tournament.graduatingClassId !== undefined) details.graduatingClassId = String(tournament.graduatingClassId);
+                if (tournament.classFilterEnabled !== undefined) details.classFilterEnabled = Boolean(tournament.classFilterEnabled);
 
                 // Count participants, rounds, eliminations
                 if (Array.isArray(tournament.participants)) {
