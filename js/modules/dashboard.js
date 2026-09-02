@@ -11,8 +11,6 @@
 (function() {
     'use strict';
 
-    console.log('[Dashboard] Module loading...');
-
     // ============================================================
     // STATE
     // ============================================================
@@ -26,14 +24,11 @@
     // ============================================================
 
     function renderDashboard(container) {
-        console.log('[Dashboard] renderDashboard called');
-        
         if (!container) {
             container = document.getElementById('tab-dashboard');
         }
         
         if (!container) {
-            console.warn('[Dashboard] Container not found');
             return;
         }
 
@@ -47,11 +42,8 @@
             state.currentYear = window.data.currentYear;
         }
 
-        // Render the dashboard
         container.innerHTML = getDashboardHTML();
         bindEvents();
-        
-        console.log('[Dashboard] Render complete');
     }
 
     // ============================================================
@@ -83,7 +75,6 @@
         var missions = data.missions || [];
         var graduatingClasses = data.graduatingClasses || [];
 
-        // Count active characters (not deceased)
         var activeChars = 0;
         var deceasedChars = 0;
         var trainees = 0;
@@ -97,7 +88,6 @@
                 activeChars++;
             }
             
-            // Check if trainee
             if (char.careerStatus && Array.isArray(char.careerStatus)) {
                 for (var j = 0; j < char.careerStatus.length; j++) {
                     var status = char.careerStatus[j];
@@ -116,7 +106,6 @@
             }
         }
 
-        // Count active teams
         var activeTeams = 0;
         for (var i = 0; i < teams.length; i++) {
             if (teams[i].status === 'active') {
@@ -124,7 +113,6 @@
             }
         }
 
-        // Count active missions
         var activeMissions = 0;
         for (var i = 0; i < missions.length; i++) {
             if (missions[i].status === 'active') {
@@ -156,7 +144,6 @@
 
         return `
             <div class="dashboard">
-                <!-- Header with Year Selector -->
                 <div class="dashboard-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid var(--border-soft);">
                     <h2 style="margin:0;font-size:1.2rem;">Dashboard</h2>
                     <div style="display:flex;align-items:center;gap:8px;">
@@ -167,7 +154,6 @@
                     </div>
                 </div>
 
-                <!-- Stats Grid -->
                 <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));gap:12px;margin-bottom:20px;">
                     <div class="stat-card" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;text-align:center;">
                         <div style="font-size:1.5rem;font-weight:700;color:var(--accent);">${stats.totalCharacters}</div>
@@ -202,7 +188,6 @@
                     </div>
                 </div>
 
-                <!-- Quick Links -->
                 <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;">
                     <a href="#" data-tab="characters" class="quick-link" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-decoration:none;color:var(--text);cursor:pointer;transition:0.15s;text-align:center;">
                         <div style="font-size:0.9rem;">👤 Characters</div>
@@ -238,9 +223,6 @@
     // ============================================================
 
     function bindEvents() {
-        console.log('[Dashboard] Binding events...');
-
-        // Year update
         var updateBtn = document.getElementById('dashboard-update-year-btn');
         var yearInput = document.getElementById('dashboard-year-input');
 
@@ -254,42 +236,35 @@
                 
                 state.currentYear = year;
                 
-                // Update data store
                 if (window.data) {
                     window.data.currentYear = year;
                     if (typeof window.saveData === 'function') {
                         window.saveData().catch(function() {
-                            console.warn('[Dashboard] Failed to save year update.');
+                            // Silent fail
                         });
                     }
                 }
                 
-                // Refresh dashboard
                 var container = document.getElementById('tab-dashboard');
                 if (container) {
                     renderDashboard(container);
                 }
                 
-                // Also refresh classes view if it's open (for age calculations)
                 var classesContainer = document.getElementById('classes-content');
                 if (classesContainer && typeof window.renderClassesView === 'function') {
                     window.renderClassesView(classesContainer);
                 }
-                
-                console.log('[Dashboard] Year updated to:', year);
             };
         }
 
-        // Enter key on year input
         if (yearInput) {
             yearInput.onkeydown = function(e) {
                 if (e.key === 'Enter') {
-                    updateBtn.click();
+                    if (updateBtn) updateBtn.click();
                 }
             };
         }
 
-        // Quick links
         var quickLinks = document.querySelectorAll('.quick-link[data-tab]');
         quickLinks.forEach(function(link) {
             link.onclick = function(e) {
@@ -303,7 +278,7 @@
     }
 
     // ============================================================
-    // UPDATE DASHBOARD STATS (for external calls)
+    // UPDATE DASHBOARD STATS
     // ============================================================
 
     function updateDashboardStats() {
@@ -358,7 +333,5 @@
 
     window.renderDashboard = renderDashboard;
     window.updateDashboardStats = updateDashboardStats;
-
-
 
 })();
