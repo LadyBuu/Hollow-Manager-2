@@ -47,6 +47,13 @@
  *   - Malformed collection entries are skipped (best-effort cleanup)
  *   - All required collections must be structurally valid arrays
  *   - validateClassName() requires the class store to exist and be an array
+ * 
+ * DEPENDENCIES:
+ *   - window.data (global state)
+ *   - window.getCharacterById (from core-utils.js)
+ *   - window.getDisplayName (from core-utils.js)
+ *   - window.MutationUtils (from mutation-utils.js)
+ *   - window.CoreUtils (from core-utils.js)
  */
 
 (function() {
@@ -57,6 +64,38 @@
         return;
     }
     window.__classCoreLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
+
+    function checkDependencies() {
+        var missing = [];
+
+        // Core dependencies
+        var required = ['getCharacterById', 'getDisplayName'];
+        required.forEach(function(name) {
+            if (typeof window[name] !== 'function') {
+                missing.push(name);
+            }
+        });
+
+        // Check for MutationUtils
+        if (!window.MutationUtils || typeof window.MutationUtils.createSafeBackup !== 'function') {
+            missing.push('MutationUtils.createSafeBackup');
+        }
+
+        // Check for CoreUtils (for deepClone)
+        if (!window.CoreUtils || typeof window.CoreUtils.deepClone !== 'function') {
+            missing.push('CoreUtils.deepClone');
+        }
+
+        if (missing.length > 0) {
+            console.warn('ClassCore: Missing dependencies:', missing.join(', '));
+            return false;
+        }
+        return true;
+    }
 
     // ============================================================
     // PRIVATE HELPERS
@@ -96,6 +135,9 @@
     }
 
     function generateId(prefix) {
+        if (window.CoreUtils && typeof window.CoreUtils.generateId === 'function') {
+            return window.CoreUtils.generateId(prefix || 'class');
+        }
         prefix = prefix || 'class';
         if (window.crypto && typeof window.crypto.randomUUID === 'function') {
             return prefix + '_' + window.crypto.randomUUID();
@@ -129,6 +171,10 @@
     }
 
     function deepClone(value) {
+        if (window.CoreUtils && typeof window.CoreUtils.deepClone === 'function') {
+            return window.CoreUtils.deepClone(value);
+        }
+
         if (value === null || typeof value !== 'object') {
             return value;
         }
