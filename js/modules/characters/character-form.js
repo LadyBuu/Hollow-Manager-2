@@ -23,11 +23,15 @@
  *   - window.CharacterViews
  *   - window.CharacterEliminations
  *   - window.CharacterClasses
- *   - window.CharacterStats
+ *   - window.CharacterStats (for domain logic)
+ *   - window.CharacterStatsView (for rendering)
  *   - window.CharacterList
  *   - window.getCharacterById (from core-utils.js)
  *   - window.getDisplayName (from core-utils.js)
  *   - window.getCurrentEditId (from index.js)
+ *   - window.CharacterConstants (from character-constants.js)
+ *   - window.DomUtils (from dom-utils.js)
+ *   - window.CoreUtils (from core-utils.js)
  */
 
 (function() {
@@ -40,39 +44,29 @@
     window.__characterFormLoaded = true;
 
     // ============================================================
-    // CONSTANTS
+    // CONSTANTS - From CharacterConstants
     // ============================================================
 
     var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'stats', 'social', 'notes'];
 
-    // Magic types - kept here for form population, but should eventually be owned by CharacterStats
-    var MAGIC_TYPES = [
-        'earth', 'water', 'fire', 'air', 'metal', 'wood',
-        'blood', 'bone', 'mind', 'morphic', 'life', 'death',
-        'space', 'time', 'dimension', 'void', 'reality', 'transference'
-    ];
+    var MAGIC_TYPE_KEYS = window.CharacterConstants
+        ? window.CharacterConstants.MAGIC_TYPE_KEYS
+        : [];
 
-    // ============================================================
-    // STATE
-    // ============================================================
+    var STAT_KEYS = window.CharacterConstants
+        ? window.CharacterConstants.STAT_KEYS
+        : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
 
-    var _dependencyCache = null;
-
-    // Track which views have been rendered to support lazy rendering
-    var _renderedViews = {
-        academic: false,
-        professional: false,
-        social: false
-    };
+    var STAT_DEFAULT = window.CharacterConstants
+        ? window.CharacterConstants.STAT_DEFAULT
+        : 10;
 
     // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
-        if (_dependencyCache !== null) {
-            return _dependencyCache;
-        }
+        var missing = [];
 
         var required = [
             'getCharacterById',
@@ -80,50 +74,53 @@
             'getCurrentEditId'
         ];
 
-        var missing = [];
         required.forEach(function(name) {
             if (typeof window[name] !== 'function') {
                 missing.push(name);
             }
         });
 
-        // Feature modules - required for their respective features
+        // Feature modules
         var featureModules = {
             'CharacterViews': ['renderAcademic', 'renderProfessional', 'renderSocial', 'addCareerStatusEntry'],
             'CharacterEliminations': ['renderTournament', 'renderStandalone'],
             'CharacterClasses': ['populateClassTags', 'clearClassTags', 'populateAcademicClassSelector', 'updateCurrentClassesDisplay'],
-            'CharacterStats': ['getCharacterStats', 'getCharacterMagic', 'updateClassSuggestion', 'updateMagicClassSuggestion', 'updateMagicPowerDisplay', 'getSpecialMoves', 'renderSpecialMoves'],
+            'CharacterStats': ['getCharacterStats', 'getCharacterMagic', 'getSpecialMoves'],
+            'CharacterStatsView': ['renderSpecialMoves'],
             'CharacterList': ['render']
         };
 
-        var missingFeatures = [];
         for (var moduleName in featureModules) {
             if (typeof window[moduleName] === 'undefined' || window[moduleName] === null) {
-                missingFeatures.push(moduleName + ' (module missing)');
+                missing.push(moduleName + ' (module missing)');
                 continue;
             }
             var methods = featureModules[moduleName];
             for (var i = 0; i < methods.length; i++) {
                 if (typeof window[moduleName][methods[i]] !== 'function') {
-                    missingFeatures.push(moduleName + '.' + methods[i]);
+                    missing.push(moduleName + '.' + methods[i]);
                 }
             }
         }
 
         if (missing.length > 0) {
-            console.warn('CharacterForm: Missing required dependencies:', missing.join(', '));
-            _dependencyCache = false;
+            console.warn('CharacterForm: Missing dependencies:', missing.join(', '));
             return false;
         }
 
-        if (missingFeatures.length > 0) {
-            console.warn('CharacterForm: Missing feature dependencies:', missingFeatures.join(', '));
-            // Don't fail - features will be degraded
-        }
-
-        _dependencyCache = true;
         return true;
     }
+
+    // ============================================================
+    // STATE
+    // ============================================================
+
+    // Track which views have been rendered to support lazy rendering
+    var _renderedViews = {
+        academic: false,
+        professional: false,
+        social: false
+    };
 
     // ============================================================
     // EMPTY STATE HELPER
@@ -141,25 +138,6 @@
         empty.textContent = text || 'None';
 
         container.appendChild(empty);
-    }
-
-    // ============================================================
-    // INIT - RENDERING ONLY (events bound in character-events.js)
-    // ============================================================
-
-    function init(container) {
-        if (!checkDependencies()) return;
-
-        if (!container) {
-            container = document.getElementById('tab-characters');
-        }
-        if (!container) return;
-
-        var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-
-        if (editId) {
-            show(editId);
-        }
     }
 
     // ============================================================
@@ -232,9 +210,7 @@
             
             if (!char) {
                 if (title) title.textContent = 'Character not found';
-                // Clear the form to avoid stale data
                 resetFormFields();
-                // But keep the form hidden/disabled state appropriate
                 return;
             }
 
@@ -335,43 +311,29 @@
         var stats = window.CharacterStats && typeof window.CharacterStats.getCharacterStats === 'function' 
             ? window.CharacterStats.getCharacterStats(char) 
             : char.stats || {};
-        setFieldValue('char-str', stats.str);
-        setFieldValue('char-dex', stats.dex);
-        setFieldValue('char-con', stats.con);
-        setFieldValue('char-int', stats.int);
-        setFieldValue('char-wis', stats.wis);
-        setFieldValue('char-cha', stats.cha);
+        STAT_KEYS.forEach(function(key) {
+            setFieldValue('char-' + key, stats[key]);
+        });
 
         // Magic stats
         var magic = window.CharacterStats && typeof window.CharacterStats.getCharacterMagic === 'function'
             ? window.CharacterStats.getCharacterMagic(char)
             : char.magic || {};
-        MAGIC_TYPES.forEach(function(key) {
+        MAGIC_TYPE_KEYS.forEach(function(key) {
             var input = document.getElementById('magic-' + key);
             if (input) {
                 input.value = magic[key] !== undefined ? magic[key] : 0;
             }
         });
 
-        // Update suggestions
-        if (window.CharacterStats && typeof window.CharacterStats.updateClassSuggestion === 'function') {
-            window.CharacterStats.updateClassSuggestion();
-        }
-        if (window.CharacterStats && typeof window.CharacterStats.updateMagicClassSuggestion === 'function') {
-            window.CharacterStats.updateMagicClassSuggestion();
-        }
-        if (window.CharacterStats && typeof window.CharacterStats.updateMagicPowerDisplay === 'function') {
-            window.CharacterStats.updateMagicPowerDisplay();
-        }
-
         // Special moves
         var moves = window.CharacterStats && typeof window.CharacterStats.getSpecialMoves === 'function'
             ? window.CharacterStats.getSpecialMoves(char)
             : char.specialMoves || { physical: [], magical: [] };
         
-        if (window.CharacterStats && typeof window.CharacterStats.renderSpecialMoves === 'function') {
-            window.CharacterStats.renderSpecialMoves('physical-moves-list', moves.physical || [], 'physical');
-            window.CharacterStats.renderSpecialMoves('magical-moves-list', moves.magical || [], 'magical');
+        if (window.CharacterStatsView && typeof window.CharacterStatsView.renderSpecialMoves === 'function') {
+            window.CharacterStatsView.renderSpecialMoves('physical-moves-list', moves.physical || [], 'physical');
+            window.CharacterStatsView.renderSpecialMoves('magical-moves-list', moves.magical || [], 'magical');
         }
 
         // Career status
@@ -429,35 +391,42 @@
     // ============================================================
 
     function resetFormFields() {
-        // Reset all inputs to default values
         var inputs = document.querySelectorAll('#character-form input, #character-form textarea, #character-form select');
+        
+        // Stat keys for special handling
+        var statMap = {};
+        STAT_KEYS.forEach(function(key) {
+            statMap['char-' + key] = key;
+        });
+
         inputs.forEach(function(input) {
             if (input.type === 'checkbox') {
                 input.checked = false;
-            } else if (input.type === 'number') {
-                // Stats defaults are owned by CharacterStats
-                // If CharacterStats is available, use its defaults
-                var defaultVal = 10;
+                return;
+            }
+
+            // Check if this is a stat input
+            var statKey = statMap[input.id];
+            if (statKey) {
+                var defaultVal = STAT_DEFAULT;
                 if (window.CharacterStats && typeof window.CharacterStats.getDefaultStats === 'function') {
                     var defaults = window.CharacterStats.getDefaultStats();
-                    // Map input ID to stat key
-                    var statMap = {
-                        'char-str': 'str',
-                        'char-dex': 'dex',
-                        'char-con': 'con',
-                        'char-int': 'int',
-                        'char-wis': 'wis',
-                        'char-cha': 'cha'
-                    };
-                    var statKey = statMap[input.id];
-                    if (statKey && defaults[statKey] !== undefined) {
+                    if (defaults && defaults[statKey] !== undefined && defaults[statKey] !== null) {
                         defaultVal = defaults[statKey];
                     }
                 }
                 input.value = defaultVal;
-            } else {
-                input.value = '';
+                return;
             }
+
+            // Special case: standalone elim week
+            if (input.id === 'standalone-elim-week') {
+                input.value = '1';
+                return;
+            }
+
+            // Everything else: empty string
+            input.value = '';
         });
 
         // Explicitly restore name format default
@@ -467,7 +436,7 @@
         }
 
         // Reset magic inputs to 0
-        MAGIC_TYPES.forEach(function(key) {
+        MAGIC_TYPE_KEYS.forEach(function(key) {
             var input = document.getElementById('magic-' + key);
             if (input) input.value = 0;
         });
@@ -557,23 +526,10 @@
             '0.7rem'
         );
 
-        // Update suggestions
-        if (window.CharacterStats && typeof window.CharacterStats.updateClassSuggestion === 'function') {
-            window.CharacterStats.updateClassSuggestion();
-        }
-        if (window.CharacterStats && typeof window.CharacterStats.updateMagicClassSuggestion === 'function') {
-            window.CharacterStats.updateMagicClassSuggestion();
-        }
-        if (window.CharacterStats && typeof window.CharacterStats.updateMagicPowerDisplay === 'function') {
-            window.CharacterStats.updateMagicPowerDisplay();
-        }
-
         // Reset view render state
         _renderedViews.academic = false;
         _renderedViews.professional = false;
         _renderedViews.social = false;
-
-        // NOTE: setCurrentEditId(null) is owned by index.js, not this module
     }
 
     // ============================================================
@@ -599,7 +555,6 @@
     // ============================================================
 
     function getCurrentTab() {
-        // Find the active tab button
         var activeBtn = document.querySelector('.char-tab-btn.active');
         return activeBtn ? activeBtn.dataset.tab : 'name';
     }
@@ -678,7 +633,7 @@
                             <input type="checkbox" id="char-deceased" />
                             <label for="char-deceased" class="deceased-label">Mark as Deceased</label>
                         </div>
-                        <div id="death-fields" class="death-fields">
+                        <div id="death-fields" class="death-fields" style="display:none;">
                             <div class="form-group"><label>Year of Death</label><input type="number" id="char-death-year" placeholder="e.g., 2023" /></div>
                             <div class="form-group"><label>Death Age</label><input type="number" id="char-death-age" min="0" max="150" placeholder="e.g., 45" /></div>
                             <div class="form-group"><label>Death Week (1-52)</label><input type="number" id="char-death-week" min="1" max="52" placeholder="e.g., 24" /></div>
@@ -720,7 +675,7 @@
                     </div>
                     <div class="form-group">
                         <label>Height</label>
-                        <input type="text" id="char-height" placeholder="e.g., 5'10&quot;" />
+                        <input type="text" id="char-height" placeholder="e.g., 5'10\"" />
                     </div>
                     <div class="form-group">
                         <label>Weight</label>
@@ -733,6 +688,10 @@
                     <div class="form-group full-width">
                         <label>Appearance Notes</label>
                         <textarea id="char-appearance-notes" rows="2" placeholder="Scars, tattoos..."></textarea>
+                    </div>
+                    <div class="form-group full-width section-divider">
+                        <label>Sexuality</label>
+                        <input type="text" id="char-sexuality" placeholder="Heterosexual, Homosexual, Bisexual, Pansexual, Asexual, Questioning, Other" />
                     </div>
                 </div>
             </div>
@@ -759,98 +718,49 @@
     }
 
     function getAcademicTabHTML() {
+        if (window.CharacterViews && typeof window.CharacterViews.getAcademicTabHTML === 'function') {
+            return window.CharacterViews.getAcademicTabHTML();
+        }
+
         return `
             <div id="char-tab-academic" class="char-tab-panel" style="display:none;">
-                <div id="academic-view" style="padding:4px 0;">
-                    <p class="empty-state" style="padding:8px;font-size:0.8rem;">Loading academic data...</p>
-                </div>
-                <div class="form-group full-width section-divider">
-                    <label class="section-label">Class Management</label>
-                    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px;">
-                        <select id="academic-class-select" style="flex:1;min-width:150px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
-                            <option value="">Select a class...</option>
-                        </select>
-                        <button type="button" id="add-to-class-btn" class="primary small">Add to Class</button>
-                        <button type="button" id="remove-from-class-btn" class="danger small">Remove from Class</button>
-                    </div>
-                    <div id="character-classes-display" style="margin-top:8px;padding:8px;background:var(--bg);border-radius:4px;border:1px solid var(--border-soft);">
-                        <span style="color:var(--text-dim);font-size:0.7rem;">Current Classes: <span id="current-classes-list">None</span></span>
-                    </div>
-                </div>
-                <div class="form-group full-width section-divider">
-                    <label>Tournament Eliminations</label>
-                    <div id="tournament-eliminations-view"><p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p></div>
-                </div>
-                <div class="form-group full-width section-divider">
-                    <label class="section-label warning-label">Standalone Elimination</label>
-                    <div class="elimination-controls">
-                        <label>Week:</label>
-                        <input type="number" id="standalone-elim-week" min="1" max="52" value="1" />
-                        <label>Reason:</label>
-                        <input type="text" id="standalone-elim-reason" placeholder="e.g., Dropped out" />
-                        <button type="button" id="add-standalone-elim-btn" class="small warning-btn">Apply</button>
-                    </div>
-                    <div id="standalone-eliminations-container"><p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p></div>
-                </div>
+                <p class="empty-state">Academic view not loaded.</p>
             </div>
         `;
     }
 
     function getProfessionalTabHTML() {
+        if (window.CharacterViews && typeof window.CharacterViews.getProfessionalTabHTML === 'function') {
+            return window.CharacterViews.getProfessionalTabHTML();
+        }
+
         return `
             <div id="char-tab-professional" class="char-tab-panel" style="display:none;">
-                <div class="form-group full-width">
-                    <label>Career Status History</label>
-                    <div id="career-status-container">
-                        <div class="career-status-entry">
-                            <select class="career-status-select">
-                                <option value="">Select status...</option>
-                                <option value="civilian">Civilian</option>
-                                <option value="trainee">Trainee</option>
-                                <option value="rookie">Rookie</option>
-                                <option value="junior">Junior</option>
-                                <option value="senior">Senior</option>
-                                <option value="instructor">Instructor</option>
-                                <option value="support">Support</option>
-                            </select>
-                            <input type="number" class="career-start-year" placeholder="Start Year" />
-                            <input type="number" class="career-end-year" placeholder="End Year" />
-                            <button type="button" class="small danger remove-status">✕</button>
-                        </div>
-                    </div>
-                    <button type="button" id="add-status-btn" class="small">+ Add Status</button>
-                </div>
-                <div class="form-group full-width">
-                    <label>Specialty/Discipline</label>
-                    <input type="text" id="char-specialty" />
-                </div>
-                <div id="professional-view" style="padding:4px 0;">
-                    <p class="empty-state" style="padding:8px;font-size:0.8rem;">Loading professional data...</p>
-                </div>
+                <p class="empty-state">Professional view not loaded.</p>
             </div>
         `;
     }
 
     function getStatsTabHTML() {
-        if (window.CharacterStats && typeof window.CharacterStats.getStatsTabHTML === 'function') {
-            return window.CharacterStats.getStatsTabHTML();
+        if (window.CharacterStatsView && typeof window.CharacterStatsView.getStatsTabHTML === 'function') {
+            return window.CharacterStatsView.getStatsTabHTML();
         }
+
         return `
             <div id="char-tab-stats" class="char-tab-panel" style="display:none;">
-                <p class="empty-state">Stats module not loaded</p>
+                <p class="empty-state">Stats view not loaded.</p>
             </div>
         `;
     }
 
     function getSocialTabHTML() {
+        if (window.CharacterViews && typeof window.CharacterViews.getSocialTabHTML === 'function') {
+            return window.CharacterViews.getSocialTabHTML();
+        }
+
         return `
             <div id="char-tab-social" class="char-tab-panel" style="display:none;">
-                <div id="social-view">
-                    <p class="empty-state" style="padding:8px;font-size:0.8rem;">Loading social connections...</p>
-                </div>
-                <div class="form-actions" style="margin-top:8px;">
-                    <button type="button" id="add-social-relation-btn" class="primary small">+ Add Connection</button>
-                </div>
+                <p class="empty-state">Social view not loaded.</p>
             </div>
         `;
     }
@@ -863,6 +773,25 @@
                 </div>
             </div>
         `;
+    }
+
+    // ============================================================
+    // INIT - RENDERING ONLY (events bound in character-events.js)
+    // ============================================================
+
+    function init(container) {
+        if (!checkDependencies()) return;
+
+        if (!container) {
+            container = document.getElementById('tab-characters');
+        }
+        if (!container) return;
+
+        var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+
+        if (editId) {
+            show(editId);
+        }
     }
 
     // ============================================================
