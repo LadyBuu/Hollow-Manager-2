@@ -1,11 +1,6 @@
 /**
  * js/modules/dashboard.js - Dashboard Module
  * Path: js/modules/dashboard.js
- * 
- * This module is responsible for:
- *   - Rendering the dashboard with key statistics
- *   - Quick links to other modules
- *   - Current year management
  */
 
 (function() {
@@ -75,6 +70,7 @@
         var missions = data.missions || [];
         var graduatingClasses = data.graduatingClasses || [];
 
+        // Count active characters (not deceased)
         var activeChars = 0;
         var deceasedChars = 0;
         var trainees = 0;
@@ -88,6 +84,7 @@
                 activeChars++;
             }
             
+            // Check if trainee
             if (char.careerStatus && Array.isArray(char.careerStatus)) {
                 for (var j = 0; j < char.careerStatus.length; j++) {
                     var status = char.careerStatus[j];
@@ -106,6 +103,7 @@
             }
         }
 
+        // Count active teams
         var activeTeams = 0;
         for (var i = 0; i < teams.length; i++) {
             if (teams[i].status === 'active') {
@@ -113,6 +111,7 @@
             }
         }
 
+        // Count active missions
         var activeMissions = 0;
         for (var i = 0; i < missions.length; i++) {
             if (missions[i].status === 'active') {
@@ -190,27 +189,27 @@
 
                 <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;">
                     <a href="#" data-tab="characters" class="quick-link" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-decoration:none;color:var(--text);cursor:pointer;transition:0.15s;text-align:center;">
-                        <div style="font-size:0.9rem;">👤 Characters</div>
+                        <div style="font-size:0.9rem;">◆ Characters</div>
                         <div style="font-size:0.65rem;color:var(--text-dim);">Manage all characters</div>
                     </a>
                     <a href="#" data-tab="classes" class="quick-link" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-decoration:none;color:var(--text);cursor:pointer;transition:0.15s;text-align:center;">
-                        <div style="font-size:0.9rem;">🎓 Classes</div>
+                        <div style="font-size:0.9rem;">◆ Classes</div>
                         <div style="font-size:0.65rem;color:var(--text-dim);">Manage graduating classes</div>
                     </a>
                     <a href="#" data-tab="teams" class="quick-link" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-decoration:none;color:var(--text);cursor:pointer;transition:0.15s;text-align:center;">
-                        <div style="font-size:0.9rem;">🏛️ Teams</div>
+                        <div style="font-size:0.9rem;">◆ Teams</div>
                         <div style="font-size:0.65rem;color:var(--text-dim);">Manage teams</div>
                     </a>
                     <a href="#" data-tab="curriculum" class="quick-link" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-decoration:none;color:var(--text);cursor:pointer;transition:0.15s;text-align:center;">
-                        <div style="font-size:0.9rem;">📚 Curriculum</div>
+                        <div style="font-size:0.9rem;">◆ Curriculum</div>
                         <div style="font-size:0.65rem;color:var(--text-dim);">Disciplines & locations</div>
                     </a>
                     <a href="#" data-tab="calendar" class="quick-link" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-decoration:none;color:var(--text);cursor:pointer;transition:0.15s;text-align:center;">
-                        <div style="font-size:0.9rem;">📅 Calendar</div>
+                        <div style="font-size:0.9rem;">◆ Calendar</div>
                         <div style="font-size:0.65rem;color:var(--text-dim);">Schedules & timetables</div>
                     </a>
                     <a href="#" data-tab="missions" class="quick-link" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-decoration:none;color:var(--text);cursor:pointer;transition:0.15s;text-align:center;">
-                        <div style="font-size:0.9rem;">⚔️ Missions</div>
+                        <div style="font-size:0.9rem;">◆ Missions</div>
                         <div style="font-size:0.65rem;color:var(--text-dim);">Manage missions</div>
                     </a>
                 </div>
