@@ -42,10 +42,10 @@
  *   - window.getClassByName (from core-utils.js)
  *   - window.createClass (from class-core.js)
  *   - window.saveData (from database.js)
- *   - window.db.createSafeCopy (from database.js)
+ *   - window.MutationUtils (from mutation-utils.js)
+ *   - window.DomUtils (from dom-utils.js)
  *   - window.logActivity (optional, for activity logging)
  *   - window.CALENDAR_CONSTANTS (from constants.js)
- *   - window.DomUtils (from dom-utils.js)
  *   - window.NotificationSystem (from notification.js)
  */
 
@@ -62,8 +62,8 @@
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = window.CALENDAR_CONSTANTS.MIN_WEEK;
-    var MAX_WEEK = window.CALENDAR_CONSTANTS.MAX_WEEK;
+    var MIN_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MIN_WEEK : 1;
+    var MAX_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MAX_WEEK : 52;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -91,6 +91,11 @@
             }
         });
 
+        // Check for MutationUtils
+        if (!window.MutationUtils || typeof window.MutationUtils.createSafeBackup !== 'function') {
+            missing.push('MutationUtils.createSafeBackup');
+        }
+
         if (missing.length > 0) {
             console.warn('CharacterClasses: Missing dependencies:', missing.join(', '));
             return false;
@@ -99,10 +104,15 @@
     }
 
     // ============================================================
-    // SAFE BACKUP - Using database module's clone
+    // SAFE BACKUP - Delegate to MutationUtils
     // ============================================================
 
     function createSafeBackup(data) {
+        if (window.MutationUtils && typeof window.MutationUtils.createSafeBackup === 'function') {
+            return window.MutationUtils.createSafeBackup(data);
+        }
+
+        // Fallback implementation
         try {
             if (window.db && typeof window.db.createSafeCopy === 'function') {
                 return window.db.createSafeCopy(data);
@@ -278,49 +288,48 @@
             return String(cid) !== String(classId);
         });
 
-        // PERSIST
-        if (typeof window.saveData === 'function') {
-            // Wrap in Promise.resolve to catch synchronous exceptions
-            return Promise.resolve()
+        // PERSIST - Use saveWithPromise from MutationUtils if available
+        var savePromise;
+        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
+            savePromise = window.MutationUtils.saveWithPromise();
+        } else {
+            savePromise = Promise.resolve()
                 .then(function() {
                     return window.saveData();
-                })
-                .then(function() {
-                    // LOG - failure-safe, persistence already succeeded
-                    try {
-                        if (typeof window.logActivity === 'function') {
-                            window.logActivity('Removed ' + name + ' from class: ' + cls.name);
-                        }
-                    } catch (logErr) {
-                        // Ignore logging errors
-                    }
+                });
+        }
 
-                    // UI COMMIT - reacquire character from restored state
-                    var savedChar = typeof window.getCharacterById === 'function' 
+        return savePromise
+            .then(function() {
+                // LOG - failure-safe, persistence already succeeded
+                try {
+                    if (typeof window.logActivity === 'function') {
+                        window.logActivity('Removed ' + name + ' from class: ' + cls.name);
+                    }
+                } catch (logErr) {
+                    // Ignore logging errors
+                }
+
+                // UI COMMIT - reacquire character from restored state
+                var savedChar = typeof window.getCharacterById === 'function' 
+                    ? window.getCharacterById(charId) 
+                    : null;
+                safeRefreshUI(savedChar);
+                showNotification('Character removed from class successfully!', 'success');
+                return true;
+            })
+            .catch(function(err) {
+                // ROLLBACK
+                if (backup) {
+                    window.data = backup;
+                    var restoredChar = typeof window.getCharacterById === 'function' 
                         ? window.getCharacterById(charId) 
                         : null;
-                    safeRefreshUI(savedChar);
-                    showNotification('Character removed from class successfully!', 'success');
-                    return true;
-                })
-                .catch(function(err) {
-                    // ROLLBACK
-                    if (backup) {
-                        window.data = backup;
-                        var restoredChar = typeof window.getCharacterById === 'function' 
-                            ? window.getCharacterById(charId) 
-                            : null;
-                        safeRefreshUI(restoredChar);
-                    }
-                    showNotification('Failed to remove character from class. Please try again.', 'error');
-                    return false;
-                });
-        } else {
-            // This should be unreachable because checkDependencies requires saveData
-            safeRefreshUI(char);
-            showNotification('Character removed from class successfully!', 'success');
-            return Promise.resolve(true);
-        }
+                    safeRefreshUI(restoredChar);
+                }
+                showNotification('Failed to remove character from class. Please try again.', 'error');
+                return false;
+            });
     }
 
     // ============================================================
@@ -383,56 +392,55 @@
         normaliseClassIds(char);
         char.classIds.push(classId);
 
-        // PERSIST
-        if (typeof window.saveData === 'function') {
-            // Wrap in Promise.resolve to catch synchronous exceptions
-            return Promise.resolve()
+        // PERSIST - Use saveWithPromise from MutationUtils if available
+        var savePromise;
+        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
+            savePromise = window.MutationUtils.saveWithPromise();
+        } else {
+            savePromise = Promise.resolve()
                 .then(function() {
                     return window.saveData();
-                })
-                .then(function() {
-                    // LOG - failure-safe, persistence already succeeded
-                    var charName = typeof window.getDisplayName === 'function' 
-                        ? window.getDisplayName(char) 
-                        : char.firstName || 'Character';
-                    try {
-                        if (typeof window.logActivity === 'function') {
-                            window.logActivity('Added ' + charName + ' to class: ' + cls.name);
-                        }
-                    } catch (logErr) {
-                        // Ignore logging errors
-                    }
+                });
+        }
 
-                    // UI COMMIT - reacquire character from restored state
-                    var savedChar = typeof window.getCharacterById === 'function' 
+        return savePromise
+            .then(function() {
+                // LOG - failure-safe, persistence already succeeded
+                var charName = typeof window.getDisplayName === 'function' 
+                    ? window.getDisplayName(char) 
+                    : char.firstName || 'Character';
+                try {
+                    if (typeof window.logActivity === 'function') {
+                        window.logActivity('Added ' + charName + ' to class: ' + cls.name);
+                    }
+                } catch (logErr) {
+                    // Ignore logging errors
+                }
+
+                // UI COMMIT - reacquire character from restored state
+                var savedChar = typeof window.getCharacterById === 'function' 
+                    ? window.getCharacterById(charId) 
+                    : null;
+                safeRefreshUI(savedChar);
+                showNotification('Character added to class successfully!', 'success');
+                return true;
+            })
+            .catch(function(err) {
+                // ROLLBACK
+                if (backup) {
+                    window.data = backup;
+                    var restoredChar = typeof window.getCharacterById === 'function' 
                         ? window.getCharacterById(charId) 
                         : null;
-                    safeRefreshUI(savedChar);
-                    showNotification('Character added to class successfully!', 'success');
-                    return true;
-                })
-                .catch(function(err) {
-                    // ROLLBACK
-                    if (backup) {
-                        window.data = backup;
-                        var restoredChar = typeof window.getCharacterById === 'function' 
-                            ? window.getCharacterById(charId) 
-                            : null;
-                        safeRefreshUI(restoredChar);
-                    }
-                    showNotification('Failed to add character to class. Please try again.', 'error');
-                    return false;
-                });
-        } else {
-            // This should be unreachable because checkDependencies requires saveData
-            safeRefreshUI(char);
-            showNotification('Character added to class successfully!', 'success');
-            return Promise.resolve(true);
-        }
+                    safeRefreshUI(restoredChar);
+                }
+                showNotification('Failed to add character to class. Please try again.', 'error');
+                return false;
+            });
     }
 
     // ============================================================
-    // ADD CLASS BY NAME - Returns Promise for consistency
+    // ADD CLASS BY NAME - FIXED: Validates BEFORE creating class
     // ============================================================
 
     function addClassByName(name) {
@@ -460,7 +468,19 @@
 
         var trimmedName = name.trim();
 
-        // SNAPSHOT - Required, abort if fails (BEFORE creating class)
+        // ---- PHASE 1: VALIDATE CHARACTER STATE (READ-ONLY, NO MUTATION) ----
+        // Check if character is already in this class (using existing data)
+        var existingClass = typeof window.getClassByName === 'function' ? window.getClassByName(trimmedName) : null;
+        if (existingClass) {
+            // Character is already in this class
+            var currentClassIds = getNormalisedClassIds(char);
+            if (currentClassIds.some(function(cid) { return String(cid) === String(existingClass.id); })) {
+                showNotification('Character is already in this class.', 'error');
+                return Promise.resolve(false);
+            }
+        }
+
+        // ---- PHASE 2: SNAPSHOT (BEFORE CREATING CLASS) ----
         var data = window.data || {};
         var backup = createSafeBackup(data);
         if (!backup) {
@@ -468,78 +488,99 @@
             return Promise.resolve(false);
         }
 
-        // Find or create class (now inside the transaction)
-        var cls = typeof window.getClassByName === 'function' ? window.getClassByName(trimmedName) : null;
+        // ---- PHASE 3: FIND OR CREATE CLASS (NOW INSIDE THE TRANSACTION) ----
+        var cls = existingClass;
+        var classCreated = false;
+
         if (!cls) {
             var result = typeof window.createClass === 'function' ? window.createClass(trimmedName) : null;
             if (result && result.success) {
-                cls = result.class;
+                cls = result.class || result.data;
+                classCreated = true;
             } else {
+                // Rollback: restore backup since we created a class but failed
+                if (backup) {
+                    window.data = backup;
+                }
                 showNotification(result ? result.message : 'Failed to create class.', 'error');
                 return Promise.resolve(false);
             }
         }
 
-        // Use pure function for validation - no mutation
-        var classIds = getNormalisedClassIds(char);
+        // ---- PHASE 4: RE-VALIDATE CHARACTER (CLASS NOW EXISTS) ----
+        // Re-fetch character from the (potentially restored) data
+        var currentChar = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        if (!currentChar) {
+            // Rollback: class was created but character is gone
+            if (classCreated && backup) {
+                window.data = backup;
+            }
+            showNotification('Character not found.', 'error');
+            return Promise.resolve(false);
+        }
 
-        if (classIds.some(function(cid) { return String(cid) === String(cls.id); })) {
+        var currentClassIds = getNormalisedClassIds(currentChar);
+        if (currentClassIds.some(function(cid) { return String(cid) === String(cls.id); })) {
+            // Class was created but character is already in it (shouldn't happen, but be safe)
+            if (classCreated && backup) {
+                // If we created the class and the character is somehow already in it,
+                // we should rollback the class creation
+                window.data = backup;
+            }
             showNotification('Character is already in this class.', 'error');
             return Promise.resolve(false);
         }
 
-        // NORMALISE and MUTATE
-        normaliseClassIds(char);
-        char.classIds.push(cls.id);
+        // ---- PHASE 5: MUTATE ----
+        normaliseClassIds(currentChar);
+        currentChar.classIds.push(cls.id);
 
-        // PERSIST
-        if (typeof window.saveData === 'function') {
-            // Wrap in Promise.resolve to catch synchronous exceptions
-            return Promise.resolve()
+        // ---- PHASE 6: PERSIST ----
+        var savePromise;
+        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
+            savePromise = window.MutationUtils.saveWithPromise();
+        } else {
+            savePromise = Promise.resolve()
                 .then(function() {
                     return window.saveData();
-                })
-                .then(function() {
-                    // LOG - failure-safe, persistence already succeeded
-                    var charName = typeof window.getDisplayName === 'function' 
-                        ? window.getDisplayName(char) 
-                        : char.firstName || 'Character';
-                    try {
-                        if (typeof window.logActivity === 'function') {
-                            window.logActivity('Added ' + charName + ' to class: ' + cls.name);
-                        }
-                    } catch (logErr) {
-                        // Ignore logging errors
-                    }
+                });
+        }
 
-                    // UI COMMIT
-                    addClassTag(cls.id, cls.name);
-                    var savedChar = typeof window.getCharacterById === 'function' 
+        return savePromise
+            .then(function() {
+                // LOG - failure-safe, persistence already succeeded
+                var charName = typeof window.getDisplayName === 'function' 
+                    ? window.getDisplayName(currentChar) 
+                    : currentChar.firstName || 'Character';
+                try {
+                    if (typeof window.logActivity === 'function') {
+                        window.logActivity('Added ' + charName + ' to class: ' + cls.name);
+                    }
+                } catch (logErr) {
+                    // Ignore logging errors
+                }
+
+                // UI COMMIT
+                addClassTag(cls.id, cls.name);
+                var savedChar = typeof window.getCharacterById === 'function' 
+                    ? window.getCharacterById(charId) 
+                    : null;
+                safeRefreshUI(savedChar);
+                showNotification('Character added to class successfully!', 'success');
+                return true;
+            })
+            .catch(function(err) {
+                // ROLLBACK - restore backup
+                if (backup) {
+                    window.data = backup;
+                    var restoredChar = typeof window.getCharacterById === 'function' 
                         ? window.getCharacterById(charId) 
                         : null;
-                    safeRefreshUI(savedChar);
-                    showNotification('Character added to class successfully!', 'success');
-                    return true;
-                })
-                .catch(function(err) {
-                    // ROLLBACK - reacquire character from restored state
-                    if (backup) {
-                        window.data = backup;
-                        var restoredChar = typeof window.getCharacterById === 'function' 
-                            ? window.getCharacterById(charId) 
-                            : null;
-                        safeRefreshUI(restoredChar);
-                    }
-                    showNotification('Failed to add character to class. Please try again.', 'error');
-                    return false;
-                });
-        } else {
-            // This should be unreachable because checkDependencies requires saveData
-            addClassTag(cls.id, cls.name);
-            safeRefreshUI(char);
-            showNotification('Character added to class successfully!', 'success');
-            return Promise.resolve(true);
-        }
+                    safeRefreshUI(restoredChar);
+                }
+                showNotification('Failed to add character to class. Please try again.', 'error');
+                return false;
+            });
     }
 
     // ============================================================
@@ -932,5 +973,6 @@
             return window.setCurrentEditId(id);
         }
     };
+
 
 })();
