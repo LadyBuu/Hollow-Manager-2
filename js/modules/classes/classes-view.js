@@ -1,7 +1,7 @@
 /**
  * js/modules/classes/classes-view.js - Graduating Classes View
  * Handles graduating class CRUD and member management
- * Mobile-responsive with birth year filters and age display
+ * Mobile-responsive with birth year filters
  */
 
 (function() {
@@ -91,30 +91,6 @@
         var currentYear = new Date().getFullYear();
         var age = currentYear - birthYear;
         return age;
-    }
-
-    function getAgeDisplay(char) {
-        var age = calculateAge(char);
-        if (age === null) {
-            return '';
-        }
-        return age + ' yrs';
-    }
-
-    function getAgeColor(char) {
-        var age = calculateAge(char);
-        if (age === null) {
-            return 'var(--text-dim)';
-        }
-        if (age < 18) {
-            return 'var(--warning)';
-        } else if (age < 25) {
-            return 'var(--accent)';
-        } else if (age < 40) {
-            return 'var(--info)';
-        } else {
-            return 'var(--text-dim)';
-        }
     }
 
     // ============================================================
@@ -210,7 +186,6 @@
             classes = window.data.graduatingClasses;
         }
 
-        // Update mobile selector
         updateMobileSelector(classes);
 
         if (classes.length === 0) {
@@ -221,7 +196,6 @@
         var html = '';
         var selectedId = state.selectedClassId;
 
-        // Sort classes by name
         classes.sort(function(a, b) {
             return (a.name || '').localeCompare(b.name || '');
         });
@@ -232,7 +206,6 @@
             var safeName = escapeHtml(cls.name || 'Unnamed Class');
             var safeId = escapeHtml(cls.id);
 
-            // Count members
             var trainees = [];
             var instructors = [];
             if (typeof window.getCharactersByGraduatingClass === 'function') {
@@ -255,16 +228,15 @@
 
         listContainer.innerHTML = html;
 
-        // Bind click events using event delegation
-        listContainer.addEventListener('click', function(e) {
-            var item = e.target.closest('.class-list-item');
-            if (item) {
-                state.selectedClassId = item.dataset.id;
+        // Event delegation for class list items
+        listContainer.querySelectorAll('.class-list-item').forEach(function(item) {
+            item.addEventListener('click', function() {
+                state.selectedClassId = this.dataset.id;
                 state.selectedCharacterId = null;
                 renderClassList();
                 renderClassDetail();
                 updateMobileSelectorValue(state.selectedClassId);
-            }
+            });
         });
     }
 
@@ -294,11 +266,7 @@
             select.appendChild(option);
         }
 
-        // Remove old listener
-        var newSelect = select.cloneNode(true);
-        select.parentNode.replaceChild(newSelect, select);
-        
-        newSelect.addEventListener('change', function() {
+        select.addEventListener('change', function() {
             if (this.value) {
                 state.selectedClassId = this.value;
                 state.selectedCharacterId = null;
@@ -369,11 +337,10 @@
         html += '</div>';
         html += '</div>';
 
-        // Stats with age info
+        // Stats (removed average age)
         var totalMembers = trainees.length + instructors.length;
-        var avgAge = getAverageAge(trainees.concat(instructors));
         
-        html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;margin-bottom:12px;">';
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:12px;">';
         html += '<div style="background:var(--bg);padding:6px;border-radius:4px;text-align:center;">';
         html += '<span style="font-size:0.55rem;color:var(--text-dim);">Total</span>';
         html += '<div style="font-size:1rem;font-weight:700;color:var(--accent);">' + totalMembers + '</div>';
@@ -385,10 +352,6 @@
         html += '<div style="background:var(--bg);padding:6px;border-radius:4px;text-align:center;">';
         html += '<span style="font-size:0.55rem;color:var(--text-dim);">Instructors</span>';
         html += '<div style="font-size:1rem;font-weight:700;color:var(--info);">' + instructors.length + '</div>';
-        html += '</div>';
-        html += '<div style="background:var(--bg);padding:6px;border-radius:4px;text-align:center;">';
-        html += '<span style="font-size:0.55rem;color:var(--text-dim);">Avg Age</span>';
-        html += '<div style="font-size:1rem;font-weight:700;color:var(--text);">' + (avgAge !== null ? avgAge.toFixed(1) : '--') + '</div>';
         html += '</div>';
         html += '</div>';
 
@@ -402,57 +365,40 @@
 
         detailContainer.innerHTML = html;
 
-        // Bind buttons using direct event listeners
-        var manageBtn = document.getElementById('manage-members-btn');
-        if (manageBtn) {
-            // Remove old listener by replacing with clone
-            var newManageBtn = manageBtn.cloneNode(true);
-            manageBtn.parentNode.replaceChild(newManageBtn, manageBtn);
-            newManageBtn.addEventListener('click', function() {
-                console.log('[ClassesView] Manage Members button clicked for class:', state.selectedClassId);
-                showMemberModal(state.selectedClassId);
-            });
-        }
-
-        var editBtn = document.getElementById('edit-class-btn');
-        if (editBtn) {
-            var newEditBtn = editBtn.cloneNode(true);
-            editBtn.parentNode.replaceChild(newEditBtn, editBtn);
-            newEditBtn.addEventListener('click', function() {
-                showClassForm(state.selectedClassId);
-            });
-        }
-
-        var deleteBtn = document.getElementById('delete-class-btn');
-        if (deleteBtn) {
-            var newDeleteBtn = deleteBtn.cloneNode(true);
-            deleteBtn.parentNode.replaceChild(newDeleteBtn, deleteBtn);
-            newDeleteBtn.addEventListener('click', function() {
-                deleteClassHandler(state.selectedClassId);
-            });
-        }
-    }
-
-    // ============================================================
-    // AVERAGE AGE CALCULATION
-    // ============================================================
-
-    function getAverageAge(chars) {
-        var ages = [];
-        for (var i = 0; i < chars.length; i++) {
-            var age = calculateAge(chars[i]);
-            if (age !== null) {
-                ages.push(age);
+        // Bind buttons using simple direct event binding after a small delay
+        // This ensures the DOM is fully updated
+        setTimeout(function() {
+            var manageBtn = document.getElementById('manage-members-btn');
+            if (manageBtn) {
+                // Remove all listeners by cloning
+                var newBtn = manageBtn.cloneNode(true);
+                manageBtn.parentNode.replaceChild(newBtn, manageBtn);
+                newBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    console.log('[ClassesView] Manage Members clicked for class:', state.selectedClassId);
+                    showMemberModal(state.selectedClassId);
+                });
             }
-        }
-        if (ages.length === 0) {
-            return null;
-        }
-        var sum = 0;
-        for (var i = 0; i < ages.length; i++) {
-            sum += ages[i];
-        }
-        return sum / ages.length;
+
+            var editBtn = document.getElementById('edit-class-btn');
+            if (editBtn) {
+                var newEditBtn = editBtn.cloneNode(true);
+                editBtn.parentNode.replaceChild(newEditBtn, editBtn);
+                newEditBtn.addEventListener('click', function() {
+                    showClassForm(state.selectedClassId);
+                });
+            }
+
+            var deleteBtn = document.getElementById('delete-class-btn');
+            if (deleteBtn) {
+                var newDeleteBtn = deleteBtn.cloneNode(true);
+                deleteBtn.parentNode.replaceChild(newDeleteBtn, deleteBtn);
+                newDeleteBtn.addEventListener('click', function() {
+                    deleteClassHandler(state.selectedClassId);
+                });
+            }
+        }, 50);
     }
 
     // ============================================================
@@ -496,8 +442,7 @@
             var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char) : '';
             var isDeceased = char.deceased || false;
             var age = calculateAge(char);
-            var ageDisplay = age !== null ? age + ' yrs' : '?';
-            var ageColor = getAgeColor(char);
+            var ageDisplay = age !== null ? ' (' + age + 'y)' : '';
 
             var roleColor = role === 'instructor' ? 'var(--info)' : 'var(--accent)';
             var roleLabel = role === 'instructor' ? 'Instructor' : 'Trainee';
@@ -508,7 +453,7 @@
             html += '<span style="font-size:0.7rem;">' + escapeHtml(name) + '</span>';
             html += '<span style="font-size:0.5rem;color:' + roleColor + ';">[' + roleLabel + ']</span>';
             if (age !== null) {
-                html += '<span style="font-size:0.5rem;color:' + ageColor + ';">(' + ageDisplay + ')</span>';
+                html += '<span style="font-size:0.5rem;color:var(--text-dim);">' + ageDisplay + '</span>';
             }
             if (isDeceased) {
                 html += '<span style="font-size:0.5rem;color:var(--danger);">[Deceased]</span>';
@@ -522,12 +467,13 @@
     }
 
     // ============================================================
-    // SHOW MEMBER MODAL - With birth year filters
+    // SHOW MEMBER MODAL - Completely rewritten for reliability
     // ============================================================
 
     function showMemberModal(classId) {
         console.log('[ClassesView] showMemberModal called for class:', classId);
         
+        // Get or create modal
         var modal = document.getElementById('member-modal');
         if (!modal) {
             modal = createMemberModal();
@@ -557,7 +503,7 @@
 
         title.textContent = 'Manage Members - ' + cls.name;
 
-        // Get all characters
+        // Get data
         var allChars = [];
         if (window.data && window.data.characters) {
             allChars = window.data.characters;
@@ -566,7 +512,6 @@
         var currentTrainees = typeof window.getCharactersByGraduatingClass === 'function' ? window.getCharactersByGraduatingClass(classId) : [];
         var currentInstructors = typeof window.getInstructorsByGraduatingClass === 'function' ? window.getInstructorsByGraduatingClass(classId) : [];
 
-        // Build lookup maps
         var traineeIds = {};
         var instructorIds = {};
         for (var i = 0; i < currentTrainees.length; i++) {
@@ -576,8 +521,8 @@
             instructorIds[currentInstructors[i].id] = true;
         }
 
-        // Build the modal content
-        buildMemberModalContent(content, classId, allChars, traineeIds, instructorIds);
+        // Build content
+        content.innerHTML = buildModalContent(classId, allChars, traineeIds, instructorIds);
 
         // Show modal
         modal.classList.remove('hidden');
@@ -586,43 +531,80 @@
         // Bind close buttons
         var closeBtn = document.getElementById('close-member-modal-btn');
         if (closeBtn) {
-            var newCloseBtn = closeBtn.cloneNode(true);
-            closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
-            newCloseBtn.addEventListener('click', function() {
+            closeBtn.onclick = function() {
                 modal.classList.add('hidden');
                 modal.style.display = 'none';
-            });
+            };
         }
 
         var closeX = document.getElementById('close-member-modal');
         if (closeX) {
-            var newCloseX = closeX.cloneNode(true);
-            closeX.parentNode.replaceChild(newCloseX, closeX);
-            newCloseX.addEventListener('click', function() {
+            closeX.onclick = function() {
                 modal.classList.add('hidden');
                 modal.style.display = 'none';
-            });
+            };
         }
 
-        modal.addEventListener('click', function(e) {
+        modal.onclick = function(e) {
             if (e.target === this) {
                 this.classList.add('hidden');
                 this.style.display = 'none';
             }
-        });
+        };
+
+        // Bind filter buttons
+        bindFilterButtons(classId, allChars, traineeIds, instructorIds);
+
+        // Bind add member
+        bindAddMember(classId, allChars, traineeIds, instructorIds);
+
+        // Bind remove members using event delegation on the content
+        content.onclick = function(e) {
+            var removeBtn = e.target.closest('.remove-member-btn');
+            if (removeBtn) {
+                var charId = removeBtn.dataset.id;
+                if (!charId) return;
+
+                if (!confirm('Remove this member from the class?')) return;
+
+                if (typeof window.removeCharacterFromGraduatingClass !== 'function') {
+                    alert('Member management functions not available.');
+                    return;
+                }
+
+                var result = window.removeCharacterFromGraduatingClass(charId);
+                if (result && result.success) {
+                    // Refresh the modal
+                    showMemberModal(classId);
+                    renderClassList();
+                    renderClassDetail();
+                    if (typeof window.saveData === 'function') {
+                        window.saveData().catch(function() {
+                            console.warn('[ClassesView] Persistence failed after removing member');
+                        });
+                    }
+                } else {
+                    alert(result && result.message ? result.message : 'Failed to remove character.');
+                }
+            }
+        };
+
+        // Populate dropdown
+        populateDropdown(classId, allChars, traineeIds, instructorIds);
     }
 
     // ============================================================
-    // BUILD MEMBER MODAL CONTENT
+    // BUILD MODAL CONTENT
     // ============================================================
 
-    function buildMemberModalContent(content, classId, allChars, traineeIds, instructorIds) {
-        var html = '';
-        html += '<p style="color:var(--text-dim);font-size:0.8rem;margin-bottom:12px;">';
-        html += 'Add or remove members from this graduating class.';
-        html += '</p>';
+    function buildModalContent(classId, allChars, traineeIds, instructorIds) {
+        var currentTrainees = typeof window.getCharactersByGraduatingClass === 'function' ? window.getCharactersByGraduatingClass(classId) : [];
+        var currentInstructors = typeof window.getInstructorsByGraduatingClass === 'function' ? window.getInstructorsByGraduatingClass(classId) : [];
 
-        // === ADD MEMBER SECTION ===
+        var html = '';
+        html += '<p style="color:var(--text-dim);font-size:0.8rem;margin-bottom:12px;">Add or remove members from this graduating class.</p>';
+
+        // Add member section
         html += '<div style="background:var(--bg);padding:12px;border-radius:6px;margin-bottom:12px;border:1px solid var(--border-soft);">';
         html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">';
         html += '<span style="font-size:0.75rem;color:var(--text-dim);">Add member:</span>';
@@ -648,17 +630,15 @@
         html += '<option value="instructor">Instructor</option>';
         html += '</select>';
         
-        // Add button
         html += '<button id="add-member-btn" class="primary small" style="font-size:0.7rem;padding:4px 12px;">Add</button>';
         html += '</div>';
         
-        // Show current members count
         html += '<div style="margin-top:6px;font-size:0.65rem;color:var(--text-dim);">';
         html += currentTrainees.length + ' trainees, ' + currentInstructors.length + ' instructors';
         html += '</div>';
         html += '</div>';
 
-        // === CURRENT MEMBERS SECTION ===
+        // Current members
         html += '<div style="max-height:300px;overflow-y:auto;">';
         
         // Trainees
@@ -671,9 +651,9 @@
                 var char = currentTrainees[i];
                 var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
                 var age = calculateAge(char);
-                var ageDisplay = age !== null ? age + ' yrs' : '?';
+                var ageDisplay = age !== null ? ' (' + age + 'y)' : '';
                 html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border-soft);">';
-                html += escapeHtml(name) + ' <span style="font-size:0.5rem;color:var(--text-dim);">(' + ageDisplay + ')</span>';
+                html += escapeHtml(name) + ageDisplay;
                 html += ' <button class="remove-member-btn" data-id="' + escapeHtml(char.id) + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button>';
                 html += '</span>';
             }
@@ -690,9 +670,9 @@
                 var char = currentInstructors[i];
                 var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
                 var age = calculateAge(char);
-                var ageDisplay = age !== null ? age + ' yrs' : '?';
+                var ageDisplay = age !== null ? ' (' + age + 'y)' : '';
                 html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border-soft);">';
-                html += escapeHtml(name) + ' <span style="font-size:0.5rem;color:var(--text-dim);">(' + ageDisplay + ')</span>';
+                html += escapeHtml(name) + ageDisplay;
                 html += ' <button class="remove-member-btn" data-id="' + escapeHtml(char.id) + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 2px;">✕</button>';
                 html += '</span>';
             }
@@ -705,60 +685,52 @@
         html += '<button type="button" id="close-member-modal-btn" class="secondary" style="font-size:0.75rem;">Close</button>';
         html += '</div>';
 
-        content.innerHTML = html;
+        return html;
+    }
 
-        // === POPULATE DROPDOWN ===
-        populateMemberDropdown(classId, allChars, traineeIds, instructorIds);
+    // ============================================================
+    // BIND FILTER BUTTONS
+    // ============================================================
 
-        // === BIND FILTER EVENTS ===
-        var applyFilterBtn = document.getElementById('apply-year-filter');
-        var clearFilterBtn = document.getElementById('clear-year-filter');
-        var minYearInput = document.getElementById('filter-min-year');
-        var maxYearInput = document.getElementById('filter-max-year');
+    function bindFilterButtons(classId, allChars, traineeIds, instructorIds) {
+        var applyBtn = document.getElementById('apply-year-filter');
+        var clearBtn = document.getElementById('clear-year-filter');
+        var minInput = document.getElementById('filter-min-year');
+        var maxInput = document.getElementById('filter-max-year');
 
-        if (applyFilterBtn) {
-            var newApplyBtn = applyFilterBtn.cloneNode(true);
-            applyFilterBtn.parentNode.replaceChild(newApplyBtn, applyFilterBtn);
-            newApplyBtn.addEventListener('click', function() {
-                var minYear = parseInt(minYearInput.value, 10);
-                var maxYear = parseInt(maxYearInput.value, 10);
-                if (!isNaN(minYear)) {
-                    state.minBirthYear = minYear;
-                } else {
-                    state.minBirthYear = null;
-                }
-                if (!isNaN(maxYear)) {
-                    state.maxBirthYear = maxYear;
-                } else {
-                    state.maxBirthYear = null;
-                }
-                populateMemberDropdown(classId, allChars, traineeIds, instructorIds);
-            });
+        if (applyBtn) {
+            applyBtn.onclick = function() {
+                var minYear = parseInt(minInput.value, 10);
+                var maxYear = parseInt(maxInput.value, 10);
+                state.minBirthYear = !isNaN(minYear) ? minYear : null;
+                state.maxBirthYear = !isNaN(maxYear) ? maxYear : null;
+                populateDropdown(classId, allChars, traineeIds, instructorIds);
+            };
         }
 
-        if (clearFilterBtn) {
-            var newClearBtn = clearFilterBtn.cloneNode(true);
-            clearFilterBtn.parentNode.replaceChild(newClearBtn, clearFilterBtn);
-            newClearBtn.addEventListener('click', function() {
-                minYearInput.value = '';
-                maxYearInput.value = '';
+        if (clearBtn) {
+            clearBtn.onclick = function() {
+                minInput.value = '';
+                maxInput.value = '';
                 state.minBirthYear = null;
                 state.maxBirthYear = null;
-                populateMemberDropdown(classId, allChars, traineeIds, instructorIds);
-            });
+                populateDropdown(classId, allChars, traineeIds, instructorIds);
+            };
         }
+    }
 
-        // === BIND ADD MEMBER ===
+    // ============================================================
+    // BIND ADD MEMBER
+    // ============================================================
+
+    function bindAddMember(classId, allChars, traineeIds, instructorIds) {
         var addBtn = document.getElementById('add-member-btn');
         var select = document.getElementById('add-member-select');
         var roleSelect = document.getElementById('add-member-role');
 
-        if (addBtn && select) {
-            var newAddBtn = addBtn.cloneNode(true);
-            addBtn.parentNode.replaceChild(newAddBtn, addBtn);
-            
-            newAddBtn.addEventListener('click', function() {
-                var charId = select.value;
+        if (addBtn) {
+            addBtn.onclick = function() {
+                var charId = select ? select.value : null;
                 var role = roleSelect ? roleSelect.value : 'trainee';
                 var isInstructor = role === 'instructor';
 
@@ -774,23 +746,9 @@
 
                 var result = window.assignCharacterToGraduatingClass(charId, classId, isInstructor);
                 if (result && result.success) {
-                    // Rebuild the modal content to show updated members
-                    var currentTrainees2 = typeof window.getCharactersByGraduatingClass === 'function' ? window.getCharactersByGraduatingClass(classId) : [];
-                    var currentInstructors2 = typeof window.getInstructorsByGraduatingClass === 'function' ? window.getInstructorsByGraduatingClass(classId) : [];
-                    
-                    var traineeIds2 = {};
-                    var instructorIds2 = {};
-                    for (var i = 0; i < currentTrainees2.length; i++) {
-                        traineeIds2[currentTrainees2[i].id] = true;
-                    }
-                    for (var i = 0; i < currentInstructors2.length; i++) {
-                        instructorIds2[currentInstructors2[i].id] = true;
-                    }
-                    
-                    buildMemberModalContent(content, classId, allChars, traineeIds2, instructorIds2);
+                    showMemberModal(classId);
                     renderClassList();
                     renderClassDetail();
-                    
                     if (typeof window.saveData === 'function') {
                         window.saveData().catch(function() {
                             console.warn('[ClassesView] Persistence failed after adding member');
@@ -799,63 +757,18 @@
                 } else {
                     alert(result && result.message ? result.message : 'Failed to add character.');
                 }
-            });
+            };
         }
-
-        // === BIND REMOVE MEMBER ===        // Use event delegation for remove buttons
-        content.addEventListener('click', function(e) {
-            var removeBtn = e.target.closest('.remove-member-btn');
-            if (removeBtn) {
-                var charId = removeBtn.dataset.id;
-                if (!charId) return;
-
-                if (!confirm('Remove this member from the class?')) return;
-
-                if (typeof window.removeCharacterFromGraduatingClass !== 'function') {
-                    alert('Member management functions not available.');
-                    return;
-                }
-
-                var result = window.removeCharacterFromGraduatingClass(charId);
-                if (result && result.success) {
-                    // Rebuild the modal content
-                    var currentTrainees3 = typeof window.getCharactersByGraduatingClass === 'function' ? window.getCharactersByGraduatingClass(classId) : [];
-                    var currentInstructors3 = typeof window.getInstructorsByGraduatingClass === 'function' ? window.getInstructorsByGraduatingClass(classId) : [];
-                    
-                    var traineeIds3 = {};
-                    var instructorIds3 = {};
-                    for (var i = 0; i < currentTrainees3.length; i++) {
-                        traineeIds3[currentTrainees3[i].id] = true;
-                    }
-                    for (var i = 0; i < currentInstructors3.length; i++) {
-                        instructorIds3[currentInstructors3[i].id] = true;
-                    }
-                    
-                    buildMemberModalContent(content, classId, allChars, traineeIds3, instructorIds3);
-                    renderClassList();
-                    renderClassDetail();
-                    
-                    if (typeof window.saveData === 'function') {
-                        window.saveData().catch(function() {
-                            console.warn('[ClassesView] Persistence failed after removing member');
-                        });
-                    }
-                } else {
-                    alert(result && result.message ? result.message : 'Failed to remove character.');
-                }
-            }
-        });
     }
 
     // ============================================================
-    // POPULATE MEMBER DROPDOWN - With birth year filter
+    // POPULATE DROPDOWN
     // ============================================================
 
-    function populateMemberDropdown(classId, allChars, traineeIds, instructorIds) {
+    function populateDropdown(classId, allChars, traineeIds, instructorIds) {
         var select = document.getElementById('add-member-select');
         if (!select) return;
 
-        // Get available characters not already in the class
         var availableChars = allChars.filter(function(char) {
             return !traineeIds[char.id] && !instructorIds[char.id];
         });
@@ -877,14 +790,12 @@
             });
         }
 
-        // Sort by name
         availableChars.sort(function(a, b) {
             var nameA = typeof window.getDisplayName === 'function' ? window.getDisplayName(a) : (a.name || 'Unknown');
             var nameB = typeof window.getDisplayName === 'function' ? window.getDisplayName(b) : (b.name || 'Unknown');
             return nameA.localeCompare(nameB);
         });
 
-        // Clear and populate
         select.innerHTML = '<option value="">Select a character...</option>';
         
         for (var i = 0; i < availableChars.length; i++) {
@@ -892,13 +803,12 @@
             var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : (char.name || 'Unknown');
             var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char) : '';
             var age = calculateAge(char);
-            var ageDisplay = age !== null ? ' (' + age + ' yrs)' : '';
+            var ageDisplay = age !== null ? ' (' + age + 'y)' : '';
             var birthYear = char.birthYear ? ' (' + char.birthYear + ')' : '';
             
             var option = document.createElement('option');
             option.value = char.id;
             option.textContent = name + ' - ' + status + ageDisplay + birthYear;
-            option.dataset.role = isInstructor(char) ? 'instructor' : 'trainee';
             select.appendChild(option);
         }
 
@@ -1117,45 +1027,43 @@
         
         var addBtn = document.getElementById('add-class-btn');
         if (addBtn) {
-            var newAddBtn = addBtn.cloneNode(true);
-            addBtn.parentNode.replaceChild(newAddBtn, addBtn);
-            newAddBtn.addEventListener('click', function() {
+            addBtn.onclick = function() {
                 console.log('[ClassesView] Add class button clicked');
                 showClassForm();
-            });
+            };
         }
 
         var closeFormBtn = document.getElementById('close-class-form');
         if (closeFormBtn) {
-            closeFormBtn.addEventListener('click', function() {
+            closeFormBtn.onclick = function() {
                 var modal = document.getElementById('class-form-modal');
                 modal.classList.add('hidden');
                 modal.style.display = 'none';
-            });
+            };
         }
 
         var cancelFormBtn = document.getElementById('cancel-class-form');
         if (cancelFormBtn) {
-            cancelFormBtn.addEventListener('click', function() {
+            cancelFormBtn.onclick = function() {
                 var modal = document.getElementById('class-form-modal');
                 modal.classList.add('hidden');
                 modal.style.display = 'none';
-            });
+            };
         }
 
         var form = document.getElementById('class-form-inner');
         if (form) {
-            form.addEventListener('submit', saveClass);
+            form.onsubmit = saveClass;
         }
 
         var formModal = document.getElementById('class-form-modal');
         if (formModal) {
-            formModal.addEventListener('click', function(e) {
+            formModal.onclick = function(e) {
                 if (e.target === this) {
                     this.classList.add('hidden');
                     this.style.display = 'none';
                 }
-            });
+            };
         }
 
         window.addEventListener('resize', function() {
