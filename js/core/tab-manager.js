@@ -1,11 +1,18 @@
 /**
  * js/core/tab-manager.js - Tab Navigation System
- * Fixed: Removed duplicate initialization and lifecycle redundancy
+ * Single source of truth for tab lifecycle and navigation
+ * 
+ * IMPORTANT:
+ *   - TabManager is the SINGLE source of truth for tab lifecycle
+ *   - Modules register with TabManager, TabManager calls them
+ *   - No module should listen for dataReady/tabChanged to render itself
+ *   - Data readiness is handled by TabManager before calling render functions
  */
 
 (function() {
     'use strict';
 
+    // Guard against duplicate loading
     if (window.__tabManagerLoaded) {
         return;
     }
@@ -28,10 +35,6 @@
         pendingTab: null,
         pendingUpdateHistory: false,
         switchTimeout: null,
-        _registeredModules: {},
-        _pendingRegistrations: {},
-        _failedModules: {},
-        _waitingForModules: {},
 
         init: function() {
             if (this.isInitialized) return;
@@ -39,7 +42,6 @@
             this._initializationStarted = true;
 
             try {
-                // Only find elements and bind links ONCE
                 this._findTabContentElements();
                 this._bindNavLinks();
                 this._bindQuickLinks();
@@ -56,20 +58,12 @@
                 }
 
                 if (!this.tabs[initialTab]) {
-                    console.log('[TabManager] Waiting for tab "' + initialTab + '" to load...');
-                    this._waitingForModules[initialTab] = {
-                        tab: initialTab,
-                        startTime: Date.now()
-                    };
-                    
                     var self = this;
                     setTimeout(function() {
                         if (!self.tabs[initialTab] && self.currentTab === initialTab) {
-                            console.warn('[TabManager] Tab "' + initialTab + '" failed to load, falling back to default.');
                             self.switchTo(DEFAULT_TAB, false);
                         }
                     }, MAX_WAIT_TIME);
-                    
                     return;
                 }
 
@@ -82,7 +76,6 @@
                 console.error('[TabManager] Initialization failed:', error);
             }
             
-            // Dispatch ready event after initialization
             this._dispatchReady();
         },
 
@@ -98,9 +91,8 @@
                     cancelable: false
                 });
                 document.dispatchEvent(event);
-                console.log('[TabManager] tabManagerReady event dispatched');
             } catch (e) {
-                console.warn('[TabManager] Failed to dispatch ready event:', e);
+                // Ignore event dispatch errors
             }
         },
 
@@ -117,12 +109,8 @@
 
             if (this.tabs[tab]) {
                 this.switchTo(tab, false);
-            } else if (this._registeredModules[tab]) {
-                console.log('[TabManager] Tab "' + tab + '" registered but not loaded, waiting...');
-                this._pendingRegistrations[tab] = true;
             } else {
                 if (tab !== DEFAULT_TAB) {
-                    console.warn('[TabManager] Unknown tab "' + tab + '", falling back to default.');
                     this.switchTo(DEFAULT_TAB, false);
                 }
             }
@@ -130,23 +118,15 @@
 
         register: function(tabName, renderFn) {
             if (!tabName || typeof tabName !== 'string') {
-                console.warn('[TabManager] Invalid tab name:', tabName);
                 return false;
             }
 
             if (typeof renderFn !== 'function') {
-                console.warn('[TabManager] Invalid render function for tab:', tabName);
                 return false;
             }
 
             var key = tabName.trim();
-
             this.tabs[key] = renderFn;
-            this._registeredModules[key] = true;
-            delete this._failedModules[key];
-            delete this._waitingForModules[key];
-
-            console.log('[TabManager] Registered tab: "' + key + '"');
 
             if (this.isInitialized) {
                 if (this.currentTab === key) {
@@ -156,22 +136,6 @@
                         setTimeout(function() {
                             self._renderTab(key);
                         }, SWITCH_DELAY);
-                    }
-                }
-                
-                if (this._pendingRegistrations[key]) {
-                    delete this._pendingRegistrations[key];
-                    if (this.currentTab === key || this._pendingInitialTab === key) {
-                        var container = this.tabContentElements[key];
-                        if (container) {
-                            var self = this;
-                            setTimeout(function() {
-                                self._renderTab(key);
-                            }, SWITCH_DELAY);
-                        }
-                        if (this._pendingInitialTab === key) {
-                            this._pendingInitialTab = null;
-                        }
                     }
                 }
             }
@@ -188,30 +152,16 @@
             return Object.keys(this.tabs);
         },
 
-        isModuleRegistered: function(tabName) {
-            if (!tabName) return false;
-            return !!this._registeredModules[tabName.trim()];
-        },
-
         switchTo: function(tabName, updateHistory) {
             if (!tabName) return;
 
             var key = tabName.trim();
 
             if (!this.tabs[key]) {
-                if (this._registeredModules[key]) {
-                    console.log('[TabManager] Tab "' + key + '" is registered but not yet loaded. Waiting...');
-                    this._pendingRegistrations[key] = true;
-                    return;
-                }
-                
                 if (key !== DEFAULT_TAB) {
-                    console.warn('[TabManager] Unknown tab "' + key + '", falling back to default.');
                     this.switchTo(DEFAULT_TAB, false);
                     return;
                 }
-                
-                console.warn('[TabManager] Unknown tab "' + key + '"');
                 return;
             }
 
@@ -252,7 +202,6 @@
             }
 
             if (!this.tabs[key]) {
-                console.warn('[TabManager] Cannot refresh unknown tab "' + key + '"');
                 return;
             }
 
@@ -290,7 +239,6 @@
         _bindNavLinks: function() {
             var self = this;
             document.querySelectorAll('#main-nav a[data-tab]').forEach(function(link) {
-                // Remove any existing listeners by cloning
                 var newLink = link.cloneNode(true);
                 link.parentNode.replaceChild(newLink, link);
                 
@@ -337,11 +285,10 @@
                 return DEFAULT_TAB;
             }
 
-            if (this.tabs[hash] || this._registeredModules[hash]) {
+            if (this.tabs[hash]) {
                 return hash;
             }
 
-            console.warn('[TabManager] Unknown initial tab "' + hash + '", using default.');
             return DEFAULT_TAB;
         },
 
@@ -365,7 +312,6 @@
             }
 
             if (!this.tabs[tabName]) {
-                console.warn('[TabManager] Cannot switch to unknown tab "' + tabName + '"');
                 return;
             }
 
@@ -402,37 +348,22 @@
             var renderFn = this.tabs[tabName];
 
             if (!container) {
-                console.warn('[TabManager] Container not found for tab:', tabName);
                 return;
             }
 
-            // Make container visible
             container.style.display = 'block';
 
             if (!renderFn) {
-                if (this._registeredModules[tabName]) {
-                    container.innerHTML = '<p class="empty-state">Loading module... Please wait.</p>';
-                    return;
-                }
-                
-                if (this._failedModules[tabName]) {
-                    container.innerHTML = '<p class="empty-state">Failed to load module. Please refresh the page.</p>';
-                    return;
-                }
-
-                if (!container.innerHTML || container.innerHTML.trim() === '' || container.innerHTML.trim() === '<p class="empty-state">Module coming soon...</p>') {
+                if (!container.innerHTML || container.innerHTML.trim() === '') {
                     container.innerHTML = '<p class="empty-state">Module coming soon...</p>';
                 }
                 return;
             }
 
             try {
-                console.log('[TabManager] Rendering tab: "' + tabName + '"');
                 renderFn(container);
-                console.log('[TabManager] Tab "' + tabName + '" rendered successfully');
             } catch (e) {
                 console.error('[TabManager] Error rendering tab "' + tabName + '":', e);
-                this._failedModules[tabName] = true;
                 container.innerHTML = '<p class="empty-state">Error loading tab content. Please try again.</p>';
             }
         },
@@ -494,12 +425,6 @@
         var hash = window.location.hash.slice(1);
         if (hash && TabManager.tabs[hash]) {
             TabManager.switchTo(hash, false);
-        } else if (hash) {
-            console.warn('[TabManager] Unknown tab in URL: "' + hash + '"');
-            var container = TabManager.tabContentElements[hash];
-            if (container) {
-                container.innerHTML = '<p class="empty-state">Module coming soon...</p>';
-            }
         }
     });
 
@@ -512,14 +437,8 @@
         }
     });
 
-    document.addEventListener('dataReady', function(e) {
-        if (TabManager.isInitialized) {
-            TabManager.onDataReady();
-            TabManager.refreshCurrent();
-        } else {
-            TabManager._isDataReady = true;
-        }
-    });
+    // NOTE: dataReady listener REMOVED - TabManager is the single source of truth
+    // Modules should not auto-render on dataReady - TabManager handles this
 
     // ============================================================
     // EXPOSE
@@ -528,7 +447,7 @@
     window.TabManager = TabManager;
 
     // ============================================================
-    // AUTO-INIT - Simplified (no duplicate work)
+    // AUTO-INIT
     // ============================================================
 
     function initTabManager() {
