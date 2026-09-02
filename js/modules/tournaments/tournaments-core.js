@@ -32,6 +32,7 @@
  *   │ restore   │   -    │    ✓     │     -     │
  *   │ complete  │   -    │    ✓     │     -     │
  *   │ delete    │   ✓    │    ✓     │     ✓     │
+ *   │ change class│ ✓    │    ✓     │     ✓     │ ← NEW
  *   └─────────┴──────────┴──────────┴───────────┘
  *   * mode cannot change if participants exist
  * 
@@ -560,7 +561,10 @@
          * Rejects unknown update keys regardless of strict mode.
          * Validates proposed state leniently to preserve legacy fields.
          * 
-         * LIFECYCLE RULE: Only draft tournaments can be structurally modified.
+         * LIFECYCLE RULE: 
+         *   - Class updates (graduatingClassId, classFilterEnabled) are ALWAYS allowed
+         *   - Structural changes (name, mode, weeks, rounds) require draft status
+         *   - Name changes are allowed in active tournaments
          * 
          * @param {string} id - Tournament ID
          * @param {object} updates - Updates to apply
@@ -607,6 +611,11 @@
             });
 
             // ---- PHASE 2: LIFECYCLE CHECK ----
+            // Class updates (graduatingClassId, classFilterEnabled) are ALWAYS allowed
+            var isClassOnlyUpdate = Object.keys(updates).every(function(key) {
+                return key === 'graduatingClassId' || key === 'classFilterEnabled';
+            });
+
             // Structural changes (name, mode, weeks, rounds) require draft status
             var isStructuralUpdate = Object.keys(updates).some(function(key) {
                 return ['name', 'mode', 'startWeek', 'endWeek', 'totalRounds'].indexOf(key) !== -1;
@@ -622,6 +631,11 @@
                     console.error('[TournamentsCore] updateTournament: structural update rejected - tournament status is "' + tournament.status + '" (requires "draft")');
                     return null;
                 }
+            }
+
+            // Class-only updates are ALWAYS allowed, regardless of status
+            if (isClassOnlyUpdate) {
+                console.log('[TournamentsCore] Class-only update allowed for status "' + tournament.status + '"');
             }
 
             // ---- PHASE 3: REJECT UNKNOWN UPDATE KEYS (ALWAYS) ----
