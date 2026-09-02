@@ -238,6 +238,28 @@
     // POPULATE SELECTORS
     // ============================================================
 
+    function populateClassSelect(select) {
+        if (!select) return;
+
+        var classes = window.getGraduatingClasses ? window.getGraduatingClasses() : [];
+        var currentValue = select.value;
+
+        select.innerHTML = '<option value="">None</option>';
+
+        for (var i = 0; i < classes.length; i++) {
+            var cls = classes[i];
+            if (!cls || typeof cls !== 'object') continue;
+            if (!cls.id) continue;
+            var option = document.createElement('option');
+            option.value = cls.id;
+            option.textContent = cls.name || 'Unnamed Class';
+            if (String(cls.id) === String(currentValue)) {
+                option.selected = true;
+            }
+            select.appendChild(option);
+        }
+    }
+
     function populateParticipantSelect(select, tournament) {
         if (!select || !tournament) return;
 
@@ -779,8 +801,45 @@
 
         title.textContent = tournament ? 'Edit Tournament' : 'Create Tournament';
 
+        // Get the class filter from the global state if available
+        var classFilter = window._tournamentsClassFilter || 'all';
+        var preselectedClass = (classFilter !== 'all') ? classFilter : (tournament ? tournament.graduatingClassId : null);
+
         var html = Render.renderForm(tournament, Core.VALID_MODES, Core.VALID_STATUSES);
         content.innerHTML = html;
+
+        // Add class selector to the form
+        var form = content.querySelector('#tournament-form');
+        if (form) {
+            // Find the mode select and insert class selector after it
+            var modeGroup = form.querySelector('.form-group:has(#tourn-mode)');
+            if (modeGroup) {
+                var classGroup = document.createElement('div');
+                classGroup.className = 'form-group';
+                classGroup.innerHTML = `
+                    <label>Graduating Class</label>
+                    <select id="tourn-class">
+                        <option value="">None</option>
+                    </select>
+                    <div style="margin-top:4px;display:flex;align-items:center;gap:6px;">
+                        <input type="checkbox" id="tourn-class-filter-enabled" ${tournament && tournament.classFilterEnabled !== false ? 'checked' : 'checked'}>
+                        <label for="tourn-class-filter-enabled" style="font-size:0.7rem;color:var(--text-dim);">Only allow characters from this class</label>
+                    </div>
+                `;
+                modeGroup.parentNode.insertBefore(classGroup, modeGroup.nextSibling);
+                
+                // Populate class select
+                var classSelect = classGroup.querySelector('#tourn-class');
+                if (classSelect) {
+                    populateClassSelect(classSelect);
+                    if (preselectedClass) {
+                        classSelect.value = preselectedClass;
+                    } else if (tournament && tournament.graduatingClassId) {
+                        classSelect.value = tournament.graduatingClassId;
+                    }
+                }
+            }
+        }
 
         modal.dataset.editId = editId || '';
         modal.classList.remove('hidden');
@@ -802,15 +861,27 @@
 
             var editId = modal.dataset.editId;
 
-            // Read values as strings - let Core/Schema validate
+            // Read values
             var data = {
                 name: this.querySelector('#tourn-name').value.trim(),
                 mode: this.querySelector('#tourn-mode').value,
-                startWeek: this.querySelector('#tourn-start-week').value,
-                endWeek: this.querySelector('#tourn-end-week').value,
+                startWeek: parseInt(this.querySelector('#tourn-start-week').value, 10) || 1,
+                endWeek: parseInt(this.querySelector('#tourn-end-week').value, 10) || 52,
                 totalRounds: parseInt(this.querySelector('#tourn-total-rounds').value, 10) || 1,
                 status: this.querySelector('#tourn-status').value
             };
+
+            // Read class selector if present
+            var classSelect = this.querySelector('#tourn-class');
+            if (classSelect) {
+                data.graduatingClassId = classSelect.value || null;
+            }
+
+            // Read class filter checkbox if present
+            var filterCheckbox = this.querySelector('#tourn-class-filter-enabled');
+            if (filterCheckbox) {
+                data.classFilterEnabled = filterCheckbox.checked;
+            }
 
             if (!data.name) {
                 showNotification('Tournament name is required.', 'warning');
