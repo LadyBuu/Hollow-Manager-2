@@ -109,8 +109,11 @@
     var VALID_MODES = Schema.VALID_MODES;
     var VALID_STATUSES = Schema.VALID_STATUSES;
     var VALID_PARTICIPANT_TYPES = Schema.VALID_PARTICIPANT_TYPES;
+    
+    // UPDATEABLE_PROPERTIES - includes class fields
     var UPDATEABLE_PROPERTIES = [
-        'name', 'mode', 'startWeek', 'endWeek', 'totalRounds', 'status'
+        'name', 'mode', 'startWeek', 'endWeek', 'totalRounds', 'status',
+        'graduatingClassId', 'classFilterEnabled'
     ];
 
     var isObject = Schema.isObject;
@@ -484,6 +487,10 @@
 
             if (Number(startWeek) > Number(endWeek)) return null;
 
+            // Class fields
+            var graduatingClassId = data.graduatingClassId !== undefined ? data.graduatingClassId : null;
+            var classFilterEnabled = data.classFilterEnabled !== false;
+
             var appData = getDataStore();
             if (!appData) return null;
 
@@ -506,7 +513,9 @@
                 eliminations: [],
                 winner: null,
                 createdAt: new Date().toISOString(),
-                _schemaVersion: Schema.SCHEMA_VERSION
+                _schemaVersion: Schema.SCHEMA_VERSION,
+                graduatingClassId: graduatingClassId,
+                classFilterEnabled: classFilterEnabled
             };
 
             // ---- PHASE 4: VALIDATE COMPLETE OBJECT AGAINST SCHEMA ----
@@ -551,7 +560,7 @@
             // ---- PHASE 2: LIFECYCLE CHECK ----
             // Structural changes (name, mode, weeks, rounds) require draft status
             var isStructuralUpdate = Object.keys(updates).some(function(key) {
-                return UPDATEABLE_PROPERTIES.indexOf(key) !== -1;
+                return ['name', 'mode', 'startWeek', 'endWeek', 'totalRounds'].indexOf(key) !== -1;
             });
 
             if (isStructuralUpdate) {
