@@ -40,7 +40,8 @@
  *   - window.getDisplayName (from core-utils.js)
  *   - window.getCurrentEditId (from index.js)
  *   - window.saveData (from database.js)
- *   - window.db.createSafeCopy (from database.js)
+ *   - window.MutationUtils (from mutation-utils.js)
+ *   - window.DomUtils (from dom-utils.js)
  *   - window.logActivity (optional, for activity logging)
  *   - window.CALENDAR_CONSTANTS (from constants.js)
  *   - window.NotificationSystem (from notification.js)
@@ -59,8 +60,8 @@
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = window.CALENDAR_CONSTANTS.MIN_WEEK;
-    var MAX_WEEK = window.CALENDAR_CONSTANTS.MAX_WEEK;
+    var MIN_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MIN_WEEK : 1;
+    var MAX_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MAX_WEEK : 52;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -82,6 +83,11 @@
                 missing.push(name);
             }
         });
+
+        // Check for MutationUtils
+        if (!window.MutationUtils || typeof window.MutationUtils.createSafeBackup !== 'function') {
+            missing.push('MutationUtils.createSafeBackup');
+        }
 
         if (missing.length > 0) {
             console.warn('CharacterEliminations: Missing dependencies:', missing.join(', '));
@@ -127,10 +133,15 @@
     }
 
     // ============================================================
-    // SAFE BACKUP - Using database module's clone
+    // SAFE BACKUP - Delegate to MutationUtils
     // ============================================================
 
     function createSafeBackup(data) {
+        if (window.MutationUtils && typeof window.MutationUtils.createSafeBackup === 'function') {
+            return window.MutationUtils.createSafeBackup(data);
+        }
+
+        // Fallback implementation
         try {
             if (window.db && typeof window.db.createSafeCopy === 'function') {
                 return window.db.createSafeCopy(data);
@@ -413,7 +424,7 @@
     }
 
     // ============================================================
-    // ADD STANDALONE ELIMINATION
+    // ADD STANDALONE ELIMINATION - Fixed to use MutationUtils pattern
     // ============================================================
 
     function addStandaloneElimination() {
@@ -489,11 +500,18 @@
 
         rebuildEliminatedWeeks(char);
 
-        // SAVE - saveData is guaranteed by checkDependencies
-        Promise.resolve()
-            .then(function() {
-                return window.saveData();
-            })
+        // PERSIST - Use saveWithPromise from MutationUtils if available
+        var savePromise;
+        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
+            savePromise = window.MutationUtils.saveWithPromise();
+        } else {
+            savePromise = Promise.resolve()
+                .then(function() {
+                    return window.saveData();
+                });
+        }
+
+        savePromise
             .then(function() {
                 // LOG - failure-safe, persistence already succeeded
                 try {
@@ -576,12 +594,19 @@
         });
         rebuildEliminatedWeeks(char);
 
-        // SAVE - saveData is guaranteed by checkDependencies
+        // PERSIST - Use saveWithPromise from MutationUtils if available
         var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
-        Promise.resolve()
-            .then(function() {
-                return window.saveData();
-            })
+        var savePromise;
+        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
+            savePromise = window.MutationUtils.saveWithPromise();
+        } else {
+            savePromise = Promise.resolve()
+                .then(function() {
+                    return window.saveData();
+                });
+        }
+
+        savePromise
             .then(function() {
                 // LOG - failure-safe, persistence already succeeded
                 try {
@@ -679,12 +704,19 @@
 
         rebuildEliminatedWeeks(char);
 
-        // SAVE - saveData is guaranteed by checkDependencies
+        // PERSIST - Use saveWithPromise from MutationUtils if available
         var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
-        return Promise.resolve()
-            .then(function() {
-                return window.saveData();
-            })
+        var savePromise;
+        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
+            savePromise = window.MutationUtils.saveWithPromise();
+        } else {
+            savePromise = Promise.resolve()
+                .then(function() {
+                    return window.saveData();
+                });
+        }
+
+        return savePromise
             .then(function() {
                 // LOG - failure-safe, persistence already succeeded
                 try {
@@ -763,12 +795,19 @@
 
         rebuildEliminatedWeeks(char);
 
-        // SAVE - saveData is guaranteed by checkDependencies
+        // PERSIST - Use saveWithPromise from MutationUtils if available
         var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
-        return Promise.resolve()
-            .then(function() {
-                return window.saveData();
-            })
+        var savePromise;
+        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
+            savePromise = window.MutationUtils.saveWithPromise();
+        } else {
+            savePromise = Promise.resolve()
+                .then(function() {
+                    return window.saveData();
+                });
+        }
+
+        return savePromise
             .then(function() {
                 // LOG - failure-safe, persistence already succeeded
                 try {
@@ -831,5 +870,6 @@
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK
     };
+
 
 })();
