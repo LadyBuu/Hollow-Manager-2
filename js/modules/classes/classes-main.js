@@ -11,7 +11,7 @@
  *   - Classes: Create/manage graduating classes, add members
  *   - Rankings: Class-based rankings (placeholder)
  *   - Groups: Auto-groups scoped to graduating classes (placeholder)
- *   - Tournaments: Class-based tournaments with filtering
+ *   - Tournaments: Class-based tournaments (uses existing TournamentsUI)
  */
 
 (function() {
@@ -450,7 +450,7 @@
     }
 
     // ============================================================
-    // TOURNAMENTS - Full integration with class filtering
+    // TOURNAMENTS - Uses existing TournamentsUI with class filter
     // ============================================================
 
     function renderTournamentsContent(container) {
@@ -460,7 +460,7 @@
         if (typeof window.TournamentsUI !== 'undefined' && 
             typeof window.TournamentsUI.render === 'function') {
             
-            // Wrap the tournament render with class filter support
+            // Render the tournaments with class filter wrapper
             renderTournamentsWithClassFilter(container);
             return;
         }
@@ -476,51 +476,15 @@
                 <h2>Tournaments</h2>
                 <button id="create-tournament-btn" class="primary">+ New Tournament</button>
             </div>
-            <div class="tournaments-controls" style="margin-bottom:12px;">
-                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                    <label style="font-size:0.75rem;color:var(--text-dim);">Class:</label>
-                    <select id="tournaments-class-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
-                        <option value="all">All Classes</option>
-                    </select>
-                </div>
-            </div>
-            <div id="tournaments-container">
-                <p class="empty-state">Tournaments module not loaded. Please refresh.</p>
-            </div>
+            <p class="empty-state">Tournaments module not loaded. Please refresh.</p>
         `;
     }
 
     function renderTournamentsWithClassFilter(container) {
-        // Get the class filter
+        // Build the tournament container with class filter
         var classFilter = getClassFilterValue();
-        
-        // Create a wrapper that filters tournaments by class
-        var allTournaments = window.TournamentsCore ? window.TournamentsCore.getTournaments() : [];
-        
-        var filteredTournaments = allTournaments;
-        if (classFilter && classFilter !== 'all') {
-            filteredTournaments = allTournaments.filter(function(t) {
-                return t && String(t.graduatingClassId) === String(classFilter);
-            });
-        }
-
-        // Render the tournaments UI with filter
-        var html = getTournamentsWithFilterHTML(classFilter, filteredTournaments);
-        container.innerHTML = html;
-        
-        // Bind events
-        bindTournamentEvents(container, classFilter);
-        
-        // If TournamentsUI is available, use it for detail rendering
-        if (typeof window.TournamentsUI !== 'undefined' && 
-            typeof window.TournamentsUI.render === 'function') {
-            // The detail view will be handled by the UI module
-        }
-    }
-
-    function getTournamentsWithFilterHTML(classFilter, tournaments) {
         var classFilterOptions = getClassFilterOptions(classFilter);
-        
+
         var html = `
             <div class="page-header">
                 <h2>Tournaments</h2>
@@ -535,12 +499,27 @@
                     <button id="refresh-tournaments-btn" class="small secondary">Refresh</button>
                 </div>
             </div>
-            <div id="tournaments-container">
-                ${renderTournamentList(tournaments)}
+            <div id="tournaments-list-container">
+                <!-- Tournaments will be rendered here by TournamentsUI -->
             </div>
         `;
-        
-        return html;
+
+        container.innerHTML = html;
+
+        // Now use TournamentsUI to render the actual tournaments
+        var listContainer = container.querySelector('#tournaments-list-container');
+        if (listContainer && typeof window.TournamentsUI !== 'undefined' && 
+            typeof window.TournamentsUI.render === 'function') {
+            
+            // Store the class filter for the tournament UI to use
+            window._tournamentsClassFilter = classFilter;
+            
+            // Call the existing tournament renderer
+            window.TournamentsUI.render(listContainer);
+        }
+
+        // Bind events
+        bindTournamentEvents(container);
     }
 
     function getClassFilterOptions(selected) {
@@ -556,65 +535,13 @@
         return html;
     }
 
-    function renderTournamentList(tournaments) {
-        if (!tournaments || tournaments.length === 0) {
-            return '<p class="empty-state">No tournaments found for this class.</p>';
-        }
-
-        var html = '';
-        html += '<div class="list-header tourn-header" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr;gap:8px;padding:8px 12px;background:var(--panel-alt);border-radius:6px 6px 0 0;border:1px solid var(--border);border-bottom:none;font-weight:600;font-size:0.7rem;color:var(--text-dim);">';
-        html += '<span>Name</span>';
-        html += '<span>Class</span>';
-        html += '<span>Mode</span>';
-        html += '<span>Rounds</span>';
-        html += '<span>Participants</span>';
-        html += '<span>Status</span>';
-        html += '</div>';
-
-        tournaments.forEach(function(tourn) {
-            var className = 'None';
-            if (tourn.graduatingClassId) {
-                var cls = window.getGraduatingClass ? window.getGraduatingClass(tourn.graduatingClassId) : null;
-                if (cls) {
-                    className = cls.name;
-                }
-            }
-            
-            var participantCount = Array.isArray(tourn.participants) ? tourn.participants.length : 0;
-            var roundCount = Array.isArray(tourn.rounds) ? tourn.rounds.length : 0;
-            var statusDisplay = getStatusDisplay(tourn.status);
-            var isComplete = tourn.status === 'completed';
-
-            html += '<div class="list-item tourn-item" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr;gap:8px;padding:8px 12px;background:var(--panel);border:1px solid var(--border);border-top:none;" data-id="' + escapeHtml(tourn.id) + '">';
-            html += '<span><strong>' + escapeHtml(tourn.name || 'Unnamed') + '</strong>' +
-                (isComplete ? ' ★' : '') + '</span>';
-            html += '<span style="font-size:0.7rem;color:var(--text-dim);">' + escapeHtml(className) + '</span>';
-            html += '<span style="font-size:0.7rem;">' + escapeHtml(tourn.mode || 'teams') + '</span>';
-            html += '<span style="font-size:0.7rem;">' + roundCount + '/' + escapeHtml(tourn.totalRounds || 1) + '</span>';
-            html += '<span style="font-size:0.7rem;">' + participantCount + '</span>';
-            html += '<span style="font-size:0.7rem;color:' + statusDisplay.color + ';">' + escapeHtml(statusDisplay.label) + '</span>';
-            html += '</div>';
-        });
-
-        return html;
-    }
-
-    function getStatusDisplay(status) {
-        var map = {
-            'draft': { label: 'Draft', color: 'var(--text-dim)' },
-            'active': { label: 'Active', color: 'var(--accent)' },
-            'completed': { label: 'Completed', color: 'var(--info)' }
-        };
-        return map[status] || { label: status || 'Unknown', color: 'var(--text-dim)' };
-    }
-
     function getClassFilterValue() {
         var select = document.getElementById('tournaments-class-filter');
         return select ? select.value : 'all';
     }
 
-    function bindTournamentEvents(container, classFilter) {
-        // Class filter change
+    function bindTournamentEvents(container) {
+        // Class filter change - re-render with new filter
         var classFilterEl = container.querySelector('#tournaments-class-filter');
         if (classFilterEl) {
             var newFilter = classFilterEl.cloneNode(true);
@@ -634,7 +561,7 @@
             });
         }
 
-        // Create tournament button - use the tournament module if available
+        // Create tournament button
         var createBtn = container.querySelector('#create-tournament-btn');
         if (createBtn) {
             var newCreate = createBtn.cloneNode(true);
@@ -650,24 +577,6 @@
                 }
             });
         }
-
-        // Click on tournament items to view details
-        var items = container.querySelectorAll('.tourn-item');
-        items.forEach(function(item) {
-            var newItem = item.cloneNode(true);
-            item.parentNode.replaceChild(newItem, item);
-            newItem.addEventListener('click', function() {
-                var id = this.dataset.id;
-                if (id && typeof window.TournamentsUI !== 'undefined' && 
-                    typeof window.TournamentsUI.viewTournament === 'function') {
-                    window.TournamentsUI.viewTournament(id);
-                } else if (typeof window.viewTournament === 'function') {
-                    window.viewTournament(id);
-                } else {
-                    alert('Tournament details coming soon.');
-                }
-            });
-        });
     }
 
     // ============================================================
