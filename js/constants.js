@@ -12,6 +12,7 @@
  *   - Status constants (valid statuses for all entity types)
  *   - Validation constants (length limits, counts)
  *   - Data version constants
+ *   - Character constants (magic, stats, classes - SINGLE SOURCE OF TRUTH)
  * 
  * IMPORTANT:
  *   - Load this module FIRST before any other module
@@ -19,6 +20,7 @@
  *   - Constants are READ-ONLY - do not modify them at runtime
  *   - Use these constants instead of duplicating values
  *   - Helper functions are provided for derived values
+ *   - This is the SINGLE SOURCE OF TRUTH for character constants
  * 
  * LOAD ORDER:
  *   <script src="js/constants.js"></script>  <!-- FIRST -->
@@ -30,7 +32,12 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
+    // ============================================================
+    // GUARD AGAINST DUPLICATE LOADING
+    // ============================================================
+    
+    // This is the FIRST module loaded, but we still need the guard
+    // in case of script reloading or duplicate script tags
     if (window.__constantsLoaded) {
         return;
     }
@@ -276,7 +283,8 @@
             MISSION: 'miss',
             RELATIONSHIP: 'rel',
             ELIMINATION: 'elim',
-            ACTIVITY: 'act'
+            ACTIVITY: 'act',
+            GRADUATING_CLASS: 'gradclass'
         }
     };
 
@@ -311,6 +319,178 @@
         /** Valid sexuality values (for suggestions) */
         SEXUALITY_VALUES: ['', 'Heterosexual', 'Homosexual', 'Bisexual', 'Pansexual', 'Asexual', 'Questioning', 'Other']
     };
+
+    // ============================================================
+    // CLASS DEFINITIONS - SINGLE SOURCE OF TRUTH
+    // ============================================================
+
+    window.CLASS_DEFINITIONS = [
+        {
+            id: 'warrior',
+            label: 'Warrior',
+            icon: '⚔',
+            primaryStats: ['str', 'con'],
+            secondaryStats: ['dex'],
+            statWeights: { str: 0.5, con: 0.3, dex: 0.15, wis: 0.05 },
+            minStats: { str: 14, con: 12 },
+            priority: 5,
+            description: 'Masters of combat who rely on strength and endurance to overpower their foes.'
+        },
+        {
+            id: 'skirmisher',
+            label: 'Skirmisher',
+            icon: '🏹',
+            primaryStats: ['dex', 'wis'],
+            secondaryStats: ['con', 'str'],
+            statWeights: { dex: 0.45, wis: 0.25, con: 0.15, str: 0.1, int: 0.05 },
+            minStats: { dex: 14, wis: 12 },
+            priority: 4,
+            description: 'Agile fighters who excel at ranged combat and hit-and-run tactics.'
+        },
+        {
+            id: 'protector',
+            label: 'Protector',
+            icon: '🛡',
+            primaryStats: ['str', 'con'],
+            secondaryStats: ['wis', 'cha'],
+            statWeights: { str: 0.35, con: 0.35, wis: 0.15, cha: 0.1, dex: 0.05 },
+            minStats: { str: 14, con: 14 },
+            priority: 4,
+            description: 'Defenders who shield others from harm and stand firm against any threat.'
+        },
+        {
+            id: 'sage',
+            label: 'Sage',
+            icon: '📚',
+            primaryStats: ['int', 'wis'],
+            secondaryStats: ['con', 'dex'],
+            statWeights: { int: 0.4, wis: 0.3, con: 0.15, dex: 0.1, cha: 0.05 },
+            minStats: { int: 14, wis: 12 },
+            priority: 4,
+            description: 'Scholars and keepers of ancient knowledge who wield intellect as their weapon.'
+        },
+        {
+            id: 'mystic',
+            label: 'Mystic',
+            icon: '✦',
+            primaryStats: ['wis', 'cha'],
+            secondaryStats: ['con', 'int'],
+            statWeights: { wis: 0.4, cha: 0.3, con: 0.15, int: 0.1, dex: 0.05 },
+            minStats: { wis: 14, cha: 12 },
+            priority: 4,
+            description: 'Channelers of spiritual and arcane forces who draw power from within.'
+        },
+        {
+            id: 'stalker',
+            label: 'Stalker',
+            icon: '🗡',
+            primaryStats: ['dex', 'int'],
+            secondaryStats: ['cha', 'wis'],
+            statWeights: { dex: 0.4, int: 0.25, cha: 0.2, wis: 0.1, str: 0.05 },
+            minStats: { dex: 14, int: 12 },
+            priority: 4,
+            description: 'Masters of stealth and subterfuge who strike from the shadows.'
+        },
+        {
+            id: 'spellblade',
+            label: 'Spellblade',
+            icon: '⚡',
+            primaryStats: ['str', 'int'],
+            secondaryStats: ['dex', 'con'],
+            statWeights: { str: 0.35, int: 0.35, dex: 0.15, con: 0.1, wis: 0.05 },
+            minStats: { str: 13, int: 13 },
+            priority: 4,
+            description: 'Warriors who weave magic into combat, blending steel and sorcery.'
+        },
+        {
+            id: 'channeler',
+            label: 'Channeler',
+            icon: '✦',
+            primaryStats: ['cha', 'con'],
+            secondaryStats: ['dex', 'int'],
+            statWeights: { cha: 0.4, con: 0.25, dex: 0.2, int: 0.1, wis: 0.05 },
+            minStats: { cha: 14, con: 12 },
+            priority: 4,
+            description: 'Mages who channel raw magical energy through force of personality.'
+        },
+        {
+            id: 'warden',
+            label: 'Warden',
+            icon: '⚔',
+            primaryStats: ['str', 'wis'],
+            secondaryStats: ['con', 'dex'],
+            statWeights: { str: 0.35, wis: 0.3, con: 0.2, dex: 0.1, cha: 0.05 },
+            minStats: { str: 13, wis: 13 },
+            priority: 4,
+            description: 'Guardians of nature and natural order who protect the wild places.'
+        },
+        {
+            id: 'adept',
+            label: 'Adept',
+            icon: '✦',
+            primaryStats: ['dex', 'wis'],
+            secondaryStats: ['con', 'str'],
+            statWeights: { dex: 0.4, wis: 0.35, con: 0.15, str: 0.1, int: 0.05 },
+            minStats: { dex: 14, wis: 14 },
+            priority: 5,
+            description: 'Masters of mind-body discipline who achieve perfection through training.'
+        },
+        {
+            id: 'artificer',
+            label: 'Artificer',
+            icon: '⚙',
+            primaryStats: ['int', 'dex'],
+            secondaryStats: ['con', 'wis'],
+            statWeights: { int: 0.4, dex: 0.25, con: 0.2, wis: 0.1, cha: 0.05 },
+            minStats: { int: 14, dex: 12 },
+            priority: 4,
+            description: 'Inventors and creators of wondrous devices who blend magic with craft.'
+        },
+        {
+            id: 'occultist',
+            label: 'Occultist',
+            icon: '✦',
+            primaryStats: ['int', 'cha'],
+            secondaryStats: ['con', 'dex'],
+            statWeights: { int: 0.35, cha: 0.35, con: 0.15, dex: 0.1, wis: 0.05 },
+            minStats: { int: 14, cha: 14 },
+            priority: 5,
+            description: 'Seekers of forbidden and hidden knowledge who bargain with dark powers.'
+        },
+        {
+            id: 'blade_dancer',
+            label: 'Blade Dancer',
+            icon: '🗡',
+            primaryStats: ['dex', 'cha'],
+            secondaryStats: ['str', 'con'],
+            statWeights: { dex: 0.4, cha: 0.3, str: 0.15, con: 0.1, wis: 0.05 },
+            minStats: { dex: 14, cha: 12 },
+            priority: 4,
+            description: 'Graceful warriors who move like the wind, turning combat into art.'
+        },
+        {
+            id: 'elementalist',
+            label: 'Elementalist',
+            icon: '✦',
+            primaryStats: ['int', 'wis'],
+            secondaryStats: ['con', 'dex'],
+            statWeights: { int: 0.45, wis: 0.25, con: 0.15, dex: 0.1, cha: 0.05 },
+            minStats: { int: 14, wis: 12 },
+            priority: 4,
+            description: 'Masters of the primal elements who command fire, water, earth, and air.'
+        },
+        {
+            id: 'sentinel',
+            label: 'Sentinel',
+            icon: '🛡',
+            primaryStats: ['str', 'con'],
+            secondaryStats: ['wis', 'dex'],
+            statWeights: { str: 0.3, con: 0.35, wis: 0.2, dex: 0.1, cha: 0.05 },
+            minStats: { str: 14, con: 14 },
+            priority: 5,
+            description: 'Unyielding guardians and protectors who never retreat from their duty.'
+        }
+    ];
 
     // ============================================================
     // HELPER FUNCTIONS - Derived from constants
@@ -460,6 +640,56 @@
      */
     window.isValidNameFormat = function(format) {
         return window.CHARACTER_CONSTANTS.NAME_FORMATS.indexOf(format) !== -1;
+    };
+
+    /**
+     * Get a class definition by ID.
+     * @param {string} id - Class ID
+     * @returns {object|null} Class definition or null if not found
+     */
+    window.getClassDefinition = function(id) {
+        var definitions = window.CLASS_DEFINITIONS;
+        for (var i = 0; i < definitions.length; i++) {
+            if (definitions[i].id === id) {
+                return definitions[i];
+            }
+        }
+        return null;
+    };
+
+    /**
+     * Check if a class ID is valid.
+     * @param {string} id - Class ID
+     * @returns {boolean} True if valid
+     */
+    window.isValidClassId = function(id) {
+        var definitions = window.CLASS_DEFINITIONS;
+        for (var i = 0; i < definitions.length; i++) {
+            if (definitions[i].id === id) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    /**
+     * Get all class definitions.
+     * @returns {object[]} Array of class definitions
+     */
+    window.getClassDefinitions = function() {
+        return window.CLASS_DEFINITIONS.slice();
+    };
+
+    /**
+     * Get class definitions sorted by priority.
+     * @returns {object[]} Array of class definitions sorted by priority
+     */
+    window.getClassDefinitionsByPriority = function() {
+        return window.CLASS_DEFINITIONS.slice().sort(function(a, b) {
+            var priorityDiff = (b.priority || 0) - (a.priority || 0);
+            if (priorityDiff !== 0) return priorityDiff;
+            return (a.label || '').localeCompare(b.label || '');
+        });
     };
 
 })();
