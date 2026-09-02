@@ -20,6 +20,7 @@
  *   - window.UI_CONSTANTS (from constants.js)
  *   - window.NotificationSystem (from notification.js)
  *   - window.TabManager (from tab-manager.js)
+ *   - window.CoreUtils (from core-utils.js)
  *   - window.data (from database.js)
  * 
  * INTEGRATION WITH CHARACTER SYSTEM:
@@ -36,7 +37,11 @@
     // INITIALIZATION GUARD
     // ============================================================
 
-    var appInitialized = false;
+    if (window.__appLoaded) {
+        return;
+    }
+    window.__appLoaded = true;
+
     var _dataReadyFired = false;
 
     // ============================================================
@@ -65,7 +70,6 @@
         if (toggle._burgerInitialized) return;
         toggle._burgerInitialized = true;
         
-        // Toggle menu on button click
         toggle.addEventListener('click', function(e) {
             e.stopPropagation();
             var isOpen = nav.classList.toggle('open');
@@ -76,7 +80,6 @@
             }
         });
         
-        // Click outside to close
         document.addEventListener('click', function(e) {
             if (nav.classList.contains('open')) {
                 var isInsideNav = nav.contains(e.target);
@@ -94,7 +97,6 @@
             }
         });
 
-        // Close menu when a nav link is clicked
         nav.querySelectorAll('a').forEach(function(link) {
             link.addEventListener('click', function() {
                 nav.classList.remove('open');
@@ -108,22 +110,16 @@
     }
 
     // ============================================================
-    // RENDER ALL FUNCTION - CLEAN BOUNDARY
+    // RENDER ALL - Delegates to TabManager
     // ============================================================
 
     function renderAll() {
-        var currentTab = 'dashboard';
-        
-        if (window.TabManager && typeof window.TabManager.getCurrentTab === 'function') {
-            currentTab = window.TabManager.getCurrentTab();
-        }
-        
-        if (window.TabManager && typeof window.TabManager.forceRefresh === 'function') {
-            window.TabManager.forceRefresh(currentTab);
-        } else if (window.renderDashboard) {
-            // Fallback: just render dashboard
+        if (window.TabManager && typeof window.TabManager.refreshCurrent === 'function') {
+            window.TabManager.refreshCurrent();
+        } else {
+            // Fallback: render dashboard
             var tab = document.getElementById('tab-dashboard');
-            if (tab) {
+            if (tab && window.renderDashboard) {
                 window.renderDashboard(tab);
             }
         }
@@ -136,37 +132,43 @@
     function logActivity(message, type) {
         type = type || 'info';
         
-        // Update in-memory state only - caller is responsible for persistence
-        if (window.data) {
-            if (!Array.isArray(window.data.activities)) {
-                window.data.activities = [];
-            }
-            
-            window.data.activities.unshift({
-                id: Date.now() + '_' + Math.random().toString(36).slice(2, 6),
-                message: message,
-                type: type,
-                timestamp: new Date().toISOString()
-            });
-            
-            // Keep only the last 100 activities
-            if (window.data.activities.length > 100) {
-                window.data.activities.length = 100;
-            }
+        if (!window.data) {
+            return;
+        }
+
+        if (!Array.isArray(window.data.activities)) {
+            window.data.activities = [];
+        }
+        
+        var id;
+        if (window.CoreUtils && typeof window.CoreUtils.generateId === 'function') {
+            id = window.CoreUtils.generateId('act');
+        } else {
+            id = Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+        }
+        
+        window.data.activities.unshift({
+            id: id,
+            message: String(message),
+            type: type,
+            timestamp: new Date().toISOString()
+        });
+        
+        if (window.data.activities.length > 100) {
+            window.data.activities.length = 100;
         }
     }
 
     // ============================================================
-    // DATA READY HANDLER - Coordinates tab system loading
+    // DATA READY HANDLER - Simplified
     // ============================================================
 
     function handleDataReady(e) {
-        var detail = e && e.detail;
-        var status = detail ? detail.status : null;
-        
-        // Prevent duplicate handling
         if (_dataReadyFired) return;
         _dataReadyFired = true;
+
+        var detail = e && e.detail;
+        var status = detail ? detail.status : null;
 
         if (status === 'failed') {
             var error = detail ? detail.error : null;
@@ -174,54 +176,23 @@
             return;
         }
 
-        // Data loaded successfully
         handleDataSuccess(detail ? detail.data : null);
     }
 
     function handleDataSuccess(data) {
-        // Data is already in window.data from database.js
         // Notify TabManager that data is ready
-        if (window.TabManager) {
-            // If TabManager has onDataReady method, call it
-            if (typeof window.TabManager.onDataReady === 'function') {
-                window.TabManager.onDataReady();
-            } 
-            // Otherwise, set data ready state directly and process pending tab
-            else if (window.TabManager._state) {
-                window.TabManager._state.isDataReady = true;
-                
-                // Process any pending tab
-                if (window.TabManager._state.pendingTab) {
-                    var tab = window.TabManager._state.pendingTab;
-                    var history = window.TabManager._state.pendingUpdateHistory;
-                    window.TabManager._state.pendingTab = null;
-                    window.TabManager._state.pendingUpdateHistory = false;
-                    
-                    if (typeof window.TabManager.switchTo === 'function') {
-                        window.TabManager.switchTo(tab, history);
-                    }
-                } else {
-                    // Refresh current tab if initialized
-                    if (window.TabManager.isInitialized && typeof window.TabManager.refreshCurrent === 'function') {
-                        window.TabManager.refreshCurrent();
-                    }
-                }
-            }
+        if (window.TabManager && typeof window.TabManager.onDataReady === 'function') {
+            window.TabManager.onDataReady();
         }
 
         // Render dashboard
         var tab = document.getElementById('tab-dashboard');
         if (tab && window.renderDashboard) {
-            window.renderDashboard(tab);
-        }
-
-        // Log success
-        if (data) {
-            var msg = 'Data loaded successfully. ';
-            msg += (data.characters ? data.characters.length : 0) + ' characters, ';
-            msg += (data.teams ? data.teams.length : 0) + ' teams, ';
-            msg += (data.tournaments ? data.tournaments.length : 0) + ' tournaments.';
-            console.info(msg);
+            try {
+                window.renderDashboard(tab);
+            } catch (e) {
+                // Ignore dashboard render errors during startup
+            }
         }
     }
 
@@ -232,13 +203,11 @@
             message = 'Data loading failed: ' + error.message;
         }
         
-        // Show notification if available
         if (window.NotificationSystem && typeof window.NotificationSystem.notifyError === 'function') {
-            window.NotificationSystem.notifyError(message, 0); // Persistent
+            window.NotificationSystem.notifyError(message, 0);
         } else if (window.showToast) {
             window.showToast(message, 'error');
         } else {
-            // Fallback: show in dashboard
             var el = document.getElementById('tab-dashboard');
             if (el) {
                 el.innerHTML = '<p class="empty-state" style="color:var(--danger);padding:20px;">' + message + '</p>';
@@ -247,57 +216,9 @@
         
         console.error('Data loading failed:', error);
         
-        // Notify TabManager of failure so it can show error state
         if (window.TabManager && typeof window.TabManager.onDataReady === 'function') {
             window.TabManager.onDataReady();
         }
-    }
-
-    // ============================================================
-    // APP INITIALIZATION
-    // ============================================================
-
-    function initApp() {
-        // Guard against duplicate initialization
-        if (appInitialized) return;
-        appInitialized = true;
-
-        // Initialize burger menu (static HTML)
-        initBurgerMenu();
-        
-        // Set up data ready listener
-        document.addEventListener('dataReady', handleDataReady);
-        
-        // Close menu when tab changes
-        document.addEventListener('tabChanged', function() {
-            closeMobileNav();
-        });
-        
-        // Resize handler - closes mobile menu on desktop
-        var resizeTimeout;
-        window.addEventListener('resize', function() {
-            clearTimeout(resizeTimeout);
-            resizeTimeout = setTimeout(function() {
-                if (window.innerWidth >= UI.MOBILE_BREAKPOINT) {
-                    closeMobileNav();
-                }
-            }, UI.DEBOUNCE_DELAY);
-        });
-
-        // If data is already loaded (database.js loaded before app.js),
-        // handle it immediately
-        if (window.data) {
-            // Don't fire dataReady again, but do handle the initial state
-            if (!_dataReadyFired) {
-                _dataReadyFired = true;
-                setTimeout(function() {
-                    handleDataSuccess(window.data);
-                }, 10);
-            }
-        }
-
-        // Log initialization (no console.log in production, but this is helpful)
-        console.info('App initialized');
     }
 
     // ============================================================
@@ -318,6 +239,37 @@
     }
 
     // ============================================================
+    // APP INITIALIZATION
+    // ============================================================
+
+    function initApp() {
+        initBurgerMenu();
+        
+        document.addEventListener('dataReady', handleDataReady);
+        
+        document.addEventListener('tabChanged', function() {
+            closeMobileNav();
+        });
+        
+        var resizeTimeout;
+        window.addEventListener('resize', function() {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(function() {
+                if (window.innerWidth >= UI.MOBILE_BREAKPOINT) {
+                    closeMobileNav();
+                }
+            }, UI.DEBOUNCE_DELAY);
+        });
+
+        if (window.data && !_dataReadyFired) {
+            _dataReadyFired = true;
+            setTimeout(function() {
+                handleDataSuccess(window.data);
+            }, 10);
+        }
+    }
+
+    // ============================================================
     // EXPOSE FUNCTIONS
     // ============================================================
 
@@ -328,7 +280,7 @@
     window.closeMobileNav = closeMobileNav;
 
     // ============================================================
-    // AUTO-INIT - No arbitrary delay
+    // AUTO-INIT
     // ============================================================
 
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
