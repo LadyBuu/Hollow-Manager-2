@@ -4,16 +4,20 @@
  * Path: utils/dom-utils.js
  * 
  * This module provides:
- *   - HTML escaping for XSS prevention
- *   - Safe element creation with textContent (safe attribute insertion)
+ *   - HTML escaping for XSS prevention (SINGLE SOURCE OF TRUTH)
+ *   - Safe element creation with textContent
  *   - DOM traversal helpers
  *   - Event delegation helpers
  *   - Modal lifecycle management (with proper cleanup and race prevention)
  *   - Notification helpers
  *   - Form helpers with consistent checkbox/radio semantics
  *   - Throttle utility
+ *   - Scroll helpers
+ *   - Visibility helpers
  * 
  * IMPORTANT:
+ *   - THIS IS THE SINGLE SOURCE OF TRUTH for escapeHtml()
+ *   - All modules MUST use DomUtils.escapeHtml() - do NOT duplicate
  *   - Functions avoid mutating application/domain state
  *   - DOM mutation is intentional and limited to UI operations
  *   - All user-controlled content must go through escapeHtml()
@@ -32,12 +36,21 @@
     window.__domUtilsLoaded = true;
 
     // ============================================================
-    // HTML ESCAPING - XSS PREVENTION
+    // HTML ESCAPING - XSS PREVENTION (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
     /**
      * Escape HTML special characters to prevent XSS.
      * Use for ALL user-controlled content before inserting into HTML.
+     * 
+     * @param {*} value - Value to escape
+     * @returns {string} Escaped string
+     * 
+     * USAGE:
+     *   var safe = DomUtils.escapeHtml(userInput);
+     *   element.innerHTML = '<div>' + safe + '</div>';
+     *   // OR use textContent for even safer insertion:
+     *   element.textContent = userInput; // No escaping needed
      */
     function escapeHtml(value) {
         if (value === undefined || value === null) {
@@ -57,6 +70,9 @@
     /**
      * Escape HTML for use in attribute values.
      * More restrictive than escapeHtml for attribute contexts.
+     * 
+     * @param {*} value - Value to escape
+     * @returns {string} Escaped string safe for attribute values
      */
     function escapeAttribute(value) {
         if (value === undefined || value === null) {
@@ -78,6 +94,9 @@
      * Encode a value for use as a URL component or query parameter.
      * This does not validate URL schemes or make an entire URL safe.
      * For complete URLs from users, validate the scheme separately.
+     * 
+     * @param {*} value - Value to encode
+     * @returns {string} URL-encoded string
      */
     function encodeUrlComponent(value) {
         if (value === undefined || value === null) {
@@ -99,6 +118,9 @@
      * This is a validator for CSS VALUES, not a general-purpose CSS escaper.
      * Allows: hex colors, rgb/rgba, hsl/hsla, safe CSS identifiers.
      * Returns empty string for unsafe values.
+     * 
+     * @param {*} value - CSS value to sanitise
+     * @returns {string} Sanitised value or empty string if unsafe
      */
     function sanitizeCssValue(value) {
         if (value === undefined || value === null) {
@@ -143,6 +165,12 @@
      * - className and attribute names must be developer-controlled
      * - attribute values are assigned through setAttribute (safe)
      * - Do not pass untrusted attribute names
+     * 
+     * @param {string} tag - HTML tag name
+     * @param {string|string[]} className - CSS class name(s)
+     * @param {*} text - Text content (safe, escapes automatically)
+     * @param {object} attributes - Key-value pairs of attributes
+     * @returns {HTMLElement}
      */
     function createElement(tag, className, text, attributes) {
         var el = document.createElement(tag);
@@ -283,6 +311,13 @@
      * in the template literal itself, not in interpolated positions.
      * There is no way to intentionally interpolate raw HTML through
      * this function - that is intentional for security.
+     * 
+     * @param {TemplateStringsArray} strings - Template strings
+     * @param {...*} args - Values to interpolate (auto-escaped)
+     * @returns {string} Safe HTML string
+     * 
+     * USAGE:
+     *   var html = DomUtils.safeHtml`<div>${userName}</div>`;
      */
     function safeHtml(strings) {
         var args = Array.prototype.slice.call(arguments, 1);
@@ -301,6 +336,10 @@
     /**
      * Build an HTML attribute string with escaped values.
      * NOTE: Attribute name must be developer-controlled.
+     * 
+     * @param {string} name - Attribute name (developer-controlled)
+     * @param {*} value - Attribute value (auto-escaped)
+     * @returns {string} Safe attribute string
      */
     function safeAttr(name, value) {
         if (value === undefined || value === null) {
@@ -312,6 +351,9 @@
     /**
      * Build multiple HTML attributes with escaped values.
      * NOTE: Attribute names must be developer-controlled.
+     * 
+     * @param {object} attrs - Key-value pairs of attributes
+     * @returns {string} Safe attribute string
      */
     function safeAttrs(attrs) {
         var result = '';
@@ -333,6 +375,10 @@
     /**
      * Find the closest ancestor matching a selector.
      * Defensively handles non-Element event targets.
+     * 
+     * @param {HTMLElement} el - Starting element
+     * @param {string} selector - CSS selector
+     * @returns {HTMLElement|null} Closest ancestor or null
      */
     function closest(el, selector) {
         if (!el) return null;
@@ -353,6 +399,10 @@
 
     /**
      * Find all descendants matching a selector.
+     * 
+     * @param {HTMLElement} el - Parent element
+     * @param {string} selector - CSS selector
+     * @returns {HTMLElement[]} Array of matching elements
      */
     function findAll(el, selector) {
         if (!el) return [];
@@ -361,6 +411,10 @@
 
     /**
      * Find the first descendant matching a selector.
+     * 
+     * @param {HTMLElement} el - Parent element
+     * @param {string} selector - CSS selector
+     * @returns {HTMLElement|null} First matching element or null
      */
     function findOne(el, selector) {
         if (!el) return null;
@@ -369,6 +423,10 @@
 
     /**
      * Get the data attribute value from an element.
+     * 
+     * @param {HTMLElement} el - Element
+     * @param {string} key - Data attribute key (without 'data-')
+     * @returns {string|null} Attribute value or null
      */
     function getData(el, key) {
         if (!el) return null;
@@ -377,6 +435,10 @@
 
     /**
      * Set the data attribute value on an element.
+     * 
+     * @param {HTMLElement} el - Element
+     * @param {string} key - Data attribute key (without 'data-')
+     * @param {*} value - Value to set
      */
     function setData(el, key, value) {
         if (!el) return;
@@ -387,12 +449,30 @@
 
     /**
      * Remove a data attribute from an element.
+     * 
+     * @param {HTMLElement} el - Element
+     * @param {string} key - Data attribute key (without 'data-')
      */
     function removeData(el, key) {
         if (!el) return;
         if (el.dataset) {
             delete el.dataset[key];
         }
+    }
+
+    /**
+     * Check if an element matches a selector.
+     * 
+     * @param {HTMLElement} el - Element
+     * @param {string} selector - CSS selector
+     * @returns {boolean} True if matches
+     */
+    function matches(el, selector) {
+        if (!el) return false;
+        if (typeof el.matches === 'function') {
+            return el.matches(selector);
+        }
+        return false;
     }
 
     // ============================================================
@@ -402,13 +482,19 @@
     /**
      * Delegate events to a parent element.
      * Defensively handles non-Element event targets.
+     * 
+     * @param {HTMLElement} parent - Parent element for delegation
+     * @param {string} selector - CSS selector for target elements
+     * @param {string} eventName - Event name (e.g., 'click')
+     * @param {Function} handler - Event handler (receives event and matched element)
+     * @returns {Function} Cleanup function to remove listener
      */
     function delegate(parent, selector, eventName, handler) {
         if (!parent || !selector || !eventName || typeof handler !== 'function') {
-            return;
+            return function() {};
         }
 
-        parent.addEventListener(eventName, function(e) {
+        function wrappedHandler(e) {
             var target = e.target;
 
             // Defensive: event target might not be an Element
@@ -422,12 +508,23 @@
             if (matched && parent.contains(matched)) {
                 handler(e, matched);
             }
-        });
+        }
+
+        parent.addEventListener(eventName, wrappedHandler);
+
+        // Return cleanup function
+        return function() {
+            parent.removeEventListener(eventName, wrappedHandler);
+        };
     }
 
     /**
      * Create a throttled function (leading-edge).
      * Calls made during the cooldown are discarded.
+     * 
+     * @param {Function} fn - Function to throttle
+     * @param {number} limit - Throttle limit in milliseconds
+     * @returns {Function} Throttled function
      */
     function throttle(fn, limit) {
         var inThrottle = false;
@@ -450,7 +547,37 @@
     }
 
     /**
+     * Create a debounced function.
+     * Calls made during the wait period reset the timer.
+     * 
+     * @param {Function} fn - Function to debounce
+     * @param {number} wait - Wait time in milliseconds
+     * @returns {Function} Debounced function
+     */
+    function debounce(fn, wait) {
+        var timer = null;
+
+        return function() {
+            var context = this;
+            var args = arguments;
+
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+
+            timer = setTimeout(function() {
+                timer = null;
+                fn.apply(context, args);
+            }, wait);
+        };
+    }
+
+    /**
      * Run a function once.
+     * 
+     * @param {Function} fn - Function to run once
+     * @returns {Function} Function that runs only once
      */
     function once(fn) {
         var called = false;
@@ -471,6 +598,8 @@
 
     /**
      * Remove all children from an element.
+     * 
+     * @param {HTMLElement} el - Element to empty
      */
     function empty(el) {
         if (!el) return;
@@ -481,6 +610,8 @@
 
     /**
      * Remove an element from the DOM.
+     * 
+     * @param {HTMLElement} el - Element to remove
      */
     function remove(el) {
         if (el && el.parentNode) {
@@ -490,6 +621,9 @@
 
     /**
      * Insert an element as the first child.
+     * 
+     * @param {HTMLElement} parent - Parent element
+     * @param {HTMLElement} child - Child element to prepend
      */
     function prepend(parent, child) {
         if (!parent || !child) return;
@@ -498,6 +632,9 @@
 
     /**
      * Insert an element after another.
+     * 
+     * @param {HTMLElement} reference - Reference element
+     * @param {HTMLElement} child - Child element to insert
      */
     function insertAfter(reference, child) {
         if (!reference || !child) return;
@@ -509,6 +646,9 @@
 
     /**
      * Insert an element before another.
+     * 
+     * @param {HTMLElement} reference - Reference element
+     * @param {HTMLElement} child - Child element to insert
      */
     function insertBefore(reference, child) {
         if (!reference || !child) return;
@@ -520,6 +660,9 @@
 
     /**
      * Replace an element with another.
+     * 
+     * @param {HTMLElement} oldEl - Element to replace
+     * @param {HTMLElement} newEl - Replacement element
      */
     function replace(oldEl, newEl) {
         if (!oldEl || !newEl) return;
@@ -531,6 +674,10 @@
 
     /**
      * Toggle a class on an element.
+     * 
+     * @param {HTMLElement} el - Element
+     * @param {string} className - CSS class name
+     * @param {boolean} force - Optional force state
      */
     function toggleClass(el, className, force) {
         if (!el) return;
@@ -543,6 +690,9 @@
 
     /**
      * Add a class to an element.
+     * 
+     * @param {HTMLElement} el - Element
+     * @param {string|string[]} className - CSS class name(s)
      */
     function addClass(el, className) {
         if (!el) return;
@@ -555,6 +705,9 @@
 
     /**
      * Remove a class from an element.
+     * 
+     * @param {HTMLElement} el - Element
+     * @param {string|string[]} className - CSS class name(s)
      */
     function removeClass(el, className) {
         if (!el) return;
@@ -567,6 +720,10 @@
 
     /**
      * Check if an element has a class.
+     * 
+     * @param {HTMLElement} el - Element
+     * @param {string} className - CSS class name
+     * @returns {boolean} True if has class
      */
     function hasClass(el, className) {
         if (!el) return false;
@@ -574,7 +731,125 @@
     }
 
     // ============================================================
-    // MODAL HELPERS - With proper lifecycle management and race prevention
+    // SCROLL HELPERS
+    // ============================================================
+
+    /**
+     * Scroll an element into view smoothly.
+     * 
+     * @param {HTMLElement} el - Element to scroll to
+     * @param {object} options - Scroll options (block, behavior, etc.)
+     */
+    function scrollIntoView(el, options) {
+        if (!el) return;
+        options = options || { block: 'nearest', behavior: 'smooth' };
+        try {
+            el.scrollIntoView(options);
+        } catch (e) {
+            // Fallback for older browsers
+            el.scrollIntoView(false);
+        }
+    }
+
+    /**
+     * Scroll to the top of the page.
+     * 
+     * @param {object} options - Scroll options
+     */
+    function scrollToTop(options) {
+        options = options || { behavior: 'smooth' };
+        try {
+            window.scrollTo({ top: 0, left: 0, behavior: options.behavior });
+        } catch (e) {
+            window.scrollTo(0, 0);
+        }
+    }
+
+    // ============================================================
+    // VISIBILITY HELPERS
+    // ============================================================
+
+    /**
+     * Check if an element is visible in the viewport.
+     * 
+     * @param {HTMLElement} el - Element to check
+     * @param {object} options - IntersectionObserver options
+     * @returns {boolean} True if visible
+     */
+    function isVisible(el, options) {
+        if (!el) return false;
+        options = options || {};
+
+        var rect = el.getBoundingClientRect();
+        var viewHeight = window.innerHeight || document.documentElement.clientHeight;
+        var viewWidth = window.innerWidth || document.documentElement.clientWidth;
+
+        var threshold = options.threshold || 0;
+        var verticalMargin = options.verticalMargin || 0;
+        var horizontalMargin = options.horizontalMargin || 0;
+
+        var top = rect.top + verticalMargin;
+        var bottom = rect.bottom - verticalMargin;
+        var left = rect.left + horizontalMargin;
+        var right = rect.right - horizontalMargin;
+
+        return top < viewHeight && bottom > 0 && left < viewWidth && right > 0;
+    }
+
+    /**
+     * Check if an element is fully visible in the viewport.
+     * 
+     * @param {HTMLElement} el - Element to check
+     * @returns {boolean} True if fully visible
+     */
+    function isFullyVisible(el) {
+        if (!el) return false;
+
+        var rect = el.getBoundingClientRect();
+        var viewHeight = window.innerHeight || document.documentElement.clientHeight;
+        var viewWidth = window.innerWidth || document.documentElement.clientWidth;
+
+        return rect.top >= 0 && rect.bottom <= viewHeight &&
+               rect.left >= 0 && rect.right <= viewWidth;
+    }
+
+    // ============================================================
+    // STYLE HELPERS
+    // ============================================================
+
+    /**
+     * Safely set inline styles on an element.
+     * 
+     * @param {HTMLElement} el - Element
+     * @param {object} styles - Key-value pairs of CSS properties
+     */
+    function setStyles(el, styles) {
+        if (!el || !styles) return;
+        for (var key in styles) {
+            if (Object.prototype.hasOwnProperty.call(styles, key)) {
+                el.style[key] = styles[key];
+            }
+        }
+    }
+
+    /**
+     * Get computed style value.
+     * 
+     * @param {HTMLElement} el - Element
+     * @param {string} property - CSS property name
+     * @returns {string} Computed style value
+     */
+    function getStyle(el, property) {
+        if (!el) return '';
+        try {
+            return window.getComputedStyle(el).getPropertyValue(property);
+        } catch (e) {
+            return '';
+        }
+    }
+
+    // ============================================================
+    // MODAL HELPERS - With proper lifecycle management
     // ============================================================
 
     // Internal store for modal state
@@ -598,6 +873,9 @@
 
     /**
      * Create a modal overlay.
+     * 
+     * @param {string} className - Additional CSS class
+     * @returns {HTMLElement} Modal element
      */
     function createModal(className) {
         var overlay = createDiv('modal' + (className ? ' ' + className : ''));
@@ -613,6 +891,8 @@
      * Show a modal.
      * Clears any pending hide timer for this modal.
      * Increments generation to invalidate stale operations.
+     * 
+     * @param {HTMLElement} modal - Modal element
      */
     function showModal(modal) {
         if (!modal) return;
@@ -665,6 +945,9 @@
      * Returns a promise that resolves when the animation completes.
      * The modal remains alive (listeners intact) for potential re-showing.
      * Multiple calls to hideModal() on the same modal will chain correctly.
+     * 
+     * @param {HTMLElement} modal - Modal element
+     * @returns {Promise<void>}
      */
     function hideModal(modal) {
         if (!modal) return Promise.resolve();
@@ -716,6 +999,9 @@
      * After close, the modal is fully destroyed and cannot be re-shown.
      * Uses generation tracking to prevent stale operations from destroying
      * a modal that was re-shown between close and its animation completion.
+     * 
+     * @param {HTMLElement} modal - Modal element
+     * @returns {Promise<void>}
      */
     function closeModal(modal) {
         if (!modal) return Promise.resolve();
@@ -775,9 +1061,13 @@
     /**
      * Setup click-outside to close a modal.
      * Does not prevent the modal from being hidden and re-shown.
+     * 
+     * @param {HTMLElement} modal - Modal element
+     * @param {Function} onClose - Optional callback when closed
+     * @returns {Function} Cleanup function
      */
     function modalClickOutside(modal, onClose) {
-        if (!modal) return;
+        if (!modal) return function() {};
 
         var handler = function(e) {
             if (e.target === modal) {
@@ -791,14 +1081,21 @@
 
         modal.addEventListener('click', handler);
 
-        _registerCleanup(modal, function() {
+        var cleanup = function() {
             modal.removeEventListener('click', handler);
-        });
+        };
+
+        _registerCleanup(modal, cleanup);
+
+        return cleanup;
     }
 
     /**
      * Setup escape key to close a modal.
-     * Returns the cleanup function (also registered automatically).
+     * 
+     * @param {HTMLElement} modal - Modal element
+     * @param {Function} onClose - Optional callback when closed
+     * @returns {Function} Cleanup function
      */
     function modalEscapeKey(modal, onClose) {
         if (!modal) return function() {};
@@ -827,6 +1124,9 @@
     /**
      * Setup both click-outside and escape-key for a modal.
      * Convenience function for common case.
+     * 
+     * @param {HTMLElement} modal - Modal element
+     * @param {Function} onClose - Optional callback when closed
      */
     function modalSetup(modal, onClose) {
         modalClickOutside(modal, onClose);
@@ -839,6 +1139,11 @@
 
     /**
      * Create a notification toast.
+     * 
+     * @param {string} message - Notification message
+     * @param {string} type - 'success' | 'error' | 'warning' | 'info'
+     * @param {number} duration - Duration in ms (0 = persistent)
+     * @returns {HTMLElement} Toast element (for manual dismissal)
      */
     function createToast(message, type, duration) {
         type = type || 'info';
@@ -855,17 +1160,19 @@
         });
 
         // Auto-hide
-        var timer = setTimeout(function() {
-            toast.classList.remove('visible');
-            setTimeout(function() {
-                if (toast.parentNode) {
-                    toast.parentNode.removeChild(toast);
-                }
-            }, 300);
-        }, duration);
+        if (duration > 0) {
+            var timer = setTimeout(function() {
+                toast.classList.remove('visible');
+                setTimeout(function() {
+                    if (toast.parentNode) {
+                        toast.parentNode.removeChild(toast);
+                    }
+                }, 300);
+            }, duration);
 
-        // Store timer for potential cancellation
-        toast._hideTimer = timer;
+            // Store timer for potential cancellation
+            toast._hideTimer = timer;
+        }
 
         return toast;
     }
@@ -908,6 +1215,9 @@
      * - Radio → boolean for this specific input (use getFormData for group value)
      * - Multi-select → array of selected values
      * - Other inputs → string value
+     * 
+     * @param {string} id - Element ID
+     * @returns {*} Field value
      */
     function getField(id) {
         var el = document.getElementById(id);
@@ -939,6 +1249,9 @@
 
     /**
      * Set a form field value safely.
+     * 
+     * @param {string} id - Element ID
+     * @param {*} value - Value to set
      */
     function setField(id, value) {
         var el = document.getElementById(id);
@@ -977,6 +1290,9 @@
      * - Multiple checkboxes with same name: returns array of selected values (empty array if none)
      * - Multi-select: returns array of selected values (empty array if none)
      * - Other inputs: returns string value
+     * 
+     * @param {HTMLFormElement} form - Form element
+     * @returns {object} Form data object
      */
     function getFormData(form) {
         if (!form) return {};
@@ -1065,6 +1381,9 @@
      * - Single checkbox: boolean → checked state
      * - Multiple checkboxes: array → check matching values
      * - Multi-select: array → select matching values
+     * 
+     * @param {HTMLFormElement} form - Form element
+     * @param {object} data - Data object
      */
     function setFormData(form, data) {
         if (!form || !data) return;
@@ -1112,6 +1431,8 @@
 
     /**
      * Reset a form.
+     * 
+     * @param {HTMLFormElement} form - Form element
      */
     function resetForm(form) {
         if (!form) return;
@@ -1125,9 +1446,12 @@
      * - Boolean: true (for checkboxes)
      * - Array: at least one element selected
      * - Number: not NaN
+     * 
+     * @param {string} id - Element ID
+     * @returns {boolean} True if field has value
      */
-    function validateRequired(field) {
-        var value = getField(field);
+    function validateRequired(id) {
+        var value = getField(id);
 
         if (value === null || value === undefined) {
             return false;
@@ -1146,42 +1470,69 @@
 
     /**
      * Validate that a field is a number.
+     * 
+     * @param {string} id - Element ID
+     * @returns {boolean} True if field is a number
      */
-    function validateNumber(field) {
-        var value = getField(field);
+    function validateNumber(id) {
+        var value = getField(id);
         if (value === null || value === undefined || value === '') return false;
         return !isNaN(Number(value));
     }
 
     /**
      * Validate that a field is an integer.
+     * 
+     * @param {string} id - Element ID
+     * @returns {boolean} True if field is an integer
      */
-    function validateInteger(field) {
-        var value = getField(field);
+    function validateInteger(id) {
+        var value = getField(id);
         if (value === null || value === undefined || value === '') return false;
         return Number.isInteger(Number(value));
     }
 
     /**
      * Validate that a field is in a range.
+     * 
+     * @param {string} id - Element ID
+     * @param {number} min - Minimum value
+     * @param {number} max - Maximum value
+     * @returns {boolean} True if field is in range
      */
-    function validateRange(field, min, max) {
-        var value = getField(field);
+    function validateRange(id, min, max) {
+        var value = getField(id);
         if (value === null || value === undefined || value === '') return false;
         var num = Number(value);
         return !isNaN(num) && num >= min && num <= max;
     }
 
     // ============================================================
+    // LEGACY COMPATIBILITY
+    // ============================================================
+
+    /**
+     * Legacy alias for escapeHtml.
+     * @deprecated Use DomUtils.escapeHtml() instead.
+     */
+    window.escapeHtml = escapeHtml;
+
+    /**
+     * Legacy alias for escapeAttribute.
+     * @deprecated Use DomUtils.escapeAttribute() instead.
+     */
+    window.escapeAttribute = escapeAttribute;
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.DomUtils = {
-        // Escaping
+        // Escaping (SINGLE SOURCE OF TRUTH)
         escapeHtml: escapeHtml,
         escapeAttribute: escapeAttribute,
         encodeUrlComponent: encodeUrlComponent,
-        escapeUrl: escapeUrl, // Deprecated alias for backward compatibility
+        escapeUrl: escapeUrl, // Deprecated alias
         sanitizeCssValue: sanitizeCssValue,
 
         // Element creation
@@ -1206,10 +1557,12 @@
         getData: getData,
         setData: setData,
         removeData: removeData,
+        matches: matches,
 
         // Events
         delegate: delegate,
         throttle: throttle,
+        debounce: debounce,
         once: once,
 
         // Manipulation
@@ -1223,6 +1576,18 @@
         addClass: addClass,
         removeClass: removeClass,
         hasClass: hasClass,
+
+        // Scroll
+        scrollIntoView: scrollIntoView,
+        scrollToTop: scrollToTop,
+
+        // Visibility
+        isVisible: isVisible,
+        isFullyVisible: isFullyVisible,
+
+        // Style
+        setStyles: setStyles,
+        getStyle: getStyle,
 
         // Modal helpers
         createModal: createModal,
@@ -1251,5 +1616,6 @@
         validateInteger: validateInteger,
         validateRange: validateRange
     };
+
 
 })();
