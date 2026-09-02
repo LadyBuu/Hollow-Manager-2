@@ -280,6 +280,28 @@
                         return p && normaliseId(p.id) === id;
                     });
                 if (isInTournament) return;
+                
+                // Check class filter
+                if (tournament.classFilterEnabled !== false && tournament.graduatingClassId) {
+                    // For teams, check if any member belongs to the class
+                    var hasClassMember = false;
+                    if (Array.isArray(team.members)) {
+                        for (var m = 0; m < team.members.length; m++) {
+                            var member = team.members[m];
+                            if (member && member.characterId) {
+                                var char = data.characters.find(function(c) {
+                                    return c && String(c.id) === String(member.characterId);
+                                });
+                                if (char && String(char.graduatingClassId) === String(tournament.graduatingClassId)) {
+                                    hasClassMember = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!hasClassMember) return;
+                }
+                
                 options.push({
                     id: id,
                     name: team.name || 'Unknown Team',
@@ -299,6 +321,14 @@
                         return p && normaliseId(p.id) === id;
                     });
                 if (isInTournament) return;
+                
+                // Check class filter
+                if (tournament.classFilterEnabled !== false && tournament.graduatingClassId) {
+                    if (String(char.graduatingClassId) !== String(tournament.graduatingClassId)) {
+                        return;
+                    }
+                }
+                
                 var name = typeof window.getDisplayName === 'function'
                     ? window.getDisplayName(char)
                     : char.name || 'Unknown';
@@ -782,7 +812,7 @@
     }
 
     // ============================================================
-    // FORM FUNCTIONS
+    // FORM FUNCTIONS - FIXED WITH CLASS SELECTOR
     // ============================================================
 
     function showTournamentForm(editId) {
@@ -887,6 +917,18 @@
                 showNotification('Tournament name is required.', 'warning');
                 return;
             }
+
+            // Ensure classFilterEnabled is a boolean
+            if (data.classFilterEnabled === undefined) {
+                data.classFilterEnabled = false;
+            }
+
+            // Ensure graduatingClassId is null if empty string
+            if (data.graduatingClassId === '') {
+                data.graduatingClassId = null;
+            }
+
+            console.log('Submitting tournament data:', JSON.stringify(data, null, 2));
 
             var success;
             if (editId) {
