@@ -488,7 +488,7 @@
         var html = `
             <div class="page-header">
                 <h2>Tournaments</h2>
-                <button id="create-tournament-btn" class="primary">+ New Tournament</button>
+                <!-- The "Add Tournament" button is inside TournamentsUI -->
             </div>
             <div class="tournaments-controls" style="margin-bottom:12px;">
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -558,23 +558,6 @@
             refreshBtn.parentNode.replaceChild(newRefresh, refreshBtn);
             newRefresh.addEventListener('click', function() {
                 renderTournamentsContent(container);
-            });
-        }
-
-        // Create tournament button
-        var createBtn = container.querySelector('#create-tournament-btn');
-        if (createBtn) {
-            var newCreate = createBtn.cloneNode(true);
-            createBtn.parentNode.replaceChild(newCreate, createBtn);
-            newCreate.addEventListener('click', function() {
-                if (typeof window.TournamentsUI !== 'undefined' && 
-                    typeof window.TournamentsUI.showTournamentForm === 'function') {
-                    window.TournamentsUI.showTournamentForm();
-                } else if (typeof window.showTournamentForm === 'function') {
-                    window.showTournamentForm();
-                } else {
-                    alert('Tournament creation coming soon.');
-                }
             });
         }
     }
