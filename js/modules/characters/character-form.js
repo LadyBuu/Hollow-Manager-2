@@ -2,259 +2,499 @@
  * js/modules/characters/character-form.js - Character Form
  * Handles form rendering, tab switching, and form field population
  * Path: js/modules/characters/character-form.js
- * 
- * This module is responsible for:
- *   - Rendering the character form with all tabs
- *   - Switching between tabs (with lazy view rendering)
- *   - Populating form fields from character data
- *   - Resetting form fields for new characters
- *   - Managing class tags in the form
- * 
- * IMPORTANT:
- *   - This module is for RENDERING only - all event binding is in character-events.js
- *   - State is managed via window.getCurrentEditId() (read-only for this module)
- *   - All user-controlled data is inserted using safe DOM APIs (textContent, value)
- *   - DOM operations are safe and defensive
- *   - Re-initialization is supported after DOM replacement
- *   - State mutation (setCurrentEditId) is owned by index.js, not this module
- *   - Lazy rendering: views are only rendered when their tab is first activated
- * 
- * DEPENDENCIES:
- *   - window.CharacterViews
- *   - window.CharacterEliminations
- *   - window.CharacterClasses
- *   - window.CharacterStats (for domain logic)
- *   - window.CharacterStatsView (for rendering)
- *   - window.CharacterList
- *   - window.getCharacterById (from core-utils.js)
- *   - window.getDisplayName (from core-utils.js)
- *   - window.getCurrentEditId (from index.js)
- *   - window.CharacterConstants (from character-constants.js)
- *   - window.DomUtils (from dom-utils.js)
- *   - window.CoreUtils (from core-utils.js)
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate script loading
-    if (window.__characterFormLoaded) {
-        return;
-    }
-    window.__characterFormLoaded = true;
-
-    // ============================================================
-    // CONSTANTS - From CharacterConstants
-    // ============================================================
-
-    var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'stats', 'social', 'notes'];
-
-    var MAGIC_TYPE_KEYS = window.CharacterConstants
-        ? window.CharacterConstants.MAGIC_TYPE_KEYS
-        : [];
-
-    var STAT_KEYS = window.CharacterConstants
-        ? window.CharacterConstants.STAT_KEYS
-        : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-
-    var STAT_DEFAULT = window.CharacterConstants
-        ? window.CharacterConstants.STAT_DEFAULT
-        : 10;
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        var required = [
-            'getCharacterById',
-            'getDisplayName',
-            'getCurrentEditId'
-        ];
-
-        required.forEach(function(name) {
-            if (typeof window[name] !== 'function') {
-                missing.push(name);
-            }
-        });
-
-        // Feature modules
-        var featureModules = {
-            'CharacterViews': ['renderAcademic', 'renderProfessional', 'renderSocial', 'addCareerStatusEntry'],
-            'CharacterEliminations': ['renderTournament', 'renderStandalone'],
-            'CharacterClasses': ['populateClassTags', 'clearClassTags', 'populateAcademicClassSelector', 'updateCurrentClassesDisplay'],
-            'CharacterStats': ['getCharacterStats', 'getCharacterMagic', 'getSpecialMoves'],
-            'CharacterStatsView': ['renderSpecialMoves'],
-            'CharacterList': ['render']
-        };
-
-        for (var moduleName in featureModules) {
-            if (typeof window[moduleName] === 'undefined' || window[moduleName] === null) {
-                missing.push(moduleName + ' (module missing)');
-                continue;
-            }
-            var methods = featureModules[moduleName];
-            for (var i = 0; i < methods.length; i++) {
-                if (typeof window[moduleName][methods[i]] !== 'function') {
-                    missing.push(moduleName + '.' + methods[i]);
-                }
-            }
-        }
-
-        if (missing.length > 0) {
-            console.warn('CharacterForm: Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
-    }
-
     // ============================================================
     // STATE
     // ============================================================
 
-    // Track which views have been rendered to support lazy rendering
-    var _renderedViews = {
-        academic: false,
-        professional: false,
-        social: false
+    var state = {
+        currentTab: 'name'
     };
 
-    // ============================================================
-    // EMPTY STATE HELPER
-    // ============================================================
-
-    function setEmptyState(container, text, padding, fontSize) {
-        if (!container) return;
-
-        container.replaceChildren();
-
-        var empty = document.createElement('p');
-        empty.className = 'empty-state';
-        empty.style.padding = padding || '8px';
-        empty.style.fontSize = fontSize || '0.8rem';
-        empty.textContent = text || 'None';
-
-        container.appendChild(empty);
-    }
+    var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'stats', 'social', 'notes'];
 
     // ============================================================
-    // TAB SWITCHING - With lazy view rendering
+    // CHARACTER FORM - Public API
     // ============================================================
 
-    function switchTab(tab) {
-        if (VALID_TABS.indexOf(tab) === -1) {
-            return;
+    function showCharacterForm(editId) {
+        if (!editId) {
+            editId = window.getCurrentEditId ? window.getCurrentEditId() : null;
         }
 
-        var tabBtns = document.querySelectorAll('.char-tab-btn');
-        tabBtns.forEach(function(btn) {
-            btn.classList.toggle('active', btn.dataset.tab === tab);
-        });
-
-        var panels = document.querySelectorAll('.char-tab-panel');
-        panels.forEach(function(panel) {
-            var panelId = panel.id.replace('char-tab-', '');
-            panel.style.display = panelId === tab ? 'block' : 'none';
-            panel.classList.toggle('active', panelId === tab);
-        });
-
-        // Lazy render tab-specific content
-        var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        if (id) {
-            var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(id) : null;
-            if (char) {
-                if (tab === 'academic' && !_renderedViews.academic) {
-                    _renderedViews.academic = true;
-                    if (window.CharacterViews && typeof window.CharacterViews.renderAcademic === 'function') {
-                        window.CharacterViews.renderAcademic(char);
-                    }
-                } else if (tab === 'professional' && !_renderedViews.professional) {
-                    _renderedViews.professional = true;
-                    if (window.CharacterViews && typeof window.CharacterViews.renderProfessional === 'function') {
-                        window.CharacterViews.renderProfessional(char);
-                    }
-                } else if (tab === 'social' && !_renderedViews.social) {
-                    _renderedViews.social = true;
-                    if (window.CharacterViews && typeof window.CharacterViews.renderSocial === 'function') {
-                        window.CharacterViews.renderSocial(char);
-                    }
-                }
-            }
-        }
-    }
-
-    // ============================================================
-    // SHOW CHARACTER IN FORM
-    // ============================================================
-
-    function show(editId) {
-        if (!checkDependencies()) return;
-
-        var form = document.getElementById('character-form');
-        var title = document.getElementById('form-title');
-        var nameDisplay = document.getElementById('current-char-name');
-
-        if (!form) {
-            console.warn('CharacterForm: Form #character-form not found');
-            return;
-        }
-
-        // Handle invalid editId - clear form state
-        if (editId !== null && editId !== undefined && editId !== '') {
-            var char = typeof window.getCharacterById === 'function' 
-                ? window.getCharacterById(editId) 
-                : null;
-            
+        var char = null;
+        if (editId) {
+            char = window.getCharacterById(editId);
             if (!char) {
-                if (title) title.textContent = 'Character not found';
-                resetFormFields();
+                showNotification('Character not found.', 'error');
                 return;
             }
-
-            // Reset view render state for this character
-            _renderedViews.academic = false;
-            _renderedViews.professional = false;
-            _renderedViews.social = false;
-
-            if (title) title.textContent = 'Edit Character';
-            if (nameDisplay) {
-                nameDisplay.textContent = typeof window.getDisplayName === 'function'
-                    ? window.getDisplayName(char)
-                    : char.firstName || '';
-            }
-
-            // Switch to name tab (this will lazy render the active view)
-            switchTab('name');
-
-            populateFormFields(char);
-
-            // Refresh character list to reflect selection
-            if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-                window.CharacterList.render();
-            }
-        } else {
-            // New character - reset view render state
-            _renderedViews.academic = false;
-            _renderedViews.professional = false;
-            _renderedViews.social = false;
-
-            switchTab('name');
-
-            if (title) title.textContent = 'New Character';
-            if (nameDisplay) nameDisplay.textContent = 'New Character';
-
-            resetFormFields();
-
-            if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-                window.CharacterList.render();
-            }
         }
 
-        form.style.display = 'block';
-        form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        showFormModal(editId, char);
+    }
+
+    function showFormModal(editId, char) {
+        var modal = document.getElementById('character-form-modal');
+        if (!modal) {
+            modal = createCharacterFormModal();
+        }
+
+        var title = document.getElementById('character-form-title');
+        var content = document.getElementById('character-form-content');
+
+        if (!title || !content) return;
+
+        title.textContent = editId ? 'Edit Character' : 'Add Character';
+
+        // Get current year for age calculation
+        var currentYear = window.data && window.data.currentYear ? window.data.currentYear : new Date().getFullYear();
+
+        var html = getCharacterFormHTML(char, editId, currentYear);
+        content.innerHTML = html;
+
+        // Populate class dropdown
+        populateClassDropdown(char);
+
+        // Populate form fields if editing
+        if (char) {
+            populateFormFields(char);
+        }
+
+        // Bind events
+        bindFormEvents(modal, editId, char);
+
+        modal.classList.remove('hidden');
+        modal.style.display = 'flex';
+    }
+
+    // ============================================================
+    // CREATE CHARACTER FORM MODAL
+    // ============================================================
+
+    function createCharacterFormModal() {
+        var modal = document.createElement('div');
+        modal.id = 'character-form-modal';
+        modal.className = 'modal hidden';
+        modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:1000;';
+
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width:650px;max-height:90vh;overflow-y:auto;background:var(--panel);border-radius:var(--radius);padding:20px;position:relative;">
+                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <h3 id="character-form-title" style="margin:0;font-size:1rem;">Add Character</h3>
+                    <button class="close-modal" id="close-character-form" style="background:none;border:none;font-size:1.5rem;cursor:pointer;color:var(--text-dim);">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="character-form-content"></div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+        return modal;
+    }
+
+    // ============================================================
+    // CHARACTER FORM HTML
+    // ============================================================
+
+    function getCharacterFormHTML(char, editId, currentYear) {
+        var tabs = getTabsHTML();
+        var age = char && char.birthYear ? currentYear - parseInt(char.birthYear, 10) : '';
+
+        return `
+            <div class="character-form">
+                <div class="form-tabs" style="display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:12px;">
+                    ${tabs}
+                </div>
+                <div class="form-tab-content" id="form-tab-content">
+                    ${getNameTabHTML(char, editId)}
+                    ${getPhysicalTabHTML(char, age)}
+                    ${getPersonalityTabHTML(char)}
+                    ${getAcademicTabHTML(char)}
+                    ${getProfessionalTabHTML(char)}
+                    ${getStatsTabHTML(char)}
+                    ${getSocialTabHTML(char)}
+                    ${getNotesTabHTML(char)}
+                </div>
+                <div class="form-actions" style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                    <button type="button" id="cancel-character-form" class="secondary" style="font-size:0.75rem;padding:6px 12px;">Cancel</button>
+                    <button type="button" id="save-character-btn" class="primary" style="font-size:0.75rem;padding:6px 12px;">${editId ? 'Update' : 'Create'} Character</button>
+                </div>
+            </div>
+        `;
+    }
+
+    // ============================================================
+    // TABS
+    // ============================================================
+
+    function getTabsHTML() {
+        var tabNames = {
+            'name': 'Name',
+            'physical': 'Physical',
+            'personality': 'Personality',
+            'academic': 'Academic',
+            'professional': 'Professional',
+            'stats': 'Stats',
+            'social': 'Social',
+            'notes': 'Notes'
+        };
+
+        var html = '';
+        for (var i = 0; i < VALID_TABS.length; i++) {
+            var tab = VALID_TABS[i];
+            var isActive = tab === state.currentTab;
+            html += `<button class="form-tab-btn ${isActive ? 'active' : ''}" data-tab="${tab}" style="background:transparent;border:none;border-bottom:2px solid ${isActive ? 'var(--accent)' : 'transparent'};color:${isActive ? 'var(--accent)' : 'var(--text-dim)'};padding:4px 10px;cursor:pointer;font-size:0.7rem;transition:0.2s;">${tabNames[tab]}</button>`;
+        }
+        return html;
+    }
+
+    // ============================================================
+    // NAME TAB - With Class Dropdown
+    // ============================================================
+
+    function getNameTabHTML(char, editId) {
+        var active = state.currentTab === 'name' ? 'block' : 'none';
+        var c = char || {};
+
+        // Get graduating class options for dropdown
+        var classOptions = getClassOptionsHTML(c.graduatingClassId);
+
+        return `
+            <div class="tab-panel" data-tab="name" style="display:${active};">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">First Name *</label>
+                        <input type="text" id="char-firstName" value="${escapeHtml(c.firstName || '')}" placeholder="First name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Last Name *</label>
+                        <input type="text" id="char-lastName" value="${escapeHtml(c.lastName || '')}" placeholder="Last name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Middle Name</label>
+                        <input type="text" id="char-middleName" value="${escapeHtml(c.middleName || '')}" placeholder="Middle name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Nickname</label>
+                        <input type="text" id="char-nickname" value="${escapeHtml(c.nickname || '')}" placeholder="Nickname" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Alias</label>
+                        <input type="text" id="char-alias" value="${escapeHtml(c.alias || '')}" placeholder="Alias" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Gender</label>
+                        <input type="text" id="char-gender" value="${escapeHtml(c.gender || '')}" placeholder="Gender" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Birth Year</label>
+                        <input type="number" id="char-birthYear" value="${escapeHtml(c.birthYear || '')}" placeholder="Birth year" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Age</label>
+                        <input type="text" id="char-age" value="${c.birthYear ? getCurrentYear() - parseInt(c.birthYear, 10) : ''}" readonly style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+
+                <!-- Graduating Class Dropdown -->
+                <div class="form-group" style="margin-top:8px;">
+                    <label style="font-size:0.7rem;color:var(--text-dim);">Graduating Class</label>
+                    <select id="char-graduatingClass" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                        ${classOptions}
+                    </select>
+                    <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+                        <input type="checkbox" id="char-isInstructor" ${c.graduatingClassInstructor ? 'checked' : ''} style="accent-color:var(--accent);">
+                        <label for="char-isInstructor" style="font-size:0.65rem;color:var(--text-dim);">Is an instructor (not a student)</label>
+                    </div>
+                </div>
+
+                <div style="font-size:0.6rem;color:var(--text-dim);margin-top:4px;">* Required fields</div>
+            </div>
+        `;
+    }
+
+    function getClassOptionsHTML(selectedId) {
+        var classes = window.getGraduatingClasses ? window.getGraduatingClasses() : [];
+        var html = '<option value="">None</option>';
+
+        for (var i = 0; i < classes.length; i++) {
+            var cls = classes[i];
+            var isSelected = String(cls.id) === String(selectedId);
+            html += `<option value="${escapeHtml(cls.id)}" ${isSelected ? 'selected' : ''}>${escapeHtml(cls.name)}</option>`;
+        }
+
+        return html;
+    }
+
+    function getCurrentYear() {
+        return window.data && window.data.currentYear ? window.data.currentYear : new Date().getFullYear();
+    }
+
+    // ============================================================
+    // PHYSICAL TAB - With Random Button
+    // ============================================================
+
+    function getPhysicalTabHTML(char) {
+        var active = state.currentTab === 'physical' ? 'block' : 'none';
+        var c = char || {};
+
+        return `
+            <div class="tab-panel" data-tab="physical" style="display:${active};">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <span style="font-size:0.7rem;color:var(--text-dim);">Physical Appearance</span>
+                    <button type="button" id="random-physical-btn" class="small" style="font-size:0.6rem;padding:2px 10px;">🎲 Random</button>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Eyes</label>
+                        <input type="text" id="char-eyes" value="${escapeHtml(c.eyes || '')}" placeholder="Eye color" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Hair</label>
+                        <input type="text" id="char-hair" value="${escapeHtml(c.hair || '')}" placeholder="Hair color/style" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Skin</label>
+                        <input type="text" id="char-skin" value="${escapeHtml(c.skin || '')}" placeholder="Skin tone" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Height</label>
+                        <input type="text" id="char-height" value="${escapeHtml(c.height || '')}" placeholder="Height" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Weight</label>
+                        <input type="text" id="char-weight" value="${escapeHtml(c.weight || '')}" placeholder="Weight" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Build</label>
+                        <input type="text" id="char-build" value="${escapeHtml(c.build || '')}" placeholder="Body type" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label style="font-size:0.7rem;color:var(--text-dim);">Appearance Notes</label>
+                    <textarea id="char-appearanceNotes" rows="2" placeholder="Distinguishing features, scars, tattoos..." style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;resize:vertical;">${escapeHtml(c.appearanceNotes || '')}</textarea>
+                </div>
+            </div>
+        `;
+    }
+
+    // ============================================================
+    // PERSONALITY TAB - With Random Button
+    // ============================================================
+
+    function getPersonalityTabHTML(char) {
+        var active = state.currentTab === 'personality' ? 'block' : 'none';
+        var p = char && char.personality ? char.personality : {};
+
+        return `
+            <div class="tab-panel" data-tab="personality" style="display:${active};">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <span style="font-size:0.7rem;color:var(--text-dim);">Personality Traits</span>
+                    <button type="button" id="random-personality-btn" class="small" style="font-size:0.6rem;padding:2px 10px;">🎲 Random</button>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Traits</label>
+                        <input type="text" id="char-personality-traits" value="${escapeHtml(p.traits || '')}" placeholder="e.g., Brave, Cunning, Loyal" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Ideals</label>
+                        <input type="text" id="char-personality-ideals" value="${escapeHtml(p.ideals || '')}" placeholder="What they believe in" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Bonds</label>
+                        <input type="text" id="char-personality-bonds" value="${escapeHtml(p.bonds || '')}" placeholder="Who/what they care about" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Flaws</label>
+                        <input type="text" id="char-personality-flaws" value="${escapeHtml(p.flaws || '')}" placeholder="Weaknesses, vices" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Alignment</label>
+                        <input type="text" id="char-personality-alignment" value="${escapeHtml(p.alignment || '')}" placeholder="e.g., Lawful Good, Chaotic Neutral" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Likes</label>
+                        <input type="text" id="char-personality-likes" value="${escapeHtml(p.likes || '')}" placeholder="Things they enjoy" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Dislikes</label>
+                        <input type="text" id="char-personality-dislikes" value="${escapeHtml(p.dislikes || '')}" placeholder="Things they avoid" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Fears</label>
+                        <input type="text" id="char-personality-fears" value="${escapeHtml(p.fears || '')}" placeholder="What they're afraid of" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Habits</label>
+                        <input type="text" id="char-personality-habits" value="${escapeHtml(p.habits || '')}" placeholder="Quirks, routines" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Goals</label>
+                        <input type="text" id="char-personality-goals" value="${escapeHtml(p.goals || '')}" placeholder="What they want to achieve" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    // ============================================================
+    // OTHER TABS - Simplified (keep existing functionality)
+    // ============================================================
+
+    function getAcademicTabHTML(char) {
+        var active = state.currentTab === 'academic' ? 'block' : 'none';
+        var c = char || {};
+        var classIds = Array.isArray(c.classIds) ? c.classIds : [];
+
+        return `
+            <div class="tab-panel" data-tab="academic" style="display:${active};">
+                <div class="form-group">
+                    <label style="font-size:0.7rem;color:var(--text-dim);">Class IDs</label>
+                    <input type="text" id="char-classIds" value="${escapeHtml(classIds.join(', '))}" placeholder="Comma-separated class IDs" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    <div style="font-size:0.6rem;color:var(--text-dim);margin-top:2px;">Use the dropdown above to assign graduating classes instead.</div>
+                </div>
+            </div>
+        `;
+    }
+
+    function getProfessionalTabHTML(char) {
+        var active = state.currentTab === 'professional' ? 'block' : 'none';
+        var c = char || {};
+        var careerStatus = Array.isArray(c.careerStatus) ? c.careerStatus : [];
+
+        return `
+            <div class="tab-panel" data-tab="professional" style="display:${active};">
+                <div class="form-group">
+                    <label style="font-size:0.7rem;color:var(--text-dim);">Career Status</label>
+                    <textarea id="char-careerStatus" rows="3" placeholder='[{"status":"trainee","startYear":"1920","endYear":"1920"}]' style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;font-family:monospace;">${escapeHtml(JSON.stringify(careerStatus, null, 2))}</textarea>
+                </div>
+                <div class="form-group">
+                    <label style="font-size:0.7rem;color:var(--text-dim);">Specialty</label>
+                    <input type="text" id="char-specialty" value="${escapeHtml(c.specialty || '')}" placeholder="Area of expertise" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                </div>
+            </div>
+        `;
+    }
+
+    function getStatsTabHTML(char) {
+        var active = state.currentTab === 'stats' ? 'block' : 'none';
+        var stats = char && char.stats ? char.stats : { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
+        var magic = char && char.magic ? char.magic : {};
+
+        var html = `
+            <div class="tab-panel" data-tab="stats" style="display:${active};">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+        `;
+
+        var statLabels = {
+            'str': 'Strength',
+            'dex': 'Dexterity',
+            'con': 'Constitution',
+            'int': 'Intelligence',
+            'wis': 'Wisdom',
+            'cha': 'Charisma'
+        };
+
+        for (var key in statLabels) {
+            html += `
+                <div class="form-group">
+                    <label style="font-size:0.7rem;color:var(--text-dim);">${statLabels[key]}</label>
+                    <input type="number" id="char-stat-${key}" value="${stats[key] !== undefined ? stats[key] : 10}" min="1" max="50" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;text-align:center;">
+                </div>
+            `;
+        }
+
+        html += `
+                </div>
+                <div style="margin-top:8px;display:flex;gap:8px;">
+                    <button type="button" id="random-stats-btn" class="small" style="font-size:0.6rem;padding:2px 10px;">🎲 Random Stats</button>
+                </div>
+            </div>
+        `;
+
+        return html;
+    }
+
+    function getSocialTabHTML(char) {
+        var active = state.currentTab === 'social' ? 'block' : 'none';
+        var c = char || {};
+
+        return `
+            <div class="tab-panel" data-tab="social" style="display:${active};">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Attraction</label>
+                        <input type="text" id="char-attraction" value="${escapeHtml(c.attraction || '')}" placeholder="e.g., Men, Women, All, None" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Sexuality</label>
+                        <input type="text" id="char-sexuality" value="${escapeHtml(c.sexuality || '')}" placeholder="e.g., Heterosexual, Bisexual, Asexual" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function getNotesTabHTML(char) {
+        var active = state.currentTab === 'notes' ? 'block' : 'none';
+        var c = char || {};
+
+        return `
+            <div class="tab-panel" data-tab="notes" style="display:${active};">
+                <div class="form-group">
+                    <label style="font-size:0.7rem;color:var(--text-dim);">Notes</label>
+                    <textarea id="char-notes" rows="6" placeholder="General notes about this character..." style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;resize:vertical;">${escapeHtml(c.notes || '')}</textarea>
+                </div>
+            </div>
+        `;
+    }
+
+    // ============================================================
+    // POPULATE CLASS DROPDOWN
+    // ============================================================
+
+    function populateClassDropdown(char) {
+        var select = document.getElementById('char-graduatingClass');
+        if (!select) return;
+
+        var classes = window.getGraduatingClasses ? window.getGraduatingClasses() : [];
+        var selectedId = char && char.graduatingClassId ? char.graduatingClassId : null;
+
+        select.innerHTML = '<option value="">None</option>';
+
+        for (var i = 0; i < classes.length; i++) {
+            var cls = classes[i];
+            var option = document.createElement('option');
+            option.value = cls.id;
+            option.textContent = cls.name;
+            if (String(cls.id) === String(selectedId)) {
+                option.selected = true;
+            }
+            select.appendChild(option);
+        }
     }
 
     // ============================================================
@@ -264,277 +504,69 @@
     function populateFormFields(char) {
         if (!char) return;
 
-        // Name tab
-        setFieldValue('char-firstname', char.firstName);
-        setFieldValue('char-middlename', char.middleName);
-        setFieldValue('char-lastname', char.lastName);
+        // Name fields
+        setFieldValue('char-firstName', char.firstName);
+        setFieldValue('char-lastName', char.lastName);
+        setFieldValue('char-middleName', char.middleName);
         setFieldValue('char-nickname', char.nickname);
         setFieldValue('char-alias', char.alias);
-        setFieldValue('char-previous-names', (char.previousNames || []).join(', '));
-        setFieldValue('char-name-format', char.nameFormat || 'firstlast');
-        setFieldValue('char-birthyear', char.birthYear);
-        setCheckbox('char-deceased', char.deceased);
-        setFieldValue('char-death-year', char.deathYear);
-        setFieldValue('char-death-cause', char.deathCause);
-        setFieldValue('char-death-age', char.deathAge);
-        setFieldValue('char-death-week', char.deathWeek);
-
-        var deathFields = document.getElementById('death-fields');
-        if (deathFields) {
-            deathFields.style.display = char.deceased ? 'block' : 'none';
-        }
-
-        // Physical tab
         setFieldValue('char-gender', char.gender);
+        setFieldValue('char-birthYear', char.birthYear);
+
+        // Physical
         setFieldValue('char-eyes', char.eyes);
         setFieldValue('char-hair', char.hair);
         setFieldValue('char-skin', char.skin);
         setFieldValue('char-height', char.height);
         setFieldValue('char-weight', char.weight);
         setFieldValue('char-build', char.build);
-        setFieldValue('char-appearance-notes', char.appearanceNotes);
+        setFieldValue('char-appearanceNotes', char.appearanceNotes);
 
-        // Personality tab
-        var p = char.personality || {};
-        setFieldValue('char-traits', p.traits);
-        setFieldValue('char-ideals', p.ideals);
-        setFieldValue('char-bonds', p.bonds);
-        setFieldValue('char-flaws', p.flaws);
-        setFieldValue('char-alignment', p.alignment);
-        setFieldValue('char-likes', p.likes);
-        setFieldValue('char-dislikes', p.dislikes);
-        setFieldValue('char-habits', p.habits);
-        setFieldValue('char-fears', p.fears);
-        setFieldValue('char-goals', p.goals);
-
-        // Stats tab
-        var stats = window.CharacterStats && typeof window.CharacterStats.getCharacterStats === 'function' 
-            ? window.CharacterStats.getCharacterStats(char) 
-            : char.stats || {};
-        STAT_KEYS.forEach(function(key) {
-            setFieldValue('char-' + key, stats[key]);
-        });
-
-        // Magic stats
-        var magic = window.CharacterStats && typeof window.CharacterStats.getCharacterMagic === 'function'
-            ? window.CharacterStats.getCharacterMagic(char)
-            : char.magic || {};
-        MAGIC_TYPE_KEYS.forEach(function(key) {
-            var input = document.getElementById('magic-' + key);
-            if (input) {
-                input.value = magic[key] !== undefined ? magic[key] : 0;
-            }
-        });
-
-        // Special moves
-        var moves = window.CharacterStats && typeof window.CharacterStats.getSpecialMoves === 'function'
-            ? window.CharacterStats.getSpecialMoves(char)
-            : char.specialMoves || { physical: [], magical: [] };
-        
-        if (window.CharacterStatsView && typeof window.CharacterStatsView.renderSpecialMoves === 'function') {
-            window.CharacterStatsView.renderSpecialMoves('physical-moves-list', moves.physical || [], 'physical');
-            window.CharacterStatsView.renderSpecialMoves('magical-moves-list', moves.magical || [], 'magical');
+        // Personality
+        if (char.personality) {
+            setFieldValue('char-personality-traits', char.personality.traits);
+            setFieldValue('char-personality-ideals', char.personality.ideals);
+            setFieldValue('char-personality-bonds', char.personality.bonds);
+            setFieldValue('char-personality-flaws', char.personality.flaws);
+            setFieldValue('char-personality-alignment', char.personality.alignment);
+            setFieldValue('char-personality-likes', char.personality.likes);
+            setFieldValue('char-personality-dislikes', char.personality.dislikes);
+            setFieldValue('char-personality-habits', char.personality.habits);
+            setFieldValue('char-personality-fears', char.personality.fears);
+            setFieldValue('char-personality-goals', char.personality.goals);
         }
 
-        // Career status
-        var statusContainer = document.getElementById('career-status-container');
-        if (statusContainer) {
-            statusContainer.replaceChildren();
-            if (char.careerStatus && char.careerStatus.length > 0) {
-                char.careerStatus.forEach(function(status) {
-                    if (window.CharacterViews && typeof window.CharacterViews.addCareerStatusEntry === 'function') {
-                        window.CharacterViews.addCareerStatusEntry(
-                            statusContainer, 
-                            status.status, 
-                            status.startYear, 
-                            status.endYear
-                        );
-                    }
-                });
-            } else if (window.CharacterViews && typeof window.CharacterViews.addCareerStatusEntry === 'function') {
-                window.CharacterViews.addCareerStatusEntry(statusContainer);
-            }
+        // Professional
+        if (Array.isArray(char.careerStatus)) {
+            setFieldValue('char-careerStatus', JSON.stringify(char.careerStatus, null, 2));
         }
-
-        // Professional tab
         setFieldValue('char-specialty', char.specialty);
 
-        // Class tags
-        if (window.CharacterClasses && typeof window.CharacterClasses.populateClassTags === 'function') {
-            window.CharacterClasses.populateClassTags(char.classIds || []);
-        }
-
-        // Academic class selector
-        if (window.CharacterClasses && typeof window.CharacterClasses.populateAcademicClassSelector === 'function') {
-            window.CharacterClasses.populateAcademicClassSelector(char);
-        }
-
-        // Current classes display
-        if (window.CharacterClasses && typeof window.CharacterClasses.updateCurrentClassesDisplay === 'function') {
-            window.CharacterClasses.updateCurrentClassesDisplay(char);
-        }
-
-        // Eliminations
-        if (window.CharacterEliminations && typeof window.CharacterEliminations.renderTournament === 'function') {
-            window.CharacterEliminations.renderTournament(char);
-        }
-        if (window.CharacterEliminations && typeof window.CharacterEliminations.renderStandalone === 'function') {
-            window.CharacterEliminations.renderStandalone(char);
-        }
+        // Social
+        setFieldValue('char-attraction', char.attraction);
+        setFieldValue('char-sexuality', char.sexuality);
 
         // Notes
         setFieldValue('char-notes', char.notes);
+
+        // Class checkbox
+        var checkbox = document.getElementById('char-isInstructor');
+        if (checkbox) {
+            checkbox.checked = char.graduatingClassInstructor || false;
+        }
+
+        // Stats
+        if (char.stats) {
+            for (var key in char.stats) {
+                setFieldValue('char-stat-' + key, char.stats[key]);
+            }
+        }
+
+        // Class IDs
+        if (Array.isArray(char.classIds)) {
+            setFieldValue('char-classIds', char.classIds.join(', '));
+        }
     }
-
-    // ============================================================
-    // RESET FORM FIELDS - DOM only, no state mutation
-    // ============================================================
-
-    function resetFormFields() {
-        var inputs = document.querySelectorAll('#character-form input, #character-form textarea, #character-form select');
-        
-        // Stat keys for special handling
-        var statMap = {};
-        STAT_KEYS.forEach(function(key) {
-            statMap['char-' + key] = key;
-        });
-
-        inputs.forEach(function(input) {
-            if (input.type === 'checkbox') {
-                input.checked = false;
-                return;
-            }
-
-            // Check if this is a stat input
-            var statKey = statMap[input.id];
-            if (statKey) {
-                var defaultVal = STAT_DEFAULT;
-                if (window.CharacterStats && typeof window.CharacterStats.getDefaultStats === 'function') {
-                    var defaults = window.CharacterStats.getDefaultStats();
-                    if (defaults && defaults[statKey] !== undefined && defaults[statKey] !== null) {
-                        defaultVal = defaults[statKey];
-                    }
-                }
-                input.value = defaultVal;
-                return;
-            }
-
-            // Special case: standalone elim week
-            if (input.id === 'standalone-elim-week') {
-                input.value = '1';
-                return;
-            }
-
-            // Everything else: empty string
-            input.value = '';
-        });
-
-        // Explicitly restore name format default
-        var nameFormat = document.getElementById('char-name-format');
-        if (nameFormat) {
-            nameFormat.value = 'firstlast';
-        }
-
-        // Reset magic inputs to 0
-        MAGIC_TYPE_KEYS.forEach(function(key) {
-            var input = document.getElementById('magic-' + key);
-            if (input) input.value = 0;
-        });
-
-        // Reset death fields
-        var deathFields = document.getElementById('death-fields');
-        if (deathFields) deathFields.style.display = 'none';
-
-        // Reset career status
-        var statusContainer = document.getElementById('career-status-container');
-        if (statusContainer) {
-            statusContainer.replaceChildren();
-            if (window.CharacterViews && typeof window.CharacterViews.addCareerStatusEntry === 'function') {
-                window.CharacterViews.addCareerStatusEntry(statusContainer);
-            }
-        }
-
-        // Reset class tags
-        if (window.CharacterClasses && typeof window.CharacterClasses.clearClassTags === 'function') {
-            window.CharacterClasses.clearClassTags();
-        }
-
-        // Reset class selector - use DOM APIs for consistency
-        var classSelect = document.getElementById('academic-class-select');
-        if (classSelect) {
-            classSelect.replaceChildren();
-            var option = document.createElement('option');
-            option.value = '';
-            option.textContent = 'Select a class...';
-            classSelect.appendChild(option);
-        }
-
-        // Reset current classes display
-        var classesDisplay = document.getElementById('current-classes-list');
-        if (classesDisplay) classesDisplay.textContent = 'None';
-
-        // Reset eliminations views
-        setEmptyState(
-            document.getElementById('tournament-eliminations-view'),
-            'None',
-            '6px',
-            '0.75rem'
-        );
-
-        setEmptyState(
-            document.getElementById('standalone-eliminations-container'),
-            'None',
-            '6px',
-            '0.75rem'
-        );
-
-        // Reset social view
-        setEmptyState(
-            document.getElementById('social-view'),
-            'Save character to view social connections',
-            '8px',
-            '0.8rem'
-        );
-
-        // Reset academic/professional views
-        setEmptyState(
-            document.getElementById('academic-view'),
-            'Save character to view academic data',
-            '8px',
-            '0.8rem'
-        );
-
-        setEmptyState(
-            document.getElementById('professional-view'),
-            'Save character to view professional data',
-            '8px',
-            '0.8rem'
-        );
-
-        // Reset special moves
-        setEmptyState(
-            document.getElementById('physical-moves-list'),
-            'None',
-            '4px',
-            '0.7rem'
-        );
-
-        setEmptyState(
-            document.getElementById('magical-moves-list'),
-            'None',
-            '4px',
-            '0.7rem'
-        );
-
-        // Reset view render state
-        _renderedViews.academic = false;
-        _renderedViews.professional = false;
-        _renderedViews.social = false;
-    }
-
-    // ============================================================
-    // HELPER FUNCTIONS
-    // ============================================================
 
     function setFieldValue(id, value) {
         var el = document.getElementById(id);
@@ -543,269 +575,376 @@
         }
     }
 
-    function setCheckbox(id, checked) {
-        var el = document.getElementById(id);
-        if (el) {
-            el.checked = !!checked;
+    // ============================================================
+    // BIND FORM EVENTS
+    // ============================================================
+
+    function bindFormEvents(modal, editId, char) {
+        // Tab switching
+        var tabBtns = modal.querySelectorAll('.form-tab-btn');
+        tabBtns.forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var tab = this.dataset.tab;
+                if (tab) {
+                    switchFormTab(tab);
+                }
+            });
+        });
+
+        // Birth year -> auto-calculate age
+        var birthYearInput = document.getElementById('char-birthYear');
+        var ageInput = document.getElementById('char-age');
+        if (birthYearInput && ageInput) {
+            birthYearInput.addEventListener('input', function() {
+                var year = parseInt(this.value, 10);
+                if (!isNaN(year)) {
+                    var currentYear = getCurrentYear();
+                    ageInput.value = currentYear - year;
+                } else {
+                    ageInput.value = '';
+                }
+            });
+        }
+
+        // Random Physical
+        var randomPhysicalBtn = document.getElementById('random-physical-btn');
+        if (randomPhysicalBtn) {
+            randomPhysicalBtn.addEventListener('click', function() {
+                fillRandomPhysical();
+            });
+        }
+
+        // Random Personality
+        var randomPersonalityBtn = document.getElementById('random-personality-btn');
+        if (randomPersonalityBtn) {
+            randomPersonalityBtn.addEventListener('click', function() {
+                fillRandomPersonality();
+            });
+        }
+
+        // Random Stats
+        var randomStatsBtn = document.getElementById('random-stats-btn');
+        if (randomStatsBtn) {
+            randomStatsBtn.addEventListener('click', function() {
+                fillRandomStats();
+            });
+        }
+
+        // Close buttons
+        var closeBtn = document.getElementById('close-character-form');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', function() {
+                modal.classList.add('hidden');
+                modal.style.display = 'none';
+            });
+        }
+
+        var cancelBtn = document.getElementById('cancel-character-form');
+        if (cancelBtn) {
+            cancelBtn.addEventListener('click', function() {
+                modal.classList.add('hidden');
+                modal.style.display = 'none';
+            });
+        }
+
+        modal.addEventListener('click', function(e) {
+            if (e.target === this) {
+                this.classList.add('hidden');
+                this.style.display = 'none';
+            }
+        });
+
+        // Save
+        var saveBtn = document.getElementById('save-character-btn');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', function() {
+                saveCharacter(editId);
+            });
+        }
+
+        // Enter key on form
+        var form = modal.querySelector('.character-form');
+        if (form) {
+            form.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') {
+                    e.preventDefault();
+                    saveCharacter(editId);
+                }
+            });
         }
     }
 
     // ============================================================
-    // GET CURRENT TAB (for external use)
+    // SWITCH FORM TAB
     // ============================================================
 
-    function getCurrentTab() {
-        var activeBtn = document.querySelector('.char-tab-btn.active');
-        return activeBtn ? activeBtn.dataset.tab : 'name';
-    }
+    function switchFormTab(tab) {
+        if (!tab || VALID_TABS.indexOf(tab) === -1) return;
 
-    // ============================================================
-    // TAB HTML GENERATORS
-    // ============================================================
+        state.currentTab = tab;
 
-    function getTabsHTML() {
-        return `
-            <div class="char-tabs">
-                <button type="button" class="char-tab-btn active" data-tab="name">Name</button>
-                <button type="button" class="char-tab-btn" data-tab="physical">Physical</button>
-                <button type="button" class="char-tab-btn" data-tab="personality">Personality</button>
-                <button type="button" class="char-tab-btn" data-tab="academic">Academic</button>
-                <button type="button" class="char-tab-btn" data-tab="professional">Professional</button>
-                <button type="button" class="char-tab-btn" data-tab="stats">Stats</button>
-                <button type="button" class="char-tab-btn" data-tab="social">Social</button>
-                <button type="button" class="char-tab-btn" data-tab="notes">Notes</button>
-            </div>
-            ${getNameTabHTML()}
-            ${getPhysicalTabHTML()}
-            ${getPersonalityTabHTML()}
-            ${getAcademicTabHTML()}
-            ${getProfessionalTabHTML()}
-            ${getStatsTabHTML()}
-            ${getSocialTabHTML()}
-            ${getNotesTabHTML()}
-        `;
-    }
+        // Update tab buttons
+        var btns = document.querySelectorAll('.form-tab-btn');
+        btns.forEach(function(btn) {
+            var isActive = btn.dataset.tab === tab;
+            btn.classList.toggle('active', isActive);
+            btn.style.color = isActive ? 'var(--accent)' : 'var(--text-dim)';
+            btn.style.borderBottomColor = isActive ? 'var(--accent)' : 'transparent';
+        });
 
-    function getNameTabHTML() {
-        return `
-            <div id="char-tab-name" class="char-tab-panel active">
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label>First Name *</label>
-                        <input type="text" id="char-firstname" required />
-                    </div>
-                    <div class="form-group">
-                        <label>Middle Name</label>
-                        <input type="text" id="char-middlename" />
-                    </div>
-                    <div class="form-group">
-                        <label>Last Name *</label>
-                        <input type="text" id="char-lastname" required />
-                    </div>
-                    <div class="form-group">
-                        <label>Nickname</label>
-                        <input type="text" id="char-nickname" placeholder="e.g., Ben" />
-                    </div>
-                    <div class="form-group">
-                        <label>Alias</label>
-                        <input type="text" id="char-alias" placeholder="e.g., The Shadow" />
-                    </div>
-                    <div class="form-group full-width">
-                        <label>Previous Names (comma separated)</label>
-                        <input type="text" id="char-previous-names" placeholder="e.g., John Smith, Jonathan Doe" />
-                    </div>
-                    <div class="form-group">
-                        <label>Display Name Format</label>
-                        <select id="char-name-format">
-                            <option value="firstlast">First + Last</option>
-                            <option value="lastfirst">Last, First</option>
-                            <option value="nicklast">Nickname + Last</option>
-                            <option value="firstnick">First "Nickname"</option>
-                            <option value="alias">Alias</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Year of Birth</label>
-                        <input type="number" id="char-birthyear" />
-                    </div>
-                    <div class="form-group full-width section-divider">
-                        <div class="deceased-toggle">
-                            <input type="checkbox" id="char-deceased" />
-                            <label for="char-deceased" class="deceased-label">Mark as Deceased</label>
-                        </div>
-                        <div id="death-fields" class="death-fields" style="display:none;">
-                            <div class="form-group"><label>Year of Death</label><input type="number" id="char-death-year" placeholder="e.g., 2023" /></div>
-                            <div class="form-group"><label>Death Age</label><input type="number" id="char-death-age" min="0" max="150" placeholder="e.g., 45" /></div>
-                            <div class="form-group"><label>Death Week (1-52)</label><input type="number" id="char-death-week" min="1" max="52" placeholder="e.g., 24" /></div>
-                            <div class="form-group full-width"><label>Cause of Death</label><input type="text" id="char-death-cause" /></div>
-                        </div>
-                    </div>
-                    <div class="form-group full-width section-divider">
-                        <label>Classes</label>
-                        <div id="class-tag-container" style="display:flex;flex-wrap:wrap;gap:4px;padding:4px;background:var(--panel-alt);border:1px solid var(--border);border-radius:6px;min-height:36px;">
-                            <span style="color:var(--text-dim);font-size:0.7rem;padding:4px;">No classes assigned</span>
-                        </div>
-                        <input type="text" id="class-tag-input" placeholder="Type class name and press Enter..." style="width:100%;padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;margin-top:4px;font-size:0.7rem;">
-                        <span style="font-size:0.6rem;color:var(--text-dim);">Press Enter to add a class. Click ✕ on a tag to remove it.</span>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-
-    function getPhysicalTabHTML() {
-        return `
-            <div id="char-tab-physical" class="char-tab-panel" style="display:none;">
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label>Gender</label>
-                        <input type="text" id="char-gender" placeholder="Male/Female/Other" />
-                    </div>
-                    <div class="form-group">
-                        <label>Eye Color</label>
-                        <input type="text" id="char-eyes" placeholder="Blue, Green, Brown..." />
-                    </div>
-                    <div class="form-group">
-                        <label>Hair Color</label>
-                        <input type="text" id="char-hair" placeholder="Blonde, Black, Red..." />
-                    </div>
-                    <div class="form-group">
-                        <label>Skin Color/Tone</label>
-                        <input type="text" id="char-skin" placeholder="Fair, Olive, Dark..." />
-                    </div>
-                    <div class="form-group">
-                        <label>Height</label>
-                        <input type="text" id="char-height" placeholder="e.g., 5'10\"" />
-                    </div>
-                    <div class="form-group">
-                        <label>Weight</label>
-                        <input type="text" id="char-weight" placeholder="e.g., 75kg" />
-                    </div>
-                    <div class="form-group">
-                        <label>Build</label>
-                        <input type="text" id="char-build" placeholder="Slim, Athletic..." />
-                    </div>
-                    <div class="form-group full-width">
-                        <label>Appearance Notes</label>
-                        <textarea id="char-appearance-notes" rows="2" placeholder="Scars, tattoos..."></textarea>
-                    </div>
-                    <div class="form-group full-width section-divider">
-                        <label>Sexuality</label>
-                        <input type="text" id="char-sexuality" placeholder="Heterosexual, Homosexual, Bisexual, Pansexual, Asexual, Questioning, Other" />
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-
-    function getPersonalityTabHTML() {
-        return `
-            <div id="char-tab-personality" class="char-tab-panel" style="display:none;">
-                <div class="personality-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
-                    <div class="form-group"><label>Traits</label><input type="text" id="char-traits" placeholder="Brave, Honest, Curious..." /></div>
-                    <div class="form-group"><label>Ideals</label><input type="text" id="char-ideals" placeholder="Justice, Freedom, Truth..." /></div>
-                    <div class="form-group"><label>Bonds</label><input type="text" id="char-bonds" placeholder="Family, Country, Friends..." /></div>
-                    <div class="form-group"><label>Flaws</label><input type="text" id="char-flaws" placeholder="Fear, Pride, Greed..." /></div>
-                    <div class="form-group"><label>Alignment</label><input type="text" id="char-alignment" placeholder="Lawful Good, Chaotic Neutral..." /></div>
-                    <div class="form-group"><label>Likes</label><input type="text" id="char-likes" placeholder="Music, Books, Combat..." /></div>
-                    <div class="form-group"><label>Dislikes</label><input type="text" id="char-dislikes" placeholder="Lies, Injustice, Spiders..." /></div>
-                    <div class="form-group"><label>Habits</label><input type="text" id="char-habits" placeholder="Smoking, Pacing, Humming..." /></div>
-                    <div class="form-group"><label>Fears</label><input type="text" id="char-fears" placeholder="Heights, Loss, Darkness..." /></div>
-                    <div class="form-group"><label>Goals</label><input type="text" id="char-goals" placeholder="Seeking power, Revenge, Peace..." /></div>
-                </div>
-            </div>
-        `;
-    }
-
-    function getAcademicTabHTML() {
-        if (window.CharacterViews && typeof window.CharacterViews.getAcademicTabHTML === 'function') {
-            return window.CharacterViews.getAcademicTabHTML();
-        }
-
-        return `
-            <div id="char-tab-academic" class="char-tab-panel" style="display:none;">
-                <p class="empty-state">Academic view not loaded.</p>
-            </div>
-        `;
-    }
-
-    function getProfessionalTabHTML() {
-        if (window.CharacterViews && typeof window.CharacterViews.getProfessionalTabHTML === 'function') {
-            return window.CharacterViews.getProfessionalTabHTML();
-        }
-
-        return `
-            <div id="char-tab-professional" class="char-tab-panel" style="display:none;">
-                <p class="empty-state">Professional view not loaded.</p>
-            </div>
-        `;
-    }
-
-    function getStatsTabHTML() {
-        if (window.CharacterStatsView && typeof window.CharacterStatsView.getStatsTabHTML === 'function') {
-            return window.CharacterStatsView.getStatsTabHTML();
-        }
-
-        return `
-            <div id="char-tab-stats" class="char-tab-panel" style="display:none;">
-                <p class="empty-state">Stats view not loaded.</p>
-            </div>
-        `;
-    }
-
-    function getSocialTabHTML() {
-        if (window.CharacterViews && typeof window.CharacterViews.getSocialTabHTML === 'function') {
-            return window.CharacterViews.getSocialTabHTML();
-        }
-
-        return `
-            <div id="char-tab-social" class="char-tab-panel" style="display:none;">
-                <p class="empty-state">Social view not loaded.</p>
-            </div>
-        `;
-    }
-
-    function getNotesTabHTML() {
-        return `
-            <div id="char-tab-notes" class="char-tab-panel" style="display:none;">
-                <div class="form-group full-width">
-                    <textarea id="char-notes" rows="6" placeholder="Background, motivations, history..." style="min-height:150px;"></textarea>
-                </div>
-            </div>
-        `;
+        // Update panels
+        var panels = document.querySelectorAll('.tab-panel');
+        panels.forEach(function(panel) {
+            var isActive = panel.dataset.tab === tab;
+            panel.style.display = isActive ? 'block' : 'none';
+        });
     }
 
     // ============================================================
-    // INIT - RENDERING ONLY (events bound in character-events.js)
+    // RANDOM GENERATORS
     // ============================================================
 
-    function init(container) {
-        if (!checkDependencies()) return;
+    function fillRandomPhysical() {
+        var eyes = ['Blue', 'Brown', 'Green', 'Grey', 'Hazel', 'Amber', 'Violet', 'Black', 'Honey'];
+        var hair = ['Blonde', 'Brown', 'Black', 'Red', 'Auburn', 'Chestnut', 'Silver', 'White', 'Platinum', 'Honey'];
+        var skin = ['Fair', 'Olive', 'Light Brown', 'Dark Brown', 'Pale', 'Tan', 'Ebony', 'Porcelain'];
+        var heights = ['165', '170', '175', '180', '185', '190', '160', '167', '172', '178', '182', '188'];
+        var builds = ['Slim', 'Athletic', 'Broad', 'Stocky', 'Lithe', 'Muscular', 'Willowy', 'Compact', 'Heavy'];
 
-        if (!container) {
-            container = document.getElementById('tab-characters');
+        setFieldValue('char-eyes', randomChoice(eyes));
+        setFieldValue('char-hair', randomChoice(hair));
+        setFieldValue('char-skin', randomChoice(skin));
+        setFieldValue('char-height', randomChoice(heights));
+        setFieldValue('char-build', randomChoice(builds));
+        setFieldValue('char-weight', (60 + Math.floor(Math.random() * 40)) + 'kg');
+    }
+
+    function fillRandomPersonality() {
+        var traits = [
+            'Brave, Honest, Loyal', 'Cunning, Ambitious, Charming', 'Wise, Patient, Kind',
+            'Fierce, Proud, Determined', 'Quiet, Observant, Clever', 'Bold, Reckless, Passionate',
+            'Calm, Collected, Strategic', 'Playful, Curious, Optimistic', 'Gruff, Loyal, Protective',
+            'Elegant, Diplomatic, Calculating', 'Wild, Free-spirited, Intuitive', 'Stoic, Disciplined, Focused'
+        ];
+
+        var ideals = [
+            'Honor and Duty', 'Freedom and Choice', 'Knowledge and Truth',
+            'Justice and Fairness', 'Power and Ambition', 'Peace and Harmony',
+            'Tradition and Order', 'Change and Progress', 'Loyalty and Family'
+        ];
+
+        var bonds = [
+            'Protecting their family', 'A childhood friend', 'Their homeland',
+            'A mentor who saved them', 'A sacred oath', 'Their closest ally',
+            'A lost loved one', 'Their honor', 'A promise made'
+        ];
+
+        var flaws = [
+            'Too trusting', 'Quick to anger', 'Afraid of failure',
+            'Reckless in pursuit of goals', 'Too proud to ask for help',
+            'Haunted by a past mistake', 'Perfectionist', 'Distrustful of others'
+        ];
+
+        var alignments = [
+            'Lawful Good', 'Neutral Good', 'Chaotic Good',
+            'Lawful Neutral', 'True Neutral', 'Chaotic Neutral',
+            'Lawful Evil', 'Neutral Evil', 'Chaotic Evil'
+        ];
+
+        setFieldValue('char-personality-traits', randomChoice(traits));
+        setFieldValue('char-personality-ideals', randomChoice(ideals));
+        setFieldValue('char-personality-bonds', randomChoice(bonds));
+        setFieldValue('char-personality-flaws', randomChoice(flaws));
+        setFieldValue('char-personality-alignment', randomChoice(alignments));
+        setFieldValue('char-personality-likes', randomChoice(['Music', 'Books', 'Nature', 'Art', 'Animals', 'Good Food', 'Stories', 'Games']));
+        setFieldValue('char-personality-dislikes', randomChoice(['Lies', 'Cruelty', 'Arrogance', 'Crowds', 'Loud Noises', 'Injustice', 'Boredom']));
+        setFieldValue('char-personality-habits', randomChoice(['Hums while working', 'Taps fingers when thinking', 'Collects small trinkets', 'Talks to themselves', 'Fidgets with a lucky charm']));
+        setFieldValue('char-personality-fears', randomChoice(['Heights', 'Spiders', 'Claustrophobia', 'Being forgotten', 'Failure', 'Loss of control']));
+        setFieldValue('char-personality-goals', randomChoice(['To protect the innocent', 'To achieve greatness', 'To find purpose', 'To restore honor', 'To discover truth', 'To build something lasting']));
+    }
+
+    function fillRandomStats() {
+        var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+
+        for (var i = 0; i < statKeys.length; i++) {
+            var val = 8 + Math.floor(Math.random() * 18); // 8-25 range
+            setFieldValue('char-stat-' + statKeys[i], val);
         }
-        if (!container) return;
+    }
 
-        var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+    function randomChoice(arr) {
+        return arr[Math.floor(Math.random() * arr.length)];
+    }
 
+    // ============================================================
+    // SAVE CHARACTER
+    // ============================================================
+
+    function saveCharacter(editId) {
+        // Gather basic fields
+        var firstName = document.getElementById('char-firstName').value.trim();
+        var lastName = document.getElementById('char-lastName').value.trim();
+
+        if (!firstName || !lastName) {
+            showNotification('First and last name are required.', 'error');
+            return;
+        }
+
+        var data = {
+            firstName: firstName,
+            lastName: lastName,
+            middleName: document.getElementById('char-middleName').value.trim(),
+            nickname: document.getElementById('char-nickname').value.trim(),
+            alias: document.getElementById('char-alias').value.trim(),
+            gender: document.getElementById('char-gender').value.trim(),
+            birthYear: document.getElementById('char-birthYear').value.trim(),
+            eyes: document.getElementById('char-eyes').value.trim(),
+            hair: document.getElementById('char-hair').value.trim(),
+            skin: document.getElementById('char-skin').value.trim(),
+            height: document.getElementById('char-height').value.trim(),
+            weight: document.getElementById('char-weight').value.trim(),
+            build: document.getElementById('char-build').value.trim(),
+            appearanceNotes: document.getElementById('char-appearanceNotes').value.trim(),
+            notes: document.getElementById('char-notes').value.trim(),
+            specialty: document.getElementById('char-specialty').value.trim(),
+            attraction: document.getElementById('char-attraction').value.trim(),
+            sexuality: document.getElementById('char-sexuality').value.trim(),
+            graduatingClassId: document.getElementById('char-graduatingClass').value || null,
+            graduatingClassInstructor: document.getElementById('char-isInstructor').checked
+        };
+
+        // Personality
+        data.personality = {
+            traits: document.getElementById('char-personality-traits').value.trim(),
+            ideals: document.getElementById('char-personality-ideals').value.trim(),
+            bonds: document.getElementById('char-personality-bonds').value.trim(),
+            flaws: document.getElementById('char-personality-flaws').value.trim(),
+            alignment: document.getElementById('char-personality-alignment').value.trim(),
+            likes: document.getElementById('char-personality-likes').value.trim(),
+            dislikes: document.getElementById('char-personality-dislikes').value.trim(),
+            habits: document.getElementById('char-personality-habits').value.trim(),
+            fears: document.getElementById('char-personality-fears').value.trim(),
+            goals: document.getElementById('char-personality-goals').value.trim()
+        };
+
+        // Stats
+        data.stats = {};
+        var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+        for (var i = 0; i < statKeys.length; i++) {
+            var val = parseInt(document.getElementById('char-stat-' + statKeys[i]).value, 10) || 10;
+            data.stats[statKeys[i]] = Math.max(1, Math.min(50, val));
+        }
+
+        // Career Status
+        var careerStatusText = document.getElementById('char-careerStatus').value.trim();
+        if (careerStatusText) {
+            try {
+                data.careerStatus = JSON.parse(careerStatusText);
+                if (!Array.isArray(data.careerStatus)) {
+                    data.careerStatus = [];
+                }
+            } catch (e) {
+                showNotification('Invalid career status JSON. Please check the format.', 'error');
+                return;
+            }
+        } else {
+            data.careerStatus = [];
+        }
+
+        // Class IDs
+        var classIdsText = document.getElementById('char-classIds').value.trim();
+        if (classIdsText) {
+            data.classIds = classIdsText.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+        } else {
+            data.classIds = [];
+        }
+
+        // Create or update
+        var result;
         if (editId) {
-            show(editId);
+            result = window.updateCharacter(editId, data);
+        } else {
+            result = window.createCharacter(data);
         }
+
+        if (!result || !result.success) {
+            showNotification(result && result.message ? result.message : 'Failed to save character.', 'error');
+            return;
+        }
+
+        var modal = document.getElementById('character-form-modal');
+        if (modal) {
+            modal.classList.add('hidden');
+            modal.style.display = 'none';
+        }
+
+        // Refresh the character list
+        if (typeof window.renderCharacterList === 'function') {
+            window.renderCharacterList();
+        }
+
+        if (typeof window.renderAll === 'function') {
+            window.renderAll();
+        }
+
+        if (typeof window.saveData === 'function') {
+            window.saveData()
+                .then(function() {
+                    showNotification(editId ? 'Character updated successfully.' : 'Character created successfully.', 'success');
+                })
+                .catch(function() {
+                    showNotification('Character saved in memory, but persistence failed.', 'error');
+                });
+        } else {
+            showNotification(editId ? 'Character updated successfully.' : 'Character created successfully.', 'success');
+        }
+    }
+
+    // ============================================================
+    // NOTIFICATION HELPER
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+        if (typeof window.showToast === 'function') {
+            window.showToast(message, type);
+            return;
+        }
+        if (type === 'error') {
+            alert('Error: ' + message);
+        } else if (type === 'success') {
+            alert(message);
+        } else {
+            console.log('[CharacterForm]', message);
+        }
+    }
+
+    // ============================================================
+    // HTML ESCAPING
+    // ============================================================
+
+    function escapeHtml(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+        var str = String(value);
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
+    window.showCharacterForm = showCharacterForm;
     window.CharacterForm = {
-        init: init,
-        show: show,
-        switchTab: switchTab,
-        getTabsHTML: getTabsHTML,
-        populateFormFields: populateFormFields,
-        resetFormFields: resetFormFields,
-        getCurrentTab: getCurrentTab
+        show: showCharacterForm,
+        switchTab: switchFormTab,
+        getCurrentTab: function() { return state.currentTab; }
     };
 
 })();
