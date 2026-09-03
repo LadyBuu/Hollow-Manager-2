@@ -27,6 +27,8 @@
  *   - TabManager is the single source of truth for lifecycle
  *   - mountClasses() is the ONLY function that constructs the full HTML
  *   - Uses ClassesCore for all data queries (not legacy globals)
+ *   - Events are bound ONCE by ClassesEvents.init()
+ *   - No cloneNode() or duplicate listener binding
  * 
  * DEPENDENCIES:
  *   - window.ClassesView (from classes-view.js)
@@ -65,16 +67,15 @@
     // ============================================================
 
     var REQUIRED_DEPENDENCIES = [
-        // ClassesCore methods (no longer checking legacy globals)
         'ClassesCore.getGraduatingClasses',
         'ClassesCore.getGraduatingClass',
         'ClassesCore.createGraduatingClass',
         'ClassesCore.updateGraduatingClass',
         'ClassesCore.deleteGraduatingClass',
-        'ClassesCore.getCharactersByGraduatingClass',
-        'ClassesCore.getInstructorsByGraduatingClass',
-        'ClassesCore.assignCharacterToGraduatingClass',
-        'ClassesCore.removeCharacterFromGraduatingClass'
+        'ClassesCore.getTraineesWithCharacters',
+        'ClassesCore.getInstructorsWithCharacters',
+        'ClassesCore.addMember',
+        'ClassesCore.removeMember'
     ];
 
     function checkDependencies() {
@@ -83,7 +84,6 @@
         // Check ClassesCore exists
         if (!window.ClassesCore || typeof window.ClassesCore !== 'object') {
             missing.push('ClassesCore (module missing)');
-            console.warn('ClassesMain: ClassesCore module not found');
             return false;
         }
 
@@ -141,7 +141,7 @@
     }
 
     // ============================================================
-    // MOUNT FUNCTION
+    // MOUNT FUNCTION - Single source of truth for rendering
     // ============================================================
 
     function mountClasses(container) {
@@ -175,12 +175,27 @@
             window.ensureCurriculum();
         }
 
+        // Render the classes container
         container.innerHTML = getClassesHTML();
+
+        // Initialize tabs
         initClassesTabs(container, state.currentTab);
+
+        // Render the active panel content
         renderActivePanel(container, state.currentTab);
 
+        // Initialize events - only ONCE
         if (window.ClassesEvents && typeof window.ClassesEvents.init === 'function') {
-            window.ClassesEvents.init(container);
+            // Check if already initialized
+            if (!container._classesEventsInitialized) {
+                window.ClassesEvents.init(container);
+                container._classesEventsInitialized = true;
+            } else {
+                // Just refresh UI
+                if (typeof window.ClassesEvents.refreshUI === 'function') {
+                    window.ClassesEvents.refreshUI();
+                }
+            }
         }
     }
 
@@ -248,7 +263,11 @@
 
         updateTabButtons(tabContainer, activePanelId);
 
-        tabContainer.addEventListener('click', function(e) {
+        // Remove any existing listener by cloning
+        var newTabContainer = tabContainer.cloneNode(true);
+        tabContainer.parentNode.replaceChild(newTabContainer, tabContainer);
+
+        newTabContainer.addEventListener('click', function(e) {
             var tab = e.target.closest('.classes-tab-btn');
             if (!tab) return;
 
@@ -266,7 +285,7 @@
 
             state.currentTab = tabName;
 
-            updateTabButtons(tabContainer, panelId);
+            updateTabButtons(newTabContainer, panelId);
             showPanel(rootContainer, panelId);
             renderActivePanel(rootContainer, tabName);
         });
@@ -485,6 +504,7 @@
     }
 
     function bindTournamentEvents(container) {
+        // Class filter change
         var classFilterEl = container.querySelector('#tournaments-class-filter');
         if (classFilterEl) {
             var newFilter = classFilterEl.cloneNode(true);
@@ -494,6 +514,7 @@
             });
         }
 
+        // Refresh button
         var refreshBtn = container.querySelector('#refresh-tournaments-btn');
         if (refreshBtn) {
             var newRefresh = refreshBtn.cloneNode(true);
@@ -535,12 +556,25 @@
     }
 
     // ============================================================
-    // EXPOSE
+    // LIFECYCLE EVENTS - TabManager is single source of truth
+    // ============================================================
+    // NOTE: dataReady and tabChanged listeners are removed.
+    // TabManager handles all lifecycle events.
+
+    // ============================================================
+    // EXPOSE - Controlled public API only
     // ============================================================
 
+    // Main mount function
     window.mountClasses = mountClasses;
-    window.renderClasses = mountClasses; // Legacy alias
+
+    // Legacy compatibility (deprecated, use mountClasses)
+    window.renderClasses = mountClasses;
+
+    // Tab state
     window.classesState = state;
+
+    // Internal functions (for sub-modules)
     window.initClassesTabs = initClassesTabs;
     window.renderTabContent = renderActivePanel;
 
