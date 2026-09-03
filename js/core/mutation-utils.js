@@ -14,6 +14,8 @@
  *   - saveWithPromise() ensures saveData() errors become Promise rejections
  *   - This module does NOT call saveData() directly - it wraps it
  *   - This module does NOT show UI - caller handles UX
+ *   - USES NotificationSystem for notifications - SINGLE SOURCE OF TRUTH
+ *   - USES DomUtils for DOM-related utilities when needed
  * 
  * MUTATION CONTRACT:
  *   performMutation(config) expects:
@@ -49,7 +51,8 @@
  *   - window.saveData (from database.js)
  *   - window.data (global state)
  *   - window.logActivity (optional, from core-utils.js)
- *   - window.NotificationSystem (optional, from notification.js)
+ *   - window.NotificationSystem (from notification.js) - SINGLE SOURCE OF TRUTH
+ *   - window.DomUtils (from dom-utils.js) - SINGLE SOURCE OF TRUTH
  */
 
 (function() {
@@ -60,6 +63,13 @@
         return;
     }
     window.__mutationUtilsLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var NotificationSystem = window.NotificationSystem || window;
+    var DomUtils = window.DomUtils || window;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -74,35 +84,32 @@
     }
 
     // ============================================================
-    // NOTIFICATION HELPER
+    // NOTIFICATION HELPER - DELEGATES TO NotificationSystem
     // ============================================================
 
+    /**
+     * Show a notification toast.
+     * Delegates to NotificationSystem - the SINGLE SOURCE OF TRUTH.
+     * 
+     * @param {string} message - Notification message
+     * @param {string} type - 'success' | 'error' | 'warning' | 'info'
+     */
     function showNotification(message, type) {
         type = type || 'info';
 
-        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
-            window.NotificationSystem.notify(message, type);
+        // Primary: Use NotificationSystem
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
             return;
         }
 
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
+        // Secondary: Use DomUtils as fallback
+        if (DomUtils && typeof DomUtils.notify === 'function') {
+            DomUtils.notify(message, type);
             return;
         }
 
-        if (typeof window.setSession === 'function') {
-            window.setSession('toast', {
-                message: message,
-                type: type,
-                timestamp: Date.now()
-            });
-            if (typeof window.renderToast === 'function') {
-                window.renderToast();
-            }
-            return;
-        }
-
-        // Last resort
+        // Last resort fallback (should never be reached)
         if (type === 'error') {
             alert('Error: ' + message);
         } else {
@@ -537,6 +544,5 @@
 
     // Also expose individual functions globally for backward compatibility
     window.createSafeBackup = createSafeBackup;
-
 
 })();
