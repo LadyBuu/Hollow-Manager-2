@@ -651,6 +651,56 @@
     }
 
     // ============================================================
+    // SHOW MEMBER MODAL - Called from ClassesEvents
+    // ============================================================
+
+    function showMemberModal(classId, container) {
+        console.log('[ClassesView] showMemberModal called for class:', classId);
+
+        var modal = document.getElementById('member-modal');
+        if (!modal) {
+            console.warn('ClassesView: member-modal not found');
+            return;
+        }
+
+        var content = document.getElementById('member-modal-content');
+        var title = document.getElementById('member-modal-title');
+
+        if (!content || !title) {
+            console.warn('ClassesView: member-modal elements not found');
+            return;
+        }
+
+        var cls = window.ClassesCore.getGraduatingClass(classId);
+        if (!cls) {
+            alert('Class not found.');
+            return;
+        }
+
+        title.textContent = 'Manage Members - ' + cls.name;
+
+        // Get data
+        var allChars = window.data && window.data.characters ? window.data.characters : [];
+        var currentTrainees = window.ClassesCore.getCharactersByGraduatingClass(classId);
+        var currentInstructors = window.ClassesCore.getInstructorsByGraduatingClass(classId);
+
+        var traineeIds = {};
+        var instructorIds = {};
+        currentTrainees.forEach(function(c) { traineeIds[c.id] = true; });
+        currentInstructors.forEach(function(c) { instructorIds[c.id] = true; });
+
+        // Build content
+        content.innerHTML = renderMemberModalContent(classId, allChars, traineeIds, instructorIds);
+
+        // Show modal
+        modal.classList.remove('hidden');
+        modal.style.display = 'flex';
+
+        // Populate dropdown
+        populateDropdown(classId, allChars, traineeIds, instructorIds);
+    }
+
+    // ============================================================
     // EXPOSE - Render-only API
     // ============================================================
 
@@ -664,6 +714,9 @@
 
         // Dropdown
         populateDropdown: populateDropdown,
+
+        // Member Modal
+        showMemberModal: showMemberModal,
 
         // State
         selectClass: selectClass,
