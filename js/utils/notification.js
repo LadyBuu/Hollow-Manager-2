@@ -16,6 +16,7 @@
  *   - No data mutation
  *   - Safe for use in any context
  *   - Works with or without DOM
+ *   - USES DomUtils.escapeHtml() - SINGLE SOURCE OF TRUTH
  * 
  * USAGE:
  *   // Simple toast
@@ -39,6 +40,40 @@
         return;
     }
     window.__notificationLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var DomUtils = window.DomUtils || window;
+
+    // ============================================================
+    // HTML ESCAPING - DELEGATES TO DomUtils (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    /**
+     * Escape HTML special characters to prevent XSS.
+     * Delegates to DomUtils.escapeHtml() - the SINGLE SOURCE OF TRUTH.
+     * 
+     * @param {*} value - Value to escape
+     * @returns {string} Escaped string
+     */
+    function escapeHtml(value) {
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
+        }
+        // Emergency fallback (should never be reached)
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;')
+            .replace(/`/g, '&#x60;');
+    }
 
     // ============================================================
     // CONSTANTS
@@ -83,22 +118,6 @@
     var _queue = [];
     var _activeNotifications = [];
     var _isRendering = false;
-
-    // ============================================================
-    // HTML ESCAPING (local copy)
-    // ============================================================
-
-    function escapeHtml(value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
 
     // ============================================================
     // CONTAINER MANAGEMENT
@@ -262,6 +281,9 @@
 
         var typeConfig = TYPES[type] || TYPES.info;
 
+        // Escape message content for safety
+        var escapedMessage = escapeHtml(message);
+
         var notification = document.createElement('div');
         notification.className = 'notification ' + typeConfig.className;
         notification.role = 'alert';
@@ -276,7 +298,7 @@
         // Content
         var content = document.createElement('span');
         content.className = 'notification-content';
-        content.textContent = message;
+        content.textContent = message; // textContent is safe, but we already escaped above
         notification.appendChild(content);
 
         // Close button (always show for persistent, show for others on hover)
