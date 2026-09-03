@@ -1,6 +1,6 @@
 /**
  * modules/classes/classes-events.js - Classes Events
- * Fixed: Class list item click detection
+ * Fixed: Single source of truth for selection state
  */
 
 (function() {
@@ -15,9 +15,12 @@
     // STATE
     // ============================================================
 
-    var _selectedClassId = null;
     var _container = null;
     var _eventsBound = false;
+
+    // NOTE: _selectedClassId is REMOVED.
+    // ClassesView.state.selectedClassId is the SINGLE source of truth.
+    // Events calls ClassesView.selectClass() to update it.
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -32,6 +35,14 @@
 
         if (!window.ClassesView || typeof window.ClassesView.renderClassesView !== 'function') {
             missing.push('ClassesView.renderClassesView');
+        }
+
+        if (!window.ClassesView || typeof window.ClassesView.selectClass !== 'function') {
+            missing.push('ClassesView.selectClass');
+        }
+
+        if (!window.ClassesView || typeof window.ClassesView.getSelectedClassId !== 'function') {
+            missing.push('ClassesView.getSelectedClassId');
         }
 
         if (missing.length > 0) {
@@ -79,16 +90,26 @@
         return Promise.resolve();
     }
 
+    // ============================================================
+    // REFRESH UI - SIMPLIFIED
+    // ============================================================
+
     function refreshUI() {
-        if (_container && window.ClassesView && typeof window.ClassesView.renderClassesView === 'function') {
-            window.ClassesView.renderClassesView(_container, _selectedClassId);
+        console.log('[ClassesEvents] refreshUI called');
+
+        if (!_container) {
+            console.warn('[ClassesEvents] No container set');
+            return;
         }
-        if (_selectedClassId && window.ClassesView && typeof window.ClassesView.renderClassDetail === 'function') {
-            var detailContainer = document.getElementById('class-detail');
-            if (detailContainer) {
-                window.ClassesView.renderClassDetail(detailContainer, _selectedClassId);
-            }
+
+        if (!window.ClassesView || typeof window.ClassesView.renderClassesView !== 'function') {
+            console.warn('[ClassesEvents] ClassesView not available');
+            return;
         }
+
+        // ClassesView.renderClassesView() will read its own state.selectedClassId
+        // and render the detail accordingly. Events doesn't need to pass the ID.
+        window.ClassesView.renderClassesView(_container);
     }
 
     // ============================================================
@@ -118,7 +139,8 @@
 
     function handleEditClass(classId) {
         if (!classId) {
-            classId = _selectedClassId;
+            // Get from View's single source of truth
+            classId = window.ClassesView.getSelectedClassId();
         }
 
         if (!classId) {
@@ -196,7 +218,8 @@
         }
 
         if (result.class) {
-            _selectedClassId = result.class.id;
+            // Update View's single source of truth
+            window.ClassesView.selectClass(result.class.id);
         }
 
         saveData().then(function() {
@@ -207,7 +230,7 @@
 
     function handleDeleteClass(classId) {
         if (!classId) {
-            classId = _selectedClassId;
+            classId = window.ClassesView.getSelectedClassId();
         }
 
         if (!classId) {
@@ -240,7 +263,8 @@
             return;
         }
 
-        _selectedClassId = null;
+        // Clear selection
+        window.ClassesView.clearSelection();
 
         saveData().then(function() {
             refreshUI();
@@ -250,7 +274,7 @@
 
     function handleManageMembers(classId) {
         if (!classId) {
-            classId = _selectedClassId;
+            classId = window.ClassesView.getSelectedClassId();
         }
 
         if (!classId) {
@@ -390,6 +414,10 @@
         });
     }
 
+    // ============================================================
+    // HANDLE CLASS SELECT - SINGLE SOURCE OF TRUTH
+    // ============================================================
+
     function handleClassSelect(classId) {
         console.log('[ClassesEvents] handleClassSelect called with:', classId);
 
@@ -397,7 +425,12 @@
             return;
         }
 
-        _selectedClassId = classId;
+        // Update View's single source of truth
+        if (window.ClassesView && typeof window.ClassesView.selectClass === 'function') {
+            window.ClassesView.selectClass(classId);
+        }
+
+        // Refresh UI - renderClassesView() will read the updated state
         refreshUI();
     }
 
@@ -435,7 +468,7 @@
     }
 
     // ============================================================
-    // DIAGNOSTIC - Check if class list items exist
+    // DIAGNOSTIC
     // ============================================================
 
     function logClassListItems() {
@@ -449,6 +482,16 @@
             });
         });
         return items;
+    }
+
+    function checkDetailContainer() {
+        var container = document.getElementById('class-detail');
+        console.log('[ClassesEvents] #class-detail exists:', !!container);
+        if (container) {
+            console.log('[ClassesEvents] #class-detail innerHTML length:', container.innerHTML.length);
+            console.log('[ClassesEvents] #class-detail innerHTML preview:', container.innerHTML.substring(0, 200));
+        }
+        return container;
     }
 
     // ============================================================
@@ -467,9 +510,6 @@
         _container.addEventListener('click', function(e) {
             var target = e.target;
 
-            // DEBUG: Log all clicks to see what's happening
-            // console.log('[ClassesEvents] Click on:', target.tagName, target.id, target.className);
-
             // 1. Add Class button
             var addBtn = target.closest('#add-class-btn');
             if (addBtn) {
@@ -479,7 +519,7 @@
                 return;
             }
 
-            // 2. Class list item - WITH DEBUG
+            // 2. Class list item
             var listItem = target.closest('.class-list-item');
             if (listItem) {
                 e.preventDefault();
@@ -487,8 +527,6 @@
                 console.log('[ClassesEvents] Class list item clicked, classId:', classId);
                 if (classId) {
                     handleClassSelect(classId);
-                } else {
-                    console.warn('[ClassesEvents] Class list item has no data-id');
                 }
                 return;
             }
@@ -497,12 +535,10 @@
             var manageBtn = target.closest('#manage-members-btn');
             if (manageBtn) {
                 e.preventDefault();
-                var classId = manageBtn.dataset.classId || _selectedClassId;
+                var classId = manageBtn.dataset.classId || window.ClassesView.getSelectedClassId();
                 console.log('[ClassesEvents] Manage Members clicked, classId:', classId);
                 if (classId) {
                     handleManageMembers(classId);
-                } else {
-                    showNotification('No class selected.', 'error');
                 }
                 return;
             }
@@ -511,12 +547,10 @@
             var editBtn = target.closest('#edit-class-btn');
             if (editBtn) {
                 e.preventDefault();
-                var classId = editBtn.dataset.classId || _selectedClassId;
+                var classId = editBtn.dataset.classId || window.ClassesView.getSelectedClassId();
                 console.log('[ClassesEvents] Edit class clicked, classId:', classId);
                 if (classId) {
                     handleEditClass(classId);
-                } else {
-                    showNotification('No class selected.', 'error');
                 }
                 return;
             }
@@ -525,12 +559,10 @@
             var deleteBtn = target.closest('#delete-class-btn');
             if (deleteBtn) {
                 e.preventDefault();
-                var classId = deleteBtn.dataset.classId || _selectedClassId;
+                var classId = deleteBtn.dataset.classId || window.ClassesView.getSelectedClassId();
                 console.log('[ClassesEvents] Delete class clicked, classId:', classId);
                 if (classId) {
                     handleDeleteClass(classId);
-                } else {
-                    showNotification('No class selected.', 'error');
                 }
                 return;
             }
@@ -541,12 +573,10 @@
                 e.preventDefault();
                 var charId = addMemberBtn.dataset.charId;
                 var role = addMemberBtn.dataset.role || 'trainee';
-                var classId = _selectedClassId;
+                var classId = window.ClassesView.getSelectedClassId();
                 console.log('[ClassesEvents] Add member from search, charId:', charId, 'classId:', classId);
                 if (charId && classId) {
                     handleAddMemberFromSearch(classId, charId, role);
-                } else {
-                    showNotification('Missing class or character ID.', 'error');
                 }
                 return;
             }
@@ -556,12 +586,10 @@
             if (removeBtn) {
                 e.preventDefault();
                 var charId = removeBtn.dataset.charId;
-                var classId = removeBtn.dataset.classId || _selectedClassId;
+                var classId = removeBtn.dataset.classId || window.ClassesView.getSelectedClassId();
                 console.log('[ClassesEvents] Remove member, charId:', charId, 'classId:', classId);
                 if (charId && classId) {
                     handleRemoveMember(classId, charId);
-                } else {
-                    showNotification('Missing class or character ID.', 'error');
                 }
                 return;
             }
@@ -614,10 +642,9 @@
         _container.addEventListener('input', function(e) {
             var target = e.target;
 
-            // Member search
             var searchInput = target.closest('#member-search');
             if (searchInput) {
-                var classId = _selectedClassId;
+                var classId = window.ClassesView.getSelectedClassId();
                 if (classId) {
                     populateSearchResults(classId);
                 }
@@ -629,17 +656,15 @@
         _container.addEventListener('change', function(e) {
             var target = e.target;
 
-            // Role select
             var roleSelect = target.closest('#member-role-select');
             if (roleSelect) {
-                var classId = _selectedClassId;
+                var classId = window.ClassesView.getSelectedClassId();
                 if (classId) {
                     populateSearchResults(classId);
                 }
                 return;
             }
 
-            // Mobile selector
             var mobileSelect = target.closest('#mobile-class-select');
             if (mobileSelect) {
                 handleMobileSelect();
@@ -697,7 +722,10 @@
         // ---- DIAGNOSTIC ----
         setTimeout(function() {
             logClassListItems();
-        }, 100);
+            checkDetailContainer();
+            var selected = window.ClassesView.getSelectedClassId();
+            console.log('[ClassesEvents] Current selected class:', selected);
+        }, 200);
 
         console.log('[ClassesEvents] Events bound successfully');
     }
@@ -744,20 +772,19 @@
         }
         _eventsBound = false;
         _container = null;
-        _selectedClassId = null;
     }
 
     // ============================================================
     // PUBLIC API
     // ============================================================
 
-    function selectClass(classId) {
-        _selectedClassId = classId;
-        refreshUI();
-    }
+    // Note: selectClass and getSelectedClassId are now delegated to ClassesView
+    // Events doesn't need its own selection state.
 
-    function getSelectedClassId() {
-        return _selectedClassId;
+    function refreshUI() {
+        if (_container && window.ClassesView && typeof window.ClassesView.renderClassesView === 'function') {
+            window.ClassesView.renderClassesView(_container);
+        }
     }
 
     // ============================================================
@@ -767,12 +794,9 @@
     window.ClassesEvents = {
         init: initEvents,
         destroy: destroy,
-        selectClass: selectClass,
-        getSelectedClassId: getSelectedClassId,
         refreshUI: refreshUI
     };
 
-    // Set loaded flag only AFTER successful definition
     window.__classesEventsLoaded = true;
 
 })();
