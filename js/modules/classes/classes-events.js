@@ -277,7 +277,6 @@
             return;
         }
 
-        // Verify class exists
         var cls = window.ClassesCore.getGraduatingClass(classId);
         if (!cls) {
             showNotification('Class not found.', 'error');
@@ -309,7 +308,6 @@
 
         saveAndRefresh(container)
             .then(function() {
-                // Re-open the member modal to show updated list
                 if (window.ClassesView && typeof window.ClassesView.showMemberModal === 'function') {
                     window.ClassesView.showMemberModal(classId, container);
                 }
@@ -339,7 +337,6 @@
 
         saveAndRefresh(container)
             .then(function() {
-                // Re-open the member modal to show updated list
                 if (window.ClassesView && typeof window.ClassesView.showMemberModal === 'function') {
                     window.ClassesView.showMemberModal(classId, container);
                 }
@@ -351,6 +348,8 @@
      * Handle class list item click (select class).
      */
     function handleClassSelect(container, classId) {
+        console.log('[ClassesEvents] handleClassSelect called for class:', classId);
+
         if (!classId) {
             return;
         }
@@ -360,6 +359,22 @@
         }
 
         refreshUI(container);
+    }
+
+    /**
+     * Handle mobile selector change.
+     */
+    function handleMobileSelect(container) {
+        var select = document.getElementById('mobile-class-select');
+        if (!select) return;
+
+        var classId = select.value;
+        if (classId) {
+            if (window.ClassesView && typeof window.ClassesView.selectClass === 'function') {
+                window.ClassesView.selectClass(classId);
+            }
+            refreshUI(container);
+        }
     }
 
     /**
@@ -397,30 +412,10 @@
         refreshUI(container);
     }
 
-    /**
-     * Handle mobile selector change.
-     */
-    function handleMobileSelect(container) {
-        var select = document.getElementById('mobile-class-select');
-        if (!select) return;
-
-        var classId = select.value;
-        if (classId) {
-            if (window.ClassesView && typeof window.ClassesView.selectClass === 'function') {
-                window.ClassesView.selectClass(classId);
-            }
-            refreshUI(container);
-        }
-    }
-
     // ============================================================
-    // MEMBER MODAL CONTENT - RENDER ONLY
+    // SHOW MEMBER MODAL - Called from handleManageMembers
     // ============================================================
 
-    /**
-     * Show the member modal.
-     * This is called by ClassesView, but we handle the event binding here.
-     */
     function showMemberModal(classId, container) {
         console.log('[ClassesEvents] showMemberModal called for class:', classId);
 
@@ -470,9 +465,10 @@
         populateDropdown(classId, allChars, traineeIds, instructorIds);
     }
 
-    /**
-     * Build member modal content HTML.
-     */
+    // ============================================================
+    // MEMBER MODAL CONTENT - RENDER ONLY
+    // ============================================================
+
     function buildMemberModalContent(classId, allChars, traineeIds, instructorIds, currentTrainees, currentInstructors) {
         var html = '';
         html += '<p style="color:var(--text-dim);font-size:0.8rem;margin-bottom:12px;">Add or remove members from this graduating class.</p>';
@@ -555,9 +551,10 @@
         return html;
     }
 
-    /**
-     * Bind member modal events.
-     */
+    // ============================================================
+    // BIND MEMBER MODAL EVENTS
+    // ============================================================
+
     function bindMemberModalEvents(container, classId, allChars, traineeIds, instructorIds) {
         // Close buttons
         var closeBtn = document.getElementById('close-member-modal');
@@ -658,9 +655,10 @@
         }
     }
 
-    /**
-     * Populate the character dropdown.
-     */
+    // ============================================================
+    // POPULATE DROPDOWN
+    // ============================================================
+
     function populateDropdown(classId, allChars, traineeIds, instructorIds) {
         var select = document.getElementById('add-member-select');
         if (!select) return;
@@ -728,9 +726,10 @@
         }
     }
 
-    /**
-     * Get display name helper.
-     */
+    // ============================================================
+    // HELPER FUNCTIONS
+    // ============================================================
+
     function getDisplayName(char) {
         if (typeof window.getDisplayName === 'function') {
             return window.getDisplayName(char);
@@ -741,9 +740,6 @@
         return 'Unknown';
     }
 
-    /**
-     * Escape HTML helper.
-     */
     function escapeHtml(value) {
         if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
             return window.DomUtils.escapeHtml(value);
@@ -854,6 +850,7 @@
                 if (item) {
                     var classId = item.dataset.id;
                     if (classId) {
+                        console.log('[ClassesEvents] Class list item clicked:', classId);
                         handleClassSelect(container, classId);
                     }
                 }
@@ -872,8 +869,8 @@
                 if (manageBtn) {
                     e.preventDefault();
                     var classId = manageBtn.dataset.classId;
+                    console.log('[ClassesEvents] Manage Members button clicked, classId:', classId);
                     if (classId) {
-                        console.log('[ClassesEvents] Manage Members clicked for class:', classId);
                         handleManageMembers(container, classId);
                     } else {
                         showNotification('No class selected.', 'error');
