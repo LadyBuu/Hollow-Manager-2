@@ -1,6 +1,6 @@
 /**
  * modules/classes/classes-events.js - Classes Events
- * Fixed: Single source of truth for selection state
+ * Fixed: Member modal character population
  */
 
 (function() {
@@ -17,10 +17,6 @@
 
     var _container = null;
     var _eventsBound = false;
-
-    // NOTE: _selectedClassId is REMOVED.
-    // ClassesView.state.selectedClassId is the SINGLE source of truth.
-    // Events calls ClassesView.selectClass() to update it.
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -91,12 +87,10 @@
     }
 
     // ============================================================
-    // REFRESH UI - SIMPLIFIED
+    // REFRESH UI
     // ============================================================
 
     function refreshUI() {
-        console.log('[ClassesEvents] refreshUI called');
-
         if (!_container) {
             console.warn('[ClassesEvents] No container set');
             return;
@@ -107,9 +101,103 @@
             return;
         }
 
-        // ClassesView.renderClassesView() will read its own state.selectedClassId
-        // and render the detail accordingly. Events doesn't need to pass the ID.
         window.ClassesView.renderClassesView(_container);
+    }
+
+    // ============================================================
+    // MEMBER MODAL - FIXED POPULATION
+    // ============================================================
+
+    function showMemberModal(classId) {
+        console.log('[ClassesEvents] showMemberModal called for class:', classId);
+
+        var modal = document.getElementById('member-modal');
+        if (!modal) {
+            showNotification('Member modal not found. Please refresh.', 'error');
+            return;
+        }
+
+        var content = document.getElementById('member-modal-content');
+        var title = document.getElementById('member-modal-title');
+
+        if (!content || !title) {
+            showNotification('Modal elements not found. Please refresh.', 'error');
+            return;
+        }
+
+        var cls = window.ClassesCore.getGraduatingClass(classId);
+        if (!cls) {
+            showNotification('Class not found.', 'error');
+            return;
+        }
+
+        title.textContent = 'Manage Members - ' + cls.name;
+
+        // Render modal content using ClassesView
+        content.innerHTML = window.ClassesView.renderMemberModalContent(classId);
+
+        // Show modal
+        modal.classList.remove('hidden');
+        modal.style.display = 'flex';
+
+        // Populate search results - THIS IS WHERE CHARACTERS SHOULD APPEAR
+        populateSearchResults(classId);
+    }
+
+    function populateSearchResults(classId) {
+        console.log('[ClassesEvents] populateSearchResults called for class:', classId);
+
+        var searchInput = document.getElementById('member-search');
+        var resultsContainer = document.getElementById('member-search-results');
+
+        if (!searchInput || !resultsContainer) {
+            console.warn('[ClassesEvents] Search elements not found');
+            return;
+        }
+
+        var query = searchInput.value.trim() || '';
+        console.log('[ClassesEvents] Search query:', query);
+
+        // Get available characters for this class
+        var available = window.ClassesCore.getAvailableCharactersForClass(classId, {
+            name: query,
+            minBirthYear: null,
+            maxBirthYear: null
+        });
+
+        console.log('[ClassesEvents] Available characters:', available ? available.length : 0);
+
+        if (!available || available.length === 0) {
+            resultsContainer.innerHTML = '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No characters available to add.</p>';
+            return;
+        }
+
+        var html = '';
+        var roleSelect = document.getElementById('member-role-select');
+        var defaultRole = roleSelect ? roleSelect.value : 'trainee';
+
+        // Show up to 20 results
+        var displayCount = Math.min(available.length, 20);
+
+        for (var i = 0; i < displayCount; i++) {
+            var char = available[i];
+            var name = getDisplayName(char);
+            var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char) : '';
+            var birthYear = char.birthYear ? ' (' + char.birthYear + ')' : '';
+            var isDeceased = char.deceased ? ' [Deceased]' : '';
+
+            html += '<div class="search-result-item" style="display:flex;justify-content:space-between;align-items:center;padding:3px 6px;border-bottom:1px solid var(--border-soft);">';
+            html += '<span style="font-size:0.7rem;">' + escapeHtml(name) + ' - ' + escapeHtml(status) + birthYear + isDeceased + '</span>';
+            html += '<button class="add-member-result-btn small primary" data-char-id="' + escapeHtml(char.id) + '" data-role="' + escapeHtml(defaultRole) + '" style="font-size:0.6rem;padding:1px 8px;">Add</button>';
+            html += '</div>';
+        }
+
+        if (available.length > 20) {
+            html += '<p style="font-size:0.6rem;color:var(--text-dim);padding:2px;">Showing 20 of ' + available.length + ' results</p>';
+        }
+
+        resultsContainer.innerHTML = html;
+        console.log('[ClassesEvents] Search results rendered:', displayCount);
     }
 
     // ============================================================
@@ -139,7 +227,6 @@
 
     function handleEditClass(classId) {
         if (!classId) {
-            // Get from View's single source of truth
             classId = window.ClassesView.getSelectedClassId();
         }
 
@@ -218,7 +305,6 @@
         }
 
         if (result.class) {
-            // Update View's single source of truth
             window.ClassesView.selectClass(result.class.id);
         }
 
@@ -263,7 +349,6 @@
             return;
         }
 
-        // Clear selection
         window.ClassesView.clearSelection();
 
         saveData().then(function() {
@@ -291,77 +376,6 @@
         showMemberModal(classId);
     }
 
-    function showMemberModal(classId) {
-        var modal = document.getElementById('member-modal');
-        if (!modal) {
-            showNotification('Member modal not found. Please refresh.', 'error');
-            return;
-        }
-
-        var content = document.getElementById('member-modal-content');
-        var title = document.getElementById('member-modal-title');
-
-        if (!content || !title) {
-            showNotification('Modal elements not found. Please refresh.', 'error');
-            return;
-        }
-
-        var cls = window.ClassesCore.getGraduatingClass(classId);
-        if (!cls) {
-            showNotification('Class not found.', 'error');
-            return;
-        }
-
-        title.textContent = 'Manage Members - ' + cls.name;
-
-        content.innerHTML = window.ClassesView.renderMemberModalContent(classId);
-
-        modal.classList.remove('hidden');
-        modal.style.display = 'flex';
-
-        populateSearchResults(classId);
-    }
-
-    function populateSearchResults(classId) {
-        var searchInput = document.getElementById('member-search');
-        var resultsContainer = document.getElementById('member-search-results');
-
-        if (!searchInput || !resultsContainer) return;
-
-        var query = searchInput.value.trim() || '';
-        var available = window.ClassesCore.getAvailableCharactersForClass(classId, {
-            name: query,
-            minBirthYear: null,
-            maxBirthYear: null
-        });
-
-        if (available.length === 0) {
-            resultsContainer.innerHTML = '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No characters available.</p>';
-            return;
-        }
-
-        var html = '';
-        var roleSelect = document.getElementById('member-role-select');
-        var defaultRole = roleSelect ? roleSelect.value : 'trainee';
-
-        available.slice(0, 20).forEach(function(char) {
-            var name = getDisplayName(char);
-            var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char) : '';
-            var birthYear = char.birthYear ? ' (' + char.birthYear + ')' : '';
-
-            html += '<div class="search-result-item" style="display:flex;justify-content:space-between;align-items:center;padding:3px 6px;border-bottom:1px solid var(--border-soft);">';
-            html += '<span style="font-size:0.7rem;">' + escapeHtml(name) + ' - ' + escapeHtml(status) + birthYear + '</span>';
-            html += '<button class="add-member-result-btn small primary" data-char-id="' + escapeHtml(char.id) + '" data-role="' + escapeHtml(defaultRole) + '" style="font-size:0.6rem;padding:1px 8px;">Add</button>';
-            html += '</div>';
-        });
-
-        if (available.length > 20) {
-            html += '<p style="font-size:0.6rem;color:var(--text-dim);padding:2px;">Showing 20 of ' + available.length + ' results</p>';
-        }
-
-        resultsContainer.innerHTML = html;
-    }
-
     function handleAddMemberFromSearch(classId, charId, role) {
         if (!classId || !charId) {
             showNotification('Class ID and Character ID are required.', 'error');
@@ -376,6 +390,7 @@
         }
 
         saveData().then(function() {
+            // Re-render the modal content
             var content = document.getElementById('member-modal-content');
             if (content) {
                 content.innerHTML = window.ClassesView.renderMemberModalContent(classId);
@@ -414,23 +429,15 @@
         });
     }
 
-    // ============================================================
-    // HANDLE CLASS SELECT - SINGLE SOURCE OF TRUTH
-    // ============================================================
-
     function handleClassSelect(classId) {
-        console.log('[ClassesEvents] handleClassSelect called with:', classId);
-
         if (!classId) {
             return;
         }
 
-        // Update View's single source of truth
         if (window.ClassesView && typeof window.ClassesView.selectClass === 'function') {
             window.ClassesView.selectClass(classId);
         }
 
-        // Refresh UI - renderClassesView() will read the updated state
         refreshUI();
     }
 
@@ -468,34 +475,7 @@
     }
 
     // ============================================================
-    // DIAGNOSTIC
-    // ============================================================
-
-    function logClassListItems() {
-        var items = document.querySelectorAll('.class-list-item');
-        console.log('[ClassesEvents] Found ' + items.length + ' .class-list-item elements');
-        items.forEach(function(item, index) {
-            console.log('[ClassesEvents] Item ' + index + ':', {
-                id: item.dataset.id,
-                text: item.textContent.trim().substring(0, 30),
-                className: item.className
-            });
-        });
-        return items;
-    }
-
-    function checkDetailContainer() {
-        var container = document.getElementById('class-detail');
-        console.log('[ClassesEvents] #class-detail exists:', !!container);
-        if (container) {
-            console.log('[ClassesEvents] #class-detail innerHTML length:', container.innerHTML.length);
-            console.log('[ClassesEvents] #class-detail innerHTML preview:', container.innerHTML.substring(0, 200));
-        }
-        return container;
-    }
-
-    // ============================================================
-    // BIND EVENTS - Container-level delegation
+    // BIND EVENTS
     // ============================================================
 
     function bindEvents() {
@@ -504,97 +484,88 @@
 
         _eventsBound = true;
 
-        console.log('[ClassesEvents] Binding events on container:', _container.id || 'classes-content');
-
         // ---- CLICK DELEGATION ----
         _container.addEventListener('click', function(e) {
             var target = e.target;
 
-            // 1. Add Class button
+            // Add Class button
             var addBtn = target.closest('#add-class-btn');
             if (addBtn) {
                 e.preventDefault();
-                console.log('[ClassesEvents] Add class clicked');
                 handleAddClass();
                 return;
             }
 
-            // 2. Class list item
+            // Class list item
             var listItem = target.closest('.class-list-item');
             if (listItem) {
                 e.preventDefault();
                 var classId = listItem.dataset.id;
-                console.log('[ClassesEvents] Class list item clicked, classId:', classId);
                 if (classId) {
                     handleClassSelect(classId);
                 }
                 return;
             }
 
-            // 3. Manage Members button
+            // Manage Members button
             var manageBtn = target.closest('#manage-members-btn');
             if (manageBtn) {
                 e.preventDefault();
                 var classId = manageBtn.dataset.classId || window.ClassesView.getSelectedClassId();
-                console.log('[ClassesEvents] Manage Members clicked, classId:', classId);
                 if (classId) {
                     handleManageMembers(classId);
                 }
                 return;
             }
 
-            // 4. Edit Class button
+            // Edit Class button
             var editBtn = target.closest('#edit-class-btn');
             if (editBtn) {
                 e.preventDefault();
                 var classId = editBtn.dataset.classId || window.ClassesView.getSelectedClassId();
-                console.log('[ClassesEvents] Edit class clicked, classId:', classId);
                 if (classId) {
                     handleEditClass(classId);
                 }
                 return;
             }
 
-            // 5. Delete Class button
+            // Delete Class button
             var deleteBtn = target.closest('#delete-class-btn');
             if (deleteBtn) {
                 e.preventDefault();
                 var classId = deleteBtn.dataset.classId || window.ClassesView.getSelectedClassId();
-                console.log('[ClassesEvents] Delete class clicked, classId:', classId);
                 if (classId) {
                     handleDeleteClass(classId);
                 }
                 return;
             }
 
-            // 6. Add member from search results
+            // Add member from search results
             var addMemberBtn = target.closest('.add-member-result-btn');
             if (addMemberBtn) {
                 e.preventDefault();
                 var charId = addMemberBtn.dataset.charId;
                 var role = addMemberBtn.dataset.role || 'trainee';
                 var classId = window.ClassesView.getSelectedClassId();
-                console.log('[ClassesEvents] Add member from search, charId:', charId, 'classId:', classId);
                 if (charId && classId) {
                     handleAddMemberFromSearch(classId, charId, role);
                 }
                 return;
             }
 
-            // 7. Remove member chip
+            // Remove member chip
             var removeBtn = target.closest('.remove-member-btn');
             if (removeBtn) {
                 e.preventDefault();
                 var charId = removeBtn.dataset.charId;
                 var classId = removeBtn.dataset.classId || window.ClassesView.getSelectedClassId();
-                console.log('[ClassesEvents] Remove member, charId:', charId, 'classId:', classId);
                 if (charId && classId) {
                     handleRemoveMember(classId, charId);
                 }
                 return;
             }
 
-            // 8. Class form modal close
+            // Class form modal close
             var closeFormBtn = target.closest('#close-class-form');
             if (closeFormBtn) {
                 var modal = document.getElementById('class-form-modal');
@@ -605,7 +576,7 @@
                 return;
             }
 
-            // 9. Class form cancel
+            // Class form cancel
             var cancelFormBtn = target.closest('#cancel-class-form');
             if (cancelFormBtn) {
                 var modal = document.getElementById('class-form-modal');
@@ -616,7 +587,7 @@
                 return;
             }
 
-            // 10. Member modal close
+            // Member modal close
             var closeMemberBtn = target.closest('#close-member-modal');
             if (closeMemberBtn) {
                 var modal = document.getElementById('member-modal');
@@ -721,13 +692,9 @@
 
         // ---- DIAGNOSTIC ----
         setTimeout(function() {
-            logClassListItems();
-            checkDetailContainer();
             var selected = window.ClassesView.getSelectedClassId();
             console.log('[ClassesEvents] Current selected class:', selected);
         }, 200);
-
-        console.log('[ClassesEvents] Events bound successfully');
     }
 
     // ============================================================
@@ -752,13 +719,8 @@
 
         _container = container;
 
-        // Bind events once
         bindEvents();
-
-        // Initial render
         refreshUI();
-
-        console.log('[ClassesEvents] Initialized');
     }
 
     // ============================================================
@@ -777,9 +739,6 @@
     // ============================================================
     // PUBLIC API
     // ============================================================
-
-    // Note: selectClass and getSelectedClassId are now delegated to ClassesView
-    // Events doesn't need its own selection state.
 
     function refreshUI() {
         if (_container && window.ClassesView && typeof window.ClassesView.renderClassesView === 'function') {
