@@ -1,4 +1,3 @@
-```javascript
 /**
  * js/modules/characters/character-crud.js - Character CRUD Operations
  * Path: js/modules/characters/character-crud.js
@@ -840,4 +839,3 @@
     };
 
 })();
-```
