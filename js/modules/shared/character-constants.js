@@ -14,8 +14,9 @@
  * IMPORTANT:
  *   - THIS IS THE SINGLE SOURCE OF TRUTH for all character constants
  *   - All modules MUST import from here - do NOT duplicate
- *   - Constants are READ-ONLY - do not modify at runtime
+ *   - Constants are IMMUTABLE and FROZEN - do not attempt to modify at runtime
  *   - Class definitions include all fields needed for suggestion and application
+ *   - Legacy global exports are DEPRECATED - use CharacterConstants instead
  * 
  * DEPENDENCIES:
  *   - None (standalone module)
@@ -33,7 +34,6 @@
     if (window.__characterConstantsLoaded) {
         return;
     }
-    window.__characterConstantsLoaded = true;
 
     // ============================================================
     // MAGIC DEFINITIONS
@@ -156,10 +156,10 @@
      * Each class has:
      *   - id: Unique identifier
      *   - label: Display name
-     *   - icon: Emoji icon
+     *   - icon: Emoji icon (should be visually distinct per class)
      *   - primaryStats: Primary stat keys (used for suggestion and application)
      *   - secondaryStats: Secondary stat keys (used for application)
-     *   - statWeights: Weighting for suggestion algorithm
+     *   - statWeights: Weighting for suggestion algorithm (must sum to 1)
      *   - minStats: Minimum stat requirements (used for suggestion filtering)
      *   - priority: Tie-breaker priority (higher = more likely to be suggested)
      *   - description: Human-readable description
@@ -168,7 +168,7 @@
         {
             id: 'warrior',
             label: 'Warrior',
-            icon: '⚔',
+            icon: '⚔️',
             primaryStats: ['str', 'con'],
             secondaryStats: ['dex'],
             statWeights: { str: 0.5, con: 0.3, dex: 0.15, wis: 0.05 },
@@ -190,7 +190,7 @@
         {
             id: 'protector',
             label: 'Protector',
-            icon: '🛡',
+            icon: '🛡️',
             primaryStats: ['str', 'con'],
             secondaryStats: ['wis', 'cha'],
             statWeights: { str: 0.35, con: 0.35, wis: 0.15, cha: 0.1, dex: 0.05 },
@@ -212,7 +212,7 @@
         {
             id: 'mystic',
             label: 'Mystic',
-            icon: '✦',
+            icon: '🔮',
             primaryStats: ['wis', 'cha'],
             secondaryStats: ['con', 'int'],
             statWeights: { wis: 0.4, cha: 0.3, con: 0.15, int: 0.1, dex: 0.05 },
@@ -223,7 +223,7 @@
         {
             id: 'stalker',
             label: 'Stalker',
-            icon: '🗡',
+            icon: '🗡️',
             primaryStats: ['dex', 'int'],
             secondaryStats: ['cha', 'wis'],
             statWeights: { dex: 0.4, int: 0.25, cha: 0.2, wis: 0.1, str: 0.05 },
@@ -245,7 +245,7 @@
         {
             id: 'channeler',
             label: 'Channeler',
-            icon: '✦',
+            icon: '🌀',
             primaryStats: ['cha', 'con'],
             secondaryStats: ['dex', 'int'],
             statWeights: { cha: 0.4, con: 0.25, dex: 0.2, int: 0.1, wis: 0.05 },
@@ -256,7 +256,7 @@
         {
             id: 'warden',
             label: 'Warden',
-            icon: '⚔',
+            icon: '🌿',
             primaryStats: ['str', 'wis'],
             secondaryStats: ['con', 'dex'],
             statWeights: { str: 0.35, wis: 0.3, con: 0.2, dex: 0.1, cha: 0.05 },
@@ -267,7 +267,7 @@
         {
             id: 'adept',
             label: 'Adept',
-            icon: '✦',
+            icon: '☯️',
             primaryStats: ['dex', 'wis'],
             secondaryStats: ['con', 'str'],
             statWeights: { dex: 0.4, wis: 0.35, con: 0.15, str: 0.1, int: 0.05 },
@@ -278,7 +278,7 @@
         {
             id: 'artificer',
             label: 'Artificer',
-            icon: '⚙',
+            icon: '⚙️',
             primaryStats: ['int', 'dex'],
             secondaryStats: ['con', 'wis'],
             statWeights: { int: 0.4, dex: 0.25, con: 0.2, wis: 0.1, cha: 0.05 },
@@ -289,7 +289,7 @@
         {
             id: 'occultist',
             label: 'Occultist',
-            icon: '✦',
+            icon: '🔯',
             primaryStats: ['int', 'cha'],
             secondaryStats: ['con', 'dex'],
             statWeights: { int: 0.35, cha: 0.35, con: 0.15, dex: 0.1, wis: 0.05 },
@@ -300,7 +300,7 @@
         {
             id: 'blade_dancer',
             label: 'Blade Dancer',
-            icon: '🗡',
+            icon: '💃',
             primaryStats: ['dex', 'cha'],
             secondaryStats: ['str', 'con'],
             statWeights: { dex: 0.4, cha: 0.3, str: 0.15, con: 0.1, wis: 0.05 },
@@ -311,7 +311,7 @@
         {
             id: 'elementalist',
             label: 'Elementalist',
-            icon: '✦',
+            icon: '🔥',
             primaryStats: ['int', 'wis'],
             secondaryStats: ['con', 'dex'],
             statWeights: { int: 0.45, wis: 0.25, con: 0.15, dex: 0.1, cha: 0.05 },
@@ -322,7 +322,7 @@
         {
             id: 'sentinel',
             label: 'Sentinel',
-            icon: '🛡',
+            icon: '🏰',
             primaryStats: ['str', 'con'],
             secondaryStats: ['wis', 'dex'],
             statWeights: { str: 0.3, con: 0.35, wis: 0.2, dex: 0.1, cha: 0.05 },
@@ -357,12 +357,182 @@
     var MAX_MOVE_DESCRIPTION_LENGTH = 500;
 
     // ============================================================
+    // STARTUP VALIDATION
+    // ============================================================
+
+    /**
+     * Validate all constants for internal consistency.
+     * Throws an error if any validation fails.
+     */
+    function validateConstants() {
+        var errors = [];
+        var seenIds = {};
+
+        // --- Validate CLASS_DEFINITIONS ---
+        CLASS_DEFINITIONS.forEach(function(cls, index) {
+            // Unique ID check
+            if (seenIds[cls.id]) {
+                errors.push('Duplicate class ID: ' + cls.id);
+            }
+            seenIds[cls.id] = true;
+
+            // Validate primary stats exist
+            cls.primaryStats.forEach(function(stat) {
+                if (!STAT_DEFINITIONS[stat]) {
+                    errors.push(cls.id + ': primaryStat "' + stat + '" not in STAT_DEFINITIONS');
+                }
+            });
+
+            // Validate secondary stats exist
+            cls.secondaryStats.forEach(function(stat) {
+                if (!STAT_DEFINITIONS[stat]) {
+                    errors.push(cls.id + ': secondaryStat "' + stat + '" not in STAT_DEFINITIONS');
+                }
+            });
+
+            // Validate no overlap between primary and secondary
+            var primarySet = {};
+            cls.primaryStats.forEach(function(s) { primarySet[s] = true; });
+            cls.secondaryStats.forEach(function(s) {
+                if (primarySet[s]) {
+                    errors.push(cls.id + ': stat "' + s + '" appears in both primary and secondary');
+                }
+            });
+
+            // Validate stat weights
+            var totalWeight = 0;
+            Object.keys(cls.statWeights).forEach(function(stat) {
+                if (!STAT_DEFINITIONS[stat]) {
+                    errors.push(cls.id + ': weight stat "' + stat + '" not in STAT_DEFINITIONS');
+                }
+                var weight = cls.statWeights[stat];
+                if (typeof weight !== 'number' || weight < 0) {
+                    errors.push(cls.id + ': weight for "' + stat + '" is not a non-negative number');
+                }
+                totalWeight += weight;
+            });
+
+            // Check total weight is approximately 1
+            if (Math.abs(totalWeight - 1) > 0.001) {
+                errors.push(cls.id + ': statWeights sum to ' + totalWeight + ', expected 1');
+            }
+
+            // Validate minStats
+            Object.keys(cls.minStats).forEach(function(stat) {
+                if (!STAT_DEFINITIONS[stat]) {
+                    errors.push(cls.id + ': minStat "' + stat + '" not in STAT_DEFINITIONS');
+                }
+            });
+        });
+
+        // --- Validate MAGIC_CATEGORIES ---
+        var allMagicTypes = {};
+        Object.keys(MAGIC_TYPES).forEach(function(key) {
+            allMagicTypes[key] = true;
+        });
+
+        // Validate each category references valid magic types
+        Object.keys(MAGIC_CATEGORIES).forEach(function(catKey) {
+            var cat = MAGIC_CATEGORIES[catKey];
+            cat.types.forEach(function(typeKey) {
+                if (!allMagicTypes[typeKey]) {
+                    errors.push('Category "' + catKey + '" references unknown magic type "' + typeKey + '"');
+                }
+            });
+        });
+
+        // Validate each magic type appears in exactly one category
+        var typeToCategory = {};
+        Object.keys(MAGIC_CATEGORIES).forEach(function(catKey) {
+            MAGIC_CATEGORIES[catKey].types.forEach(function(typeKey) {
+                if (typeToCategory[typeKey]) {
+                    errors.push('Magic type "' + typeKey + '" appears in multiple categories');
+                }
+                typeToCategory[typeKey] = catKey;
+            });
+        });
+
+        // Validate every magic type appears in some category
+        Object.keys(MAGIC_TYPES).forEach(function(typeKey) {
+            if (!typeToCategory[typeKey]) {
+                errors.push('Magic type "' + typeKey + '" does not belong to any category');
+            }
+        });
+
+        // Validate MAGIC_TYPE_KEYS contains all types
+        var typeKeysSet = {};
+        MAGIC_TYPE_KEYS.forEach(function(key) {
+            typeKeysSet[key] = true;
+        });
+        Object.keys(MAGIC_TYPES).forEach(function(key) {
+            if (!typeKeysSet[key]) {
+                errors.push('Magic type "' + key + '" missing from MAGIC_TYPE_KEYS');
+            }
+        });
+
+        // Validate MAGIC_CATEGORY_KEYS contains all categories
+        var categoryKeysSet = {};
+        MAGIC_CATEGORY_KEYS.forEach(function(key) {
+            categoryKeysSet[key] = true;
+        });
+        Object.keys(MAGIC_CATEGORIES).forEach(function(key) {
+            if (!categoryKeysSet[key]) {
+                errors.push('Magic category "' + key + '" missing from MAGIC_CATEGORY_KEYS');
+            }
+        });
+
+        if (errors.length > 0) {
+            throw new Error(
+                'CharacterConstants validation failed:\n  ' + 
+                errors.join('\n  ') + 
+                '\n\nPlease fix the constant definitions before loading the application.'
+            );
+        }
+    }
+
+    // ============================================================
+    // IMMUTABILITY HELPERS
+    // ============================================================
+
+    /**
+     * Recursively freeze an object and all its nested objects.
+     * @param {object} obj - The object to freeze
+     * @returns {object} The frozen object
+     */
+    function deepFreeze(obj) {
+        if (obj === null || typeof obj !== 'object') {
+            return obj;
+        }
+
+        // Freeze all properties first
+        Object.keys(obj).forEach(function(key) {
+            if (obj[key] !== null && typeof obj[key] === 'object') {
+                deepFreeze(obj[key]);
+            }
+        });
+
+        // Then freeze the object itself
+        Object.freeze(obj);
+        return obj;
+    }
+
+    /**
+     * Create a deep clone of an object.
+     * Used to create defensive copies while preserving immutability.
+     * @param {object} obj - The object to clone
+     * @returns {object} A deep clone of the object
+     */
+    function deepClone(obj) {
+        return JSON.parse(JSON.stringify(obj));
+    }
+
+    // ============================================================
     // HELPER FUNCTIONS - Derived from constants
     // ============================================================
 
     /**
      * Get all magic type keys.
-     * @returns {string[]} Array of magic type keys
+     * @returns {ReadonlyArray<string>} Array of magic type keys
      */
     function getMagicTypeKeys() {
         return MAGIC_TYPE_KEYS.slice();
@@ -371,7 +541,7 @@
     /**
      * Get magic type metadata for a specific type.
      * @param {string} key - Magic type key
-     * @returns {object|null} Magic type metadata or null if not found
+     * @returns {Readonly<object>|null} Magic type metadata or null if not found
      */
     function getMagicTypeMetadata(key) {
         return MAGIC_TYPES[key] || null;
@@ -380,7 +550,7 @@
     /**
      * Get magic types for a category.
      * @param {string} category - 'elemental' | 'body' | 'aether'
-     * @returns {string[]} Array of magic type keys for the category
+     * @returns {ReadonlyArray<string>} Array of magic type keys for the category
      */
     function getMagicCategoryTypes(category) {
         var cat = MAGIC_CATEGORIES[category];
@@ -390,7 +560,7 @@
     /**
      * Get magic category metadata.
      * @param {string} category - 'elemental' | 'body' | 'aether'
-     * @returns {object|null} Category metadata or null if not found
+     * @returns {Readonly<object>|null} Category metadata or null if not found
      */
     function getMagicCategory(category) {
         return MAGIC_CATEGORIES[category] || null;
@@ -398,25 +568,21 @@
 
     /**
      * Get all magic categories.
-     * @returns {object} All magic categories
+     * @returns {object} All magic categories (deep-cloned and frozen)
      */
     function getMagicCategories() {
         var result = {};
         for (var key in MAGIC_CATEGORIES) {
             if (Object.prototype.hasOwnProperty.call(MAGIC_CATEGORIES, key)) {
-                result[key] = {
-                    label: MAGIC_CATEGORIES[key].label,
-                    color: MAGIC_CATEGORIES[key].color,
-                    types: MAGIC_CATEGORIES[key].types.slice()
-                };
+                result[key] = deepFreeze(deepClone(MAGIC_CATEGORIES[key]));
             }
         }
-        return result;
+        return deepFreeze(result);
     }
 
     /**
      * Get all stat keys.
-     * @returns {string[]} Array of stat keys
+     * @returns {ReadonlyArray<string>} Array of stat keys
      */
     function getStatKeys() {
         return STAT_KEYS.slice();
@@ -425,7 +591,7 @@
     /**
      * Get stat definition.
      * @param {string} key - Stat key
-     * @returns {object|null} Stat definition or null if not found
+     * @returns {Readonly<object>|null} Stat definition or null if not found
      */
     function getStatDefinition(key) {
         return STAT_DEFINITIONS[key] || null;
@@ -454,7 +620,7 @@
     /**
      * Get a class definition by ID.
      * @param {string} id - Class ID
-     * @returns {object|null} Class definition or null if not found
+     * @returns {Readonly<object>|null} Class definition or null if not found
      */
     function getClassDefinition(id) {
         for (var i = 0; i < CLASS_DEFINITIONS.length; i++) {
@@ -476,29 +642,52 @@
 
     /**
      * Get all class definitions.
-     * @returns {object[]} Array of class definitions
+     * @returns {ReadonlyArray<Readonly<object>>} Array of class definitions (immutable)
      */
     function getClassDefinitions() {
-        return CLASS_DEFINITIONS.slice();
+        return CLASS_DEFINITIONS.map(function(cls) {
+            return deepFreeze(deepClone(cls));
+        });
     }
 
     /**
      * Get class definitions sorted by priority.
-     * @returns {object[]} Array of class definitions sorted by priority
+     * @returns {ReadonlyArray<Readonly<object>>} Array of class definitions sorted by priority
      */
     function getClassDefinitionsByPriority() {
-        return CLASS_DEFINITIONS.slice().sort(function(a, b) {
-            var priorityDiff = (b.priority || 0) - (a.priority || 0);
-            if (priorityDiff !== 0) return priorityDiff;
-            return (a.label || '').localeCompare(b.label || '');
-        });
+        return deepFreeze(
+            CLASS_DEFINITIONS.slice().sort(function(a, b) {
+                var priorityDiff = (b.priority || 0) - (a.priority || 0);
+                if (priorityDiff !== 0) return priorityDiff;
+                return (a.label || '').localeCompare(b.label || '');
+            }).map(function(cls) {
+                return deepFreeze(deepClone(cls));
+            })
+        );
     }
 
     // ============================================================
-    // EXPOSE
+    // RUN VALIDATION AND FREEZE CONSTANTS
     // ============================================================
 
-    window.CharacterConstants = {
+    // Validate all constants before freezing
+    validateConstants();
+
+    // Deep freeze all primary constant objects
+    deepFreeze(MAGIC_TYPES);
+    deepFreeze(MAGIC_TYPE_KEYS);
+    deepFreeze(MAGIC_CATEGORIES);
+    deepFreeze(MAGIC_CATEGORY_KEYS);
+    deepFreeze(STAT_DEFINITIONS);
+    deepFreeze(STAT_KEYS);
+    deepFreeze(CLASS_DEFINITIONS);
+    deepFreeze(CLASS_IDS);
+
+    // ============================================================
+    // EXPOSE - PRIMARY API
+    // ============================================================
+
+    window.CharacterConstants = deepFreeze({
         // Magic
         MAGIC_TYPES: MAGIC_TYPES,
         MAGIC_TYPE_KEYS: MAGIC_TYPE_KEYS,
@@ -541,24 +730,61 @@
         isValidClassId: isValidClassId,
         getClassDefinitions: getClassDefinitions,
         getClassDefinitionsByPriority: getClassDefinitionsByPriority
-    };
+    });
 
-    // Also expose individual constants globally for backward compatibility
-    window.MAGIC_TYPES = MAGIC_TYPES;
-    window.MAGIC_TYPE_KEYS = MAGIC_TYPE_KEYS;
-    window.MAGIC_CATEGORIES = MAGIC_CATEGORIES;
-    window.MAGIC_CATEGORY_KEYS = MAGIC_CATEGORY_KEYS;
-    window.BALANCED_MAGE_THRESHOLD = BALANCED_MAGE_THRESHOLD;
-    window.MAGIC_MAX = MAGIC_MAX;
-    window.STAT_DEFINITIONS = STAT_DEFINITIONS;
-    window.STAT_KEYS = STAT_KEYS;
-    window.STAT_MIN = STAT_MIN;
-    window.STAT_MAX = STAT_MAX;
-    window.STAT_DEFAULT = STAT_DEFAULT;
-    window.CLASS_DEFINITIONS = CLASS_DEFINITIONS;
-    window.CLASS_IDS = CLASS_IDS;
-    window.MAX_SPECIAL_MOVES = MAX_SPECIAL_MOVES;
-    window.MAX_MOVE_NAME_LENGTH = MAX_MOVE_NAME_LENGTH;
-    window.MAX_MOVE_DESCRIPTION_LENGTH = MAX_MOVE_DESCRIPTION_LENGTH;
+    // ============================================================
+    // LEGACY GLOBAL EXPOSURE (DEPRECATED - MIGRATION ONLY)
+    // ============================================================
+
+    /**
+     * DEPRECATED: These globals are provided for backward compatibility only.
+     * New code MUST use window.CharacterConstants instead.
+     * These will be removed in a future version.
+     */
+    (function setupLegacyGlobals() {
+        var legacyExports = {
+            MAGIC_TYPES: MAGIC_TYPES,
+            MAGIC_TYPE_KEYS: MAGIC_TYPE_KEYS,
+            MAGIC_CATEGORIES: MAGIC_CATEGORIES,
+            MAGIC_CATEGORY_KEYS: MAGIC_CATEGORY_KEYS,
+            BALANCED_MAGE_THRESHOLD: BALANCED_MAGE_THRESHOLD,
+            MAGIC_MAX: MAGIC_MAX,
+            STAT_DEFINITIONS: STAT_DEFINITIONS,
+            STAT_KEYS: STAT_KEYS,
+            STAT_MIN: STAT_MIN,
+            STAT_MAX: STAT_MAX,
+            STAT_DEFAULT: STAT_DEFAULT,
+            CLASS_DEFINITIONS: CLASS_DEFINITIONS,
+            CLASS_IDS: CLASS_IDS,
+            MAX_SPECIAL_MOVES: MAX_SPECIAL_MOVES,
+            MAX_MOVE_NAME_LENGTH: MAX_MOVE_NAME_LENGTH,
+            MAX_MOVE_DESCRIPTION_LENGTH: MAX_MOVE_DESCRIPTION_LENGTH
+        };
+
+        Object.keys(legacyExports).forEach(function(key) {
+            Object.defineProperty(window, key, {
+                get: function() {
+                    console.warn(
+                        'DEPRECATED: window.' + key + ' is deprecated. ' +
+                        'Use CharacterConstants.' + key + ' instead. ' +
+                        'This global will be removed in a future version.'
+                    );
+                    return legacyExports[key];
+                },
+                set: function(value) {
+                    console.warn(
+                        'DEPRECATED: Modifying window.' + key + ' has no effect. ' +
+                        'Constants are immutable and frozen. ' +
+                        'Use CharacterConstants.' + key + ' instead.'
+                    );
+                },
+                configurable: true,
+                enumerable: true
+            });
+        });
+    })();
+
+    // Mark the module as loaded only after successful initialization
+    window.__characterConstantsLoaded = true;
 
 })();
