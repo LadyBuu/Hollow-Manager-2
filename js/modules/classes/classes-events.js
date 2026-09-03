@@ -1,7 +1,6 @@
 /**
  * modules/classes/classes-events.js - Classes Events
- * Event binding for the classes module
- * Uses container-level delegation on stable parent
+ * Fixed: Class list item click detection
  */
 
 (function() {
@@ -11,9 +10,6 @@
     if (window.__classesEventsLoaded) {
         return;
     }
-
-    // Don't set loaded flag until dependencies are verified
-    // ============================================================
 
     // ============================================================
     // STATE
@@ -395,6 +391,8 @@
     }
 
     function handleClassSelect(classId) {
+        console.log('[ClassesEvents] handleClassSelect called with:', classId);
+
         if (!classId) {
             return;
         }
@@ -437,6 +435,23 @@
     }
 
     // ============================================================
+    // DIAGNOSTIC - Check if class list items exist
+    // ============================================================
+
+    function logClassListItems() {
+        var items = document.querySelectorAll('.class-list-item');
+        console.log('[ClassesEvents] Found ' + items.length + ' .class-list-item elements');
+        items.forEach(function(item, index) {
+            console.log('[ClassesEvents] Item ' + index + ':', {
+                id: item.dataset.id,
+                text: item.textContent.trim().substring(0, 30),
+                className: item.className
+            });
+        });
+        return items;
+    }
+
+    // ============================================================
     // BIND EVENTS - Container-level delegation
     // ============================================================
 
@@ -446,26 +461,34 @@
 
         _eventsBound = true;
 
-        console.log('ClassesEvents: Binding events on container:', _container.id || 'classes-content');
+        console.log('[ClassesEvents] Binding events on container:', _container.id || 'classes-content');
 
         // ---- CLICK DELEGATION ----
         _container.addEventListener('click', function(e) {
             var target = e.target;
 
+            // DEBUG: Log all clicks to see what's happening
+            // console.log('[ClassesEvents] Click on:', target.tagName, target.id, target.className);
+
             // 1. Add Class button
             var addBtn = target.closest('#add-class-btn');
             if (addBtn) {
                 e.preventDefault();
+                console.log('[ClassesEvents] Add class clicked');
                 handleAddClass();
                 return;
             }
 
-            // 2. Class list item
+            // 2. Class list item - WITH DEBUG
             var listItem = target.closest('.class-list-item');
             if (listItem) {
+                e.preventDefault();
                 var classId = listItem.dataset.id;
+                console.log('[ClassesEvents] Class list item clicked, classId:', classId);
                 if (classId) {
                     handleClassSelect(classId);
+                } else {
+                    console.warn('[ClassesEvents] Class list item has no data-id');
                 }
                 return;
             }
@@ -475,6 +498,7 @@
             if (manageBtn) {
                 e.preventDefault();
                 var classId = manageBtn.dataset.classId || _selectedClassId;
+                console.log('[ClassesEvents] Manage Members clicked, classId:', classId);
                 if (classId) {
                     handleManageMembers(classId);
                 } else {
@@ -488,6 +512,7 @@
             if (editBtn) {
                 e.preventDefault();
                 var classId = editBtn.dataset.classId || _selectedClassId;
+                console.log('[ClassesEvents] Edit class clicked, classId:', classId);
                 if (classId) {
                     handleEditClass(classId);
                 } else {
@@ -501,6 +526,7 @@
             if (deleteBtn) {
                 e.preventDefault();
                 var classId = deleteBtn.dataset.classId || _selectedClassId;
+                console.log('[ClassesEvents] Delete class clicked, classId:', classId);
                 if (classId) {
                     handleDeleteClass(classId);
                 } else {
@@ -516,6 +542,7 @@
                 var charId = addMemberBtn.dataset.charId;
                 var role = addMemberBtn.dataset.role || 'trainee';
                 var classId = _selectedClassId;
+                console.log('[ClassesEvents] Add member from search, charId:', charId, 'classId:', classId);
                 if (charId && classId) {
                     handleAddMemberFromSearch(classId, charId, role);
                 } else {
@@ -530,6 +557,7 @@
                 e.preventDefault();
                 var charId = removeBtn.dataset.charId;
                 var classId = removeBtn.dataset.classId || _selectedClassId;
+                console.log('[ClassesEvents] Remove member, charId:', charId, 'classId:', classId);
                 if (charId && classId) {
                     handleRemoveMember(classId, charId);
                 } else {
@@ -628,7 +656,6 @@
         });
 
         // ---- MODAL CLICK OUTSIDE ----
-        // These need to be on the modal elements themselves
         var formModal = document.getElementById('class-form-modal');
         if (formModal) {
             formModal.addEventListener('click', function(e) {
@@ -667,7 +694,12 @@
         window._classesResizeHandler = resizeHandler;
         window.addEventListener('resize', resizeHandler);
 
-        console.log('ClassesEvents: Events bound successfully');
+        // ---- DIAGNOSTIC ----
+        setTimeout(function() {
+            logClassListItems();
+        }, 100);
+
+        console.log('[ClassesEvents] Events bound successfully');
     }
 
     // ============================================================
@@ -698,7 +730,7 @@
         // Initial render
         refreshUI();
 
-        console.log('ClassesEvents: Initialized');
+        console.log('[ClassesEvents] Initialized');
     }
 
     // ============================================================
