@@ -7,9 +7,11 @@
  *   - Graduating class CRUD (create, read, update, delete)
  *   - Character assignment to classes (trainee/instructor)
  *   - Character removal from classes
+ *   - Role management (trainee ↔ instructor)
  *   - Query functions for class members
  * 
  * IMPORTANT:
+ *   - CLASS OWNS ITS MEMBERSHIP - members stored on the class, not on characters
  *   - All MUTATION operations return { success: boolean, message?: string, data?: any }
  *   - Query/helper functions return their documented value types
  *   - Invalid inputs are REJECTED (operation returns { success: false })
@@ -29,6 +31,26 @@
  *   - 7. If any step before commit fails, return error WITHOUT mutating
  *   - No mutation of live state occurs before all validation completes
  *   - This is a candidate-based commit, not a database transaction
+ * 
+ * DATA MODEL:
+ *   graduatingClasses: [
+ *       {
+ *           id: "gradclass_xxx",
+ *           name: "Class of 2028",
+ *           graduationYear: 2028,
+ *           members: [
+ *               { characterId: "char_xxx", role: "trainee" },
+ *               { characterId: "char_yyy", role: "instructor" }
+ *           ],
+ *           createdAt: "2024-01-01T00:00:00.000Z"
+ *       }
+ *   ]
+ * 
+ * ROLE SEMANTICS:
+ *   - 'trainee': Student member of the graduating class
+ *   - 'instructor': Teacher/professor member of the graduating class
+ *   - A character can be in multiple classes (e.g., instructor across years)
+ *   - Role changes are tracked historically (mutation creates new record)
  * 
  * DEPENDENCIES:
  *   - window.data (global state)
@@ -78,6 +100,10 @@
 
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
+    }
+
+    function isValidRole(role) {
+        return role === 'trainee' || role === 'instructor';
     }
 
     function getDataStore() {
@@ -245,14 +271,13 @@
         return cls ? deepClone(cls) : null;
     }
 
-    function createGraduatingClass(name) {
+    function createGraduatingClass(name, graduationYear) {
         // ---- PHASE 1: VALIDATE ----
         if (!isNonEmptyString(name)) {
             return failure('Class name is required.');
         }
 
         var target = String(name).trim();
-
         var data = getDataStore();
         if (!data) {
             return failure('Data store is not available.');
@@ -271,10 +296,21 @@
             return failure('A graduating class with this name already exists.');
         }
 
+        // Validate year
+        var year = null;
+        if (graduationYear !== undefined && graduationYear !== null && graduationYear !== '') {
+            year = parseInt(graduationYear, 10);
+            if (isNaN(year) || year < 1900 || year > 2100) {
+                return failure('Invalid graduation year. Must be between 1900 and 2100.');
+            }
+        }
+
         // ---- PHASE 2: BUILD CLASS ----
         var newClass = {
             id: generateId('gradclass'),
             name: target,
+            graduationYear: year,
+            members: [],
             createdAt: new Date().toISOString()
         };
 
@@ -293,7 +329,7 @@
         return successWithClass(newClass);
     }
 
-    function updateGraduatingClass(id, name) {
+    function updateGraduatingClass(id, name, graduationYear) {
         // ---- PHASE 1: VALIDATE ----
         if (!isNonEmptyString(id)) {
             return failure('Class ID is required.');
@@ -331,6 +367,17 @@
             return failure('A class with this name already exists.');
         }
 
+        // Validate year if provided
+        var year = null;
+        if (graduationYear !== undefined) {
+            if (graduationYear !== null && graduationYear !== '') {
+                year = parseInt(graduationYear, 10);
+                if (isNaN(year) || year < 1900 || year > 2100) {
+                    return failure('Invalid graduation year. Must be between 1900 and 2100.');
+                }
+            }
+        }
+
         // ---- PHASE 2: BUILD CANDIDATE ----
         var candidate = deepClone(data.graduatingClasses);
         if (candidate === null) {
@@ -338,6 +385,9 @@
         }
 
         candidate[index].name = newName;
+        if (graduationYear !== undefined) {
+            candidate[index].graduationYear = year;
+        }
 
         // ---- PHASE 3: COMMIT ----
         data.graduatingClasses = candidate;
@@ -371,241 +421,464 @@
 
         var cls = data.graduatingClasses[index];
         var name = cls.name;
+        var memberCount = Array.isArray(cls.members) ? cls.members.length : 0;
 
-        // ---- PHASE 2: BUILD CANDIDATES ----
-        var candidateClasses = deepClone(data.graduatingClasses);
-        if (candidateClasses === null) {
+        // ---- PHASE 2: BUILD CANDIDATE ----
+        var candidate = deepClone(data.graduatingClasses);
+        if (candidate === null) {
             return failure('Failed to prepare class data.');
         }
 
-        var candidateCharacters = deepClone(data.characters);
-        if (candidateCharacters === null) {
-            return failure('Failed to prepare character data.');
-        }
+        candidate.splice(index, 1);
 
-        // ---- PHASE 3: CLEAN REFERENCES IN CANDIDATES ----
-        var affected = 0;
-        for (var i = 0; i < candidateCharacters.length; i++) {
-            var char = candidateCharacters[i];
-            if (char && String(char.graduatingClassId) === String(id)) {
-                char.graduatingClassId = null;
-                char.graduatingClassInstructor = false;
-                affected++;
-            }
-        }
+        // ---- PHASE 3: COMMIT ----
+        data.graduatingClasses = candidate;
 
-        // Remove class from array
-        candidateClasses.splice(index, 1);
-
-        // ---- PHASE 4: COMMIT ----
-        data.graduatingClasses = candidateClasses;
-        data.characters = candidateCharacters;
-
-        logActivity('Deleted graduating class: ' + name + ' (' + affected + ' characters affected)');
-        return success({ deleted: true, affectedCharacters: affected });
+        logActivity('Deleted graduating class: ' + name + ' (' + memberCount + ' members affected)');
+        return success({ deleted: true, memberCount: memberCount });
     }
 
     // ============================================================
-    // CHARACTER ASSIGNMENT
+    // MEMBERSHIP QUERIES
     // ============================================================
 
-    function assignCharacterToGraduatingClass(charId, classId, isInstructor) {
-        // ---- PHASE 1: VALIDATE ----
-        if (!isNonEmptyString(charId)) {
-            return failure('Character ID is required.');
-        }
-
+    function getMembers(classId) {
         if (!isNonEmptyString(classId)) {
-            return failure('Class ID is required.');
-        }
-
-        var char = getCharacterById(charId);
-        if (!char) {
-            return failure('Character not found.');
+            return [];
         }
 
         var cls = getGraduatingClass(classId);
         if (!cls) {
-            return failure('Graduating class not found.');
-        }
-
-        // Check if character is already assigned
-        if (char.graduatingClassId && String(char.graduatingClassId) === String(classId)) {
-            return failure('Character is already in this class.');
-        }
-
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
-        }
-
-        // ---- PHASE 2: BUILD CANDIDATE ----
-        var candidate = deepClone(data.characters);
-        if (candidate === null) {
-            return failure('Failed to prepare character data.');
-        }
-
-        var charIndex = -1;
-        for (var i = 0; i < candidate.length; i++) {
-            if (candidate[i] && String(candidate[i].id) === String(charId)) {
-                charIndex = i;
-                break;
-            }
-        }
-
-        if (charIndex === -1) {
-            return failure('Character not found in data store.');
-        }
-
-        var targetChar = candidate[charIndex];
-        targetChar.graduatingClassId = classId;
-        targetChar.graduatingClassInstructor = isInstructor === true;
-
-        // ---- PHASE 3: COMMIT ----
-        data.characters = candidate;
-
-        var roleText = isInstructor ? 'instructor' : 'trainee';
-        logActivity('Assigned ' + getDisplayName(char) + ' to graduating class "' + cls.name + '" as ' + roleText);
-        return success({ 
-            character: targetChar,
-            characterId: charId,
-            classId: classId,
-            className: cls.name,
-            role: roleText
-        });
-    }
-
-    function removeCharacterFromGraduatingClass(charId) {
-        // ---- PHASE 1: VALIDATE ----
-        if (!isNonEmptyString(charId)) {
-            return failure('Character ID is required.');
-        }
-
-        var char = getCharacterById(charId);
-        if (!char) {
-            return failure('Character not found.');
-        }
-
-        if (!char.graduatingClassId) {
-            return failure('Character is not assigned to any graduating class.');
-        }
-
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
-        }
-
-        // ---- PHASE 2: BUILD CANDIDATE ----
-        var candidate = deepClone(data.characters);
-        if (candidate === null) {
-            return failure('Failed to prepare character data.');
-        }
-
-        var charIndex = -1;
-        for (var i = 0; i < candidate.length; i++) {
-            if (candidate[i] && String(candidate[i].id) === String(charId)) {
-                charIndex = i;
-                break;
-            }
-        }
-
-        if (charIndex === -1) {
-            return failure('Character not found in data store.');
-        }
-
-        var targetChar = candidate[charIndex];
-        var className = getGraduatingClass(targetChar.graduatingClassId);
-        targetChar.graduatingClassId = null;
-        targetChar.graduatingClassInstructor = false;
-
-        // ---- PHASE 3: COMMIT ----
-        data.characters = candidate;
-
-        logActivity('Removed ' + getDisplayName(char) + ' from graduating class');
-        return success({ 
-            character: targetChar,
-            characterId: charId,
-            className: className ? className.name : 'Unknown'
-        });
-    }
-
-    // ============================================================
-    // QUERY FUNCTIONS
-    // ============================================================
-
-    function getGraduatingClassMembers(classId, includeInstructors) {
-        if (!isNonEmptyString(classId)) {
             return [];
         }
 
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.characters)) {
-            return [];
-        }
+        return Array.isArray(cls.members) ? cls.members.slice() : [];
+    }
 
+    function getMembersWithCharacters(classId) {
+        var members = getMembers(classId);
         var result = [];
-        for (var i = 0; i < data.characters.length; i++) {
-            var char = data.characters[i];
-            if (char && String(char.graduatingClassId) === String(classId)) {
-                if (includeInstructors !== undefined) {
-                    if (char.graduatingClassInstructor !== includeInstructors) {
-                        continue;
-                    }
-                }
-                var cloned = deepClone(char);
-                if (cloned !== null) {
-                    result.push(cloned);
-                }
-            }
-        }
+
+        members.forEach(function(member) {
+            var char = getCharacterById(member.characterId);
+            result.push({
+                characterId: member.characterId,
+                role: member.role,
+                character: char ? deepClone(char) : null
+            });
+        });
 
         return result;
     }
 
-    function getCharactersByGraduatingClass(classId) {
-        return getGraduatingClassMembers(classId, false);
+    function getTrainees(classId) {
+        var members = getMembers(classId);
+        return members.filter(function(m) { return m.role === 'trainee'; });
     }
 
-    function getInstructorsByGraduatingClass(classId) {
-        return getGraduatingClassMembers(classId, true);
+    function getTraineesWithCharacters(classId) {
+        var members = getTrainees(classId);
+        var result = [];
+
+        members.forEach(function(member) {
+            var char = getCharacterById(member.characterId);
+            result.push({
+                characterId: member.characterId,
+                role: 'trainee',
+                character: char ? deepClone(char) : null
+            });
+        });
+
+        return result;
     }
 
-    function getCharacterGraduatingClass(charId) {
-        if (!isNonEmptyString(charId)) {
-            return null;
-        }
-
-        var char = getCharacterById(charId);
-        if (!char || !char.graduatingClassId) {
-            return null;
-        }
-
-        return getGraduatingClass(char.graduatingClassId);
+    function getInstructors(classId) {
+        var members = getMembers(classId);
+        return members.filter(function(m) { return m.role === 'instructor'; });
     }
 
-    function isCharacterInGraduatingClass(charId, classId) {
-        if (!isNonEmptyString(charId) || !isNonEmptyString(classId)) {
-            return false;
+    function getInstructorsWithCharacters(classId) {
+        var members = getInstructors(classId);
+        var result = [];
+
+        members.forEach(function(member) {
+            var char = getCharacterById(member.characterId);
+            result.push({
+                characterId: member.characterId,
+                role: 'instructor',
+                character: char ? deepClone(char) : null
+            });
+        });
+
+        return result;
+    }
+
+    function getMemberCount(classId) {
+        return getMembers(classId).length;
+    }
+
+    function getTraineeCount(classId) {
+        return getTrainees(classId).length;
+    }
+
+    function getInstructorCount(classId) {
+        return getInstructors(classId).length;
+    }
+
+    function getTotalCount(classId) {
+        return getTraineeCount(classId) + getInstructorCount(classId);
+    }
+
+    function isMember(classId, characterId) {
+        var members = getMembers(classId);
+        return members.some(function(m) {
+            return String(m.characterId) === String(characterId);
+        });
+    }
+
+    function getMemberRole(classId, characterId) {
+        var members = getMembers(classId);
+        var member = members.find(function(m) {
+            return String(m.characterId) === String(characterId);
+        });
+        return member ? member.role : null;
+    }
+
+    // ============================================================
+    // MEMBERSHIP MUTATIONS (candidate-based)
+    // ============================================================
+
+    function addMember(classId, characterId, role) {
+        // ---- PHASE 1: VALIDATE ----
+        if (!isNonEmptyString(classId)) {
+            return failure('Class ID is required.');
         }
 
-        var char = getCharacterById(charId);
+        if (!isNonEmptyString(characterId)) {
+            return failure('Character ID is required.');
+        }
+
+        if (!isValidRole(role)) {
+            return failure('Role must be "trainee" or "instructor".');
+        }
+
+        var data = getDataStore();
+        if (!data) {
+            return failure('Data store is not available.');
+        }
+
+        if (!Array.isArray(data.graduatingClasses)) {
+            return failure('No classes found.');
+        }
+
+        var char = getCharacterById(characterId);
         if (!char) {
-            return false;
+            return failure('Character not found.');
         }
 
-        return String(char.graduatingClassId) === String(classId);
+        // Find class index (read-only)
+        var classIndex = data.graduatingClasses.findIndex(function(c) {
+            return c && String(c.id) === String(classId);
+        });
+
+        if (classIndex === -1) {
+            return failure('Class not found.');
+        }
+
+        var cls = data.graduatingClasses[classIndex];
+
+        // Check if already a member
+        if (!Array.isArray(cls.members)) {
+            cls.members = [];
+        }
+
+        if (cls.members.some(function(m) { return String(m.characterId) === String(characterId); })) {
+            return failure('Character is already a member of this class.');
+        }
+
+        // ---- PHASE 2: BUILD CANDIDATE ----
+        var candidate = deepClone(data.graduatingClasses);
+        if (candidate === null) {
+            return failure('Failed to prepare class data.');
+        }
+
+        candidate[classIndex].members.push({
+            characterId: characterId,
+            role: role
+        });
+
+        // ---- PHASE 3: COMMIT ----
+        data.graduatingClasses = candidate;
+
+        var charName = getDisplayName(char);
+        logActivity('Added ' + charName + ' to class "' + cls.name + '" as ' + role);
+        return success({
+            characterId: characterId,
+            role: role,
+            className: cls.name
+        });
     }
 
-    function getClassMemberCount(classId) {
-        return getGraduatingClassMembers(classId).length;
+    function removeMember(classId, characterId) {
+        // ---- PHASE 1: VALIDATE ----
+        if (!isNonEmptyString(classId)) {
+            return failure('Class ID is required.');
+        }
+
+        if (!isNonEmptyString(characterId)) {
+            return failure('Character ID is required.');
+        }
+
+        var data = getDataStore();
+        if (!data) {
+            return failure('Data store is not available.');
+        }
+
+        if (!Array.isArray(data.graduatingClasses)) {
+            return failure('No classes found.');
+        }
+
+        var char = getCharacterById(characterId);
+        var charName = char ? getDisplayName(char) : 'Unknown';
+
+        var classIndex = data.graduatingClasses.findIndex(function(c) {
+            return c && String(c.id) === String(classId);
+        });
+
+        if (classIndex === -1) {
+            return failure('Class not found.');
+        }
+
+        var cls = data.graduatingClasses[classIndex];
+
+        if (!Array.isArray(cls.members)) {
+            return failure('No members found.');
+        }
+
+        var memberIndex = cls.members.findIndex(function(m) {
+            return String(m.characterId) === String(characterId);
+        });
+
+        if (memberIndex === -1) {
+            return failure('Character is not a member of this class.');
+        }
+
+        // ---- PHASE 2: BUILD CANDIDATE ----
+        var candidate = deepClone(data.graduatingClasses);
+        if (candidate === null) {
+            return failure('Failed to prepare class data.');
+        }
+
+        candidate[classIndex].members.splice(memberIndex, 1);
+
+        // ---- PHASE 3: COMMIT ----
+        data.graduatingClasses = candidate;
+
+        logActivity('Removed ' + charName + ' from class "' + cls.name + '"');
+        return success({
+            characterId: characterId,
+            className: cls.name
+        });
     }
 
-    function getClassInstructorCount(classId) {
-        return getGraduatingClassMembers(classId, true).length;
+    function setMemberRole(classId, characterId, role) {
+        // ---- PHASE 1: VALIDATE ----
+        if (!isNonEmptyString(classId)) {
+            return failure('Class ID is required.');
+        }
+
+        if (!isNonEmptyString(characterId)) {
+            return failure('Character ID is required.');
+        }
+
+        if (!isValidRole(role)) {
+            return failure('Role must be "trainee" or "instructor".');
+        }
+
+        var data = getDataStore();
+        if (!data) {
+            return failure('Data store is not available.');
+        }
+
+        if (!Array.isArray(data.graduatingClasses)) {
+            return failure('No classes found.');
+        }
+
+        var char = getCharacterById(characterId);
+        var charName = char ? getDisplayName(char) : 'Unknown';
+
+        var classIndex = data.graduatingClasses.findIndex(function(c) {
+            return c && String(c.id) === String(classId);
+        });
+
+        if (classIndex === -1) {
+            return failure('Class not found.');
+        }
+
+        var cls = data.graduatingClasses[classIndex];
+
+        if (!Array.isArray(cls.members)) {
+            return failure('No members found.');
+        }
+
+        var memberIndex = cls.members.findIndex(function(m) {
+            return String(m.characterId) === String(characterId);
+        });
+
+        if (memberIndex === -1) {
+            return failure('Character is not a member of this class.');
+        }
+
+        // ---- PHASE 2: BUILD CANDIDATE ----
+        var candidate = deepClone(data.graduatingClasses);
+        if (candidate === null) {
+            return failure('Failed to prepare class data.');
+        }
+
+        candidate[classIndex].members[memberIndex].role = role;
+
+        // ---- PHASE 3: COMMIT ----
+        data.graduatingClasses = candidate;
+
+        logActivity('Updated ' + charName + '\'s role in "' + cls.name + '" to ' + role);
+        return success({
+            characterId: characterId,
+            role: role,
+            className: cls.name
+        });
     }
 
-    function getClassTotalCount(classId) {
-        return getGraduatingClassMembers(classId).length + getGraduatingClassMembers(classId, true).length;
+    // ============================================================
+    // CHARACTER QUERIES
+    // ============================================================
+
+    function getClassesForCharacter(characterId) {
+        if (!isNonEmptyString(characterId)) {
+            return [];
+        }
+
+        var data = getDataStore();
+        if (!data) {
+            return [];
+        }
+
+        if (!Array.isArray(data.graduatingClasses)) {
+            return [];
+        }
+
+        var result = [];
+        data.graduatingClasses.forEach(function(cls) {
+            if (!Array.isArray(cls.members)) {
+                return;
+            }
+            var member = cls.members.find(function(m) {
+                return String(m.characterId) === String(characterId);
+            });
+            if (member) {
+                result.push({
+                    classId: cls.id,
+                    className: cls.name,
+                    graduationYear: cls.graduationYear,
+                    role: member.role
+                });
+            }
+        });
+
+        return result;
+    }
+
+    function getAvailableCharactersForClass(classId, filters) {
+        filters = filters || {};
+
+        var data = getDataStore();
+        if (!data) {
+            return [];
+        }
+
+        if (!Array.isArray(data.characters)) {
+            return [];
+        }
+
+        var members = getMembers(classId);
+        var memberIds = {};
+        members.forEach(function(m) {
+            memberIds[m.characterId] = true;
+        });
+
+        var available = data.characters.filter(function(char) {
+            // Already in this class
+            if (memberIds[char.id]) {
+                return false;
+            }
+
+            // Deceased
+            if (char.deceased) {
+                return false;
+            }
+
+            // Birth year filter
+            if (filters.minBirthYear !== null && filters.minBirthYear !== undefined) {
+                var birthYear = parseInt(char.birthYear, 10);
+                if (isNaN(birthYear) || birthYear < filters.minBirthYear) {
+                    return false;
+                }
+            }
+
+            if (filters.maxBirthYear !== null && filters.maxBirthYear !== undefined) {
+                var birthYear = parseInt(char.birthYear, 10);
+                if (isNaN(birthYear) || birthYear > filters.maxBirthYear) {
+                    return false;
+                }
+            }
+
+            // Name filter
+            if (filters.name) {
+                var name = getDisplayName(char).toLowerCase();
+                if (name.indexOf(filters.name.toLowerCase()) === -1) {
+                    return false;
+                }
+            }
+
+            return true;
+        });
+
+        return available;
+    }
+
+    // ============================================================
+    // LEGACY COMPATIBILITY
+    // ============================================================
+
+    /**
+     * Legacy: Returns just the character objects for trainees.
+     * @deprecated Use getTraineesWithCharacters() instead.
+     */
+    function getCharactersByGraduatingClass(classId) {
+        var members = getTraineesWithCharacters(classId);
+        return members.map(function(m) { return m.character; }).filter(function(c) { return c; });
+    }
+
+    /**
+     * Legacy: Returns just the character objects for instructors.
+     * @deprecated Use getInstructorsWithCharacters() instead.
+     */
+    function getInstructorsByGraduatingClass(classId) {
+        var members = getInstructorsWithCharacters(classId);
+        return members.map(function(m) { return m.character; }).filter(function(c) { return c; });
+    }
+
+    /**
+     * Legacy: Returns characters only (not full member objects).
+     * @deprecated Use getMembersWithCharacters() or specific role queries.
+     */
+    function getGraduatingClassMembers(classId, includeInstructors) {
+        if (includeInstructors) {
+            var instructors = getInstructorsWithCharacters(classId);
+            return instructors.map(function(m) { return m.character; }).filter(function(c) { return c; });
+        } else {
+            var trainees = getTraineesWithCharacters(classId);
+            return trainees.map(function(m) { return m.character; }).filter(function(c) { return c; });
+        }
     }
 
     // ============================================================
@@ -646,7 +919,7 @@
     }
 
     // ============================================================
-    // EXPOSE
+    // EXPOSE - Main API
     // ============================================================
 
     window.ClassesCore = {
@@ -658,25 +931,83 @@
         updateGraduatingClass: updateGraduatingClass,
         deleteGraduatingClass: deleteGraduatingClass,
 
-        // Character assignment
-        assignCharacterToGraduatingClass: assignCharacterToGraduatingClass,
-        removeCharacterFromGraduatingClass: removeCharacterFromGraduatingClass,
+        // Membership - Queries
+        getMembers: getMembers,
+        getMembersWithCharacters: getMembersWithCharacters,
+        getTrainees: getTrainees,
+        getTraineesWithCharacters: getTraineesWithCharacters,
+        getInstructors: getInstructors,
+        getInstructorsWithCharacters: getInstructorsWithCharacters,
+        getMemberCount: getMemberCount,
+        getTraineeCount: getTraineeCount,
+        getInstructorCount: getInstructorCount,
+        getTotalCount: getTotalCount,
+        isMember: isMember,
+        getMemberRole: getMemberRole,
 
-        // Queries
-        getGraduatingClassMembers: getGraduatingClassMembers,
-        getCharactersByGraduatingClass: getCharactersByGraduatingClass,
-        getInstructorsByGraduatingClass: getInstructorsByGraduatingClass,
-        getCharacterGraduatingClass: getCharacterGraduatingClass,
-        isCharacterInGraduatingClass: isCharacterInGraduatingClass,
+        // Membership - Mutations
+        addMember: addMember,
+        removeMember: removeMember,
+        setMemberRole: setMemberRole,
 
-        // Counts
-        getClassMemberCount: getClassMemberCount,
-        getClassInstructorCount: getClassInstructorCount,
-        getClassTotalCount: getClassTotalCount,
+        // Character queries
+        getClassesForCharacter: getClassesForCharacter,
+        getAvailableCharactersForClass: getAvailableCharactersForClass,
 
         // Validation
         validateClassName: validateClassName,
-        classExists: classExists
+        classExists: classExists,
+
+        // Legacy compatibility (deprecated)
+        getCharactersByGraduatingClass: getCharactersByGraduatingClass,
+        getInstructorsByGraduatingClass: getInstructorsByGraduatingClass,
+        getGraduatingClassMembers: getGraduatingClassMembers
+    };
+
+    // ============================================================
+    // LEGACY GLOBAL ALIASES - For backward compatibility
+    // ============================================================
+
+    window.getGraduatingClass = getGraduatingClass;
+    window.getGraduatingClasses = getGraduatingClasses;
+    window.getGraduatingClassByName = getGraduatingClassByName;
+    window.createGraduatingClass = createGraduatingClass;
+    window.updateGraduatingClass = updateGraduatingClass;
+    window.deleteGraduatingClass = deleteGraduatingClass;
+
+    // Legacy assignment functions (will be removed later)
+    window.assignCharacterToGraduatingClass = function(charId, classId, isInstructor) {
+        var role = isInstructor ? 'instructor' : 'trainee';
+        return addMember(classId, charId, role);
+    };
+
+    window.removeCharacterFromGraduatingClass = function(charId) {
+        // Find which class this character is in and remove them
+        var data = getDataStore();
+        if (!data) return failure('Data store not available.');
+        if (!Array.isArray(data.graduatingClasses)) return failure('No classes found.');
+
+        var foundClassId = null;
+        var foundIndex = -1;
+
+        for (var i = 0; i < data.graduatingClasses.length; i++) {
+            var cls = data.graduatingClasses[i];
+            if (!Array.isArray(cls.members)) continue;
+            var memberIndex = cls.members.findIndex(function(m) {
+                return String(m.characterId) === String(charId);
+            });
+            if (memberIndex !== -1) {
+                foundClassId = cls.id;
+                foundIndex = i;
+                break;
+            }
+        }
+
+        if (!foundClassId) {
+            return failure('Character is not in any graduating class.');
+        }
+
+        return removeMember(foundClassId, charId);
     };
 
 })();
