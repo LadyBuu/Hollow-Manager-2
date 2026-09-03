@@ -17,6 +17,9 @@
  *   - All event handlers are delegated to callbacks
  *   - No direct window.data access
  *   - No hardcoded dependencies on specific entity types
+ *   - USES DomUtils.escapeHtml() - SINGLE SOURCE OF TRUTH
+ *   - USES NotificationSystem for notifications
+ *   - USES CalendarUtils for formatting
  * 
  * USAGE:
  *   var renderer = window.CalendarRenderer;
@@ -46,62 +49,99 @@
     }
 
     // ============================================================
-    // CONSTANTS
+    // DEPENDENCY IMPORTS
     // ============================================================
 
     var CalendarUtils = window.CalendarUtils;
+    var DomUtils = window.DomUtils || window;
+    var NotificationSystem = window.NotificationSystem || window;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
 
     var DAY_NAMES = CalendarUtils.DAY_NAMES || ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
     var CALENDAR_START_HOUR = CalendarUtils.CALENDAR_START_HOUR || 5;
     var CALENDAR_END_HOUR = CalendarUtils.CALENDAR_END_HOUR || 23;
 
     // ============================================================
-    // HTML ESCAPING (Single Source of Truth)
+    // HTML ESCAPING - DELEGATES TO DomUtils (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
+    /**
+     * Escape HTML special characters to prevent XSS.
+     * Delegates to DomUtils.escapeHtml() - the SINGLE SOURCE OF TRUTH.
+     * 
+     * @param {*} value - Value to escape
+     * @returns {string} Escaped string
+     */
     function escapeHtml(value) {
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
+        }
+        // Emergency fallback (should never be reached)
         if (value === undefined || value === null) {
             return '';
         }
-        var str = String(value);
-        return str
+        return String(value)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+            .replace(/'/g, '&#039;')
+            .replace(/`/g, '&#x60;');
     }
 
     // ============================================================
-    // NOTIFICATION (Single Source of Truth)
+    // NOTIFICATION - DELEGATES TO NotificationSystem
     // ============================================================
 
+    /**
+     * Show a notification toast.
+     * Delegates to NotificationSystem - the SINGLE SOURCE OF TRUTH.
+     * 
+     * @param {string} message - Notification message
+     * @param {string} type - 'success' | 'error' | 'warning' | 'info'
+     */
     function showNotification(message, type) {
         type = type || 'info';
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
+
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
             return;
         }
-        if (typeof window.notify === 'function') {
-            window.notify(message, type);
+
+        // Fallback to DomUtils if available
+        if (DomUtils && typeof DomUtils.notify === 'function') {
+            DomUtils.notify(message, type);
             return;
         }
+
+        // Emergency fallback (should never be reached)
         if (type === 'error') {
             alert('Error: ' + message);
-        } else if (type === 'success') {
+        } else {
             alert(message);
         }
     }
 
     // ============================================================
-    // FORMAT HOUR - Use CalendarUtils
+    // FORMAT HOUR - DELEGATES TO CalendarUtils
     // ============================================================
 
+    /**
+     * Format an hour number to a display string.
+     * Delegates to CalendarUtils.formatHour() - the SINGLE SOURCE OF TRUTH.
+     * 
+     * @param {number} hour - Hour number (0-23)
+     * @param {boolean} includeMinutes - Whether to include ":00"
+     * @returns {string} Formatted hour string
+     */
     function formatHour(hour, includeMinutes) {
-        if (window.CalendarUtils && typeof window.CalendarUtils.formatHour === 'function') {
-            return window.CalendarUtils.formatHour(hour, includeMinutes);
+        if (CalendarUtils && typeof CalendarUtils.formatHour === 'function') {
+            return CalendarUtils.formatHour(hour, includeMinutes);
         }
-        // Fallback
+        // Emergency fallback (should never be reached)
         includeMinutes = includeMinutes !== false;
         var num = parseInt(hour, 10);
         if (isNaN(num) || num < 0 || num > 23) {
@@ -232,7 +272,7 @@
                     if (data.slotMetadata) {
                         var meta = data.slotMetadata(day, hour);
                         if (meta) {
-                            html += '<div style="font-size:0.5rem;color:var(--text-dim);">' + meta + '</div>';
+                            html += '<div style="font-size:0.5rem;color:var(--text-dim);">' + escapeHtml(meta) + '</div>';
                         }
                     }
 
@@ -835,6 +875,7 @@
         getAvailableHours: getAvailableHours,
         escapeHtml: escapeHtml,
         showNotification: showNotification,
+        formatHour: formatHour,
 
         // Constants
         CALENDAR_START_HOUR: CALENDAR_START_HOUR,
