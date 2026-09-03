@@ -34,19 +34,16 @@
  *   - DOM is the temporary source of form input values during save.
  *   - Persisted character data remains in window.data.
  * 
- * DEPENDENCIES:
+ * DEPENDENCIES (ALL REQUIRED):
  *   - window.getCurrentEditId (from index.js)
  *   - window.setCurrentEditId (from index.js)
  *   - window.getCharacterById (from core-utils.js)
  *   - window.getDisplayName (from core-utils.js)
  *   - window.saveData (from database.js)
- *   - window.CharacterConstants (from character-constants.js)
+ *   - window.CharacterConstants (from character-constants.js) - MANDATORY
  *   - window.MutationUtils (from mutation-utils.js)
  *   - window.DomUtils (from dom-utils.js)
- *   - window.CharacterStats (for magic schema, optional but recommended)
  *   - window.logActivity (optional, for activity logging)
- *   - window.MAGIC_CONSTANTS (from constants.js)
- *   - window.CALENDAR_CONSTANTS (from constants.js)
  *   - window.NotificationSystem (from notification.js)
  */
 
@@ -60,42 +57,13 @@
     window.__characterCrudLoaded = true;
 
     // ============================================================
-    // CONSTANTS - Use centralised sources
-    // ============================================================
-
-    var MIN_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MIN_WEEK : 1;
-    var MAX_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MAX_WEEK : 52;
-
-    // Use CharacterConstants for magic/stat definitions if available
-    var MAGIC_TYPE_KEYS = window.CharacterConstants
-        ? window.CharacterConstants.MAGIC_TYPE_KEYS
-        : (window.MAGIC_CONSTANTS ? window.MAGIC_CONSTANTS.TYPES : [
-            'earth', 'water', 'fire', 'air', 'metal', 'wood',
-            'blood', 'bone', 'mind', 'morphic', 'life', 'death',
-            'space', 'time', 'dimension', 'void', 'reality', 'transference'
-          ]);
-
-    var MAGIC_MAX = window.CharacterConstants
-        ? window.CharacterConstants.MAGIC_MAX
-        : (window.MAGIC_CONSTANTS ? window.MAGIC_CONSTANTS.MAX : 10);
-
-    var STAT_KEYS = window.CharacterConstants
-        ? window.CharacterConstants.STAT_KEYS
-        : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-
-    var STAT_MIN = window.CharacterConstants
-        ? window.CharacterConstants.STAT_MIN
-        : 1;
-
-    var STAT_MAX = window.CharacterConstants
-        ? window.CharacterConstants.STAT_MAX
-        : 50;
-
-    // ============================================================
-    // DEPENDENCY CHECK
+    // DEPENDENCY CHECK - ALL dependencies must be present
     // ============================================================
 
     function checkDependencies() {
+        var missing = [];
+
+        // Hard dependencies - MUST be present
         var required = [
             'getCurrentEditId',
             'setCurrentEditId',
@@ -104,31 +72,62 @@
             'saveData'
         ];
 
-        var missing = [];
         required.forEach(function(name) {
-            if (name === 'saveData' && typeof window.saveData !== 'function') {
-                missing.push('saveData');
-            } else if (typeof window[name] !== 'function') {
+            if (typeof window[name] !== 'function') {
                 missing.push(name);
             }
         });
 
-        // Check for MutationUtils
+        // CharacterConstants is MANDATORY - no fallbacks
+        if (!window.CharacterConstants) {
+            missing.push('CharacterConstants');
+        }
+
+        // MutationUtils is MANDATORY
         if (!window.MutationUtils || typeof window.MutationUtils.createSafeBackup !== 'function') {
             missing.push('MutationUtils.createSafeBackup');
         }
+        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise !== 'function') {
+            missing.push('MutationUtils.saveWithPromise');
+        }
 
-        // Check for DomUtils
+        // DomUtils is MANDATORY
         if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
 
         if (missing.length > 0) {
-            console.warn('CharacterCRUD: Missing dependencies:', missing.join(', '));
+            console.error('CharacterCRUD: Missing mandatory dependencies:', missing.join(', '));
             return false;
         }
         return true;
     }
+
+    // ============================================================
+    // CANONICAL CONSTANTS - From CharacterConstants ONLY
+    // ============================================================
+
+    var CC = window.CharacterConstants;
+
+    // Magic constants
+    var MAGIC_TYPE_KEYS = CC.MAGIC_TYPE_KEYS;
+    var MAGIC_MAX = CC.MAGIC_MAX;
+    var BALANCED_MAGE_THRESHOLD = CC.BALANCED_MAGE_THRESHOLD;
+
+    // Stat constants
+    var STAT_KEYS = CC.STAT_KEYS;
+    var STAT_MIN = CC.STAT_MIN;
+    var STAT_MAX = CC.STAT_MAX;
+    var STAT_DEFAULT = CC.STAT_DEFAULT;
+
+    // Special moves constants
+    var MAX_SPECIAL_MOVES = CC.MAX_SPECIAL_MOVES;
+    var MAX_MOVE_NAME_LENGTH = CC.MAX_MOVE_NAME_LENGTH;
+    var MAX_MOVE_DESCRIPTION_LENGTH = CC.MAX_MOVE_DESCRIPTION_LENGTH;
+
+    // Calendar constants
+    var MIN_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MIN_WEEK : 1;
+    var MAX_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MAX_WEEK : 52;
 
     // ============================================================
     // SAFE RENDER HELPERS
@@ -170,7 +169,7 @@
     }
 
     // ============================================================
-    // NOTIFICATION - Use DomUtils or fallback
+    // NOTIFICATION - Use DomUtils with fallback chain
     // ============================================================
 
     function showNotification(message, type) {
@@ -247,24 +246,39 @@
             return window.MutationUtils.createSafeBackup(data);
         }
 
-        // Fallback implementation (should not be needed after Phase 0)
+        // Emergency fallback (should never be needed)
         try {
-            if (window.db && typeof window.db.createSafeCopy === 'function') {
-                return window.db.createSafeCopy(data);
-            }
             if (typeof structuredClone === 'function') {
                 return structuredClone(data);
             }
-            try {
-                return JSON.parse(JSON.stringify(data));
-            } catch (e) {
-                console.warn('CharacterCRUD: Failed to create backup:', e);
-                return null;
-            }
+            return JSON.parse(JSON.stringify(data));
         } catch (err) {
-            console.warn('CharacterCRUD: Failed to create backup:', err);
+            console.error('CharacterCRUD: Failed to create backup:', err);
             return null;
         }
+    }
+
+    // ============================================================
+    // ROLLBACK - Centralised recovery choreography
+    // ============================================================
+
+    function rollback(backup, editId, wasEditing) {
+        // Restore data
+        window.data = backup;
+
+        // Restore UI state
+        safeRenderCharacterList();
+
+        if (wasEditing) {
+            setCurrentEditId(editId);
+            safeShowCharacterForm(editId);
+        } else {
+            setCurrentEditId(null);
+            safeShowCharacterForm(null);
+        }
+
+        // Notify user
+        showNotification('Operation failed. Changes have been rolled back.', 'error');
     }
 
     // ============================================================
@@ -291,7 +305,7 @@
     }
 
     // ============================================================
-    // HELPER FUNCTIONS
+    // FORM EXTRACTION HELPERS
     // ============================================================
 
     function getClassIds() {
@@ -325,42 +339,11 @@
         return statuses;
     }
 
-    function getMagicTypeKeys() {
-        // Use CharacterConstants first
-        if (window.CharacterConstants && typeof window.CharacterConstants.getMagicTypeKeys === 'function') {
-            return window.CharacterConstants.getMagicTypeKeys();
-        }
-
-        // Fallback to CharacterStats
-        if (window.CharacterStats && typeof window.CharacterStats.getMagicTypeKeys === 'function') {
-            var keys = window.CharacterStats.getMagicTypeKeys();
-            if (Array.isArray(keys) && keys.length > 0) {
-                return keys;
-            }
-        }
-
-        // Use constants as final fallback
-        return MAGIC_TYPE_KEYS.slice();
-    }
-
-    function getMagicMax() {
-        if (window.CharacterConstants && typeof window.CharacterConstants.MAGIC_MAX !== 'undefined') {
-            return window.CharacterConstants.MAGIC_MAX;
-        }
-
-        if (window.CharacterStats && typeof window.CharacterStats.MAGIC_MAX !== 'undefined') {
-            return window.CharacterStats.MAGIC_MAX;
-        }
-
-        return MAGIC_MAX;
-    }
-
     function getMagic() {
         var magic = {};
-        var types = getMagicTypeKeys();
-        var magicMax = getMagicMax();
+        var magicMax = MAGIC_MAX;
 
-        types.forEach(function(key) {
+        MAGIC_TYPE_KEYS.forEach(function(key) {
             var input = document.getElementById('magic-' + key);
             var val = input ? parseInt(input.value, 10) : 0;
             magic[key] = isNaN(val) ? 0 : Math.max(0, Math.min(magicMax, val));
@@ -372,8 +355,10 @@
         var moves = [];
         var containerId = type === 'physical' ? 'physical-moves-list' : 'magical-moves-list';
         var container = document.getElementById(containerId);
+
         if (container) {
-            container.querySelectorAll('.special-move-entry').forEach(function(el) {
+            var entries = container.querySelectorAll('.special-move-entry');
+            entries.forEach(function(el) {
                 var nameEl = el.querySelector('.move-name');
                 var descEl = el.querySelector('.move-desc');
                 if (nameEl) {
@@ -388,6 +373,7 @@
                 }
             });
         }
+
         return moves;
     }
 
@@ -395,6 +381,10 @@
         var num = Number(week);
         return Number.isInteger(num) && num >= MIN_WEEK && num <= MAX_WEEK;
     }
+
+    // ============================================================
+    // BUILD CHARACTER DATA - Using canonical constants
+    // ============================================================
 
     function buildCharacterData(
         classIds, careerStatus, magic, physicalMoves, magicalMoves,
@@ -410,7 +400,8 @@
             if (!el) return fallback;
             var val = parseInt(el.value, 10);
             if (isNaN(val)) return fallback;
-            return Math.max(1, Math.min(30, val));
+            // Use canonical STAT_MIN and STAT_MAX
+            return Math.max(STAT_MIN, Math.min(STAT_MAX, val));
         };
 
         var finalDeathYear = isDeceased ? deathYear : '';
@@ -461,12 +452,12 @@
                 goals: getVal('char-goals', '')
             },
             stats: {
-                str: getInt('char-str', 10),
-                dex: getInt('char-dex', 10),
-                con: getInt('char-con', 10),
-                int: getInt('char-int', 10),
-                wis: getInt('char-wis', 10),
-                cha: getInt('char-cha', 10)
+                str: getInt('char-str', STAT_DEFAULT),
+                dex: getInt('char-dex', STAT_DEFAULT),
+                con: getInt('char-con', STAT_DEFAULT),
+                int: getInt('char-int', STAT_DEFAULT),
+                wis: getInt('char-wis', STAT_DEFAULT),
+                cha: getInt('char-cha', STAT_DEFAULT)
             },
             magic: magic,
             specialMoves: {
@@ -476,24 +467,80 @@
         };
     }
 
+    // ============================================================
+    // CHARACTER VALIDATION - Using canonical constants
+    // ============================================================
+
     function validateCharacter(charData) {
+        // Basic required fields
         if (!charData.firstName) {
             return { valid: false, message: 'First name is required.' };
         }
         if (!charData.lastName) {
             return { valid: false, message: 'Last name is required.' };
         }
+
+        // Death validation
         if (charData.deceased) {
             var hasDeathInfo = charData.deathYear || charData.deathAge || charData.deathWeek;
             if (!hasDeathInfo) {
                 return { valid: false, message: 'Please enter Death Year, Death Age, or Death Week for deceased characters.' };
             }
             if (charData.deathWeek && !validateWeek(charData.deathWeek)) {
-                return { valid: false, message: 'Death Week must be between 1 and 52.' };
+                return { valid: false, message: 'Death Week must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.' };
             }
         }
+
+        // Special moves validation - enforce constants
+        var physicalMoves = charData.specialMoves && charData.specialMoves.physical ? charData.specialMoves.physical : [];
+        var magicalMoves = charData.specialMoves && charData.specialMoves.magical ? charData.specialMoves.magical : [];
+
+        if (physicalMoves.length > MAX_SPECIAL_MOVES) {
+            return { valid: false, message: 'Too many physical special moves. Maximum is ' + MAX_SPECIAL_MOVES + '.' };
+        }
+        if (magicalMoves.length > MAX_SPECIAL_MOVES) {
+            return { valid: false, message: 'Too many magical special moves. Maximum is ' + MAX_SPECIAL_MOVES + '.' };
+        }
+
+        var allMoves = physicalMoves.concat(magicalMoves);
+        for (var i = 0; i < allMoves.length; i++) {
+            var move = allMoves[i];
+            if (move.name && move.name.length > MAX_MOVE_NAME_LENGTH) {
+                return { valid: false, message: 'Move name exceeds maximum length of ' + MAX_MOVE_NAME_LENGTH + ' characters.' };
+            }
+            if (move.description && move.description.length > MAX_MOVE_DESCRIPTION_LENGTH) {
+                return { valid: false, message: 'Move description exceeds maximum length of ' + MAX_MOVE_DESCRIPTION_LENGTH + ' characters.' };
+            }
+        }
+
+        // Stats validation
+        var stats = charData.stats || {};
+        for (var statKey in stats) {
+            if (Object.prototype.hasOwnProperty.call(stats, statKey)) {
+                var val = stats[statKey];
+                if (typeof val !== 'number' || isNaN(val) || val < STAT_MIN || val > STAT_MAX) {
+                    return { valid: false, message: 'Stat "' + statKey + '" must be between ' + STAT_MIN + ' and ' + STAT_MAX + '.' };
+                }
+            }
+        }
+
+        // Magic validation
+        var magic = charData.magic || {};
+        for (var magicKey in magic) {
+            if (Object.prototype.hasOwnProperty.call(magic, magicKey)) {
+                var val = magic[magicKey];
+                if (typeof val !== 'number' || isNaN(val) || val < 0 || val > MAGIC_MAX) {
+                    return { valid: false, message: 'Magic proficiency must be between 0 and ' + MAGIC_MAX + '.' };
+                }
+            }
+        }
+
         return { valid: true };
     }
+
+    // ============================================================
+    // MUTATION HELPERS
+    // ============================================================
 
     function updateExistingCharacter(existing, charData, data) {
         var index = data.characters.findIndex(function(c) {
@@ -501,20 +548,23 @@
         });
 
         if (index === -1) {
-            return false;
+            return { success: false, error: 'Character not found in data store.' };
         }
 
         var current = data.characters[index];
 
-        data.characters[index] = Object.assign({}, current, charData, {
+        // Preserve system-managed fields
+        var preserved = {
             id: current.id,
             createdAt: current.createdAt,
             eliminations: Array.isArray(current.eliminations) ? current.eliminations : [],
             eliminatedWeeks: Array.isArray(current.eliminatedWeeks) ? current.eliminatedWeeks : []
-        });
+        };
 
-        window.data = data;
-        return true;
+        // Merge - charData overrides everything except preserved fields
+        data.characters[index] = Object.assign({}, current, charData, preserved);
+
+        return { success: true };
     }
 
     function createNewCharacter(charData, data) {
@@ -528,14 +578,31 @@
         });
 
         data.characters.push(newChar);
-        setCurrentEditId(id);
-        window.data = data;
 
-        return id;
+        return { success: true, id: id };
     }
 
     // ============================================================
-    // SAVE CHARACTER - Uses MutationUtils pattern
+    // UI COMMIT HELPERS
+    // ============================================================
+
+    function commitSaveUI(id, isEditing) {
+        // Commit UI state AFTER persistence succeeds
+        setCurrentEditId(id);
+        safeUpdateDashboardStats();
+        safeShowCharacterForm(id);
+        showNotification(isEditing ? 'Character saved successfully!' : 'Character created successfully!', 'success');
+    }
+
+    function commitDeleteUI() {
+        setCurrentEditId(null);
+        safeUpdateDashboardStats();
+        safeShowCharacterForm(null);
+        showNotification('Character deleted successfully!', 'success');
+    }
+
+    // ============================================================
+    // SAVE CHARACTER - Transactional mutation flow
     // ============================================================
 
     function save() {
@@ -554,6 +621,7 @@
 
         var editId = getCurrentEditId();
 
+        // --- EXTRACT FORM DATA ---
         var deceasedEl = document.getElementById('char-deceased');
         if (!deceasedEl) {
             showNotification('Form error: Missing required fields. Please refresh the page.', 'error');
@@ -572,11 +640,13 @@
         var physicalMoves = getFormSpecialMoves('physical');
         var magicalMoves = getFormSpecialMoves('magical');
 
+        // --- BUILD ---
         var charData = buildCharacterData(
             classIds, careerStatus, magic, physicalMoves, magicalMoves,
             isDeceased, deathYear, deathCause, deathAge, deathWeek
         );
 
+        // --- VALIDATE ---
         var validation = validateCharacter(charData);
         if (!validation.valid) {
             showNotification(validation.message, 'error');
@@ -589,49 +659,49 @@
         var newId = null;
 
         if (isEditing) {
-            existingChar = typeof window.getCharacterById === 'function' 
-                ? window.getCharacterById(editId) 
+            existingChar = typeof window.getCharacterById === 'function'
+                ? window.getCharacterById(editId)
                 : null;
             if (!existingChar) {
                 showNotification('Character not found.', 'error');
                 return Promise.resolve(false);
             }
-            name = typeof window.getDisplayName === 'function' 
-                ? window.getDisplayName(existingChar) 
+            name = typeof window.getDisplayName === 'function'
+                ? window.getDisplayName(existingChar)
                 : existingChar.firstName + ' ' + existingChar.lastName;
         }
 
-        // SNAPSHOT - Required, abort if fails
+        // --- SNAPSHOT - Required, abort if fails ---
         var backup = createSafeBackup(data);
         if (!backup) {
             showNotification('Unable to safely save character. Please try again.', 'error');
             return Promise.resolve(false);
         }
 
-        // MUTATE
+        // --- MUTATE ---
+        var mutationResult;
         if (isEditing) {
-            var updated = updateExistingCharacter(existingChar, charData, data);
-            if (!updated) {
-                showNotification('Failed to update character. Please try again.', 'error');
+            mutationResult = updateExistingCharacter(existingChar, charData, data);
+            if (!mutationResult.success) {
+                showNotification(mutationResult.error || 'Failed to update character.', 'error');
                 return Promise.resolve(false);
             }
             newId = editId;
         } else {
-            newId = createNewCharacter(charData, data);
+            mutationResult = createNewCharacter(charData, data);
+            if (!mutationResult.success) {
+                showNotification(mutationResult.error || 'Failed to create character.', 'error');
+                return Promise.resolve(false);
+            }
+            newId = mutationResult.id;
             name = charData.firstName + ' ' + charData.lastName;
         }
 
-        // PERSIST - Use saveWithPromise from MutationUtils if available
-        var savePromise;
-        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
-            savePromise = window.MutationUtils.saveWithPromise();
-        } else {
-            // Fallback
-            savePromise = Promise.resolve()
-                .then(function() {
-                    return window.saveData();
-                });
-        }
+        // Commit the mutation to window.data
+        window.data = data;
+
+        // --- PERSIST - Use saveWithPromise from MutationUtils ---
+        var savePromise = window.MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
@@ -648,36 +718,19 @@
                     // Ignore logging errors
                 }
 
-                // UI COMMIT
-                onSaveSuccess(newId, isEditing);
+                // --- UI COMMIT ---
+                commitSaveUI(newId, isEditing);
                 return true;
             })
             .catch(function(err) {
-                // ROLLBACK
-                window.data = backup;
-                safeRenderCharacterList();
-
-                if (isEditing) {
-                    setCurrentEditId(editId);
-                    safeShowCharacterForm(editId);
-                } else {
-                    setCurrentEditId(null);
-                    safeShowCharacterForm(null);
-                }
-
-                showNotification('Failed to save character. Please try again.', 'error');
+                // --- ROLLBACK ---
+                rollback(backup, editId, isEditing);
                 return false;
             });
     }
 
-    function onSaveSuccess(id, isEditing) {
-        safeUpdateDashboardStats();
-        safeShowCharacterForm(id);
-        showNotification(isEditing ? 'Character saved successfully!' : 'Character created successfully!', 'success');
-    }
-
     // ============================================================
-    // DELETE CHARACTER - Uses MutationUtils pattern
+    // DELETE CHARACTER - Transactional mutation flow
     // ============================================================
 
     function deleteCharacter(id) {
@@ -705,22 +758,22 @@
             return Promise.resolve(false);
         }
 
-        var name = typeof window.getDisplayName === 'function' 
-            ? window.getDisplayName(char) 
+        var name = typeof window.getDisplayName === 'function'
+            ? window.getDisplayName(char)
             : char.firstName + ' ' + char.lastName;
 
         if (!confirm('Delete "' + name + '" permanently? This will also remove them from all teams.')) {
             return Promise.resolve(false);
         }
 
-        // SNAPSHOT - Required, abort if fails
+        // --- SNAPSHOT - Required, abort if fails ---
         var backup = createSafeBackup(data);
         if (!backup) {
             showNotification('Unable to safely delete character. Please try again.', 'error');
             return Promise.resolve(false);
         }
 
-        // MUTATE - Clean team memberships
+        // --- MUTATE - Clean team memberships ---
         if (Array.isArray(data.teams)) {
             data.teams.forEach(function(team) {
                 if (Array.isArray(team.members)) {
@@ -736,17 +789,11 @@
             return c && String(c.id) !== String(id);
         });
 
-        // PERSIST - Use saveWithPromise from MutationUtils if available
-        var savePromise;
-        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
-            savePromise = window.MutationUtils.saveWithPromise();
-        } else {
-            // Fallback
-            savePromise = Promise.resolve()
-                .then(function() {
-                    return window.saveData();
-                });
-        }
+        // Commit mutation
+        window.data = data;
+
+        // --- PERSIST ---
+        var savePromise = window.MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
@@ -759,26 +806,15 @@
                     // Ignore logging errors
                 }
 
-                // UI COMMIT
-                onDeleteSuccess();
+                // --- UI COMMIT ---
+                commitDeleteUI();
                 return true;
             })
             .catch(function(err) {
-                // ROLLBACK
-                window.data = backup;
-                safeRenderCharacterList();
-                setCurrentEditId(id);
-                safeShowCharacterForm(id);
-                showNotification('Failed to delete character. Please try again.', 'error');
+                // --- ROLLBACK ---
+                rollback(backup, id, true);
                 return false;
             });
-    }
-
-    function onDeleteSuccess() {
-        setCurrentEditId(null);
-        safeUpdateDashboardStats();
-        safeShowCharacterForm(null);
-        showNotification('Character deleted successfully!', 'success');
     }
 
     // ============================================================
@@ -797,8 +833,9 @@
         createSafeBackup: createSafeBackup,
         generateCharacterId: generateCharacterId,
         getCurrentEditId: getCurrentEditId,
-        setCurrentEditId: setCurrentEditId
+        setCurrentEditId: setCurrentEditId,
+        // Exposed for testing/emergency recovery
+        rollback: rollback
     };
-
 
 })();
