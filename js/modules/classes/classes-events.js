@@ -1,25 +1,7 @@
 /**
  * modules/classes/classes-events.js - Classes Events
  * Event binding for the classes module
- * Path: js/modules/classes/classes-events.js
- * 
- * This module is responsible for:
- *   - Binding UI events for the classes module
- *   - Delegating actions to ClassesCore for mutations
- *   - Delegating rendering to ClassesView for UI updates
- * 
- * IMPORTANT:
- *   - Uses EVENT DELEGATION on stable parent elements
- *   - Events are bound ONCE and survive content refreshes
- *   - No cloneNode() or listener re-binding needed
- *   - All mutations delegate to ClassesCore
- *   - All rendering delegates to ClassesView
- * 
- * DEPENDENCIES:
- *   - window.ClassesCore (from classes-core.js)
- *   - window.ClassesView (from classes-view.js)
- *   - window.CoreUtils (from core-utils.js)
- *   - window.DomUtils (from dom-utils.js)
+ * Uses container-level delegation on stable parent
  */
 
 (function() {
@@ -29,7 +11,9 @@
     if (window.__classesEventsLoaded) {
         return;
     }
-    window.__classesEventsLoaded = true;
+
+    // Don't set loaded flag until dependencies are verified
+    // ============================================================
 
     // ============================================================
     // STATE
@@ -52,10 +36,6 @@
 
         if (!window.ClassesView || typeof window.ClassesView.renderClassesView !== 'function') {
             missing.push('ClassesView.renderClassesView');
-        }
-
-        if (!window.CoreUtils || typeof window.CoreUtils.getDisplayName !== 'function') {
-            missing.push('CoreUtils.getDisplayName');
         }
 
         if (missing.length > 0) {
@@ -90,7 +70,7 @@
     }
 
     // ============================================================
-    // PERSISTENCE HELPERS
+    // PERSISTENCE
     // ============================================================
 
     function saveData() {
@@ -142,7 +122,6 @@
 
     function handleEditClass(classId) {
         if (!classId) {
-            // Try to get from selected state
             classId = _selectedClassId;
         }
 
@@ -315,13 +294,11 @@
 
         title.textContent = 'Manage Members - ' + cls.name;
 
-        // Use ClassesView to render modal content
         content.innerHTML = window.ClassesView.renderMemberModalContent(classId);
 
         modal.classList.remove('hidden');
         modal.style.display = 'flex';
 
-        // Populate search results after render
         populateSearchResults(classId);
     }
 
@@ -348,7 +325,7 @@
         var defaultRole = roleSelect ? roleSelect.value : 'trainee';
 
         available.slice(0, 20).forEach(function(char) {
-            var name = window.CoreUtils.getDisplayName(char);
+            var name = getDisplayName(char);
             var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char) : '';
             var birthYear = char.birthYear ? ' (' + char.birthYear + ')' : '';
 
@@ -440,6 +417,16 @@
     // HELPER FUNCTIONS
     // ============================================================
 
+    function getDisplayName(char) {
+        if (typeof window.getDisplayName === 'function') {
+            return window.getDisplayName(char);
+        }
+        if (char && char.firstName) {
+            return char.firstName + (char.lastName ? ' ' + char.lastName : '');
+        }
+        return 'Unknown';
+    }
+
     function escapeHtml(value) {
         if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
             return window.DomUtils.escapeHtml(value);
@@ -450,49 +437,198 @@
     }
 
     // ============================================================
-    // BIND EVENTS USING DELEGATION - ONCE, ON STABLE ELEMENTS
+    // BIND EVENTS - Container-level delegation
     // ============================================================
 
     function bindEvents() {
         if (_eventsBound) return;
+        if (!_container) return;
+
         _eventsBound = true;
 
-        // ---- ADD CLASS BUTTON ----
-        var addBtn = document.getElementById('add-class-btn');
-        if (addBtn) {
-            addBtn.addEventListener('click', handleAddClass);
-        }
+        console.log('ClassesEvents: Binding events on container:', _container.id || 'classes-content');
 
-        // ---- CLASS FORM ----
-        var form = document.getElementById('class-form-inner');
-        if (form) {
-            form.addEventListener('submit', handleSaveClass);
-        }
+        // ---- CLICK DELEGATION ----
+        _container.addEventListener('click', function(e) {
+            var target = e.target;
 
-        // ---- CLASS FORM CLOSE BUTTONS ----
-        var closeFormBtn = document.getElementById('close-class-form');
-        if (closeFormBtn) {
-            closeFormBtn.addEventListener('click', function() {
+            // 1. Add Class button
+            var addBtn = target.closest('#add-class-btn');
+            if (addBtn) {
+                e.preventDefault();
+                handleAddClass();
+                return;
+            }
+
+            // 2. Class list item
+            var listItem = target.closest('.class-list-item');
+            if (listItem) {
+                var classId = listItem.dataset.id;
+                if (classId) {
+                    handleClassSelect(classId);
+                }
+                return;
+            }
+
+            // 3. Manage Members button
+            var manageBtn = target.closest('#manage-members-btn');
+            if (manageBtn) {
+                e.preventDefault();
+                var classId = manageBtn.dataset.classId || _selectedClassId;
+                if (classId) {
+                    handleManageMembers(classId);
+                } else {
+                    showNotification('No class selected.', 'error');
+                }
+                return;
+            }
+
+            // 4. Edit Class button
+            var editBtn = target.closest('#edit-class-btn');
+            if (editBtn) {
+                e.preventDefault();
+                var classId = editBtn.dataset.classId || _selectedClassId;
+                if (classId) {
+                    handleEditClass(classId);
+                } else {
+                    showNotification('No class selected.', 'error');
+                }
+                return;
+            }
+
+            // 5. Delete Class button
+            var deleteBtn = target.closest('#delete-class-btn');
+            if (deleteBtn) {
+                e.preventDefault();
+                var classId = deleteBtn.dataset.classId || _selectedClassId;
+                if (classId) {
+                    handleDeleteClass(classId);
+                } else {
+                    showNotification('No class selected.', 'error');
+                }
+                return;
+            }
+
+            // 6. Add member from search results
+            var addMemberBtn = target.closest('.add-member-result-btn');
+            if (addMemberBtn) {
+                e.preventDefault();
+                var charId = addMemberBtn.dataset.charId;
+                var role = addMemberBtn.dataset.role || 'trainee';
+                var classId = _selectedClassId;
+                if (charId && classId) {
+                    handleAddMemberFromSearch(classId, charId, role);
+                } else {
+                    showNotification('Missing class or character ID.', 'error');
+                }
+                return;
+            }
+
+            // 7. Remove member chip
+            var removeBtn = target.closest('.remove-member-btn');
+            if (removeBtn) {
+                e.preventDefault();
+                var charId = removeBtn.dataset.charId;
+                var classId = removeBtn.dataset.classId || _selectedClassId;
+                if (charId && classId) {
+                    handleRemoveMember(classId, charId);
+                } else {
+                    showNotification('Missing class or character ID.', 'error');
+                }
+                return;
+            }
+
+            // 8. Class form modal close
+            var closeFormBtn = target.closest('#close-class-form');
+            if (closeFormBtn) {
                 var modal = document.getElementById('class-form-modal');
                 if (modal) {
                     modal.classList.add('hidden');
                     modal.style.display = 'none';
                 }
-            });
-        }
+                return;
+            }
 
-        var cancelFormBtn = document.getElementById('cancel-class-form');
-        if (cancelFormBtn) {
-            cancelFormBtn.addEventListener('click', function() {
+            // 9. Class form cancel
+            var cancelFormBtn = target.closest('#cancel-class-form');
+            if (cancelFormBtn) {
                 var modal = document.getElementById('class-form-modal');
                 if (modal) {
                     modal.classList.add('hidden');
                     modal.style.display = 'none';
                 }
-            });
-        }
+                return;
+            }
 
-        // ---- CLASS FORM MODAL CLICK OUTSIDE ----
+            // 10. Member modal close
+            var closeMemberBtn = target.closest('#close-member-modal');
+            if (closeMemberBtn) {
+                var modal = document.getElementById('member-modal');
+                if (modal) {
+                    modal.classList.add('hidden');
+                    modal.style.display = 'none';
+                }
+                return;
+            }
+
+            var closeMemberBtn2 = target.closest('#close-member-modal-btn');
+            if (closeMemberBtn2) {
+                var modal = document.getElementById('member-modal');
+                if (modal) {
+                    modal.classList.add('hidden');
+                    modal.style.display = 'none';
+                }
+                return;
+            }
+        });
+
+        // ---- INPUT DELEGATION ----
+        _container.addEventListener('input', function(e) {
+            var target = e.target;
+
+            // Member search
+            var searchInput = target.closest('#member-search');
+            if (searchInput) {
+                var classId = _selectedClassId;
+                if (classId) {
+                    populateSearchResults(classId);
+                }
+                return;
+            }
+        });
+
+        // ---- CHANGE DELEGATION ----
+        _container.addEventListener('change', function(e) {
+            var target = e.target;
+
+            // Role select
+            var roleSelect = target.closest('#member-role-select');
+            if (roleSelect) {
+                var classId = _selectedClassId;
+                if (classId) {
+                    populateSearchResults(classId);
+                }
+                return;
+            }
+
+            // Mobile selector
+            var mobileSelect = target.closest('#mobile-class-select');
+            if (mobileSelect) {
+                handleMobileSelect();
+                return;
+            }
+        });
+
+        // ---- FORM SUBMIT ----
+        _container.addEventListener('submit', function(e) {
+            var form = e.target.closest('#class-form-inner');
+            if (form) {
+                handleSaveClass(e);
+            }
+        });
+
+        // ---- MODAL CLICK OUTSIDE ----
+        // These need to be on the modal elements themselves
         var formModal = document.getElementById('class-form-modal');
         if (formModal) {
             formModal.addEventListener('click', function(e) {
@@ -503,7 +639,6 @@
             });
         }
 
-        // ---- MEMBER MODAL ----
         var memberModal = document.getElementById('member-modal');
         if (memberModal) {
             memberModal.addEventListener('click', function(e) {
@@ -512,157 +647,6 @@
                     this.style.display = 'none';
                 }
             });
-        }
-
-        // Close member modal buttons
-        var closeMemberBtn = document.getElementById('close-member-modal');
-        if (closeMemberBtn) {
-            closeMemberBtn.addEventListener('click', function() {
-                var modal = document.getElementById('member-modal');
-                if (modal) {
-                    modal.classList.add('hidden');
-                    modal.style.display = 'none';
-                }
-            });
-        }
-
-        var closeMemberBtn2 = document.getElementById('close-member-modal-btn');
-        if (closeMemberBtn2) {
-            closeMemberBtn2.addEventListener('click', function() {
-                var modal = document.getElementById('member-modal');
-                if (modal) {
-                    modal.classList.add('hidden');
-                    modal.style.display = 'none';
-                }
-            });
-        }
-
-        // ---- DELEGATED EVENTS (stays bound even when content refreshes) ----
-
-        // 1. Class list items - delegate from stable container
-        var listContainer = document.getElementById('class-list');
-        if (listContainer) {
-            listContainer.addEventListener('click', function(e) {
-                var item = e.target.closest('.class-list-item');
-                if (item) {
-                    var classId = item.dataset.id;
-                    if (classId) {
-                        handleClassSelect(classId);
-                    }
-                }
-            });
-        }
-
-        // 2. Class detail actions - delegate from stable container
-        var detailContainer = document.getElementById('class-detail');
-        if (detailContainer) {
-            detailContainer.addEventListener('click', function(e) {
-                var target = e.target;
-
-                // Manage Members button
-                var manageBtn = target.closest('#manage-members-btn');
-                if (manageBtn) {
-                    e.preventDefault();
-                    var classId = manageBtn.dataset.classId || _selectedClassId;
-                    if (classId) {
-                        handleManageMembers(classId);
-                    } else {
-                        showNotification('No class selected.', 'error');
-                    }
-                    return;
-                }
-
-                // Edit button
-                var editBtn = target.closest('#edit-class-btn');
-                if (editBtn) {
-                    e.preventDefault();
-                    var classId = editBtn.dataset.classId || _selectedClassId;
-                    if (classId) {
-                        handleEditClass(classId);
-                    } else {
-                        showNotification('No class selected.', 'error');
-                    }
-                    return;
-                }
-
-                // Delete button
-                var deleteBtn = target.closest('#delete-class-btn');
-                if (deleteBtn) {
-                    e.preventDefault();
-                    var classId = deleteBtn.dataset.classId || _selectedClassId;
-                    if (classId) {
-                        handleDeleteClass(classId);
-                    } else {
-                        showNotification('No class selected.', 'error');
-                    }
-                    return;
-                }
-            });
-        }
-
-        // 3. Member modal content - delegate for dynamic buttons
-        var memberContent = document.getElementById('member-modal-content');
-        if (memberContent) {
-            memberContent.addEventListener('click', function(e) {
-                var target = e.target;
-
-                // Add member from search results
-                var addBtn = target.closest('.add-member-result-btn');
-                if (addBtn) {
-                    e.preventDefault();
-                    var charId = addBtn.dataset.charId;
-                    var role = addBtn.dataset.role || 'trainee';
-                    var classId = _selectedClassId;
-                    if (charId && classId) {
-                        handleAddMemberFromSearch(classId, charId, role);
-                    } else {
-                        showNotification('Missing class or character ID.', 'error');
-                    }
-                    return;
-                }
-
-                // Remove member chip
-                var removeBtn = target.closest('.remove-member-btn');
-                if (removeBtn) {
-                    e.preventDefault();
-                    var charId = removeBtn.dataset.charId;
-                    var classId = removeBtn.dataset.classId || _selectedClassId;
-                    if (charId && classId) {
-                        handleRemoveMember(classId, charId);
-                    } else {
-                        showNotification('Missing class or character ID.', 'error');
-                    }
-                    return;
-                }
-            });
-        }
-
-        // 4. Search input - delegate from stable container
-        var searchInput = document.getElementById('member-search');
-        if (searchInput) {
-            searchInput.addEventListener('input', function() {
-                var classId = _selectedClassId;
-                if (classId) {
-                    populateSearchResults(classId);
-                }
-            });
-        }
-
-        // 5. Role select - delegate from stable container
-        var roleSelect = document.getElementById('member-role-select');
-        if (roleSelect) {
-            roleSelect.addEventListener('change', function() {
-                var classId = _selectedClassId;
-                if (classId) {
-                    populateSearchResults(classId);
-                }
-            });
-        }
-
-        // 6. Mobile selector - delegate from stable container
-        var mobileSelect = document.getElementById('mobile-class-select');
-        if (mobileSelect) {
-            mobileSelect.addEventListener('change', handleMobileSelect);
         }
 
         // ---- RESIZE HANDLER ----
@@ -682,6 +666,8 @@
 
         window._classesResizeHandler = resizeHandler;
         window.addEventListener('resize', resizeHandler);
+
+        console.log('ClassesEvents: Events bound successfully');
     }
 
     // ============================================================
@@ -706,11 +692,13 @@
 
         _container = container;
 
-        // Bind events only ONCE
+        // Bind events once
         bindEvents();
 
         // Initial render
         refreshUI();
+
+        console.log('ClassesEvents: Initialized');
     }
 
     // ============================================================
@@ -749,11 +737,10 @@
         destroy: destroy,
         selectClass: selectClass,
         getSelectedClassId: getSelectedClassId,
-        refreshUI: refreshUI,
-        handleManageMembers: handleManageMembers,
-        handleEditClass: handleEditClass,
-        handleDeleteClass: handleDeleteClass,
-        handleClassSelect: handleClassSelect
+        refreshUI: refreshUI
     };
+
+    // Set loaded flag only AFTER successful definition
+    window.__classesEventsLoaded = true;
 
 })();
