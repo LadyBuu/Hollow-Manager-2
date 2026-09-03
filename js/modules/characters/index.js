@@ -35,6 +35,7 @@
  *   - window.CharacterEliminations (from character-eliminations.js)
  *   - window.CharacterViews (from character-views.js)
  *   - window.CharacterStats (from character-stats.js)
+ *   - window.CharacterStatsView (from character-stats-view.js)
  *   - window.CharacterDetail (from character-detail.js)
  *   - window.TabManager (from tab-manager.js)
  *   - window.MutationUtils (from mutation-utils.js)
@@ -72,6 +73,7 @@
             'CharacterEliminations',
             'CharacterViews',
             'CharacterStats',
+            'CharacterStatsView',
             'CharacterDetail'
         ];
 
@@ -128,23 +130,39 @@
 
         // Initialize character list
         if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-            window.CharacterList.render();
+            try {
+                window.CharacterList.render();
+            } catch (e) {
+                console.warn('CharactersModule: CharacterList.render failed:', e);
+            }
         }
 
         // Initialize character form
         if (window.CharacterForm && typeof window.CharacterForm.init === 'function') {
-            window.CharacterForm.init(container);
+            try {
+                window.CharacterForm.init(container);
+            } catch (e) {
+                console.warn('CharactersModule: CharacterForm.init failed:', e);
+            }
         }
 
         // Initialize character events
         if (window.CharacterEvents && typeof window.CharacterEvents.init === 'function') {
-            window.CharacterEvents.init(container);
+            try {
+                window.CharacterEvents.init(container);
+            } catch (e) {
+                console.warn('CharactersModule: CharacterEvents.init failed:', e);
+            }
         }
 
         // Show the current character if any
         var editId = getCurrentEditId();
         if (editId && window.CharacterForm && typeof window.CharacterForm.show === 'function') {
-            window.CharacterForm.show(editId);
+            try {
+                window.CharacterForm.show(editId);
+            } catch (e) {
+                console.warn('CharactersModule: CharacterForm.show failed:', e);
+            }
         }
     }
 
