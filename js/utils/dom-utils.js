@@ -9,7 +9,7 @@
  *   - DOM traversal helpers
  *   - Event delegation helpers
  *   - Modal lifecycle management (with proper cleanup and race prevention)
- *   - Notification helpers
+ *   - Notification helpers (delegates to NotificationSystem)
  *   - Form helpers with consistent checkbox/radio semantics
  *   - Throttle utility
  *   - Scroll helpers
@@ -24,6 +24,7 @@
  *   - Attribute names are NOT sanitised - they must be developer-controlled
  *   - debounce() is NOT provided here (use CoreUtils.debounce if needed)
  *   - This module is UI-focused, domain utilities belong in core-utils.js
+ *   - Notification helpers delegate to NotificationSystem
  */
 
 (function() {
@@ -1134,11 +1135,90 @@
     }
 
     // ============================================================
-    // NOTIFICATION HELPERS
+    // NOTIFICATION HELPERS - Delegates to NotificationSystem
     // ============================================================
 
     /**
-     * Create a notification toast.
+     * Get the NotificationSystem instance.
+     * Returns null if not available.
+     */
+    function _getNotificationSystem() {
+        return window.NotificationSystem || null;
+    }
+
+    /**
+     * Show a notification toast.
+     * Delegates to NotificationSystem if available.
+     * 
+     * @param {string} message - Notification message
+     * @param {string} type - 'success' | 'error' | 'warning' | 'info'
+     * @param {number} duration - Duration in ms (0 = persistent)
+     * @param {function} onDismiss - Callback when dismissed
+     * @returns {object|null} Notification object or null
+     */
+    function notify(message, type, duration, onDismiss) {
+        var ns = _getNotificationSystem();
+        if (ns && typeof ns.notify === 'function') {
+            return ns.notify(message, type, duration, onDismiss);
+        }
+
+        // Fallback to alert if NotificationSystem not available
+        if (typeof alert === 'function') {
+            alert(message);
+        }
+        return null;
+    }
+
+    /**
+     * Show a success notification.
+     */
+    function notifySuccess(message, duration, onDismiss) {
+        return notify(message, 'success', duration, onDismiss);
+    }
+
+    /**
+     * Show an error notification.
+     */
+    function notifyError(message, duration, onDismiss) {
+        return notify(message, 'error', duration, onDismiss);
+    }
+
+    /**
+     * Show a warning notification.
+     */
+    function notifyWarning(message, duration, onDismiss) {
+        return notify(message, 'warning', duration, onDismiss);
+    }
+
+    /**
+     * Show an info notification.
+     */
+    function notifyInfo(message, duration, onDismiss) {
+        return notify(message, 'info', duration, onDismiss);
+    }
+
+    /**
+     * Compatibility wrapper for showToast.
+     * Delegates to NotificationSystem.
+     */
+    function showToast(message, type) {
+        return notify(message, type || 'info');
+    }
+
+    /**
+     * Clear all active notifications.
+     * Delegates to NotificationSystem if available.
+     */
+    function clearNotifications() {
+        var ns = _getNotificationSystem();
+        if (ns && typeof ns.clearNotifications === 'function') {
+            ns.clearNotifications();
+        }
+    }
+
+    /**
+     * Create a notification toast element directly.
+     * This is a low-level function for when NotificationSystem is not available.
      * 
      * @param {string} message - Notification message
      * @param {string} type - 'success' | 'error' | 'warning' | 'info'
@@ -1178,31 +1258,31 @@
     }
 
     /**
-     * Show a success notification.
+     * Show a success notification (compatibility wrapper).
      */
     function showSuccess(message, duration) {
-        return createToast(message, 'success', duration);
+        return notify(message, 'success', duration);
     }
 
     /**
-     * Show an error notification.
+     * Show an error notification (compatibility wrapper).
      */
     function showError(message, duration) {
-        return createToast(message, 'error', duration);
+        return notify(message, 'error', duration);
     }
 
     /**
-     * Show a warning notification.
+     * Show a warning notification (compatibility wrapper).
      */
     function showWarning(message, duration) {
-        return createToast(message, 'warning', duration);
+        return notify(message, 'warning', duration);
     }
 
     /**
-     * Show an info notification.
+     * Show an info notification (compatibility wrapper).
      */
     function showInfo(message, duration) {
-        return createToast(message, 'info', duration);
+        return notify(message, 'info', duration);
     }
 
     // ============================================================
@@ -1598,7 +1678,14 @@
         modalEscapeKey: modalEscapeKey,
         modalSetup: modalSetup,
 
-        // Notification helpers
+        // Notification helpers (delegates to NotificationSystem)
+        notify: notify,
+        notifySuccess: notifySuccess,
+        notifyError: notifyError,
+        notifyWarning: notifyWarning,
+        notifyInfo: notifyInfo,
+        showToast: showToast,
+        clearNotifications: clearNotifications,
         createToast: createToast,
         showSuccess: showSuccess,
         showError: showError,
@@ -1616,6 +1703,5 @@
         validateInteger: validateInteger,
         validateRange: validateRange
     };
-
 
 })();
