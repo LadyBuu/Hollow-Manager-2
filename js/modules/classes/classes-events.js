@@ -9,16 +9,16 @@
  *   - Delegating rendering to ClassesView for UI updates
  * 
  * IMPORTANT:
- *   - This module handles EVENTS only - no rendering logic
+ *   - Uses EVENT DELEGATION on stable parent elements
+ *   - Events are bound ONCE and survive content refreshes
+ *   - No cloneNode() or listener re-binding needed
  *   - All mutations delegate to ClassesCore
  *   - All rendering delegates to ClassesView
- *   - No direct DOM manipulation except event binding
- *   - No direct data mutation
- *   - Uses event delegation - NO cloneNode() for listener management
  * 
  * DEPENDENCIES:
  *   - window.ClassesCore (from classes-core.js)
  *   - window.ClassesView (from classes-view.js)
+ *   - window.CoreUtils (from core-utils.js)
  *   - window.DomUtils (from dom-utils.js)
  */
 
@@ -35,10 +35,9 @@
     // STATE
     // ============================================================
 
-    // Track if events are already bound to avoid duplicates
-    var _eventsBound = false;
-    var _container = null;
     var _selectedClassId = null;
+    var _container = null;
+    var _eventsBound = false;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -53,6 +52,10 @@
 
         if (!window.ClassesView || typeof window.ClassesView.renderClassesView !== 'function') {
             missing.push('ClassesView.renderClassesView');
+        }
+
+        if (!window.CoreUtils || typeof window.CoreUtils.getDisplayName !== 'function') {
+            missing.push('CoreUtils.getDisplayName');
         }
 
         if (missing.length > 0) {
@@ -101,7 +104,7 @@
     }
 
     function refreshUI() {
-        if (window.ClassesView && typeof window.ClassesView.renderClassesView === 'function') {
+        if (_container && window.ClassesView && typeof window.ClassesView.renderClassesView === 'function') {
             window.ClassesView.renderClassesView(_container, _selectedClassId);
         }
         if (_selectedClassId && window.ClassesView && typeof window.ClassesView.renderClassDetail === 'function') {
@@ -116,9 +119,6 @@
     // EVENT HANDLERS
     // ============================================================
 
-    /**
-     * Handle adding a new class (open modal).
-     */
     function handleAddClass() {
         var modal = document.getElementById('class-form-modal');
         var title = document.getElementById('class-form-title');
@@ -133,21 +133,21 @@
 
         modal.classList.remove('hidden');
         modal.style.display = 'flex';
-
         title.textContent = 'Add Class';
         nameInput.value = '';
         if (yearInput) yearInput.value = '';
         delete form.dataset.editId;
-
         nameInput.focus();
     }
 
-    /**
-     * Handle editing a class (open modal with existing data).
-     */
     function handleEditClass(classId) {
         if (!classId) {
-            showNotification('Class ID is required.', 'error');
+            // Try to get from selected state
+            classId = _selectedClassId;
+        }
+
+        if (!classId) {
+            showNotification('No class selected.', 'error');
             return;
         }
 
@@ -170,18 +170,13 @@
 
         modal.classList.remove('hidden');
         modal.style.display = 'flex';
-
         title.textContent = 'Edit Class';
         nameInput.value = cls.name;
         if (yearInput) yearInput.value = cls.graduationYear || '';
         form.dataset.editId = classId;
-
         nameInput.focus();
     }
 
-    /**
-     * Handle saving a class (create or update).
-     */
     function handleSaveClass(e) {
         e.preventDefault();
 
@@ -235,12 +230,13 @@
         });
     }
 
-    /**
-     * Handle deleting a class.
-     */
     function handleDeleteClass(classId) {
         if (!classId) {
-            showNotification('Class ID is required.', 'error');
+            classId = _selectedClassId;
+        }
+
+        if (!classId) {
+            showNotification('No class selected.', 'error');
             return;
         }
 
@@ -277,10 +273,11 @@
         });
     }
 
-    /**
-     * Handle managing members (open modal).
-     */
     function handleManageMembers(classId) {
+        if (!classId) {
+            classId = _selectedClassId;
+        }
+
         if (!classId) {
             showNotification('No class selected.', 'error');
             return;
@@ -295,9 +292,6 @@
         showMemberModal(classId);
     }
 
-    /**
-     * Show the member management modal.
-     */
     function showMemberModal(classId) {
         var modal = document.getElementById('member-modal');
         if (!modal) {
@@ -321,23 +315,16 @@
 
         title.textContent = 'Manage Members - ' + cls.name;
 
-        // Render content using ClassesView
+        // Use ClassesView to render modal content
         content.innerHTML = window.ClassesView.renderMemberModalContent(classId);
 
-        // Show modal
         modal.classList.remove('hidden');
         modal.style.display = 'flex';
 
-        // Populate search results
+        // Populate search results after render
         populateSearchResults(classId);
-
-        // Bind modal events (only once)
-        bindMemberModalEvents(classId);
     }
 
-    /**
-     * Populate member search results.
-     */
     function populateSearchResults(classId) {
         var searchInput = document.getElementById('member-search');
         var resultsContainer = document.getElementById('member-search-results');
@@ -345,7 +332,6 @@
         if (!searchInput || !resultsContainer) return;
 
         var query = searchInput.value.trim() || '';
-
         var available = window.ClassesCore.getAvailableCharactersForClass(classId, {
             name: query,
             minBirthYear: null,
@@ -362,7 +348,7 @@
         var defaultRole = roleSelect ? roleSelect.value : 'trainee';
 
         available.slice(0, 20).forEach(function(char) {
-            var name = getDisplayName(char);
+            var name = window.CoreUtils.getDisplayName(char);
             var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char) : '';
             var birthYear = char.birthYear ? ' (' + char.birthYear + ')' : '';
 
@@ -379,9 +365,6 @@
         resultsContainer.innerHTML = html;
     }
 
-    /**
-     * Handle adding a member from the search results.
-     */
     function handleAddMemberFromSearch(classId, charId, role) {
         if (!classId || !charId) {
             showNotification('Class ID and Character ID are required.', 'error');
@@ -396,7 +379,6 @@
         }
 
         saveData().then(function() {
-            // Re-render the modal content
             var content = document.getElementById('member-modal-content');
             if (content) {
                 content.innerHTML = window.ClassesView.renderMemberModalContent(classId);
@@ -407,9 +389,6 @@
         });
     }
 
-    /**
-     * Handle removing a member.
-     */
     function handleRemoveMember(classId, charId) {
         if (!classId || !charId) {
             showNotification('Class ID and Character ID are required.', 'error');
@@ -428,7 +407,6 @@
         }
 
         saveData().then(function() {
-            // Re-render the modal content
             var content = document.getElementById('member-modal-content');
             if (content) {
                 content.innerHTML = window.ClassesView.renderMemberModalContent(classId);
@@ -439,29 +417,15 @@
         });
     }
 
-    /**
-     * Handle class list item click (select class).
-     */
     function handleClassSelect(classId) {
         if (!classId) {
             return;
         }
 
         _selectedClassId = classId;
-
-        // Update the detail view
-        var detailContainer = document.getElementById('class-detail');
-        if (detailContainer && window.ClassesView && typeof window.ClassesView.renderClassDetail === 'function') {
-            window.ClassesView.renderClassDetail(detailContainer, classId);
-        }
-
-        // Update the list highlight
         refreshUI();
     }
 
-    /**
-     * Handle mobile selector change.
-     */
     function handleMobileSelect() {
         var select = document.getElementById('mobile-class-select');
         if (!select) return;
@@ -476,138 +440,20 @@
     // HELPER FUNCTIONS
     // ============================================================
 
-    function getDisplayName(char) {
-        if (typeof window.getDisplayName === 'function') {
-            return window.getDisplayName(char);
-        }
-        if (char && char.firstName) {
-            return char.firstName + (char.lastName ? ' ' + char.lastName : '');
-        }
-        return 'Unknown';
-    }
-
     function escapeHtml(value) {
         if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
             return window.DomUtils.escapeHtml(value);
         }
-
-        if (value === undefined || value === null) {
-            return '';
-        }
+        if (value === undefined || value === null) return '';
         var str = String(value);
-        return str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
     }
 
     // ============================================================
-    // BIND MEMBER MODAL EVENTS
+    // BIND EVENTS USING DELEGATION - ONCE, ON STABLE ELEMENTS
     // ============================================================
 
-    function bindMemberModalEvents(classId) {
-        // Close buttons
-        var closeBtn = document.getElementById('close-member-modal');
-        if (closeBtn) {
-            // Remove old listener by replacing with clone
-            var newClose = closeBtn.cloneNode(true);
-            closeBtn.parentNode.replaceChild(newClose, closeBtn);
-            newClose.addEventListener('click', function() {
-                var modal = document.getElementById('member-modal');
-                if (modal) {
-                    modal.classList.add('hidden');
-                    modal.style.display = 'none';
-                }
-            });
-        }
-
-        var closeBtn2 = document.getElementById('close-member-modal-btn');
-        if (closeBtn2) {
-            var newClose2 = closeBtn2.cloneNode(true);
-            closeBtn2.parentNode.replaceChild(newClose2, closeBtn2);
-            newClose2.addEventListener('click', function() {
-                var modal = document.getElementById('member-modal');
-                if (modal) {
-                    modal.classList.add('hidden');
-                    modal.style.display = 'none';
-                }
-            });
-        }
-
-        // Modal click outside
-        var modal = document.getElementById('member-modal');
-        if (modal) {
-            var newModal = modal.cloneNode(true);
-            modal.parentNode.replaceChild(newModal, modal);
-            newModal.addEventListener('click', function(e) {
-                if (e.target === this) {
-                    this.classList.add('hidden');
-                    this.style.display = 'none';
-                }
-            });
-        }
-
-        // Search input
-        var searchInput = document.getElementById('member-search');
-        if (searchInput) {
-            var newSearch = searchInput.cloneNode(true);
-            searchInput.parentNode.replaceChild(newSearch, searchInput);
-            newSearch.addEventListener('input', function() {
-                populateSearchResults(classId);
-            });
-        }
-
-        // Role select change - refresh results with new role
-        var roleSelect = document.getElementById('member-role-select');
-        if (roleSelect) {
-            var newRoleSelect = roleSelect.cloneNode(true);
-            roleSelect.parentNode.replaceChild(newRoleSelect, roleSelect);
-            newRoleSelect.addEventListener('change', function() {
-                populateSearchResults(classId);
-            });
-        }
-
-        // Add member from search results - event delegation
-        var resultsContainer = document.getElementById('member-search-results');
-        if (resultsContainer) {
-            var newResults = resultsContainer.cloneNode(true);
-            resultsContainer.parentNode.replaceChild(newResults, resultsContainer);
-            newResults.addEventListener('click', function(e) {
-                var btn = e.target.closest('.add-member-result-btn');
-                if (btn) {
-                    var charId = btn.dataset.charId;
-                    var role = btn.dataset.role || 'trainee';
-                    if (charId) {
-                        handleAddMemberFromSearch(classId, charId, role);
-                    }
-                }
-            });
-        }
-
-        // Remove member - event delegation
-        var content = document.getElementById('member-modal-content');
-        if (content) {
-            var newContent = content.cloneNode(true);
-            content.parentNode.replaceChild(newContent, content);
-            newContent.addEventListener('click', function(e) {
-                var removeBtn = e.target.closest('.remove-member-btn');
-                if (removeBtn) {
-                    var charId = removeBtn.dataset.charId;
-                    if (charId) {
-                        handleRemoveMember(classId, charId);
-                    }
-                }
-            });
-        }
-    }
-
-    // ============================================================
-    // BIND MAIN EVENTS - SINGLE BIND, NO CLONE SPAM
-    // ============================================================
-
-    function bindMainEvents(container) {
+    function bindEvents() {
         if (_eventsBound) return;
         _eventsBound = true;
 
@@ -657,7 +503,43 @@
             });
         }
 
-        // ---- CLASS LIST ITEMS - EVENT DELEGATION ----
+        // ---- MEMBER MODAL ----
+        var memberModal = document.getElementById('member-modal');
+        if (memberModal) {
+            memberModal.addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.classList.add('hidden');
+                    this.style.display = 'none';
+                }
+            });
+        }
+
+        // Close member modal buttons
+        var closeMemberBtn = document.getElementById('close-member-modal');
+        if (closeMemberBtn) {
+            closeMemberBtn.addEventListener('click', function() {
+                var modal = document.getElementById('member-modal');
+                if (modal) {
+                    modal.classList.add('hidden');
+                    modal.style.display = 'none';
+                }
+            });
+        }
+
+        var closeMemberBtn2 = document.getElementById('close-member-modal-btn');
+        if (closeMemberBtn2) {
+            closeMemberBtn2.addEventListener('click', function() {
+                var modal = document.getElementById('member-modal');
+                if (modal) {
+                    modal.classList.add('hidden');
+                    modal.style.display = 'none';
+                }
+            });
+        }
+
+        // ---- DELEGATED EVENTS (stays bound even when content refreshes) ----
+
+        // 1. Class list items - delegate from stable container
         var listContainer = document.getElementById('class-list');
         if (listContainer) {
             listContainer.addEventListener('click', function(e) {
@@ -671,46 +553,113 @@
             });
         }
 
-        // ---- CLASS DETAIL ACTION BUTTONS - EVENT DELEGATION ----
+        // 2. Class detail actions - delegate from stable container
         var detailContainer = document.getElementById('class-detail');
         if (detailContainer) {
             detailContainer.addEventListener('click', function(e) {
+                var target = e.target;
+
                 // Manage Members button
-                var manageBtn = e.target.closest('[data-action="manage-members"]');
+                var manageBtn = target.closest('#manage-members-btn');
                 if (manageBtn) {
                     e.preventDefault();
-                    var classId = manageBtn.dataset.classId;
+                    var classId = manageBtn.dataset.classId || _selectedClassId;
                     if (classId) {
                         handleManageMembers(classId);
+                    } else {
+                        showNotification('No class selected.', 'error');
                     }
                     return;
                 }
 
                 // Edit button
-                var editBtn = e.target.closest('[data-action="edit-class"]');
+                var editBtn = target.closest('#edit-class-btn');
                 if (editBtn) {
                     e.preventDefault();
-                    var classId = editBtn.dataset.classId;
+                    var classId = editBtn.dataset.classId || _selectedClassId;
                     if (classId) {
                         handleEditClass(classId);
+                    } else {
+                        showNotification('No class selected.', 'error');
                     }
                     return;
                 }
 
                 // Delete button
-                var deleteBtn = e.target.closest('[data-action="delete-class"]');
+                var deleteBtn = target.closest('#delete-class-btn');
                 if (deleteBtn) {
                     e.preventDefault();
-                    var classId = deleteBtn.dataset.classId;
+                    var classId = deleteBtn.dataset.classId || _selectedClassId;
                     if (classId) {
                         handleDeleteClass(classId);
+                    } else {
+                        showNotification('No class selected.', 'error');
                     }
                     return;
                 }
             });
         }
 
-        // ---- MOBILE SELECTOR ----
+        // 3. Member modal content - delegate for dynamic buttons
+        var memberContent = document.getElementById('member-modal-content');
+        if (memberContent) {
+            memberContent.addEventListener('click', function(e) {
+                var target = e.target;
+
+                // Add member from search results
+                var addBtn = target.closest('.add-member-result-btn');
+                if (addBtn) {
+                    e.preventDefault();
+                    var charId = addBtn.dataset.charId;
+                    var role = addBtn.dataset.role || 'trainee';
+                    var classId = _selectedClassId;
+                    if (charId && classId) {
+                        handleAddMemberFromSearch(classId, charId, role);
+                    } else {
+                        showNotification('Missing class or character ID.', 'error');
+                    }
+                    return;
+                }
+
+                // Remove member chip
+                var removeBtn = target.closest('.remove-member-btn');
+                if (removeBtn) {
+                    e.preventDefault();
+                    var charId = removeBtn.dataset.charId;
+                    var classId = removeBtn.dataset.classId || _selectedClassId;
+                    if (charId && classId) {
+                        handleRemoveMember(classId, charId);
+                    } else {
+                        showNotification('Missing class or character ID.', 'error');
+                    }
+                    return;
+                }
+            });
+        }
+
+        // 4. Search input - delegate from stable container
+        var searchInput = document.getElementById('member-search');
+        if (searchInput) {
+            searchInput.addEventListener('input', function() {
+                var classId = _selectedClassId;
+                if (classId) {
+                    populateSearchResults(classId);
+                }
+            });
+        }
+
+        // 5. Role select - delegate from stable container
+        var roleSelect = document.getElementById('member-role-select');
+        if (roleSelect) {
+            roleSelect.addEventListener('change', function() {
+                var classId = _selectedClassId;
+                if (classId) {
+                    populateSearchResults(classId);
+                }
+            });
+        }
+
+        // 6. Mobile selector - delegate from stable container
         var mobileSelect = document.getElementById('mobile-class-select');
         if (mobileSelect) {
             mobileSelect.addEventListener('change', handleMobileSelect);
@@ -724,24 +673,19 @@
                 resizeTimeout = null;
             }
             resizeTimeout = setTimeout(function() {
-                var wasMobile = window._classesIsMobile || false;
                 var isMobile = window.innerWidth < 768;
                 window._classesIsMobile = isMobile;
-
-                if (wasMobile !== isMobile) {
-                    refreshUI();
-                }
+                refreshUI();
                 resizeTimeout = null;
             }, 300);
         };
 
-        // Store reference for cleanup
         window._classesResizeHandler = resizeHandler;
         window.addEventListener('resize', resizeHandler);
     }
 
     // ============================================================
-    // MAIN INIT - BIND ONCE
+    // MAIN INIT
     // ============================================================
 
     function initEvents(container) {
@@ -752,11 +696,9 @@
         if (!container) {
             container = document.getElementById('tab-classes');
         }
-
         if (!container) {
             container = document.getElementById('classes-content');
         }
-
         if (!container) {
             console.warn('ClassesEvents: Container not found');
             return;
@@ -764,8 +706,8 @@
 
         _container = container;
 
-        // Bind main events once
-        bindMainEvents(container);
+        // Bind events only ONCE
+        bindEvents();
 
         // Initial render
         refreshUI();
@@ -786,12 +728,16 @@
     }
 
     // ============================================================
-    // SELECT CLASS (External API)
+    // PUBLIC API
     // ============================================================
 
     function selectClass(classId) {
         _selectedClassId = classId;
         refreshUI();
+    }
+
+    function getSelectedClassId() {
+        return _selectedClassId;
     }
 
     // ============================================================
@@ -802,13 +748,11 @@
         init: initEvents,
         destroy: destroy,
         selectClass: selectClass,
+        getSelectedClassId: getSelectedClassId,
         refreshUI: refreshUI,
         handleManageMembers: handleManageMembers,
         handleEditClass: handleEditClass,
-        handleSaveClass: handleSaveClass,
         handleDeleteClass: handleDeleteClass,
-        handleAddMember: handleAddMemberFromSearch,
-        handleRemoveMember: handleRemoveMember,
         handleClassSelect: handleClassSelect
     };
 
