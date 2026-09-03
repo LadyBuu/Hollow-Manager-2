@@ -14,6 +14,9 @@
  *   - This module depends ONLY on CalendarModes registry
  *   - It does not know about students, instructors, or locations directly
  *   - All entity-specific logic is delegated to the registered modes
+ *   - USES DomUtils.escapeHtml() - SINGLE SOURCE OF TRUTH
+ *   - USES DomUtils for DOM manipulation
+ *   - USES NotificationSystem for notifications (via DomUtils)
  */
 
 (function() {
@@ -43,20 +46,37 @@
     var CalendarModes = window.CalendarModes;
 
     // ============================================================
-    // HTML ESCAPING
+    // DEPENDENCY IMPORTS
     // ============================================================
 
+    var DomUtils = window.DomUtils || window;
+
+    // ============================================================
+    // HTML ESCAPING - DELEGATES TO DomUtils (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    /**
+     * Escape HTML special characters to prevent XSS.
+     * Delegates to DomUtils.escapeHtml() - the SINGLE SOURCE OF TRUTH.
+     * 
+     * @param {*} value - Value to escape
+     * @returns {string} Escaped string
+     */
     function escapeHtml(value) {
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
+        }
+        // Emergency fallback (should never be reached)
         if (value === undefined || value === null) {
             return '';
         }
-        var str = String(value);
-        return str
+        return String(value)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+            .replace(/'/g, '&#039;')
+            .replace(/`/g, '&#x60;');
     }
 
     // ============================================================
