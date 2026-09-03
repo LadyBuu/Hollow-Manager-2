@@ -1,5 +1,5 @@
 /**
- * utils/core-utils.js - Core Domain Utilities
+ * js/core/core-utils.js - Core Domain Utilities
  * Shared helper functions for domain operations
  * Path: utils/core-utils.js
  * 

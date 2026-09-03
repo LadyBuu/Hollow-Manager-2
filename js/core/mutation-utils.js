@@ -1,5 +1,5 @@
 /**
- * modules/shared/mutation-utils.js - Mutation Utilities
+ * js/core/mutation-utils.js - Mutation Utilities
  * Centralised mutation pipeline and backup creation
  * Path: js/modules/shared/mutation-utils.js
  * 

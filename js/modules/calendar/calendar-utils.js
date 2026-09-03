@@ -1,5 +1,5 @@
 /**
- * js/utils/calendar-utils.js - Calendar Utilities
+ * js/calendar/calendar-utils.js - Calendar Utilities
  * Path: js/utils/calendar-utils.js
  * 
  * This module provides calendar-related utility functions:
