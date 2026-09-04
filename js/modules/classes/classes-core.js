@@ -15,6 +15,12 @@
  *   - Validation occurs BEFORE mutation (candidate-based approach)
  *   - This module does NOT call saveData() - callers own persistence
  *   - This module does NOT show UI - caller handles UX
+ *   - USES CharacterQueries for character data
+ *   - USES ClassesQueries for class queries
+ *   - USES TeamQueries for team data
+ *   - USES ActivityLog for activity logging
+ *   - USES ObjectUtils for deep cloning
+ *   - USES IdUtils for ID generation
  * 
  * MUTATION INVARIANT:
  *   - All mutations use candidate-based validation:
@@ -43,8 +49,8 @@
  *   - window.TeamQueries (from team-queries.js)
  *   - window.ActivityLog (from activity-log.js)
  *   - window.ObjectUtils (from object-utils.js)
- *   - window.ValidationUtils (from validation-utils.js)
  *   - window.IdUtils (from id-utils.js)
+ *   - window.ValidationUtils (from validation-utils.js)
  *   - window.CALENDAR_CONSTANTS (from constants.js)
  * 
  * USAGE:
@@ -66,24 +72,24 @@
     window.__classesCoreLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries || window;
-    var ClassesQueries = window.ClassesQueries || window;
-    var TeamQueries = window.TeamQueries || window;
-    var ActivityLog = window.ActivityLog || window;
-    var ObjectUtils = window.ObjectUtils || window;
-    var ValidationUtils = window.ValidationUtils || window;
-    var IdUtils = window.IdUtils || window;
-    var CalendarConstants = window.CALENDAR_CONSTANTS || {};
+    var CharacterQueries = window.CharacterQueries;
+    var ClassesQueries = window.ClassesQueries;
+    var TeamQueries = window.TeamQueries;
+    var ActivityLog = window.ActivityLog;
+    var ObjectUtils = window.ObjectUtils;
+    var IdUtils = window.IdUtils;
+    var ValidationUtils = window.ValidationUtils;
+    var CalendarConstants = window.CALENDAR_CONSTANTS;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = CalendarConstants.MIN_WEEK || 1;
-    var MAX_WEEK = CalendarConstants.MAX_WEEK || 52;
+    var MIN_WEEK = CalendarConstants ? CalendarConstants.MIN_WEEK : 1;
+    var MAX_WEEK = CalendarConstants ? CalendarConstants.MAX_WEEK : 52;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -157,7 +163,7 @@
         if (ObjectUtils && typeof ObjectUtils.deepClone === 'function') {
             return ObjectUtils.deepClone(value);
         }
-        // Fallback
+        // Fallback (should never be reached if dependencies are checked)
         if (value === null || typeof value !== 'object') return value;
         try {
             return JSON.parse(JSON.stringify(value));
@@ -440,7 +446,11 @@
 
         // ---- PHASE 2: GET STORE ----
         var data = getDataStore();
-        if (!data || !Array.isArray(data.classes)) {
+        if (!data) {
+            return { success: false, message: 'Data store is not available.' };
+        }
+
+        if (!Array.isArray(data.classes)) {
             return { success: false, message: 'No classes found.' };
         }
 
