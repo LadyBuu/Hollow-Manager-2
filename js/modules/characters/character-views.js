@@ -16,13 +16,17 @@
  *   - Grades are sorted chronologically
  *   - Missions show their assigned team
  *   - Orphaned relationships are clearly identified
+ *   - USES CharacterQueries for character data and display names
+ *   - USES ClassesQueries for class display names
+ *   - USES TeamQueries for team names
+ *   - USES DisciplineQueries for discipline names
  * 
  * DEPENDENCIES:
- *   - window.getCharacterById (from core-utils.js)
- *   - window.getDisplayName (from core-utils.js)
- *   - window.getClassDisplayName (optional, from core-utils.js)
- *   - window.getDiscipline (optional, from core-utils.js)
- *   - window.getTeamName (optional, from core-utils.js)
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.TeamQueries (from team-queries.js)
+ *   - window.DisciplineQueries (from discipline-queries.js)
+ *   - window.DomUtils (from dom-utils.js)
  *   - window.data (global state)
  */
 
@@ -34,6 +38,16 @@
         return;
     }
     window.__characterViewsLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var CharacterQueries = window.CharacterQueries || window;
+    var ClassesQueries = window.ClassesQueries || window;
+    var TeamQueries = window.TeamQueries || window;
+    var DisciplineQueries = window.DisciplineQueries || window;
+    var DomUtils = window.DomUtils || window;
 
     // ============================================================
     // CONSTANTS
@@ -55,39 +69,34 @@
     // ============================================================
 
     function checkDependencies() {
-        var required = [
-            'getCharacterById',
-            'getDisplayName'
-        ];
-
         var missing = [];
-        required.forEach(function(name) {
-            if (typeof window[name] !== 'function') {
-                missing.push(name);
-            }
-        });
 
-        // Optional helpers
-        var optional = [
-            'getClassDisplayName',
-            'getDiscipline',
-            'getTeamName'
-        ];
+        // CharacterQueries is MANDATORY
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
 
-        var missingOptional = [];
-        optional.forEach(function(name) {
-            if (typeof window[name] !== 'function') {
-                missingOptional.push(name);
-            }
-        });
+        // ClassesQueries is MANDATORY
+        if (!ClassesQueries || typeof ClassesQueries.getClassDisplayName !== 'function') {
+            missing.push('ClassesQueries.getClassDisplayName');
+        }
+
+        // TeamQueries is MANDATORY
+        if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
+            missing.push('TeamQueries.getTeamName');
+        }
 
         if (missing.length > 0) {
             console.warn('CharacterViews: Missing required dependencies:', missing.join(', '));
             return false;
         }
 
-        if (missingOptional.length > 0) {
-            console.warn('CharacterViews: Missing optional dependencies:', missingOptional.join(', '));
+        // Optional dependencies (log warning but don't fail)
+        if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
+            console.warn('CharacterViews: DisciplineQueries.getDiscipline not available');
         }
 
         return true;
@@ -156,7 +165,7 @@
     }
 
     // ============================================================
-    // TEAM QUERY HELPER
+    // TEAM QUERY HELPER - Uses TeamQueries
     // ============================================================
 
     function getTeamsByTypeAndCharacter(types, charId) {
@@ -219,7 +228,7 @@
     }
 
     // ============================================================
-    // ACADEMIC VIEW
+    // ACADEMIC VIEW - Uses CharacterQueries, ClassesQueries
     // ============================================================
 
     function renderAcademic(char) {
@@ -249,9 +258,7 @@
                 var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod, 'Wk ');
                 var classDisplay = '';
                 if (team.classId) {
-                    var className = typeof window.getClassDisplayName === 'function'
-                        ? window.getClassDisplayName(team.classId)
-                        : 'Unknown';
+                    var className = ClassesQueries.getClassDisplayName(team.classId);
                     classDisplay = ' [' + className + ']';
                 }
 
@@ -338,8 +345,8 @@
                 var discIds = Object.keys(weekGrades).sort();
                 discIds.forEach(function(discId) {
                     if (!Object.prototype.hasOwnProperty.call(weekGrades, discId)) return;
-                    var disc = typeof window.getDiscipline === 'function'
-                        ? window.getDiscipline(discId)
+                    var disc = DisciplineQueries && typeof DisciplineQueries.getDiscipline === 'function'
+                        ? DisciplineQueries.getDiscipline(discId)
                         : null;
                     var score = weekGrades[discId];
                     var discName = disc ? disc.name : 'Unknown';
@@ -372,7 +379,7 @@
     }
 
     // ============================================================
-    // PROFESSIONAL VIEW
+    // PROFESSIONAL VIEW - Uses CharacterQueries, TeamQueries
     // ============================================================
 
     function renderProfessional(char) {
@@ -520,7 +527,7 @@
             container.appendChild(empty);
         }
 
-        // Missions - with team name
+        // Missions - with team name using TeamQueries
         var missionHeading = document.createElement('h4');
         missionHeading.style.cssText = 'color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;';
         missionHeading.textContent = 'Missions';
@@ -550,9 +557,7 @@
                 } else {
                     statusColor = 'var(--warning)';
                 }
-                var teamName = typeof window.getTeamName === 'function'
-                    ? window.getTeamName(m.assignedTeamId)
-                    : 'Unknown Team';
+                var teamName = TeamQueries.getTeamName(m.assignedTeamId);
 
                 var div = document.createElement('div');
                 div.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + statusColor + ';margin-bottom:3px;font-size:0.75rem;';
@@ -590,7 +595,7 @@
     }
 
     // ============================================================
-    // SOCIAL VIEW
+    // SOCIAL VIEW - Uses CharacterQueries
     // ============================================================
 
     function renderSocial(char) {
@@ -618,10 +623,10 @@
 
         rels.forEach(function(rel) {
             var otherId = String(rel.character1) === String(char.id) ? rel.character2 : rel.character1;
-            var other = typeof window.getCharacterById === 'function' ? window.getCharacterById(otherId) : null;
+            var other = CharacterQueries.getCharacterById(otherId);
 
             // Clearly identify orphaned relationships
-            var otherName = other ? (typeof window.getDisplayName === 'function' ? window.getDisplayName(other) : 'Unknown') : 'Unknown Character';
+            var otherName = other ? CharacterQueries.getDisplayName(other) : 'Unknown Character';
             if (!other) {
                 otherName = '⚠ Unknown Character (ID: ' + otherId + ')';
             }
