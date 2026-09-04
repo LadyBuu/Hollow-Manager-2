@@ -20,12 +20,17 @@
  *   corrupted or malformed persisted data.
  * 
  * DEPENDENCIES:
- *   - window.CharacterQueries (from character-queries.js) - getCharacterById, getDisplayName, getCharacterAge
- *   - window.ClassesQueries (from classes-queries.js) - getClassDisplayName
- *   - window.DisciplineQueries (from discipline-queries.js) - getDiscipline
- *   - window.TeamQueries (from team-queries.js) - getTeamById, getTeamName
- *   - window.Elimination (from elimination.js) - isCharacterEliminated, getEliminatedCharacters
- *   - window.DomUtils (from dom-utils.js) - escapeHtml
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.TeamQueries (from team-queries.js)
+ *   - window.GradeQueries (from grade-core.js)
+ *   - window.MissionQueries (from missions-queries.js)
+ *   - window.SocialQueries (from social.js)
+ *   - window.DisciplineQueries (from discipline-core.js)
+ *   - window.EliminationQueries (from elimination.js)
+ *   - window.ScheduleQueries (from schedule-core.js)
+ *   - window.DomUtils (from dom-utils.js)
+ *   - window.NotificationSystem (from notification.js)
  *   - window.RELATIONSHIP_CONSTANTS (from constants.js)
  */
 
@@ -37,22 +42,48 @@
         return;
     }
 
+    // ============================================================
+    // STATE
+    // ============================================================
+
     var state = {
         characterId: null,
         activeTab: 'name'
     };
 
+    var VALID_TABS = {
+        name: true,
+        physical: true,
+        personality: true,
+        career: true,
+        academic: true,
+        stats: true,
+        social: true,
+        notes: true
+    };
+
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries || window;
-    var ClassesQueries = window.ClassesQueries || window;
+    var CharacterQueries = window.CharacterQueries;
+    var ClassesQueries = window.ClassesQueries;
+    var TeamQueries = window.TeamQueries;
+    var GradeQueries = window.GradeQueries || window;
+    var MissionQueries = window.MissionQueries || window;
+    var SocialQueries = window.SocialQueries || window;
     var DisciplineQueries = window.DisciplineQueries || window;
-    var TeamQueries = window.TeamQueries || window;
-    var Elimination = window.Elimination || window;
-    var DomUtils = window.DomUtils || window;
+    var EliminationQueries = window.EliminationQueries || window;
+    var ScheduleQueries = window.ScheduleQueries || window;
+    var DomUtils = window.DomUtils;
+    var NotificationSystem = window.NotificationSystem;
     var RelationshipConstants = window.RELATIONSHIP_CONSTANTS || {};
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var DEFAULT_RELATIONSHIP_COLOR = RelationshipConstants.DEFAULT_COLOR || '#7f8c8d';
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -61,7 +92,6 @@
     function checkDependencies() {
         var missing = [];
 
-        // CharacterQueries is MANDATORY
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
@@ -71,36 +101,44 @@
         if (!CharacterQueries || typeof CharacterQueries.getCharacterAge !== 'function') {
             missing.push('CharacterQueries.getCharacterAge');
         }
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterStats !== 'function') {
+            missing.push('CharacterQueries.getCharacterStats');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterMagic !== 'function') {
+            missing.push('CharacterQueries.getCharacterMagic');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterSpecialMoves !== 'function') {
+            missing.push('CharacterQueries.getCharacterSpecialMoves');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
+            missing.push('CharacterQueries.getCurrentStatus');
+        }
 
-        // DomUtils is MANDATORY
+        if (!ClassesQueries || typeof ClassesQueries.getClassDisplayName !== 'function') {
+            missing.push('ClassesQueries.getClassDisplayName');
+        }
+
+        if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
+            missing.push('TeamQueries.getTeamById');
+        }
+        if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
+            missing.push('TeamQueries.getTeamName');
+        }
+        if (!TeamQueries || typeof TeamQueries.getTeamsForCharacter !== 'function') {
+            missing.push('TeamQueries.getTeamsForCharacter');
+        }
+
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
+        }
+
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
         }
 
         if (missing.length > 0) {
             console.warn('CharacterDetail: Missing dependencies:', missing.join(', '));
             return false;
-        }
-
-        // Optional dependencies (log warning but don't fail)
-        var optional = [
-            'ClassesQueries.getClassDisplayName',
-            'DisciplineQueries.getDiscipline',
-            'TeamQueries.getTeamById',
-            'Elimination.isCharacterEliminated'
-        ];
-
-        var missingOptional = [];
-        optional.forEach(function(name) {
-            var parts = name.split('.');
-            var obj = window[parts[0]];
-            if (!obj || typeof obj[parts[1]] !== 'function') {
-                missingOptional.push(name);
-            }
-        });
-
-        if (missingOptional.length > 0) {
-            console.warn('CharacterDetail: Missing optional dependencies:', missingOptional.join(', '));
         }
 
         return true;
@@ -128,6 +166,21 @@
     }
 
     // ============================================================
+    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
+        } else if (type === 'error') {
+            alert('Error: ' + message);
+        } else {
+            alert(message);
+        }
+    }
+
+    // ============================================================
     // SAFE CSS COLOR VALIDATION - Whitelist based
     // ============================================================
 
@@ -143,19 +196,27 @@
     };
 
     function getSafeRelationshipColor(typeId) {
-        var color = getRelationshipTypeRawColor(typeId);
+        var color = SocialQueries && typeof SocialQueries.getRelationshipTypeColor === 'function'
+            ? SocialQueries.getRelationshipTypeColor(typeId)
+            : null;
 
         if (!color || typeof color !== 'string') {
-            return '#7f8c8d';
+            return DEFAULT_RELATIONSHIP_COLOR;
         }
 
-        // Normalise and whitelist
         var normalized = color.toLowerCase();
         if (ALLOWED_COLORS[normalized]) {
             return normalized;
         }
 
-        return '#7f8c8d';
+        return DEFAULT_RELATIONSHIP_COLOR;
+    }
+
+    function getRelationshipTypeLabel(typeId) {
+        if (SocialQueries && typeof SocialQueries.getRelationshipTypeLabel === 'function') {
+            return SocialQueries.getRelationshipTypeLabel(typeId);
+        }
+        return typeId || 'Other';
     }
 
     // ============================================================
@@ -177,34 +238,18 @@
     }
 
     // ============================================================
-    // RELATIONSHIP TYPE HELPERS - Single source of truth
-    // ============================================================
-
-    function getRelationshipTypeRawColor(typeId) {
-        var data = window.data || {};
-        var social = data.social || {};
-        var types = Array.isArray(social.relationshipTypes) ? social.relationshipTypes : [];
-        var type = types.find(function(t) {
-            return t && String(t.id) === String(typeId);
-        });
-        return type ? type.color : '#7f8c8d';
-    }
-
-    function getRelationshipTypeLabel(typeId) {
-        var data = window.data || {};
-        var social = data.social || {};
-        var types = Array.isArray(social.relationshipTypes) ? social.relationshipTypes : [];
-        var type = types.find(function(t) {
-            return t && String(t.id) === String(typeId);
-        });
-        return type ? type.label : (typeId || 'Other');
-    }
-
-    // ============================================================
-    // TEAM/MISSION QUERY HELPERS - Single source of truth
+    // DOMAIN QUERY HELPERS - Uses query modules
     // ============================================================
 
     function getCharacterTeamsByType(charId, types) {
+        if (TeamQueries && typeof TeamQueries.getTeamsForCharacter === 'function') {
+            return TeamQueries.getTeamsForCharacter(charId, {
+                types: types,
+                includeInactive: true
+            });
+        }
+
+        // Fallback if TeamQueries not available (should never happen)
         var data = window.data || {};
         var teams = Array.isArray(data.teams) ? data.teams : [];
 
@@ -224,6 +269,11 @@
     }
 
     function getCharacterMissions(charId) {
+        if (MissionQueries && typeof MissionQueries.getMissionsForCharacter === 'function') {
+            return MissionQueries.getMissionsForCharacter(charId);
+        }
+
+        // Fallback if MissionQueries not available
         var data = window.data || {};
         var teams = Array.isArray(data.teams) ? data.teams : [];
         var missions = Array.isArray(data.missions) ? data.missions : [];
@@ -243,6 +293,11 @@
     }
 
     function getScheduleCount(charId) {
+        if (ScheduleQueries && typeof ScheduleQueries.getCharacterScheduleCount === 'function') {
+            return ScheduleQueries.getCharacterScheduleCount(charId);
+        }
+
+        // Fallback if ScheduleQueries not available
         var data = window.data || {};
         var curriculum = data.curriculum || {};
         var schedules = curriculum.schedules || {};
@@ -267,8 +322,8 @@
     }
 
     function getCharacterTournamentEliminations(char) {
-        var data = window.data || {};
         var eliminations = Array.isArray(char.eliminations) ? char.eliminations : [];
+        var data = window.data || {};
         var tournaments = Array.isArray(data.tournaments) ? data.tournaments : [];
 
         return eliminations.filter(function(e) {
@@ -297,6 +352,11 @@
     }
 
     function getCharacterGrades(charId) {
+        if (GradeQueries && typeof GradeQueries.getCharacterGrades === 'function') {
+            return GradeQueries.getCharacterGrades(charId);
+        }
+
+        // Fallback if GradeQueries not available
         var data = window.data || {};
         var curriculum = data.curriculum || {};
         var grades = curriculum.grades || {};
@@ -310,7 +370,9 @@
             for (var discId in weekData) {
                 if (!Object.prototype.hasOwnProperty.call(weekData, discId)) continue;
                 var score = weekData[discId];
-                var disc = DisciplineQueries ? DisciplineQueries.getDiscipline(discId) : null;
+                var disc = DisciplineQueries && typeof DisciplineQueries.getDiscipline === 'function'
+                    ? DisciplineQueries.getDiscipline(discId)
+                    : null;
                 result.push({
                     week: week,
                     disciplineId: discId,
@@ -322,8 +384,24 @@
         return result;
     }
 
+    function getCharacterRelationships(charId) {
+        if (SocialQueries && typeof SocialQueries.getRelationshipsForCharacter === 'function') {
+            return SocialQueries.getRelationshipsForCharacter(charId);
+        }
+
+        // Fallback if SocialQueries not available
+        var data = window.data || {};
+        var social = data.social || {};
+        var relationships = Array.isArray(social.relationships) ? social.relationships : [];
+
+        return relationships.filter(function(r) {
+            return r && (String(r.character1) === String(charId) ||
+                        String(r.character2) === String(charId));
+        });
+    }
+
     // ============================================================
-    // PERIOD FORMATTING
+    // PERIOD FORMATTING - Presentation logic
     // ============================================================
 
     function formatPeriod(joinPeriod, leavePeriod, prefix) {
@@ -343,13 +421,13 @@
 
     function openCharacterDetail(charId) {
         if (!checkDependencies()) {
-            alert('Character detail dependencies not loaded. Please refresh the page.');
+            showNotification('Character detail dependencies not loaded. Please refresh the page.', 'error');
             return;
         }
 
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
-            alert('Character not found.');
+            showNotification('Character not found.', 'error');
             return;
         }
 
@@ -447,6 +525,8 @@
     // ============================================================
 
     function switchDetailTab(tab) {
+        if (!tab || !VALID_TABS[tab]) return;
+
         var modal = document.getElementById('character-detail-modal');
         if (!modal) return;
 
@@ -594,7 +674,7 @@
         var careerStatus = Array.isArray(char.careerStatus) ? char.careerStatus : [];
 
         var html = '<div class="detail-section">';
-
+        
         html += '<h4 style="color:var(--accent);font-size:0.85rem;margin-bottom:8px;">Career Status History</h4>';
 
         if (careerStatus.length > 0) {
@@ -619,7 +699,7 @@
             html += '<p class="empty-state" style="padding:8px;font-size:0.8rem;">No career history</p>';
         }
 
-        // Professional Teams
+        // Professional Teams - uses TeamQueries
         html += '<h4 style="color:var(--info);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Professional Teams</h4>';
         var profTeams = getCharacterTeamsByType(char.id, 'professional');
         if (profTeams.length > 0) {
@@ -673,15 +753,19 @@
             html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No civilian teams</p>';
         }
 
-        // Missions
+        // Missions - uses MissionQueries
         html += '<h4 style="color:var(--warning);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Missions</h4>';
         var missions = getCharacterMissions(char.id);
         if (missions.length > 0) {
             missions.forEach(function(m) {
-                var statusColor = m.status === 'completed' ? 'var(--accent)' :
+                var statusColor = m.status === 'completed' ? 'var(--accent)' : 
                                  m.status === 'cancelled' ? 'var(--danger)' : 'var(--warning)';
+                var teamName = TeamQueries && typeof TeamQueries.getTeamName === 'function'
+                    ? TeamQueries.getTeamName(m.assignedTeamId)
+                    : 'Unknown Team';
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + statusColor + ';margin-bottom:4px;">';
-                html += '<span><strong>' + escapeHtml(m.title) + '</strong> <span style="color:' + statusColor + ';font-size:0.7rem;">' + escapeHtml(m.status || 'active') + '</span></span>';
+                html += '<span><strong>' + escapeHtml(m.title) + '</strong> <span style="color:' + statusColor + ';font-size:0.7rem;">' + escapeHtml(m.status || 'active') + '</span>';
+                html += ' <span style="color:var(--text-dim);font-size:0.7rem;">[' + escapeHtml(teamName) + ']</span>';
                 if (m.location) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(m.location) + ')</span>';
                 html += '</div>';
             });
@@ -697,7 +781,7 @@
         var data = window.data || {};
         var html = '<div class="detail-section">';
 
-        // Academic Teams
+        // Academic Teams - uses TeamQueries
         html += '<h4 style="color:var(--accent);font-size:0.85rem;margin-bottom:8px;">Academic Teams</h4>';
         var acadTeams = getCharacterTeamsByType(char.id, 'academic');
         if (acadTeams.length > 0) {
@@ -706,7 +790,7 @@
                     return m && String(m.characterId) === String(char.id);
                 }) : null;
                 var period = formatPeriod(member ? member.joinPeriod : null, member ? member.leavePeriod : null, 'Wk ');
-                var classDisplay = team.classId ? ' [' + escapeHtml(ClassesQueries.getClassDisplayName ? ClassesQueries.getClassDisplayName(team.classId) : 'Unknown') + ']' : '';
+                var classDisplay = team.classId ? ' [' + escapeHtml(ClassesQueries.getClassDisplayName(team.classId)) + ']' : '';
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);margin-bottom:4px;">';
                 html += '<span><strong>' + escapeHtml(team.name) + '</strong>' + classDisplay + ' <span style="color:var(--text-dim);font-size:0.8rem;">(' + escapeHtml(period) + ')</span></span>';
                 if (member && member.role) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">[' + escapeHtml(member.role) + ']</span>';
@@ -716,7 +800,7 @@
             html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No academic teams</p>';
         }
 
-        // Grades
+        // Grades - uses GradeQueries
         html += '<h4 style="color:var(--info);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Grades</h4>';
         var grades = getCharacterGrades(char.id);
         if (grades.length > 0) {
@@ -758,7 +842,7 @@
             html += '<p class="empty-state" style="padding:4px;font-size:0.75rem;">No standalone eliminations</p>';
         }
 
-        // Schedule Summary
+        // Schedule Summary - uses ScheduleQueries
         html += '<h4 style="color:var(--warning);font-size:0.85rem;margin-bottom:8px;margin-top:12px;">Schedule Summary</h4>';
         var scheduleCount = getScheduleCount(char.id);
         if (scheduleCount > 0) {
@@ -773,17 +857,9 @@
 
     function renderStatsTab(char) {
         // Use CharacterQueries for stats
-        var stats = CharacterQueries.getCharacterStats ? 
-            CharacterQueries.getCharacterStats(char) : 
-            { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
-
-        var magic = CharacterQueries.getCharacterMagic ? 
-            CharacterQueries.getCharacterMagic(char) : 
-            {};
-
-        var moves = CharacterQueries.getCharacterSpecialMoves ? 
-            CharacterQueries.getCharacterSpecialMoves(char) : 
-            { physical: [], magical: [] };
+        var stats = CharacterQueries.getCharacterStats(char);
+        var magic = CharacterQueries.getCharacterMagic(char);
+        var moves = CharacterQueries.getCharacterSpecialMoves(char);
 
         // Class suggestion - use CharacterStats if available
         var suggestedClass = null;
@@ -902,25 +978,20 @@
     }
 
     function renderSocialTab(char) {
-        var data = window.data || {};
-        var social = data.social || {};
-        var relationships = Array.isArray(social.relationships) ? social.relationships : [];
-        var rels = relationships.filter(function(r) {
-            return r && (String(r.character1) === String(char.id) || String(r.character2) === String(char.id));
-        });
+        var relationships = getCharacterRelationships(char.id);
 
         var html = '<div class="detail-section">';
         html += '<h4 style="color:var(--accent);font-size:0.85rem;margin-bottom:8px;">Social Connections</h4>';
 
-        if (rels.length === 0) {
+        if (relationships.length === 0) {
             html += '<p class="empty-state" style="padding:8px;font-size:0.8rem;">No social connections</p>';
         } else {
             html += '<div style="display:flex;flex-direction:column;gap:4px;">';
-            rels.forEach(function(rel) {
+            relationships.forEach(function(rel) {
                 var otherId = String(rel.character1) === String(char.id) ? rel.character2 : rel.character1;
                 var other = CharacterQueries.getCharacterById(otherId);
                 var otherName = other ? CharacterQueries.getDisplayName(other) : 'Unknown Character';
-                var type = getRelationshipTypeLabel(rel.typeId);
+                var typeLabel = getRelationshipTypeLabel(rel.typeId);
                 var typeColor = getSafeRelationshipColor(rel.typeId);
                 var period = '';
                 if (rel.startYear && rel.endYear) {
@@ -932,7 +1003,7 @@
                 var notes = rel.notes ? ' 📝' : '';
 
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + typeColor + ';">';
-                html += '<span><strong>' + escapeHtml(otherName) + '</strong> <span style="color:' + typeColor + ';font-size:0.8rem;">' + escapeHtml(type) + clarification + '</span></span>';
+                html += '<span><strong>' + escapeHtml(otherName) + '</strong> <span style="color:' + typeColor + ';font-size:0.8rem;">' + escapeHtml(typeLabel) + clarification + '</span></span>';
                 if (period) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">' + escapeHtml(period) + '</span>';
                 if (notes) html += ' <span style="color:var(--text-dim);font-size:0.7rem;">' + notes + '</span>';
                 html += '</div>';
