@@ -1,5 +1,5 @@
 /**
- * modules/calendar/index.js - Unified Calendar Entry Point
+ * js/modules/calendar/index.js - Unified Calendar Entry Point
  * Single entry point for all calendar functionality
  * Path: js/modules/calendar/index.js
  * 
@@ -11,46 +11,77 @@
  *   - Restoring state from sessionStorage and URL hash
  * 
  * LIFECYCLE:
- *   TabManager registers 'calendar' → renderCalendar() → CalendarUI.init()
- *   Tab switching → renderCalendar() → CalendarUI.render()
+ *   TabManager registers 'calendar' -> renderCalendar() -> CalendarUI.init()
+ *   Tab switching -> renderCalendar() -> CalendarUI.render()
  * 
  * IMPORTANT:
  *   - This module is the only external entry point for calendar
  *   - All calendar logic lives in calendar/ subdirectory
  *   - This module does NOT implement calendar logic directly
  *   - It uses CalendarModes registry for ALL mode validation
+ *   - TabManager is the single source of truth for lifecycle
+ * 
+ * DEPENDENCIES:
+ *   - window.CalendarUI (from calendar-ui.js)
+ *   - window.CalendarModes (from modes/index.js)
+ *   - window.CalendarUtils (from calendar-utils.js)
+ *   - window.CalendarRenderer (from calendar-renderer.js)
+ *   - window.TabManager (from tab-manager.js)
  */
 
 (function() {
     'use strict';
 
     // ============================================================
-    // DEPENDENCIES (MUST BE CHECKED FIRST)
-    // ============================================================
-
-    if (!window.CalendarUI) {
-        return;
-    }
-
-    if (typeof window.TabManager === 'undefined') {
-        return;
-    }
-
-    // ============================================================
-    // GUARD AGAINST DUPLICATE LOADING (AFTER DEPENDENCIES)
+    // GUARD AGAINST DUPLICATE LOADING
     // ============================================================
 
     if (window.__calendarModuleLoaded) {
         return;
     }
+
+    // ============================================================
+    // DEPENDENCY CHECK - NO FALLBACKS
+    // ============================================================
+
+    if (!window.CalendarUI || typeof window.CalendarUI.init !== 'function') {
+        return;
+    }
+
+    if (!window.CalendarModes || typeof window.CalendarModes.hasMode !== 'function') {
+        return;
+    }
+
+    if (!window.CalendarUtils) {
+        return;
+    }
+
+    if (!window.CalendarRenderer || typeof window.CalendarRenderer.renderGrid !== 'function') {
+        return;
+    }
+
+    if (!window.TabManager || typeof window.TabManager.register !== 'function') {
+        return;
+    }
+
     window.__calendarModuleLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var CalendarUI = window.CalendarUI;
+    var CalendarModes = window.CalendarModes;
+    var CalendarUtils = window.CalendarUtils;
+    var CalendarRenderer = window.CalendarRenderer;
+    var TabManager = window.TabManager;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var CalendarUI = window.CalendarUI;
-    var CalendarModes = window.CalendarModes;
+    var MIN_WEEK = CalendarUtils.MIN_WEEK || 1;
+    var MAX_WEEK = CalendarUtils.MAX_WEEK || 52;
 
     // ============================================================
     // STATE
@@ -78,7 +109,11 @@
         }
 
         if (typeof window.ensureCurriculum === 'function') {
-            window.ensureCurriculum();
+            try {
+                window.ensureCurriculum();
+            } catch (e) {
+                // Ensure curriculum is non-critical for display
+            }
         }
 
         if (!_initialized || _container !== container) {
@@ -100,6 +135,18 @@
     }
 
     // ============================================================
+    // DESTROY CALENDAR - Clean up event listeners
+    // ============================================================
+
+    function destroyCalendar() {
+        if (CalendarUI && typeof CalendarUI.destroy === 'function') {
+            CalendarUI.destroy();
+        }
+        _initialized = false;
+        _container = null;
+    }
+
+    // ============================================================
     // CALENDAR CONTAINER HTML
     // ============================================================
 
@@ -114,85 +161,6 @@
     }
 
     // ============================================================
-    // INITIAL OPTIONS
-    // ============================================================
-
-    function getInitialOptions() {
-        var options = {
-            mode: 'student',
-            week: 1,
-            selectedId: null
-        };
-
-        // Priority 1: sessionStorage (user's last session)
-        try {
-            var saved = sessionStorage.getItem('calendar_state');
-            if (saved) {
-                var parsed = JSON.parse(saved);
-                if (parsed.mode && isValidMode(parsed.mode)) {
-                    options.mode = parsed.mode;
-                }
-                if (parsed.week !== undefined && parsed.week !== null) {
-                    var week = parseInt(parsed.week, 10);
-                    if (!isNaN(week) && week >= 1 && week <= 52) {
-                        options.week = week;
-                    }
-                }
-                if (parsed.selectedId !== undefined && parsed.selectedId !== null) {
-                    options.selectedId = parsed.selectedId;
-                }
-            }
-        } catch (_) {
-            // Ignore storage errors
-        }
-
-        // Priority 2: URL hash (overrides session)
-        try {
-            var hash = window.location.hash;
-            if (hash) {
-                var queryIndex = hash.indexOf('?');
-                if (queryIndex !== -1) {
-                    var params = new URLSearchParams(hash.substring(queryIndex + 1));
-                    var modeParam = params.get('mode');
-                    if (modeParam && isValidMode(modeParam)) {
-                        options.mode = modeParam;
-                    }
-                    var weekParam = params.get('week');
-                    if (weekParam !== null) {
-                        var week = parseInt(weekParam, 10);
-                        if (!isNaN(week) && week >= 1 && week <= 52) {
-                            options.week = week;
-                        }
-                    }
-                    var idParam = params.get('id');
-                    if (idParam !== null) {
-                        options.selectedId = idParam;
-                    }
-                }
-            }
-        } catch (_) {
-            // Ignore URL parsing errors
-        }
-
-        // Priority 3: validate selectedId against current mode
-        if (options.selectedId !== null && options.selectedId !== undefined) {
-            if (!isValidSelectedId(options.mode, options.selectedId)) {
-                options.selectedId = null;
-            }
-        }
-
-        // Priority 4: auto-select first available
-        if (!options.selectedId) {
-            var firstId = getFirstAvailableId(options.mode);
-            if (firstId) {
-                options.selectedId = firstId;
-            }
-        }
-
-        return options;
-    }
-
-    // ============================================================
     // MODE VALIDATION - REGISTRY IS THE SOURCE OF TRUTH
     // ============================================================
 
@@ -200,10 +168,7 @@
         if (!CalendarModes) {
             return false;
         }
-        if (typeof CalendarModes.hasMode === 'function') {
-            return CalendarModes.hasMode(mode);
-        }
-        return false;
+        return CalendarModes.hasMode(mode);
     }
 
     // ============================================================
@@ -253,6 +218,85 @@
     }
 
     // ============================================================
+    // INITIAL OPTIONS
+    // ============================================================
+
+    function getInitialOptions() {
+        var options = {
+            mode: 'student',
+            week: 1,
+            selectedId: null
+        };
+
+        // Priority 1: sessionStorage (user's last session)
+        try {
+            var saved = sessionStorage.getItem('calendar_state');
+            if (saved) {
+                var parsed = JSON.parse(saved);
+                if (parsed.mode && isValidMode(parsed.mode)) {
+                    options.mode = parsed.mode;
+                }
+                if (parsed.week !== undefined && parsed.week !== null) {
+                    var week = parseInt(parsed.week, 10);
+                    if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
+                        options.week = week;
+                    }
+                }
+                if (parsed.selectedId !== undefined && parsed.selectedId !== null) {
+                    options.selectedId = parsed.selectedId;
+                }
+            }
+        } catch (_) {
+            // Ignore storage errors
+        }
+
+        // Priority 2: URL hash (overrides session)
+        try {
+            var hash = window.location.hash;
+            if (hash) {
+                var queryIndex = hash.indexOf('?');
+                if (queryIndex !== -1) {
+                    var params = new URLSearchParams(hash.substring(queryIndex + 1));
+                    var modeParam = params.get('mode');
+                    if (modeParam && isValidMode(modeParam)) {
+                        options.mode = modeParam;
+                    }
+                    var weekParam = params.get('week');
+                    if (weekParam !== null) {
+                        var week = parseInt(weekParam, 10);
+                        if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
+                            options.week = week;
+                        }
+                    }
+                    var idParam = params.get('id');
+                    if (idParam !== null) {
+                        options.selectedId = idParam;
+                    }
+                }
+            }
+        } catch (_) {
+            // Ignore URL parsing errors
+        }
+
+        // Priority 3: validate selectedId against current mode
+        if (options.selectedId !== null && options.selectedId !== undefined) {
+            if (!isValidSelectedId(options.mode, options.selectedId)) {
+                options.selectedId = null;
+            }
+        }
+
+        // Priority 4: auto-select first available
+        if (!options.selectedId) {
+            var firstId = getFirstAvailableId(options.mode);
+            if (firstId) {
+                options.selectedId = firstId;
+            }
+        }
+
+        return options;
+    }
+
+    // ============================================================
     // SAVE STATE
     // ============================================================
 
@@ -294,58 +338,16 @@
     }
 
     // ============================================================
-    // REGISTER WITH TABMANAGER
+    // REGISTER WITH TABMANAGER - Single lifecycle path
     // ============================================================
 
-    if (typeof window.TabManager !== 'undefined') {
-        window.TabManager.register('calendar', renderCalendar);
-    }
-
-    // ============================================================
-    // LIFECYCLE EVENTS
-    // ============================================================
-
-    document.addEventListener('dataReady', function() {
-        var container = document.getElementById('tab-calendar');
-        if (container && container.style.display !== 'none') {
-            renderCalendar(container);
-        }
-    });
-
-    document.addEventListener('tabChanged', function(e) {
-        if (!e || !e.detail) {
-            return;
-        }
-
-        if (e.detail.tab === 'calendar') {
-            var container = document.getElementById('tab-calendar');
-            if (container) {
-                renderCalendar(container);
-            }
-        } else if (_initialized) {
-            saveState();
-        }
-    });
-
-    window.addEventListener('beforeunload', function() {
-        if (_initialized) {
-            saveState();
-        }
-    });
-
-    if (window.data) {
-        setTimeout(function() {
-            var container = document.getElementById('tab-calendar');
-            if (container && container.style.display !== 'none') {
-                renderCalendar(container);
-            }
-        }, 100);
-    }
+    TabManager.register('calendar', renderCalendar);
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
     window.renderCalendar = renderCalendar;
+    window.destroyCalendar = destroyCalendar;
 
 })();
