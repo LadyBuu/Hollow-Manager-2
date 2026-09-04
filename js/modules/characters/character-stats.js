@@ -18,13 +18,18 @@
  *   - All mutation APIs accept characterId, not live character objects
  *   - Uses CharacterConstants for all definitions (single source of truth)
  *   - Uses MutationUtils for backup and persistence
+ *   - Uses CharacterQueries for character data and display names
+ *   - Uses NotificationSystem for notifications
+ *   - Uses ActivityLog for activity logging
+ *   - Uses ObjectUtils for deep cloning
  * 
  * DEPENDENCIES:
  *   - window.CharacterConstants (from character-constants.js)
+ *   - window.CharacterQueries (from character-queries.js)
  *   - window.MutationUtils (from mutation-utils.js)
- *   - window.CoreUtils (from core-utils.js)
- *   - window.getCharacterById (from core-utils.js)
- *   - window.getDisplayName (from core-utils.js)
+ *   - window.NotificationSystem (from notification.js)
+ *   - window.ActivityLog (from activity-log.js)
+ *   - window.ObjectUtils (from object-utils.js)
  *   - window.getCurrentEditId (from index.js)
  *   - window.saveData (from database.js)
  */
@@ -39,6 +44,17 @@
     window.__characterStatsLoaded = true;
 
     // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var CharacterQueries = window.CharacterQueries || window;
+    var MutationUtils = window.MutationUtils || window;
+    var NotificationSystem = window.NotificationSystem || window;
+    var ActivityLog = window.ActivityLog || window;
+    var ObjectUtils = window.ObjectUtils || window;
+    var CC = window.CharacterConstants;
+
+    // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
 
@@ -46,8 +62,6 @@
         var missing = [];
 
         var required = [
-            'getCharacterById',
-            'getDisplayName',
             'getCurrentEditId',
             'saveData'
         ];
@@ -60,16 +74,30 @@
             }
         });
 
-        if (!window.CharacterConstants) {
+        // CharacterConstants is MANDATORY
+        if (!CC) {
             missing.push('CharacterConstants');
         }
 
-        if (!window.MutationUtils || typeof window.MutationUtils.createSafeBackup !== 'function') {
-            missing.push('MutationUtils.createSafeBackup');
+        // CharacterQueries is MANDATORY
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
         }
 
-        if (!window.CoreUtils || typeof window.CoreUtils.deepClone !== 'function') {
-            missing.push('CoreUtils.deepClone');
+        // MutationUtils is MANDATORY
+        if (!MutationUtils || typeof MutationUtils.createSafeBackup !== 'function') {
+            missing.push('MutationUtils.createSafeBackup');
+        }
+        if (MutationUtils && typeof MutationUtils.saveWithPromise !== 'function') {
+            missing.push('MutationUtils.saveWithPromise');
+        }
+
+        // NotificationSystem is MANDATORY
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
         }
 
         if (missing.length > 0) {
@@ -83,39 +111,31 @@
     // CONSTANTS - From CharacterConstants
     // ============================================================
 
-    var MAGIC_MAX = window.CharacterConstants ? window.CharacterConstants.MAGIC_MAX : 10;
-    var STAT_MIN = window.CharacterConstants ? window.CharacterConstants.STAT_MIN : 1;
-    var STAT_MAX = window.CharacterConstants ? window.CharacterConstants.STAT_MAX : 50;
-    var MAX_SPECIAL_MOVES = window.CharacterConstants ? window.CharacterConstants.MAX_SPECIAL_MOVES : 20;
-    var MAX_MOVE_NAME_LENGTH = window.CharacterConstants ? window.CharacterConstants.MAX_MOVE_NAME_LENGTH : 100;
-    var MAX_MOVE_DESCRIPTION_LENGTH = window.CharacterConstants ? window.CharacterConstants.MAX_MOVE_DESCRIPTION_LENGTH : 500;
-    var BALANCED_MAGE_THRESHOLD = window.CharacterConstants ? window.CharacterConstants.BALANCED_MAGE_THRESHOLD : 3;
+    var MAGIC_MAX = CC ? CC.MAGIC_MAX : 10;
+    var STAT_MIN = CC ? CC.STAT_MIN : 1;
+    var STAT_MAX = CC ? CC.STAT_MAX : 50;
+    var STAT_DEFAULT = CC ? CC.STAT_DEFAULT : 10;
+    var MAX_SPECIAL_MOVES = CC ? CC.MAX_SPECIAL_MOVES : 20;
+    var MAX_MOVE_NAME_LENGTH = CC ? CC.MAX_MOVE_NAME_LENGTH : 100;
+    var MAX_MOVE_DESCRIPTION_LENGTH = CC ? CC.MAX_MOVE_DESCRIPTION_LENGTH : 500;
+    var BALANCED_MAGE_THRESHOLD = CC ? CC.BALANCED_MAGE_THRESHOLD : 3;
 
-    var MAGIC_TYPES = window.CharacterConstants ? window.CharacterConstants.MAGIC_TYPES : {};
-    var MAGIC_TYPE_KEYS = window.CharacterConstants ? window.CharacterConstants.MAGIC_TYPE_KEYS : [];
-    var MAGIC_CATEGORIES = window.CharacterConstants ? window.CharacterConstants.MAGIC_CATEGORIES : {};
-    var STAT_DEFINITIONS = window.CharacterConstants ? window.CharacterConstants.STAT_DEFINITIONS : {};
-    var STAT_KEYS = window.CharacterConstants ? window.CharacterConstants.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-    var CLASS_DEFINITIONS = window.CharacterConstants ? window.CharacterConstants.CLASS_DEFINITIONS : [];
+    var MAGIC_TYPES = CC ? CC.MAGIC_TYPES : {};
+    var MAGIC_TYPE_KEYS = CC ? CC.MAGIC_TYPE_KEYS : [];
+    var MAGIC_CATEGORIES = CC ? CC.MAGIC_CATEGORIES : {};
+    var STAT_DEFINITIONS = CC ? CC.STAT_DEFINITIONS : {};
+    var STAT_KEYS = CC ? CC.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    var CLASS_DEFINITIONS = CC ? CC.CLASS_DEFINITIONS : [];
 
     // ============================================================
-    // NOTIFICATION
+    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
-
-        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
-            window.NotificationSystem.notify(message, type);
-            return;
-        }
-
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
-        }
-
-        if (type === 'error') {
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
+        } else if (type === 'error') {
             alert('Error: ' + message);
         } else {
             alert(message);
@@ -127,10 +147,11 @@
     // ============================================================
 
     function createSafeBackup(data) {
-        if (window.MutationUtils && typeof window.MutationUtils.createSafeBackup === 'function') {
-            return window.MutationUtils.createSafeBackup(data);
+        if (MutationUtils && typeof MutationUtils.createSafeBackup === 'function') {
+            return MutationUtils.createSafeBackup(data);
         }
 
+        // Emergency fallback (should never be needed)
         try {
             if (window.db && typeof window.db.createSafeCopy === 'function') {
                 return window.db.createSafeCopy(data);
@@ -179,12 +200,12 @@
     // ============================================================
 
     function getDefaultStats() {
-        return { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
+        return { str: STAT_DEFAULT, dex: STAT_DEFAULT, con: STAT_DEFAULT, int: STAT_DEFAULT, wis: STAT_DEFAULT, cha: STAT_DEFAULT };
     }
 
     function clampStat(value) {
         var num = Number(value);
-        if (isNaN(num) || !isFinite(num)) return 10;
+        if (isNaN(num) || !isFinite(num)) return STAT_DEFAULT;
         return Math.max(STAT_MIN, Math.min(STAT_MAX, Math.round(num)));
     }
 
@@ -200,7 +221,7 @@
             if (typeof val === 'number' && !isNaN(val) && isFinite(val)) {
                 result[key] = clampStat(val);
             } else {
-                result[key] = 10;
+                result[key] = STAT_DEFAULT;
             }
         });
         return result;
@@ -596,6 +617,25 @@
     }
 
     // ============================================================
+    // MAGIC TYPE HELPERS (delegate to constants if available)
+    // ============================================================
+
+    function getMagicTypeKeys() {
+        if (CC && typeof CC.getMagicTypeKeys === 'function') {
+            return CC.getMagicTypeKeys();
+        }
+        return MAGIC_TYPE_KEYS.slice();
+    }
+
+    function getMagicCategoryTypes(category) {
+        if (CC && typeof CC.getMagicCategoryTypes === 'function') {
+            return CC.getMagicCategoryTypes(category);
+        }
+        var cat = MAGIC_CATEGORIES[category];
+        return cat ? cat.types.slice() : [];
+    }
+
+    // ============================================================
     // SPECIAL MOVES - Full mutation pipeline with save
     // ============================================================
 
@@ -650,7 +690,7 @@
         }
 
         // ---- PHASE 1: VALIDATE CHARACTER ----
-        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             showNotification('Character not found.', 'error');
             return Promise.resolve(false);
@@ -715,22 +755,15 @@
         });
 
         // ---- PHASE 5: PERSIST ----
-        var savePromise;
-        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
-            savePromise = window.MutationUtils.saveWithPromise();
-        } else {
-            savePromise = Promise.resolve().then(function() { return window.saveData(); });
-        }
+        var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
                 // LOG - failure-safe
                 try {
-                    if (typeof window.logActivity === 'function') {
-                        var charName = typeof window.getDisplayName === 'function'
-                            ? window.getDisplayName(currentChar)
-                            : currentChar.firstName || 'Character';
-                        window.logActivity('Added ' + type + ' move "' + nameTruncated + '" to ' + charName);
+                    if (ActivityLog && typeof ActivityLog.record === 'function') {
+                        var charName = CharacterQueries.getDisplayName(currentChar);
+                        ActivityLog.record('Added ' + type + ' move "' + nameTruncated + '" to ' + charName);
                     }
                 } catch (logErr) {
                     // Ignore logging errors
@@ -784,7 +817,7 @@
         }
 
         // ---- PHASE 1: VALIDATE CHARACTER ----
-        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             showNotification('Character not found.', 'error');
             return Promise.resolve(false);
@@ -863,22 +896,15 @@
         };
 
         // ---- PHASE 4: PERSIST ----
-        var savePromise;
-        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
-            savePromise = window.MutationUtils.saveWithPromise();
-        } else {
-            savePromise = Promise.resolve().then(function() { return window.saveData(); });
-        }
+        var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
                 // LOG - failure-safe
                 try {
-                    if (typeof window.logActivity === 'function') {
-                        var charName = typeof window.getDisplayName === 'function'
-                            ? window.getDisplayName(currentChar)
-                            : currentChar.firstName || 'Character';
-                        window.logActivity('Updated ' + type + ' move on ' + charName);
+                    if (ActivityLog && typeof ActivityLog.record === 'function') {
+                        var charName = CharacterQueries.getDisplayName(currentChar);
+                        ActivityLog.record('Updated ' + type + ' move on ' + charName);
                     }
                 } catch (logErr) {
                     // Ignore logging errors
@@ -932,7 +958,7 @@
         }
 
         // ---- PHASE 1: VALIDATE CHARACTER ----
-        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             showNotification('Character not found.', 'error');
             return Promise.resolve(false);
@@ -1006,22 +1032,15 @@
         currentChar.specialMoves[type].splice(idx, 1);
 
         // ---- PHASE 4: PERSIST ----
-        var savePromise;
-        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
-            savePromise = window.MutationUtils.saveWithPromise();
-        } else {
-            savePromise = Promise.resolve().then(function() { return window.saveData(); });
-        }
+        var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
                 // LOG - failure-safe
                 try {
-                    if (typeof window.logActivity === 'function') {
-                        var charName = typeof window.getDisplayName === 'function'
-                            ? window.getDisplayName(currentChar)
-                            : currentChar.firstName || 'Character';
-                        window.logActivity('Removed ' + type + ' move "' + moveName + '" from ' + charName);
+                    if (ActivityLog && typeof ActivityLog.record === 'function') {
+                        var charName = CharacterQueries.getDisplayName(currentChar);
+                        ActivityLog.record('Removed ' + type + ' move "' + moveName + '" from ' + charName);
                     }
                 } catch (logErr) {
                     // Ignore logging errors
@@ -1045,25 +1064,6 @@
                 showNotification('Failed to remove move. Please try again.', 'error');
                 return false;
             });
-    }
-
-    // ============================================================
-    // MAGIC TYPE HELPERS (delegate to constants if available)
-    // ============================================================
-
-    function getMagicTypeKeys() {
-        if (window.CharacterConstants && typeof window.CharacterConstants.getMagicTypeKeys === 'function') {
-            return window.CharacterConstants.getMagicTypeKeys();
-        }
-        return MAGIC_TYPE_KEYS.slice();
-    }
-
-    function getMagicCategoryTypes(category) {
-        if (window.CharacterConstants && typeof window.CharacterConstants.getMagicCategoryTypes === 'function') {
-            return window.CharacterConstants.getMagicCategoryTypes(category);
-        }
-        var cat = MAGIC_CATEGORIES[category];
-        return cat ? cat.types.slice() : [];
     }
 
     // ============================================================
