@@ -18,16 +18,25 @@
  *   - Orphaned relationships are clearly identified
  *   - USES CharacterQueries for character data and display names
  *   - USES ClassesQueries for class display names
- *   - USES TeamQueries for team names
+ *   - USES TeamQueries for team queries
  *   - USES DisciplineQueries for discipline names
+ *   - USES GradeQueries for grade data
+ *   - USES MissionQueries for mission data
+ *   - USES SocialQueries for social data
+ *   - USES Elimination for elimination status
+ *   - NO DIRECT window.data ACCESS - all queries go through domain modules
  * 
  * DEPENDENCIES:
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.ClassesQueries (from classes-queries.js)
  *   - window.TeamQueries (from team-queries.js)
  *   - window.DisciplineQueries (from discipline-queries.js)
+ *   - window.GradeQueries (from grade-queries.js) - optional
+ *   - window.MissionQueries (from mission-queries.js) - optional
+ *   - window.SocialQueries (from social-queries.js) - optional
+ *   - window.Elimination (from elimination.js) - optional
  *   - window.DomUtils (from dom-utils.js)
- *   - window.data (global state)
+ *   - window.NotificationSystem (from notification.js)
  */
 
 (function() {
@@ -43,26 +52,33 @@
     // DEPENDENCY IMPORTS
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries || window;
-    var ClassesQueries = window.ClassesQueries || window;
-    var TeamQueries = window.TeamQueries || window;
-    var DisciplineQueries = window.DisciplineQueries || window;
-    var DomUtils = window.DomUtils || window;
+    var CharacterQueries = window.CharacterQueries;
+    var ClassesQueries = window.ClassesQueries;
+    var TeamQueries = window.TeamQueries;
+    var DisciplineQueries = window.DisciplineQueries;
+    var GradeQueries = window.GradeQueries || null;
+    var MissionQueries = window.MissionQueries || null;
+    var SocialQueries = window.SocialQueries || null;
+    var Elimination = window.Elimination || null;
+    var DomUtils = window.DomUtils;
+    var NotificationSystem = window.NotificationSystem;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var CAREER_STATUS_OPTIONS = [
-        { value: '', label: 'Select status...' },
-        { value: 'civilian', label: 'Civilian' },
-        { value: 'trainee', label: 'Trainee' },
-        { value: 'rookie', label: 'Rookie' },
-        { value: 'junior', label: 'Junior' },
-        { value: 'senior', label: 'Senior' },
-        { value: 'instructor', label: 'Instructor' },
-        { value: 'support', label: 'Support' }
-    ];
+    var CAREER_STATUS_OPTIONS = window.CharacterConstants
+        ? window.CharacterConstants.CAREER_STATUS_OPTIONS
+        : [
+            { value: '', label: 'Select status...' },
+            { value: 'civilian', label: 'Civilian' },
+            { value: 'trainee', label: 'Trainee' },
+            { value: 'rookie', label: 'Rookie' },
+            { value: 'junior', label: 'Junior' },
+            { value: 'senior', label: 'Senior' },
+            { value: 'instructor', label: 'Instructor' },
+            { value: 'support', label: 'Support' }
+        ];
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -85,8 +101,21 @@
         }
 
         // TeamQueries is MANDATORY
+        if (!TeamQueries || typeof TeamQueries.getTeamsForCharacter !== 'function') {
+            missing.push('TeamQueries.getTeamsForCharacter');
+        }
         if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
             missing.push('TeamQueries.getTeamName');
+        }
+
+        // DomUtils is MANDATORY
+        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
+            missing.push('DomUtils.escapeHtml');
+        }
+
+        // NotificationSystem is MANDATORY
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
         }
 
         if (missing.length > 0) {
@@ -95,11 +124,63 @@
         }
 
         // Optional dependencies (log warning but don't fail)
-        if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
-            console.warn('CharacterViews: DisciplineQueries.getDiscipline not available');
+        var optional = [
+            'GradeQueries.getCharacterGrades',
+            'MissionQueries.getMissionsForCharacter',
+            'SocialQueries.getRelationshipsForCharacter',
+            'Elimination.isCharacterEliminated'
+        ];
+
+        var missingOptional = [];
+        optional.forEach(function(name) {
+            var parts = name.split('.');
+            var obj = window[parts[0]];
+            if (!obj || typeof obj[parts[1]] !== 'function') {
+                missingOptional.push(name);
+            }
+        });
+
+        if (missingOptional.length > 0) {
+            console.warn('CharacterViews: Missing optional dependencies:', missingOptional.join(', '));
         }
 
         return true;
+    }
+
+    // ============================================================
+    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
+        } else if (type === 'error') {
+            alert('Error: ' + message);
+        } else {
+            alert(message);
+        }
+    }
+
+    // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function escapeHtml(value) {
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
+        }
+        // Emergency fallback (should never be reached)
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;')
+            .replace(/`/g, '&#x60;');
     }
 
     // ============================================================
@@ -134,10 +215,16 @@
     }
 
     // ============================================================
-    // RELATIONSHIP TYPE HELPERS
+    // RELATIONSHIP TYPE HELPERS - Uses SocialQueries if available
     // ============================================================
 
     function getRelationshipTypeRawColor(typeId) {
+        // Prefer SocialQueries if available
+        if (SocialQueries && typeof SocialQueries.getRelationshipTypeColor === 'function') {
+            return SocialQueries.getRelationshipTypeColor(typeId) || '#7f8c8d';
+        }
+
+        // Fallback: direct data access (legacy)
         var data = window.data || {};
         if (!data.social || !data.social.relationshipTypes) return '#7f8c8d';
         var type = data.social.relationshipTypes.find(function(t) {
@@ -147,53 +234,23 @@
     }
 
     function getRelationshipTypeLabel(typeId) {
-        var data = window.data || {};
+        // Prefer SocialQueries if available
+        if (SocialQueries && typeof SocialQueries.getRelationshipTypeLabel === 'function') {
+            return SocialQueries.getRelationshipTypeLabel(typeId) || 'Other';
+        }
 
+        // Fallback: direct data access (legacy)
+        var data = window.data || {};
         if (!data.social || !Array.isArray(data.social.relationshipTypes)) {
             return typeId != null ? String(typeId) : 'Other';
         }
-
         var type = data.social.relationshipTypes.find(function(t) {
             return t && String(t.id) === String(typeId);
         });
-
         if (type && type.label != null) {
             return String(type.label);
         }
-
         return typeId != null ? String(typeId) : 'Other';
-    }
-
-    // ============================================================
-    // TEAM QUERY HELPER - Uses TeamQueries
-    // ============================================================
-
-    function getTeamsByTypeAndCharacter(types, charId) {
-        if (!Array.isArray(types)) {
-            types = [types];
-        }
-        var data = window.data || {};
-        if (!data.teams) return [];
-
-        return data.teams.filter(function(t) {
-            if (!t || typeof t !== 'object') return false;
-            if (t.status === 'deleted') return false;
-            if (types.indexOf(t.type) === -1) return false;
-            if (!t.members || !Array.isArray(t.members)) return false;
-            return t.members.some(function(m) {
-                return m && String(m.characterId) === String(charId);
-            });
-        }).sort(function(a, b) {
-            var aMember = a.members.find(function(m) {
-                return m && String(m.characterId) === String(charId);
-            });
-            var bMember = b.members.find(function(m) {
-                return m && String(m.characterId) === String(charId);
-            });
-            var aJoin = parseInt(aMember ? aMember.joinPeriod : 0) || 0;
-            var bJoin = parseInt(bMember ? bMember.joinPeriod : 0) || 0;
-            return aJoin - bJoin;
-        });
     }
 
     // ============================================================
@@ -228,31 +285,27 @@
     }
 
     // ============================================================
-    // ACADEMIC VIEW - Uses CharacterQueries, ClassesQueries
+    // ACADEMIC VIEW - Uses TeamQueries, GradeQueries, DisciplineQueries
     // ============================================================
 
     function renderAcademic(char) {
         var container = document.getElementById('academic-view');
         if (!container) return;
 
-        var data = window.data || {};
-
         // Clear container
         container.textContent = '';
 
-        // Academic Teams
+        // ---- ACADEMIC TEAMS ----
         var heading = document.createElement('h4');
         heading.style.cssText = 'color:var(--accent);font-size:0.8rem;margin:8px 0 4px 0;';
         heading.textContent = 'Academic Teams';
         container.appendChild(heading);
 
-        var acadTeams = getTeamsByTypeAndCharacter('academic', char.id);
+        var acadTeams = TeamQueries.getTeamsForCharacter(char.id, ['academic']);
 
         if (acadTeams.length > 0) {
             acadTeams.forEach(function(team) {
-                var member = team.members.find(function(m) {
-                    return m && String(m.characterId) === String(char.id);
-                });
+                var member = TeamQueries.getCharacterTeamMembership(team.id, char.id);
                 var joinPeriod = member ? member.joinPeriod : '';
                 var leavePeriod = member ? member.leavePeriod : '';
                 var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod, 'Wk ');
@@ -297,75 +350,71 @@
             container.appendChild(empty);
         }
 
-        // Grades - sorted chronologically
+        // ---- GRADES ----
         var gradeHeading = document.createElement('h4');
         gradeHeading.style.cssText = 'color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;';
         gradeHeading.textContent = 'Grades';
         container.appendChild(gradeHeading);
 
-        var curriculum = data.curriculum || {};
-        var grades = curriculum.grades && curriculum.grades[char.id]
-            ? curriculum.grades[char.id]
-            : {};
+        var grades = [];
 
-        // Defensively validate grades
-        if (!isValidGradeObject(grades)) {
-            grades = {};
-        }
+        if (GradeQueries && typeof GradeQueries.getCharacterGrades === 'function') {
+            grades = GradeQueries.getCharacterGrades(char.id) || [];
+        } else {
+            // Legacy fallback - direct data access
+            var data = window.data || {};
+            var curriculum = data.curriculum || {};
+            var gradeData = curriculum.grades && curriculum.grades[char.id]
+                ? curriculum.grades[char.id]
+                : {};
 
-        var classCount = 0;
-
-        // Count grades defensively
-        for (var week in grades) {
-            if (!Object.prototype.hasOwnProperty.call(grades, week)) continue;
-            var weekGrades = grades[week];
-            if (!isValidGradeObject(weekGrades)) continue;
-            for (var discId in weekGrades) {
-                if (!Object.prototype.hasOwnProperty.call(weekGrades, discId)) continue;
-                classCount++;
+            if (isValidGradeObject(gradeData)) {
+                for (var week in gradeData) {
+                    if (!Object.prototype.hasOwnProperty.call(gradeData, week)) continue;
+                    var weekGrades = gradeData[week];
+                    if (!isValidGradeObject(weekGrades)) continue;
+                    for (var discId in weekGrades) {
+                        if (!Object.prototype.hasOwnProperty.call(weekGrades, discId)) continue;
+                        var score = weekGrades[discId];
+                        var disc = DisciplineQueries && typeof DisciplineQueries.getDiscipline === 'function'
+                            ? DisciplineQueries.getDiscipline(discId)
+                            : null;
+                        grades.push({
+                            week: week,
+                            disciplineId: discId,
+                            disciplineName: disc ? disc.name : 'Unknown',
+                            score: score
+                        });
+                    }
+                }
             }
         }
 
-        if (classCount > 0) {
+        if (grades.length > 0) {
+            // Sort chronologically
+            grades.sort(function(a, b) {
+                return parseInt(a.week, 10) - parseInt(b.week, 10);
+            });
+
             var gradeContainer = document.createElement('div');
             gradeContainer.style.cssText = 'max-height:100px;overflow-y:auto;font-size:0.7rem;';
 
-            // Sort weeks chronologically - filter out invalid keys
-            var weeks = Object.keys(grades).filter(function(w) {
-                return /^\d+$/.test(w);
-            }).sort(function(a, b) {
-                return parseInt(a, 10) - parseInt(b, 10);
-            });
+            grades.forEach(function(g) {
+                var formattedScore = formatGradeValue(g.score);
 
-            weeks.forEach(function(week) {
-                if (!Object.prototype.hasOwnProperty.call(grades, week)) return;
-                var weekGrades = grades[week];
-                if (!isValidGradeObject(weekGrades)) return;
-                // Sort disciplines alphabetically
-                var discIds = Object.keys(weekGrades).sort();
-                discIds.forEach(function(discId) {
-                    if (!Object.prototype.hasOwnProperty.call(weekGrades, discId)) return;
-                    var disc = DisciplineQueries && typeof DisciplineQueries.getDiscipline === 'function'
-                        ? DisciplineQueries.getDiscipline(discId)
-                        : null;
-                    var score = weekGrades[discId];
-                    var discName = disc ? disc.name : 'Unknown';
-                    var formattedScore = formatGradeValue(score);
+                var gradeDiv = document.createElement('div');
+                gradeDiv.style.cssText = 'padding:2px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;display:flex;justify-content:space-between;';
 
-                    var gradeDiv = document.createElement('div');
-                    gradeDiv.style.cssText = 'padding:2px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;display:flex;justify-content:space-between;';
+                var nameSpan = document.createElement('span');
+                nameSpan.textContent = g.disciplineName + ' (Wk ' + g.week + ')';
+                gradeDiv.appendChild(nameSpan);
 
-                    var nameSpan = document.createElement('span');
-                    nameSpan.textContent = discName + ' (Wk ' + week + ')';
-                    gradeDiv.appendChild(nameSpan);
+                var scoreSpan = document.createElement('span');
+                scoreSpan.style.cssText = 'color:var(--accent);font-weight:600;';
+                scoreSpan.textContent = formattedScore;
+                gradeDiv.appendChild(scoreSpan);
 
-                    var scoreSpan = document.createElement('span');
-                    scoreSpan.style.cssText = 'color:var(--accent);font-weight:600;';
-                    scoreSpan.textContent = formattedScore;
-                    gradeDiv.appendChild(scoreSpan);
-
-                    gradeContainer.appendChild(gradeDiv);
-                });
+                gradeContainer.appendChild(gradeDiv);
             });
 
             container.appendChild(gradeContainer);
@@ -376,32 +425,51 @@
             empty.textContent = 'No grades recorded';
             container.appendChild(empty);
         }
+
+        // ---- ELIMINATION STATUS ----
+        var elimHeading = document.createElement('h4');
+        elimHeading.style.cssText = 'color:var(--danger);font-size:0.8rem;margin:8px 0 4px 0;';
+        elimHeading.textContent = 'Elimination Status';
+        container.appendChild(elimHeading);
+
+        var isEliminated = false;
+        var currentWeek = window.data && window.data.currentWeek ? window.data.currentWeek : 1;
+
+        if (Elimination && typeof Elimination.isCharacterEliminated === 'function') {
+            isEliminated = Elimination.isCharacterEliminated(char.id, currentWeek);
+        } else if (char.eliminatedWeeks && Array.isArray(char.eliminatedWeeks)) {
+            isEliminated = char.eliminatedWeeks.some(function(w) {
+                return parseInt(w, 10) <= currentWeek;
+            });
+        }
+
+        var elimDiv = document.createElement('div');
+        elimDiv.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + (isEliminated ? 'var(--danger)' : 'var(--accent)') + ';font-size:0.75rem;';
+        elimDiv.textContent = isEliminated ? '⚠ This character is eliminated' : '✓ Not eliminated';
+        container.appendChild(elimDiv);
     }
 
     // ============================================================
-    // PROFESSIONAL VIEW - Uses CharacterQueries, TeamQueries
+    // PROFESSIONAL VIEW - Uses TeamQueries, MissionQueries
     // ============================================================
 
     function renderProfessional(char) {
         var container = document.getElementById('professional-view');
         if (!container) return;
 
-        var data = window.data || {};
         container.textContent = '';
 
-        // Professional Teams
+        // ---- PROFESSIONAL TEAMS ----
         var heading = document.createElement('h4');
         heading.style.cssText = 'color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;';
         heading.textContent = 'Professional Teams';
         container.appendChild(heading);
 
-        var profTeams = getTeamsByTypeAndCharacter('professional', char.id);
+        var profTeams = TeamQueries.getTeamsForCharacter(char.id, ['professional']);
 
         if (profTeams.length > 0) {
             profTeams.forEach(function(team) {
-                var member = team.members.find(function(m) {
-                    return m && String(m.characterId) === String(char.id);
-                });
+                var member = TeamQueries.getCharacterTeamMembership(team.id, char.id);
                 var joinPeriod = member ? member.joinPeriod : '';
                 var leavePeriod = member ? member.leavePeriod : '';
                 var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod);
@@ -435,19 +503,17 @@
             container.appendChild(empty);
         }
 
-        // Temporary Teams
+        // ---- TEMPORARY TEAMS ----
         var tempHeading = document.createElement('h4');
         tempHeading.style.cssText = 'color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;';
         tempHeading.textContent = 'Temporary Teams';
         container.appendChild(tempHeading);
 
-        var tempTeams = getTeamsByTypeAndCharacter(['temporary', 'internship'], char.id);
+        var tempTeams = TeamQueries.getTeamsForCharacter(char.id, ['temporary']);
 
         if (tempTeams.length > 0) {
             tempTeams.forEach(function(team) {
-                var member = team.members.find(function(m) {
-                    return m && String(m.characterId) === String(char.id);
-                });
+                var member = TeamQueries.getCharacterTeamMembership(team.id, char.id);
                 var joinPeriod = member ? member.joinPeriod : '';
                 var leavePeriod = member ? member.leavePeriod : '';
                 var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod);
@@ -481,19 +547,17 @@
             container.appendChild(empty);
         }
 
-        // Civilian Teams
+        // ---- CIVILIAN TEAMS ----
         var civHeading = document.createElement('h4');
         civHeading.style.cssText = 'color:var(--text-dim);font-size:0.8rem;margin:8px 0 4px 0;';
         civHeading.textContent = 'Civilian Teams';
         container.appendChild(civHeading);
 
-        var civTeams = getTeamsByTypeAndCharacter('civilian', char.id);
+        var civTeams = TeamQueries.getTeamsForCharacter(char.id, ['civilian']);
 
         if (civTeams.length > 0) {
             civTeams.forEach(function(team) {
-                var member = team.members.find(function(m) {
-                    return m && String(m.characterId) === String(char.id);
-                });
+                var member = TeamQueries.getCharacterTeamMembership(team.id, char.id);
                 var joinPeriod = member ? member.joinPeriod : '';
                 var leavePeriod = member ? member.leavePeriod : '';
                 var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod);
@@ -527,37 +591,49 @@
             container.appendChild(empty);
         }
 
-        // Missions - with team name using TeamQueries
+        // ---- MISSIONS ----
         var missionHeading = document.createElement('h4');
         missionHeading.style.cssText = 'color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;';
         missionHeading.textContent = 'Missions';
         container.appendChild(missionHeading);
 
-        var missions = Array.isArray(data.missions)
-            ? data.missions.filter(function(m) {
-                if (!m || typeof m !== 'object') return false;
-                if (!m.assignedTeamId) return false;
-                return data.teams && data.teams.some(function(t) {
-                    if (!t || typeof t !== 'object') return false;
-                    return String(t.id) === String(m.assignedTeamId) &&
+        var missions = [];
+
+        if (MissionQueries && typeof MissionQueries.getMissionsForCharacter === 'function') {
+            missions = MissionQueries.getMissionsForCharacter(char.id) || [];
+        } else {
+            // Legacy fallback
+            var data = window.data || {};
+            var allMissions = data.missions || [];
+            var teams = data.teams || [];
+
+            allMissions.forEach(function(m) {
+                if (!m || typeof m !== 'object') return;
+                if (!m.assignedTeamId) return;
+                var team = teams.find(function(t) {
+                    return t && String(t.id) === String(m.assignedTeamId) &&
                            t.members && t.members.some(function(mem) {
                                return mem && String(mem.characterId) === String(char.id);
                            });
                 });
-            })
-            : [];
+                if (team) {
+                    missions.push({
+                        id: m.id,
+                        title: m.title || 'Untitled',
+                        status: m.status || 'active',
+                        location: m.location || '',
+                        teamName: team.name || 'Unknown Team',
+                        teamId: m.assignedTeamId
+                    });
+                }
+            });
+        }
 
         if (missions.length > 0) {
             missions.forEach(function(m) {
-                var statusColor;
-                if (m.status === 'completed') {
-                    statusColor = 'var(--accent)';
-                } else if (m.status === 'cancelled') {
-                    statusColor = 'var(--danger)';
-                } else {
-                    statusColor = 'var(--warning)';
-                }
-                var teamName = TeamQueries.getTeamName(m.assignedTeamId);
+                var statusColor = m.status === 'completed' ? 'var(--accent)' :
+                                 m.status === 'cancelled' ? 'var(--danger)' : 'var(--warning)';
+                var teamName = TeamQueries.getTeamName(m.teamId);
 
                 var div = document.createElement('div');
                 div.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + statusColor + ';margin-bottom:3px;font-size:0.75rem;';
@@ -568,7 +644,7 @@
 
                 var teamSpan = document.createElement('span');
                 teamSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
-                teamSpan.textContent = ' [' + teamName + '] ';
+                teamSpan.textContent = ' [' + (teamName || 'Unknown Team') + '] ';
                 div.appendChild(teamSpan);
 
                 var statusSpan = document.createElement('span');
@@ -595,24 +671,32 @@
     }
 
     // ============================================================
-    // SOCIAL VIEW - Uses CharacterQueries
+    // SOCIAL VIEW - Uses SocialQueries
     // ============================================================
 
     function renderSocial(char) {
         var container = document.getElementById('social-view');
         if (!container) return;
 
-        var data = window.data || {};
         container.textContent = '';
 
-        var rels = data.social && Array.isArray(data.social.relationships)
-            ? data.social.relationships.filter(function(r) {
+        var relationships = [];
+
+        if (SocialQueries && typeof SocialQueries.getRelationshipsForCharacter === 'function') {
+            relationships = SocialQueries.getRelationshipsForCharacter(char.id) || [];
+        } else {
+            // Legacy fallback
+            var data = window.data || {};
+            var allRels = data.social && Array.isArray(data.social.relationships)
+                ? data.social.relationships
+                : [];
+            relationships = allRels.filter(function(r) {
                 return r && (String(r.character1) === String(char.id) ||
                            String(r.character2) === String(char.id));
-            })
-            : [];
+            });
+        }
 
-        if (rels.length === 0) {
+        if (relationships.length === 0) {
             var empty = document.createElement('p');
             empty.className = 'empty-state';
             empty.style.cssText = 'padding:8px;font-size:0.8rem;';
@@ -621,7 +705,7 @@
             return;
         }
 
-        rels.forEach(function(rel) {
+        relationships.forEach(function(rel) {
             var otherId = String(rel.character1) === String(char.id) ? rel.character2 : rel.character1;
             var other = CharacterQueries.getCharacterById(otherId);
 
@@ -683,9 +767,11 @@
 
         var entry = document.createElement('div');
         entry.className = 'career-status-entry';
+        entry.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;flex-wrap:wrap;align-items:center;';
 
         var select = document.createElement('select');
         select.className = 'career-status-select';
+        select.style.cssText = 'flex:1;min-width:100px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 6px;font-size:0.7rem;';
 
         CAREER_STATUS_OPTIONS.forEach(function(opt) {
             var option = document.createElement('option');
@@ -701,6 +787,7 @@
         startInput.type = 'number';
         startInput.className = 'career-start-year';
         startInput.placeholder = 'Start Year';
+        startInput.style.cssText = 'flex:1;min-width:60px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 6px;font-size:0.7rem;';
         if (startYear !== undefined && startYear !== null && startYear !== '') {
             startInput.value = startYear;
         }
@@ -709,6 +796,7 @@
         endInput.type = 'number';
         endInput.className = 'career-end-year';
         endInput.placeholder = 'End Year';
+        endInput.style.cssText = 'flex:1;min-width:60px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 6px;font-size:0.7rem;';
         if (endYear !== undefined && endYear !== null && endYear !== '') {
             endInput.value = endYear;
         }
@@ -717,6 +805,7 @@
         removeBtn.type = 'button';
         removeBtn.className = 'small danger remove-status';
         removeBtn.textContent = '✕';
+        removeBtn.style.cssText = 'padding:2px 6px;font-size:0.6rem;';
 
         entry.appendChild(select);
         entry.appendChild(startInput);
@@ -819,8 +908,7 @@
         // Career status
         addCareerStatusEntry: addCareerStatusEntry,
 
-        // Query helpers
-        getTeamsByTypeAndCharacter: getTeamsByTypeAndCharacter,
+        // Helpers (for external use)
         getRelationshipTypeLabel: getRelationshipTypeLabel,
         getRelationshipTypeColor: getSafeRelationshipColor,
 
