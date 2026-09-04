@@ -14,14 +14,18 @@
  *   - RENDER ONLY - no event binding (handled by character-events.js)
  *   - No data mutations
  *   - No persistence calls
- *   - Uses CoreUtils for data queries
- *   - Uses DomUtils for safe DOM operations
+ *   - USES CharacterQueries for character data queries
+ *   - USES ClassesQueries for class-related queries
+ *   - USES Elimination for elimination status
+ *   - USES DomUtils for safe DOM operations
  * 
  * DEPENDENCIES:
- *   - window.CoreUtils (from core-utils.js)
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.Elimination (from elimination.js)
  *   - window.DomUtils (from dom-utils.js)
  *   - window.getCurrentEditId (from index.js)
- *   - window.CharacterEliminations (from character-eliminations.js)
+ *   - window.CALENDAR_CONSTANTS (from constants.js)
  */
 
 (function() {
@@ -34,28 +38,51 @@
     window.__characterListLoaded = true;
 
     // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var CharacterQueries = window.CharacterQueries || window;
+    var ClassesQueries = window.ClassesQueries || window;
+    var Elimination = window.Elimination || window;
+    var DomUtils = window.DomUtils || window;
+    var CalendarConstants = window.CALENDAR_CONSTANTS || {};
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK || 1;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK || 52;
+
+    // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
-        if (!window.CoreUtils || typeof window.CoreUtils.getDisplayName !== 'function') {
-            missing.push('CoreUtils.getDisplayName');
+        // CharacterQueries is MANDATORY
+        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
+            missing.push('CharacterQueries.getCurrentStatus');
         }
 
-        if (!window.CoreUtils || typeof window.CoreUtils.getCharacterById !== 'function') {
-            missing.push('CoreUtils.getCharacterById');
+        // ClassesQueries is MANDATORY
+        if (!ClassesQueries || typeof ClassesQueries.getCharacterClassNames !== 'function') {
+            missing.push('ClassesQueries.getCharacterClassNames');
         }
 
-        if (!window.CoreUtils || typeof window.CoreUtils.getCurrentStatus !== 'function') {
-            missing.push('CoreUtils.getCurrentStatus');
-        }
-
-        if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
+        // DomUtils is MANDATORY
+        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
 
+        // getCurrentEditId is MANDATORY
         if (typeof window.getCurrentEditId !== 'function') {
             missing.push('getCurrentEditId');
         }
@@ -68,31 +95,35 @@
     }
 
     // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function escapeHtml(value) {
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
+        }
+        // Emergency fallback (should never be reached)
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;')
+            .replace(/`/g, '&#x60;');
+    }
+
+    // ============================================================
     // STATE
     // ============================================================
 
     var _filterDebounceTimer = null;
 
     // ============================================================
-    // HELPERS
+    // FILTER HELPERS
     // ============================================================
-
-    function escapeHtml(value) {
-        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
-            return window.DomUtils.escapeHtml(value);
-        }
-
-        if (value === undefined || value === null) {
-            return '';
-        }
-        var str = String(value);
-        return str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
 
     function getFilterValues() {
         var nameFilter = document.getElementById('char-name-filter');
@@ -111,12 +142,13 @@
     function characterMatchesFilters(char, filters) {
         if (!char) return false;
 
-        var name = window.CoreUtils.getDisplayName(char).toLowerCase();
+        // Name filter
+        var name = CharacterQueries.getDisplayName(char).toLowerCase();
         if (filters.name && name.indexOf(filters.name) === -1) {
             return false;
         }
 
-        // Class filter
+        // Class filter - use ClassesQueries
         if (filters.classId !== 'all' && filters.classId !== '') {
             var classIds = Array.isArray(char.classIds) ? char.classIds : [];
             if (!classIds.some(function(cid) { return String(cid) === String(filters.classId); })) {
@@ -129,12 +161,11 @@
             return false;
         }
 
-        // Hide eliminated
+        // Hide eliminated - use Elimination module
         if (filters.hideEliminated) {
             var currentWeek = window.data && window.data.currentWeek ? window.data.currentWeek : 1;
-            if (window.CharacterEliminations && 
-                typeof window.CharacterEliminations.isCharacterEliminatedByWeek === 'function') {
-                if (window.CharacterEliminations.isCharacterEliminatedByWeek(char, currentWeek)) {
+            if (Elimination && typeof Elimination.isCharacterEliminated === 'function') {
+                if (Elimination.isCharacterEliminated(char.id, currentWeek)) {
                     return false;
                 }
             }
@@ -167,14 +198,18 @@
         var filters = getFilterValues();
 
         // Filter characters
-        var filtered = characters.filter(function(char) {
-            return characterMatchesFilters(char, filters);
-        });
+        var filtered = [];
+        for (var i = 0; i < characters.length; i++) {
+            var char = characters[i];
+            if (characterMatchesFilters(char, filters)) {
+                filtered.push(char);
+            }
+        }
 
-        // Sort by display name
+        // Sort by display name (using CharacterQueries)
         filtered.sort(function(a, b) {
-            var nameA = window.CoreUtils.getDisplayName(a);
-            var nameB = window.CoreUtils.getDisplayName(b);
+            var nameA = CharacterQueries.getDisplayName(a);
+            var nameB = CharacterQueries.getDisplayName(b);
             return nameA.localeCompare(nameB);
         });
 
@@ -190,21 +225,22 @@
         for (var i = 0; i < filtered.length; i++) {
             var char = filtered[i];
             var isSelected = String(char.id) === String(currentEditId);
-            var displayName = window.CoreUtils.getDisplayName(char);
-            var status = window.CoreUtils.getCurrentStatus(char);
+
+            // Use CharacterQueries for display name and status
+            var displayName = CharacterQueries.getDisplayName(char);
+            var status = CharacterQueries.getCurrentStatus(char);
             var isDeceased = char.deceased || false;
 
-            // Check if eliminated
+            // Check if eliminated - use Elimination module
             var isEliminated = false;
-            if (window.CharacterEliminations && 
-                typeof window.CharacterEliminations.isCharacterEliminatedByWeek === 'function') {
-                isEliminated = window.CharacterEliminations.isCharacterEliminatedByWeek(char, currentWeek);
+            if (Elimination && typeof Elimination.isCharacterEliminated === 'function') {
+                isEliminated = Elimination.isCharacterEliminated(char.id, currentWeek);
             }
 
-            // Get class names
+            // Get class names - use ClassesQueries
             var classNames = [];
-            if (window.CoreUtils && typeof window.CoreUtils.getCharacterClassNames === 'function') {
-                classNames = window.CoreUtils.getCharacterClassNames(char);
+            if (ClassesQueries && typeof ClassesQueries.getCharacterClassNames === 'function') {
+                classNames = ClassesQueries.getCharacterClassNames(char);
             }
 
             var safeId = escapeHtml(char.id);
@@ -246,7 +282,7 @@
     }
 
     // ============================================================
-    // POPULATE CLASS FILTER
+    // POPULATE CLASS FILTER - Uses ClassesQueries
     // ============================================================
 
     function populateClassFilter() {
@@ -254,8 +290,8 @@
         if (!select) return;
 
         var classes = [];
-        if (window.CoreUtils && typeof window.CoreUtils.getClasses === 'function') {
-            classes = window.CoreUtils.getClasses();
+        if (ClassesQueries && typeof ClassesQueries.getClasses === 'function') {
+            classes = ClassesQueries.getClasses();
         }
 
         select.innerHTML = '<option value="all">All Classes</option>';
