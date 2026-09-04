@@ -37,24 +37,32 @@
     if (window.__calendarRendererLoaded) {
         return;
     }
-    window.__calendarRendererLoaded = true;
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // DEPENDENCY CHECK - NO FALLBACKS
     // ============================================================
 
     if (!window.CalendarUtils) {
-        console.error('CalendarRenderer: CalendarUtils not loaded.');
         return;
     }
+
+    if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
+        return;
+    }
+
+    if (!window.NotificationSystem || typeof window.NotificationSystem.notify !== 'function') {
+        return;
+    }
+
+    window.__calendarRendererLoaded = true;
 
     // ============================================================
     // DEPENDENCY IMPORTS
     // ============================================================
 
     var CalendarUtils = window.CalendarUtils;
-    var DomUtils = window.DomUtils || window;
-    var NotificationSystem = window.NotificationSystem || window;
+    var DomUtils = window.DomUtils;
+    var NotificationSystem = window.NotificationSystem;
 
     // ============================================================
     // CONSTANTS
@@ -65,92 +73,38 @@
     var CALENDAR_END_HOUR = CalendarUtils.CALENDAR_END_HOUR || 23;
 
     // ============================================================
-    // HTML ESCAPING - DELEGATES TO DomUtils (SINGLE SOURCE OF TRUTH)
+    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
-    /**
-     * Escape HTML special characters to prevent XSS.
-     * Delegates to DomUtils.escapeHtml() - the SINGLE SOURCE OF TRUTH.
-     * 
-     * @param {*} value - Value to escape
-     * @returns {string} Escaped string
-     */
     function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
+        return DomUtils.escapeHtml(value);
+    }
+
+    function escapeAttribute(value) {
+        if (typeof DomUtils.escapeAttribute === 'function') {
+            return DomUtils.escapeAttribute(value);
         }
-        // Emergency fallback (should never be reached)
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
+        return String(value == null ? '' : value)
             .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;')
-            .replace(/`/g, '&#x60;');
+            .replace(/'/g, '&#039;');
     }
 
     // ============================================================
-    // NOTIFICATION - DELEGATES TO NotificationSystem
+    // NOTIFICATION - Delegates to NotificationSystem (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
-    /**
-     * Show a notification toast.
-     * Delegates to NotificationSystem - the SINGLE SOURCE OF TRUTH.
-     * 
-     * @param {string} message - Notification message
-     * @param {string} type - 'success' | 'error' | 'warning' | 'info'
-     */
     function showNotification(message, type) {
         type = type || 'info';
-
-        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
-            NotificationSystem.notify(message, type);
-            return;
-        }
-
-        // Fallback to DomUtils if available
-        if (DomUtils && typeof DomUtils.notify === 'function') {
-            DomUtils.notify(message, type);
-            return;
-        }
-
-        // Emergency fallback (should never be reached)
-        if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
+        NotificationSystem.notify(message, type);
     }
 
     // ============================================================
-    // FORMAT HOUR - DELEGATES TO CalendarUtils
+    // FORMAT HOUR - Delegates to CalendarUtils
     // ============================================================
 
-    /**
-     * Format an hour number to a display string.
-     * Delegates to CalendarUtils.formatHour() - the SINGLE SOURCE OF TRUTH.
-     * 
-     * @param {number} hour - Hour number (0-23)
-     * @param {boolean} includeMinutes - Whether to include ":00"
-     * @returns {string} Formatted hour string
-     */
     function formatHour(hour, includeMinutes) {
-        if (CalendarUtils && typeof CalendarUtils.formatHour === 'function') {
-            return CalendarUtils.formatHour(hour, includeMinutes);
-        }
-        // Emergency fallback (should never be reached)
-        includeMinutes = includeMinutes !== false;
-        var num = parseInt(hour, 10);
-        if (isNaN(num) || num < 0 || num > 23) {
-            return String(hour);
-        }
-        var displayHour = num > 12 ? num - 12 : num;
-        if (num === 0) displayHour = 12;
-        var ampm = num >= 12 ? 'PM' : 'AM';
-        return displayHour + (includeMinutes ? ':00 ' : ' ') + ampm;
+        return CalendarUtils.formatHour(hour, includeMinutes);
     }
 
     // ============================================================
@@ -198,28 +152,30 @@
             }
         }
 
-        var html = '<div class="calendar-grid-container" style="display:grid;grid-template-columns:1fr 250px;gap:16px;">';
+        var html = '';
+        html += '<div class="calendar-grid-container">';
         html += '<div class="calendar-grid-wrapper">';
-        html += '<div class="calendar-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
-        html += '<h3 style="margin:0;">' + escapeHtml(entityName) + ' - Week ' + state.week + '</h3>';
+        html += '<div class="calendar-header">';
+        html += '<h3 class="calendar-title">' + escapeHtml(entityName) + ' - Week ' + state.week + '</h3>';
         html += '</div>';
 
-        html += '<div class="schedule-grid" style="display:grid;grid-template-columns:50px repeat(7,1fr);gap:2px;font-size:0.7rem;">';
+        html += '<div class="schedule-grid">';
 
         // Header row
-        html += '<div class="schedule-cell schedule-time" style="font-weight:600;color:var(--text-dim);padding:4px;text-align:right;">Time</div>';
+        html += '<div class="schedule-cell schedule-time schedule-header">Time</div>';
         for (var day = 1; day <= 7; day++) {
             var isRestDay = restDays.indexOf(day) !== -1;
             var dayName = DAY_NAMES[day] || 'Day ' + day;
-            html += '<div class="schedule-cell schedule-day" style="font-weight:600;color:' + (isRestDay ? 'var(--danger)' : 'var(--text-dim)') + ';text-align:center;padding:4px;">' + escapeHtml(dayName) + (isRestDay ? ' [R]' : '') + '</div>';
+            var restClass = isRestDay ? ' schedule-rest-day' : '';
+            html += '<div class="schedule-cell schedule-day schedule-header' + restClass + '">' + escapeHtml(dayName) + (isRestDay ? ' [R]' : '') + '</div>';
         }
 
         // Body rows
-        for (var h = 0; h < hours.length; h++) {
-            var hour = hours[h];
+        for (var row = 0; row < hours.length; row++) {
+            var hour = hours[row];
             var hourDisplay = formatHour(hour);
 
-            html += '<div class="schedule-cell schedule-time" style="font-size:0.6rem;color:var(--text-dim);padding:4px;text-align:right;">' + escapeHtml(hourDisplay) + '</div>';
+            html += '<div class="schedule-cell schedule-time">' + escapeHtml(hourDisplay) + '</div>';
 
             for (var day = 1; day <= 7; day++) {
                 var isRestDay = restDays.indexOf(day) !== -1;
@@ -227,24 +183,26 @@
                 var isOccupied = !!disciplineId;
 
                 var classes = 'schedule-cell schedule-slot';
-                classes += isOccupied ? ' occupied' : ' empty';
-                if (isRestDay) classes += ' rest-day';
+                if (isOccupied) {
+                    classes += ' schedule-occupied';
+                } else {
+                    classes += ' schedule-empty';
+                }
+                if (isRestDay) {
+                    classes += ' schedule-rest-day';
+                }
+                if (data.isBlock && data.isBlock(day, hour)) {
+                    classes += ' schedule-blocked';
+                }
 
                 var dataAttrs = 'data-day="' + day + '" data-hour="' + hour + '"';
                 if (isOccupied) {
-                    dataAttrs += ' data-discipline="' + escapeHtml(disciplineId) + '"';
+                    dataAttrs += ' data-discipline="' + escapeAttribute(disciplineId) + '"';
                     var duration = data.getDuration ? data.getDuration(day, hour) : 1;
                     dataAttrs += ' data-duration="' + duration + '"';
                 }
 
-                var style = 'min-height:30px;padding:2px;border:1px solid var(--border-soft);border-radius:3px;cursor:pointer;transition:0.15s;';
-                if (isRestDay) {
-                    style += 'background:var(--danger-soft);border-color:var(--danger);opacity:0.4;';
-                } else if (isOccupied) {
-                    style += 'background:var(--accent-soft);border-color:var(--accent);';
-                }
-
-                html += '<div class="' + classes + '" ' + dataAttrs + ' style="' + style + '">';
+                html += '<div class="' + classes + '" ' + dataAttrs + '>';
 
                 if (isOccupied && !isRestDay) {
                     var discipline = data.getDiscipline ? data.getDiscipline(disciplineId) : null;
@@ -254,33 +212,31 @@
                     var instructorName = data.getInstructorName ? data.getInstructorName(day, hour) : '';
                     var isBlock = data.isBlock ? data.isBlock(day, hour) : false;
 
-                    html += '<div style="font-weight:600;font-size:0.65rem;color:var(--accent);">' + escapeHtml(disciplineName) + '</div>';
+                    html += '<div class="schedule-discipline-name">' + escapeHtml(disciplineName) + '</div>';
                     if (label) {
-                        html += '<div style="font-size:0.5rem;color:var(--text-dim);">[' + escapeHtml(label) + ']</div>';
+                        html += '<div class="schedule-label">[' + escapeHtml(label) + ']</div>';
                     }
                     if (instructorName) {
-                        html += '<div style="font-size:0.5rem;color:var(--text-dim);">' + escapeHtml(instructorName) + '</div>';
+                        html += '<div class="schedule-instructor">' + escapeHtml(instructorName) + '</div>';
                     }
                     if (duration > 1) {
-                        html += '<div style="font-size:0.5rem;color:var(--text-dim);">' + duration + 'h</div>';
+                        html += '<div class="schedule-duration">' + duration + 'h</div>';
                     }
                     if (isBlock) {
-                        html += '<div style="font-size:0.5rem;color:var(--danger);">[BLOCKED]</div>';
+                        html += '<div class="schedule-blocked-label">[BLOCKED]</div>';
                     }
 
-                    // Additional metadata
                     if (data.slotMetadata) {
                         var meta = data.slotMetadata(day, hour);
                         if (meta) {
-                            html += '<div style="font-size:0.5rem;color:var(--text-dim);">' + escapeHtml(meta) + '</div>';
+                            html += '<div class="schedule-metadata">' + escapeHtml(meta) + '</div>';
                         }
                     }
 
-                    // Remove button (X) for occupied slots
-                    html += '<div style="font-size:0.5rem;color:var(--danger);cursor:pointer;" class="schedule-remove-slot" data-day="' + day + '" data-hour="' + hour + '">✕</div>';
+                    html += '<div class="schedule-remove-slot" data-day="' + day + '" data-hour="' + hour + '">×</div>';
 
                 } else if (!isRestDay) {
-                    html += '<div style="font-size:0.5rem;color:var(--text-dim);text-align:center;padding:4px 0;">+</div>';
+                    html += '<div class="schedule-empty-label">+</div>';
                 }
 
                 html += '</div>';
@@ -303,36 +259,37 @@
     // ============================================================
 
     function getSidebarHTML(data, state) {
-        var html = '<div class="schedule-sidebar" style="display:flex;flex-direction:column;gap:12px;">';
+        var html = '';
+        html += '<div class="schedule-sidebar">';
 
         // Rest Days
         if (data.restDays !== undefined) {
-            html += '<div class="sidebar-section" style="background:var(--panel-alt);padding:10px;border-radius:6px;border:1px solid var(--border-soft);">';
-            html += '<h4 style="margin:0 0 8px 0;font-size:0.8rem;color:var(--text-dim);">Rest Days</h4>';
-            html += '<div class="rest-day-controls" style="display:flex;flex-wrap:wrap;gap:4px;">';
+            html += '<div class="sidebar-section">';
+            html += '<h4 class="sidebar-section-title">Rest Days</h4>';
+            html += '<div class="rest-day-controls">';
             for (var d = 1; d <= 7; d++) {
                 var checked = data.restDays.indexOf(d) !== -1 ? 'checked' : '';
-                html += '<label style="font-size:0.7rem;cursor:pointer;display:flex;align-items:center;gap:3px;">';
-                html += '<input type="checkbox" class="rest-day-check" data-day="' + d + '" ' + checked + ' style="accent-color:var(--accent);">';
+                html += '<label class="rest-day-label">';
+                html += '<input type="checkbox" class="rest-day-check" data-day="' + d + '" ' + checked + '>';
                 html += DAY_NAMES[d];
                 html += '</label>';
             }
             html += '</div>';
-            html += '<button id="save-rest-days-btn" class="small primary" style="margin-top:8px;">Save Rest Days</button>';
+            html += '<button id="save-rest-days-btn" class="small primary">Save Rest Days</button>';
             html += '</div>';
         }
 
         // Available Items
         if (data.availableItems && data.availableItems.length > 0) {
-            html += '<div class="sidebar-section" style="background:var(--panel-alt);padding:10px;border-radius:6px;border:1px solid var(--border-soft);">';
-            html += '<h4 style="margin:0 0 8px 0;font-size:0.8rem;color:var(--text-dim);">' + (data.availableLabel || 'Available Items') + '</h4>';
-            html += '<div id="available-items" style="display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;">';
+            html += '<div class="sidebar-section">';
+            html += '<h4 class="sidebar-section-title">' + (data.availableLabel || 'Available Items') + '</h4>';
+            html += '<div id="available-items" class="available-items-list">';
             for (var i = 0; i < data.availableItems.length; i++) {
                 var item = data.availableItems[i];
-                html += '<div class="available-item" data-id="' + escapeHtml(item.id) + '" style="padding:4px 8px;background:var(--bg);border-radius:4px;cursor:pointer;font-size:0.7rem;border:1px solid var(--border-soft);transition:0.15s;">';
+                html += '<div class="available-item" data-id="' + escapeAttribute(item.id) + '">';
                 html += escapeHtml(item.label);
                 if (item.subtitle) {
-                    html += ' <span style="font-size:0.6rem;color:var(--text-dim);">' + escapeHtml(item.subtitle) + '</span>';
+                    html += ' <span class="available-item-subtitle">' + escapeHtml(item.subtitle) + '</span>';
                 }
                 html += '</div>';
             }
@@ -368,19 +325,29 @@
      * @param {function} callbacks.onBlockRightClick - Called when block is right-clicked
      * @param {function} callbacks.onClearWeek - Called when clear week button is clicked
      * @param {function} callbacks.onRemoveSlot - Called when remove slot (X) is clicked
+     * @returns {object} Cleanup function to remove all listeners
      */
     function bindEvents(container, state, callbacks) {
         if (!container) {
-            return;
+            return function() {};
         }
 
         callbacks = callbacks || {};
+        var listeners = [];
+
+        function addListener(element, eventName, handler) {
+            if (!element) {
+                return;
+            }
+            element.addEventListener(eventName, handler);
+            listeners.push({ element: element, eventName: eventName, handler: handler });
+        }
 
         // Empty slots - Click to add
-        var emptySlots = container.querySelectorAll('.time-slot.empty:not(.rest-day)');
+        var emptySlots = container.querySelectorAll('.schedule-slot.schedule-empty:not(.schedule-rest-day)');
         for (var i = 0; i < emptySlots.length; i++) {
             var slot = emptySlots[i];
-            slot.addEventListener('click', function() {
+            addListener(slot, 'click', function() {
                 var day = parseInt(this.dataset.day, 10);
                 var hour = parseInt(this.dataset.hour, 10);
                 if (callbacks.onSlotClick) {
@@ -390,10 +357,10 @@
         }
 
         // Occupied slots - Click for details, Right-click to remove
-        var occupiedSlots = container.querySelectorAll('.time-slot.occupied:not(.blocked)');
+        var occupiedSlots = container.querySelectorAll('.schedule-slot.schedule-occupied:not(.schedule-blocked)');
         for (var j = 0; j < occupiedSlots.length; j++) {
             var occSlot = occupiedSlots[j];
-            occSlot.addEventListener('click', function() {
+            addListener(occSlot, 'click', function() {
                 var day = parseInt(this.dataset.day, 10);
                 var hour = parseInt(this.dataset.hour, 10);
                 if (callbacks.onSlotDetails) {
@@ -401,7 +368,7 @@
                 }
             });
 
-            occSlot.addEventListener('contextmenu', function(e) {
+            addListener(occSlot, 'contextmenu', function(e) {
                 e.preventDefault();
                 var day = parseInt(this.dataset.day, 10);
                 var hour = parseInt(this.dataset.hour, 10);
@@ -415,26 +382,23 @@
         var removeBtns = container.querySelectorAll('.schedule-remove-slot');
         for (var r = 0; r < removeBtns.length; r++) {
             var btn = removeBtns[r];
-            btn.addEventListener('click', function(e) {
+            addListener(btn, 'click', function(e) {
                 e.stopPropagation();
                 var day = parseInt(this.dataset.day, 10);
                 var hour = parseInt(this.dataset.hour, 10);
                 if (callbacks.onRemoveSlot) {
                     callbacks.onRemoveSlot(day, hour);
-                } else if (confirm('Remove this class from the schedule?')) {
-                    // Fallback - just call right-click handler
-                    if (callbacks.onSlotRightClick) {
-                        callbacks.onSlotRightClick(day, hour);
-                    }
+                } else if (callbacks.onSlotRightClick) {
+                    callbacks.onSlotRightClick(day, hour);
                 }
             });
         }
 
         // Blocked slots - Click for details, Right-click to remove
-        var blockedSlots = container.querySelectorAll('.time-slot.blocked');
+        var blockedSlots = container.querySelectorAll('.schedule-slot.schedule-blocked');
         for (var k = 0; k < blockedSlots.length; k++) {
             var blockSlot = blockedSlots[k];
-            blockSlot.addEventListener('click', function() {
+            addListener(blockSlot, 'click', function() {
                 var day = parseInt(this.dataset.day, 10);
                 var hour = parseInt(this.dataset.hour, 10);
                 if (callbacks.onBlockClick) {
@@ -442,7 +406,7 @@
                 }
             });
 
-            blockSlot.addEventListener('contextmenu', function(e) {
+            addListener(blockSlot, 'contextmenu', function(e) {
                 e.preventDefault();
                 var day = parseInt(this.dataset.day, 10);
                 var hour = parseInt(this.dataset.hour, 10);
@@ -455,7 +419,7 @@
         // Save Rest Days
         var saveRestBtn = container.querySelector('#save-rest-days-btn');
         if (saveRestBtn && callbacks.onRestDaySave) {
-            saveRestBtn.addEventListener('click', function() {
+            addListener(saveRestBtn, 'click', function() {
                 var checkboxes = container.querySelectorAll('.rest-day-check');
                 var days = [];
                 for (var i = 0; i < checkboxes.length; i++) {
@@ -472,7 +436,7 @@
         var availItems = container.querySelectorAll('.available-item');
         for (var l = 0; l < availItems.length; l++) {
             var item = availItems[l];
-            item.addEventListener('click', function() {
+            addListener(item, 'click', function() {
                 var id = this.dataset.id;
                 if (callbacks.onAvailableItemClick) {
                     callbacks.onAvailableItemClick(id);
@@ -483,12 +447,25 @@
         // Clear week button
         var clearBtn = container.querySelector('#clear-week-btn');
         if (clearBtn && callbacks.onClearWeek) {
-            clearBtn.addEventListener('click', function() {
-                if (confirm('Clear all classes for this week?')) {
+            addListener(clearBtn, 'click', function() {
+                if (callbacks.onClearWeek) {
                     callbacks.onClearWeek();
                 }
             });
         }
+
+        // Return cleanup function
+        return function() {
+            for (var i = 0; i < listeners.length; i++) {
+                var item = listeners[i];
+                try {
+                    item.element.removeEventListener(item.eventName, item.handler);
+                } catch (e) {
+                    // Ignore errors during cleanup
+                }
+            }
+            listeners = [];
+        };
     }
 
     // ============================================================
@@ -519,7 +496,7 @@
         for (var i = 0; i < disciplines.length; i++) {
             var d = disciplines[i];
             var label = options.getDisciplineLabel ? options.getDisciplineLabel(d) : d.name;
-            optionsHTML += '<option value="' + escapeHtml(d.id) + '">' + escapeHtml(label) + '</option>';
+            optionsHTML += '<option value="' + escapeAttribute(d.id) + '">' + escapeHtml(label) + '</option>';
         }
 
         var durationOptionsHTML = '';
@@ -528,7 +505,7 @@
         }
 
         modal.innerHTML = (
-            '<div class="modal-content" style="max-width:500px;">' +
+            '<div class="modal-content modal-form-content">' +
                 '<div class="modal-header">' +
                     '<h3>' + escapeHtml(options.title || 'Add Class') + '</h3>' +
                     '<button class="close-modal">&times;</button>' +
@@ -536,21 +513,21 @@
                 '<div class="modal-body">' +
                     '<div class="form-group">' +
                         '<label>Discipline:</label>' +
-                        '<select id="add-class-select" style="width:100%;padding:8px;margin-bottom:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;">' +
+                        '<select id="add-class-select" class="modal-select">' +
                             optionsHTML +
                         '</select>' +
                     '</div>' +
                     '<div class="form-group">' +
                         '<label>Duration:</label>' +
-                        '<select id="add-class-duration" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;">' +
+                        '<select id="add-class-duration" class="modal-select">' +
                             durationOptionsHTML +
                         '</select>' +
                     '</div>' +
                     '<div class="form-group">' +
                         '<label>Label (optional):</label>' +
-                        '<input type="text" id="add-class-label" placeholder="e.g., A, B, Group 1..." style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;">' +
+                        '<input type="text" id="add-class-label" class="modal-input" placeholder="e.g., A, B, Group 1...">' +
                     '</div>' +
-                    '<div class="form-actions" style="margin-top:16px;">' +
+                    '<div class="form-actions">' +
                         '<button type="button" id="cancel-add-class" class="secondary">Cancel</button>' +
                         '<button type="button" id="confirm-add-class" class="primary">Add Class</button>' +
                     '</div>' +
@@ -569,29 +546,40 @@
             }
         };
 
-        modal.querySelector('.close-modal').onclick = closeModal;
-        modal.querySelector('#cancel-add-class').onclick = closeModal;
+        var closeBtn = modal.querySelector('.close-modal');
+        if (closeBtn) {
+            closeBtn.onclick = closeModal;
+        }
+
+        var cancelBtn = modal.querySelector('#cancel-add-class');
+        if (cancelBtn) {
+            cancelBtn.onclick = closeModal;
+        }
+
         modal.addEventListener('click', function(e) {
             if (e.target === modal) {
                 closeModal();
             }
         });
 
-        modal.querySelector('#confirm-add-class').onclick = function() {
-            var select = document.getElementById('add-class-select');
-            var disciplineId = select ? select.value : null;
-            var duration = parseInt(document.getElementById('add-class-duration').value, 10) || 1;
-            var label = document.getElementById('add-class-label').value.trim();
+        var confirmBtn = modal.querySelector('#confirm-add-class');
+        if (confirmBtn) {
+            confirmBtn.onclick = function() {
+                var select = document.getElementById('add-class-select');
+                var disciplineId = select ? select.value : null;
+                var duration = parseInt(document.getElementById('add-class-duration').value, 10) || 1;
+                var label = document.getElementById('add-class-label').value.trim();
 
-            if (!disciplineId) {
-                showNotification('Please select a discipline.', 'error');
-                return;
-            }
+                if (!disciplineId) {
+                    showNotification('Please select a discipline.', 'error');
+                    return;
+                }
 
-            if (options.onConfirm) {
-                options.onConfirm(disciplineId, duration, label, closeModal);
-            }
-        };
+                if (options.onConfirm) {
+                    options.onConfirm(disciplineId, duration, label, closeModal);
+                }
+            };
+        }
 
         return modal;
     }
@@ -617,25 +605,25 @@
         var detailsHTML = '';
         for (var i = 0; i < details.length; i++) {
             var d = details[i];
-            detailsHTML += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);flex-wrap:wrap;gap:4px;"><span class="label" style="color:var(--text-dim);">' + escapeHtml(d.label) + ':</span> <span><strong>' + escapeHtml(d.value) + '</strong></span></div>';
+            detailsHTML += '<div class="detail-row"><span class="detail-label">' + escapeHtml(d.label) + ':</span> <span class="detail-value"><strong>' + escapeHtml(d.value) + '</strong></span></div>';
         }
 
         var actionsHTML = '';
         for (var j = 0; j < actions.length; j++) {
             var a = actions[j];
-            actionsHTML += '<button type="button" id="action-' + j + '" class="' + escapeHtml(a.className || 'secondary') + ' small">' + escapeHtml(a.label) + '</button>';
+            actionsHTML += '<button type="button" id="action-' + j + '" class="' + escapeAttribute(a.className || 'secondary') + ' small">' + escapeHtml(a.label) + '</button>';
         }
         actionsHTML += '<button type="button" id="close-detail" class="secondary small">Close</button>';
 
         modal.innerHTML = (
-            '<div class="modal-content" style="max-width:450px;">' +
+            '<div class="modal-content modal-detail-content">' +
                 '<div class="modal-header">' +
                     '<h3>' + escapeHtml(options.title || 'Details') + '</h3>' +
                     '<button class="close-modal">&times;</button>' +
                 '</div>' +
                 '<div class="modal-body">' +
                     detailsHTML +
-                    '<div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">' +
+                    '<div class="detail-actions">' +
                         actionsHTML +
                     '</div>' +
                 '</div>' +
@@ -653,8 +641,16 @@
             }
         };
 
-        modal.querySelector('.close-modal').onclick = closeModal;
-        modal.querySelector('#close-detail').onclick = closeModal;
+        var closeBtn = modal.querySelector('.close-modal');
+        if (closeBtn) {
+            closeBtn.onclick = closeModal;
+        }
+
+        var closeDetailBtn = modal.querySelector('#close-detail');
+        if (closeDetailBtn) {
+            closeDetailBtn.onclick = closeModal;
+        }
+
         modal.addEventListener('click', function(e) {
             if (e.target === modal) {
                 closeModal();
@@ -664,11 +660,11 @@
         for (var k = 0; k < actions.length; k++) {
             var btn = modal.querySelector('#action-' + k);
             if (btn && actions[k].handler) {
-                btn.addEventListener('click', function(handler) {
+                btn.addEventListener('click', (function(handler) {
                     return function() {
                         handler(closeModal);
                     };
-                }(actions[k].handler));
+                })(actions[k].handler));
             }
         }
 
@@ -695,26 +691,27 @@
         var studentsHTML = '';
         for (var i = 0; i < students.length; i++) {
             var s = students[i];
+            var checked = s.assigned ? 'checked' : '';
             studentsHTML += (
-                '<label style="display:block;padding:4px 0;font-size:0.8rem;cursor:pointer;border-bottom:1px solid var(--border-soft);">' +
-                    '<input type="checkbox" class="student-checkbox" value="' + escapeHtml(s.id) + '" ' + (s.assigned ? 'checked' : '') + ' style="accent-color:var(--accent);"> ' +
+                '<label class="student-checkbox-label">' +
+                    '<input type="checkbox" class="student-checkbox" value="' + escapeAttribute(s.id) + '" ' + checked + '> ' +
                     escapeHtml(s.name) +
-                    (s.assigned ? ' <span style="color:var(--accent);font-size:0.7rem;">[assigned]</span>' : '') +
+                    (s.assigned ? ' <span class="student-assigned-badge">[assigned]</span>' : '') +
                 '</label>'
             );
         }
 
         modal.innerHTML = (
-            '<div class="modal-content" style="max-width:550px;">' +
+            '<div class="modal-content modal-manage-content">' +
                 '<div class="modal-header">' +
                     '<h3>' + escapeHtml(options.title || 'Manage Students') + '</h3>' +
                     '<button class="close-modal">&times;</button>' +
                 '</div>' +
                 '<div class="modal-body">' +
-                    '<div style="max-height:300px;overflow-y:auto;">' +
+                    '<div class="student-list">' +
                         studentsHTML +
                     '</div>' +
-                    '<div class="form-actions" style="margin-top:16px;">' +
+                    '<div class="form-actions">' +
                         '<button type="button" id="cancel-manage" class="secondary">Cancel</button>' +
                         '<button type="button" id="update-assignments" class="primary">Update Assignments</button>' +
                     '</div>' +
@@ -733,24 +730,35 @@
             }
         };
 
-        modal.querySelector('.close-modal').onclick = closeModal;
-        modal.querySelector('#cancel-manage').onclick = closeModal;
+        var closeBtn = modal.querySelector('.close-modal');
+        if (closeBtn) {
+            closeBtn.onclick = closeModal;
+        }
+
+        var cancelBtn = modal.querySelector('#cancel-manage');
+        if (cancelBtn) {
+            cancelBtn.onclick = closeModal;
+        }
+
         modal.addEventListener('click', function(e) {
             if (e.target === modal) {
                 closeModal();
             }
         });
 
-        modal.querySelector('#update-assignments').onclick = function() {
-            var selected = [];
-            var checkboxes = modal.querySelectorAll('.student-checkbox:checked');
-            for (var j = 0; j < checkboxes.length; j++) {
-                selected.push(checkboxes[j].value);
-            }
-            if (options.onConfirm) {
-                options.onConfirm(selected, closeModal);
-            }
-        };
+        var updateBtn = modal.querySelector('#update-assignments');
+        if (updateBtn) {
+            updateBtn.onclick = function() {
+                var selected = [];
+                var checkboxes = modal.querySelectorAll('.student-checkbox:checked');
+                for (var j = 0; j < checkboxes.length; j++) {
+                    selected.push(checkboxes[j].value);
+                }
+                if (options.onConfirm) {
+                    options.onConfirm(selected, closeModal);
+                }
+            };
+        }
 
         return modal;
     }
@@ -774,18 +782,28 @@
         }
 
         for (var day in schedule) {
-            if (!Object.prototype.hasOwnProperty.call(schedule, day)) continue;
+            if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
+                continue;
+            }
             var daySchedule = schedule[day];
-            if (!daySchedule || typeof daySchedule !== 'object') continue;
+            if (!daySchedule || typeof daySchedule !== 'object') {
+                continue;
+            }
 
             for (var hour in daySchedule) {
-                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
-                if (!daySchedule[hour]) continue;
+                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
+                    continue;
+                }
+                if (!daySchedule[hour]) {
+                    continue;
+                }
 
                 var startHour = parseInt(hour, 10);
                 var duration = getDuration ? getDuration(parseInt(day, 10), startHour) : 1;
 
-                if (!occupied[day]) occupied[day] = {};
+                if (!occupied[day]) {
+                    occupied[day] = {};
+                }
 
                 for (var h = startHour; h < startHour + duration && h <= CALENDAR_END_HOUR; h++) {
                     occupied[day][h] = true;
@@ -874,6 +892,7 @@
         hasOverlap: hasOverlap,
         getAvailableHours: getAvailableHours,
         escapeHtml: escapeHtml,
+        escapeAttribute: escapeAttribute,
         showNotification: showNotification,
         formatHour: formatHour,
 
