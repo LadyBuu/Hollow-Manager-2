@@ -17,18 +17,16 @@
  *   - USES DomUtils.escapeHtml() - SINGLE SOURCE OF TRUTH
  *   - USES DomUtils for DOM manipulation
  *   - USES NotificationSystem for notifications (via DomUtils)
+ * 
+ * LIFECYCLE:
+ *   - init(container, options, callbacks) - Initialize the calendar UI
+ *   - render() - Re-render the current view
+ *   - destroy() - Clean up event listeners
+ *   - getState() / setState() - State management
  */
 
 (function() {
     'use strict';
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    if (!window.CalendarModes) {
-        return;
-    }
 
     // ============================================================
     // GUARD AGAINST DUPLICATE LOADING
@@ -37,6 +35,31 @@
     if (window.__calendarUILoaded) {
         return;
     }
+
+    // ============================================================
+    // DEPENDENCY CHECK - NO FALLBACKS
+    // ============================================================
+
+    if (!window.CalendarModes) {
+        return;
+    }
+
+    if (!window.CalendarRenderer) {
+        return;
+    }
+
+    if (!window.CalendarUtils) {
+        return;
+    }
+
+    if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
+        return;
+    }
+
+    if (!window.NotificationSystem || typeof window.NotificationSystem.notify !== 'function') {
+        return;
+    }
+
     window.__calendarUILoaded = true;
 
     // ============================================================
@@ -44,39 +67,71 @@
     // ============================================================
 
     var CalendarModes = window.CalendarModes;
+    var CalendarRenderer = window.CalendarRenderer;
+    var CalendarUtils = window.CalendarUtils;
+    var DomUtils = window.DomUtils;
+    var NotificationSystem = window.NotificationSystem;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // STATE
     // ============================================================
 
-    var DomUtils = window.DomUtils || window;
+    var _state = {
+        mode: 'student',
+        week: 1,
+        selectedId: null
+    };
+
+    var _container = null;
+    var _initialized = false;
+    var _onStateChange = null;
 
     // ============================================================
-    // HTML ESCAPING - DELEGATES TO DomUtils (SINGLE SOURCE OF TRUTH)
+    // EVENT LISTENER TRACKING
     // ============================================================
 
-    /**
-     * Escape HTML special characters to prevent XSS.
-     * Delegates to DomUtils.escapeHtml() - the SINGLE SOURCE OF TRUTH.
-     * 
-     * @param {*} value - Value to escape
-     * @returns {string} Escaped string
-     */
+    var _eventListeners = [];
+
+    function addSafeEventListener(element, eventName, handler, options) {
+        if (!element) {
+            return;
+        }
+        element.addEventListener(eventName, handler, options || false);
+        _eventListeners.push({
+            element: element,
+            eventName: eventName,
+            handler: handler,
+            options: options || false
+        });
+    }
+
+    function removeAllEventListeners() {
+        for (var i = 0; i < _eventListeners.length; i++) {
+            var item = _eventListeners[i];
+            try {
+                item.element.removeEventListener(item.eventName, item.handler, item.options);
+            } catch (e) {
+                // Ignore errors during cleanup
+            }
+        }
+        _eventListeners = [];
+    }
+
+    // ============================================================
+    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+        NotificationSystem.notify(message, type);
+    }
+
+    // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
     function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        // Emergency fallback (should never be reached)
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;')
-            .replace(/`/g, '&#x60;');
+        return DomUtils.escapeHtml(value);
     }
 
     // ============================================================
@@ -100,26 +155,20 @@
             }
         }
 
+        if (!CalendarRenderer || typeof CalendarRenderer.renderGrid !== 'function') {
+            missing.push('CalendarRenderer.renderGrid');
+        }
+
+        if (!CalendarUtils || typeof CalendarUtils.formatHour !== 'function') {
+            missing.push('CalendarUtils.formatHour');
+        }
+
         if (missing.length > 0) {
             return false;
         }
 
         return true;
     }
-
-    // ============================================================
-    // STATE
-    // ============================================================
-
-    var _state = {
-        mode: 'student',
-        week: 1,
-        selectedId: null
-    };
-
-    var _container = null;
-    var _initialized = false;
-    var _onStateChange = null;
 
     // ============================================================
     // INIT
@@ -132,6 +181,9 @@
             }
             return;
         }
+
+        // Remove existing listeners before initializing
+        removeAllEventListeners();
 
         _container = container;
 
@@ -173,6 +225,9 @@
             return;
         }
 
+        // Remove existing listeners before re-rendering
+        removeAllEventListeners();
+
         // Ensure selection is valid before rendering
         ensureValidSelection();
 
@@ -182,6 +237,17 @@
         populateEntitySelector();
         renderCalendarGrid();
         bindEvents();
+    }
+
+    // ============================================================
+    // DESTROY
+    // ============================================================
+
+    function destroy() {
+        removeAllEventListeners();
+        _container = null;
+        _initialized = false;
+        _onStateChange = null;
     }
 
     // ============================================================
@@ -207,7 +273,6 @@
 
         if (!exists) {
             _state.selectedId = entities.length > 0 ? entities[0].id : null;
-            // Notify state change after healing
             if (_onStateChange) {
                 _onStateChange(getState());
             }
@@ -223,38 +288,38 @@
         var optionsHTML = '';
         for (var i = 0; i < options.length; i++) {
             var opt = options[i];
-            optionsHTML += '<option value="' + escapeHtml(opt.value) + '">' + escapeHtml(opt.label) + '</option>';
+            var selected = opt.value === _state.mode ? ' selected' : '';
+            optionsHTML += '<option value="' + escapeHtml(opt.value) + '"' + selected + '>' + escapeHtml(opt.label) + '</option>';
         }
 
-        return (
-            '<div class="calendar-ui">' +
-                '<div class="calendar-controls">' +
-                    '<div class="mode-selector">' +
-                        '<label for="calendar-mode-select">View:</label>' +
-                        '<select id="calendar-mode-select">' +
-                            optionsHTML +
-                        '</select>' +
-                    '</div>' +
-                    '<div class="entity-selector">' +
-                        '<label for="calendar-entity-select" id="calendar-entity-label">Entity:</label>' +
-                        '<select id="calendar-entity-select">' +
-                            '<option value="">Select...</option>' +
-                        '</select>' +
-                    '</div>' +
-                    '<div class="week-nav">' +
-                        '<button id="calendar-prev-week" class="small">‹</button>' +
-                        '<span id="calendar-week-display" style="font-weight:600;min-width:80px;text-align:center;">Week 1</span>' +
-                        '<button id="calendar-next-week" class="small">›</button>' +
-                    '</div>' +
-                '</div>' +
-                '<div class="schedule-grid-wrapper" id="calendar-grid-wrapper">' +
-                    '<div id="calendar-grid"></div>' +
-                '</div>' +
-                '<div style="margin-top:8px;font-size:0.7rem;color:var(--text-dim);text-align:center;">' +
-                    getModeHint() +
-                '</div>' +
-            '</div>'
-        );
+        var html = '';
+        html += '<div class="calendar-ui">';
+        html += '<div class="calendar-controls">';
+        html += '<div class="mode-selector">';
+        html += '<label for="calendar-mode-select">View:</label>';
+        html += '<select id="calendar-mode-select">';
+        html += optionsHTML;
+        html += '</select>';
+        html += '</div>';
+        html += '<div class="entity-selector">';
+        html += '<label for="calendar-entity-select" id="calendar-entity-label">Entity:</label>';
+        html += '<select id="calendar-entity-select">';
+        html += '<option value="">Select...</option>';
+        html += '</select>';
+        html += '</div>';
+        html += '<div class="week-nav">';
+        html += '<button id="calendar-prev-week" class="small" title="Previous Week">‹</button>';
+        html += '<span id="calendar-week-display" class="week-display">Week ' + _state.week + '</span>';
+        html += '<button id="calendar-next-week" class="small" title="Next Week">›</button>';
+        html += '</div>';
+        html += '</div>';
+        html += '<div class="schedule-grid-wrapper" id="calendar-grid-wrapper">';
+        html += '<div id="calendar-grid"></div>';
+        html += '</div>';
+        html += '<div class="calendar-hint">' + escapeHtml(getModeHint()) + '</div>';
+        html += '</div>';
+
+        return html;
     }
 
     // ============================================================
@@ -321,11 +386,7 @@
             select.appendChild(option);
         }
 
-        // If selection doesn't exist, ensure state is healed
-        // (ensureValidSelection already handles this, but this is a safety net)
         if (!selectionExists && entities.length > 0) {
-            // ensureValidSelection should have fixed this already
-            // If not, heal now but this should be unreachable
             if (String(_state.selectedId) !== String(entities[0].id)) {
                 _state.selectedId = entities[0].id;
                 select.value = String(_state.selectedId);
@@ -419,21 +480,21 @@
     function bindEvents() {
         var modeSelect = document.getElementById('calendar-mode-select');
         if (modeSelect) {
-            modeSelect.addEventListener('change', function() {
+            addSafeEventListener(modeSelect, 'change', function() {
                 setState({ mode: this.value });
             });
         }
 
         var entitySelect = document.getElementById('calendar-entity-select');
         if (entitySelect) {
-            entitySelect.addEventListener('change', function() {
+            addSafeEventListener(entitySelect, 'change', function() {
                 setState({ selectedId: this.value });
             });
         }
 
         var prevBtn = document.getElementById('calendar-prev-week');
         if (prevBtn) {
-            prevBtn.addEventListener('click', function() {
+            addSafeEventListener(prevBtn, 'click', function() {
                 if (_state.week > 1) {
                     setState({ week: _state.week - 1 });
                 }
@@ -442,7 +503,7 @@
 
         var nextBtn = document.getElementById('calendar-next-week');
         if (nextBtn) {
-            nextBtn.addEventListener('click', function() {
+            addSafeEventListener(nextBtn, 'click', function() {
                 if (_state.week < 52) {
                     setState({ week: _state.week + 1 });
                 }
@@ -457,6 +518,7 @@
     window.CalendarUI = {
         init: init,
         render: render,
+        destroy: destroy,
         getState: getState,
         setState: setState
     };
