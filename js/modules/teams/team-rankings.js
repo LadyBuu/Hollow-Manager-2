@@ -46,16 +46,17 @@
  * 
  * DEPENDENCIES:
  *   - window.TeamCore - For team lookup (required)
+ *   - window.TeamQueries - For team queries (required)
  *   - window.CALENDAR_CONSTANTS - Week/year constants (from constants.js)
  *   - window.DomUtils - HTML escaping (from dom-utils.js)
- *   - window.logActivity - For activity logging (optional)
+ *   - window.ValidationUtils - Period parsing (from validation-utils.js)
+ *   - window.ActivityLog - Activity logging (from activity-log.js)
  */
 
 (function() {
     'use strict';
 
     // Guard against duplicate script loading
-    // IMPORTANT: Check dependency BEFORE marking as loaded
     if (window.__teamRankingsLoaded) {
         return;
     }
@@ -65,13 +66,28 @@
         return;
     }
 
+    if (!window.TeamQueries) {
+        console.error('TeamRankings: TeamQueries is required but not loaded.');
+        return;
+    }
+
     window.__teamRankingsLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var TeamCore = window.TeamCore;
+    var TeamQueries = window.TeamQueries;
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var DomUtils = window.DomUtils || window;
+    var ValidationUtils = window.ValidationUtils || window;
+    var ActivityLog = window.ActivityLog || window;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var CALENDAR = window.CALENDAR_CONSTANTS || {};
     var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
     var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
     var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
@@ -82,8 +98,8 @@
     // ============================================================
 
     function escapeHtml(value) {
-        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
-            return window.DomUtils.escapeHtml(value);
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
         }
         // Fallback
         return String(value == null ? '' : value)
@@ -95,7 +111,21 @@
     }
 
     // ============================================================
-    // PERIOD HELPERS
+    // ACTIVITY LOGGING - Uses ActivityLog
+    // ============================================================
+
+    function recordActivity(message) {
+        try {
+            if (ActivityLog && typeof ActivityLog.record === 'function') {
+                ActivityLog.record(message);
+            }
+        } catch (err) {
+            // Swallow logging errors
+        }
+    }
+
+    // ============================================================
+    // PERIOD HELPERS - Delegate to ValidationUtils
     // ============================================================
 
     function hasPeriodValue(value) {
@@ -112,6 +142,10 @@
     }
 
     function parseNumericPeriod(value) {
+        if (ValidationUtils && typeof ValidationUtils.parseStrictPositivePeriod === 'function') {
+            return ValidationUtils.parseStrictPositivePeriod(value);
+        }
+        // Fallback
         if (value === undefined || value === null || value === '') {
             return null;
         }
@@ -121,6 +155,11 @@
         }
         var parsed = Number(str);
         return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+    }
+
+    function parsePositivePeriod(value) {
+        var parsed = parseNumericPeriod(value);
+        return (parsed !== null && parsed >= 1) ? parsed : null;
     }
 
     function isValidAcademicPeriod(value) {
@@ -232,7 +271,7 @@
                 return false;
             }
 
-            var team = window.TeamCore.getTeam(teamId);
+            var team = TeamCore.getTeam(teamId);
             if (!team) {
                 console.warn('TeamRankings.addRanking: Team not found.');
                 return false;
@@ -259,7 +298,7 @@
             }
 
             var periodStr = String(period).trim();
-            var rankNum = parseNumericPeriod(rank);
+            var rankNum = parsePositivePeriod(rank);
 
             // Enforce ONE ranking per period: remove ALL existing entries for this period
             var existingEntries = team.rankingHistory.filter(function(r) {
@@ -287,13 +326,11 @@
             this._updateCurrentRank(team);
 
             // Activity logging
-            if (typeof window.logActivity === 'function') {
-                var teamName = team.name || 'Unknown Team';
-                if (isUpdate) {
-                    window.logActivity('Updated ranking for ' + teamName + ': #' + oldRank + ' → #' + rank + ' (' + periodStr + ')');
-                } else {
-                    window.logActivity('Added ranking #' + rank + ' for ' + teamName + ' (' + periodStr + ')');
-                }
+            var teamName = team.name || 'Unknown Team';
+            if (isUpdate) {
+                recordActivity('Updated ranking for ' + teamName + ': #' + oldRank + ' → #' + rank + ' (' + periodStr + ')');
+            } else {
+                recordActivity('Added ranking #' + rank + ' for ' + teamName + ' (' + periodStr + ')');
             }
 
             return true;
@@ -314,7 +351,7 @@
                 return false;
             }
 
-            var team = window.TeamCore.getTeam(teamId);
+            var team = TeamCore.getTeam(teamId);
             if (!team || !team.rankingHistory) {
                 console.warn('TeamRankings.removeRanking: Team or ranking history not found.');
                 return false;
@@ -346,11 +383,9 @@
             this._updateCurrentRank(team);
 
             // Activity logging
-            if (typeof window.logActivity === 'function') {
-                var teamName = team.name || 'Unknown Team';
-                var rankInfo = removedEntry ? ' #' + removedEntry.rank : '';
-                window.logActivity('Removed ranking' + rankInfo + ' from ' + teamName + ' (' + periodStr + ')');
-            }
+            var teamName = team.name || 'Unknown Team';
+            var rankInfo = removedEntry ? ' #' + removedEntry.rank : '';
+            recordActivity('Removed ranking' + rankInfo + ' from ' + teamName + ' (' + periodStr + ')');
 
             return true;
         },
@@ -439,7 +474,7 @@
             if (!Array.isArray(team.rankingHistory)) return [];
 
             var history = team.rankingHistory.slice().filter(function(r) {
-                return r && hasPeriodValue(r.period) && parseNumericPeriod(r.rank) !== null;
+                return r && hasPeriodValue(r.period) && parsePositivePeriod(r.rank) !== null;
             });
 
             return history.sort(function(a, b) {
@@ -524,7 +559,7 @@
 
             var periodStr = String(period).trim();
             var entries = team.rankingHistory.filter(function(r) {
-                return r && String(r.period) === periodStr && parseNumericPeriod(r.rank) !== null;
+                return r && String(r.period) === periodStr && parsePositivePeriod(r.rank) !== null;
             });
 
             if (entries.length === 0) return null;
@@ -573,6 +608,14 @@
          * @returns {object} { min, max, label }
          */
         getPeriodRange: getPeriodRange,
+
+        /**
+         * Get the period label for a team type.
+         * 
+         * @param {string} teamType - Team type
+         * @returns {string} Period label
+         */
+        getPeriodLabel: getPeriodLabel,
 
         // ============================================================
         // RENDERING - Returns HTML string
@@ -632,15 +675,7 @@
             var periodLabel = getPeriodLabel(team.type);
 
             return '<span class="ranking-summary">#' + escapeHtml(summary.current) + ' (last ' + escapeHtml(periodLabel) + ' ' + escapeHtml(summary.mostRecent ? summary.mostRecent.period : '') + ')</span>';
-        },
-
-        /**
-         * Get the period label for a team type.
-         * 
-         * @param {string} teamType - Team type
-         * @returns {string} Period label
-         */
-        getPeriodLabel: getPeriodLabel
+        }
     };
 
     // ============================================================
