@@ -2,10 +2,64 @@
  * js/modules/characters/character-form.js - Character Form
  * Handles form rendering, tab switching, and form field population
  * Path: js/modules/characters/character-form.js
+ * 
+ * This module is responsible for:
+ *   - Rendering the character form modal
+ *   - Tab switching between form sections
+ *   - Populating form fields from character data
+ *   - Collecting form data for save operations
+ *   - Delegating save operations to CharacterCRUD
+ * 
+ * IMPORTANT:
+ *   - USES CharacterQueries for character data and display names
+ *   - USES ClassesQueries for class-related data
+ *   - USES DomUtils for safe DOM operations
+ *   - Delegates save operations to CharacterCRUD (which uses the mutation pipeline)
+ *   - No direct data mutation
+ *   - No direct persistence calls
+ *   - Uses NotificationSystem for notifications
+ * 
+ * DEPENDENCIES:
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.CharacterCRUD (from character-crud.js)
+ *   - window.DomUtils (from dom-utils.js)
+ *   - window.NotificationSystem (from notification.js)
+ *   - window.getCurrentEditId (from index.js)
+ *   - window.setCurrentEditId (from index.js)
+ *   - window.getGraduatingClasses (from classes-core.js)
+ *   - window.CharacterConstants (from character-constants.js)
  */
 
 (function() {
     'use strict';
+
+    // Guard against duplicate script loading
+    if (window.__characterFormLoaded) {
+        return;
+    }
+    window.__characterFormLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var CharacterQueries = window.CharacterQueries || window;
+    var ClassesQueries = window.ClassesQueries || window;
+    var CharacterCRUD = window.CharacterCRUD || window;
+    var DomUtils = window.DomUtils || window;
+    var NotificationSystem = window.NotificationSystem || window;
+    var CC = window.CharacterConstants;
+
+    // ============================================================
+    // CONSTANTS - From CharacterConstants
+    // ============================================================
+
+    var STAT_MIN = CC ? CC.STAT_MIN : 1;
+    var STAT_MAX = CC ? CC.STAT_MAX : 50;
+    var STAT_DEFAULT = CC ? CC.STAT_DEFAULT : 10;
+    var MAGIC_MAX = CC ? CC.MAGIC_MAX : 10;
+    var MAGIC_TYPE_KEYS = CC ? CC.MAGIC_TYPE_KEYS : [];
 
     // ============================================================
     // STATE
@@ -18,17 +72,106 @@
     var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'stats', 'social', 'notes'];
 
     // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
+
+    function checkDependencies() {
+        var missing = [];
+
+        var required = [
+            'getCurrentEditId',
+            'setCurrentEditId'
+        ];
+
+        required.forEach(function(name) {
+            if (typeof window[name] !== 'function') {
+                missing.push(name);
+            }
+        });
+
+        // CharacterQueries is MANDATORY
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+
+        // CharacterCRUD is MANDATORY
+        if (!CharacterCRUD || typeof CharacterCRUD.save !== 'function') {
+            missing.push('CharacterCRUD.save');
+        }
+
+        // DomUtils is MANDATORY
+        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
+            missing.push('DomUtils.escapeHtml');
+        }
+
+        // NotificationSystem is MANDATORY
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
+        }
+
+        if (missing.length > 0) {
+            console.warn('CharacterForm: Missing dependencies:', missing.join(', '));
+            return false;
+        }
+        return true;
+    }
+
+    // ============================================================
+    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
+        } else if (type === 'error') {
+            alert('Error: ' + message);
+        } else {
+            alert(message);
+        }
+    }
+
+    // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function escapeHtml(value) {
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
+        }
+        // Emergency fallback (should never be reached)
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;')
+            .replace(/`/g, '&#x60;');
+    }
+
+    // ============================================================
     // CHARACTER FORM - Public API
     // ============================================================
 
     function showCharacterForm(editId) {
+        if (!checkDependencies()) {
+            showNotification('Dependencies not loaded. Please refresh the page.', 'error');
+            return;
+        }
+
         if (!editId) {
-            editId = window.getCurrentEditId ? window.getCurrentEditId() : null;
+            editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
         }
 
         var char = null;
         if (editId) {
-            char = window.getCharacterById(editId);
+            char = CharacterQueries.getCharacterById(editId);
             if (!char) {
                 showNotification('Character not found.', 'error');
                 return;
@@ -155,14 +298,14 @@
     }
 
     // ============================================================
-    // NAME TAB - With Class Dropdown
+    // NAME TAB - Uses ClassesQueries for class dropdown
     // ============================================================
 
     function getNameTabHTML(char, editId) {
         var active = state.currentTab === 'name' ? 'block' : 'none';
         var c = char || {};
 
-        // Get graduating class options for dropdown
+        // Get graduating class options
         var classOptions = getClassOptionsHTML(c.graduatingClassId);
 
         return `
@@ -224,11 +367,14 @@
     }
 
     function getClassOptionsHTML(selectedId) {
-        var classes = window.getGraduatingClasses ? window.getGraduatingClasses() : [];
+        var classes = typeof window.getGraduatingClasses === 'function' 
+            ? window.getGraduatingClasses() 
+            : [];
         var html = '<option value="">None</option>';
 
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
+            if (!cls || typeof cls !== 'object') continue;
             var isSelected = String(cls.id) === String(selectedId);
             html += `<option value="${escapeHtml(cls.id)}" ${isSelected ? 'selected' : ''}>${escapeHtml(cls.name)}</option>`;
         }
@@ -241,7 +387,7 @@
     }
 
     // ============================================================
-    // PHYSICAL TAB - With Random Button
+    // OTHER TABS - Using CharacterQueries for display names
     // ============================================================
 
     function getPhysicalTabHTML(char) {
@@ -291,10 +437,6 @@
             </div>
         `;
     }
-
-    // ============================================================
-    // PERSONALITY TAB - With Random Button
-    // ============================================================
 
     function getPersonalityTabHTML(char) {
         var active = state.currentTab === 'personality' ? 'block' : 'none';
@@ -360,10 +502,6 @@
         `;
     }
 
-    // ============================================================
-    // OTHER TABS - Simplified (keep existing functionality)
-    // ============================================================
-
     function getAcademicTabHTML(char) {
         var active = state.currentTab === 'academic' ? 'block' : 'none';
         var c = char || {};
@@ -402,7 +540,6 @@
     function getStatsTabHTML(char) {
         var active = state.currentTab === 'stats' ? 'block' : 'none';
         var stats = char && char.stats ? char.stats : { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
-        var magic = char && char.magic ? char.magic : {};
 
         var html = `
             <div class="tab-panel" data-tab="stats" style="display:${active};">
@@ -419,10 +556,11 @@
         };
 
         for (var key in statLabels) {
+            if (!Object.prototype.hasOwnProperty.call(statLabels, key)) continue;
             html += `
                 <div class="form-group">
                     <label style="font-size:0.7rem;color:var(--text-dim);">${statLabels[key]}</label>
-                    <input type="number" id="char-stat-${key}" value="${stats[key] !== undefined ? stats[key] : 10}" min="1" max="50" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;text-align:center;">
+                    <input type="number" id="char-stat-${key}" value="${stats[key] !== undefined ? stats[key] : 10}" min="${STAT_MIN}" max="${STAT_MAX}" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;text-align:center;">
                 </div>
             `;
         }
@@ -473,20 +611,23 @@
     }
 
     // ============================================================
-    // POPULATE CLASS DROPDOWN
+    // POPULATE CLASS DROPDOWN - Uses getGraduatingClasses
     // ============================================================
 
     function populateClassDropdown(char) {
         var select = document.getElementById('char-graduatingClass');
         if (!select) return;
 
-        var classes = window.getGraduatingClasses ? window.getGraduatingClasses() : [];
+        var classes = typeof window.getGraduatingClasses === 'function' 
+            ? window.getGraduatingClasses() 
+            : [];
         var selectedId = char && char.graduatingClassId ? char.graduatingClassId : null;
 
         select.innerHTML = '<option value="">None</option>';
 
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
+            if (!cls || typeof cls !== 'object') continue;
             var option = document.createElement('option');
             option.value = cls.id;
             option.textContent = cls.name;
@@ -558,6 +699,7 @@
         // Stats
         if (char.stats) {
             for (var key in char.stats) {
+                if (!Object.prototype.hasOwnProperty.call(char.stats, key)) continue;
                 setFieldValue('char-stat-' + key, char.stats[key]);
             }
         }
@@ -654,11 +796,26 @@
             }
         });
 
-        // Save
+        // Save - Uses CharacterCRUD.save()
         var saveBtn = document.getElementById('save-character-btn');
         if (saveBtn) {
             saveBtn.addEventListener('click', function() {
-                saveCharacter(editId);
+                // Use CharacterCRUD which implements the proper mutation pipeline
+                if (CharacterCRUD && typeof CharacterCRUD.save === 'function') {
+                    CharacterCRUD.save()
+                        .then(function(success) {
+                            if (success) {
+                                // Close the modal on success
+                                var modal = document.getElementById('character-form-modal');
+                                if (modal) {
+                                    modal.classList.add('hidden');
+                                    modal.style.display = 'none';
+                                }
+                            }
+                        });
+                } else {
+                    showNotification('Save functionality not available.', 'error');
+                }
             });
         }
 
@@ -668,7 +825,18 @@
             form.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') {
                     e.preventDefault();
-                    saveCharacter(editId);
+                    if (CharacterCRUD && typeof CharacterCRUD.save === 'function') {
+                        CharacterCRUD.save()
+                            .then(function(success) {
+                                if (success) {
+                                    var modal = document.getElementById('character-form-modal');
+                                    if (modal) {
+                                        modal.classList.add('hidden');
+                                        modal.style.display = 'none';
+                                    }
+                                }
+                            });
+                    }
                 }
             });
         }
@@ -765,7 +933,6 @@
 
     function fillRandomStats() {
         var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-
         for (var i = 0; i < statKeys.length; i++) {
             var val = 8 + Math.floor(Math.random() * 18); // 8-25 range
             setFieldValue('char-stat-' + statKeys[i], val);
@@ -774,166 +941,6 @@
 
     function randomChoice(arr) {
         return arr[Math.floor(Math.random() * arr.length)];
-    }
-
-    // ============================================================
-    // SAVE CHARACTER
-    // ============================================================
-
-    function saveCharacter(editId) {
-        // Gather basic fields
-        var firstName = document.getElementById('char-firstName').value.trim();
-        var lastName = document.getElementById('char-lastName').value.trim();
-
-        if (!firstName || !lastName) {
-            showNotification('First and last name are required.', 'error');
-            return;
-        }
-
-        var data = {
-            firstName: firstName,
-            lastName: lastName,
-            middleName: document.getElementById('char-middleName').value.trim(),
-            nickname: document.getElementById('char-nickname').value.trim(),
-            alias: document.getElementById('char-alias').value.trim(),
-            gender: document.getElementById('char-gender').value.trim(),
-            birthYear: document.getElementById('char-birthYear').value.trim(),
-            eyes: document.getElementById('char-eyes').value.trim(),
-            hair: document.getElementById('char-hair').value.trim(),
-            skin: document.getElementById('char-skin').value.trim(),
-            height: document.getElementById('char-height').value.trim(),
-            weight: document.getElementById('char-weight').value.trim(),
-            build: document.getElementById('char-build').value.trim(),
-            appearanceNotes: document.getElementById('char-appearanceNotes').value.trim(),
-            notes: document.getElementById('char-notes').value.trim(),
-            specialty: document.getElementById('char-specialty').value.trim(),
-            attraction: document.getElementById('char-attraction').value.trim(),
-            sexuality: document.getElementById('char-sexuality').value.trim(),
-            graduatingClassId: document.getElementById('char-graduatingClass').value || null,
-            graduatingClassInstructor: document.getElementById('char-isInstructor').checked
-        };
-
-        // Personality
-        data.personality = {
-            traits: document.getElementById('char-personality-traits').value.trim(),
-            ideals: document.getElementById('char-personality-ideals').value.trim(),
-            bonds: document.getElementById('char-personality-bonds').value.trim(),
-            flaws: document.getElementById('char-personality-flaws').value.trim(),
-            alignment: document.getElementById('char-personality-alignment').value.trim(),
-            likes: document.getElementById('char-personality-likes').value.trim(),
-            dislikes: document.getElementById('char-personality-dislikes').value.trim(),
-            habits: document.getElementById('char-personality-habits').value.trim(),
-            fears: document.getElementById('char-personality-fears').value.trim(),
-            goals: document.getElementById('char-personality-goals').value.trim()
-        };
-
-        // Stats
-        data.stats = {};
-        var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-        for (var i = 0; i < statKeys.length; i++) {
-            var val = parseInt(document.getElementById('char-stat-' + statKeys[i]).value, 10) || 10;
-            data.stats[statKeys[i]] = Math.max(1, Math.min(50, val));
-        }
-
-        // Career Status
-        var careerStatusText = document.getElementById('char-careerStatus').value.trim();
-        if (careerStatusText) {
-            try {
-                data.careerStatus = JSON.parse(careerStatusText);
-                if (!Array.isArray(data.careerStatus)) {
-                    data.careerStatus = [];
-                }
-            } catch (e) {
-                showNotification('Invalid career status JSON. Please check the format.', 'error');
-                return;
-            }
-        } else {
-            data.careerStatus = [];
-        }
-
-        // Class IDs
-        var classIdsText = document.getElementById('char-classIds').value.trim();
-        if (classIdsText) {
-            data.classIds = classIdsText.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
-        } else {
-            data.classIds = [];
-        }
-
-        // Create or update
-        var result;
-        if (editId) {
-            result = window.updateCharacter(editId, data);
-        } else {
-            result = window.createCharacter(data);
-        }
-
-        if (!result || !result.success) {
-            showNotification(result && result.message ? result.message : 'Failed to save character.', 'error');
-            return;
-        }
-
-        var modal = document.getElementById('character-form-modal');
-        if (modal) {
-            modal.classList.add('hidden');
-            modal.style.display = 'none';
-        }
-
-        // Refresh the character list
-        if (typeof window.renderCharacterList === 'function') {
-            window.renderCharacterList();
-        }
-
-        if (typeof window.renderAll === 'function') {
-            window.renderAll();
-        }
-
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    showNotification(editId ? 'Character updated successfully.' : 'Character created successfully.', 'success');
-                })
-                .catch(function() {
-                    showNotification('Character saved in memory, but persistence failed.', 'error');
-                });
-        } else {
-            showNotification(editId ? 'Character updated successfully.' : 'Character created successfully.', 'success');
-        }
-    }
-
-    // ============================================================
-    // NOTIFICATION HELPER
-    // ============================================================
-
-    function showNotification(message, type) {
-        type = type || 'info';
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
-        }
-        if (type === 'error') {
-            alert('Error: ' + message);
-        } else if (type === 'success') {
-            alert(message);
-        } else {
-            console.log('[CharacterForm]', message);
-        }
-    }
-
-    // ============================================================
-    // HTML ESCAPING
-    // ============================================================
-
-    function escapeHtml(value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
-        var str = String(value);
-        return str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
     }
 
     // ============================================================
