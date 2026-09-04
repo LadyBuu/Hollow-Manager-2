@@ -16,6 +16,11 @@
  *   rather than raw HTML, preventing XSS.
  *   Rollback is performed on save failure.
  *   Normalisation occurs AFTER snapshot, not before validation.
+ *   USES CharacterQueries for character data and display names
+ *   USES ClassesQueries for class data
+ *   USES MutationUtils for backup and persistence
+ *   USES NotificationSystem for notifications
+ *   USES ActivityLog for activity logging
  * 
  * MUTATION CONTRACT:
  *   1. Validate inputs (no mutation)
@@ -35,18 +40,14 @@
  * DEPENDENCIES:
  *   - window.getCurrentEditId (from index.js)
  *   - window.setCurrentEditId (from index.js)
- *   - window.getCharacterById (from core-utils.js)
- *   - window.getDisplayName (from core-utils.js)
- *   - window.getClasses (from core-utils.js)
- *   - window.getClass (from core-utils.js)
- *   - window.getClassByName (from core-utils.js)
- *   - window.createClass (from class-core.js)
- *   - window.saveData (from database.js)
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.ClassesQueries (from classes-queries.js)
  *   - window.MutationUtils (from mutation-utils.js)
- *   - window.DomUtils (from dom-utils.js)
- *   - window.logActivity (optional, for activity logging)
- *   - window.CALENDAR_CONSTANTS (from constants.js)
  *   - window.NotificationSystem (from notification.js)
+ *   - window.ActivityLog (from activity-log.js)
+ *   - window.DomUtils (from dom-utils.js)
+ *   - window.saveData (from database.js)
+ *   - window.CALENDAR_CONSTANTS (from constants.js)
  */
 
 (function() {
@@ -59,30 +60,38 @@
     window.__characterClassesLoaded = true;
 
     // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var CharacterQueries = window.CharacterQueries || window;
+    var ClassesQueries = window.ClassesQueries || window;
+    var MutationUtils = window.MutationUtils || window;
+    var NotificationSystem = window.NotificationSystem || window;
+    var ActivityLog = window.ActivityLog || window;
+    var DomUtils = window.DomUtils || window;
+    var CalendarConstants = window.CALENDAR_CONSTANTS || {};
+
+    // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MIN_WEEK : 1;
-    var MAX_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MAX_WEEK : 52;
+    var MIN_WEEK = CalendarConstants.MIN_WEEK || 1;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK || 52;
 
     // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
+        var missing = [];
+
+        // Required functions
         var required = [
             'getCurrentEditId',
             'setCurrentEditId',
-            'getCharacterById',
-            'getDisplayName',
-            'getClasses',
-            'getClass',
-            'getClassByName',
-            'createClass',
             'saveData'
         ];
 
-        var missing = [];
         required.forEach(function(name) {
             if (name === 'saveData' && typeof window.saveData !== 'function') {
                 missing.push('saveData');
@@ -91,9 +100,38 @@
             }
         });
 
-        // Check for MutationUtils
-        if (!window.MutationUtils || typeof window.MutationUtils.createSafeBackup !== 'function') {
+        // CharacterQueries is MANDATORY
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+
+        // ClassesQueries is MANDATORY
+        if (!ClassesQueries || typeof ClassesQueries.getClass !== 'function') {
+            missing.push('ClassesQueries.getClass');
+        }
+        if (!ClassesQueries || typeof ClassesQueries.getClasses !== 'function') {
+            missing.push('ClassesQueries.getClasses');
+        }
+
+        // MutationUtils is MANDATORY
+        if (!MutationUtils || typeof MutationUtils.createSafeBackup !== 'function') {
             missing.push('MutationUtils.createSafeBackup');
+        }
+        if (MutationUtils && typeof MutationUtils.saveWithPromise !== 'function') {
+            missing.push('MutationUtils.saveWithPromise');
+        }
+
+        // NotificationSystem is MANDATORY
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
+        }
+
+        // DomUtils is MANDATORY
+        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
+            missing.push('DomUtils.escapeHtml');
         }
 
         if (missing.length > 0) {
@@ -104,15 +142,51 @@
     }
 
     // ============================================================
+    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
+        } else if (type === 'error') {
+            alert('Error: ' + message);
+        } else {
+            alert(message);
+        }
+    }
+
+    // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function escapeHtml(value) {
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
+        }
+        // Emergency fallback (should never be reached)
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;')
+            .replace(/`/g, '&#x60;');
+    }
+
+    // ============================================================
     // SAFE BACKUP - Delegate to MutationUtils
     // ============================================================
 
     function createSafeBackup(data) {
-        if (window.MutationUtils && typeof window.MutationUtils.createSafeBackup === 'function') {
-            return window.MutationUtils.createSafeBackup(data);
+        if (MutationUtils && typeof MutationUtils.createSafeBackup === 'function') {
+            return MutationUtils.createSafeBackup(data);
         }
 
-        // Fallback implementation
+        // Emergency fallback (should never be needed)
         try {
             if (window.db && typeof window.db.createSafeCopy === 'function') {
                 return window.db.createSafeCopy(data);
@@ -120,12 +194,7 @@
             if (typeof structuredClone === 'function') {
                 return structuredClone(data);
             }
-            try {
-                return JSON.parse(JSON.stringify(data));
-            } catch (e) {
-                console.warn('CharacterClasses: Failed to create backup:', e);
-                return null;
-            }
+            return JSON.parse(JSON.stringify(data));
         } catch (err) {
             console.warn('CharacterClasses: Failed to create backup:', err);
             return null;
@@ -133,38 +202,51 @@
     }
 
     // ============================================================
-    // NOTIFICATION
+    // STATE ACCESS - Single source of truth
     // ============================================================
 
-    function showNotification(message, type) {
-        type = type || 'info';
-
-        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
-            window.NotificationSystem.notify(message, type);
-            return;
+    function getCurrentEditId() {
+        if (typeof window.getCurrentEditId === 'function') {
+            return window.getCurrentEditId();
         }
+        return null;
+    }
 
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
+    function setCurrentEditId(id) {
+        if (typeof window.setCurrentEditId === 'function') {
+            window.setCurrentEditId(id);
         }
+    }
 
-        if (typeof window.setSession === 'function') {
-            window.setSession('toast', {
-                message: message,
-                type: type,
-                timestamp: Date.now()
-            });
-            if (typeof window.renderToast === 'function') {
-                window.renderToast();
-            }
-            return;
+    // ============================================================
+    // SAFE RENDER HELPERS
+    // ============================================================
+
+    function safeRenderCharacterList() {
+        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+            window.CharacterList.render();
         }
+    }
 
-        if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
+    function safeShowCharacterForm(id) {
+        if (typeof window.showCharacterForm === 'function') {
+            window.showCharacterForm(id);
+        }
+    }
+
+    function safeUpdateDashboardStats() {
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
+        }
+    }
+
+    function safeRefreshUI(char) {
+        safeRenderCharacterList();
+        populateAcademicClassSelector(char);
+        updateCurrentClassesDisplay(char);
+        safeUpdateDashboardStats();
+        if (char) {
+            safeShowCharacterForm(char.id);
         }
     }
 
@@ -208,38 +290,6 @@
     }
 
     // ============================================================
-    // SAFE RENDER HELPERS
-    // ============================================================
-
-    function safeRenderCharacterList() {
-        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-            window.CharacterList.render();
-        }
-    }
-
-    function safeShowCharacterForm(id) {
-        if (typeof window.showCharacterForm === 'function') {
-            window.showCharacterForm(id);
-        }
-    }
-
-    function safeUpdateDashboardStats() {
-        if (typeof window.updateDashboardStats === 'function') {
-            window.updateDashboardStats();
-        }
-    }
-
-    function safeRefreshUI(char) {
-        safeRenderCharacterList();
-        populateAcademicClassSelector(char);
-        updateCurrentClassesDisplay(char);
-        safeUpdateDashboardStats();
-        if (char) {
-            safeShowCharacterForm(char.id);
-        }
-    }
-
-    // ============================================================
     // CORE REMOVE FUNCTION - Single source of truth for removal
     // ============================================================
 
@@ -249,13 +299,13 @@
             return Promise.resolve(false);
         }
 
-        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             showNotification('Character not found.', 'error');
             return Promise.resolve(false);
         }
 
-        var cls = typeof window.getClass === 'function' ? window.getClass(classId) : null;
+        var cls = ClassesQueries.getClass(classId);
         if (!cls) {
             showNotification('Class not found.', 'error');
             return Promise.resolve(false);
@@ -269,7 +319,7 @@
             return Promise.resolve(false);
         }
 
-        var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
+        var name = CharacterQueries.getDisplayName(char);
         if (!confirm('Remove ' + name + ' from class "' + cls.name + '"?')) {
             return Promise.resolve(false);
         }
@@ -288,32 +338,22 @@
             return String(cid) !== String(classId);
         });
 
-        // PERSIST - Use saveWithPromise from MutationUtils if available
-        var savePromise;
-        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
-            savePromise = window.MutationUtils.saveWithPromise();
-        } else {
-            savePromise = Promise.resolve()
-                .then(function() {
-                    return window.saveData();
-                });
-        }
+        // PERSIST - Use saveWithPromise from MutationUtils
+        var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
                 // LOG - failure-safe, persistence already succeeded
                 try {
-                    if (typeof window.logActivity === 'function') {
-                        window.logActivity('Removed ' + name + ' from class: ' + cls.name);
+                    if (ActivityLog && typeof ActivityLog.record === 'function') {
+                        ActivityLog.record('Removed ' + name + ' from class: ' + cls.name);
                     }
                 } catch (logErr) {
                     // Ignore logging errors
                 }
 
                 // UI COMMIT - reacquire character from restored state
-                var savedChar = typeof window.getCharacterById === 'function' 
-                    ? window.getCharacterById(charId) 
-                    : null;
+                var savedChar = CharacterQueries.getCharacterById(charId);
                 safeRefreshUI(savedChar);
                 showNotification('Character removed from class successfully!', 'success');
                 return true;
@@ -322,9 +362,7 @@
                 // ROLLBACK
                 if (backup) {
                     window.data = backup;
-                    var restoredChar = typeof window.getCharacterById === 'function' 
-                        ? window.getCharacterById(charId) 
-                        : null;
+                    var restoredChar = CharacterQueries.getCharacterById(charId);
                     safeRefreshUI(restoredChar);
                 }
                 showNotification('Failed to remove character from class. Please try again.', 'error');
@@ -354,19 +392,19 @@
             return Promise.resolve(false);
         }
 
-        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        var charId = getCurrentEditId();
         if (!charId) {
             showNotification('No character selected.', 'error');
             return Promise.resolve(false);
         }
 
-        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             showNotification('Character not found.', 'error');
             return Promise.resolve(false);
         }
 
-        var cls = typeof window.getClass === 'function' ? window.getClass(classId) : null;
+        var cls = ClassesQueries.getClass(classId);
         if (!cls) {
             showNotification('Class not found.', 'error');
             return Promise.resolve(false);
@@ -392,35 +430,23 @@
         normaliseClassIds(char);
         char.classIds.push(classId);
 
-        // PERSIST - Use saveWithPromise from MutationUtils if available
-        var savePromise;
-        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
-            savePromise = window.MutationUtils.saveWithPromise();
-        } else {
-            savePromise = Promise.resolve()
-                .then(function() {
-                    return window.saveData();
-                });
-        }
+        // PERSIST - Use saveWithPromise from MutationUtils
+        var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
                 // LOG - failure-safe, persistence already succeeded
-                var charName = typeof window.getDisplayName === 'function' 
-                    ? window.getDisplayName(char) 
-                    : char.firstName || 'Character';
+                var charName = CharacterQueries.getDisplayName(char);
                 try {
-                    if (typeof window.logActivity === 'function') {
-                        window.logActivity('Added ' + charName + ' to class: ' + cls.name);
+                    if (ActivityLog && typeof ActivityLog.record === 'function') {
+                        ActivityLog.record('Added ' + charName + ' to class: ' + cls.name);
                     }
                 } catch (logErr) {
                     // Ignore logging errors
                 }
 
                 // UI COMMIT - reacquire character from restored state
-                var savedChar = typeof window.getCharacterById === 'function' 
-                    ? window.getCharacterById(charId) 
-                    : null;
+                var savedChar = CharacterQueries.getCharacterById(charId);
                 safeRefreshUI(savedChar);
                 showNotification('Character added to class successfully!', 'success');
                 return true;
@@ -429,9 +455,7 @@
                 // ROLLBACK
                 if (backup) {
                     window.data = backup;
-                    var restoredChar = typeof window.getCharacterById === 'function' 
-                        ? window.getCharacterById(charId) 
-                        : null;
+                    var restoredChar = CharacterQueries.getCharacterById(charId);
                     safeRefreshUI(restoredChar);
                 }
                 showNotification('Failed to add character to class. Please try again.', 'error');
@@ -440,7 +464,7 @@
     }
 
     // ============================================================
-    // ADD CLASS BY NAME - FIXED: Validates BEFORE creating class
+    // ADD CLASS BY NAME - Fixed: Validates BEFORE creating class
     // ============================================================
 
     function addClassByName(name) {
@@ -449,13 +473,13 @@
             return Promise.resolve(false);
         }
 
-        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        var charId = getCurrentEditId();
         if (!charId) {
             showNotification('No character selected.', 'error');
             return Promise.resolve(false);
         }
 
-        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             showNotification('Character not found.', 'error');
             return Promise.resolve(false);
@@ -470,7 +494,7 @@
 
         // ---- PHASE 1: VALIDATE CHARACTER STATE (READ-ONLY, NO MUTATION) ----
         // Check if character is already in this class (using existing data)
-        var existingClass = typeof window.getClassByName === 'function' ? window.getClassByName(trimmedName) : null;
+        var existingClass = ClassesQueries.getClassByName(trimmedName);
         if (existingClass) {
             // Character is already in this class
             var currentClassIds = getNormalisedClassIds(char);
@@ -509,7 +533,7 @@
 
         // ---- PHASE 4: RE-VALIDATE CHARACTER (CLASS NOW EXISTS) ----
         // Re-fetch character from the (potentially restored) data
-        var currentChar = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        var currentChar = CharacterQueries.getCharacterById(charId);
         if (!currentChar) {
             // Rollback: class was created but character is gone
             if (classCreated && backup) {
@@ -536,25 +560,15 @@
         currentChar.classIds.push(cls.id);
 
         // ---- PHASE 6: PERSIST ----
-        var savePromise;
-        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
-            savePromise = window.MutationUtils.saveWithPromise();
-        } else {
-            savePromise = Promise.resolve()
-                .then(function() {
-                    return window.saveData();
-                });
-        }
+        var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
                 // LOG - failure-safe, persistence already succeeded
-                var charName = typeof window.getDisplayName === 'function' 
-                    ? window.getDisplayName(currentChar) 
-                    : currentChar.firstName || 'Character';
+                var charName = CharacterQueries.getDisplayName(currentChar);
                 try {
-                    if (typeof window.logActivity === 'function') {
-                        window.logActivity('Added ' + charName + ' to class: ' + cls.name);
+                    if (ActivityLog && typeof ActivityLog.record === 'function') {
+                        ActivityLog.record('Added ' + charName + ' to class: ' + cls.name);
                     }
                 } catch (logErr) {
                     // Ignore logging errors
@@ -562,9 +576,7 @@
 
                 // UI COMMIT
                 addClassTag(cls.id, cls.name);
-                var savedChar = typeof window.getCharacterById === 'function' 
-                    ? window.getCharacterById(charId) 
-                    : null;
+                var savedChar = CharacterQueries.getCharacterById(charId);
                 safeRefreshUI(savedChar);
                 showNotification('Character added to class successfully!', 'success');
                 return true;
@@ -573,9 +585,7 @@
                 // ROLLBACK - restore backup
                 if (backup) {
                     window.data = backup;
-                    var restoredChar = typeof window.getCharacterById === 'function' 
-                        ? window.getCharacterById(charId) 
-                        : null;
+                    var restoredChar = CharacterQueries.getCharacterById(charId);
                     safeRefreshUI(restoredChar);
                 }
                 showNotification('Failed to add character to class. Please try again.', 'error');
@@ -593,13 +603,13 @@
             return Promise.resolve(false);
         }
 
-        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        var charId = getCurrentEditId();
         if (!charId) {
             showNotification('No character selected.', 'error');
             return Promise.resolve(false);
         }
 
-        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             showNotification('Character not found.', 'error');
             return Promise.resolve(false);
@@ -614,7 +624,7 @@
         }
 
         // Get currently assigned classes with display names
-        var classes = typeof window.getClasses === 'function' ? window.getClasses() : [];
+        var classes = ClassesQueries.getClasses();
         var assignedClasses = classIds.map(function(cid) {
             var cls = classes.find(function(c) { return String(c.id) === String(cid); });
             return cls ? { id: cls.id, name: cls.name } : null;
@@ -648,7 +658,7 @@
 
         var info = document.createElement('p');
         info.style.cssText = 'color:var(--text-dim);font-size:0.85rem;margin-bottom:12px;';
-        var charName = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
+        var charName = CharacterQueries.getDisplayName(char);
         info.textContent = 'Select a class to remove ' + charName + ' from:';
         body.appendChild(info);
 
@@ -799,7 +809,7 @@
         clearClassTags();
         if (!classIds || classIds.length === 0) return;
 
-        var classes = typeof window.getClasses === 'function' ? window.getClasses() : [];
+        var classes = ClassesQueries.getClasses();
         classIds.forEach(function(cid) {
             var cls = classes.find(function(c) { return String(c.id) === String(cid); });
             if (cls) {
@@ -816,7 +826,7 @@
         var select = document.getElementById('academic-class-select');
         if (!select) return;
 
-        var classes = typeof window.getClasses === 'function' ? window.getClasses() : [];
+        var classes = ClassesQueries.getClasses();
 
         select.innerHTML = '<option value="">Select a class...</option>';
 
@@ -847,7 +857,7 @@
             return;
         }
 
-        var classes = typeof window.getClasses === 'function' ? window.getClasses() : [];
+        var classes = ClassesQueries.getClasses();
         var names = [];
         classIds.forEach(function(cid) {
             var cls = classes.find(function(c) { return String(c.id) === String(cid); });
@@ -857,84 +867,23 @@
     }
 
     // ============================================================
-    // QUERY FUNCTIONS
+    // QUERY FUNCTIONS - Delegates to ClassesQueries
     // ============================================================
 
     function getCharacterClasses(char) {
-        if (!char) return [];
-        var classIds = Array.isArray(char.classIds) ? char.classIds : [];
-        if (classIds.length === 0) return [];
-
-        var classes = typeof window.getClasses === 'function' ? window.getClasses() : [];
-        return classes.filter(function(c) {
-            return classIds.some(function(cid) { return String(cid) === String(c.id); });
-        });
+        return ClassesQueries.getCharacterClasses(char);
     }
 
     function getCharacterClassNames(char) {
-        var classes = getCharacterClasses(char);
-        return classes.map(function(c) { return c.name; });
+        return ClassesQueries.getCharacterClassNames(char);
     }
 
     function getCharactersByClass(classId) {
-        if (!classId) return [];
-        var data = window.data || {};
-        if (!data.characters) return [];
-        return data.characters.filter(function(c) {
-            var classIds = Array.isArray(c.classIds) ? c.classIds : [];
-            return classIds.some(function(cid) { return String(cid) === String(classId); });
-        });
+        return ClassesQueries.getCharactersByClass(classId);
     }
 
     function getAvailableStudentsForClass(classId, week) {
-        if (!classId) return [];
-        var weekNum = Number(week);
-        if (!Number.isInteger(weekNum) || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return [];
-        }
-
-        var data = window.data || {};
-        var classChars = getCharactersByClass(classId);
-
-        var available = classChars.filter(function(char) {
-            if (window.CharacterEliminations &&
-                typeof window.CharacterEliminations.isCharacterEliminatedByWeek === 'function' &&
-                window.CharacterEliminations.isCharacterEliminatedByWeek(char, weekNum)) {
-                return false;
-            }
-
-            if (data.teams && Array.isArray(data.teams)) {
-                for (var i = 0; i < data.teams.length; i++) {
-                    var team = data.teams[i];
-                    if (!team || typeof team !== 'object') continue;
-                    if (team.type !== 'academic') continue;
-                    if (team.status === 'deleted' || team.status === 'inactive' || team.status === 'deprecated') continue;
-                    if (String(team.classId) !== String(classId)) continue;
-
-                    if (team.members && Array.isArray(team.members)) {
-                        for (var j = 0; j < team.members.length; j++) {
-                            var member = team.members[j];
-                            if (!member || typeof member !== 'object') continue;
-                            if (String(member.characterId) === String(char.id)) {
-                                var join = parseInt(member.joinPeriod);
-                                var leave = parseInt(member.leavePeriod);
-                                // Invalid join means we can't determine availability - exclude
-                                if (isNaN(join)) {
-                                    return false;
-                                }
-                                if (join <= weekNum && (isNaN(leave) || leave >= weekNum)) {
-                                    return false;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            return true;
-        });
-
-        return available;
+        return ClassesQueries.getAvailableStudentsForClass(classId, week);
     }
 
     // ============================================================
@@ -956,7 +905,7 @@
         clearClassTags: clearClassTags,
         populateClassTags: populateClassTags,
 
-        // Queries
+        // Queries (delegated to ClassesQueries)
         getCharacterClasses: getCharacterClasses,
         getCharacterClassNames: getCharacterClassNames,
         getCharactersByClass: getCharactersByClass,
@@ -967,12 +916,11 @@
 
         // State access (delegated to index)
         getCurrentEditId: function() {
-            return window.getCurrentEditId();
+            return getCurrentEditId();
         },
         setCurrentEditId: function(id) {
-            return window.setCurrentEditId(id);
+            return setCurrentEditId(id);
         }
     };
-
 
 })();
