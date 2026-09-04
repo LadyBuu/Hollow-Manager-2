@@ -34,15 +34,25 @@
  *   - DOM is the temporary source of form input values during save.
  *   - Persisted character data remains in window.data.
  * 
+ * IMPORTANT:
+ *   - No DOM extraction here - form extraction is in character-form.js
+ *   - No UI rendering here - rendering is in character-form.js
+ *   - This module only handles CRUD operations and persistence
+ *   - USES CharacterQueries for character data and display names
+ *   - USES MutationUtils for backup and persistence
+ *   - USES NotificationSystem for notifications
+ *   - USES ActivityLog for activity logging
+ *   - USES CharacterConstants for domain constants
+ * 
  * DEPENDENCIES (ALL REQUIRED):
- *   - window.getCurrentEditId (from index.js)
- *   - window.setCurrentEditId (from index.js)
- *   - window.CharacterQueries (from character-queries.js) - getCharacterById, getDisplayName
- *   - window.saveData (from database.js)
- *   - window.CharacterConstants (from character-constants.js) - MANDATORY
+ *   - window.CharacterQueries (from character-queries.js)
  *   - window.MutationUtils (from mutation-utils.js)
  *   - window.NotificationSystem (from notification.js)
- *   - window.ActivityLog (from activity-log.js) - optional
+ *   - window.ActivityLog (from activity-log.js)
+ *   - window.CharacterConstants (from character-constants.js) - MANDATORY
+ *   - window.getCurrentEditId (from index.js)
+ *   - window.setCurrentEditId (from index.js)
+ *   - window.saveData (from database.js)
  */
 
 (function() {
@@ -55,36 +65,39 @@
     window.__characterCrudLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries || window;
-    var NotificationSystem = window.NotificationSystem || window;
-    var MutationUtils = window.MutationUtils || window;
-    var ActivityLog = window.ActivityLog || window;
-    var CC = window.CharacterConstants;
+    var CharacterQueries = window.CharacterQueries;
+    var MutationUtils = window.MutationUtils;
+    var NotificationSystem = window.NotificationSystem;
+    var ActivityLog = window.ActivityLog;
+    var CharacterConstants = window.CharacterConstants;
 
     // ============================================================
-    // DEPENDENCY CHECK - ALL dependencies must be present
+    // CONSTANTS - From CharacterConstants (MANDATORY)
+    // ============================================================
+
+    var STAT_KEYS = CharacterConstants.STAT_KEYS;
+    var STAT_MIN = CharacterConstants.STAT_MIN;
+    var STAT_MAX = CharacterConstants.STAT_MAX;
+    var STAT_DEFAULT = CharacterConstants.STAT_DEFAULT;
+    var MAGIC_MAX = CharacterConstants.MAGIC_MAX;
+    var MAGIC_TYPE_KEYS = CharacterConstants.MAGIC_TYPE_KEYS;
+    var MAX_SPECIAL_MOVES = CharacterConstants.MAX_SPECIAL_MOVES;
+    var MAX_MOVE_NAME_LENGTH = CharacterConstants.MAX_MOVE_NAME_LENGTH;
+    var MAX_MOVE_DESCRIPTION_LENGTH = CharacterConstants.MAX_MOVE_DESCRIPTION_LENGTH;
+
+    // Calendar constants
+    var MIN_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MIN_WEEK : 1;
+    var MAX_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MAX_WEEK : 52;
+
+    // ============================================================
+    // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
         var missing = [];
-
-        // Hard dependencies - MUST be present
-        var required = [
-            'getCurrentEditId',
-            'setCurrentEditId',
-            'saveData'
-        ];
-
-        required.forEach(function(name) {
-            if (name === 'saveData' && typeof window.saveData !== 'function') {
-                missing.push('saveData');
-            } else if (typeof window[name] !== 'function') {
-                missing.push(name);
-            }
-        });
 
         // CharacterQueries is MANDATORY
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
@@ -94,16 +107,11 @@
             missing.push('CharacterQueries.getDisplayName');
         }
 
-        // CharacterConstants is MANDATORY - no fallbacks
-        if (!CC) {
-            missing.push('CharacterConstants');
-        }
-
         // MutationUtils is MANDATORY
         if (!MutationUtils || typeof MutationUtils.createSafeBackup !== 'function') {
             missing.push('MutationUtils.createSafeBackup');
         }
-        if (MutationUtils && typeof MutationUtils.saveWithPromise !== 'function') {
+        if (!MutationUtils || typeof MutationUtils.saveWithPromise !== 'function') {
             missing.push('MutationUtils.saveWithPromise');
         }
 
@@ -112,36 +120,37 @@
             missing.push('NotificationSystem.notify');
         }
 
+        // ActivityLog is MANDATORY
+        if (!ActivityLog || typeof ActivityLog.record !== 'function') {
+            missing.push('ActivityLog.record');
+        }
+
+        // CharacterConstants is MANDATORY
+        if (!CharacterConstants) {
+            missing.push('CharacterConstants');
+        }
+
+        // getCurrentEditId is MANDATORY
+        if (typeof window.getCurrentEditId !== 'function') {
+            missing.push('getCurrentEditId');
+        }
+
+        // setCurrentEditId is MANDATORY
+        if (typeof window.setCurrentEditId !== 'function') {
+            missing.push('setCurrentEditId');
+        }
+
+        // saveData is MANDATORY
+        if (typeof window.saveData !== 'function') {
+            missing.push('saveData');
+        }
+
         if (missing.length > 0) {
-            console.error('CharacterCRUD: Missing mandatory dependencies:', missing.join(', '));
+            console.warn('CharacterCRUD: Missing dependencies:', missing.join(', '));
             return false;
         }
         return true;
     }
-
-    // ============================================================
-    // CANONICAL CONSTANTS - From CharacterConstants ONLY
-    // ============================================================
-
-    // Magic constants
-    var MAGIC_TYPE_KEYS = CC ? CC.MAGIC_TYPE_KEYS : [];
-    var MAGIC_MAX = CC ? CC.MAGIC_MAX : 10;
-    var BALANCED_MAGE_THRESHOLD = CC ? CC.BALANCED_MAGE_THRESHOLD : 3;
-
-    // Stat constants
-    var STAT_KEYS = CC ? CC.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-    var STAT_MIN = CC ? CC.STAT_MIN : 1;
-    var STAT_MAX = CC ? CC.STAT_MAX : 50;
-    var STAT_DEFAULT = CC ? CC.STAT_DEFAULT : 10;
-
-    // Special moves constants
-    var MAX_SPECIAL_MOVES = CC ? CC.MAX_SPECIAL_MOVES : 20;
-    var MAX_MOVE_NAME_LENGTH = CC ? CC.MAX_MOVE_NAME_LENGTH : 100;
-    var MAX_MOVE_DESCRIPTION_LENGTH = CC ? CC.MAX_MOVE_DESCRIPTION_LENGTH : 500;
-
-    // Calendar constants
-    var MIN_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MIN_WEEK : 1;
-    var MAX_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MAX_WEEK : 52;
 
     // ============================================================
     // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
@@ -149,13 +158,27 @@
 
     function showNotification(message, type) {
         type = type || 'info';
-        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
-            NotificationSystem.notify(message, type);
-        } else if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
+        NotificationSystem.notify(message, type);
+    }
+
+    // ============================================================
+    // SAFE BACKUP - Delegates to MutationUtils
+    // ============================================================
+
+    function createSafeBackup(data) {
+        return MutationUtils.createSafeBackup(data);
+    }
+
+    // ============================================================
+    // STATE ACCESS - Single source of truth
+    // ============================================================
+
+    function getCurrentEditId() {
+        return window.getCurrentEditId();
+    }
+
+    function setCurrentEditId(id) {
+        window.setCurrentEditId(id);
     }
 
     // ============================================================
@@ -164,57 +187,19 @@
 
     function safeRenderCharacterList() {
         if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-            window.CharacterList.render();
+            try { window.CharacterList.render(); } catch (e) { /* Ignore */ }
         }
     }
 
     function safeShowCharacterForm(id) {
         if (typeof window.showCharacterForm === 'function') {
-            window.showCharacterForm(id);
+            try { window.showCharacterForm(id); } catch (e) { /* Ignore */ }
         }
     }
 
     function safeUpdateDashboardStats() {
         if (typeof window.updateDashboardStats === 'function') {
-            window.updateDashboardStats();
-        }
-    }
-
-    // ============================================================
-    // STATE ACCESS - Single source of truth
-    // ============================================================
-
-    function getCurrentEditId() {
-        if (typeof window.getCurrentEditId === 'function') {
-            return window.getCurrentEditId();
-        }
-        return null;
-    }
-
-    function setCurrentEditId(id) {
-        if (typeof window.setCurrentEditId === 'function') {
-            window.setCurrentEditId(id);
-        }
-    }
-
-    // ============================================================
-    // SAFE CLONE - Delegate to MutationUtils
-    // ============================================================
-
-    function createSafeBackup(data) {
-        if (MutationUtils && typeof MutationUtils.createSafeBackup === 'function') {
-            return MutationUtils.createSafeBackup(data);
-        }
-
-        // Emergency fallback (should never be needed)
-        try {
-            if (typeof structuredClone === 'function') {
-                return structuredClone(data);
-            }
-            return JSON.parse(JSON.stringify(data));
-        } catch (err) {
-            console.error('CharacterCRUD: Failed to create backup:', err);
-            return null;
+            try { window.updateDashboardStats(); } catch (e) { /* Ignore */ }
         }
     }
 
@@ -268,172 +253,16 @@
     }
 
     // ============================================================
-    // FORM EXTRACTION HELPERS
+    // CHARACTER VALIDATION - Pure domain validation
     // ============================================================
 
-    function getClassIds() {
-        var ids = [];
-        var container = document.getElementById('class-tag-container');
-        if (container) {
-            container.querySelectorAll('[data-class-id]').forEach(function(tag) {
-                ids.push(tag.dataset.classId);
-            });
-        }
-        return ids;
-    }
-
-    function getCareerStatus() {
-        var statuses = [];
-        var container = document.getElementById('career-status-container');
-        if (container) {
-            container.querySelectorAll('.career-status-entry').forEach(function(entry) {
-                var select = entry.querySelector('.career-status-select');
-                var startInput = entry.querySelector('.career-start-year');
-                var endInput = entry.querySelector('.career-end-year');
-                if (select && select.value) {
-                    statuses.push({
-                        status: select.value,
-                        startYear: startInput ? startInput.value || '' : '',
-                        endYear: endInput ? endInput.value || '' : ''
-                    });
-                }
-            });
-        }
-        return statuses;
-    }
-
-    function getMagic() {
-        var magic = {};
-        var magicMax = MAGIC_MAX;
-
-        MAGIC_TYPE_KEYS.forEach(function(key) {
-            var input = document.getElementById('magic-' + key);
-            var val = input ? parseInt(input.value, 10) : 0;
-            magic[key] = isNaN(val) ? 0 : Math.max(0, Math.min(magicMax, val));
-        });
-        return magic;
-    }
-
-    function getFormSpecialMoves(type) {
-        var moves = [];
-        var containerId = type === 'physical' ? 'physical-moves-list' : 'magical-moves-list';
-        var container = document.getElementById(containerId);
-
-        if (container) {
-            var entries = container.querySelectorAll('.special-move-entry');
-            entries.forEach(function(el) {
-                var nameEl = el.querySelector('.move-name');
-                var descEl = el.querySelector('.move-desc');
-                if (nameEl) {
-                    var name = nameEl.textContent ? nameEl.textContent.trim() : '';
-                    var desc = descEl ? descEl.textContent.trim() : '';
-                    if (name) {
-                        moves.push({
-                            name: name,
-                            description: desc
-                        });
-                    }
-                }
-            });
-        }
-
-        return moves;
-    }
-
-    function validateWeek(week) {
-        var num = Number(week);
-        return Number.isInteger(num) && num >= MIN_WEEK && num <= MAX_WEEK;
-    }
-
-    // ============================================================
-    // BUILD CHARACTER DATA - Using canonical constants
-    // ============================================================
-
-    function buildCharacterData(
-        classIds, careerStatus, magic, physicalMoves, magicalMoves,
-        isDeceased, deathYear, deathCause, deathAge, deathWeek
-    ) {
-        var getVal = function(id, fallback) {
-            var el = document.getElementById(id);
-            return el ? el.value.trim() : fallback;
-        };
-
-        var getInt = function(id, fallback) {
-            var el = document.getElementById(id);
-            if (!el) return fallback;
-            var val = parseInt(el.value, 10);
-            if (isNaN(val)) return fallback;
-            // Use canonical STAT_MIN and STAT_MAX
-            return Math.max(STAT_MIN, Math.min(STAT_MAX, val));
-        };
-
-        var finalDeathYear = isDeceased ? deathYear : '';
-        var finalDeathCause = isDeceased ? deathCause : '';
-        var finalDeathAge = isDeceased ? deathAge : '';
-        var finalDeathWeek = isDeceased ? deathWeek : '';
-
-        return {
-            firstName: getVal('char-firstName', ''),
-            middleName: getVal('char-middlename', ''),
-            lastName: getVal('char-lastName', ''),
-            nickname: getVal('char-nickname', ''),
-            alias: getVal('char-alias', ''),
-            previousNames: getVal('char-previous-names', '').split(',').map(function(n) {
-                return n.trim();
-            }).filter(function(n) { return n; }),
-            nameFormat: getVal('char-name-format', 'firstlast'),
-            birthYear: getVal('char-birthyear', ''),
-            gender: getVal('char-gender', ''),
-            attraction: getVal('char-attraction', ''),
-            sexuality: getVal('char-sexuality', ''),
-            eyes: getVal('char-eyes', ''),
-            hair: getVal('char-hair', ''),
-            skin: getVal('char-skin', ''),
-            height: getVal('char-height', ''),
-            weight: getVal('char-weight', ''),
-            build: getVal('char-build', ''),
-            appearanceNotes: getVal('char-appearance-notes', ''),
-            notes: getVal('char-notes', ''),
-            deceased: isDeceased,
-            deathYear: finalDeathYear,
-            deathCause: finalDeathCause,
-            deathAge: finalDeathAge,
-            deathWeek: finalDeathWeek,
-            careerStatus: careerStatus,
-            specialty: getVal('char-specialty', ''),
-            classIds: classIds,
-            personality: {
-                traits: getVal('char-traits', ''),
-                ideals: getVal('char-ideals', ''),
-                bonds: getVal('char-bonds', ''),
-                flaws: getVal('char-flaws', ''),
-                alignment: getVal('char-alignment', ''),
-                likes: getVal('char-likes', ''),
-                dislikes: getVal('char-dislikes', ''),
-                habits: getVal('char-habits', ''),
-                fears: getVal('char-fears', ''),
-                goals: getVal('char-goals', '')
-            },
-            stats: {
-                str: getInt('char-str', STAT_DEFAULT),
-                dex: getInt('char-dex', STAT_DEFAULT),
-                con: getInt('char-con', STAT_DEFAULT),
-                int: getInt('char-int', STAT_DEFAULT),
-                wis: getInt('char-wis', STAT_DEFAULT),
-                cha: getInt('char-cha', STAT_DEFAULT)
-            },
-            magic: magic,
-            specialMoves: {
-                physical: physicalMoves,
-                magical: magicalMoves
-            }
-        };
-    }
-
-    // ============================================================
-    // CHARACTER VALIDATION - Using canonical constants
-    // ============================================================
-
+    /**
+     * Validate character data.
+     * This is a PURE function - no side effects, no state mutation.
+     * 
+     * @param {object} charData - Character data to validate
+     * @returns {object} { valid: boolean, message?: string }
+     */
     function validateCharacter(charData) {
         // Basic required fields
         if (!charData.firstName) {
@@ -499,6 +328,15 @@
         }
 
         return { valid: true };
+    }
+
+    // ============================================================
+    // WEEK VALIDATION
+    // ============================================================
+
+    function validateWeek(week) {
+        var num = Number(week);
+        return Number.isInteger(num) && num >= MIN_WEEK && num <= MAX_WEEK;
     }
 
     // ============================================================
@@ -568,57 +406,36 @@
     // SAVE CHARACTER - Transactional mutation flow
     // ============================================================
 
-    function save() {
+    /**
+     * Save a character (create or update).
+     * Expects the form data to already be extracted and validated.
+     * 
+     * @param {object} formData - Form data object
+     * @returns {Promise<boolean>} True on success
+     */
+    function save(formData) {
         if (!checkDependencies()) {
             showNotification('Dependencies not loaded. Please refresh the page.', 'error');
             return Promise.resolve(false);
         }
 
-        var data = window.data || {};
-
-        // Validate data structure - fail closed
-        if (!validateDataArray(data, 'characters')) {
-            showNotification('Character data is corrupted. Please reload.', 'error');
+        // ---- PHASE 1: VALIDATE ----
+        if (!formData || typeof formData !== 'object') {
+            showNotification('Form data is required.', 'error');
             return Promise.resolve(false);
         }
 
-        var editId = getCurrentEditId();
-
-        // --- EXTRACT FORM DATA ---
-        var deceasedEl = document.getElementById('char-deceased');
-        if (!deceasedEl) {
-            showNotification('Form error: Missing required fields. Please refresh the page.', 'error');
-            return Promise.resolve(false);
-        }
-
-        var isDeceased = deceasedEl.checked;
-        var deathYear = document.getElementById('char-death-year') ? document.getElementById('char-death-year').value.trim() : '';
-        var deathCause = document.getElementById('char-death-cause') ? document.getElementById('char-death-cause').value.trim() : '';
-        var deathAge = document.getElementById('char-death-age') ? document.getElementById('char-death-age').value.trim() : '';
-        var deathWeek = document.getElementById('char-death-week') ? document.getElementById('char-death-week').value.trim() : '';
-
-        var classIds = getClassIds();
-        var careerStatus = getCareerStatus();
-        var magic = getMagic();
-        var physicalMoves = getFormSpecialMoves('physical');
-        var magicalMoves = getFormSpecialMoves('magical');
-
-        // --- BUILD ---
-        var charData = buildCharacterData(
-            classIds, careerStatus, magic, physicalMoves, magicalMoves,
-            isDeceased, deathYear, deathCause, deathAge, deathWeek
-        );
-
-        // --- VALIDATE ---
-        var validation = validateCharacter(charData);
+        // Use the pure validation function - NO MUTATION
+        var validation = validateCharacter(formData);
         if (!validation.valid) {
             showNotification(validation.message, 'error');
             return Promise.resolve(false);
         }
 
+        var editId = getCurrentEditId();
         var isEditing = editId !== null && editId !== undefined && editId !== '';
         var existingChar = null;
-        var name = charData.firstName + ' ' + charData.lastName;
+        var name = formData.firstName + ' ' + formData.lastName;
         var newId = null;
 
         if (isEditing) {
@@ -630,41 +447,49 @@
             name = CharacterQueries.getDisplayName(existingChar);
         }
 
-        // --- SNAPSHOT - Required, abort if fails ---
+        var data = window.data || {};
+
+        // Validate data structure - fail closed
+        if (!validateDataArray(data, 'characters')) {
+            showNotification('Character data is corrupted. Please reload.', 'error');
+            return Promise.resolve(false);
+        }
+
+        // ---- PHASE 2: SNAPSHOT - Required, abort if fails ----
         var backup = createSafeBackup(data);
         if (!backup) {
             showNotification('Unable to safely save character. Please try again.', 'error');
             return Promise.resolve(false);
         }
 
-        // --- MUTATE ---
+        // ---- PHASE 3: MUTATE ----
         var mutationResult;
         if (isEditing) {
-            mutationResult = updateExistingCharacter(existingChar, charData, data);
+            mutationResult = updateExistingCharacter(existingChar, formData, data);
             if (!mutationResult.success) {
                 showNotification(mutationResult.error || 'Failed to update character.', 'error');
                 return Promise.resolve(false);
             }
             newId = editId;
         } else {
-            mutationResult = createNewCharacter(charData, data);
+            mutationResult = createNewCharacter(formData, data);
             if (!mutationResult.success) {
                 showNotification(mutationResult.error || 'Failed to create character.', 'error');
                 return Promise.resolve(false);
             }
             newId = mutationResult.id;
-            name = charData.firstName + ' ' + charData.lastName;
+            name = formData.firstName + ' ' + formData.lastName;
         }
 
         // Commit the mutation to window.data
         window.data = data;
 
-        // --- PERSIST - Use saveWithPromise from MutationUtils ---
+        // ---- PHASE 4: PERSIST ----
         var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
-                // POST-PERSIST SIDE EFFECTS - failure-safe
+                // ---- PHASE 5: POST-PERSIST SIDE EFFECTS (failure-safe) ----
                 try {
                     if (ActivityLog && typeof ActivityLog.record === 'function') {
                         ActivityLog.record(
@@ -677,12 +502,12 @@
                     // Ignore logging errors
                 }
 
-                // --- UI COMMIT ---
+                // ---- PHASE 6: UI COMMIT ----
                 commitSaveUI(newId, isEditing);
                 return true;
             })
             .catch(function(err) {
-                // --- ROLLBACK ---
+                // ---- PHASE 7: ROLLBACK ----
                 rollback(backup, editId, isEditing);
                 return false;
             });
@@ -717,20 +542,24 @@
             return Promise.resolve(false);
         }
 
+        // Capture previous edit state BEFORE mutation
+        var previousEditId = getCurrentEditId();
+        var wasEditing = previousEditId !== null && String(previousEditId) === String(id);
+
         var name = CharacterQueries.getDisplayName(char);
 
         if (!confirm('Delete "' + name + '" permanently? This will also remove them from all teams.')) {
             return Promise.resolve(false);
         }
 
-        // --- SNAPSHOT - Required, abort if fails ---
+        // ---- PHASE 1: SNAPSHOT - Required, abort if fails ----
         var backup = createSafeBackup(data);
         if (!backup) {
             showNotification('Unable to safely delete character. Please try again.', 'error');
             return Promise.resolve(false);
         }
 
-        // --- MUTATE - Clean team memberships ---
+        // ---- PHASE 2: MUTATE - Clean team memberships ----
         if (Array.isArray(data.teams)) {
             data.teams.forEach(function(team) {
                 if (Array.isArray(team.members)) {
@@ -749,12 +578,12 @@
         // Commit mutation
         window.data = data;
 
-        // --- PERSIST ---
+        // ---- PHASE 3: PERSIST ----
         var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
-                // POST-PERSIST SIDE EFFECTS - failure-safe
+                // ---- PHASE 4: POST-PERSIST SIDE EFFECTS (failure-safe) ----
                 try {
                     if (ActivityLog && typeof ActivityLog.record === 'function') {
                         ActivityLog.record('Deleted character: ' + name);
@@ -763,13 +592,15 @@
                     // Ignore logging errors
                 }
 
-                // --- UI COMMIT ---
+                // ---- PHASE 5: UI COMMIT ----
+                // Use captured previousEditId, not the deleted character ID
                 commitDeleteUI();
                 return true;
             })
             .catch(function(err) {
-                // --- ROLLBACK ---
-                rollback(backup, id, true);
+                // ---- PHASE 6: ROLLBACK ----
+                // Use captured previousEditId to restore correct UI state
+                rollback(backup, previousEditId, wasEditing);
                 return false;
             });
     }
@@ -779,20 +610,21 @@
     // ============================================================
 
     window.CharacterCRUD = {
+        // Core operations
         save: save,
         delete: deleteCharacter,
-        getClassIds: getClassIds,
-        getCareerStatus: getCareerStatus,
-        getMagic: getMagic,
-        getFormSpecialMoves: getFormSpecialMoves,
-        buildCharacterData: buildCharacterData,
+
+        // Validation (pure, for external use)
         validateCharacter: validateCharacter,
+
+        // Helpers (exposed for testing/emergency recovery)
         createSafeBackup: createSafeBackup,
         generateCharacterId: generateCharacterId,
+        rollback: rollback,
+
+        // State access (delegated)
         getCurrentEditId: getCurrentEditId,
-        setCurrentEditId: setCurrentEditId,
-        // Exposed for testing/emergency recovery
-        rollback: rollback
+        setCurrentEditId: setCurrentEditId
     };
 
 })();
