@@ -18,6 +18,11 @@
  *   Death handling: deceased characters are eliminated from the timeline.
  *   Death and elimination records are combined for availability checks.
  *   Death with invalid deathWeek = unavailable entirely (fail-closed).
+ *   USES CharacterQueries for character data and display names
+ *   USES MutationUtils for backup and persistence
+ *   USES NotificationSystem for notifications
+ *   USES ActivityLog for activity logging
+ *   USES DomUtils for safe DOM operations
  * 
  * ELIMINATION SOURCES OF TRUTH:
  *   1. eliminations array - explicit elimination records (tournament or standalone)
@@ -36,15 +41,14 @@
  *     determines availability from its week onward.
  * 
  * DEPENDENCIES:
- *   - window.getCharacterById (from core-utils.js)
- *   - window.getDisplayName (from core-utils.js)
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.MutationUtils (from mutation-utils.js)
+ *   - window.NotificationSystem (from notification.js)
+ *   - window.ActivityLog (from activity-log.js)
+ *   - window.DomUtils (from dom-utils.js)
  *   - window.getCurrentEditId (from index.js)
  *   - window.saveData (from database.js)
- *   - window.MutationUtils (from mutation-utils.js)
- *   - window.DomUtils (from dom-utils.js)
- *   - window.logActivity (optional, for activity logging)
  *   - window.CALENDAR_CONSTANTS (from constants.js)
- *   - window.NotificationSystem (from notification.js)
  */
 
 (function() {
@@ -57,25 +61,35 @@
     window.__characterEliminationsLoaded = true;
 
     // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var CharacterQueries = window.CharacterQueries || window;
+    var MutationUtils = window.MutationUtils || window;
+    var NotificationSystem = window.NotificationSystem || window;
+    var ActivityLog = window.ActivityLog || window;
+    var DomUtils = window.DomUtils || window;
+    var CalendarConstants = window.CALENDAR_CONSTANTS || {};
+
+    // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MIN_WEEK : 1;
-    var MAX_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MAX_WEEK : 52;
+    var MIN_WEEK = CalendarConstants.MIN_WEEK || 1;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK || 52;
 
     // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
+        var missing = [];
+
         var required = [
-            'getCharacterById',
-            'getDisplayName',
             'getCurrentEditId',
             'saveData'
         ];
 
-        var missing = [];
         required.forEach(function(name) {
             if (name === 'saveData' && typeof window.saveData !== 'function') {
                 missing.push('saveData');
@@ -84,9 +98,30 @@
             }
         });
 
-        // Check for MutationUtils
-        if (!window.MutationUtils || typeof window.MutationUtils.createSafeBackup !== 'function') {
+        // CharacterQueries is MANDATORY
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+
+        // MutationUtils is MANDATORY
+        if (!MutationUtils || typeof MutationUtils.createSafeBackup !== 'function') {
             missing.push('MutationUtils.createSafeBackup');
+        }
+        if (MutationUtils && typeof MutationUtils.saveWithPromise !== 'function') {
+            missing.push('MutationUtils.saveWithPromise');
+        }
+
+        // NotificationSystem is MANDATORY
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
+        }
+
+        // DomUtils is MANDATORY
+        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
+            missing.push('DomUtils.escapeHtml');
         }
 
         if (missing.length > 0) {
@@ -97,35 +132,14 @@
     }
 
     // ============================================================
-    // NOTIFICATION SYSTEM
+    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
-
-        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
-            window.NotificationSystem.notify(message, type);
-            return;
-        }
-
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
-        }
-
-        if (typeof window.setSession === 'function') {
-            window.setSession('toast', {
-                message: message,
-                type: type,
-                timestamp: Date.now()
-            });
-            if (typeof window.renderToast === 'function') {
-                window.renderToast();
-            }
-            return;
-        }
-
-        if (type === 'error') {
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
+        } else if (type === 'error') {
             alert('Error: ' + message);
         } else {
             alert(message);
@@ -133,15 +147,36 @@
     }
 
     // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function escapeHtml(value) {
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
+        }
+        // Emergency fallback (should never be reached)
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;')
+            .replace(/`/g, '&#x60;');
+    }
+
+    // ============================================================
     // SAFE BACKUP - Delegate to MutationUtils
     // ============================================================
 
     function createSafeBackup(data) {
-        if (window.MutationUtils && typeof window.MutationUtils.createSafeBackup === 'function') {
-            return window.MutationUtils.createSafeBackup(data);
+        if (MutationUtils && typeof MutationUtils.createSafeBackup === 'function') {
+            return MutationUtils.createSafeBackup(data);
         }
 
-        // Fallback implementation
+        // Emergency fallback (should never be needed)
         try {
             if (window.db && typeof window.db.createSafeCopy === 'function') {
                 return window.db.createSafeCopy(data);
@@ -149,12 +184,7 @@
             if (typeof structuredClone === 'function') {
                 return structuredClone(data);
             }
-            try {
-                return JSON.parse(JSON.stringify(data));
-            } catch (e) {
-                console.warn('CharacterEliminations: Failed to create backup:', e);
-                return null;
-            }
+            return JSON.parse(JSON.stringify(data));
         } catch (err) {
             console.warn('CharacterEliminations: Failed to create backup:', err);
             return null;
@@ -167,19 +197,19 @@
 
     function safeRenderCharacterList() {
         if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-            window.CharacterList.render();
+            try { window.CharacterList.render(); } catch (e) { /* Ignore */ }
         }
     }
 
     function safeShowCharacterForm(id) {
         if (typeof window.showCharacterForm === 'function') {
-            window.showCharacterForm(id);
+            try { window.showCharacterForm(id); } catch (e) { /* Ignore */ }
         }
     }
 
     function safeUpdateDashboardStats() {
         if (typeof window.updateDashboardStats === 'function') {
-            window.updateDashboardStats();
+            try { window.updateDashboardStats(); } catch (e) { /* Ignore */ }
         }
     }
 
@@ -195,6 +225,9 @@
     // ============================================================
 
     function generateEliminationId() {
+        if (window.IdUtils && typeof window.IdUtils.generateId === 'function') {
+            return window.IdUtils.generateId('elim');
+        }
         if (window.crypto && typeof window.crypto.randomUUID === 'function') {
             return 'elim_' + window.crypto.randomUUID();
         }
@@ -472,7 +505,7 @@
             return;
         }
 
-        var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
+        var name = CharacterQueries.getDisplayName(char);
         if (!confirm('Eliminate ' + name + ' at week ' + week + '?\nReason: ' + reason)) {
             return;
         }
@@ -500,23 +533,15 @@
 
         rebuildEliminatedWeeks(char);
 
-        // PERSIST - Use saveWithPromise from MutationUtils if available
-        var savePromise;
-        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
-            savePromise = window.MutationUtils.saveWithPromise();
-        } else {
-            savePromise = Promise.resolve()
-                .then(function() {
-                    return window.saveData();
-                });
-        }
+        // PERSIST - Use saveWithPromise from MutationUtils
+        var savePromise = MutationUtils.saveWithPromise();
 
         savePromise
             .then(function() {
                 // LOG - failure-safe, persistence already succeeded
                 try {
-                    if (typeof window.logActivity === 'function') {
-                        window.logActivity('Eliminated ' + name + ' (standalone, week ' + week + '): ' + reason);
+                    if (ActivityLog && typeof ActivityLog.record === 'function') {
+                        ActivityLog.record('Eliminated ' + name + ' (standalone, week ' + week + '): ' + reason);
                     }
                 } catch (logErr) {
                     // Ignore logging errors
@@ -594,24 +619,16 @@
         });
         rebuildEliminatedWeeks(char);
 
-        // PERSIST - Use saveWithPromise from MutationUtils if available
-        var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
-        var savePromise;
-        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
-            savePromise = window.MutationUtils.saveWithPromise();
-        } else {
-            savePromise = Promise.resolve()
-                .then(function() {
-                    return window.saveData();
-                });
-        }
+        // PERSIST - Use saveWithPromise from MutationUtils
+        var name = CharacterQueries.getDisplayName(char);
+        var savePromise = MutationUtils.saveWithPromise();
 
         savePromise
             .then(function() {
                 // LOG - failure-safe, persistence already succeeded
                 try {
-                    if (typeof window.logActivity === 'function') {
-                        window.logActivity('Removed standalone elimination for ' + name + ' (week ' + elim.week + ')');
+                    if (ActivityLog && typeof ActivityLog.record === 'function') {
+                        ActivityLog.record('Removed standalone elimination for ' + name + ' (week ' + elim.week + ')');
                     }
                 } catch (logErr) {
                     // Ignore logging errors
@@ -704,23 +721,15 @@
 
         rebuildEliminatedWeeks(char);
 
-        // PERSIST - Use saveWithPromise from MutationUtils if available
-        var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
-        var savePromise;
-        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
-            savePromise = window.MutationUtils.saveWithPromise();
-        } else {
-            savePromise = Promise.resolve()
-                .then(function() {
-                    return window.saveData();
-                });
-        }
+        // PERSIST - Use saveWithPromise from MutationUtils
+        var name = CharacterQueries.getDisplayName(char);
+        var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
                 // LOG - failure-safe, persistence already succeeded
                 try {
-                    if (typeof window.logActivity === 'function') {
+                    if (ActivityLog && typeof ActivityLog.record === 'function') {
                         var tournName = 'Unknown Tournament';
                         if (tournamentId && data.tournaments) {
                             var tourn = data.tournaments.find(function(t) {
@@ -728,7 +737,7 @@
                             });
                             if (tourn) tournName = tourn.name;
                         }
-                        window.logActivity(name + ' eliminated from ' + tournName + ' (week ' + weekNum + ')');
+                        ActivityLog.record(name + ' eliminated from ' + tournName + ' (week ' + weekNum + ')');
                     }
                 } catch (logErr) {
                     // Ignore logging errors
@@ -795,23 +804,15 @@
 
         rebuildEliminatedWeeks(char);
 
-        // PERSIST - Use saveWithPromise from MutationUtils if available
-        var name = typeof window.getDisplayName === 'function' ? window.getDisplayName(char) : char.firstName || 'Character';
-        var savePromise;
-        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise === 'function') {
-            savePromise = window.MutationUtils.saveWithPromise();
-        } else {
-            savePromise = Promise.resolve()
-                .then(function() {
-                    return window.saveData();
-                });
-        }
+        // PERSIST - Use saveWithPromise from MutationUtils
+        var name = CharacterQueries.getDisplayName(char);
+        var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
                 // LOG - failure-safe, persistence already succeeded
                 try {
-                    if (typeof window.logActivity === 'function') {
+                    if (ActivityLog && typeof ActivityLog.record === 'function') {
                         var tournName = 'Unknown Tournament';
                         if (tournamentId && data.tournaments) {
                             var tourn = data.tournaments.find(function(t) {
@@ -819,7 +820,7 @@
                             });
                             if (tourn) tournName = tourn.name;
                         }
-                        window.logActivity('Restored ' + name + ' from ' + tournName);
+                        ActivityLog.record('Restored ' + name + ' from ' + tournName);
                     }
                 } catch (logErr) {
                     // Ignore logging errors
@@ -870,6 +871,5 @@
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK
     };
-
 
 })();
