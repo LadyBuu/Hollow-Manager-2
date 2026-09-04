@@ -31,29 +31,34 @@
  * DEPENDENCIES:
  *   Required:
  *     - window.TeamCore
+ *     - window.TeamQueries
  *     - window.TeamMembers
  *     - window.TeamRankings
  *   Optional (fallbacks provided):
- *     - window.getClasses
- *     - window.getDisplayName
- *     - window.getCharacterById
- *     - window.getCurrentStatus
+ *     - window.CharacterQueries (from character-queries.js)
+ *     - window.ClassesQueries (from classes-queries.js)
  *     - window.NotificationSystem (from notification.js)
+ *     - window.ActivityLog (from activity-log.js)
  *     - window.CALENDAR_CONSTANTS (from constants.js)
  *     - window.DomUtils (from dom-utils.js)
+ *     - window.ValidationUtils (from validation-utils.js)
  */
 
 (function() {
     'use strict';
 
     // Guard against duplicate script loading
-    // IMPORTANT: Check dependency BEFORE marking as loaded
     if (window.__teamModalsLoaded) {
         return;
     }
 
     if (!window.TeamCore) {
         console.error('TeamModals: TeamCore is required but not loaded.');
+        return;
+    }
+
+    if (!window.TeamQueries) {
+        console.error('TeamModals: TeamQueries is required but not loaded.');
         return;
     }
 
@@ -70,10 +75,24 @@
     window.__teamModalsLoaded = true;
 
     // ============================================================
-    // CONSTANTS - Use type-safe defaults
+    // DEPENDENCY IMPORTS
     // ============================================================
 
+    var TeamCore = window.TeamCore;
+    var TeamQueries = window.TeamQueries;
+    var TeamMembers = window.TeamMembers;
+    var TeamRankings = window.TeamRankings;
+    var CharacterQueries = window.CharacterQueries || window;
+    var ClassesQueries = window.ClassesQueries || window;
+    var NotificationSystem = window.NotificationSystem || window;
+    var ActivityLog = window.ActivityLog || window;
+    var DomUtils = window.DomUtils || window;
+    var ValidationUtils = window.ValidationUtils || window;
     var CALENDAR = window.CALENDAR_CONSTANTS || {};
+
+    // ============================================================
+    // CONSTANTS - Use type-safe defaults
+    // ============================================================
 
     var MIN_WEEK = Number.isInteger(CALENDAR.MIN_WEEK) ? CALENDAR.MIN_WEEK : 1;
     var MAX_WEEK = Number.isInteger(CALENDAR.MAX_WEEK) ? CALENDAR.MAX_WEEK : 52;
@@ -85,8 +104,8 @@
     // ============================================================
 
     function escapeHtml(value) {
-        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
-            return window.DomUtils.escapeHtml(value);
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
         }
         // Fallback
         return String(value == null ? '' : value)
@@ -98,28 +117,99 @@
     }
 
     // ============================================================
-    // NOTIFICATION - Use NotificationSystem when available
+    // CHARACTER HELPERS - Uses CharacterQueries
+    // ============================================================
+
+    function getCharacterName(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getDisplayName === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+        }
+        return 'Unknown';
+    }
+
+    function getCharacterCurrentStatus(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getCurrentStatus === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getCurrentStatus(char) : '';
+        }
+        return '';
+    }
+
+    // ============================================================
+    // CLASS HELPERS - Uses ClassesQueries
+    // ============================================================
+
+    function getClasses() {
+        if (ClassesQueries && typeof ClassesQueries.getClasses === 'function') {
+            return ClassesQueries.getClasses();
+        }
+        return [];
+    }
+
+    function getMissions() {
+        var data = window.data || {};
+        return data.missions || [];
+    }
+
+    // ============================================================
+    // ACTIVITY LOGGING - Uses ActivityLog
+    // ============================================================
+
+    function recordActivity(message) {
+        try {
+            if (ActivityLog && typeof ActivityLog.record === 'function') {
+                ActivityLog.record(message);
+            }
+        } catch (err) {
+            // Swallow logging errors
+        }
+    }
+
+    // ============================================================
+    // NOTIFICATION - Uses NotificationSystem
     // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
-
-        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
-            window.NotificationSystem.notify(message, type);
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
             return;
         }
-
         if (typeof window.showToast === 'function') {
             window.showToast(message, type);
             return;
         }
-
-        // Fallback to alert for errors
         if (type === 'error') {
             alert('Error: ' + message);
         } else {
             alert(message);
         }
+    }
+
+    // ============================================================
+    // PERIOD PARSING - Delegate to ValidationUtils
+    // ============================================================
+
+    function parseNumericPeriod(value) {
+        if (ValidationUtils && typeof ValidationUtils.parseStrictPositivePeriod === 'function') {
+            return ValidationUtils.parseStrictPositivePeriod(value);
+        }
+        // Fallback
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        var str = String(value).trim();
+        if (!/^\d+$/.test(str)) {
+            return null;
+        }
+        var parsed = Number(str);
+        return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+    }
+
+    function parsePositivePeriod(value) {
+        var parsed = parseNumericPeriod(value);
+        return (parsed !== null && parsed >= 1) ? parsed : null;
     }
 
     // ============================================================
@@ -142,23 +232,23 @@
     // ============================================================
 
     function refreshMemberList(teamId) {
-        var team = window.TeamCore.getTeam(teamId);
+        var team = TeamCore.getTeam(teamId);
         if (!team) return;
 
         var container = document.getElementById('members-list');
         if (!container) return;
 
         var currentPeriod = getCurrentPeriod(team.type);
-        container.innerHTML = window.TeamMembers.renderList(team, currentPeriod);
+        container.innerHTML = TeamMembers.renderList(team, currentPeriod);
     }
 
     function refreshRankingList(teamId) {
-        var team = window.TeamCore.getTeam(teamId);
+        var team = TeamCore.getTeam(teamId);
         if (!team) return;
 
         var listEl = document.getElementById('ranking-list');
         if (listEl) {
-            listEl.innerHTML = window.TeamRankings.renderList(team);
+            listEl.innerHTML = TeamRankings.renderList(team);
         }
     }
 
@@ -202,7 +292,7 @@
 
         if (editId) {
             title.textContent = 'Edit Team';
-            var team = window.TeamCore.getTeam(editId);
+            var team = TeamCore.getTeam(editId);
             if (team) {
                 // Null-safe field population
                 setFieldValue('team-name', team.name);
@@ -213,7 +303,7 @@
                 // Ranking field is DISPLAY ONLY - disabled by JS
                 var rankingInput = document.getElementById('team-ranking');
                 if (rankingInput) {
-                    var currentRank = window.TeamRankings.getCurrentRank(team);
+                    var currentRank = TeamQueries.getTeamCurrentRank(team);
                     rankingInput.value = currentRank || '';
                     rankingInput.disabled = true;
                 }
@@ -298,7 +388,7 @@
         var select = document.getElementById('team-class');
         if (!select) return;
 
-        var classes = window.getClasses ? window.getClasses() : [];
+        var classes = getClasses();
         var currentValue = select.value;
         select.innerHTML = '<option value="">Unassigned</option>';
         classes.forEach(function(cls) {
@@ -314,8 +404,7 @@
         var select = document.getElementById('team-mission');
         if (!select) return;
 
-        var data = window.data || {};
-        var missions = data.missions || [];
+        var missions = getMissions();
         select.innerHTML = '<option value="">None</option>';
         var sortedMissions = missions.slice().sort(function(a, b) {
             if (a.status === 'active' && b.status !== 'active') return -1;
@@ -436,7 +525,7 @@
         var modal = document.getElementById('member-modal');
         if (!modal) return;
 
-        var team = window.TeamCore.getTeam(teamId);
+        var team = TeamCore.getTeam(teamId);
         if (!team) return;
 
         var currentPeriod = getCurrentPeriod(team.type);
@@ -451,14 +540,14 @@
             select.innerHTML = '<option value="">Select character...</option>';
 
             // Get candidates for the current period (period-aware)
-            var candidates = window.TeamMembers.getCandidateCharactersAtPeriod(team.type, currentPeriod);
+            var candidates = TeamMembers.getCandidateCharactersAtPeriod(team.type, currentPeriod);
 
             candidates.forEach(function(char) {
                 if (!char || typeof char !== 'object') return;
                 var charId = char.id;
 
                 // Use TeamMembers for all eligibility/status logic
-                var eligibility = window.TeamMembers.getEligibilityStatus(
+                var eligibility = TeamMembers.getEligibilityStatus(
                     team,
                     char,
                     currentPeriod
@@ -467,8 +556,8 @@
                 var option = document.createElement('option');
                 option.value = char.id;
 
-                var displayName = window.getDisplayName ? window.getDisplayName(char) : 'Unknown';
-                var currentStatus = window.getCurrentStatus ? window.getCurrentStatus(char) : '';
+                var displayName = CharacterQueries.getDisplayName(char);
+                var currentStatus = CharacterQueries.getCurrentStatus(char);
                 option.textContent = displayName + ' [' + currentStatus + '] ' + eligibility.label;
 
                 if (eligibility.style) {
@@ -495,7 +584,7 @@
 
         var membersContainer = document.getElementById('members-list');
         if (membersContainer) {
-            membersContainer.innerHTML = window.TeamMembers.renderList(team, currentPeriod);
+            membersContainer.innerHTML = TeamMembers.renderList(team, currentPeriod);
         }
 
         modal.dataset.teamId = teamId;
@@ -543,9 +632,10 @@
             e.stopPropagation();
             var charId = target.dataset.characterId;
             if (charId && confirm('Remove this member from the team?')) {
-                var result = window.TeamCore.removeMember(teamId, charId);
+                var result = TeamCore.removeMember(teamId, charId);
                 if (result) {
                     refreshAllMemberUI(teamId);
+                    recordActivity('Removed member from team');
                 } else {
                     showNotification('Failed to remove member.', 'error');
                 }
@@ -562,7 +652,7 @@
         var modal = document.getElementById('edit-member-modal');
         if (!modal) return;
 
-        var team = window.TeamCore.getTeam(teamId);
+        var team = TeamCore.getTeam(teamId);
         if (!team || !team.members) {
             showNotification('Team not found.', 'error');
             return;
@@ -578,8 +668,8 @@
             return;
         }
 
-        var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
-        var name = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
+        var char = CharacterQueries.getCharacterById(member.characterId);
+        var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
 
         var nameEl = document.getElementById('edit-member-name');
         if (nameEl) nameEl.textContent = name;
@@ -635,7 +725,7 @@
             return;
         }
 
-        var result = window.TeamCore.addMember(teamId, {
+        var result = TeamCore.addMember(teamId, {
             characterId: charId,
             role: role,
             joinPeriod: joinPeriod,
@@ -655,6 +745,7 @@
 
         // Refresh UI
         refreshAllMemberUI(teamId);
+        recordActivity('Added member to team');
         showNotification('Member added successfully!', 'success');
     }
 
@@ -687,7 +778,7 @@
         var joinPeriod = joinInput ? joinInput.value : '';
         var leavePeriod = leaveInput ? leaveInput.value : '';
 
-        var result = window.TeamCore.updateMember(teamId, charId, {
+        var result = TeamCore.updateMember(teamId, charId, {
             role: role,
             joinPeriod: joinPeriod,
             leavePeriod: leavePeriod
@@ -703,6 +794,7 @@
 
         // Refresh UI
         refreshAllMemberUI(teamId);
+        recordActivity('Updated member in team');
         showNotification('Member updated successfully!', 'success');
     }
 
@@ -714,7 +806,7 @@
         var modal = document.getElementById('ranking-modal');
         if (!modal) return;
 
-        var team = window.TeamCore.getTeam(teamId);
+        var team = TeamCore.getTeam(teamId);
         if (!team) return;
 
         var titleEl = document.getElementById('ranking-modal-title');
@@ -738,7 +830,7 @@
 
         var listEl = document.getElementById('ranking-list');
         if (listEl) {
-            listEl.innerHTML = window.TeamRankings.renderList(team);
+            listEl.innerHTML = TeamRankings.renderList(team);
         }
 
         modal.classList.remove('hidden');
@@ -776,9 +868,10 @@
             e.stopPropagation();
             var period = target.dataset.period;
             if (period && confirm('Remove this ranking entry?')) {
-                var result = window.TeamCore.removeRanking(teamId, period);
+                var result = TeamCore.removeRanking(teamId, period);
                 if (result) {
                     refreshAllRankingUI(teamId);
+                    recordActivity('Removed ranking from team');
                 } else {
                     showNotification('Failed to remove ranking.', 'error');
                 }
@@ -807,7 +900,7 @@
             return;
         }
 
-        var team = window.TeamCore.getTeam(teamId);
+        var team = TeamCore.getTeam(teamId);
         if (!team) {
             showNotification('Team not found.', 'error');
             return;
@@ -829,7 +922,7 @@
             return;
         }
 
-        var result = window.TeamCore.addRanking(teamId, period, rank);
+        var result = TeamCore.addRanking(teamId, period, rank);
         if (!result) {
             showNotification('Failed to add ranking.', 'error');
             return;
@@ -841,6 +934,7 @@
 
         // Refresh UI
         refreshAllRankingUI(teamId);
+        recordActivity('Added ranking to team');
         showNotification('Ranking added successfully!', 'success');
     }
 
@@ -852,7 +946,7 @@
         var select = document.getElementById('member-character');
         if (!select) return;
 
-        var team = window.TeamCore.getTeam(teamId);
+        var team = TeamCore.getTeam(teamId);
         if (!team) return;
 
         var currentPeriod = getCurrentPeriod(team.type);
@@ -860,7 +954,7 @@
         select.innerHTML = '<option value="">Select character...</option>';
 
         // Use period-aware candidate selection
-        var candidates = window.TeamMembers.getCandidateCharactersAtPeriod(team.type, currentPeriod);
+        var candidates = TeamMembers.getCandidateCharactersAtPeriod(team.type, currentPeriod);
 
         var currentMemberIds = (team.members || []).map(function(m) {
             return m ? String(m.characterId) : null;
@@ -870,7 +964,7 @@
             if (!char || typeof char !== 'object') return;
 
             // Use TeamMembers for ALL eligibility logic - this is the single authority
-            var eligibility = window.TeamMembers.getEligibilityStatus(
+            var eligibility = TeamMembers.getEligibilityStatus(
                 team,
                 char,
                 currentPeriod
@@ -879,8 +973,8 @@
             var option = document.createElement('option');
             option.value = char.id;
 
-            var displayName = window.getDisplayName ? window.getDisplayName(char) : 'Unknown';
-            var currentStatus = window.getCurrentStatus ? window.getCurrentStatus(char) : '';
+            var displayName = CharacterQueries.getDisplayName(char);
+            var currentStatus = CharacterQueries.getCurrentStatus(char);
             option.textContent = displayName + ' [' + currentStatus + '] ' + eligibility.label;
 
             if (eligibility.style) {
