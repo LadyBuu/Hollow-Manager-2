@@ -45,20 +45,17 @@
  * 
  * DEPENDENCIES:
  *   - window.TeamCore - Core team operations (required)
+ *   - window.TeamQueries - Team query operations (required)
  *   - window.CALENDAR_CONSTANTS - Week/year constants (from constants.js)
- *   - window.STATUS_CONSTANTS - Status constants (from constants.js)
- *   - window.DomUtils - HTML escaping (from dom-utils.js)
- *   - window.getCharacterById (from core-utils.js)
- *   - window.getDisplayName (from core-utils.js)
- *   - window.getCurrentStatus (from core-utils.js)
- *   - window.getCharacterAge (from core-utils.js) - NOTE: Currently uses current age, not period-aware
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.DomUtils (from dom-utils.js)
+ *   - window.ValidationUtils (from validation-utils.js)
  */
 
 (function() {
     'use strict';
 
     // Guard against duplicate script loading
-    // IMPORTANT: Check dependency BEFORE marking as loaded
     if (window.__teamMembersLoaded) {
         return;
     }
@@ -68,14 +65,27 @@
         return;
     }
 
+    if (!window.TeamQueries) {
+        console.error('TeamMembers: TeamQueries is required but not loaded.');
+        return;
+    }
+
     window.__teamMembersLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var TeamCore = window.TeamCore;
+    var TeamQueries = window.TeamQueries;
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var CharacterQueries = window.CharacterQueries || window;
+    var DomUtils = window.DomUtils || window;
+    var ValidationUtils = window.ValidationUtils || window;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
-
-    var CALENDAR = window.CALENDAR_CONSTANTS || {};
-    var STATUS = window.STATUS_CONSTANTS || {};
 
     var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
     var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
@@ -89,8 +99,8 @@
     // ============================================================
 
     function escapeHtml(value) {
-        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
-            return window.DomUtils.escapeHtml(value);
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
         }
         // Fallback
         return String(value == null ? '' : value)
@@ -102,10 +112,42 @@
     }
 
     // ============================================================
-    // PERIOD PARSING - Shared with TeamCore
+    // CHARACTER HELPERS - Uses CharacterQueries
+    // ============================================================
+
+    function getCharacterName(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getDisplayName === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+        }
+        return 'Unknown';
+    }
+
+    function getCharacterAge(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getCharacterAge === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getCharacterAge(char) : '-';
+        }
+        return '-';
+    }
+
+    function getCharacterCurrentStatus(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getCurrentStatus === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getCurrentStatus(char) : '';
+        }
+        return '';
+    }
+
+    // ============================================================
+    // PERIOD PARSING - Delegate to ValidationUtils
     // ============================================================
 
     function parseNumericPeriod(value) {
+        if (ValidationUtils && typeof ValidationUtils.parseStrictPositivePeriod === 'function') {
+            return ValidationUtils.parseStrictPositivePeriod(value);
+        }
+        // Fallback
         if (value === undefined || value === null || value === '') {
             return null;
         }
@@ -203,7 +245,7 @@
         var periodNum = typedPeriod.value;
         var periodUnit = typedPeriod.unit;
 
-        var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
+        var char = CharacterQueries.getCharacterById(member.characterId);
 
         // ============================================================
         // DECEASED CHECK - Only for year-based periods
@@ -429,14 +471,7 @@
         }
 
         // Check if character is active/future in another team
-        // (Uses TeamCore.getAllTeams() when available)
-        var teams = [];
-        if (window.TeamCore && typeof window.TeamCore.getAllTeams === 'function') {
-            teams = window.TeamCore.getAllTeams();
-        } else {
-            var data = window.data || {};
-            teams = data.teams || [];
-        }
+        var teams = TeamQueries.getAllOperationalTeams();
 
         if (Array.isArray(teams)) {
             for (var i = 0; i < teams.length; i++) {
@@ -505,16 +540,8 @@
         chars.forEach(function(c) {
             if (!c || typeof c !== 'object') return;
 
-            var status = '';
-            if (typeof window.getCurrentStatus === 'function') {
-                // TODO: Make this period-aware. Currently uses current status.
-                // For true historical filtering, we need a getStatusAtPeriod() for characters.
-                status = String(window.getCurrentStatus(c) || '').toLowerCase();
-            }
+            var status = CharacterQueries.getCurrentStatus(c);
 
-            // For now, we use current status as a proxy.
-            // In a fully period-aware system, this would check the character's
-            // career status at the given period.
             if (teamType === 'academic') {
                 if (status === 'trainee' || status.startsWith('trainee')) {
                     result.push(c);
@@ -540,8 +567,8 @@
 
         // Sort by display name
         result.sort(function(a, b) {
-            var nameA = window.getDisplayName ? window.getDisplayName(a) : (a.firstName || 'Unknown');
-            var nameB = window.getDisplayName ? window.getDisplayName(b) : (b.firstName || 'Unknown');
+            var nameA = CharacterQueries.getDisplayName(a);
+            var nameB = CharacterQueries.getDisplayName(b);
             return nameA.localeCompare(nameB);
         });
 
@@ -629,10 +656,10 @@
             if (aPriority !== bPriority) return aPriority - bPriority;
 
             // Fall back to character name
-            var aChar = window.getCharacterById ? window.getCharacterById(a.member.characterId) : null;
-            var bChar = window.getCharacterById ? window.getCharacterById(b.member.characterId) : null;
-            var aName = aChar ? (window.getDisplayName ? window.getDisplayName(aChar) : 'Unknown') : 'Unknown';
-            var bName = bChar ? (window.getDisplayName ? window.getDisplayName(bChar) : 'Unknown') : 'Unknown';
+            var aChar = CharacterQueries.getCharacterById(a.member.characterId);
+            var bChar = CharacterQueries.getCharacterById(b.member.characterId);
+            var aName = aChar ? CharacterQueries.getDisplayName(aChar) : 'Unknown';
+            var bName = bChar ? CharacterQueries.getDisplayName(bChar) : 'Unknown';
             return aName.localeCompare(bName);
         });
 
@@ -642,13 +669,11 @@
             var member = item.member;
             var index = item.index;
             var status = item.status;
-            var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
-            var name = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
-            // NOTE: Age is currently current-age, not period-aware.
-            // TODO: Add getCharacterAgeAtPeriod() for historical accuracy.
-            var age = char ? (window.getCharacterAge ? window.getCharacterAge(char) : '-') : '-';
+            var char = CharacterQueries.getCharacterById(member.characterId);
+            var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+            var age = char ? CharacterQueries.getCharacterAge(char) : '-';
 
-            var statusInfo = window.TeamCore.getMemberStatusInfo(status);
+            var statusInfo = TeamCore.getMemberStatusInfo(status);
             var statusColor = statusInfo.color;
 
             // Build period display with proper formatting
