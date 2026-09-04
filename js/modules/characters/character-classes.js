@@ -18,16 +18,18 @@
  *   Normalisation occurs AFTER snapshot, not before validation.
  *   USES CharacterQueries for character data and display names
  *   USES ClassesQueries for class data
+ *   USES ClassesCore for class creation (NON-PERSISTING when used in transactions)
  *   USES MutationUtils for backup and persistence
  *   USES NotificationSystem for notifications
  *   USES ActivityLog for activity logging
+ *   USES DomUtils for safe DOM operations
  * 
  * MUTATION CONTRACT:
  *   1. Validate inputs (no mutation)
  *   2. Create backup of current state (abort if fails)
- *   3. Normalise data structures
+ *   3. Normalise data structures (ONLY AFTER snapshot)
  *   4. Apply mutation
- *   5. Persist via saveData() (wrapped for safety)
+ *   5. Persist via saveWithPromise() (wrapped for safety)
  *   6. Log activity (failure-safe, no rollback)
  *   7. On persistence failure, restore backup and refresh UI
  * 
@@ -37,15 +39,16 @@
  *   - DOM is rendered from state, not the other way around
  *   - DOM is the source of unsaved form input only
  * 
- * DEPENDENCIES:
- *   - window.getCurrentEditId (from index.js)
- *   - window.setCurrentEditId (from index.js)
+ * DEPENDENCIES (ALL REQUIRED):
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.ClassesCore (from classes-core.js)
  *   - window.MutationUtils (from mutation-utils.js)
  *   - window.NotificationSystem (from notification.js)
  *   - window.ActivityLog (from activity-log.js)
  *   - window.DomUtils (from dom-utils.js)
+ *   - window.getCurrentEditId (from index.js)
+ *   - window.setCurrentEditId (from index.js)
  *   - window.saveData (from database.js)
  *   - window.CALENDAR_CONSTANTS (from constants.js)
  */
@@ -60,23 +63,24 @@
     window.__characterClassesLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries || window;
-    var ClassesQueries = window.ClassesQueries || window;
-    var MutationUtils = window.MutationUtils || window;
-    var NotificationSystem = window.NotificationSystem || window;
-    var ActivityLog = window.ActivityLog || window;
-    var DomUtils = window.DomUtils || window;
-    var CalendarConstants = window.CALENDAR_CONSTANTS || {};
+    var CharacterQueries = window.CharacterQueries;
+    var ClassesQueries = window.ClassesQueries;
+    var ClassesCore = window.ClassesCore;
+    var MutationUtils = window.MutationUtils;
+    var NotificationSystem = window.NotificationSystem;
+    var ActivityLog = window.ActivityLog;
+    var DomUtils = window.DomUtils;
+    var CalendarConstants = window.CALENDAR_CONSTANTS;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = CalendarConstants.MIN_WEEK || 1;
-    var MAX_WEEK = CalendarConstants.MAX_WEEK || 52;
+    var MIN_WEEK = CalendarConstants ? CalendarConstants.MIN_WEEK : 1;
+    var MAX_WEEK = CalendarConstants ? CalendarConstants.MAX_WEEK : 52;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -115,12 +119,20 @@
         if (!ClassesQueries || typeof ClassesQueries.getClasses !== 'function') {
             missing.push('ClassesQueries.getClasses');
         }
+        if (!ClassesQueries || typeof ClassesQueries.getClassByName !== 'function') {
+            missing.push('ClassesQueries.getClassByName');
+        }
+
+        // ClassesCore is MANDATORY (for class creation)
+        if (!ClassesCore || typeof ClassesCore.createClass !== 'function') {
+            missing.push('ClassesCore.createClass');
+        }
 
         // MutationUtils is MANDATORY
         if (!MutationUtils || typeof MutationUtils.createSafeBackup !== 'function') {
             missing.push('MutationUtils.createSafeBackup');
         }
-        if (MutationUtils && typeof MutationUtils.saveWithPromise !== 'function') {
+        if (!MutationUtils || typeof MutationUtils.saveWithPromise !== 'function') {
             missing.push('MutationUtils.saveWithPromise');
         }
 
@@ -132,6 +144,11 @@
         // DomUtils is MANDATORY
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
+        }
+
+        // ActivityLog is MANDATORY
+        if (!ActivityLog || typeof ActivityLog.record !== 'function') {
+            missing.push('ActivityLog.record');
         }
 
         if (missing.length > 0) {
@@ -147,13 +164,7 @@
 
     function showNotification(message, type) {
         type = type || 'info';
-        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
-            NotificationSystem.notify(message, type);
-        } else if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
+        NotificationSystem.notify(message, type);
     }
 
     // ============================================================
@@ -178,27 +189,11 @@
     }
 
     // ============================================================
-    // SAFE BACKUP - Delegate to MutationUtils
+    // SAFE BACKUP - Delegates to MutationUtils
     // ============================================================
 
     function createSafeBackup(data) {
-        if (MutationUtils && typeof MutationUtils.createSafeBackup === 'function') {
-            return MutationUtils.createSafeBackup(data);
-        }
-
-        // Emergency fallback (should never be needed)
-        try {
-            if (window.db && typeof window.db.createSafeCopy === 'function') {
-                return window.db.createSafeCopy(data);
-            }
-            if (typeof structuredClone === 'function') {
-                return structuredClone(data);
-            }
-            return JSON.parse(JSON.stringify(data));
-        } catch (err) {
-            console.warn('CharacterClasses: Failed to create backup:', err);
-            return null;
-        }
+        return MutationUtils.createSafeBackup(data);
     }
 
     // ============================================================
@@ -206,16 +201,11 @@
     // ============================================================
 
     function getCurrentEditId() {
-        if (typeof window.getCurrentEditId === 'function') {
-            return window.getCurrentEditId();
-        }
-        return null;
+        return window.getCurrentEditId();
     }
 
     function setCurrentEditId(id) {
-        if (typeof window.setCurrentEditId === 'function') {
-            window.setCurrentEditId(id);
-        }
+        window.setCurrentEditId(id);
     }
 
     // ============================================================
@@ -224,19 +214,19 @@
 
     function safeRenderCharacterList() {
         if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-            window.CharacterList.render();
+            try { window.CharacterList.render(); } catch (e) { /* Ignore */ }
         }
     }
 
     function safeShowCharacterForm(id) {
         if (typeof window.showCharacterForm === 'function') {
-            window.showCharacterForm(id);
+            try { window.showCharacterForm(id); } catch (e) { /* Ignore */ }
         }
     }
 
     function safeUpdateDashboardStats() {
         if (typeof window.updateDashboardStats === 'function') {
-            window.updateDashboardStats();
+            try { window.updateDashboardStats(); } catch (e) { /* Ignore */ }
         }
     }
 
@@ -324,7 +314,7 @@
             return Promise.resolve(false);
         }
 
-        // SNAPSHOT - Required, abort if fails
+        // ---- PHASE 1: SNAPSHOT - Required, abort if fails ----
         var data = window.data || {};
         var backup = createSafeBackup(data);
         if (!backup) {
@@ -332,18 +322,27 @@
             return Promise.resolve(false);
         }
 
-        // NORMALISE and MUTATE
-        normaliseClassIds(char);
-        char.classIds = char.classIds.filter(function(cid) {
+        // ---- PHASE 2: NORMALISE and MUTATE (ONLY AFTER snapshot) ----
+        var currentChar = data.characters.find(function(c) {
+            return c && String(c.id) === String(charId);
+        });
+
+        if (!currentChar) {
+            showNotification('Character not found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        normaliseClassIds(currentChar);
+        currentChar.classIds = currentChar.classIds.filter(function(cid) {
             return String(cid) !== String(classId);
         });
 
-        // PERSIST - Use saveWithPromise from MutationUtils
+        // ---- PHASE 3: PERSIST ----
         var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
-                // LOG - failure-safe, persistence already succeeded
+                // ---- PHASE 4: LOG - failure-safe, persistence already succeeded ----
                 try {
                     if (ActivityLog && typeof ActivityLog.record === 'function') {
                         ActivityLog.record('Removed ' + name + ' from class: ' + cls.name);
@@ -352,14 +351,14 @@
                     // Ignore logging errors
                 }
 
-                // UI COMMIT - reacquire character from restored state
+                // ---- PHASE 5: UI COMMIT ----
                 var savedChar = CharacterQueries.getCharacterById(charId);
                 safeRefreshUI(savedChar);
                 showNotification('Character removed from class successfully!', 'success');
                 return true;
             })
             .catch(function(err) {
-                // ROLLBACK
+                // ---- PHASE 6: ROLLBACK ----
                 if (backup) {
                     window.data = backup;
                     var restoredChar = CharacterQueries.getCharacterById(charId);
@@ -418,7 +417,7 @@
             return Promise.resolve(false);
         }
 
-        // SNAPSHOT - Required, abort if fails
+        // ---- PHASE 1: SNAPSHOT - Required, abort if fails ----
         var data = window.data || {};
         var backup = createSafeBackup(data);
         if (!backup) {
@@ -426,17 +425,26 @@
             return Promise.resolve(false);
         }
 
-        // NORMALISE and MUTATE
-        normaliseClassIds(char);
-        char.classIds.push(classId);
+        // ---- PHASE 2: NORMALISE and MUTATE (ONLY AFTER snapshot) ----
+        var currentChar = data.characters.find(function(c) {
+            return c && String(c.id) === String(charId);
+        });
 
-        // PERSIST - Use saveWithPromise from MutationUtils
+        if (!currentChar) {
+            showNotification('Character not found.', 'error');
+            return Promise.resolve(false);
+        }
+
+        normaliseClassIds(currentChar);
+        currentChar.classIds.push(classId);
+
+        // ---- PHASE 3: PERSIST ----
         var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
-                // LOG - failure-safe, persistence already succeeded
-                var charName = CharacterQueries.getDisplayName(char);
+                // ---- PHASE 4: LOG - failure-safe, persistence already succeeded ----
+                var charName = CharacterQueries.getDisplayName(currentChar);
                 try {
                     if (ActivityLog && typeof ActivityLog.record === 'function') {
                         ActivityLog.record('Added ' + charName + ' to class: ' + cls.name);
@@ -445,14 +453,14 @@
                     // Ignore logging errors
                 }
 
-                // UI COMMIT - reacquire character from restored state
+                // ---- PHASE 5: UI COMMIT ----
                 var savedChar = CharacterQueries.getCharacterById(charId);
                 safeRefreshUI(savedChar);
                 showNotification('Character added to class successfully!', 'success');
                 return true;
             })
             .catch(function(err) {
-                // ROLLBACK
+                // ---- PHASE 6: ROLLBACK ----
                 if (backup) {
                     window.data = backup;
                     var restoredChar = CharacterQueries.getCharacterById(charId);
@@ -517,10 +525,16 @@
         var classCreated = false;
 
         if (!cls) {
-            var result = typeof window.createClass === 'function' ? window.createClass(trimmedName) : null;
+            // Use ClassesCore.createClass() - but we will NOT persist yet
+            // This creates the class in the candidate state
+            var result = ClassesCore.createClass(trimmedName);
+
             if (result && result.success) {
                 cls = result.class || result.data;
                 classCreated = true;
+
+                // The class was added to data.classes, but we haven't persisted yet
+                // We'll handle persistence in the main save
             } else {
                 // Rollback: restore backup since we created a class but failed
                 if (backup) {
@@ -564,7 +578,7 @@
 
         return savePromise
             .then(function() {
-                // LOG - failure-safe, persistence already succeeded
+                // ---- PHASE 7: LOG - failure-safe, persistence already succeeded ----
                 var charName = CharacterQueries.getDisplayName(currentChar);
                 try {
                     if (ActivityLog && typeof ActivityLog.record === 'function') {
@@ -574,7 +588,7 @@
                     // Ignore logging errors
                 }
 
-                // UI COMMIT
+                // ---- PHASE 8: UI COMMIT ----
                 addClassTag(cls.id, cls.name);
                 var savedChar = CharacterQueries.getCharacterById(charId);
                 safeRefreshUI(savedChar);
@@ -582,7 +596,7 @@
                 return true;
             })
             .catch(function(err) {
-                // ROLLBACK - restore backup
+                // ---- PHASE 9: ROLLBACK - restore backup ----
                 if (backup) {
                     window.data = backup;
                     var restoredChar = CharacterQueries.getCharacterById(charId);
