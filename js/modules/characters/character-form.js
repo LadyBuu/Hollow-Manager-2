@@ -3,32 +3,12 @@
  * Handles form rendering, tab switching, and form field population
  * Path: js/modules/characters/character-form.js
  * 
- * This module is responsible for:
- *   - Rendering the character form in the right side container
- *   - Tab switching between form sections
- *   - Populating form fields from character data
- *   - Collecting form data for save operations
- *   - Delegating save operations to CharacterCRUD
- * 
  * IMPORTANT:
  *   - USES CharacterQueries for character data and display names
  *   - USES ClassesQueries for class-related data
  *   - USES DomUtils for safe DOM operations
- *   - Delegates save operations to CharacterCRUD (which uses the mutation pipeline)
- *   - No direct data mutation
- *   - No direct persistence calls
- *   - Uses NotificationSystem for notifications
- * 
- * DEPENDENCIES:
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.ClassesQueries (from classes-queries.js)
- *   - window.CharacterCRUD (from character-crud.js)
- *   - window.DomUtils (from dom-utils.js)
- *   - window.NotificationSystem (from notification.js)
- *   - window.getCurrentEditId (from index.js)
- *   - window.setCurrentEditId (from index.js)
- *   - window.getGraduatingClasses (from classes-core.js)
- *   - window.CharacterConstants (from character-constants.js)
+ *   - Delegates save operations to CharacterCRUD
+ *   - No direct data mutation or persistence calls
  */
 
 (function() {
@@ -52,7 +32,7 @@
     var CC = window.CharacterConstants;
 
     // ============================================================
-    // CONSTANTS - From CharacterConstants
+    // CONSTANTS
     // ============================================================
 
     var STAT_MIN = CC ? CC.STAT_MIN : 1;
@@ -89,7 +69,6 @@
             }
         });
 
-        // CharacterQueries is MANDATORY
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
@@ -97,17 +76,14 @@
             missing.push('CharacterQueries.getDisplayName');
         }
 
-        // CharacterCRUD is MANDATORY
         if (!CharacterCRUD || typeof CharacterCRUD.save !== 'function') {
             missing.push('CharacterCRUD.save');
         }
 
-        // DomUtils is MANDATORY
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
 
-        // NotificationSystem is MANDATORY
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
             missing.push('NotificationSystem.notify');
         }
@@ -120,7 +96,7 @@
     }
 
     // ============================================================
-    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
+    // NOTIFICATION
     // ============================================================
 
     function showNotification(message, type) {
@@ -135,17 +111,14 @@
     }
 
     // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
+    // HTML ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
         if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
             return DomUtils.escapeHtml(value);
         }
-        // Emergency fallback (should never be reached)
-        if (value === undefined || value === null) {
-            return '';
-        }
+        if (value === undefined || value === null) return '';
         return String(value)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
@@ -156,7 +129,88 @@
     }
 
     // ============================================================
-    // CHARACTER FORM - Public API (Renders in container, not modal)
+    // ENSURE FORM ELEMENTS EXIST
+    // ============================================================
+
+    /**
+     * Ensure the character form and its content container exist.
+     * Creates them if they don't exist.
+     */
+    function ensureFormElements() {
+        var container = document.getElementById('character-form-container');
+        if (!container) {
+            console.warn('CharacterForm: Container #character-form-container not found');
+            return null;
+        }
+
+        var form = document.getElementById('character-form');
+        if (!form) {
+            // Create the form if it doesn't exist
+            form = document.createElement('form');
+            form.id = 'character-form';
+            form.style.display = 'none';
+            
+            // Header
+            var header = document.createElement('div');
+            header.className = 'form-header';
+            header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;';
+            
+            var title = document.createElement('h3');
+            title.id = 'form-title';
+            title.textContent = 'No Character Selected';
+            title.style.margin = '0';
+            header.appendChild(title);
+            
+            var nameDisplay = document.createElement('span');
+            nameDisplay.id = 'current-char-name';
+            nameDisplay.className = 'char-name-display';
+            nameDisplay.style.cssText = 'display:none;color:var(--accent);font-weight:600;';
+            header.appendChild(nameDisplay);
+            
+            var actions = document.createElement('div');
+            actions.className = 'form-actions';
+            actions.style.cssText = 'display:flex;gap:4px;';
+            
+            var deleteBtn = document.createElement('button');
+            deleteBtn.type = 'button';
+            deleteBtn.id = 'delete-char-btn';
+            deleteBtn.className = 'danger small';
+            deleteBtn.textContent = 'Delete';
+            actions.appendChild(deleteBtn);
+            
+            var saveBtn = document.createElement('button');
+            saveBtn.type = 'submit';
+            saveBtn.id = 'save-char-btn';
+            saveBtn.className = 'primary';
+            saveBtn.textContent = 'Save';
+            actions.appendChild(saveBtn);
+            
+            header.appendChild(actions);
+            form.appendChild(header);
+            
+            // Content
+            var content = document.createElement('div');
+            content.id = 'character-form-content';
+            content.innerHTML = '<p class="empty-state">Select a character from the list to view and edit details.</p>';
+            form.appendChild(content);
+            
+            container.appendChild(form);
+        }
+
+        var content = document.getElementById('character-form-content');
+        if (!content) {
+            // This should never happen if form was created above, but just in case
+            content = document.createElement('div');
+            content.id = 'character-form-content';
+            content.innerHTML = '<p class="empty-state">Select a character from the list to view and edit details.</p>';
+            form.appendChild(content);
+        }
+
+        return { form: form, content: content };
+    }
+
+    // ============================================================
+    // CHARACTER FORM - Public API
     // ============================================================
 
     function showCharacterForm(editId) {
@@ -165,12 +219,15 @@
             return;
         }
 
-        // Find the container - the right side panel
-        var container = document.getElementById('character-form-container');
-        if (!container) {
-            console.warn('CharacterForm: Container #character-form-container not found');
+        // Ensure form elements exist
+        var elements = ensureFormElements();
+        if (!elements) {
+            showNotification('Form container not found. Please refresh the page.', 'error');
             return;
         }
+
+        var form = elements.form;
+        var content = elements.content;
 
         if (!editId) {
             editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
@@ -183,13 +240,6 @@
                 showNotification('Character not found.', 'error');
                 return;
             }
-        }
-
-        // Get the form element
-        var form = document.getElementById('character-form');
-        if (!form) {
-            console.warn('CharacterForm: Form #character-form not found');
-            return;
         }
 
         // Update the form title
@@ -210,13 +260,6 @@
             }
         }
 
-        // Get the form content area
-        var content = document.getElementById('character-form-content');
-        if (!content) {
-            console.warn('CharacterForm: Content #character-form-content not found');
-            return;
-        }
-
         // Get current year for age calculation
         var currentYear = window.data && window.data.currentYear ? window.data.currentYear : new Date().getFullYear();
 
@@ -233,7 +276,7 @@
         }
 
         // Bind events
-        bindFormEvents(container, editId, char);
+        bindFormEvents(editId, char);
 
         // Show the form
         form.style.display = 'block';
@@ -329,14 +372,12 @@
     }
 
     // ============================================================
-    // NAME TAB - With Class Dropdown
+    // NAME TAB
     // ============================================================
 
     function getNameTabHTML(char, editId) {
         var active = state.currentTab === 'name' ? 'block' : 'none';
         var c = char || {};
-
-        // Get graduating class options for dropdown
         var classOptions = getClassOptionsHTML(c.graduatingClassId);
 
         return `
@@ -379,8 +420,6 @@
                         <input type="text" id="char-age" value="${c.birthYear ? getCurrentYear() - parseInt(c.birthYear, 10) : ''}" readonly style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
-
-                <!-- Graduating Class Dropdown -->
                 <div class="form-group" style="margin-top:8px;">
                     <label style="font-size:0.7rem;color:var(--text-dim);">Graduating Class</label>
                     <select id="char-graduatingClass" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
@@ -391,7 +430,6 @@
                         <label for="char-isInstructor" style="font-size:0.65rem;color:var(--text-dim);">Is an instructor (not a student)</label>
                     </div>
                 </div>
-
                 <div style="font-size:0.6rem;color:var(--text-dim);margin-top:4px;">* Required fields</div>
             </div>
         `;
@@ -418,7 +456,7 @@
     }
 
     // ============================================================
-    // OTHER TABS - Using CharacterQueries for display names
+    // OTHER TABS
     // ============================================================
 
     function getPhysicalTabHTML(char) {
@@ -642,7 +680,7 @@
     }
 
     // ============================================================
-    // POPULATE CLASS DROPDOWN - Uses getGraduatingClasses
+    // POPULATE CLASS DROPDOWN
     // ============================================================
 
     function populateClassDropdown(char) {
@@ -676,7 +714,6 @@
     function populateFormFields(char) {
         if (!char) return;
 
-        // Name fields
         setFieldValue('char-firstName', char.firstName);
         setFieldValue('char-lastName', char.lastName);
         setFieldValue('char-middleName', char.middleName);
@@ -685,7 +722,6 @@
         setFieldValue('char-gender', char.gender);
         setFieldValue('char-birthYear', char.birthYear);
 
-        // Physical
         setFieldValue('char-eyes', char.eyes);
         setFieldValue('char-hair', char.hair);
         setFieldValue('char-skin', char.skin);
@@ -694,7 +730,6 @@
         setFieldValue('char-build', char.build);
         setFieldValue('char-appearanceNotes', char.appearanceNotes);
 
-        // Personality
         if (char.personality) {
             setFieldValue('char-personality-traits', char.personality.traits);
             setFieldValue('char-personality-ideals', char.personality.ideals);
@@ -708,26 +743,21 @@
             setFieldValue('char-personality-goals', char.personality.goals);
         }
 
-        // Professional
         if (Array.isArray(char.careerStatus)) {
             setFieldValue('char-careerStatus', JSON.stringify(char.careerStatus, null, 2));
         }
         setFieldValue('char-specialty', char.specialty);
 
-        // Social
         setFieldValue('char-attraction', char.attraction);
         setFieldValue('char-sexuality', char.sexuality);
 
-        // Notes
         setFieldValue('char-notes', char.notes);
 
-        // Class checkbox
         var checkbox = document.getElementById('char-isInstructor');
         if (checkbox) {
             checkbox.checked = char.graduatingClassInstructor || false;
         }
 
-        // Stats
         if (char.stats) {
             for (var key in char.stats) {
                 if (!Object.prototype.hasOwnProperty.call(char.stats, key)) continue;
@@ -735,7 +765,6 @@
             }
         }
 
-        // Class IDs
         if (Array.isArray(char.classIds)) {
             setFieldValue('char-classIds', char.classIds.join(', '));
         }
@@ -752,9 +781,9 @@
     // BIND FORM EVENTS
     // ============================================================
 
-    function bindFormEvents(container, editId, char) {
+    function bindFormEvents(editId, char) {
         // Tab switching
-        var tabBtns = container.querySelectorAll('.form-tab-btn');
+        var tabBtns = document.querySelectorAll('.form-tab-btn');
         tabBtns.forEach(function(btn) {
             btn.addEventListener('click', function() {
                 var tab = this.dataset.tab;
@@ -779,31 +808,23 @@
             });
         }
 
-        // Random Physical
+        // Random buttons
         var randomPhysicalBtn = document.getElementById('random-physical-btn');
         if (randomPhysicalBtn) {
-            randomPhysicalBtn.addEventListener('click', function() {
-                fillRandomPhysical();
-            });
+            randomPhysicalBtn.addEventListener('click', fillRandomPhysical);
         }
 
-        // Random Personality
         var randomPersonalityBtn = document.getElementById('random-personality-btn');
         if (randomPersonalityBtn) {
-            randomPersonalityBtn.addEventListener('click', function() {
-                fillRandomPersonality();
-            });
+            randomPersonalityBtn.addEventListener('click', fillRandomPersonality);
         }
 
-        // Random Stats
         var randomStatsBtn = document.getElementById('random-stats-btn');
         if (randomStatsBtn) {
-            randomStatsBtn.addEventListener('click', function() {
-                fillRandomStats();
-            });
+            randomStatsBtn.addEventListener('click', fillRandomStats);
         }
 
-        // Cancel button - clear selection
+        // Cancel button
         var cancelBtn = document.getElementById('cancel-character-form');
         if (cancelBtn) {
             cancelBtn.addEventListener('click', function() {
@@ -814,7 +835,7 @@
             });
         }
 
-        // Save - Uses CharacterCRUD.save()
+        // Save button
         var saveBtn = document.getElementById('save-character-btn');
         if (saveBtn) {
             saveBtn.addEventListener('click', function() {
@@ -822,7 +843,6 @@
                     CharacterCRUD.save()
                         .then(function(success) {
                             if (success) {
-                                // Update the displayed name after save
                                 var savedChar = CharacterQueries.getCharacterById(
                                     typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null
                                 );
@@ -840,10 +860,10 @@
             });
         }
 
-        // Enter key on form - find the form element
-        var formElement = container.querySelector('.character-form-container');
-        if (formElement) {
-            formElement.addEventListener('keydown', function(e) {
+        // Enter key
+        var formContainer = document.querySelector('.character-form-container');
+        if (formContainer) {
+            formContainer.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') {
                     e.preventDefault();
                     if (CharacterCRUD && typeof CharacterCRUD.save === 'function') {
@@ -863,7 +883,6 @@
 
         state.currentTab = tab;
 
-        // Update tab buttons
         var btns = document.querySelectorAll('.form-tab-btn');
         btns.forEach(function(btn) {
             var isActive = btn.dataset.tab === tab;
@@ -872,7 +891,6 @@
             btn.style.borderBottomColor = isActive ? 'var(--accent)' : 'transparent';
         });
 
-        // Update panels
         var panels = document.querySelectorAll('.tab-panel');
         panels.forEach(function(panel) {
             var isActive = panel.dataset.tab === tab;
@@ -946,7 +964,7 @@
     function fillRandomStats() {
         var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
         for (var i = 0; i < statKeys.length; i++) {
-            var val = 8 + Math.floor(Math.random() * 18); // 8-25 range
+            var val = 8 + Math.floor(Math.random() * 18);
             setFieldValue('char-stat-' + statKeys[i], val);
         }
     }
