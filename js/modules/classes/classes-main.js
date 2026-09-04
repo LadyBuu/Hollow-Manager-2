@@ -1,41 +1,40 @@
 /**
- * modules/classes/classes-main.js - Classes Module Entry Point
- * Single entry point for all graduating class functionality
+ * js/modules/classes/classes-main.js - Classes Main Entry Point
+ * Single entry point for all class functionality
  * Path: js/modules/classes/classes-main.js
  * 
  * This module is responsible for:
  *   - Registering with TabManager
- *   - Rendering the Classes tab container
- *   - Tab navigation with state persistence
- *   - Delegating rendering to ClassesView
- *   - Delegating events to ClassesEvents
- * 
- * TABS:
- *   - Classes: Create/manage graduating classes, add members
- *   - Rankings: Class-based rankings (placeholder)
- *   - Groups: Auto-groups scoped to graduating classes (placeholder)
- *   - Tournaments: Class-based tournaments (uses existing TournamentsUI)
+ *   - Rendering the class container
+ *   - Initializing all class sub-modules
+ *   - Managing class lifecycle
  * 
  * LIFECYCLE:
- *   TabManager registers 'classes' → mountClasses() → 
- *   ClassesView.renderClassesView() → ClassesEvents.init()
+ *   TabManager registers 'classes' → renderClasses() → 
+ *   ClassesView.render() → ClassesEvents.init()
  * 
  * IMPORTANT:
  *   - This module is the only external entry point for classes
  *   - All class logic lives in the sub-modules
  *   - This module does NOT implement class logic directly
+ *   - It delegates to sub-modules for all operations
+ *   - renderClasses() is the ONLY function that constructs the full HTML
  *   - TabManager is the single source of truth for lifecycle
- *   - mountClasses() is the ONLY function that constructs the full HTML
- *   - Uses ClassesCore for all data queries (not legacy globals)
- *   - Events are bound ONCE by ClassesEvents.init()
- *   - No cloneNode() or duplicate listener binding
+ * 
+ * STATE SOURCE OF TRUTH:
+ *   - classesState is the canonical edit state (PRIVATE)
+ *   - window.data is the source of truth for persisted application data
+ *   - ClassesQueries provides read-only access to class data
+ *   - ClassesCore provides mutation operations
  * 
  * DEPENDENCIES:
  *   - window.ClassesView (from classes-view.js)
  *   - window.ClassesEvents (from classes-events.js)
+ *   - window.ClassesQueries (from classes-queries.js)
  *   - window.ClassesCore (from classes-core.js)
  *   - window.TabManager (from tab-manager.js)
- *   - window.CoreUtils (from core-utils.js)
+ *   - window.NotificationSystem (from notification.js)
+ *   - window.ActivityLog (from activity-log.js)
  *   - window.DomUtils (from dom-utils.js)
  */
 
@@ -49,68 +48,71 @@
     window.__classesMainLoaded = true;
 
     // ============================================================
-    // STATE - Shared state root with tab persistence
+    // STATE - Single source of truth for class edit state
     // ============================================================
 
-    var state = window.classesState || {
-        currentTab: 'classes'
+    var _state = {
+        selectedClassId: null,
+        distributionWeek: 1,
+        maxTeamSize: 4
     };
 
-    if (!state.currentTab) {
-        state.currentTab = 'classes';
-    }
-
-    window.classesState = state;
-
     // ============================================================
-    // DEPENDENCY CHECK - Uses ClassesCore directly
+    // DEPENDENCY IMPORTS
     // ============================================================
 
-    var REQUIRED_DEPENDENCIES = [
-        'ClassesCore.getGraduatingClasses',
-        'ClassesCore.getGraduatingClass',
-        'ClassesCore.createGraduatingClass',
-        'ClassesCore.updateGraduatingClass',
-        'ClassesCore.deleteGraduatingClass',
-        'ClassesCore.getTraineesWithCharacters',
-        'ClassesCore.getInstructorsWithCharacters',
-        'ClassesCore.addMember',
-        'ClassesCore.removeMember'
-    ];
+    var ClassesView = window.ClassesView || null;
+    var ClassesEvents = window.ClassesEvents || null;
+    var ClassesQueries = window.ClassesQueries || window;
+    var ClassesCore = window.ClassesCore || window;
+    var TabManager = window.TabManager || null;
+    var NotificationSystem = window.NotificationSystem || window;
+    var ActivityLog = window.ActivityLog || window;
+    var DomUtils = window.DomUtils || window;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
-        // Check ClassesCore exists
-        if (!window.ClassesCore || typeof window.ClassesCore !== 'object') {
-            missing.push('ClassesCore (module missing)');
-            return false;
+        // ClassesView is MANDATORY
+        if (!ClassesView || typeof ClassesView.render !== 'function') {
+            missing.push('ClassesView.render');
         }
 
-        // Check each required method on ClassesCore
-        REQUIRED_DEPENDENCIES.forEach(function(fullName) {
-            var parts = fullName.split('.');
-            var obj = window;
-            for (var i = 0; i < parts.length; i++) {
-                obj = obj[parts[i]];
-                if (obj === undefined || obj === null) {
-                    missing.push(fullName);
-                    break;
-                }
-            }
-        });
-
-        // Check module dependencies
-        if (!window.ClassesView || typeof window.ClassesView.renderClassesView !== 'function') {
-            missing.push('ClassesView.renderClassesView');
-        }
-
-        if (!window.ClassesEvents || typeof window.ClassesEvents.init !== 'function') {
+        // ClassesEvents is MANDATORY
+        if (!ClassesEvents || typeof ClassesEvents.init !== 'function') {
             missing.push('ClassesEvents.init');
         }
 
-        if (!window.CoreUtils || typeof window.CoreUtils.deepClone !== 'function') {
-            missing.push('CoreUtils.deepClone');
+        // ClassesQueries is MANDATORY
+        if (!ClassesQueries || typeof ClassesQueries.getClasses !== 'function') {
+            missing.push('ClassesQueries.getClasses');
+        }
+        if (!ClassesQueries || typeof ClassesQueries.getClass !== 'function') {
+            missing.push('ClassesQueries.getClass');
+        }
+
+        // ClassesCore is MANDATORY
+        if (!ClassesCore || typeof ClassesCore.createClass !== 'function') {
+            missing.push('ClassesCore.createClass');
+        }
+
+        // ActivityLog is MANDATORY
+        if (!ActivityLog || typeof ActivityLog.record !== 'function') {
+            missing.push('ActivityLog.record');
+        }
+
+        // NotificationSystem is MANDATORY
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
+        }
+
+        // DomUtils is MANDATORY
+        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
+            missing.push('DomUtils.escapeHtml');
         }
 
         if (missing.length > 0) {
@@ -122,29 +124,137 @@
     }
 
     // ============================================================
-    // REGISTER WITH TABMANAGER
+    // STATE MANAGEMENT - Private, exposed via controlled API
     // ============================================================
 
-    function registerWithTabManager() {
-        if (window.TabManager && typeof window.TabManager.register === 'function') {
-            window.TabManager.register('classes', mountClasses);
-            return true;
+    /**
+     * Get the current class state.
+     * @returns {object} Current state
+     */
+    function getState() {
+        return {
+            selectedClassId: _state.selectedClassId,
+            distributionWeek: _state.distributionWeek || 1,
+            maxTeamSize: _state.maxTeamSize || 4
+        };
+    }
+
+    /**
+     * Set the current class state.
+     * @param {object} newState - New state values
+     */
+    function setState(newState) {
+        if (!newState || typeof newState !== 'object') {
+            return;
         }
-        return false;
+
+        var changed = false;
+
+        if (newState.selectedClassId !== undefined && newState.selectedClassId !== _state.selectedClassId) {
+            _state.selectedClassId = newState.selectedClassId;
+            changed = true;
+        }
+
+        if (newState.distributionWeek !== undefined && newState.distributionWeek !== _state.distributionWeek) {
+            var week = parseInt(newState.distributionWeek, 10);
+            if (!isNaN(week) && week >= 1 && week <= 52) {
+                _state.distributionWeek = week;
+                changed = true;
+            }
+        }
+
+        if (newState.maxTeamSize !== undefined && newState.maxTeamSize !== _state.maxTeamSize) {
+            var size = parseInt(newState.maxTeamSize, 10);
+            if (!isNaN(size) && size >= 1 && size <= 20) {
+                _state.maxTeamSize = size;
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            // Notify any listeners if needed
+            if (typeof window.updateDashboardStats === 'function') {
+                window.updateDashboardStats();
+            }
+        }
     }
 
-    // Register immediately if TabManager is available
-    if (!registerWithTabManager()) {
-        document.addEventListener('tabManagerReady', function() {
-            registerWithTabManager();
-        });
+    /**
+     * Select a class by ID.
+     * @param {string} classId - Class ID
+     */
+    function selectClass(classId) {
+        if (classId && !ClassesQueries.getClass(classId)) {
+            console.warn('ClassesMain: Class not found:', classId);
+            return;
+        }
+
+        _state.selectedClassId = classId || null;
+    }
+
+    /**
+     * Get the currently selected class ID.
+     * @returns {string|null} Selected class ID
+     */
+    function getSelectedClassId() {
+        return _state.selectedClassId;
+    }
+
+    /**
+     * Clear the selected class.
+     */
+    function clearSelection() {
+        _state.selectedClassId = null;
     }
 
     // ============================================================
-    // MOUNT FUNCTION - Single source of truth for rendering
+    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
-    function mountClasses(container) {
+    function showNotification(message, type) {
+        type = type || 'info';
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
+        } else if (type === 'error') {
+            alert('Error: ' + message);
+        } else {
+            alert(message);
+        }
+    }
+
+    // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function escapeHtml(value) {
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
+        }
+        // Emergency fallback (should never be reached)
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;')
+            .replace(/`/g, '&#x60;');
+    }
+
+    // ============================================================
+    // RENDER CLASSES - Main entry point
+    // ============================================================
+
+    function renderClasses(container) {
+        if (!checkDependencies()) {
+            if (container) {
+                container.innerHTML = '<p class="empty-state">Class dependencies not loaded. Please refresh the page.</p>';
+            }
+            return;
+        }
+
         if (!container) {
             container = document.getElementById('tab-classes');
         }
@@ -154,58 +264,48 @@
             return;
         }
 
-        container.style.display = 'block';
-        container.style.visibility = 'visible';
-        container.style.minHeight = '400px';
-
         if (!window.data) {
-            container.innerHTML = '<p class="empty-state">Loading classes data...</p>';
+            container.innerHTML = '<p class="empty-state">Loading class data...</p>';
             return;
         }
 
-        ensureDataStructures();
-
-        if (!checkDependencies()) {
-            container.innerHTML = '<p class="empty-state" style="color:var(--danger);">' +
-                'Classes dependencies not loaded. Please refresh.</p>';
-            return;
-        }
-
+        // Ensure curriculum is initialized
         if (typeof window.ensureCurriculum === 'function') {
-            window.ensureCurriculum();
-        }
-
-        // Render the classes container
-        container.innerHTML = getClassesHTML();
-
-        // Initialize tabs
-        initClassesTabs(container, state.currentTab);
-
-        // Render the active panel content
-        renderActivePanel(container, state.currentTab);
-
-        // Initialize events - only ONCE
-        if (window.ClassesEvents && typeof window.ClassesEvents.init === 'function') {
-            // Check if already initialized
-            if (!container._classesEventsInitialized) {
-                window.ClassesEvents.init(container);
-                container._classesEventsInitialized = true;
-            } else {
-                // Just refresh UI
-                if (typeof window.ClassesEvents.refreshUI === 'function') {
-                    window.ClassesEvents.refreshUI();
-                }
+            try {
+                window.ensureCurriculum();
+            } catch (e) {
+                console.warn('ClassesMain: ensureCurriculum() failed:', e);
             }
         }
-    }
 
-    function ensureDataStructures() {
-        var data = window.data || {};
-        if (!data.graduatingClasses) {
-            data.graduatingClasses = [];
+        // Render the class container
+        container.innerHTML = getClassesHTML();
+
+        // Initialize ClassesView
+        if (ClassesView && typeof ClassesView.render === 'function') {
+            try {
+                ClassesView.render(container);
+            } catch (e) {
+                console.warn('ClassesMain: ClassesView.render failed:', e);
+                container.querySelector('#class-list').innerHTML = 
+                    '<p class="empty-state">Error loading class list. Please refresh.</p>';
+            }
         }
-        if (!data.tournaments) {
-            data.tournaments = [];
+
+        // Initialize ClassesEvents
+        if (ClassesEvents && typeof ClassesEvents.init === 'function') {
+            try {
+                ClassesEvents.init(container);
+            } catch (e) {
+                console.warn('ClassesMain: ClassesEvents.init failed:', e);
+            }
+        }
+
+        // Select the current class if any
+        if (_state.selectedClassId && ClassesQueries.getClass(_state.selectedClassId)) {
+            if (ClassesView && typeof ClassesView.selectClass === 'function') {
+                ClassesView.selectClass(container, _state.selectedClassId);
+            }
         }
     }
 
@@ -214,368 +314,188 @@
     // ============================================================
 
     function getClassesHTML() {
+        var selectedId = _state.selectedClassId || '';
+
         return `
-            <div class="classes-module-container">
-                <div class="classes-tab-nav" id="classes-tab-nav" style="display:flex;gap:4px;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:12px;flex-wrap:wrap;">
-                    <button class="classes-tab-btn active" data-panel="classes-panel" style="background:transparent;border:none;border-bottom:2px solid var(--accent);color:var(--accent);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Classes</button>
-                    <button class="classes-tab-btn" data-panel="rankings-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Rankings</button>
-                    <button class="classes-tab-btn" data-panel="groups-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Groups</button>
-                    <button class="classes-tab-btn" data-panel="tournaments-panel" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-dim);padding:6px 12px;cursor:pointer;font-size:0.75rem;transition:0.2s;">Tournaments</button>
-                </div>
-                
-                <div class="classes-panels" id="classes-panels">
-                    <div id="classes-panel" class="classes-panel active" style="display:block;">
-                        <div id="classes-content"></div>
-                    </div>
-                    <div id="rankings-panel" class="classes-panel" style="display:none;">
-                        <div id="rankings-content"></div>
-                    </div>
-                    <div id="groups-panel" class="classes-panel" style="display:none;">
-                        <div id="groups-content"></div>
-                    </div>
-                    <div id="tournaments-panel" class="classes-panel" style="display:none;">
-                        <div id="tournaments-content"></div>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-
-    // ============================================================
-    // TAB INITIALISATION
-    // ============================================================
-
-    var tabMap = {
-        'classes': 'classes-panel',
-        'rankings': 'rankings-panel',
-        'groups': 'groups-panel',
-        'tournaments': 'tournaments-panel'
-    };
-
-    function initClassesTabs(rootContainer, initialTab) {
-        var tabContainer = rootContainer.querySelector('#classes-tab-nav');
-        if (!tabContainer) {
-            return;
-        }
-
-        var activeTabName = initialTab || 'classes';
-        var activePanelId = tabMap[activeTabName] || 'classes-panel';
-
-        updateTabButtons(tabContainer, activePanelId);
-
-        // Remove any existing listener by cloning
-        var newTabContainer = tabContainer.cloneNode(true);
-        tabContainer.parentNode.replaceChild(newTabContainer, tabContainer);
-
-        newTabContainer.addEventListener('click', function(e) {
-            var tab = e.target.closest('.classes-tab-btn');
-            if (!tab) return;
-
-            e.preventDefault();
-            var panelId = tab.dataset.panel;
-            if (!panelId) return;
-
-            var tabName = activeTabName;
-            for (var key in tabMap) {
-                if (tabMap[key] === panelId) {
-                    tabName = key;
-                    break;
-                }
-            }
-
-            state.currentTab = tabName;
-
-            updateTabButtons(newTabContainer, panelId);
-            showPanel(rootContainer, panelId);
-            renderActivePanel(rootContainer, tabName);
-        });
-    }
-
-    function updateTabButtons(tabContainer, activePanelId) {
-        var buttons = tabContainer.querySelectorAll('.classes-tab-btn');
-        buttons.forEach(function(btn) {
-            var isActive = btn.dataset.panel === activePanelId;
-            btn.classList.toggle('active', isActive);
-            btn.style.color = isActive ? 'var(--accent)' : 'var(--text-dim)';
-            btn.style.borderBottomColor = isActive ? 'var(--accent)' : 'transparent';
-        });
-    }
-
-    function showPanel(rootContainer, panelId) {
-        var panels = rootContainer.querySelectorAll('.classes-panel');
-        panels.forEach(function(panel) {
-            panel.style.display = 'none';
-            panel.classList.remove('active');
-        });
-
-        var activePanel = rootContainer.querySelector('#' + panelId);
-        if (activePanel) {
-            activePanel.style.display = 'block';
-            activePanel.classList.add('active');
-        }
-    }
-
-    // ============================================================
-    // RENDER PANEL CONTENT
-    // ============================================================
-
-    function renderActivePanel(rootContainer, tabName) {
-        var panelMap = {
-            'classes': {
-                panelId: 'classes-panel',
-                contentId: 'classes-content',
-                renderer: renderClassesContent
-            },
-            'rankings': {
-                panelId: 'rankings-panel',
-                contentId: 'rankings-content',
-                renderer: renderRankingsPlaceholder
-            },
-            'groups': {
-                panelId: 'groups-panel',
-                contentId: 'groups-content',
-                renderer: renderGroupsPlaceholder
-            },
-            'tournaments': {
-                panelId: 'tournaments-panel',
-                contentId: 'tournaments-content',
-                renderer: renderTournamentsContent
-            }
-        };
-
-        var config = panelMap[tabName];
-        if (!config) {
-            return;
-        }
-
-        var content = rootContainer.querySelector('#' + config.contentId);
-        if (!content) {
-            return;
-        }
-
-        content.style.display = 'block';
-
-        try {
-            config.renderer(content, rootContainer);
-        } catch (e) {
-            console.error('ClassesMain: Error rendering panel:', e);
-            content.innerHTML = '<p class="empty-state">Error loading content. Please refresh.</p>';
-        }
-    }
-
-    // ============================================================
-    // PANEL RENDERERS - Using ClassesCore directly
-    // ============================================================
-
-    function renderClassesContent(container) {
-        if (window.ClassesView && typeof window.ClassesView.renderClassesView === 'function') {
-            window.ClassesView.renderClassesView(container);
-        } else {
-            container.innerHTML = '<p class="empty-state">Classes module not loaded.</p>';
-        }
-    }
-
-    function renderRankingsPlaceholder(container) {
-        if (!container) return;
-
-        // Use ClassesCore for data
-        var classes = window.ClassesCore ? window.ClassesCore.getGraduatingClasses() : [];
-
-        container.innerHTML = `
-            <div class="page-header">
-                <h2>Class Rankings</h2>
-            </div>
-            <div class="ranking-controls" style="margin-bottom:12px;">
-                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                    <label style="font-size:0.75rem;color:var(--text-dim);">Class:</label>
-                    <select id="rankings-class-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
-                        <option value="all">All Classes</option>
-                        ${classes.map(function(cls) {
-                            return '<option value="' + cls.id + '">' + escapeHtml(cls.name) + '</option>';
-                        }).join('')}
-                    </select>
-                    <label style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Week:</label>
-                    <select id="rankings-week-select" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
-                        ${getWeekOptions()}
-                    </select>
-                    <button id="auto-rank-btn" class="primary small">Generate Rankings</button>
-                </div>
-            </div>
-            <div id="rankings-container">
-                <p class="empty-state">Select a class to view rankings.</p>
-            </div>
-        `;
-    }
-
-    function renderGroupsPlaceholder(container) {
-        if (!container) return;
-
-        var classes = window.ClassesCore ? window.ClassesCore.getGraduatingClasses() : [];
-
-        container.innerHTML = `
-            <div class="page-header">
-                <h2>Auto-Groups</h2>
-                <div style="display:flex;gap:4px;">
-                    <button id="rebuild-groups-btn" class="primary small">Rebuild Groups</button>
-                    <button id="refresh-groups-btn" class="secondary small">Refresh</button>
-                </div>
-            </div>
-            <div class="groups-controls" style="margin-bottom:12px;">
-                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                    <label style="font-size:0.75rem;color:var(--text-dim);">Class:</label>
-                    <select id="groups-class-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
-                        <option value="all">All Classes</option>
-                        ${classes.map(function(cls) {
-                            return '<option value="' + cls.id + '">' + escapeHtml(cls.name) + '</option>';
-                        }).join('')}
-                    </select>
-                    <label style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Discipline:</label>
-                    <select id="groups-discipline-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
-                        <option value="all">All Disciplines</option>
-                    </select>
-                </div>
-            </div>
-            <div id="groups-container">
-                <p class="empty-state">No auto-groups found. Groups are auto-created when students share the same discipline, instructor, and time slot.</p>
-            </div>
-        `;
-    }
-
-    function renderTournamentsContent(container) {
-        if (!container) return;
-
-        var classes = window.ClassesCore ? window.ClassesCore.getGraduatingClasses() : [];
-
-        if (window.TournamentsUI && typeof window.TournamentsUI.render === 'function') {
-            var classFilter = getClassFilterFromState();
-
-            var html = `
+            <div class="classes-layout">
                 <div class="page-header">
-                    <h2>Tournaments</h2>
+                    <h2>Academic Classes</h2>
+                    <button id="add-class-btn" class="primary">+ New Class</button>
                 </div>
-                <div class="tournaments-controls" style="margin-bottom:12px;">
-                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                        <label style="font-size:0.75rem;color:var(--text-dim);">Class:</label>
-                        <select id="tournaments-class-filter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:0.75rem;">
-                            <option value="all">All Classes</option>
-                            ${classes.map(function(cls) {
-                                var isSelected = String(cls.id) === String(classFilter);
-                                return '<option value="' + escapeHtml(cls.id) + '"' + (isSelected ? ' selected' : '') + '>' + escapeHtml(cls.name) + '</option>';
-                            }).join('')}
-                        </select>
-                        <button id="refresh-tournaments-btn" class="small secondary">Refresh</button>
+                <div class="classes-layout-grid" style="display:grid;grid-template-columns:1fr 2fr;gap:16px;">
+                    <div id="class-list-container" class="class-list-panel" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;max-height:500px;overflow-y:auto;">
+                        <div id="class-list">
+                            <p class="empty-state">No classes created yet.</p>
+                        </div>
+                    </div>
+                    <div id="class-detail-container" class="class-detail-panel" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;">
+                        <div id="class-detail">
+                            <p class="empty-state">Select a class to view details.</p>
+                        </div>
                     </div>
                 </div>
-                <div id="tournaments-list-container"></div>
-            `;
-
-            container.innerHTML = html;
-
-            var listContainer = container.querySelector('#tournaments-list-container');
-            if (listContainer) {
-                window.TournamentsUI.render(listContainer);
-            }
-
-            bindTournamentEvents(container);
-            return;
-        }
-
-        if (typeof window.renderTournaments === 'function') {
-            window.renderTournaments(container);
-            return;
-        }
-
-        container.innerHTML = `
-            <div class="page-header">
-                <h2>Tournaments</h2>
-                <button id="create-tournament-btn" class="primary">+ New Tournament</button>
             </div>
-            <p class="empty-state">Tournaments module not loaded. Please refresh.</p>
+
+            <!-- Class Form Modal -->
+            <div id="class-form-modal" class="modal hidden">
+                <div class="modal-content" style="max-width:450px;">
+                    <div class="modal-header">
+                        <h3 id="class-form-title">Add Class</h3>
+                        <button class="close-modal" id="close-class-form">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <form id="class-form-inner">
+                            <div class="form-group">
+                                <label>Class Name *</label>
+                                <input type="text" id="class-name" placeholder="e.g., Spring 1424, March 1436" required>
+                                <span style="font-size:0.6rem;color:var(--text-dim);">Free text - use any naming convention you prefer.</span>
+                            </div>
+                            <div class="form-actions">
+                                <button type="button" id="cancel-class-form" class="secondary">Cancel</button>
+                                <button type="submit" id="save-class-btn" class="primary">Save Class</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Distribute Modal -->
+            <div id="distribute-modal" class="modal hidden">
+                <div class="modal-content" style="max-width:550px;">
+                    <div class="modal-header">
+                        <h3>Auto-Distribute Students</h3>
+                        <button class="close-modal" id="close-distribute-modal">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="distribute-content"></div>
+                    </div>
+                </div>
+            </div>
         `;
     }
 
     // ============================================================
-    // TOURNAMENT HELPERS
+    // REFRESH FUNCTIONS
     // ============================================================
 
-    function getClassFilterFromState() {
-        var select = document.getElementById('tournaments-class-filter');
-        return select ? select.value : 'all';
-    }
+    /**
+     * Refresh the class list only.
+     */
+    function refreshClassList() {
+        var container = document.getElementById('tab-classes');
+        if (!container) return;
 
-    function bindTournamentEvents(container) {
-        // Class filter change
-        var classFilterEl = container.querySelector('#tournaments-class-filter');
-        if (classFilterEl) {
-            var newFilter = classFilterEl.cloneNode(true);
-            classFilterEl.parentNode.replaceChild(newFilter, classFilterEl);
-            newFilter.addEventListener('change', function() {
-                renderTournamentsContent(container);
-            });
-        }
-
-        // Refresh button
-        var refreshBtn = container.querySelector('#refresh-tournaments-btn');
-        if (refreshBtn) {
-            var newRefresh = refreshBtn.cloneNode(true);
-            refreshBtn.parentNode.replaceChild(newRefresh, refreshBtn);
-            newRefresh.addEventListener('click', function() {
-                renderTournamentsContent(container);
-            });
+        if (ClassesView && typeof ClassesView.renderClassList === 'function') {
+            ClassesView.renderClassList(container);
         }
     }
 
-    // ============================================================
-    // HELPER FUNCTIONS
-    // ============================================================
+    /**
+     * Refresh the class detail only.
+     */
+    function refreshClassDetail() {
+        var container = document.getElementById('tab-classes');
+        if (!container) return;
 
-    function escapeHtml(value) {
-        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
-            return window.DomUtils.escapeHtml(value);
+        if (ClassesView && typeof ClassesView.renderClassDetail === 'function') {
+            ClassesView.renderClassDetail(container);
         }
-
-        if (value === undefined || value === null) {
-            return '';
-        }
-        var str = String(value);
-        return str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
     }
 
-    function getWeekOptions() {
-        var html = '';
-        var currentWeek = window.data && window.data.currentWeek ? window.data.currentWeek : 1;
-        for (var w = 1; w <= 52; w++) {
-            html += '<option value="' + w + '"' + (w === currentWeek ? ' selected' : '') + '>Week ' + w + '</option>';
+    /**
+     * Refresh the entire classes UI.
+     */
+    function refreshUI() {
+        var container = document.getElementById('tab-classes');
+        if (!container) return;
+
+        if (ClassesView && typeof ClassesView.render === 'function') {
+            ClassesView.render(container);
         }
-        return html;
     }
 
     // ============================================================
-    // LIFECYCLE EVENTS - TabManager is single source of truth
+    // REGISTER WITH TABMANAGER - Single lifecycle path
     // ============================================================
-    // NOTE: dataReady and tabChanged listeners are removed.
-    // TabManager handles all lifecycle events.
+
+    function registerWithTabManager() {
+        if (TabManager && typeof TabManager.register === 'function') {
+            TabManager.register('classes', renderClasses);
+            return true;
+        }
+        return false;
+    }
+
+    // Register immediately if TabManager is available
+    if (!registerWithTabManager()) {
+        // TabManager not ready - wait for it via event
+        document.addEventListener('tabManagerReady', function() {
+            registerWithTabManager();
+        });
+    }
+
+    // ============================================================
+    // LIFECYCLE EVENTS
+    // ============================================================
+
+    document.addEventListener('dataReady', function() {
+        var container = document.getElementById('tab-classes');
+        if (container && container.style.display !== 'none') {
+            renderClasses(container);
+        }
+    });
+
+    document.addEventListener('tabChanged', function(e) {
+        if (!e || !e.detail) {
+            return;
+        }
+
+        if (e.detail.tab === 'classes') {
+            var container = document.getElementById('tab-classes');
+            if (container) {
+                renderClasses(container);
+            }
+        }
+    });
 
     // ============================================================
     // EXPOSE - Controlled public API only
     // ============================================================
 
-    // Main mount function
-    window.mountClasses = mountClasses;
+    // Main render function
+    window.renderClasses = renderClasses;
 
-    // Legacy compatibility (deprecated, use mountClasses)
-    window.renderClasses = mountClasses;
+    // State management
+    window.classesState = {
+        getState: getState,
+        setState: setState,
+        selectClass: selectClass,
+        getSelectedClassId: getSelectedClassId,
+        clearSelection: clearSelection,
+        refreshList: refreshClassList,
+        refreshDetail: refreshClassDetail,
+        refreshUI: refreshUI
+    };
 
-    // Tab state
-    window.classesState = state;
+    // For backward compatibility
+    window.getClassesState = getState;
+    window.setClassesState = setState;
+    window.selectClass = selectClass;
+    window.getSelectedClassId = getSelectedClassId;
+    window.clearClassSelection = clearSelection;
+    window.refreshClasses = refreshUI;
 
-    // Internal functions (for sub-modules)
-    window.initClassesTabs = initClassesTabs;
-    window.renderTabContent = renderActivePanel;
+    // ============================================================
+    // AUTO-INIT
+    // ============================================================
+
+    if (window.data) {
+        setTimeout(function() {
+            var container = document.getElementById('tab-classes');
+            if (container && container.style.display !== 'none') {
+                renderClasses(container);
+            }
+        }, 100);
+    }
 
 })();
