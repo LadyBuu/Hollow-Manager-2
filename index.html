@@ -26,13 +26,22 @@
             <a href="#" data-tab="social">Social</a>
         </nav>
         <div class="header-actions" id="header-actions">
+            <!-- JSON (Full Backup) -->
             <button id="export-json-btn" class="small">Export JSON</button>
             <button id="import-json-btn" class="small">Import JSON</button>
-            <button id="export-csv-btn" class="small">Export CSV</button>
-            <button id="import-csv-btn" class="small">Import CSV</button>
-            <button id="template-csv-btn" class="small">Template CSV</button>
             <input type="file" id="json-file-input" accept=".json" style="display:none" />
-            <input type="file" id="csv-file-input" accept=".csv" style="display:none" />
+
+            <!-- Character CSV -->
+            <button id="export-characters-csv-btn" class="small">Export Characters</button>
+            <button id="import-characters-csv-btn" class="small">Import Characters</button>
+            <button id="template-characters-csv-btn" class="small">Character Template</button>
+            <input type="file" id="characters-csv-file-input" accept=".csv" style="display:none" />
+
+            <!-- Mission CSV -->
+            <button id="export-missions-csv-btn" class="small">Export Missions</button>
+            <button id="import-missions-csv-btn" class="small">Import Missions</button>
+            <button id="template-missions-csv-btn" class="small">Mission Template</button>
+            <input type="file" id="missions-csv-file-input" accept=".csv" style="display:none" />
         </div>
     </header>
 
@@ -99,60 +108,60 @@
     <!-- 7. DOMAIN QUERY MODULES (READ-ONLY) -->
     <!-- 7a. Character Queries -->
     <script src="js/modules/characters/character-queries.js"></script>
-    
+
     <!-- 7b. Team Queries -->
     <script src="js/modules/teams/team-queries.js"></script>
-    
+
     <!-- 7c. Classes Queries -->
     <script src="js/modules/classes/classes-queries.js"></script>
 
     <!-- 8. CHARACTER MODULES -->
     <!-- 8a. Character Generator -->
     <script src="js/modules/characters/character-generator.js"></script>
-    
+
     <!-- 8b. Character Stats (Domain Logic) -->
     <script src="js/modules/characters/character-stats.js"></script>
-    
+
     <!-- 8c. Character Stats View (Rendering) -->
     <script src="js/modules/characters/character-stats-view.js"></script>
-    
+
     <!-- 8d. Character CRUD -->
     <script src="js/modules/characters/character-crud.js"></script>
-    
+
     <!-- 8e. Character Classes -->
     <script src="js/modules/characters/character-classes.js"></script>
-    
+
     <!-- 8f. Character Eliminations -->
     <script src="js/modules/characters/character-eliminations.js"></script>
-    
+
     <!-- 8g. Character Views -->
     <script src="js/modules/characters/character-views.js"></script>
-    
+
     <!-- 8h. Character List -->
     <script src="js/modules/characters/character-list.js"></script>
-    
+
     <!-- 8i. Character Form -->
     <script src="js/modules/characters/character-form.js"></script>
-    
+
     <!-- 8j. Character Detail -->
     <script src="js/modules/characters/character-detail.js"></script>
-    
+
     <!-- 8k. Character Events -->
     <script src="js/modules/characters/character-events.js"></script>
-    
+
     <!-- 8l. Characters Module Entry Point -->
     <script src="js/modules/characters/index.js"></script>
 
     <!-- 9. CLASSES MODULES (Refactored) -->
     <!-- 9a. Classes Core (CRUD) -->
     <script src="js/modules/classes/classes-core.js"></script>
-    
+
     <!-- 9b. Classes View (RENDER ONLY) -->
     <script src="js/modules/classes/classes-view.js"></script>
-    
+
     <!-- 9c. Classes Events -->
     <script src="js/modules/classes/classes-events.js"></script>
-    
+
     <!-- 9d. Classes Main Entry Point -->
     <script src="js/modules/classes/classes-main.js"></script>
 
@@ -237,12 +246,24 @@
     <script src="js/modules/tournaments/tournaments-ui.js"></script>
 
     <!-- 23. EXPORT MODULES -->
+    <!-- 23a. Shared Export Utilities -->
     <script src="js/export/export-utils.js"></script>
     <script src="js/export/csv-parser.js"></script>
-    <script src="js/export/csv-schema.js"></script>
-    <script src="js/export/csv-io.js"></script>
+
+    <!-- 23b. JSON (Full Backup) -->
     <script src="js/export/json-io.js"></script>
-    <script src="js/export/template.js"></script>
+
+    <!-- 23c. Character CSV -->
+    <script src="js/export/character-export.js"></script>
+    <script src="js/export/character-import.js"></script>
+    <script src="js/export/character-template.js"></script>
+
+    <!-- 23d. Mission CSV -->
+    <script src="js/export/mission-export.js"></script>
+    <script src="js/export/mission-import.js"></script>
+    <script src="js/export/mission-template.js"></script>
+
+    <!-- 23e. Export Index (UI Wiring) -->
     <script src="js/export/index.js"></script>
 
     <!-- 24. APP BOOTSTRAPPER -->
