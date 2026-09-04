@@ -18,6 +18,7 @@
  *   - USES ClassesQueries for class-related queries
  *   - USES Elimination for elimination status
  *   - USES DomUtils for safe DOM operations
+ *   - USES State for current week (delegates to CalendarConstants)
  * 
  * DEPENDENCIES:
  *   - window.CharacterQueries (from character-queries.js)
@@ -38,21 +39,22 @@
     window.__characterListLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries || window;
-    var ClassesQueries = window.ClassesQueries || window;
-    var Elimination = window.Elimination || window;
-    var DomUtils = window.DomUtils || window;
-    var CalendarConstants = window.CALENDAR_CONSTANTS || {};
+    var CharacterQueries = window.CharacterQueries;
+    var ClassesQueries = window.ClassesQueries;
+    var Elimination = window.Elimination;
+    var DomUtils = window.DomUtils;
+    var CalendarConstants = window.CALENDAR_CONSTANTS;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = CalendarConstants.MIN_WEEK || 1;
-    var MAX_WEEK = CalendarConstants.MAX_WEEK || 52;
+    var MIN_WEEK = CalendarConstants ? CalendarConstants.MIN_WEEK : 1;
+    var MAX_WEEK = CalendarConstants ? CalendarConstants.MAX_WEEK : 52;
+    var DEFAULT_WEEK = 1;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -75,6 +77,14 @@
         // ClassesQueries is MANDATORY
         if (!ClassesQueries || typeof ClassesQueries.getCharacterClassNames !== 'function') {
             missing.push('ClassesQueries.getCharacterClassNames');
+        }
+        if (!ClassesQueries || typeof ClassesQueries.getClasses !== 'function') {
+            missing.push('ClassesQueries.getClasses');
+        }
+
+        // Elimination is MANDATORY
+        if (!Elimination || typeof Elimination.isCharacterEliminated !== 'function') {
+            missing.push('Elimination.isCharacterEliminated');
         }
 
         // DomUtils is MANDATORY
@@ -99,30 +109,11 @@
     // ============================================================
 
     function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        // Emergency fallback (should never be reached)
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;')
-            .replace(/`/g, '&#x60;');
+        return DomUtils.escapeHtml(value);
     }
 
     // ============================================================
-    // STATE
-    // ============================================================
-
-    var _filterDebounceTimer = null;
-
-    // ============================================================
-    // FILTER HELPERS
+    // GET FILTER VALUES
     // ============================================================
 
     function getFilterValues() {
@@ -139,20 +130,32 @@
         };
     }
 
+    // ============================================================
+    // CHARACTER MATCHES FILTERS
+    // ============================================================
+
     function characterMatchesFilters(char, filters) {
         if (!char) return false;
 
-        // Name filter
+        // Name filter - uses CharacterQueries
         var name = CharacterQueries.getDisplayName(char).toLowerCase();
         if (filters.name && name.indexOf(filters.name) === -1) {
             return false;
         }
 
-        // Class filter - use ClassesQueries
+        // Class filter - uses ClassesQueries to check membership
         if (filters.classId !== 'all' && filters.classId !== '') {
-            var classIds = Array.isArray(char.classIds) ? char.classIds : [];
-            if (!classIds.some(function(cid) { return String(cid) === String(filters.classId); })) {
-                return false;
+            // Use ClassesQueries to check if character belongs to class
+            if (ClassesQueries && typeof ClassesQueries.isCharacterInClass === 'function') {
+                if (!ClassesQueries.isCharacterInClass(char, filters.classId)) {
+                    return false;
+                }
+            } else {
+                // Fallback: direct classIds check (should not be reached)
+                var classIds = Array.isArray(char.classIds) ? char.classIds : [];
+                if (!classIds.some(function(cid) { return String(cid) === String(filters.classId); })) {
+                    return false;
+                }
             }
         }
 
@@ -163,7 +166,7 @@
 
         // Hide eliminated - use Elimination module
         if (filters.hideEliminated) {
-            var currentWeek = window.data && window.data.currentWeek ? window.data.currentWeek : 1;
+            var currentWeek = getCurrentWeek();
             if (Elimination && typeof Elimination.isCharacterEliminated === 'function') {
                 if (Elimination.isCharacterEliminated(char.id, currentWeek)) {
                     return false;
@@ -172,6 +175,19 @@
         }
 
         return true;
+    }
+
+    // ============================================================
+    // GET CURRENT WEEK - From application state
+    // ============================================================
+
+    function getCurrentWeek() {
+        var data = window.data || {};
+        var week = data.currentWeek;
+        if (typeof week === 'number' && week >= MIN_WEEK && week <= MAX_WEEK) {
+            return week;
+        }
+        return DEFAULT_WEEK;
     }
 
     // ============================================================
@@ -219,7 +235,7 @@
         }
 
         var currentEditId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        var currentWeek = window.data && window.data.currentWeek ? window.data.currentWeek : 1;
+        var currentWeek = getCurrentWeek();
 
         var html = '';
         for (var i = 0; i < filtered.length; i++) {
@@ -289,11 +305,14 @@
         var select = document.getElementById('char-class-filter');
         if (!select) return;
 
+        var previousValue = select.value;
+
         var classes = [];
         if (ClassesQueries && typeof ClassesQueries.getClasses === 'function') {
             classes = ClassesQueries.getClasses();
         }
 
+        // Preserve selection if possible
         select.innerHTML = '<option value="all">All Classes</option>';
 
         for (var i = 0; i < classes.length; i++) {
@@ -304,6 +323,24 @@
             option.textContent = cls.name;
             select.appendChild(option);
         }
+
+        // Restore previous selection if it still exists
+        if (previousValue && previousValue !== 'all') {
+            var exists = false;
+            for (var j = 0; j < select.options.length; j++) {
+                if (select.options[j].value === previousValue) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (exists) {
+                select.value = previousValue;
+            } else {
+                select.value = 'all';
+            }
+        } else {
+            select.value = 'all';
+        }
     }
 
     // ============================================================
@@ -312,7 +349,8 @@
 
     window.CharacterList = {
         render: render,
-        populateClassFilter: populateClassFilter
+        populateClassFilter: populateClassFilter,
+        getFilterValues: getFilterValues
     };
 
 })();
