@@ -37,14 +37,12 @@
  * DEPENDENCIES (ALL REQUIRED):
  *   - window.getCurrentEditId (from index.js)
  *   - window.setCurrentEditId (from index.js)
- *   - window.getCharacterById (from core-utils.js)
- *   - window.getDisplayName (from core-utils.js)
+ *   - window.CharacterQueries (from character-queries.js) - getCharacterById, getDisplayName
  *   - window.saveData (from database.js)
  *   - window.CharacterConstants (from character-constants.js) - MANDATORY
  *   - window.MutationUtils (from mutation-utils.js)
- *   - window.DomUtils (from dom-utils.js)
- *   - window.logActivity (optional, for activity logging)
  *   - window.NotificationSystem (from notification.js)
+ *   - window.ActivityLog (from activity-log.js) - optional
  */
 
 (function() {
@@ -57,6 +55,16 @@
     window.__characterCrudLoaded = true;
 
     // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var CharacterQueries = window.CharacterQueries || window;
+    var NotificationSystem = window.NotificationSystem || window;
+    var MutationUtils = window.MutationUtils || window;
+    var ActivityLog = window.ActivityLog || window;
+    var CC = window.CharacterConstants;
+
+    // ============================================================
     // DEPENDENCY CHECK - ALL dependencies must be present
     // ============================================================
 
@@ -67,33 +75,41 @@
         var required = [
             'getCurrentEditId',
             'setCurrentEditId',
-            'getCharacterById',
-            'getDisplayName',
             'saveData'
         ];
 
         required.forEach(function(name) {
-            if (typeof window[name] !== 'function') {
+            if (name === 'saveData' && typeof window.saveData !== 'function') {
+                missing.push('saveData');
+            } else if (typeof window[name] !== 'function') {
                 missing.push(name);
             }
         });
 
+        // CharacterQueries is MANDATORY
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+
         // CharacterConstants is MANDATORY - no fallbacks
-        if (!window.CharacterConstants) {
+        if (!CC) {
             missing.push('CharacterConstants');
         }
 
         // MutationUtils is MANDATORY
-        if (!window.MutationUtils || typeof window.MutationUtils.createSafeBackup !== 'function') {
+        if (!MutationUtils || typeof MutationUtils.createSafeBackup !== 'function') {
             missing.push('MutationUtils.createSafeBackup');
         }
-        if (window.MutationUtils && typeof window.MutationUtils.saveWithPromise !== 'function') {
+        if (MutationUtils && typeof MutationUtils.saveWithPromise !== 'function') {
             missing.push('MutationUtils.saveWithPromise');
         }
 
-        // DomUtils is MANDATORY
-        if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
+        // NotificationSystem is MANDATORY
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
         }
 
         if (missing.length > 0) {
@@ -107,27 +123,40 @@
     // CANONICAL CONSTANTS - From CharacterConstants ONLY
     // ============================================================
 
-    var CC = window.CharacterConstants;
-
     // Magic constants
-    var MAGIC_TYPE_KEYS = CC.MAGIC_TYPE_KEYS;
-    var MAGIC_MAX = CC.MAGIC_MAX;
-    var BALANCED_MAGE_THRESHOLD = CC.BALANCED_MAGE_THRESHOLD;
+    var MAGIC_TYPE_KEYS = CC ? CC.MAGIC_TYPE_KEYS : [];
+    var MAGIC_MAX = CC ? CC.MAGIC_MAX : 10;
+    var BALANCED_MAGE_THRESHOLD = CC ? CC.BALANCED_MAGE_THRESHOLD : 3;
 
     // Stat constants
-    var STAT_KEYS = CC.STAT_KEYS;
-    var STAT_MIN = CC.STAT_MIN;
-    var STAT_MAX = CC.STAT_MAX;
-    var STAT_DEFAULT = CC.STAT_DEFAULT;
+    var STAT_KEYS = CC ? CC.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    var STAT_MIN = CC ? CC.STAT_MIN : 1;
+    var STAT_MAX = CC ? CC.STAT_MAX : 50;
+    var STAT_DEFAULT = CC ? CC.STAT_DEFAULT : 10;
 
     // Special moves constants
-    var MAX_SPECIAL_MOVES = CC.MAX_SPECIAL_MOVES;
-    var MAX_MOVE_NAME_LENGTH = CC.MAX_MOVE_NAME_LENGTH;
-    var MAX_MOVE_DESCRIPTION_LENGTH = CC.MAX_MOVE_DESCRIPTION_LENGTH;
+    var MAX_SPECIAL_MOVES = CC ? CC.MAX_SPECIAL_MOVES : 20;
+    var MAX_MOVE_NAME_LENGTH = CC ? CC.MAX_MOVE_NAME_LENGTH : 100;
+    var MAX_MOVE_DESCRIPTION_LENGTH = CC ? CC.MAX_MOVE_DESCRIPTION_LENGTH : 500;
 
     // Calendar constants
     var MIN_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MIN_WEEK : 1;
     var MAX_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MAX_WEEK : 52;
+
+    // ============================================================
+    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
+        } else if (type === 'error') {
+            alert('Error: ' + message);
+        } else {
+            alert(message);
+        }
+    }
 
     // ============================================================
     // SAFE RENDER HELPERS
@@ -169,81 +198,12 @@
     }
 
     // ============================================================
-    // NOTIFICATION - Use DomUtils with fallback chain
-    // ============================================================
-
-    function showNotification(message, type) {
-        type = type || 'info';
-
-        // Prefer DomUtils
-        if (window.DomUtils) {
-            switch (type) {
-                case 'success':
-                    if (typeof window.DomUtils.showSuccess === 'function') {
-                        window.DomUtils.showSuccess(message);
-                        return;
-                    }
-                    break;
-                case 'error':
-                    if (typeof window.DomUtils.showError === 'function') {
-                        window.DomUtils.showError(message);
-                        return;
-                    }
-                    break;
-                case 'warning':
-                    if (typeof window.DomUtils.showWarning === 'function') {
-                        window.DomUtils.showWarning(message);
-                        return;
-                    }
-                    break;
-                default:
-                    if (typeof window.DomUtils.showInfo === 'function') {
-                        window.DomUtils.showInfo(message);
-                        return;
-                    }
-            }
-        }
-
-        // Fallback to NotificationSystem
-        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
-            window.NotificationSystem.notify(message, type);
-            return;
-        }
-
-        // Fallback to showToast
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
-        }
-
-        // Fallback to session toast
-        if (typeof window.setSession === 'function') {
-            window.setSession('toast', {
-                message: message,
-                type: type,
-                timestamp: Date.now()
-            });
-            if (typeof window.renderToast === 'function') {
-                window.renderToast();
-            }
-            return;
-        }
-
-        // Last resort
-        if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
-    }
-
-    // ============================================================
     // SAFE CLONE - Delegate to MutationUtils
     // ============================================================
 
     function createSafeBackup(data) {
-        if (window.MutationUtils && typeof window.MutationUtils.createSafeBackup === 'function') {
-            return window.MutationUtils.createSafeBackup(data);
+        if (MutationUtils && typeof MutationUtils.createSafeBackup === 'function') {
+            return MutationUtils.createSafeBackup(data);
         }
 
         // Emergency fallback (should never be needed)
@@ -286,6 +246,9 @@
     // ============================================================
 
     function generateCharacterId() {
+        if (window.IdUtils && typeof window.IdUtils.generateId === 'function') {
+            return window.IdUtils.generateId('char');
+        }
         if (typeof window.generateId === 'function') {
             return window.generateId('char');
         }
@@ -410,9 +373,9 @@
         var finalDeathWeek = isDeceased ? deathWeek : '';
 
         return {
-            firstName: getVal('char-firstname', ''),
+            firstName: getVal('char-firstName', ''),
             middleName: getVal('char-middlename', ''),
-            lastName: getVal('char-lastname', ''),
+            lastName: getVal('char-lastName', ''),
             nickname: getVal('char-nickname', ''),
             alias: getVal('char-alias', ''),
             previousNames: getVal('char-previous-names', '').split(',').map(function(n) {
@@ -659,16 +622,12 @@
         var newId = null;
 
         if (isEditing) {
-            existingChar = typeof window.getCharacterById === 'function'
-                ? window.getCharacterById(editId)
-                : null;
+            existingChar = CharacterQueries.getCharacterById(editId);
             if (!existingChar) {
                 showNotification('Character not found.', 'error');
                 return Promise.resolve(false);
             }
-            name = typeof window.getDisplayName === 'function'
-                ? window.getDisplayName(existingChar)
-                : existingChar.firstName + ' ' + existingChar.lastName;
+            name = CharacterQueries.getDisplayName(existingChar);
         }
 
         // --- SNAPSHOT - Required, abort if fails ---
@@ -701,14 +660,14 @@
         window.data = data;
 
         // --- PERSIST - Use saveWithPromise from MutationUtils ---
-        var savePromise = window.MutationUtils.saveWithPromise();
+        var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
                 // POST-PERSIST SIDE EFFECTS - failure-safe
                 try {
-                    if (typeof window.logActivity === 'function') {
-                        window.logActivity(
+                    if (ActivityLog && typeof ActivityLog.record === 'function') {
+                        ActivityLog.record(
                             isEditing
                                 ? 'Updated character: ' + name
                                 : 'Created character: ' + name
@@ -758,9 +717,7 @@
             return Promise.resolve(false);
         }
 
-        var name = typeof window.getDisplayName === 'function'
-            ? window.getDisplayName(char)
-            : char.firstName + ' ' + char.lastName;
+        var name = CharacterQueries.getDisplayName(char);
 
         if (!confirm('Delete "' + name + '" permanently? This will also remove them from all teams.')) {
             return Promise.resolve(false);
@@ -793,14 +750,14 @@
         window.data = data;
 
         // --- PERSIST ---
-        var savePromise = window.MutationUtils.saveWithPromise();
+        var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
                 // POST-PERSIST SIDE EFFECTS - failure-safe
                 try {
-                    if (typeof window.logActivity === 'function') {
-                        window.logActivity('Deleted character: ' + name);
+                    if (ActivityLog && typeof ActivityLog.record === 'function') {
+                        ActivityLog.record('Deleted character: ' + name);
                     }
                 } catch (logErr) {
                     // Ignore logging errors
