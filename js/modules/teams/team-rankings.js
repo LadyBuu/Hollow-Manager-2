@@ -7,7 +7,6 @@
  *   - Adding ranking entries to teams
  *   - Removing ranking entries from teams
  *   - Maintaining the currentRank cache
- *   - Rendering ranking lists (returns HTML)
  *   - Providing ranking queries (getRankAtPeriod, getRankChange, etc.)
  * 
  * IMPORTANT:
@@ -29,7 +28,6 @@
  *   - Academic teams: periods are week numbers (e.g., "1", "14")
  *   - Non-academic teams: periods are years (e.g., "2025")
  *   - Periods are compared using natural ordering (numeric for both types)
- *   - "Arbitrary sortable strings" are NOT supported - periods must be numeric
  * 
  * MUTATION VALIDATION:
  *   - addRanking() validates the entire ranking history before mutation
@@ -47,10 +45,14 @@
  * DEPENDENCIES:
  *   - window.TeamCore - For team lookup (required)
  *   - window.TeamQueries - For team queries (required)
- *   - window.CALENDAR_CONSTANTS - Week/year constants (from constants.js)
- *   - window.DomUtils - HTML escaping (from dom-utils.js)
- *   - window.ValidationUtils - Period parsing (from validation-utils.js)
- *   - window.ActivityLog - Activity logging (from activity-log.js)
+ *   - window.CALENDAR_CONSTANTS - Week/year constants (required)
+ *   - window.ValidationUtils - Period parsing (required)
+ *   - window.ActivityLog - Activity logging (required)
+ * 
+ * PERSISTENCE:
+ *   - Mutations update in-memory domain state only.
+ *   - The caller owns saveData() / persistence.
+ *   - This module does NOT call saveData().
  */
 
 (function() {
@@ -61,13 +63,23 @@
         return;
     }
 
+    // ============================================================
+    // DEPENDENCY CHECK - NO FALLBACKS
+    // ============================================================
+
     if (!window.TeamCore) {
-        console.error('TeamRankings: TeamCore is required but not loaded.');
         return;
     }
-
     if (!window.TeamQueries) {
-        console.error('TeamRankings: TeamQueries is required but not loaded.');
+        return;
+    }
+    if (!window.CALENDAR_CONSTANTS) {
+        return;
+    }
+    if (!window.ValidationUtils) {
+        return;
+    }
+    if (!window.ActivityLog) {
         return;
     }
 
@@ -79,36 +91,18 @@
 
     var TeamCore = window.TeamCore;
     var TeamQueries = window.TeamQueries;
-    var CALENDAR = window.CALENDAR_CONSTANTS || {};
-    var DomUtils = window.DomUtils || window;
-    var ValidationUtils = window.ValidationUtils || window;
-    var ActivityLog = window.ActivityLog || window;
+    var CALENDAR = window.CALENDAR_CONSTANTS;
+    var ValidationUtils = window.ValidationUtils;
+    var ActivityLog = window.ActivityLog;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
-    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
-    var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
-    var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
-
-    // ============================================================
-    // HTML ESCAPING - Use DomUtils when available
-    // ============================================================
-
-    function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        // Fallback
-        return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
+    var MIN_WEEK = CALENDAR.MIN_WEEK;
+    var MAX_WEEK = CALENDAR.MAX_WEEK;
+    var MIN_YEAR = CALENDAR.MIN_YEAR;
+    var MAX_YEAR = CALENDAR.MAX_YEAR;
 
     // ============================================================
     // ACTIVITY LOGGING - Uses ActivityLog
@@ -116,11 +110,9 @@
 
     function recordActivity(message) {
         try {
-            if (ActivityLog && typeof ActivityLog.record === 'function') {
-                ActivityLog.record(message);
-            }
+            ActivityLog.record(message);
         } catch (err) {
-            // Swallow logging errors
+            // Activity logging failure should not abort the mutation
         }
     }
 
@@ -132,20 +124,7 @@
         return value !== undefined && value !== null && String(value).trim() !== '';
     }
 
-    function getPeriodLabel(teamType) {
-        return teamType === 'academic' ? 'Week' : 'Year';
-    }
-
-    function getPeriodDisplay(period) {
-        if (!hasPeriodValue(period)) return '?';
-        return String(period).trim();
-    }
-
     function parseNumericPeriod(value) {
-        if (ValidationUtils && typeof ValidationUtils.parseStrictPositivePeriod === 'function') {
-            return ValidationUtils.parseStrictPositivePeriod(value);
-        }
-        // Fallback
         if (value === undefined || value === null || value === '') {
             return null;
         }
@@ -163,13 +142,17 @@
     }
 
     function isValidAcademicPeriod(value) {
-        if (!hasPeriodValue(value)) return false;
+        if (!hasPeriodValue(value)) {
+            return false;
+        }
         var num = parseNumericPeriod(value);
         return num !== null && num >= MIN_WEEK && num <= MAX_WEEK;
     }
 
     function isValidYearPeriod(value) {
-        if (!hasPeriodValue(value)) return false;
+        if (!hasPeriodValue(value)) {
+            return false;
+        }
         var num = parseNumericPeriod(value);
         return num !== null && num >= MIN_YEAR && num <= MAX_YEAR;
     }
@@ -179,37 +162,10 @@
         return num !== null && num >= 1;
     }
 
-    /**
-     * Compare two periods for sorting.
-     * Both academic (weeks) and non-academic (years) use numeric comparison.
-     * 
-     * @param {string} a - First period
-     * @param {string} b - Second period
-     * @returns {number} Comparison result
-     */
-    function comparePeriods(a, b) {
-        var aNum = parseNumericPeriod(a);
-        var bNum = parseNumericPeriod(b);
-
-        if (aNum !== null && bNum !== null) {
-            return aNum - bNum;
-        }
-
-        // Fallback to string comparison if not numeric
-        return String(a).localeCompare(String(b), undefined, { numeric: true });
-    }
-
-    /**
-     * Validate a period for a team type.
-     * Academic: must be 1-52
-     * Non-academic: must be 1900-2100
-     * 
-     * @param {string|number} period - Period to validate
-     * @param {string} teamType - Team type
-     * @returns {boolean} True if valid
-     */
     function isValidPeriod(period, teamType) {
-        if (!hasPeriodValue(period)) return false;
+        if (!hasPeriodValue(period)) {
+            return false;
+        }
 
         if (teamType === 'academic') {
             return isValidAcademicPeriod(period);
@@ -218,12 +174,6 @@
         return isValidYearPeriod(period);
     }
 
-    /**
-     * Get the valid period range for a team type.
-     * 
-     * @param {string} teamType - Team type
-     * @returns {object} { min, max, label }
-     */
     function getPeriodRange(teamType) {
         if (teamType === 'academic') {
             return {
@@ -243,6 +193,25 @@
         };
     }
 
+    function getPeriodLabel(teamType) {
+        return teamType === 'academic' ? 'Week' : 'Year';
+    }
+
+    /**
+     * Compare two periods for sorting.
+     * Both academic (weeks) and non-academic (years) use numeric comparison.
+     * Malformed periods are filtered out before calling this function.
+     * 
+     * @param {string} a - First period
+     * @param {string} b - Second period
+     * @returns {number} Comparison result
+     */
+    function comparePeriods(a, b) {
+        var aNum = parsePositivePeriod(a);
+        var bNum = parsePositivePeriod(b);
+        return aNum - bNum;
+    }
+
     // ============================================================
     // RANKING OPERATIONS
     // ============================================================
@@ -250,7 +219,7 @@
     var TeamRankings = {
         /**
          * Add a ranking entry to a team.
-         * Enforces ONE ranking per period by removing all existing entries for the period.
+         * Enforces ONE ranking per period by replacing the existing entry.
          * Validates the entire ranking history before mutation.
          * 
          * @param {string} teamId - Team ID
@@ -261,66 +230,64 @@
         addRanking: function(teamId, period, rank) {
             // Validate inputs
             if (!hasPeriodValue(period)) {
-                console.warn('TeamRankings.addRanking: Period is required.');
                 return false;
             }
 
             // Strict rank validation: must be a positive integer
             if (!isValidRank(rank)) {
-                console.warn('TeamRankings.addRanking: Rank must be a positive integer.');
                 return false;
             }
 
             var team = TeamCore.getTeam(teamId);
             if (!team) {
-                console.warn('TeamRankings.addRanking: Team not found.');
                 return false;
             }
 
             // Validate period against team type
             if (!isValidPeriod(period, team.type)) {
                 var range = getPeriodRange(team.type);
-                console.warn('TeamRankings.addRanking: Period must be ' + range.minLabel + '-' + range.maxLabel + ' for ' + range.label + ' (' + team.type + ').');
                 return false;
             }
 
             // Reject malformed existing data
             if (!Array.isArray(team.rankingHistory)) {
-                console.warn('TeamRankings.addRanking: Ranking history data is malformed.');
                 return false;
             }
 
             // Validate existing ranking entries are well-formed
-            var rankingValidation = this._validateRankingHistory(team.rankingHistory);
+            var rankingValidation = this._validateRankingHistory(team.rankingHistory, team.type);
             if (!rankingValidation.valid) {
-                console.warn('TeamRankings.addRanking: Ranking history contains malformed entries:', rankingValidation.message);
                 return false;
             }
 
             var periodStr = String(period).trim();
             var rankNum = parsePositivePeriod(rank);
 
-            // Enforce ONE ranking per period: remove ALL existing entries for this period
-            var existingEntries = team.rankingHistory.filter(function(r) {
-                return r && String(r.period) === periodStr;
-            });
-
-            // Use findIndex to remove exactly the matching entries (should be 0 or 1)
-            for (var i = team.rankingHistory.length - 1; i >= 0; i--) {
-                var r = team.rankingHistory[i];
-                if (r && String(r.period) === periodStr) {
-                    team.rankingHistory.splice(i, 1);
+            // Find existing entry for this period
+            var existingIndex = -1;
+            for (var i = 0; i < team.rankingHistory.length; i++) {
+                var entry = team.rankingHistory[i];
+                if (entry && String(entry.period) === periodStr) {
+                    existingIndex = i;
+                    break;
                 }
             }
 
-            var oldRank = existingEntries.length > 0 ? existingEntries[0].rank : null;
-            var isUpdate = existingEntries.length > 0;
+            var oldRank = null;
+            var isUpdate = existingIndex !== -1;
 
-            // Add the new canonical entry
-            team.rankingHistory.push({
-                period: periodStr,
-                rank: rankNum
-            });
+            if (isUpdate) {
+                oldRank = team.rankingHistory[existingIndex].rank;
+                team.rankingHistory[existingIndex] = {
+                    period: periodStr,
+                    rank: rankNum
+                };
+            } else {
+                team.rankingHistory.push({
+                    period: periodStr,
+                    rank: rankNum
+                });
+            }
 
             // Update current rank cache
             this._updateCurrentRank(team);
@@ -328,7 +295,7 @@
             // Activity logging
             var teamName = team.name || 'Unknown Team';
             if (isUpdate) {
-                recordActivity('Updated ranking for ' + teamName + ': #' + oldRank + ' → #' + rank + ' (' + periodStr + ')');
+                recordActivity('Updated ranking for ' + teamName + ': #' + oldRank + ' -> #' + rank + ' (' + periodStr + ')');
             } else {
                 recordActivity('Added ranking #' + rank + ' for ' + teamName + ' (' + periodStr + ')');
             }
@@ -347,32 +314,33 @@
          */
         removeRanking: function(teamId, period) {
             if (!hasPeriodValue(period)) {
-                console.warn('TeamRankings.removeRanking: Period is required.');
                 return false;
             }
 
             var team = TeamCore.getTeam(teamId);
             if (!team || !team.rankingHistory) {
-                console.warn('TeamRankings.removeRanking: Team or ranking history not found.');
                 return false;
             }
 
             // Validate existing ranking entries are well-formed (same as addRanking)
-            var rankingValidation = this._validateRankingHistory(team.rankingHistory);
+            var rankingValidation = this._validateRankingHistory(team.rankingHistory, team.type);
             if (!rankingValidation.valid) {
-                console.warn('TeamRankings.removeRanking: Ranking history contains malformed entries:', rankingValidation.message);
                 return false;
             }
 
             var periodStr = String(period).trim();
 
             // Find exact entry using findIndex
-            var index = team.rankingHistory.findIndex(function(r) {
-                return r && String(r.period) === periodStr;
-            });
+            var index = -1;
+            for (var i = 0; i < team.rankingHistory.length; i++) {
+                var entry = team.rankingHistory[i];
+                if (entry && String(entry.period) === periodStr) {
+                    index = i;
+                    break;
+                }
+            }
 
             if (index === -1) {
-                console.warn('TeamRankings.removeRanking: Period "' + periodStr + '" not found.');
                 return false;
             }
 
@@ -395,10 +363,11 @@
          * Returns { valid: boolean, message: string }
          * 
          * @param {array} history - Ranking history array
+         * @param {string} teamType - Team type for period validation
          * @returns {object} Validation result
          * @private
          */
-        _validateRankingHistory: function(history) {
+        _validateRankingHistory: function(history, teamType) {
             if (!Array.isArray(history)) {
                 return { valid: false, message: 'Ranking history must be an array.' };
             }
@@ -406,15 +375,15 @@
             var seenPeriods = {};
 
             for (var i = 0; i < history.length; i++) {
-                var r = history[i];
-                if (!r || typeof r !== 'object') {
+                var entry = history[i];
+                if (!entry || typeof entry !== 'object') {
                     return {
                         valid: false,
                         message: 'Invalid ranking entry at index ' + i + '.'
                     };
                 }
 
-                var period = parseNumericPeriod(r.period);
+                var period = parsePositivePeriod(entry.period);
                 if (period === null) {
                     return {
                         valid: false,
@@ -422,7 +391,24 @@
                     };
                 }
 
-                var rank = parseNumericPeriod(r.rank);
+                // Validate period against team type
+                if (teamType === 'academic') {
+                    if (period < MIN_WEEK || period > MAX_WEEK) {
+                        return {
+                            valid: false,
+                            message: 'Period must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + ' for academic teams at index ' + i + '.'
+                        };
+                    }
+                } else {
+                    if (period < MIN_YEAR || period > MAX_YEAR) {
+                        return {
+                            valid: false,
+                            message: 'Period must be between ' + MIN_YEAR + ' and ' + MAX_YEAR + ' for non-academic teams at index ' + i + '.'
+                        };
+                    }
+                }
+
+                var rank = parsePositivePeriod(entry.rank);
                 if (rank === null || rank < 1) {
                     return {
                         valid: false,
@@ -450,7 +436,9 @@
          * @private
          */
         _updateCurrentRank: function(team) {
-            if (!team) return;
+            if (!team) {
+                return;
+            }
 
             if (!team.rankingHistory || team.rankingHistory.length === 0) {
                 team.currentRank = '';
@@ -470,16 +458,26 @@
          * @returns {array} Sorted ranking history
          */
         getSortedHistory: function(team) {
-            if (!team || !team.rankingHistory) return [];
-            if (!Array.isArray(team.rankingHistory)) return [];
+            if (!team || !team.rankingHistory) {
+                return [];
+            }
+            if (!Array.isArray(team.rankingHistory)) {
+                return [];
+            }
 
-            var history = team.rankingHistory.slice().filter(function(r) {
-                return r && hasPeriodValue(r.period) && parsePositivePeriod(r.rank) !== null;
-            });
+            var history = [];
+            for (var i = 0; i < team.rankingHistory.length; i++) {
+                var entry = team.rankingHistory[i];
+                if (entry && hasPeriodValue(entry.period) && parsePositivePeriod(entry.rank) !== null) {
+                    history.push(entry);
+                }
+            }
 
-            return history.sort(function(a, b) {
+            history.sort(function(a, b) {
                 return comparePeriods(a.period, b.period);
             });
+
+            return history;
         },
 
         /**
@@ -491,7 +489,9 @@
          * @returns {string} Current rank (empty string if none)
          */
         getCurrentRank: function(team) {
-            if (!team) return '';
+            if (!team) {
+                return '';
+            }
             var history = this.getSortedHistory(team);
             return history.length > 0 ? String(history[history.length - 1].rank) : '';
         },
@@ -503,7 +503,9 @@
          * @returns {object|null} Most recent ranking entry or null
          */
         getMostRecentRanking: function(team) {
-            if (!team) return null;
+            if (!team) {
+                return null;
+            }
             var history = this.getSortedHistory(team);
             return history.length > 0 ? history[history.length - 1] : null;
         },
@@ -541,7 +543,9 @@
          * @returns {boolean} True if the team has rankings
          */
         hasRankings: function(team) {
-            if (!team) return false;
+            if (!team) {
+                return false;
+            }
             return this.getSortedHistory(team).length > 0;
         },
 
@@ -554,19 +558,28 @@
          * @returns {number|null} Rank at that period, or null if not found
          */
         getRankAtPeriod: function(team, period) {
-            if (!team || !team.rankingHistory) return null;
-            if (!hasPeriodValue(period)) return null;
+            if (!team || !team.rankingHistory) {
+                return null;
+            }
+            if (!hasPeriodValue(period)) {
+                return null;
+            }
+
+            // Validate requested period against team type
+            if (!isValidPeriod(period, team.type)) {
+                return null;
+            }
 
             var periodStr = String(period).trim();
-            var entries = team.rankingHistory.filter(function(r) {
-                return r && String(r.period) === periodStr && parsePositivePeriod(r.rank) !== null;
-            });
 
-            if (entries.length === 0) return null;
-            if (entries.length > 1) {
-                console.warn('TeamRankings.getRankAtPeriod: Duplicate periods found for "' + periodStr + '". Using first entry.');
+            for (var i = 0; i < team.rankingHistory.length; i++) {
+                var entry = team.rankingHistory[i];
+                if (entry && String(entry.period) === periodStr && parsePositivePeriod(entry.rank) !== null) {
+                    return entry.rank;
+                }
             }
-            return entries[0].rank;
+
+            return null;
         },
 
         /**
@@ -615,67 +628,7 @@
          * @param {string} teamType - Team type
          * @returns {string} Period label
          */
-        getPeriodLabel: getPeriodLabel,
-
-        // ============================================================
-        // RENDERING - Returns HTML string
-        // ============================================================
-
-        /**
-         * Render ranking list for a team.
-         * PURE: Returns HTML string. Does NOT mutate data or DOM.
-         * 
-         * @param {object} team - Team object
-         * @returns {string} HTML string
-         */
-        renderList: function(team) {
-            if (!team) {
-                return '<p class="empty-state">No team provided.</p>';
-            }
-
-            var rankings = this.getSortedHistory(team);
-
-            if (rankings.length === 0) {
-                return '<p class="empty-state">No ranking history</p>';
-            }
-
-            var html = '';
-            var periodLabel = getPeriodLabel(team.type);
-
-            rankings.forEach(function(entry) {
-                var periodDisplay = entry.period;
-                var rankDisplay = entry.rank;
-
-                html += '<div class="ranking-entry" style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border-soft);">';
-                html += '<span><strong>#' + escapeHtml(rankDisplay) + '</strong> - ' + escapeHtml(periodLabel) + ' ' + escapeHtml(periodDisplay) + '</span>';
-                html += '<button class="small danger remove-ranking" data-period="' + escapeHtml(entry.period) + '" style="padding:2px 8px;font-size:0.65rem;">Remove</button>';
-                html += '</div>';
-            });
-
-            return html;
-        },
-
-        /**
-         * Render a ranking summary for a team (compact view).
-         * 
-         * @param {object} team - Team object
-         * @returns {string} HTML string
-         */
-        renderSummary: function(team) {
-            if (!team) {
-                return '<span class="ranking-summary">No team</span>';
-            }
-
-            var summary = this.getSummary(team);
-
-            if (summary.total === 0) {
-                return '<span class="ranking-summary no-rankings">No rankings</span>';
-            }
-
-            var periodLabel = getPeriodLabel(team.type);
-
-            return '<span class="ranking-summary">#' + escapeHtml(summary.current) + ' (last ' + escapeHtml(periodLabel) + ' ' + escapeHtml(summary.mostRecent ? summary.mostRecent.period : '') + ')</span>';
-        }
+        getPeriodLabel: getPeriodLabel
     };
 
     // ============================================================

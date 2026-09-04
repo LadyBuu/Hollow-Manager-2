@@ -14,9 +14,9 @@
  * All ranking logic is delegated to TeamRankings.
  * 
  * MUTATION DELEGATION:
- *   - Team mutations → TeamCore.createTeam() / TeamCore.updateTeam() / TeamCore.deleteTeam()
- *   - Member mutations → TeamCore.addMember() / TeamCore.removeMember() / TeamCore.updateMember()
- *   - Ranking mutations → TeamCore.addRanking() / TeamCore.removeRanking()
+ *   - Team mutations -> TeamCore.createTeam() / TeamCore.updateTeam() / TeamCore.deleteTeam()
+ *   - Member mutations -> TeamCore.addMember() / TeamCore.removeMember() / TeamCore.updateMember()
+ *   - Ranking mutations -> TeamCore.addRanking() / TeamCore.removeRanking()
  * 
  * PERSISTENCE:
  *   - This module does NOT call saveData() directly.
@@ -34,14 +34,11 @@
  *     - window.TeamQueries
  *     - window.TeamMembers
  *     - window.TeamRankings
- *   Optional (fallbacks provided):
- *     - window.CharacterQueries (from character-queries.js)
- *     - window.ClassesQueries (from classes-queries.js)
- *     - window.NotificationSystem (from notification.js)
- *     - window.ActivityLog (from activity-log.js)
- *     - window.CALENDAR_CONSTANTS (from constants.js)
- *     - window.DomUtils (from dom-utils.js)
- *     - window.ValidationUtils (from validation-utils.js)
+ *     - window.CharacterQueries
+ *     - window.ClassesQueries
+ *     - window.NotificationSystem
+ *     - window.CALENDAR_CONSTANTS
+ *     - window.ValidationUtils
  */
 
 (function() {
@@ -52,23 +49,35 @@
         return;
     }
 
+    // ============================================================
+    // DEPENDENCY CHECK - NO FALLBACKS
+    // ============================================================
+
     if (!window.TeamCore) {
-        console.error('TeamModals: TeamCore is required but not loaded.');
         return;
     }
-
     if (!window.TeamQueries) {
-        console.error('TeamModals: TeamQueries is required but not loaded.');
         return;
     }
-
     if (!window.TeamMembers) {
-        console.error('TeamModals: TeamMembers is required but not loaded.');
         return;
     }
-
     if (!window.TeamRankings) {
-        console.error('TeamModals: TeamRankings is required but not loaded.');
+        return;
+    }
+    if (!window.CharacterQueries) {
+        return;
+    }
+    if (!window.ClassesQueries) {
+        return;
+    }
+    if (!window.NotificationSystem) {
+        return;
+    }
+    if (!window.CALENDAR_CONSTANTS) {
+        return;
+    }
+    if (!window.ValidationUtils) {
         return;
     }
 
@@ -82,89 +91,20 @@
     var TeamQueries = window.TeamQueries;
     var TeamMembers = window.TeamMembers;
     var TeamRankings = window.TeamRankings;
-    var CharacterQueries = window.CharacterQueries || window;
-    var ClassesQueries = window.ClassesQueries || window;
-    var NotificationSystem = window.NotificationSystem || window;
-    var ActivityLog = window.ActivityLog || window;
-    var DomUtils = window.DomUtils || window;
-    var ValidationUtils = window.ValidationUtils || window;
-    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var CharacterQueries = window.CharacterQueries;
+    var ClassesQueries = window.ClassesQueries;
+    var NotificationSystem = window.NotificationSystem;
+    var CALENDAR = window.CALENDAR_CONSTANTS;
+    var ValidationUtils = window.ValidationUtils;
 
     // ============================================================
-    // CONSTANTS - Use type-safe defaults
+    // CONSTANTS - Use type-safe defaults from CALENDAR
     // ============================================================
 
-    var MIN_WEEK = Number.isInteger(CALENDAR.MIN_WEEK) ? CALENDAR.MIN_WEEK : 1;
-    var MAX_WEEK = Number.isInteger(CALENDAR.MAX_WEEK) ? CALENDAR.MAX_WEEK : 52;
-    var MIN_YEAR = Number.isInteger(CALENDAR.MIN_YEAR) ? CALENDAR.MIN_YEAR : 1900;
-    var MAX_YEAR = Number.isInteger(CALENDAR.MAX_YEAR) ? CALENDAR.MAX_YEAR : 2100;
-
-    // ============================================================
-    // HTML ESCAPING - Use DomUtils when available
-    // ============================================================
-
-    function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        // Fallback
-        return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
-
-    // ============================================================
-    // CHARACTER HELPERS - Uses CharacterQueries
-    // ============================================================
-
-    function getCharacterName(charId) {
-        if (CharacterQueries && typeof CharacterQueries.getDisplayName === 'function') {
-            var char = CharacterQueries.getCharacterById(charId);
-            return char ? CharacterQueries.getDisplayName(char) : 'Unknown';
-        }
-        return 'Unknown';
-    }
-
-    function getCharacterCurrentStatus(charId) {
-        if (CharacterQueries && typeof CharacterQueries.getCurrentStatus === 'function') {
-            var char = CharacterQueries.getCharacterById(charId);
-            return char ? CharacterQueries.getCurrentStatus(char) : '';
-        }
-        return '';
-    }
-
-    // ============================================================
-    // CLASS HELPERS - Uses ClassesQueries
-    // ============================================================
-
-    function getClasses() {
-        if (ClassesQueries && typeof ClassesQueries.getClasses === 'function') {
-            return ClassesQueries.getClasses();
-        }
-        return [];
-    }
-
-    function getMissions() {
-        var data = window.data || {};
-        return data.missions || [];
-    }
-
-    // ============================================================
-    // ACTIVITY LOGGING - Uses ActivityLog
-    // ============================================================
-
-    function recordActivity(message) {
-        try {
-            if (ActivityLog && typeof ActivityLog.record === 'function') {
-                ActivityLog.record(message);
-            }
-        } catch (err) {
-            // Swallow logging errors
-        }
-    }
+    var MIN_WEEK = CALENDAR.MIN_WEEK;
+    var MAX_WEEK = CALENDAR.MAX_WEEK;
+    var MIN_YEAR = CALENDAR.MIN_YEAR;
+    var MAX_YEAR = CALENDAR.MAX_YEAR;
 
     // ============================================================
     // NOTIFICATION - Uses NotificationSystem
@@ -172,19 +112,7 @@
 
     function showNotification(message, type) {
         type = type || 'info';
-        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
-            NotificationSystem.notify(message, type);
-            return;
-        }
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
-        }
-        if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
+        NotificationSystem.notify(message, type);
     }
 
     // ============================================================
@@ -192,10 +120,6 @@
     // ============================================================
 
     function parseNumericPeriod(value) {
-        if (ValidationUtils && typeof ValidationUtils.parseStrictPositivePeriod === 'function') {
-            return ValidationUtils.parseStrictPositivePeriod(value);
-        }
-        // Fallback
         if (value === undefined || value === null || value === '') {
             return null;
         }
@@ -205,11 +129,6 @@
         }
         var parsed = Number(str);
         return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
-    }
-
-    function parsePositivePeriod(value) {
-        var parsed = parseNumericPeriod(value);
-        return (parsed !== null && parsed >= 1) ? parsed : null;
     }
 
     // ============================================================
@@ -222,9 +141,9 @@
             if (window.teamState && window.teamState.filters && window.teamState.filters.academic) {
                 return window.teamState.filters.academic.filterWeek || 1;
             }
-            return 1;
+            return data.currentWeek || 1;
         }
-        return data.currentYear || new Date().getFullYear();
+        return data.currentYear || MIN_YEAR;
     }
 
     // ============================================================
@@ -233,18 +152,27 @@
 
     function refreshMemberList(teamId) {
         var team = TeamCore.getTeam(teamId);
-        if (!team) return;
+        if (!team) {
+            return;
+        }
 
         var container = document.getElementById('members-list');
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         var currentPeriod = getCurrentPeriod(team.type);
-        container.innerHTML = TeamMembers.renderList(team, currentPeriod);
+        // TODO: Use TeamMemberViews.renderList when available
+        // For now, delegate to TeamMembers
+        var membersHtml = TeamMembers.renderList ? TeamMembers.renderList(team, currentPeriod) : '';
+        container.innerHTML = membersHtml;
     }
 
     function refreshRankingList(teamId) {
         var team = TeamCore.getTeam(teamId);
-        if (!team) return;
+        if (!team) {
+            return;
+        }
 
         var listEl = document.getElementById('ranking-list');
         if (listEl) {
@@ -252,13 +180,8 @@
         }
     }
 
-    function refreshCharacterSelect(teamId) {
-        populateMemberCharacterSelect(teamId);
-    }
-
     function refreshAllMemberUI(teamId) {
         refreshMemberList(teamId);
-        refreshCharacterSelect(teamId);
         if (typeof window.refreshTeamList === 'function') {
             window.refreshTeamList();
         }
@@ -278,7 +201,6 @@
     function showTeamForm(editId) {
         var modal = document.getElementById('team-form-modal');
         if (!modal) {
-            console.warn('TeamModals: team-form-modal not found.');
             return;
         }
 
@@ -294,13 +216,11 @@
             title.textContent = 'Edit Team';
             var team = TeamCore.getTeam(editId);
             if (team) {
-                // Null-safe field population
                 setFieldValue('team-name', team.name);
                 setFieldValue('team-type', team.type || 'academic');
                 setFieldValue('team-start', team.startPeriod);
                 setFieldValue('team-end', team.endPeriod);
 
-                // Ranking field is DISPLAY ONLY - disabled by JS
                 var rankingInput = document.getElementById('team-ranking');
                 if (rankingInput) {
                     var currentRank = TeamQueries.getTeamCurrentRank(team);
@@ -323,15 +243,18 @@
                     setFieldValue('team-number', team.teamNumber);
                 }
 
-                if (form) form.dataset.editId = editId;
+                if (form) {
+                    form.dataset.editId = editId;
+                }
 
                 var container = document.getElementById('name-history-container');
                 if (container) {
                     container.innerHTML = '';
                     if (team.nameHistory && team.nameHistory.length > 0) {
-                        team.nameHistory.forEach(function(entry) {
+                        for (var i = 0; i < team.nameHistory.length; i++) {
+                            var entry = team.nameHistory[i];
                             addNameHistoryEntry(container, entry.name, entry.startPeriod, entry.endPeriod);
-                        });
+                        }
                     } else {
                         addNameHistoryEntry(container);
                     }
@@ -344,19 +267,19 @@
                 setFieldValue('team-type', 'academic');
                 setFieldValue('team-status', 'active');
 
-                var rankingInput = document.getElementById('team-ranking');
-                if (rankingInput) {
-                    rankingInput.value = '';
-                    rankingInput.disabled = true;
+                var rankingInput2 = document.getElementById('team-ranking');
+                if (rankingInput2) {
+                    rankingInput2.value = '';
+                    rankingInput2.disabled = true;
                 }
 
                 delete form.dataset.editId;
             }
 
-            var container = document.getElementById('name-history-container');
-            if (container) {
-                container.innerHTML = '';
-                addNameHistoryEntry(container);
+            var container2 = document.getElementById('name-history-container');
+            if (container2) {
+                container2.innerHTML = '';
+                addNameHistoryEntry(container2);
             }
         }
 
@@ -370,7 +293,9 @@
 
     function closeTeamForm() {
         var modal = document.getElementById('team-form-modal');
-        if (modal) modal.classList.add('hidden');
+        if (modal) {
+            modal.classList.add('hidden');
+        }
     }
 
     // ============================================================
@@ -386,34 +311,49 @@
 
     function populateClassSelector() {
         var select = document.getElementById('team-class');
-        if (!select) return;
+        if (!select) {
+            return;
+        }
 
-        var classes = getClasses();
+        var classes = ClassesQueries.getClasses();
         var currentValue = select.value;
         select.innerHTML = '<option value="">Unassigned</option>';
-        classes.forEach(function(cls) {
+        for (var i = 0; i < classes.length; i++) {
+            var cls = classes[i];
             var option = document.createElement('option');
             option.value = cls.id;
             option.textContent = cls.name;
             select.appendChild(option);
-        });
-        if (currentValue) select.value = currentValue;
+        }
+        if (currentValue) {
+            select.value = currentValue;
+        }
     }
 
     function populateMissionSelector() {
         var select = document.getElementById('team-mission');
-        if (!select) return;
+        if (!select) {
+            return;
+        }
 
-        var missions = getMissions();
+        var data = window.data || {};
+        var missions = data.missions || [];
         select.innerHTML = '<option value="">None</option>';
+
         var sortedMissions = missions.slice().sort(function(a, b) {
-            if (a.status === 'active' && b.status !== 'active') return -1;
-            if (a.status !== 'active' && b.status === 'active') return 1;
+            if (a.status === 'active' && b.status !== 'active') {
+                return -1;
+            }
+            if (a.status !== 'active' && b.status === 'active') {
+                return 1;
+            }
             var titleA = String(a.title || '');
             var titleB = String(b.title || '');
             return titleA.localeCompare(titleB);
         });
-        sortedMissions.forEach(function(mission) {
+
+        for (var i = 0; i < sortedMissions.length; i++) {
+            var mission = sortedMissions[i];
             if (mission.status !== 'cancelled') {
                 var option = document.createElement('option');
                 option.value = mission.id;
@@ -421,13 +361,12 @@
                 option.textContent = title + (mission.status === 'completed' ? ' (completed)' : '');
                 select.appendChild(option);
             }
-        });
+        }
     }
 
     function toggleAcademicFields(type) {
         var fields = document.getElementById('academic-team-fields');
         if (fields) {
-            fields.classList.toggle('hidden', type !== 'academic');
             fields.style.display = (type === 'academic') ? 'block' : 'none';
         }
     }
@@ -435,14 +374,15 @@
     function toggleMissionField(type) {
         var field = document.getElementById('temporary-mission-field');
         if (field) {
-            field.classList.toggle('hidden', type !== 'temporary' && type !== 'professional');
             field.style.display = (type === 'temporary' || type === 'professional') ? 'block' : 'none';
         }
     }
 
     function updatePeriodLabels() {
         var typeSelect = document.getElementById('team-type');
-        if (!typeSelect) return;
+        if (!typeSelect) {
+            return;
+        }
 
         var type = typeSelect.value;
         var startLabel = document.getElementById('team-start-label');
@@ -451,15 +391,31 @@
         var endInput = document.getElementById('team-end');
 
         if (type === 'academic') {
-            if (startLabel) startLabel.textContent = 'Start Week (' + MIN_WEEK + '-' + MAX_WEEK + ')';
-            if (endLabel) endLabel.textContent = 'End Week (optional)';
-            if (startInput) startInput.placeholder = 'Week (e.g., 1)';
-            if (endInput) endInput.placeholder = 'Week (e.g., ' + MAX_WEEK + ')';
+            if (startLabel) {
+                startLabel.textContent = 'Start Week (' + MIN_WEEK + '-' + MAX_WEEK + ')';
+            }
+            if (endLabel) {
+                endLabel.textContent = 'End Week (optional)';
+            }
+            if (startInput) {
+                startInput.placeholder = 'Week (e.g., 1)';
+            }
+            if (endInput) {
+                endInput.placeholder = 'Week (e.g., ' + MAX_WEEK + ')';
+            }
         } else {
-            if (startLabel) startLabel.textContent = 'Start Period (' + MIN_YEAR + '-' + MAX_YEAR + ')';
-            if (endLabel) endLabel.textContent = 'End Period (optional)';
-            if (startInput) startInput.placeholder = 'Year (e.g., ' + MIN_YEAR + ')';
-            if (endInput) endInput.placeholder = 'Year (e.g., ' + MAX_YEAR + ')';
+            if (startLabel) {
+                startLabel.textContent = 'Start Period (' + MIN_YEAR + '-' + MAX_YEAR + ')';
+            }
+            if (endLabel) {
+                endLabel.textContent = 'End Period (optional)';
+            }
+            if (startInput) {
+                startInput.placeholder = 'Year (e.g., ' + MIN_YEAR + ')';
+            }
+            if (endInput) {
+                endInput.placeholder = 'Year (e.g., ' + MAX_YEAR + ')';
+            }
         }
 
         toggleAcademicFields(type);
@@ -467,13 +423,14 @@
     }
 
     function addNameHistoryEntry(container, name, start, end) {
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         var entry = document.createElement('div');
         entry.className = 'name-history-entry';
         entry.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;flex-wrap:wrap;align-items:center;';
 
-        // Use DOM APIs for safety
         var nameInput = document.createElement('input');
         nameInput.type = 'text';
         nameInput.className = 'name-history-name';
@@ -499,7 +456,7 @@
         removeBtn.type = 'button';
         removeBtn.className = 'small danger remove-name';
         removeBtn.style.cssText = 'padding:2px 6px;font-size:0.6rem;';
-        removeBtn.textContent = '✕';
+        removeBtn.textContent = 'x';
 
         entry.appendChild(nameInput);
         entry.appendChild(startInput);
@@ -518,15 +475,94 @@
     }
 
     // ============================================================
-    // MEMBER MODAL - Delegates all eligibility logic to TeamMembers
+    // POPULATE CHARACTER SELECT - Uses TeamMembers for eligibility
+    // ============================================================
+
+    function populateCharacterSelect(select, team, currentPeriod) {
+        if (!select || !team) {
+            return;
+        }
+
+        select.innerHTML = '<option value="">Select character...</option>';
+
+        var candidates = TeamMembers.getCandidateCharactersAtPeriod(team.type, currentPeriod);
+
+        for (var i = 0; i < candidates.length; i++) {
+            var character = candidates[i];
+            if (!character || typeof character !== 'object') {
+                continue;
+            }
+
+            var eligibility = TeamMembers.getEligibilityStatus(
+                team,
+                character,
+                currentPeriod
+            );
+
+            var option = document.createElement('option');
+            option.value = character.id;
+
+            var displayName = CharacterQueries.getDisplayName(character);
+            var currentStatus = CharacterQueries.getCurrentStatus(character);
+
+            var label = displayName + ' [' + currentStatus + ']';
+            if (eligibility === 'in-team') {
+                label += ' (In Team)';
+                option.disabled = true;
+            } else if (eligibility === 'in-other-team') {
+                label += ' (In Other Team)';
+                option.disabled = true;
+            } else if (eligibility === 'deceased') {
+                label += ' (Deceased)';
+                option.disabled = true;
+            } else if (eligibility === 'eliminated') {
+                label += ' (Eliminated)';
+                option.disabled = true;
+            } else if (eligibility === 'future-member') {
+                label += ' (Future Member)';
+                option.disabled = true;
+            } else if (eligibility === 'former-member') {
+                label += ' (Former Member)';
+                option.disabled = true;
+            } else if (eligibility === 'unknown') {
+                label += ' (Unknown)';
+                option.disabled = true;
+            }
+
+            option.textContent = label;
+            select.appendChild(option);
+        }
+    }
+
+    function populateMemberCharacterSelect(teamId) {
+        var select = document.getElementById('member-character');
+        if (!select) {
+            return;
+        }
+
+        var team = TeamCore.getTeam(teamId);
+        if (!team) {
+            return;
+        }
+
+        var currentPeriod = getCurrentPeriod(team.type);
+        populateCharacterSelect(select, team, currentPeriod);
+    }
+
+    // ============================================================
+    // MEMBER MODAL
     // ============================================================
 
     function showMemberModal(teamId) {
         var modal = document.getElementById('member-modal');
-        if (!modal) return;
+        if (!modal) {
+            return;
+        }
 
         var team = TeamCore.getTeam(teamId);
-        if (!team) return;
+        if (!team) {
+            return;
+        }
 
         var currentPeriod = getCurrentPeriod(team.type);
 
@@ -535,56 +571,28 @@
             titleEl.textContent = team.name + ' - Members (Full History)';
         }
 
-        var select = document.getElementById('member-character');
-        if (select) {
-            select.innerHTML = '<option value="">Select character...</option>';
+        populateMemberCharacterSelect(teamId);
 
-            // Get candidates for the current period (period-aware)
-            var candidates = TeamMembers.getCandidateCharactersAtPeriod(team.type, currentPeriod);
-
-            candidates.forEach(function(char) {
-                if (!char || typeof char !== 'object') return;
-                var charId = char.id;
-
-                // Use TeamMembers for all eligibility/status logic
-                var eligibility = TeamMembers.getEligibilityStatus(
-                    team,
-                    char,
-                    currentPeriod
-                );
-
-                var option = document.createElement('option');
-                option.value = char.id;
-
-                var displayName = CharacterQueries.getDisplayName(char);
-                var currentStatus = CharacterQueries.getCurrentStatus(char);
-                option.textContent = displayName + ' [' + currentStatus + '] ' + eligibility.label;
-
-                if (eligibility.style) {
-                    option.style.cssText = eligibility.style;
-                }
-
-                if (eligibility.disabled) {
-                    option.disabled = true;
-                }
-
-                select.appendChild(option);
-            });
+        var roleInput = document.getElementById('member-role');
+        if (roleInput) {
+            roleInput.value = '';
         }
 
-        // Null-safe field clearing
-        var roleInput = document.getElementById('member-role');
-        if (roleInput) roleInput.value = '';
-
         var joinInput = document.getElementById('member-join');
-        if (joinInput) joinInput.value = '';
+        if (joinInput) {
+            joinInput.value = '';
+        }
 
         var leaveInput = document.getElementById('member-leave');
-        if (leaveInput) leaveInput.value = '';
+        if (leaveInput) {
+            leaveInput.value = '';
+        }
 
         var membersContainer = document.getElementById('members-list');
         if (membersContainer) {
-            membersContainer.innerHTML = TeamMembers.renderList(team, currentPeriod);
+            // TODO: Use TeamMemberViews.renderList when available
+            var membersHtml = TeamMembers.renderList ? TeamMembers.renderList(team, currentPeriod) : '';
+            membersContainer.innerHTML = membersHtml;
         }
 
         modal.dataset.teamId = teamId;
@@ -595,7 +603,9 @@
 
     function closeMemberModal() {
         var modal = document.getElementById('member-modal');
-        if (modal) modal.classList.add('hidden');
+        if (modal) {
+            modal.classList.add('hidden');
+        }
     }
 
     // ============================================================
@@ -604,7 +614,9 @@
 
     function attachMemberEvents(teamId) {
         var container = document.getElementById('members-list');
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         container.removeEventListener('click', handleMemberClick);
         container.addEventListener('click', handleMemberClick);
@@ -613,11 +625,15 @@
 
     function handleMemberClick(e) {
         var target = e.target.closest('button');
-        if (!target) return;
+        if (!target) {
+            return;
+        }
 
         var container = document.getElementById('members-list');
         var teamId = container ? container.dataset.teamId : null;
-        if (!teamId) return;
+        if (!teamId) {
+            return;
+        }
 
         if (target.classList.contains('edit-member')) {
             e.stopPropagation();
@@ -635,7 +651,6 @@
                 var result = TeamCore.removeMember(teamId, charId);
                 if (result) {
                     refreshAllMemberUI(teamId);
-                    recordActivity('Removed member from team');
                 } else {
                     showNotification('Failed to remove member.', 'error');
                 }
@@ -650,7 +665,9 @@
 
     function showEditMemberModal(teamId, charId) {
         var modal = document.getElementById('edit-member-modal');
-        if (!modal) return;
+        if (!modal) {
+            return;
+        }
 
         var team = TeamCore.getTeam(teamId);
         if (!team || !team.members) {
@@ -658,30 +675,42 @@
             return;
         }
 
-        // Find member by characterId (stable identifier)
-        var member = team.members.find(function(m) {
-            return m && String(m.characterId) === String(charId);
-        });
+        var member = null;
+        for (var i = 0; i < team.members.length; i++) {
+            var m = team.members[i];
+            if (m && String(m.characterId) === String(charId)) {
+                member = m;
+                break;
+            }
+        }
 
         if (!member) {
             showNotification('Member not found.', 'error');
             return;
         }
 
-        var char = CharacterQueries.getCharacterById(member.characterId);
-        var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+        var character = CharacterQueries.getCharacterById(member.characterId);
+        var name = character ? CharacterQueries.getDisplayName(character) : 'Unknown';
 
         var nameEl = document.getElementById('edit-member-name');
-        if (nameEl) nameEl.textContent = name;
+        if (nameEl) {
+            nameEl.textContent = name;
+        }
 
         var roleEl = document.getElementById('edit-member-role');
-        if (roleEl) roleEl.value = member.role || '';
+        if (roleEl) {
+            roleEl.value = member.role || '';
+        }
 
         var joinEl = document.getElementById('edit-member-join');
-        if (joinEl) joinEl.value = member.joinPeriod || '';
+        if (joinEl) {
+            joinEl.value = member.joinPeriod || '';
+        }
 
         var leaveEl = document.getElementById('edit-member-leave');
-        if (leaveEl) leaveEl.value = member.leavePeriod || '';
+        if (leaveEl) {
+            leaveEl.value = member.leavePeriod || '';
+        }
 
         modal.dataset.teamId = teamId;
         modal.dataset.characterId = charId;
@@ -690,7 +719,9 @@
 
     function closeEditMemberModal() {
         var modal = document.getElementById('edit-member-modal');
-        if (modal) modal.classList.add('hidden');
+        if (modal) {
+            modal.classList.add('hidden');
+        }
     }
 
     // ============================================================
@@ -737,15 +768,20 @@
             return;
         }
 
-        // Clear form fields
-        if (charSelect) charSelect.value = '';
-        if (roleInput) roleInput.value = '';
-        if (joinInput) joinInput.value = '';
-        if (leaveInput) leaveInput.value = '';
+        if (charSelect) {
+            charSelect.value = '';
+        }
+        if (roleInput) {
+            roleInput.value = '';
+        }
+        if (joinInput) {
+            joinInput.value = '';
+        }
+        if (leaveInput) {
+            leaveInput.value = '';
+        }
 
-        // Refresh UI
         refreshAllMemberUI(teamId);
-        recordActivity('Added member to team');
         showNotification('Member added successfully!', 'success');
     }
 
@@ -789,12 +825,9 @@
             return;
         }
 
-        // Close modal
         modal.classList.add('hidden');
 
-        // Refresh UI
         refreshAllMemberUI(teamId);
-        recordActivity('Updated member in team');
         showNotification('Member updated successfully!', 'success');
     }
 
@@ -804,27 +837,34 @@
 
     function showRankingModal(teamId) {
         var modal = document.getElementById('ranking-modal');
-        if (!modal) return;
+        if (!modal) {
+            return;
+        }
 
         var team = TeamCore.getTeam(teamId);
-        if (!team) return;
+        if (!team) {
+            return;
+        }
 
         var titleEl = document.getElementById('ranking-modal-title');
-        if (titleEl) titleEl.textContent = team.name + ' - Ranking History';
+        if (titleEl) {
+            titleEl.textContent = team.name + ' - Ranking History';
+        }
 
         var periodInput = document.getElementById('ranking-period');
         if (periodInput) {
-            // Set appropriate placeholder based on team type
             if (team.type === 'academic') {
                 periodInput.placeholder = 'Week (e.g., 1)';
             } else {
-                periodInput.placeholder = 'Year (e.g., ' + new Date().getFullYear() + ')';
+                periodInput.placeholder = 'Year (e.g., ' + (window.data ? window.data.currentYear || MIN_YEAR : MIN_YEAR) + ')';
             }
             periodInput.value = '';
         }
 
         var rankInput = document.getElementById('ranking-rank');
-        if (rankInput) rankInput.value = '';
+        if (rankInput) {
+            rankInput.value = '';
+        }
 
         modal.dataset.teamId = teamId;
 
@@ -840,7 +880,9 @@
 
     function closeRankingModal() {
         var modal = document.getElementById('ranking-modal');
-        if (modal) modal.classList.add('hidden');
+        if (modal) {
+            modal.classList.add('hidden');
+        }
     }
 
     // ============================================================
@@ -849,7 +891,9 @@
 
     function attachRankingEvents(teamId) {
         var container = document.getElementById('ranking-list');
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         container.removeEventListener('click', handleRankingClick);
         container.addEventListener('click', handleRankingClick);
@@ -858,11 +902,15 @@
 
     function handleRankingClick(e) {
         var target = e.target.closest('button');
-        if (!target) return;
+        if (!target) {
+            return;
+        }
 
         var container = document.getElementById('ranking-list');
         var teamId = container ? container.dataset.teamId : null;
-        if (!teamId) return;
+        if (!teamId) {
+            return;
+        }
 
         if (target.classList.contains('remove-ranking')) {
             e.stopPropagation();
@@ -871,7 +919,6 @@
                 var result = TeamCore.removeRanking(teamId, period);
                 if (result) {
                     refreshAllRankingUI(teamId);
-                    recordActivity('Removed ranking from team');
                 } else {
                     showNotification('Failed to remove ranking.', 'error');
                 }
@@ -928,65 +975,15 @@
             return;
         }
 
-        // Clear form fields
-        if (periodInput) periodInput.value = '';
-        if (rankInput) rankInput.value = '';
+        if (periodInput) {
+            periodInput.value = '';
+        }
+        if (rankInput) {
+            rankInput.value = '';
+        }
 
-        // Refresh UI
         refreshAllRankingUI(teamId);
-        recordActivity('Added ranking to team');
         showNotification('Ranking added successfully!', 'success');
-    }
-
-    // ============================================================
-    // POPULATE MEMBER CHARACTER SELECT
-    // ============================================================
-
-    function populateMemberCharacterSelect(teamId) {
-        var select = document.getElementById('member-character');
-        if (!select) return;
-
-        var team = TeamCore.getTeam(teamId);
-        if (!team) return;
-
-        var currentPeriod = getCurrentPeriod(team.type);
-
-        select.innerHTML = '<option value="">Select character...</option>';
-
-        // Use period-aware candidate selection
-        var candidates = TeamMembers.getCandidateCharactersAtPeriod(team.type, currentPeriod);
-
-        var currentMemberIds = (team.members || []).map(function(m) {
-            return m ? String(m.characterId) : null;
-        }).filter(function(id) { return id; });
-
-        candidates.forEach(function(char) {
-            if (!char || typeof char !== 'object') return;
-
-            // Use TeamMembers for ALL eligibility logic - this is the single authority
-            var eligibility = TeamMembers.getEligibilityStatus(
-                team,
-                char,
-                currentPeriod
-            );
-
-            var option = document.createElement('option');
-            option.value = char.id;
-
-            var displayName = CharacterQueries.getDisplayName(char);
-            var currentStatus = CharacterQueries.getCurrentStatus(char);
-            option.textContent = displayName + ' [' + currentStatus + '] ' + eligibility.label;
-
-            if (eligibility.style) {
-                option.style.cssText = eligibility.style;
-            }
-
-            if (eligibility.disabled) {
-                option.disabled = true;
-            }
-
-            select.appendChild(option);
-        });
     }
 
     // ============================================================
@@ -1010,12 +1007,12 @@
         showRankingModal: showRankingModal,
         closeRankingModal: closeRankingModal,
 
-        // Action handlers (exposed for event binding)
+        // Action handlers
         handleAddRanking: handleAddRanking,
         handleAddMember: handleAddMember,
         handleSaveEditMember: handleSaveEditMember,
 
-        // Helpers (exposed for team-manager.js)
+        // Helpers
         populateMemberCharacterSelect: populateMemberCharacterSelect,
         populateClassSelector: populateClassSelector,
         populateMissionSelector: populateMissionSelector,

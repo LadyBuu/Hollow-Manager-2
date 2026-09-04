@@ -1,5 +1,5 @@
 /**
- * modules/classes/classes-queries.js - Class Queries
+ * js/modules/classes/classes-queries.js - Class Queries
  * Read-only class domain queries
  * Path: js/modules/classes/classes-queries.js
  * 
@@ -19,7 +19,8 @@
  *   - Uses CharacterQueries for character data (when needed)
  *   - Uses TeamQueries for team data (when needed)
  *   - Uses Elimination for elimination status (when needed)
- *   - All functions return DEEP CLONED data where appropriate
+ *   - All functions return live references into window.data.
+ *     Callers must not mutate returned objects.
  * 
  * DEPENDENCIES:
  *   - window.ValidationUtils (from validation-utils.js)
@@ -33,7 +34,7 @@
  *   - window.data.characters is the source of truth for character data
  *   - window.data.teams is the source of truth for team data
  *   - No caching - always reads fresh from window.data
- *   - Results are NOT cloned by default (caller should clone if needed)
+ *   - Results are live references - callers must not mutate
  * 
  * USAGE:
  *   var queries = window.ClassesQueries;
@@ -50,24 +51,16 @@
     if (window.__classesQueriesLoaded) {
         return;
     }
-    window.__classesQueriesLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var ValidationUtils = window.ValidationUtils || window;
-    var CharacterQueries = window.CharacterQueries || window;
-    var TeamQueries = window.TeamQueries || window;
-    var Elimination = window.Elimination || window;
-    var CalendarConstants = window.CALENDAR_CONSTANTS || {};
-
-    // ============================================================
-    // CONSTANTS
-    // ============================================================
-
-    var MIN_WEEK = CalendarConstants.MIN_WEEK || 1;
-    var MAX_WEEK = CalendarConstants.MAX_WEEK || 52;
+    var ValidationUtils = window.ValidationUtils;
+    var CharacterQueries = window.CharacterQueries;
+    var TeamQueries = window.TeamQueries;
+    var Elimination = window.Elimination;
+    var CalendarConstants = window.CALENDAR_CONSTANTS;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -76,15 +69,10 @@
     function checkDependencies() {
         var missing = [];
 
-        // ValidationUtils is MANDATORY
         if (!ValidationUtils || typeof ValidationUtils.parseStrictPositivePeriod !== 'function') {
             missing.push('ValidationUtils.parseStrictPositivePeriod');
         }
-        if (!ValidationUtils || typeof ValidationUtils.getPeriodInfo !== 'function') {
-            missing.push('ValidationUtils.getPeriodInfo');
-        }
 
-        // CharacterQueries is MANDATORY
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
@@ -92,78 +80,63 @@
             missing.push('CharacterQueries.getDisplayName');
         }
 
-        // TeamQueries is MANDATORY
         if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
             missing.push('TeamQueries.getActiveTeamMembers');
         }
-        if (!TeamQueries || typeof TeamQueries.isTeamOperational !== 'function') {
-            missing.push('TeamQueries.isTeamOperational');
+
+        if (!Elimination || typeof Elimination.isCharacterEliminated !== 'function') {
+            missing.push('Elimination.isCharacterEliminated');
+        }
+
+        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
+            missing.push('CALENDAR_CONSTANTS');
         }
 
         if (missing.length > 0) {
-            console.warn('ClassesQueries: Missing dependencies:', missing.join(', '));
             return false;
         }
 
         return true;
     }
 
+    if (!checkDependencies()) {
+        return;
+    }
+
+    window.__classesQueriesLoaded = true;
+
     // ============================================================
-    // HELPERS - Delegate to ValidationUtils
+    // CONSTANTS
+    // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+
+    // ============================================================
+    // PERIOD PARSING - Delegate to ValidationUtils
     // ============================================================
 
     function parseStrictPositivePeriod(value) {
-        if (ValidationUtils && typeof ValidationUtils.parseStrictPositivePeriod === 'function') {
-            return ValidationUtils.parseStrictPositivePeriod(value);
-        }
-        // Emergency fallback
-        if (value === undefined || value === null || value === '') return null;
-        var num = parseInt(value, 10);
-        return (!isNaN(num) && num >= 1) ? num : null;
-    }
-
-    function getPeriodInfo(value) {
-        if (ValidationUtils && typeof ValidationUtils.getPeriodInfo === 'function') {
-            return ValidationUtils.getPeriodInfo(value);
-        }
-        // Emergency fallback
-        if (value === undefined || value === null || value === '') {
-            return { present: false, valid: true, value: null };
-        }
-        var num = parseInt(value, 10);
-        return {
-            present: true,
-            valid: !isNaN(num),
-            value: !isNaN(num) ? num : null
-        };
+        return ValidationUtils.parseStrictPositivePeriod(value);
     }
 
     // ============================================================
-    // HELPER: Get Class Data from window.data
+    // HELPER: Get Class Data from window.data (READ-ONLY)
     // ============================================================
 
     function getClassData() {
-        var data = window.data || {};
-        if (!Array.isArray(data.classes)) {
-            data.classes = [];
-        }
-        return data.classes;
+        var data = window.data;
+        return data && Array.isArray(data.classes) ? data.classes : [];
     }
 
     function getCharacterData() {
-        var data = window.data || {};
-        if (!Array.isArray(data.characters)) {
-            data.characters = [];
-        }
-        return data.characters;
+        var data = window.data;
+        return data && Array.isArray(data.characters) ? data.characters : [];
     }
 
     function getTeamData() {
-        var data = window.data || {};
-        if (!Array.isArray(data.teams)) {
-            data.teams = [];
-        }
-        return data.teams;
+        var data = window.data;
+        return data && Array.isArray(data.teams) ? data.teams : [];
     }
 
     // ============================================================
@@ -172,12 +145,12 @@
 
     /**
      * Get all classes.
-     * @returns {Array} Array of class objects (shallow copy)
+     * @returns {Array} Array of class objects (shallow copy of array, live class objects)
      */
     function getClasses() {
         var classes = getClassData();
-        return classes.slice().filter(function(c) {
-            return c && typeof c === 'object';
+        return classes.slice().filter(function(cls) {
+            return cls && typeof cls === 'object';
         }).sort(function(a, b) {
             var nameA = String(a.name || '');
             var nameB = String(b.name || '');
@@ -191,13 +164,15 @@
      * @returns {object|null} Class object or null
      */
     function getClass(id) {
-        if (!id) return null;
+        if (!id) {
+            return null;
+        }
         var target = String(id);
         var classes = getClassData();
         for (var i = 0; i < classes.length; i++) {
-            var c = classes[i];
-            if (c && typeof c === 'object' && String(c.id) === target) {
-                return c;
+            var cls = classes[i];
+            if (cls && typeof cls === 'object' && String(cls.id) === target) {
+                return cls;
             }
         }
         return null;
@@ -209,15 +184,17 @@
      * @returns {object|null} Class object or null
      */
     function getClassByName(name) {
-        if (!name) return null;
+        if (!name) {
+            return null;
+        }
         var target = String(name).toLowerCase().trim();
         var classes = getClassData();
         for (var i = 0; i < classes.length; i++) {
-            var c = classes[i];
-            if (c && typeof c === 'object') {
-                var className = String(c.name || '').toLowerCase().trim();
+            var cls = classes[i];
+            if (cls && typeof cls === 'object') {
+                var className = String(cls.name || '').toLowerCase().trim();
                 if (className === target) {
-                    return c;
+                    return cls;
                 }
             }
         }
@@ -242,11 +219,11 @@
         var classes = getClasses();
         var options = [];
         for (var i = 0; i < classes.length; i++) {
-            var c = classes[i];
-            var count = getCharactersByClass(c.id).length;
+            var cls = classes[i];
+            var count = getCharactersByClass(cls.id).length;
             options.push({
-                id: c.id,
-                name: c.name,
+                id: cls.id,
+                name: cls.name,
                 count: count
             });
         }
@@ -269,18 +246,24 @@
     /**
      * Get all characters in a class.
      * @param {string} classId - Class ID
-     * @returns {Array} Array of character objects
+     * @returns {Array} Array of character objects (live references)
      */
     function getCharactersByClass(classId) {
-        if (!classId) return [];
+        if (!classId) {
+            return [];
+        }
         var target = String(classId);
         var chars = getCharacterData();
         var result = [];
         for (var i = 0; i < chars.length; i++) {
-            var c = chars[i];
-            if (c && typeof c === 'object' && Array.isArray(c.classIds) &&
-                c.classIds.some(function(cid) { return String(cid) === target; })) {
-                result.push(c);
+            var character = chars[i];
+            if (character && typeof character === 'object' && Array.isArray(character.classIds)) {
+                for (var j = 0; j < character.classIds.length; j++) {
+                    if (String(character.classIds[j]) === target) {
+                        result.push(character);
+                        break;
+                    }
+                }
             }
         }
         return result;
@@ -297,20 +280,30 @@
 
     /**
      * Get all classes a character belongs to.
-     * @param {object} char - Character object
-     * @returns {Array} Array of class objects
+     * @param {object} character - Character object
+     * @returns {Array} Array of class objects (live references)
      */
-    function getCharacterClasses(char) {
-        if (!char) return [];
-        var classIds = Array.isArray(char.classIds) ? char.classIds : [];
-        if (classIds.length === 0) return [];
+    function getCharacterClasses(character) {
+        if (!character) {
+            return [];
+        }
+        var classIds = Array.isArray(character.classIds) ? character.classIds : [];
+        if (classIds.length === 0) {
+            return [];
+        }
 
         var classes = getClasses();
         var result = [];
         for (var i = 0; i < classes.length; i++) {
-            var c = classes[i];
-            if (c && classIds.some(function(cid) { return String(cid) === String(c.id); })) {
-                result.push(c);
+            var cls = classes[i];
+            if (!cls) {
+                continue;
+            }
+            for (var j = 0; j < classIds.length; j++) {
+                if (String(classIds[j]) === String(cls.id)) {
+                    result.push(cls);
+                    break;
+                }
             }
         }
         return result;
@@ -318,11 +311,11 @@
 
     /**
      * Get all class names a character belongs to.
-     * @param {object} char - Character object
+     * @param {object} character - Character object
      * @returns {Array} Array of class names
      */
-    function getCharacterClassNames(char) {
-        var classes = getCharacterClasses(char);
+    function getCharacterClassNames(character) {
+        var classes = getCharacterClasses(character);
         var names = [];
         for (var i = 0; i < classes.length; i++) {
             names.push(classes[i].name);
@@ -332,14 +325,22 @@
 
     /**
      * Check if a character is in a class.
-     * @param {object} char - Character object
+     * @param {object} character - Character object
      * @param {string} classId - Class ID
      * @returns {boolean} True if character is in the class
      */
-    function isCharacterInClass(char, classId) {
-        if (!char || !classId) return false;
-        var classIds = Array.isArray(char.classIds) ? char.classIds : [];
-        return classIds.some(function(cid) { return String(cid) === String(classId); });
+    function isCharacterInClass(character, classId) {
+        if (!character || !classId) {
+            return false;
+        }
+        var classIds = Array.isArray(character.classIds) ? character.classIds : [];
+        var target = String(classId);
+        for (var i = 0; i < classIds.length; i++) {
+            if (String(classIds[i]) === target) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ============================================================
@@ -349,20 +350,21 @@
     /**
      * Get all academic teams in a class.
      * @param {string} classId - Class ID
-     * @returns {Array} Array of team objects
+     * @returns {Array} Array of team objects (live references)
      */
     function getTeamsByClass(classId) {
-        if (!classId) return [];
+        if (!classId) {
+            return [];
+        }
         var target = String(classId);
         var teams = getTeamData();
         var result = [];
         for (var i = 0; i < teams.length; i++) {
-            var t = teams[i];
-            if (t && typeof t === 'object' && 
-                t.type === 'academic' && 
-                String(t.classId) === target &&
-                TeamQueries.isTeamOperational(t)) {
-                result.push(t);
+            var team = teams[i];
+            if (team && typeof team === 'object' && team.type === 'academic' && String(team.classId) === target) {
+                if (TeamQueries.isTeamOperational(team)) {
+                    result.push(team);
+                }
             }
         }
         return result;
@@ -383,18 +385,10 @@
      * @returns {object|null} Class object or null
      */
     function getClassForTeam(team) {
-        if (!team || team.type !== 'academic' || !team.classId) return null;
+        if (!team || team.type !== 'academic' || !team.classId) {
+            return null;
+        }
         return getClass(team.classId);
-    }
-
-    /**
-     * Get the class name for a team.
-     * @param {object} team - Team object
-     * @returns {string} Class name or 'Unassigned'
-     */
-    function getClassForTeamDisplay(team) {
-        var cls = getClassForTeam(team);
-        return cls ? cls.name : 'Unassigned';
     }
 
     // ============================================================
@@ -411,10 +405,12 @@
      * 
      * @param {string} classId - Class ID
      * @param {number|string} week - Week number
-     * @returns {Array} Array of available character objects
+     * @returns {Array} Array of available character objects (live references)
      */
     function getAvailableStudentsForClass(classId, week) {
-        if (!classId) return [];
+        if (!classId) {
+            return [];
+        }
 
         var weekNum = parseStrictPositivePeriod(week);
         if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
@@ -424,42 +420,46 @@
         var classChars = getCharactersByClass(classId);
         var teams = getTeamsByClass(classId);
 
-        var result = [];
+        // Build occupied character set from all teams
+        var occupiedIds = {};
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (!team || typeof team !== 'object') {
+                continue;
+            }
 
-        for (var i = 0; i < classChars.length; i++) {
-            var char = classChars[i];
-            if (!char || typeof char !== 'object') continue;
+            var members = TeamQueries.getActiveTeamMembers(team, weekNum);
+            for (var j = 0; j < members.length; j++) {
+                var member = members[j];
+                if (member && member.characterId) {
+                    occupiedIds[String(member.characterId)] = true;
+                }
+            }
+        }
+
+        var result = [];
+        for (var k = 0; k < classChars.length; k++) {
+            var character = classChars[k];
+            if (!character || typeof character !== 'object') {
+                continue;
+            }
 
             // Check deceased
-            if (char.deceased) continue;
-
-            // Check eliminated - use Elimination module
-            if (Elimination && typeof Elimination.isCharacterEliminated === 'function') {
-                if (Elimination.isCharacterEliminated(char.id, weekNum)) {
-                    continue;
-                }
+            if (character.deceased) {
+                continue;
             }
 
-            // Check if character is in an active team for this class
-            var isOccupied = false;
-            for (var j = 0; j < teams.length; j++) {
-                var team = teams[j];
-                if (!team || typeof team !== 'object') continue;
-
-                var members = TeamQueries.getActiveTeamMembers(team, weekNum);
-                for (var k = 0; k < members.length; k++) {
-                    var member = members[k];
-                    if (member && String(member.characterId) === String(char.id)) {
-                        isOccupied = true;
-                        break;
-                    }
-                }
-                if (isOccupied) break;
+            // Check eliminated
+            if (Elimination.isCharacterEliminated(character.id, weekNum)) {
+                continue;
             }
 
-            if (!isOccupied) {
-                result.push(char);
+            // Check if character is in an occupied set
+            if (occupiedIds[String(character.id)]) {
+                continue;
             }
+
+            result.push(character);
         }
 
         return result;
@@ -483,34 +483,42 @@
      * @returns {boolean} True if available
      */
     function isStudentAvailableForClass(classId, studentId, week) {
-        if (!classId || !studentId) return false;
+        if (!classId || !studentId) {
+            return false;
+        }
 
         var weekNum = parseStrictPositivePeriod(week);
         if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
             return false;
         }
 
-        var char = CharacterQueries.getCharacterById(studentId);
-        if (!char) return false;
+        var character = CharacterQueries.getCharacterById(studentId);
+        if (!character) {
+            return false;
+        }
 
         // Check if character is in this class
-        if (!isCharacterInClass(char, classId)) return false;
+        if (!isCharacterInClass(character, classId)) {
+            return false;
+        }
 
         // Check deceased
-        if (char.deceased) return false;
+        if (character.deceased) {
+            return false;
+        }
 
         // Check eliminated
-        if (Elimination && typeof Elimination.isCharacterEliminated === 'function') {
-            if (Elimination.isCharacterEliminated(studentId, weekNum)) {
-                return false;
-            }
+        if (Elimination.isCharacterEliminated(studentId, weekNum)) {
+            return false;
         }
 
         // Check if character is in an active team for this class
         var teams = getTeamsByClass(classId);
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
-            if (!team || typeof team !== 'object') continue;
+            if (!team || typeof team !== 'object') {
+                continue;
+            }
 
             var members = TeamQueries.getActiveTeamMembers(team, weekNum);
             for (var j = 0; j < members.length; j++) {
@@ -539,7 +547,7 @@
             return {
                 totalStudents: 0,
                 totalTeams: 0,
-                availableStudents: 0,
+                availableStudents: null,
                 classExists: false,
                 className: null
             };
@@ -550,7 +558,7 @@
             return {
                 totalStudents: 0,
                 totalTeams: 0,
-                availableStudents: 0,
+                availableStudents: null,
                 classExists: false,
                 className: null
             };
@@ -558,7 +566,7 @@
 
         var totalStudents = getCharacterCountByClass(classId);
         var totalTeams = getTeamCountByClass(classId);
-        var availableStudents = 0;
+        var availableStudents = null;
 
         if (week !== undefined && week !== null) {
             availableStudents = getAvailableStudentCount(classId, week);
@@ -583,11 +591,11 @@
         var result = [];
 
         for (var i = 0; i < classes.length; i++) {
-            var c = classes[i];
-            var stats = getClassStats(c.id, week);
+            var cls = classes[i];
+            var stats = getClassStats(cls.id, week);
             result.push({
-                id: c.id,
-                name: c.name,
+                id: cls.id,
+                name: cls.name,
                 totalStudents: stats.totalStudents,
                 totalTeams: stats.totalTeams,
                 availableStudents: stats.availableStudents
@@ -595,46 +603,6 @@
         }
 
         return result;
-    }
-
-    // ============================================================
-    // CLASS VALIDATION HELPERS
-    // ============================================================
-
-    /**
-     * Validate a class name.
-     * @param {string} name - Class name to validate
-     * @param {string} excludeId - Optional class ID to exclude from duplicate check
-     * @returns {object} { valid: boolean, message?: string }
-     */
-    function validateClassName(name, excludeId) {
-        if (!name || typeof name !== 'string' || name.trim() === '') {
-            return { valid: false, message: 'Class name is required.' };
-        }
-
-        var trimmed = String(name).trim();
-        var classes = getClassData();
-
-        for (var i = 0; i < classes.length; i++) {
-            var c = classes[i];
-            if (!c || typeof c !== 'object') continue;
-            if (excludeId && String(c.id) === String(excludeId)) continue;
-            if (String(c.name || '').toLowerCase().trim() === trimmed.toLowerCase()) {
-                return { valid: false, message: 'A class with this name already exists.' };
-            }
-        }
-
-        return { valid: true };
-    }
-
-    /**
-     * Check if a class name is valid.
-     * @param {string} name - Class name to check
-     * @param {string} excludeId - Optional class ID to exclude
-     * @returns {boolean} True if valid
-     */
-    function isValidClassName(name, excludeId) {
-        return validateClassName(name, excludeId).valid;
     }
 
     // ============================================================
@@ -661,7 +629,6 @@
         getTeamsByClass: getTeamsByClass,
         getTeamCountByClass: getTeamCountByClass,
         getClassForTeam: getClassForTeam,
-        getClassForTeamDisplay: getClassForTeamDisplay,
 
         // Available students
         getAvailableStudentsForClass: getAvailableStudentsForClass,
@@ -671,10 +638,6 @@
         // Statistics
         getClassStats: getClassStats,
         getClassesWithStats: getClassesWithStats,
-
-        // Validation
-        validateClassName: validateClassName,
-        isValidClassName: isValidClassName,
 
         // Constants
         MIN_WEEK: MIN_WEEK,

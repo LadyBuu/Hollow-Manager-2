@@ -17,10 +17,10 @@
  *   - This module does NOT show UI - caller handles UX
  *   - USES CharacterQueries for character data
  *   - USES ClassesQueries for class queries
- *   - USES TeamQueries for team data
  *   - USES ActivityLog for activity logging
  *   - USES ObjectUtils for deep cloning
  *   - USES IdUtils for ID generation
+ *   - USES CALENDAR_CONSTANTS for calendar bounds
  * 
  * MUTATION INVARIANT:
  *   - All mutations use candidate-based validation:
@@ -41,16 +41,15 @@
  *   - Deleting a class removes it from all characters' classIds arrays
  *   - Deleting a class sets classId to null on all academic teams
  *   - The class object itself is removed from the classes array
- *   - All operations are transactional (all or nothing)
+ *   - All in-memory mutations are candidate-based and committed together.
+ *     Persistence is handled by the caller.
  * 
  * DEPENDENCIES:
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.ClassesQueries (from classes-queries.js)
- *   - window.TeamQueries (from team-queries.js)
  *   - window.ActivityLog (from activity-log.js)
  *   - window.ObjectUtils (from object-utils.js)
  *   - window.IdUtils (from id-utils.js)
- *   - window.ValidationUtils (from validation-utils.js)
  *   - window.CALENDAR_CONSTANTS (from constants.js)
  * 
  * USAGE:
@@ -69,7 +68,6 @@
     if (window.__classesCoreLoaded) {
         return;
     }
-    window.__classesCoreLoaded = true;
 
     // ============================================================
     // DEPENDENCY IMPORTS - NO FALLBACKS
@@ -77,19 +75,10 @@
 
     var CharacterQueries = window.CharacterQueries;
     var ClassesQueries = window.ClassesQueries;
-    var TeamQueries = window.TeamQueries;
     var ActivityLog = window.ActivityLog;
     var ObjectUtils = window.ObjectUtils;
     var IdUtils = window.IdUtils;
-    var ValidationUtils = window.ValidationUtils;
     var CalendarConstants = window.CALENDAR_CONSTANTS;
-
-    // ============================================================
-    // CONSTANTS
-    // ============================================================
-
-    var MIN_WEEK = CalendarConstants ? CalendarConstants.MIN_WEEK : 1;
-    var MAX_WEEK = CalendarConstants ? CalendarConstants.MAX_WEEK : 52;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -98,7 +87,6 @@
     function checkDependencies() {
         var missing = [];
 
-        // CharacterQueries is MANDATORY
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
@@ -106,46 +94,47 @@
             missing.push('CharacterQueries.getDisplayName');
         }
 
-        // ClassesQueries is MANDATORY
         if (!ClassesQueries || typeof ClassesQueries.getClass !== 'function') {
             missing.push('ClassesQueries.getClass');
         }
         if (!ClassesQueries || typeof ClassesQueries.getClasses !== 'function') {
             missing.push('ClassesQueries.getClasses');
         }
-        if (!ClassesQueries || typeof ClassesQueries.getCharactersByClass !== 'function') {
-            missing.push('ClassesQueries.getCharactersByClass');
-        }
-        if (!ClassesQueries || typeof ClassesQueries.getTeamsByClass !== 'function') {
-            missing.push('ClassesQueries.getTeamsByClass');
-        }
 
-        // TeamQueries is MANDATORY
-        if (!TeamQueries || typeof TeamQueries.isTeamOperational !== 'function') {
-            missing.push('TeamQueries.isTeamOperational');
-        }
-
-        // ActivityLog is MANDATORY
         if (!ActivityLog || typeof ActivityLog.record !== 'function') {
             missing.push('ActivityLog.record');
         }
 
-        // ObjectUtils is MANDATORY
         if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
             missing.push('ObjectUtils.deepClone');
         }
 
-        // IdUtils is MANDATORY
         if (!IdUtils || typeof IdUtils.generateId !== 'function') {
             missing.push('IdUtils.generateId');
         }
 
+        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
+            missing.push('CALENDAR_CONSTANTS');
+        }
+
         if (missing.length > 0) {
-            console.warn('ClassesCore: Missing dependencies:', missing.join(', '));
             return false;
         }
         return true;
     }
+
+    if (!checkDependencies()) {
+        return;
+    }
+
+    window.__classesCoreLoaded = true;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
 
     // ============================================================
     // HELPER ALIASES
@@ -160,35 +149,15 @@
     }
 
     function deepClone(value) {
-        if (ObjectUtils && typeof ObjectUtils.deepClone === 'function') {
-            return ObjectUtils.deepClone(value);
-        }
-        // Fallback (should never be reached if dependencies are checked)
-        if (value === null || typeof value !== 'object') return value;
-        try {
-            return JSON.parse(JSON.stringify(value));
-        } catch (e) {
-            console.warn('ClassesCore: Failed to clone:', e);
-            return null;
-        }
+        return ObjectUtils.deepClone(value);
     }
 
     function recordActivity(message) {
         try {
-            if (ActivityLog && typeof ActivityLog.record === 'function') {
-                ActivityLog.record(message);
-            }
+            ActivityLog.record(message);
         } catch (e) {
-            // Ignore logging errors
+            // Activity logging failure should not abort the mutation
         }
-    }
-
-    function getCharacterName(charId) {
-        if (CharacterQueries && typeof CharacterQueries.getDisplayName === 'function') {
-            var char = CharacterQueries.getCharacterById(charId);
-            return char ? CharacterQueries.getDisplayName(char) : 'Unknown';
-        }
-        return 'Unknown';
     }
 
     function getDataStore() {
@@ -203,13 +172,15 @@
     // ============================================================
 
     function generateClassId() {
-        if (IdUtils && typeof IdUtils.generateId === 'function') {
-            return IdUtils.generateId('class');
-        }
-        if (typeof window.generateId === 'function') {
-            return window.generateId('class');
-        }
-        return 'class_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+        return IdUtils.generateId('class');
+    }
+
+    // ============================================================
+    // CLASS NAME NORMALIZATION
+    // ============================================================
+
+    function normalizeClassName(name) {
+        return String(name).trim();
     }
 
     // ============================================================
@@ -227,15 +198,19 @@
             return { valid: false, message: 'Class name is required.' };
         }
 
-        var trimmed = String(name).trim();
+        var trimmed = normalizeClassName(name);
 
-        // Check for existing class with same name
         var classes = ClassesQueries.getClasses();
         for (var i = 0; i < classes.length; i++) {
-            var c = classes[i];
-            if (!c || typeof c !== 'object') continue;
-            if (excludeId && String(c.id) === String(excludeId)) continue;
-            if (String(c.name || '').toLowerCase().trim() === trimmed.toLowerCase()) {
+            var cls = classes[i];
+            if (!cls || typeof cls !== 'object') {
+                continue;
+            }
+            if (excludeId && String(cls.id) === String(excludeId)) {
+                continue;
+            }
+            var existingName = normalizeClassName(cls.name || '');
+            if (existingName.toLowerCase() === trimmed.toLowerCase()) {
                 return { valid: false, message: 'A class with this name already exists.' };
             }
         }
@@ -254,7 +229,6 @@
             return { valid: false, message: 'Class data must be an object.' };
         }
 
-        // Name validation
         if (!isPartial) {
             if (!isNonEmptyString(data.name)) {
                 return { valid: false, message: 'Class name is required.' };
@@ -265,7 +239,6 @@
             }
         }
 
-        // No other fields to validate for classes
         return { valid: true };
     }
 
@@ -280,10 +253,6 @@
      */
     function createClass(name) {
         // ---- PHASE 1: VALIDATE ----
-        if (!checkDependencies()) {
-            return { success: false, message: 'Dependencies not loaded.' };
-        }
-
         var validation = validateClassName(name);
         if (!validation.valid) {
             return { success: false, message: validation.message };
@@ -296,13 +265,20 @@
         }
 
         if (!Array.isArray(data.classes)) {
-            data.classes = [];
+            return { success: false, message: 'Class data is corrupted.' };
         }
 
-        // ---- PHASE 3: CHECK DUPLICATE (defensive) ----
-        var trimmed = String(name).trim();
-        var existing = data.classes.find(function(c) {
-            return c && String(c.name || '').toLowerCase() === trimmed.toLowerCase();
+        // ---- PHASE 3: BUILD CANDIDATE ----
+        var candidate = deepClone(data.classes);
+        if (candidate === null) {
+            return { success: false, message: 'Failed to prepare class data.' };
+        }
+
+        var trimmed = normalizeClassName(name);
+
+        // Defensive duplicate check (should be redundant after validateClassName)
+        var existing = candidate.some(function(cls) {
+            return cls && normalizeClassName(cls.name || '').toLowerCase() === trimmed.toLowerCase();
         });
 
         if (existing) {
@@ -316,15 +292,9 @@
             createdAt: new Date().toISOString()
         };
 
-        // ---- PHASE 5: BUILD CANDIDATE ----
-        var candidate = deepClone(data.classes);
-        if (candidate === null) {
-            return { success: false, message: 'Failed to prepare class data.' };
-        }
-
         candidate.push(newClass);
 
-        // ---- PHASE 6: COMMIT ----
+        // ---- PHASE 5: COMMIT ----
         data.classes = candidate;
 
         recordActivity('Created class: ' + newClass.name);
@@ -344,10 +314,6 @@
      */
     function updateClass(id, updates) {
         // ---- PHASE 1: VALIDATE ----
-        if (!checkDependencies()) {
-            return { success: false, message: 'Dependencies not loaded.' };
-        }
-
         if (!isNonEmptyString(id)) {
             return { success: false, message: 'Class ID is required.' };
         }
@@ -368,19 +334,23 @@
         }
 
         // ---- PHASE 3: FIND CLASS ----
-        var index = data.classes.findIndex(function(c) {
-            return c && String(c.id) === String(id);
-        });
+        var index = -1;
+        var cls = null;
+        for (var i = 0; i < data.classes.length; i++) {
+            if (data.classes[i] && String(data.classes[i].id) === String(id)) {
+                index = i;
+                cls = data.classes[i];
+                break;
+            }
+        }
 
-        if (index === -1) {
+        if (index === -1 || !cls) {
             return { success: false, message: 'Class not found.' };
         }
 
-        var cls = data.classes[index];
-
-        // ---- PHASE 4: BUILD CANDIDATE ----
-        var candidate = deepClone(cls);
-        if (candidate === null) {
+        // ---- PHASE 4: BUILD CANDIDATE CLASS ----
+        var candidateClass = deepClone(cls);
+        if (candidateClass === null) {
             return { success: false, message: 'Failed to clone class data.' };
         }
 
@@ -392,9 +362,9 @@
             if (!nameValidation.valid) {
                 return { success: false, message: nameValidation.message };
             }
-            var newName = String(updates.name).trim();
-            if (candidate.name !== newName) {
-                candidate.name = newName;
+            var newName = normalizeClassName(updates.name);
+            if (candidateClass.name !== newName) {
+                candidateClass.name = newName;
                 changed = true;
             }
         }
@@ -414,16 +384,16 @@
             return { success: false, message: 'Failed to prepare class data.' };
         }
 
-        candidateArray[index] = candidate;
+        candidateArray[index] = candidateClass;
 
         // ---- PHASE 7: COMMIT ----
         data.classes = candidateArray;
 
-        recordActivity('Updated class: ' + candidate.name);
+        recordActivity('Updated class: ' + candidateClass.name);
 
         return {
             success: true,
-            class: deepClone(candidate),
+            class: deepClone(candidateClass),
             changed: true,
             message: 'Class updated successfully.'
         };
@@ -436,10 +406,6 @@
      */
     function deleteClass(id) {
         // ---- PHASE 1: VALIDATE ----
-        if (!checkDependencies()) {
-            return { success: false, message: 'Dependencies not loaded.' };
-        }
-
         if (!isNonEmptyString(id)) {
             return { success: false, message: 'Class ID is required.' };
         }
@@ -463,15 +429,20 @@
         }
 
         // ---- PHASE 3: FIND CLASS ----
-        var index = data.classes.findIndex(function(c) {
-            return c && String(c.id) === String(id);
-        });
+        var index = -1;
+        var cls = null;
+        for (var i = 0; i < data.classes.length; i++) {
+            if (data.classes[i] && String(data.classes[i].id) === String(id)) {
+                index = i;
+                cls = data.classes[i];
+                break;
+            }
+        }
 
-        if (index === -1) {
+        if (index === -1 || !cls) {
             return { success: false, message: 'Class not found.' };
         }
 
-        var cls = data.classes[index];
         var className = cls.name;
 
         // ---- PHASE 4: BUILD CANDIDATES ----
@@ -494,28 +465,35 @@
         var affectedTeams = 0;
 
         // ---- PHASE 5: CLEAN REFERENCES IN CHARACTERS ----
-        for (var i = 0; i < candidateCharacters.length; i++) {
-            var char = candidateCharacters[i];
-            if (!char || typeof char !== 'object' || !Array.isArray(char.classIds)) {
+        for (var charIdx = 0; charIdx < candidateCharacters.length; charIdx++) {
+            var character = candidateCharacters[charIdx];
+            if (!character || typeof character !== 'object' || !Array.isArray(character.classIds)) {
                 continue;
             }
 
-            // Check if character has this class
-            var hadClass = char.classIds.some(function(cid) {
-                return String(cid) === String(id);
-            });
+            var hadClass = false;
+            for (var cidIdx = 0; cidIdx < character.classIds.length; cidIdx++) {
+                if (String(character.classIds[cidIdx]) === String(id)) {
+                    hadClass = true;
+                    break;
+                }
+            }
 
             if (hadClass) {
                 affectedCharacters++;
-                char.classIds = char.classIds.filter(function(cid) {
-                    return String(cid) !== String(id);
-                });
+                var newClassIds = [];
+                for (var cidIdx2 = 0; cidIdx2 < character.classIds.length; cidIdx2++) {
+                    if (String(character.classIds[cidIdx2]) !== String(id)) {
+                        newClassIds.push(character.classIds[cidIdx2]);
+                    }
+                }
+                character.classIds = newClassIds;
             }
         }
 
         // ---- PHASE 6: CLEAN REFERENCES IN TEAMS ----
-        for (var i = 0; i < candidateTeams.length; i++) {
-            var team = candidateTeams[i];
+        for (var teamIdx = 0; teamIdx < candidateTeams.length; teamIdx++) {
+            var team = candidateTeams[teamIdx];
             if (!team || typeof team !== 'object' || team.type !== 'academic') {
                 continue;
             }
@@ -557,10 +535,6 @@
      */
     function addCharacterToClass(charId, classId) {
         // ---- PHASE 1: VALIDATE ----
-        if (!checkDependencies()) {
-            return { success: false, message: 'Dependencies not loaded.' };
-        }
-
         if (!isNonEmptyString(charId)) {
             return { success: false, message: 'Character ID is required.' };
         }
@@ -583,24 +557,26 @@
 
         // ---- PHASE 4: FIND CHARACTER ----
         var charIndex = -1;
-        var char = null;
+        var character = null;
 
         for (var i = 0; i < data.characters.length; i++) {
             if (data.characters[i] && String(data.characters[i].id) === String(charId)) {
                 charIndex = i;
-                char = data.characters[i];
+                character = data.characters[i];
                 break;
             }
         }
 
-        if (!char) {
+        if (!character) {
             return { success: false, message: 'Character not found.' };
         }
 
-        var existingClassIds = Array.isArray(char.classIds) ? char.classIds : [];
+        var existingClassIds = Array.isArray(character.classIds) ? character.classIds : [];
 
-        if (existingClassIds.some(function(cid) { return String(cid) === String(classId); })) {
-            return { success: false, message: 'Character is already in this class.' };
+        for (var cidIdx3 = 0; cidIdx3 < existingClassIds.length; cidIdx3++) {
+            if (String(existingClassIds[cidIdx3]) === String(classId)) {
+                return { success: false, message: 'Character is already in this class.' };
+            }
         }
 
         // ---- PHASE 5: BUILD CANDIDATE ----
@@ -623,7 +599,7 @@
         // ---- PHASE 6: COMMIT ----
         data.characters = candidate;
 
-        var charName = CharacterQueries.getDisplayName(char);
+        var charName = CharacterQueries.getDisplayName(character);
         recordActivity('Added ' + charName + ' to class: ' + cls.name);
 
         return {
@@ -643,10 +619,6 @@
      */
     function removeCharacterFromClass(charId, classId) {
         // ---- PHASE 1: VALIDATE ----
-        if (!checkDependencies()) {
-            return { success: false, message: 'Dependencies not loaded.' };
-        }
-
         if (!isNonEmptyString(charId)) {
             return { success: false, message: 'Character ID is required.' };
         }
@@ -669,23 +641,31 @@
 
         // ---- PHASE 4: FIND CHARACTER ----
         var charIndex = -1;
-        var char = null;
+        var character = null;
 
         for (var i = 0; i < data.characters.length; i++) {
             if (data.characters[i] && String(data.characters[i].id) === String(charId)) {
                 charIndex = i;
-                char = data.characters[i];
+                character = data.characters[i];
                 break;
             }
         }
 
-        if (!char) {
+        if (!character) {
             return { success: false, message: 'Character not found.' };
         }
 
-        var existingClassIds = Array.isArray(char.classIds) ? char.classIds : [];
+        var existingClassIds = Array.isArray(character.classIds) ? character.classIds : [];
 
-        if (!existingClassIds.some(function(cid) { return String(cid) === String(classId); })) {
+        var isInClass = false;
+        for (var cidIdx4 = 0; cidIdx4 < existingClassIds.length; cidIdx4++) {
+            if (String(existingClassIds[cidIdx4]) === String(classId)) {
+                isInClass = true;
+                break;
+            }
+        }
+
+        if (!isInClass) {
             return { success: false, message: 'Character is not in this class.' };
         }
 
@@ -704,14 +684,18 @@
             candidateChar.classIds = [];
         }
 
-        candidateChar.classIds = candidateChar.classIds.filter(function(cid) {
-            return String(cid) !== String(classId);
-        });
+        var newClassIds = [];
+        for (var cidIdx5 = 0; cidIdx5 < candidateChar.classIds.length; cidIdx5++) {
+            if (String(candidateChar.classIds[cidIdx5]) !== String(classId)) {
+                newClassIds.push(candidateChar.classIds[cidIdx5]);
+            }
+        }
+        candidateChar.classIds = newClassIds;
 
         // ---- PHASE 6: COMMIT ----
         data.characters = candidate;
 
-        var charName = CharacterQueries.getDisplayName(char);
+        var charName = CharacterQueries.getDisplayName(character);
         recordActivity('Removed ' + charName + ' from class: ' + cls.name);
 
         return {
@@ -730,10 +714,6 @@
      */
     function removeCharacterFromAllClasses(charId) {
         // ---- PHASE 1: VALIDATE ----
-        if (!checkDependencies()) {
-            return { success: false, message: 'Dependencies not loaded.' };
-        }
-
         if (!isNonEmptyString(charId)) {
             return { success: false, message: 'Character ID is required.' };
         }
@@ -746,21 +726,21 @@
 
         // ---- PHASE 3: FIND CHARACTER ----
         var charIndex = -1;
-        var char = null;
+        var character = null;
 
         for (var i = 0; i < data.characters.length; i++) {
             if (data.characters[i] && String(data.characters[i].id) === String(charId)) {
                 charIndex = i;
-                char = data.characters[i];
+                character = data.characters[i];
                 break;
             }
         }
 
-        if (!char) {
+        if (!character) {
             return { success: false, message: 'Character not found.' };
         }
 
-        var existingClassIds = Array.isArray(char.classIds) ? char.classIds : [];
+        var existingClassIds = Array.isArray(character.classIds) ? character.classIds : [];
 
         if (existingClassIds.length === 0) {
             return {
@@ -788,7 +768,7 @@
         // ---- PHASE 5: COMMIT ----
         data.characters = candidate;
 
-        var charName = CharacterQueries.getDisplayName(char);
+        var charName = CharacterQueries.getDisplayName(character);
         recordActivity('Removed ' + charName + ' from all classes (' + removedCount + ' classes)');
 
         return {
@@ -804,15 +784,15 @@
 
     /**
      * Add multiple characters to a class.
+     * Bulk operations are partially successful by design.
+     * Invalid or ineligible entries are reported in failed;
+     * valid entries are committed together.
+     * 
      * @param {string} classId - Class ID
      * @param {Array} charIds - Array of character IDs
      * @returns {object} { success: boolean, message?: string, added?: number, failed?: Array }
      */
     function addCharactersToClass(classId, charIds) {
-        if (!checkDependencies()) {
-            return { success: false, message: 'Dependencies not loaded.' };
-        }
-
         if (!isNonEmptyString(classId)) {
             return { success: false, message: 'Class ID is required.' };
         }
@@ -862,17 +842,25 @@
                 continue;
             }
 
-            var char = candidate[charIndex];
-            if (!Array.isArray(char.classIds)) {
-                char.classIds = [];
+            var character = candidate[charIndex];
+            if (!Array.isArray(character.classIds)) {
+                character.classIds = [];
             }
 
-            if (char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+            var alreadyInClass = false;
+            for (var k = 0; k < character.classIds.length; k++) {
+                if (String(character.classIds[k]) === String(classId)) {
+                    alreadyInClass = true;
+                    break;
+                }
+            }
+
+            if (alreadyInClass) {
                 failed.push({ charId: charId, reason: 'Already in class' });
                 continue;
             }
 
-            char.classIds.push(classId);
+            character.classIds.push(classId);
             added++;
         }
 
@@ -900,15 +888,13 @@
 
     /**
      * Remove multiple characters from a class.
+     * Bulk operations are partially successful by design.
+     * 
      * @param {string} classId - Class ID
      * @param {Array} charIds - Array of character IDs
      * @returns {object} { success: boolean, message?: string, removed?: number, failed?: Array }
      */
     function removeCharactersFromClass(classId, charIds) {
-        if (!checkDependencies()) {
-            return { success: false, message: 'Dependencies not loaded.' };
-        }
-
         if (!isNonEmptyString(classId)) {
             return { success: false, message: 'Class ID is required.' };
         }
@@ -958,19 +944,31 @@
                 continue;
             }
 
-            var char = candidate[charIndex];
-            if (!Array.isArray(char.classIds)) {
-                char.classIds = [];
+            var character = candidate[charIndex];
+            if (!Array.isArray(character.classIds)) {
+                character.classIds = [];
             }
 
-            if (!char.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+            var isInClass = false;
+            for (var k = 0; k < character.classIds.length; k++) {
+                if (String(character.classIds[k]) === String(classId)) {
+                    isInClass = true;
+                    break;
+                }
+            }
+
+            if (!isInClass) {
                 failed.push({ charId: charId, reason: 'Not in class' });
                 continue;
             }
 
-            char.classIds = char.classIds.filter(function(cid) {
-                return String(cid) !== String(classId);
-            });
+            var newClassIds = [];
+            for (var k2 = 0; k2 < character.classIds.length; k2++) {
+                if (String(character.classIds[k2]) !== String(classId)) {
+                    newClassIds.push(character.classIds[k2]);
+                }
+            }
+            character.classIds = newClassIds;
             removed++;
         }
 
@@ -1017,10 +1015,7 @@
 
         // Validation
         validateClassName: validateClassName,
-        validateClassData: validateClassData,
-
-        // Helpers
-        generateClassId: generateClassId
+        validateClassData: validateClassData
     };
 
     // ============================================================
