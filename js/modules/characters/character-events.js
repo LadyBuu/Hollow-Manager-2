@@ -14,6 +14,9 @@
  *   - Can be re-initialized after DOM replacement
  *   - Mutation modules own their own persistence lifecycle
  *   - No direct mutation of window.data
+ *   - USES CharacterQueries for character data
+ *   - USES NotificationSystem for notifications
+ *   - USES DomUtils for DOM operations
  * 
  * LIFECYCLE:
  *   - init(container) - Binds events to the current DOM
@@ -27,15 +30,15 @@
  *   - window.CharacterStats (domain logic)
  *   - window.CharacterStatsView (UI rendering/updates)
  *   - window.CharacterViews
- *   - window.getCharacterById (from core-utils.js)
- *   - window.getDisplayName (from core-utils.js)
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.NotificationSystem (from notification.js)
+ *   - window.DomUtils (from dom-utils.js)
  *   - window.getCurrentEditId (from index.js)
  *   - window.setCurrentEditId (from index.js)
  *   - window.showCharacterForm (from index.js)
  *   - window.toggleCharacterList (from index.js)
  *   - window.UI_CONSTANTS (from constants.js)
  *   - window.MAGIC_CONSTANTS (from constants.js)
- *   - window.NotificationSystem (from notification.js)
  */
 
 (function() {
@@ -46,6 +49,16 @@
         return;
     }
     window.__characterEventsLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var CharacterQueries = window.CharacterQueries || window;
+    var NotificationSystem = window.NotificationSystem || window;
+    var DomUtils = window.DomUtils || window;
+    var UI_CONSTANTS = window.UI_CONSTANTS || {};
+    var MAGIC_CONSTANTS = window.MAGIC_CONSTANTS || {};
 
     // ============================================================
     // STATE
@@ -61,16 +74,15 @@
     // ============================================================
 
     function checkDependencies() {
+        var missing = [];
+
         var required = [
-            'getCharacterById',
-            'getDisplayName',
             'getCurrentEditId',
             'setCurrentEditId',
             'showCharacterForm',
             'toggleCharacterList'
         ];
 
-        var missing = [];
         required.forEach(function(name) {
             if (typeof window[name] !== 'function') {
                 missing.push(name);
@@ -118,6 +130,21 @@
             }
         }
 
+        // CharacterQueries is MANDATORY
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
+
+        // NotificationSystem is MANDATORY
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
+        }
+
+        // DomUtils is MANDATORY
+        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
+            missing.push('DomUtils.escapeHtml');
+        }
+
         if (missing.length > 0) {
             console.warn('CharacterEvents: Missing required dependencies:', missing.join(', '));
             return false;
@@ -131,6 +158,42 @@
     }
 
     // ============================================================
+    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
+        } else if (type === 'error') {
+            alert('Error: ' + message);
+        } else {
+            alert(message);
+        }
+    }
+
+    // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function escapeHtml(value) {
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
+        }
+        // Emergency fallback (should never be reached)
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;')
+            .replace(/`/g, '&#x60;');
+    }
+
+    // ============================================================
     // MAGIC TYPE HELPERS - Delegate to CharacterConstants
     // ============================================================
 
@@ -138,16 +201,17 @@
         if (window.CharacterConstants && typeof window.CharacterConstants.getMagicTypeKeys === 'function') {
             return window.CharacterConstants.getMagicTypeKeys();
         }
-        return window.MAGIC_CONSTANTS.TYPES.slice();
+        return window.MAGIC_CONSTANTS.TYPES ? window.MAGIC_CONSTANTS.TYPES.slice() : [];
     }
 
     function getMagicCategoryTypes(category) {
         if (window.CharacterConstants && typeof window.CharacterConstants.getMagicCategoryTypes === 'function') {
             return window.CharacterConstants.getMagicCategoryTypes(category);
         }
-        return window.MAGIC_CONSTANTS.CATEGORIES[category] 
-            ? window.MAGIC_CONSTANTS.CATEGORIES[category].types.slice()
-            : [];
+        if (window.MAGIC_CONSTANTS && window.MAGIC_CONSTANTS.CATEGORIES && window.MAGIC_CONSTANTS.CATEGORIES[category]) {
+            return window.MAGIC_CONSTANTS.CATEGORIES[category].types.slice();
+        }
+        return [];
     }
 
     // ============================================================
@@ -177,42 +241,6 @@
 
         clearTimeout(_filterDebounceTimer);
         _filterDebounceTimer = null;
-    }
-
-    // ============================================================
-    // NOTIFICATION
-    // ============================================================
-
-    function showNotification(message, type) {
-        type = type || 'info';
-
-        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
-            window.NotificationSystem.notify(message, type);
-            return;
-        }
-
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
-        }
-
-        if (typeof window.setSession === 'function') {
-            window.setSession('toast', {
-                message: message,
-                type: type,
-                timestamp: Date.now()
-            });
-            if (typeof window.renderToast === 'function') {
-                window.renderToast();
-            }
-            return;
-        }
-
-        if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
     }
 
     // ============================================================
@@ -299,7 +327,7 @@
                 if (typeof window.showCharacterForm === 'function') {
                     window.showCharacterForm(null);
                 }
-                if (window.innerWidth < window.UI_CONSTANTS.MOBILE_BREAKPOINT && typeof window.toggleCharacterList === 'function') {
+                if (window.innerWidth < (UI_CONSTANTS.MOBILE_BREAKPOINT || 768) && typeof window.toggleCharacterList === 'function') {
                     window.toggleCharacterList(false);
                 }
             });
@@ -368,7 +396,7 @@
                     if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                         window.CharacterList.render();
                     }
-                }, window.UI_CONSTANTS.DEBOUNCE_DELAY);
+                }, UI_CONSTANTS.DEBOUNCE_DELAY || 300);
             });
         }
 
@@ -659,7 +687,7 @@
                 }, 100);
             }
 
-            if (window.innerWidth < window.UI_CONSTANTS.MOBILE_BREAKPOINT && typeof window.toggleCharacterList === 'function') {
+            if (window.innerWidth < (UI_CONSTANTS.MOBILE_BREAKPOINT || 768) && typeof window.toggleCharacterList === 'function') {
                 window.toggleCharacterList(false);
             }
         });
@@ -680,13 +708,13 @@
                     }
                 });
                 addSafeEventListener(el, 'blur', function() {
-                    var val = parseInt(this.value);
+                    var val = parseInt(this.value, 10);
                     if (isNaN(val)) {
-                        this.value = window.STATS_CONSTANTS.DEFAULT;
-                    } else if (val < window.STATS_CONSTANTS.MIN) {
-                        this.value = window.STATS_CONSTANTS.MIN;
-                    } else if (val > window.STATS_CONSTANTS.MAX) {
-                        this.value = window.STATS_CONSTANTS.MAX;
+                        this.value = 10;
+                    } else if (val < (window.STATS_CONSTANTS ? window.STATS_CONSTANTS.MIN : 1)) {
+                        this.value = window.STATS_CONSTANTS ? window.STATS_CONSTANTS.MIN : 1;
+                    } else if (val > (window.STATS_CONSTANTS ? window.STATS_CONSTANTS.MAX : 50)) {
+                        this.value = window.STATS_CONSTANTS ? window.STATS_CONSTANTS.MAX : 50;
                     }
                     if (window.CharacterStatsView && typeof window.CharacterStatsView.updateClassSuggestion === 'function') {
                         window.CharacterStatsView.updateClassSuggestion();
@@ -792,10 +820,10 @@
                     }
                 });
                 addSafeEventListener(el, 'blur', function() {
-                    var val = parseInt(this.value);
+                    var val = parseInt(this.value, 10);
                     var max = window.CharacterConstants && typeof window.CharacterConstants.MAGIC_MAX !== 'undefined'
                         ? window.CharacterConstants.MAGIC_MAX
-                        : window.MAGIC_CONSTANTS.MAX;
+                        : (window.MAGIC_CONSTANTS ? window.MAGIC_CONSTANTS.MAX : 10);
                     if (isNaN(val)) {
                         this.value = 0;
                     } else if (val < 0) {
@@ -979,111 +1007,4 @@
 
     // ============================================================
     // SPECIAL MOVES - Shared Handlers with Promise support
-    // ============================================================
-
-    function handleAddSpecialMove(type) {
-        var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        if (!id) {
-            showNotification('Please save the character first.', 'error');
-            return;
-        }
-
-        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(id) : null;
-        if (!char) return;
-
-        var nameInput = document.getElementById(type + '-move-name');
-        var descInput = document.getElementById(type + '-move-desc');
-
-        var moveName = nameInput ? nameInput.value.trim() : '';
-        var moveDesc = descInput ? descInput.value.trim() : '';
-
-        if (!moveName) {
-            showNotification('Please enter a move name.', 'error');
-            return;
-        }
-
-        if (window.CharacterStats && typeof window.CharacterStats.addSpecialMove === 'function') {
-            var result = window.CharacterStats.addSpecialMove(id, type, moveName, moveDesc);
-
-            if (result && typeof result.then === 'function') {
-                result.then(function(success) {
-                    if (success !== false) {
-                        if (nameInput) nameInput.value = '';
-                        if (descInput) descInput.value = '';
-                    }
-                }).catch(function() {
-                    // Don't clear on failure - user can retry
-                });
-            } else if (result !== false) {
-                if (nameInput) nameInput.value = '';
-                if (descInput) descInput.value = '';
-            }
-        } else {
-            showNotification('Special move functionality is not available.', 'error');
-            return;
-        }
-    }
-
-    function handleRemoveSpecialMove(e, defaultType) {
-        var target = e.target.closest ? e.target.closest('.remove-special-move') : null;
-        if (!target) return;
-
-        var container = target.closest('.moves-list');
-        if (!container) return;
-
-        var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        if (!id) {
-            showNotification('Please save the character first.', 'error');
-            return;
-        }
-
-        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(id) : null;
-        if (!char) return;
-
-        var type = target.dataset.type || defaultType || 'physical';
-        var index = parseInt(target.dataset.index);
-        if (isNaN(index)) return;
-
-        if (window.CharacterStats && typeof window.CharacterStats.removeSpecialMove === 'function') {
-            window.CharacterStats.removeSpecialMove(id, type, index);
-        } else {
-            showNotification('Special move functionality is not available.', 'error');
-            return;
-        }
-    }
-
-    function handleEditSpecialMove(e, defaultType) {
-        var target = e.target.closest ? e.target.closest('.edit-special-move') : null;
-        if (!target) return;
-
-        var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        if (!id) {
-            showNotification('Please save the character first.', 'error');
-            return;
-        }
-
-        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(id) : null;
-        if (!char) return;
-
-        var type = target.dataset.type || defaultType || 'physical';
-        var index = parseInt(target.dataset.index);
-        if (isNaN(index)) return;
-
-        if (window.CharacterStatsView && typeof window.CharacterStatsView.editSpecialMove === 'function') {
-            window.CharacterStatsView.editSpecialMove(id, type, index);
-        } else {
-            showNotification('Edit functionality is not available.', 'error');
-        }
-    }
-
-    // ============================================================
-    // EXPOSE
-    // ============================================================
-
-    window.CharacterEvents = {
-        init: init,
-        destroy: destroy,
-        removeAllEventListeners: removeAllEventListeners
-    };
-
-})();
+    //
