@@ -17,10 +17,9 @@
  *   - USES ClassesCore for all class mutations
  *   - USES ClassesQueries for all class queries
  *   - USES CharacterQueries for character data
- *   - USES TeamQueries for team data
  *   - USES NotificationSystem for notifications
  *   - USES ActivityLog for activity logging
- *   - USES DomUtils for DOM operations
+ *   - USES ClassesView for UI rendering
  * 
  * LIFECYCLE:
  *   - init(container) - Binds events to the current DOM
@@ -31,10 +30,9 @@
  *   - window.ClassesCore (from classes-core.js)
  *   - window.ClassesQueries (from classes-queries.js)
  *   - window.CharacterQueries (from character-queries.js)
- *   - window.TeamQueries (from team-queries.js)
  *   - window.ActivityLog (from activity-log.js)
  *   - window.NotificationSystem (from notification.js)
- *   - window.DomUtils (from dom-utils.js)
+ *   - window.ClassesView (from classes-view.js)
  *   - window.saveData (from database.js)
  */
 
@@ -45,26 +43,17 @@
     if (window.__classesEventsLoaded) {
         return;
     }
-    window.__classesEventsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var ClassesCore = window.ClassesCore || window;
-    var ClassesQueries = window.ClassesQueries || window;
-    var CharacterQueries = window.CharacterQueries || window;
-    var TeamQueries = window.TeamQueries || window;
-    var ActivityLog = window.ActivityLog || window;
-    var NotificationSystem = window.NotificationSystem || window;
-    var DomUtils = window.DomUtils || window;
-
-    // ============================================================
-    // STATE
-    // ============================================================
-
-    var _initialized = false;
-    var _eventListeners = [];
+    var ClassesCore = window.ClassesCore;
+    var ClassesQueries = window.ClassesQueries;
+    var CharacterQueries = window.CharacterQueries;
+    var ActivityLog = window.ActivityLog;
+    var NotificationSystem = window.NotificationSystem;
+    var ClassesView = window.ClassesView;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -73,7 +62,6 @@
     function checkDependencies() {
         var missing = [];
 
-        // ClassesCore is MANDATORY
         if (!ClassesCore || typeof ClassesCore.createClass !== 'function') {
             missing.push('ClassesCore.createClass');
         }
@@ -90,7 +78,6 @@
             missing.push('ClassesCore.removeCharacterFromClass');
         }
 
-        // ClassesQueries is MANDATORY
         if (!ClassesQueries || typeof ClassesQueries.getClasses !== 'function') {
             missing.push('ClassesQueries.getClasses');
         }
@@ -104,7 +91,6 @@
             missing.push('ClassesQueries.getTeamsByClass');
         }
 
-        // CharacterQueries is MANDATORY
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
@@ -112,33 +98,45 @@
             missing.push('CharacterQueries.getCharacterById');
         }
 
-        // TeamQueries is MANDATORY
-        if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
-            missing.push('TeamQueries.getActiveTeamMembers');
-        }
-
-        // ActivityLog is MANDATORY
         if (!ActivityLog || typeof ActivityLog.record !== 'function') {
             missing.push('ActivityLog.record');
         }
 
-        // NotificationSystem is MANDATORY
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
             missing.push('NotificationSystem.notify');
         }
 
-        // DomUtils is MANDATORY
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
+        if (!ClassesView || typeof ClassesView.renderClassList !== 'function') {
+            missing.push('ClassesView.renderClassList');
+        }
+        if (!ClassesView || typeof ClassesView.renderClassDetail !== 'function') {
+            missing.push('ClassesView.renderClassDetail');
+        }
+        if (!ClassesView || typeof ClassesView.showClassForm !== 'function') {
+            missing.push('ClassesView.showClassForm');
+        }
+        if (!ClassesView || typeof ClassesView.showDistributeModal !== 'function') {
+            missing.push('ClassesView.showDistributeModal');
         }
 
         if (missing.length > 0) {
-            console.warn('ClassesEvents: Missing dependencies:', missing.join(', '));
             return false;
         }
 
         return true;
     }
+
+    if (!checkDependencies()) {
+        return;
+    }
+
+    window.__classesEventsLoaded = true;
+
+    // ============================================================
+    // STATE
+    // ============================================================
+
+    var _eventListeners = [];
 
     // ============================================================
     // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
@@ -146,34 +144,7 @@
 
     function showNotification(message, type) {
         type = type || 'info';
-        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
-            NotificationSystem.notify(message, type);
-        } else if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
-    }
-
-    // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
-    // ============================================================
-
-    function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        // Emergency fallback (should never be reached)
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;')
-            .replace(/`/g, '&#x60;');
+        NotificationSystem.notify(message, type);
     }
 
     // ============================================================
@@ -182,11 +153,9 @@
 
     function recordActivity(message) {
         try {
-            if (ActivityLog && typeof ActivityLog.record === 'function') {
-                ActivityLog.record(message);
-            }
+            ActivityLog.record(message);
         } catch (e) {
-            // Ignore logging errors
+            // Activity logging failure should not abort the operation
         }
     }
 
@@ -196,18 +165,20 @@
 
     function persistMutation(successMessage, errorMessage) {
         if (typeof window.saveData !== 'function') {
-            console.warn('Persistence unavailable.');
             showNotification('Changes were applied in memory, but persistent storage is unavailable.', 'error');
             return;
         }
 
         window.saveData()
             .then(function() {
-                if (successMessage) showNotification(successMessage, 'success');
+                if (successMessage) {
+                    showNotification(successMessage, 'success');
+                }
             })
-            .catch(function(err) {
-                console.error('Persistence error:', err);
-                if (errorMessage) showNotification(errorMessage, 'error');
+            .catch(function() {
+                if (errorMessage) {
+                    showNotification(errorMessage, 'error');
+                }
             });
     }
 
@@ -216,7 +187,9 @@
     // ============================================================
 
     function addSafeEventListener(element, eventName, handler, options) {
-        if (!element) return;
+        if (!element) {
+            return;
+        }
         element.addEventListener(eventName, handler, options || false);
         _eventListeners.push({
             element: element,
@@ -227,13 +200,14 @@
     }
 
     function removeAllEventListeners() {
-        _eventListeners.forEach(function(item) {
+        for (var i = 0; i < _eventListeners.length; i++) {
+            var item = _eventListeners[i];
             try {
                 item.element.removeEventListener(item.eventName, item.handler, item.options);
             } catch (e) {
                 // Ignore errors during cleanup
             }
-        });
+        }
         _eventListeners = [];
     }
 
@@ -242,14 +216,14 @@
     // ============================================================
 
     function refreshClassList(container) {
-        if (window.ClassesView && typeof window.ClassesView.renderClassList === 'function') {
-            window.ClassesView.renderClassList(container);
+        if (ClassesView && typeof ClassesView.renderClassList === 'function') {
+            ClassesView.renderClassList(container);
         }
     }
 
     function refreshClassDetail(container) {
-        if (window.ClassesView && typeof window.ClassesView.renderClassDetail === 'function') {
-            window.ClassesView.renderClassDetail(container);
+        if (ClassesView && typeof ClassesView.renderClassDetail === 'function') {
+            ClassesView.renderClassDetail(container);
         }
     }
 
@@ -266,8 +240,8 @@
      * Handle adding a new class.
      */
     function handleAddClass(container) {
-        if (window.ClassesView && typeof window.ClassesView.showClassForm === 'function') {
-            window.ClassesView.showClassForm(container);
+        if (ClassesView && typeof ClassesView.showClassForm === 'function') {
+            ClassesView.showClassForm(container);
         }
     }
 
@@ -275,8 +249,8 @@
      * Handle editing a class.
      */
     function handleEditClass(container, classId) {
-        if (window.ClassesView && typeof window.ClassesView.showClassForm === 'function') {
-            window.ClassesView.showClassForm(container, classId);
+        if (ClassesView && typeof ClassesView.showClassForm === 'function') {
+            ClassesView.showClassForm(container, classId);
         }
     }
 
@@ -333,8 +307,9 @@
 
         var form = e.target;
         var editId = form.dataset.editId;
-        var nameInput = document.getElementById('class-name');
 
+        // Find the name input inside the form
+        var nameInput = form.querySelector('#class-name');
         if (!nameInput) {
             showNotification('Form elements not found. Please refresh.', 'error');
             return;
@@ -363,15 +338,18 @@
             }
         }
 
-        // Close modal
-        var modal = document.getElementById('class-form-modal');
+        // Find the modal containing the form
+        var modal = form.closest('.modal');
         if (modal) {
             modal.classList.add('hidden');
         }
 
-        // Update state
-        if (window.classesState) {
-            window.classesState.selectedClassId = result.class ? result.class.id : editId;
+        // Update state using the proper API
+        if (window.classesState && typeof window.classesState.selectClass === 'function') {
+            var classId = result.class ? result.class.id : editId;
+            if (classId) {
+                window.classesState.selectClass(classId);
+            }
         }
 
         refreshUI(container);
@@ -389,8 +367,8 @@
      * Handle auto-distribute students.
      */
     function handleDistribute(container, classId) {
-        if (window.ClassesView && typeof window.ClassesView.showDistributeModal === 'function') {
-            window.ClassesView.showDistributeModal(container, classId);
+        if (ClassesView && typeof ClassesView.showDistributeModal === 'function') {
+            ClassesView.showDistributeModal(container, classId);
         }
     }
 
@@ -433,8 +411,8 @@
             return;
         }
 
-        var char = CharacterQueries.getCharacterById(charId);
-        var charName = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+        var character = CharacterQueries.getCharacterById(charId);
+        var charName = character ? CharacterQueries.getDisplayName(character) : 'Unknown';
 
         if (!confirm('Remove "' + charName + '" from this class?')) {
             return;
@@ -466,16 +444,10 @@
     // ============================================================
 
     function init(container) {
-        if (!checkDependencies()) {
-            console.warn('ClassesEvents: Dependencies not met, skipping initialization');
-            return;
-        }
-
         if (!container) {
             container = document.getElementById('classes-content');
         }
         if (!container) {
-            console.warn('ClassesEvents: Container not found');
             return;
         }
 
@@ -488,8 +460,6 @@
         bindClassDetail(container);
         bindFormModals(container);
         bindDistributeModal(container);
-
-        _initialized = true;
     }
 
     // ============================================================
@@ -498,7 +468,6 @@
 
     function destroy() {
         removeAllEventListeners();
-        _initialized = false;
     }
 
     // ============================================================
@@ -506,7 +475,10 @@
     // ============================================================
 
     function bindAddClass(container) {
-        var addBtn = container ? container.querySelector('#add-class-btn') : document.getElementById('add-class-btn');
+        var addBtn = container.querySelector('#add-class-btn');
+        if (!addBtn) {
+            addBtn = document.getElementById('add-class-btn');
+        }
 
         if (addBtn) {
             addSafeEventListener(addBtn, 'click', function() {
@@ -520,32 +492,31 @@
     // ============================================================
 
     function bindClassList(container) {
-        var listContainer = container ? container.querySelector('#class-list') : document.getElementById('class-list');
-
+        var listContainer = container.querySelector('#class-list');
         if (!listContainer) {
-            // Try the container itself if it's the class list
-            if (container && container.id === 'class-list') {
-                listContainer = container;
-            }
+            listContainer = container.querySelector('#class-list-container');
         }
-
         if (!listContainer) {
-            console.warn('ClassesEvents: Class list container not found');
             return;
         }
 
         addSafeEventListener(listContainer, 'click', function(e) {
-            // Find the clicked list item
             var item = e.target.closest ? e.target.closest('.class-list-item') : null;
-            if (!item) return;
-            if (!listContainer.contains(item)) return;
+            if (!item) {
+                return;
+            }
+            if (!listContainer.contains(item)) {
+                return;
+            }
 
             var classId = item.dataset.id;
-            if (!classId) return;
+            if (!classId) {
+                return;
+            }
 
-            // Update state
-            if (window.classesState) {
-                window.classesState.selectedClassId = classId;
+            // Update state using the proper API
+            if (window.classesState && typeof window.classesState.selectClass === 'function') {
+                window.classesState.selectClass(classId);
             }
 
             refreshUI(container);
@@ -557,33 +528,33 @@
     // ============================================================
 
     function bindClassDetail(container) {
-        var detailContainer = container ? container.querySelector('#class-detail') : document.getElementById('class-detail');
-
+        var detailContainer = container.querySelector('#class-detail');
         if (!detailContainer) {
-            // Try the container itself if it's the detail container
-            if (container && container.id === 'class-detail') {
-                detailContainer = container;
-            }
+            detailContainer = container.querySelector('#class-detail-container');
         }
-
         if (!detailContainer) {
-            console.warn('ClassesEvents: Class detail container not found');
             return;
         }
 
         addSafeEventListener(detailContainer, 'click', function(e) {
             var button = e.target.closest ? e.target.closest('button') : null;
-            if (!button) return;
-            if (!detailContainer.contains(button)) return;
+            if (!button) {
+                return;
+            }
+            if (!detailContainer.contains(button)) {
+                return;
+            }
 
             var classId = button.dataset.id;
 
-            // If no classId on button, try to find it from the detail container's state
-            if (!classId && window.classesState) {
-                classId = window.classesState.selectedClassId;
+            // If no classId on button, try to find it from the state
+            if (!classId && window.classesState && typeof window.classesState.getSelectedClassId === 'function') {
+                classId = window.classesState.getSelectedClassId();
             }
 
-            if (!classId) return;
+            if (!classId) {
+                return;
+            }
 
             // Edit class
             if (button.classList.contains('edit-class-btn')) {
@@ -609,6 +580,7 @@
             // Add student to class
             if (button.classList.contains('add-student-btn')) {
                 e.stopPropagation();
+                // TODO: Replace with proper character picker UI
                 var charId = button.dataset.characterId || prompt('Enter character ID:');
                 if (charId) {
                     handleAddCharacterToClass(container, classId, charId);
@@ -633,12 +605,17 @@
     // ============================================================
 
     function bindFormModals(container) {
+        // Find the form modal
+        var formModal = document.getElementById('class-form-modal');
+        if (!formModal) {
+            return;
+        }
+
         // Close form modal
         var closeFormBtn = document.getElementById('close-class-form');
         if (closeFormBtn) {
             addSafeEventListener(closeFormBtn, 'click', function() {
-                var modal = document.getElementById('class-form-modal');
-                if (modal) modal.classList.add('hidden');
+                formModal.classList.add('hidden');
             });
         }
 
@@ -646,30 +623,24 @@
         var cancelFormBtn = document.getElementById('cancel-class-form');
         if (cancelFormBtn) {
             addSafeEventListener(cancelFormBtn, 'click', function() {
-                var modal = document.getElementById('class-form-modal');
-                if (modal) modal.classList.add('hidden');
+                formModal.classList.add('hidden');
             });
         }
 
         // Form submit
         var form = document.getElementById('class-form-inner');
         if (form) {
-            // Remove existing listener to avoid duplicates
-            form.removeEventListener('submit', function(e) { handleSaveClass(e, container); });
             addSafeEventListener(form, 'submit', function(e) {
                 handleSaveClass(e, container);
             });
         }
 
         // Click outside to close
-        var formModal = document.getElementById('class-form-modal');
-        if (formModal) {
-            addSafeEventListener(formModal, 'click', function(e) {
-                if (e.target === this) {
-                    this.classList.add('hidden');
-                }
-            });
-        }
+        addSafeEventListener(formModal, 'click', function(e) {
+            if (e.target === this) {
+                this.classList.add('hidden');
+            }
+        });
     }
 
     // ============================================================
@@ -678,7 +649,9 @@
 
     function bindDistributeModal(container) {
         var modal = document.getElementById('distribute-modal');
-        if (!modal) return;
+        if (!modal) {
+            return;
+        }
 
         // Close buttons
         var closeBtn = document.getElementById('close-distribute-modal');
@@ -706,8 +679,8 @@
         var confirmBtn = document.getElementById('confirm-distribute');
         if (confirmBtn) {
             addSafeEventListener(confirmBtn, 'click', function() {
-                if (window.ClassesView && typeof window.ClassesView.executeDistribution === 'function') {
-                    window.ClassesView.executeDistribution(container);
+                if (ClassesView && typeof ClassesView.executeDistribution === 'function') {
+                    ClassesView.executeDistribution(container);
                 }
             });
         }
@@ -716,8 +689,8 @@
         var weekInput = document.getElementById('distribute-week');
         if (weekInput) {
             addSafeEventListener(weekInput, 'change', function() {
-                if (window.ClassesView && typeof window.ClassesView.updateDistributeTeamList === 'function') {
-                    window.ClassesView.updateDistributeTeamList(container);
+                if (ClassesView && typeof ClassesView.updateDistributeTeamList === 'function') {
+                    ClassesView.updateDistributeTeamList(container);
                 }
             });
         }
@@ -725,8 +698,8 @@
         var maxSizeInput = document.getElementById('distribute-max-size');
         if (maxSizeInput) {
             addSafeEventListener(maxSizeInput, 'change', function() {
-                if (window.ClassesView && typeof window.ClassesView.updateDistributeTeamList === 'function') {
-                    window.ClassesView.updateDistributeTeamList(container);
+                if (ClassesView && typeof ClassesView.updateDistributeTeamList === 'function') {
+                    ClassesView.updateDistributeTeamList(container);
                 }
             });
         }
