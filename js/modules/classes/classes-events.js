@@ -1,22 +1,70 @@
 /**
- * modules/classes/classes-events.js - Classes Events
- * Fixed: Member modal character population
+ * js/modules/classes/classes-events.js - Classes Events
+ * Path: js/modules/classes/classes-events.js
+ * 
+ * This module is responsible for UI event binding for the classes module.
+ * All mutations delegate to the appropriate module (ClassesCore, etc.)
+ * 
+ * IMPORTANT:
+ *   - This module binds events AFTER the DOM is rendered
+ *   - Uses event delegation where possible for dynamic elements
+ *   - All mutations delegate to ClassesCore
+ *   - Safe event binding with proper cleanup
+ *   - No inline event handlers in HTML
+ *   - Can be re-initialized after DOM replacement
+ *   - Mutation modules own their own persistence lifecycle
+ *   - No direct mutation of window.data
+ *   - USES ClassesCore for all class mutations
+ *   - USES ClassesQueries for all class queries
+ *   - USES CharacterQueries for character data
+ *   - USES TeamQueries for team data
+ *   - USES NotificationSystem for notifications
+ *   - USES ActivityLog for activity logging
+ *   - USES DomUtils for DOM operations
+ * 
+ * LIFECYCLE:
+ *   - init(container) - Binds events to the current DOM
+ *   - destroy() - Removes all event listeners and resets state
+ *   - Re-initialization is supported for dynamic DOM replacement
+ * 
+ * DEPENDENCIES:
+ *   - window.ClassesCore (from classes-core.js)
+ *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.TeamQueries (from team-queries.js)
+ *   - window.ActivityLog (from activity-log.js)
+ *   - window.NotificationSystem (from notification.js)
+ *   - window.DomUtils (from dom-utils.js)
+ *   - window.saveData (from database.js)
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
+    // Guard against duplicate script loading
     if (window.__classesEventsLoaded) {
         return;
     }
+    window.__classesEventsLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var ClassesCore = window.ClassesCore || window;
+    var ClassesQueries = window.ClassesQueries || window;
+    var CharacterQueries = window.CharacterQueries || window;
+    var TeamQueries = window.TeamQueries || window;
+    var ActivityLog = window.ActivityLog || window;
+    var NotificationSystem = window.NotificationSystem || window;
+    var DomUtils = window.DomUtils || window;
 
     // ============================================================
     // STATE
     // ============================================================
 
-    var _container = null;
-    var _eventsBound = false;
+    var _initialized = false;
+    var _eventListeners = [];
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -25,47 +73,82 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!window.ClassesCore) {
-            missing.push('ClassesCore');
+        // ClassesCore is MANDATORY
+        if (!ClassesCore || typeof ClassesCore.createClass !== 'function') {
+            missing.push('ClassesCore.createClass');
+        }
+        if (!ClassesCore || typeof ClassesCore.updateClass !== 'function') {
+            missing.push('ClassesCore.updateClass');
+        }
+        if (!ClassesCore || typeof ClassesCore.deleteClass !== 'function') {
+            missing.push('ClassesCore.deleteClass');
+        }
+        if (!ClassesCore || typeof ClassesCore.addCharacterToClass !== 'function') {
+            missing.push('ClassesCore.addCharacterToClass');
+        }
+        if (!ClassesCore || typeof ClassesCore.removeCharacterFromClass !== 'function') {
+            missing.push('ClassesCore.removeCharacterFromClass');
         }
 
-        if (!window.ClassesView || typeof window.ClassesView.renderClassesView !== 'function') {
-            missing.push('ClassesView.renderClassesView');
+        // ClassesQueries is MANDATORY
+        if (!ClassesQueries || typeof ClassesQueries.getClasses !== 'function') {
+            missing.push('ClassesQueries.getClasses');
+        }
+        if (!ClassesQueries || typeof ClassesQueries.getClass !== 'function') {
+            missing.push('ClassesQueries.getClass');
+        }
+        if (!ClassesQueries || typeof ClassesQueries.getCharactersByClass !== 'function') {
+            missing.push('ClassesQueries.getCharactersByClass');
+        }
+        if (!ClassesQueries || typeof ClassesQueries.getTeamsByClass !== 'function') {
+            missing.push('ClassesQueries.getTeamsByClass');
         }
 
-        if (!window.ClassesView || typeof window.ClassesView.selectClass !== 'function') {
-            missing.push('ClassesView.selectClass');
+        // CharacterQueries is MANDATORY
+        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
         }
 
-        if (!window.ClassesView || typeof window.ClassesView.getSelectedClassId !== 'function') {
-            missing.push('ClassesView.getSelectedClassId');
+        // TeamQueries is MANDATORY
+        if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
+            missing.push('TeamQueries.getActiveTeamMembers');
+        }
+
+        // ActivityLog is MANDATORY
+        if (!ActivityLog || typeof ActivityLog.record !== 'function') {
+            missing.push('ActivityLog.record');
+        }
+
+        // NotificationSystem is MANDATORY
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
+        }
+
+        // DomUtils is MANDATORY
+        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
+            missing.push('DomUtils.escapeHtml');
         }
 
         if (missing.length > 0) {
             console.warn('ClassesEvents: Missing dependencies:', missing.join(', '));
             return false;
         }
+
         return true;
     }
 
     // ============================================================
-    // NOTIFICATION
+    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
-
-        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
-            window.NotificationSystem.notify(message, type);
-            return;
-        }
-
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
-        }
-
-        if (type === 'error') {
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
+        } else if (type === 'error') {
             alert('Error: ' + message);
         } else {
             alert(message);
@@ -73,642 +156,321 @@
     }
 
     // ============================================================
-    // PERSISTENCE
+    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
-    function saveData() {
-        if (typeof window.saveData === 'function') {
-            return window.saveData().catch(function(err) {
-                console.warn('ClassesEvents: Persistence failed:', err);
-                showNotification('Save failed. Please try again.', 'error');
+    function escapeHtml(value) {
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
+        }
+        // Emergency fallback (should never be reached)
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;')
+            .replace(/`/g, '&#x60;');
+    }
+
+    // ============================================================
+    // ACTIVITY LOGGING - Uses ActivityLog (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function recordActivity(message) {
+        try {
+            if (ActivityLog && typeof ActivityLog.record === 'function') {
+                ActivityLog.record(message);
+            }
+        } catch (e) {
+            // Ignore logging errors
+        }
+    }
+
+    // ============================================================
+    // PERSISTENCE HELPER
+    // ============================================================
+
+    function persistMutation(successMessage, errorMessage) {
+        if (typeof window.saveData !== 'function') {
+            console.warn('Persistence unavailable.');
+            showNotification('Changes were applied in memory, but persistent storage is unavailable.', 'error');
+            return;
+        }
+
+        window.saveData()
+            .then(function() {
+                if (successMessage) showNotification(successMessage, 'success');
+            })
+            .catch(function(err) {
+                console.error('Persistence error:', err);
+                if (errorMessage) showNotification(errorMessage, 'error');
             });
-        }
-        return Promise.resolve();
     }
 
     // ============================================================
-    // REFRESH UI
+    // SAFE EVENT BINDING WITH CLEANUP
     // ============================================================
 
-    function refreshUI() {
-        if (!_container) {
-            console.warn('[ClassesEvents] No container set');
-            return;
-        }
-
-        if (!window.ClassesView || typeof window.ClassesView.renderClassesView !== 'function') {
-            console.warn('[ClassesEvents] ClassesView not available');
-            return;
-        }
-
-        window.ClassesView.renderClassesView(_container);
-    }
-
-    // ============================================================
-    // MEMBER MODAL - FIXED POPULATION
-    // ============================================================
-
-    function showMemberModal(classId) {
-        console.log('[ClassesEvents] showMemberModal called for class:', classId);
-
-        var modal = document.getElementById('member-modal');
-        if (!modal) {
-            showNotification('Member modal not found. Please refresh.', 'error');
-            return;
-        }
-
-        var content = document.getElementById('member-modal-content');
-        var title = document.getElementById('member-modal-title');
-
-        if (!content || !title) {
-            showNotification('Modal elements not found. Please refresh.', 'error');
-            return;
-        }
-
-        var cls = window.ClassesCore.getGraduatingClass(classId);
-        if (!cls) {
-            showNotification('Class not found.', 'error');
-            return;
-        }
-
-        title.textContent = 'Manage Members - ' + cls.name;
-
-        // Render modal content using ClassesView
-        content.innerHTML = window.ClassesView.renderMemberModalContent(classId);
-
-        // Show modal
-        modal.classList.remove('hidden');
-        modal.style.display = 'flex';
-
-        // Populate search results - THIS IS WHERE CHARACTERS SHOULD APPEAR
-        populateSearchResults(classId);
-    }
-
-    function populateSearchResults(classId) {
-        console.log('[ClassesEvents] populateSearchResults called for class:', classId);
-
-        var searchInput = document.getElementById('member-search');
-        var resultsContainer = document.getElementById('member-search-results');
-
-        if (!searchInput || !resultsContainer) {
-            console.warn('[ClassesEvents] Search elements not found');
-            return;
-        }
-
-        var query = searchInput.value.trim() || '';
-        console.log('[ClassesEvents] Search query:', query);
-
-        // Get available characters for this class
-        var available = window.ClassesCore.getAvailableCharactersForClass(classId, {
-            name: query,
-            minBirthYear: null,
-            maxBirthYear: null
+    function addSafeEventListener(element, eventName, handler, options) {
+        if (!element) return;
+        element.addEventListener(eventName, handler, options || false);
+        _eventListeners.push({
+            element: element,
+            eventName: eventName,
+            handler: handler,
+            options: options || false
         });
+    }
 
-        console.log('[ClassesEvents] Available characters:', available ? available.length : 0);
+    function removeAllEventListeners() {
+        _eventListeners.forEach(function(item) {
+            try {
+                item.element.removeEventListener(item.eventName, item.handler, item.options);
+            } catch (e) {
+                // Ignore errors during cleanup
+            }
+        });
+        _eventListeners = [];
+    }
 
-        if (!available || available.length === 0) {
-            resultsContainer.innerHTML = '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No characters available to add.</p>';
-            return;
+    // ============================================================
+    // UI REFRESH HELPERS
+    // ============================================================
+
+    function refreshClassList(container) {
+        if (window.ClassesView && typeof window.ClassesView.renderClassList === 'function') {
+            window.ClassesView.renderClassList(container);
         }
+    }
 
-        var html = '';
-        var roleSelect = document.getElementById('member-role-select');
-        var defaultRole = roleSelect ? roleSelect.value : 'trainee';
-
-        // Show up to 20 results
-        var displayCount = Math.min(available.length, 20);
-
-        for (var i = 0; i < displayCount; i++) {
-            var char = available[i];
-            var name = getDisplayName(char);
-            var status = typeof window.getCurrentStatus === 'function' ? window.getCurrentStatus(char) : '';
-            var birthYear = char.birthYear ? ' (' + char.birthYear + ')' : '';
-            var isDeceased = char.deceased ? ' [Deceased]' : '';
-
-            html += '<div class="search-result-item" style="display:flex;justify-content:space-between;align-items:center;padding:3px 6px;border-bottom:1px solid var(--border-soft);">';
-            html += '<span style="font-size:0.7rem;">' + escapeHtml(name) + ' - ' + escapeHtml(status) + birthYear + isDeceased + '</span>';
-            html += '<button class="add-member-result-btn small primary" data-char-id="' + escapeHtml(char.id) + '" data-role="' + escapeHtml(defaultRole) + '" style="font-size:0.6rem;padding:1px 8px;">Add</button>';
-            html += '</div>';
+    function refreshClassDetail(container) {
+        if (window.ClassesView && typeof window.ClassesView.renderClassDetail === 'function') {
+            window.ClassesView.renderClassDetail(container);
         }
+    }
 
-        if (available.length > 20) {
-            html += '<p style="font-size:0.6rem;color:var(--text-dim);padding:2px;">Showing 20 of ' + available.length + ' results</p>';
-        }
-
-        resultsContainer.innerHTML = html;
-        console.log('[ClassesEvents] Search results rendered:', displayCount);
+    function refreshUI(container) {
+        refreshClassList(container);
+        refreshClassDetail(container);
     }
 
     // ============================================================
     // EVENT HANDLERS
     // ============================================================
 
-    function handleAddClass() {
-        var modal = document.getElementById('class-form-modal');
-        var title = document.getElementById('class-form-title');
-        var nameInput = document.getElementById('class-name');
-        var yearInput = document.getElementById('class-year');
-        var form = document.getElementById('class-form-inner');
-
-        if (!modal || !title || !nameInput || !form) {
-            showNotification('Form elements not found. Please refresh.', 'error');
-            return;
+    /**
+     * Handle adding a new class.
+     */
+    function handleAddClass(container) {
+        if (window.ClassesView && typeof window.ClassesView.showClassForm === 'function') {
+            window.ClassesView.showClassForm(container);
         }
-
-        modal.classList.remove('hidden');
-        modal.style.display = 'flex';
-        title.textContent = 'Add Class';
-        nameInput.value = '';
-        if (yearInput) yearInput.value = '';
-        delete form.dataset.editId;
-        nameInput.focus();
     }
 
-    function handleEditClass(classId) {
-        if (!classId) {
-            classId = window.ClassesView.getSelectedClassId();
+    /**
+     * Handle editing a class.
+     */
+    function handleEditClass(container, classId) {
+        if (window.ClassesView && typeof window.ClassesView.showClassForm === 'function') {
+            window.ClassesView.showClassForm(container, classId);
         }
+    }
 
-        if (!classId) {
-            showNotification('No class selected.', 'error');
-            return;
-        }
-
-        var modal = document.getElementById('class-form-modal');
-        var title = document.getElementById('class-form-title');
-        var nameInput = document.getElementById('class-name');
-        var yearInput = document.getElementById('class-year');
-        var form = document.getElementById('class-form-inner');
-
-        if (!modal || !title || !nameInput || !form) {
-            showNotification('Form elements not found. Please refresh.', 'error');
-            return;
-        }
-
-        var cls = window.ClassesCore.getGraduatingClass(classId);
+    /**
+     * Handle deleting a class.
+     */
+    function handleDeleteClass(container, classId) {
+        var cls = ClassesQueries.getClass(classId);
         if (!cls) {
             showNotification('Class not found.', 'error');
             return;
         }
 
-        modal.classList.remove('hidden');
-        modal.style.display = 'flex';
-        title.textContent = 'Edit Class';
-        nameInput.value = cls.name;
-        if (yearInput) yearInput.value = cls.graduationYear || '';
-        form.dataset.editId = classId;
-        nameInput.focus();
-    }
-
-    function handleSaveClass(e) {
-        e.preventDefault();
-
-        var form = e.target;
-        var editId = form.dataset.editId;
-        var nameInput = document.getElementById('class-name');
-        var yearInput = document.getElementById('class-year');
-
-        if (!nameInput) {
-            showNotification('Form not found. Please refresh.', 'error');
-            return;
-        }
-
-        var name = nameInput.value.trim();
-        if (!name) {
-            showNotification('Class name is required.', 'error');
-            return;
-        }
-
-        var year = yearInput ? parseInt(yearInput.value, 10) : null;
-        if (yearInput && yearInput.value && isNaN(year)) {
-            showNotification('Invalid graduation year.', 'error');
-            return;
-        }
-
-        var result;
-        if (editId) {
-            result = window.ClassesCore.updateGraduatingClass(editId, name, year);
-        } else {
-            result = window.ClassesCore.createGraduatingClass(name, year);
-        }
-
-        if (!result || !result.success) {
-            showNotification(result && result.message ? result.message : 'Failed to save class.', 'error');
-            return;
-        }
-
-        var modal = document.getElementById('class-form-modal');
-        if (modal) {
-            modal.classList.add('hidden');
-            modal.style.display = 'none';
-        }
-
-        if (result.class) {
-            window.ClassesView.selectClass(result.class.id);
-        }
-
-        saveData().then(function() {
-            refreshUI();
-            showNotification(editId ? 'Class updated successfully!' : 'Class created successfully!', 'success');
-        });
-    }
-
-    function handleDeleteClass(classId) {
-        if (!classId) {
-            classId = window.ClassesView.getSelectedClassId();
-        }
-
-        if (!classId) {
-            showNotification('No class selected.', 'error');
-            return;
-        }
-
-        var cls = window.ClassesCore.getGraduatingClass(classId);
-        if (!cls) {
-            showNotification('Class not found.', 'error');
-            return;
-        }
-
-        var totalMembers = window.ClassesCore.getTotalCount(classId);
+        var students = ClassesQueries.getCharactersByClass(classId);
+        var teams = ClassesQueries.getTeamsByClass(classId);
 
         var message = 'Delete "' + cls.name + '" permanently?';
-        if (totalMembers > 0) {
-            message += '\n\nThis class has ' + totalMembers + ' members.';
-            message += '\nAll members will be unassigned from this class.';
+
+        if (students.length > 0 || teams.length > 0) {
+            message += '\n\nThis class has ' + students.length + ' student(s) and ' + teams.length + ' team(s) assigned.';
+            message += '\nAll references will be removed from students and teams.';
+            message += '\n\nThis action cannot be undone.';
         }
-        message += '\n\nThis action cannot be undone.';
 
         if (!confirm(message)) {
             return;
         }
 
-        var result = window.ClassesCore.deleteGraduatingClass(classId);
-        if (!result || !result.success) {
+        var result = ClassesCore.deleteClass(classId);
+
+        if (result && result.success) {
+            recordActivity('Deleted class: ' + cls.name);
+
+            refreshUI(container);
+
+            if (typeof window.updateDashboardStats === 'function') {
+                window.updateDashboardStats();
+            }
+
+            persistMutation(
+                'Class deleted successfully!',
+                'Class deleted in memory, but persistence failed.'
+            );
+        } else {
             showNotification(result && result.message ? result.message : 'Failed to delete class.', 'error');
-            return;
         }
-
-        window.ClassesView.clearSelection();
-
-        saveData().then(function() {
-            refreshUI();
-            showNotification('Class deleted successfully!', 'success');
-        });
     }
 
-    function handleManageMembers(classId) {
-        if (!classId) {
-            classId = window.ClassesView.getSelectedClassId();
-        }
+    /**
+     * Handle saving a class (create or update).
+     */
+    function handleSaveClass(e, container) {
+        e.preventDefault();
 
-        if (!classId) {
-            showNotification('No class selected.', 'error');
+        var form = e.target;
+        var editId = form.dataset.editId;
+        var nameInput = document.getElementById('class-name');
+
+        if (!nameInput) {
+            showNotification('Form elements not found. Please refresh.', 'error');
             return;
         }
 
-        var cls = window.ClassesCore.getGraduatingClass(classId);
-        if (!cls) {
-            showNotification('Class not found.', 'error');
+        var name = nameInput.value.trim();
+
+        if (!name) {
+            showNotification('Class name is required.', 'error');
             return;
         }
 
-        showMemberModal(classId);
+        var result;
+
+        if (editId) {
+            result = ClassesCore.updateClass(editId, { name: name });
+            if (!result || !result.success) {
+                showNotification(result && result.message ? result.message : 'Failed to update class.', 'error');
+                return;
+            }
+        } else {
+            result = ClassesCore.createClass(name);
+            if (!result || !result.success) {
+                showNotification(result && result.message ? result.message : 'Failed to create class.', 'error');
+                return;
+            }
+        }
+
+        // Close modal
+        var modal = document.getElementById('class-form-modal');
+        if (modal) {
+            modal.classList.add('hidden');
+        }
+
+        // Update state
+        if (window.classesState) {
+            window.classesState.selectedClassId = result.class ? result.class.id : editId;
+        }
+
+        refreshUI(container);
+
+        if (typeof window.updateDashboardStats === 'function') {
+            window.updateDashboardStats();
+        }
+
+        var successMsg = editId ? 'Class updated successfully.' : 'Class created successfully.';
+        var errorMsg = 'Class changed in memory, but persistence failed.';
+        persistMutation(successMsg, errorMsg);
     }
 
-    function handleAddMemberFromSearch(classId, charId, role) {
+    /**
+     * Handle auto-distribute students.
+     */
+    function handleDistribute(container, classId) {
+        if (window.ClassesView && typeof window.ClassesView.showDistributeModal === 'function') {
+            window.ClassesView.showDistributeModal(container, classId);
+        }
+    }
+
+    /**
+     * Handle adding a character to a class.
+     */
+    function handleAddCharacterToClass(container, classId, charId) {
         if (!classId || !charId) {
             showNotification('Class ID and Character ID are required.', 'error');
             return;
         }
 
-        var result = window.ClassesCore.addMember(classId, charId, role);
+        var result = ClassesCore.addCharacterToClass(charId, classId);
 
         if (!result || !result.success) {
-            showNotification(result && result.message ? result.message : 'Failed to add member.', 'error');
+            showNotification(result && result.message ? result.message : 'Failed to add character to class.', 'error');
             return;
         }
 
-        saveData().then(function() {
-            // Re-render the modal content
-            var content = document.getElementById('member-modal-content');
-            if (content) {
-                content.innerHTML = window.ClassesView.renderMemberModalContent(classId);
-            }
-            populateSearchResults(classId);
-            refreshUI();
-            showNotification('Member added successfully!', 'success');
-        });
+        recordActivity('Added character to class: ' + result.className);
+
+        refreshUI(container);
+
+        if (typeof window.renderCharacterList === 'function') {
+            window.renderCharacterList();
+        }
+
+        persistMutation(
+            'Character added to class successfully.',
+            'Character added in memory, but persistence failed.'
+        );
     }
 
-    function handleRemoveMember(classId, charId) {
+    /**
+     * Handle removing a character from a class.
+     */
+    function handleRemoveCharacterFromClass(container, classId, charId) {
         if (!classId || !charId) {
             showNotification('Class ID and Character ID are required.', 'error');
             return;
         }
 
-        if (!confirm('Remove this member from the class?')) {
+        var char = CharacterQueries.getCharacterById(charId);
+        var charName = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+
+        if (!confirm('Remove "' + charName + '" from this class?')) {
             return;
         }
 
-        var result = window.ClassesCore.removeMember(classId, charId);
+        var result = ClassesCore.removeCharacterFromClass(charId, classId);
 
         if (!result || !result.success) {
-            showNotification(result && result.message ? result.message : 'Failed to remove member.', 'error');
+            showNotification(result && result.message ? result.message : 'Failed to remove character from class.', 'error');
             return;
         }
 
-        saveData().then(function() {
-            var content = document.getElementById('member-modal-content');
-            if (content) {
-                content.innerHTML = window.ClassesView.renderMemberModalContent(classId);
-            }
-            populateSearchResults(classId);
-            refreshUI();
-            showNotification('Member removed successfully!', 'success');
-        });
-    }
+        recordActivity('Removed character from class: ' + result.className);
 
-    function handleClassSelect(classId) {
-        if (!classId) {
-            return;
+        refreshUI(container);
+
+        if (typeof window.renderCharacterList === 'function') {
+            window.renderCharacterList();
         }
 
-        if (window.ClassesView && typeof window.ClassesView.selectClass === 'function') {
-            window.ClassesView.selectClass(classId);
-        }
-
-        refreshUI();
-    }
-
-    function handleMobileSelect() {
-        var select = document.getElementById('mobile-class-select');
-        if (!select) return;
-
-        var classId = select.value;
-        if (classId) {
-            handleClassSelect(classId);
-        }
+        persistMutation(
+            'Character removed from class successfully.',
+            'Character removed in memory, but persistence failed.'
+        );
     }
 
     // ============================================================
-    // HELPER FUNCTIONS
+    // MAIN INITIALIZATION - Supports re-initialization
     // ============================================================
 
-    function getDisplayName(char) {
-        if (typeof window.getDisplayName === 'function') {
-            return window.getDisplayName(char);
-        }
-        if (char && char.firstName) {
-            return char.firstName + (char.lastName ? ' ' + char.lastName : '');
-        }
-        return 'Unknown';
-    }
-
-    function escapeHtml(value) {
-        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
-            return window.DomUtils.escapeHtml(value);
-        }
-        if (value === undefined || value === null) return '';
-        var str = String(value);
-        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
-    }
-
-    // ============================================================
-    // BIND EVENTS
-    // ============================================================
-
-    function bindEvents() {
-        if (_eventsBound) return;
-        if (!_container) return;
-
-        _eventsBound = true;
-
-        // ---- CLICK DELEGATION ----
-        _container.addEventListener('click', function(e) {
-            var target = e.target;
-
-            // Add Class button
-            var addBtn = target.closest('#add-class-btn');
-            if (addBtn) {
-                e.preventDefault();
-                handleAddClass();
-                return;
-            }
-
-            // Class list item
-            var listItem = target.closest('.class-list-item');
-            if (listItem) {
-                e.preventDefault();
-                var classId = listItem.dataset.id;
-                if (classId) {
-                    handleClassSelect(classId);
-                }
-                return;
-            }
-
-            // Manage Members button
-            var manageBtn = target.closest('#manage-members-btn');
-            if (manageBtn) {
-                e.preventDefault();
-                var classId = manageBtn.dataset.classId || window.ClassesView.getSelectedClassId();
-                if (classId) {
-                    handleManageMembers(classId);
-                }
-                return;
-            }
-
-            // Edit Class button
-            var editBtn = target.closest('#edit-class-btn');
-            if (editBtn) {
-                e.preventDefault();
-                var classId = editBtn.dataset.classId || window.ClassesView.getSelectedClassId();
-                if (classId) {
-                    handleEditClass(classId);
-                }
-                return;
-            }
-
-            // Delete Class button
-            var deleteBtn = target.closest('#delete-class-btn');
-            if (deleteBtn) {
-                e.preventDefault();
-                var classId = deleteBtn.dataset.classId || window.ClassesView.getSelectedClassId();
-                if (classId) {
-                    handleDeleteClass(classId);
-                }
-                return;
-            }
-
-            // Add member from search results
-            var addMemberBtn = target.closest('.add-member-result-btn');
-            if (addMemberBtn) {
-                e.preventDefault();
-                var charId = addMemberBtn.dataset.charId;
-                var role = addMemberBtn.dataset.role || 'trainee';
-                var classId = window.ClassesView.getSelectedClassId();
-                if (charId && classId) {
-                    handleAddMemberFromSearch(classId, charId, role);
-                }
-                return;
-            }
-
-            // Remove member chip
-            var removeBtn = target.closest('.remove-member-btn');
-            if (removeBtn) {
-                e.preventDefault();
-                var charId = removeBtn.dataset.charId;
-                var classId = removeBtn.dataset.classId || window.ClassesView.getSelectedClassId();
-                if (charId && classId) {
-                    handleRemoveMember(classId, charId);
-                }
-                return;
-            }
-
-            // Class form modal close
-            var closeFormBtn = target.closest('#close-class-form');
-            if (closeFormBtn) {
-                var modal = document.getElementById('class-form-modal');
-                if (modal) {
-                    modal.classList.add('hidden');
-                    modal.style.display = 'none';
-                }
-                return;
-            }
-
-            // Class form cancel
-            var cancelFormBtn = target.closest('#cancel-class-form');
-            if (cancelFormBtn) {
-                var modal = document.getElementById('class-form-modal');
-                if (modal) {
-                    modal.classList.add('hidden');
-                    modal.style.display = 'none';
-                }
-                return;
-            }
-
-            // Member modal close
-            var closeMemberBtn = target.closest('#close-member-modal');
-            if (closeMemberBtn) {
-                var modal = document.getElementById('member-modal');
-                if (modal) {
-                    modal.classList.add('hidden');
-                    modal.style.display = 'none';
-                }
-                return;
-            }
-
-            var closeMemberBtn2 = target.closest('#close-member-modal-btn');
-            if (closeMemberBtn2) {
-                var modal = document.getElementById('member-modal');
-                if (modal) {
-                    modal.classList.add('hidden');
-                    modal.style.display = 'none';
-                }
-                return;
-            }
-        });
-
-        // ---- INPUT DELEGATION ----
-        _container.addEventListener('input', function(e) {
-            var target = e.target;
-
-            var searchInput = target.closest('#member-search');
-            if (searchInput) {
-                var classId = window.ClassesView.getSelectedClassId();
-                if (classId) {
-                    populateSearchResults(classId);
-                }
-                return;
-            }
-        });
-
-        // ---- CHANGE DELEGATION ----
-        _container.addEventListener('change', function(e) {
-            var target = e.target;
-
-            var roleSelect = target.closest('#member-role-select');
-            if (roleSelect) {
-                var classId = window.ClassesView.getSelectedClassId();
-                if (classId) {
-                    populateSearchResults(classId);
-                }
-                return;
-            }
-
-            var mobileSelect = target.closest('#mobile-class-select');
-            if (mobileSelect) {
-                handleMobileSelect();
-                return;
-            }
-        });
-
-        // ---- FORM SUBMIT ----
-        _container.addEventListener('submit', function(e) {
-            var form = e.target.closest('#class-form-inner');
-            if (form) {
-                handleSaveClass(e);
-            }
-        });
-
-        // ---- MODAL CLICK OUTSIDE ----
-        var formModal = document.getElementById('class-form-modal');
-        if (formModal) {
-            formModal.addEventListener('click', function(e) {
-                if (e.target === this) {
-                    this.classList.add('hidden');
-                    this.style.display = 'none';
-                }
-            });
-        }
-
-        var memberModal = document.getElementById('member-modal');
-        if (memberModal) {
-            memberModal.addEventListener('click', function(e) {
-                if (e.target === this) {
-                    this.classList.add('hidden');
-                    this.style.display = 'none';
-                }
-            });
-        }
-
-        // ---- RESIZE HANDLER ----
-        var resizeTimeout = null;
-        var resizeHandler = function() {
-            if (resizeTimeout) {
-                clearTimeout(resizeTimeout);
-                resizeTimeout = null;
-            }
-            resizeTimeout = setTimeout(function() {
-                var isMobile = window.innerWidth < 768;
-                window._classesIsMobile = isMobile;
-                refreshUI();
-                resizeTimeout = null;
-            }, 300);
-        };
-
-        window._classesResizeHandler = resizeHandler;
-        window.addEventListener('resize', resizeHandler);
-
-        // ---- DIAGNOSTIC ----
-        setTimeout(function() {
-            var selected = window.ClassesView.getSelectedClassId();
-            console.log('[ClassesEvents] Current selected class:', selected);
-        }, 200);
-    }
-
-    // ============================================================
-    // MAIN INIT
-    // ============================================================
-
-    function initEvents(container) {
+    function init(container) {
         if (!checkDependencies()) {
+            console.warn('ClassesEvents: Dependencies not met, skipping initialization');
             return;
         }
 
-        if (!container) {
-            container = document.getElementById('tab-classes');
-        }
         if (!container) {
             container = document.getElementById('classes-content');
         }
@@ -717,32 +479,256 @@
             return;
         }
 
-        _container = container;
+        // Remove existing listeners before binding new ones
+        removeAllEventListeners();
 
-        bindEvents();
-        refreshUI();
+        // Bind all events
+        bindAddClass(container);
+        bindClassList(container);
+        bindClassDetail(container);
+        bindFormModals(container);
+        bindDistributeModal(container);
+
+        _initialized = true;
     }
 
     // ============================================================
-    // CLEANUP
+    // DESTROY - Clean up for re-initialization
     // ============================================================
 
     function destroy() {
-        if (window._classesResizeHandler) {
-            window.removeEventListener('resize', window._classesResizeHandler);
-            window._classesResizeHandler = null;
-        }
-        _eventsBound = false;
-        _container = null;
+        removeAllEventListeners();
+        _initialized = false;
     }
 
     // ============================================================
-    // PUBLIC API
+    // EVENT BINDING - Add Class
     // ============================================================
 
-    function refreshUI() {
-        if (_container && window.ClassesView && typeof window.ClassesView.renderClassesView === 'function') {
-            window.ClassesView.renderClassesView(_container);
+    function bindAddClass(container) {
+        var addBtn = container ? container.querySelector('#add-class-btn') : document.getElementById('add-class-btn');
+
+        if (addBtn) {
+            addSafeEventListener(addBtn, 'click', function() {
+                handleAddClass(container);
+            });
+        }
+    }
+
+    // ============================================================
+    // EVENT BINDING - Class List (Event Delegation)
+    // ============================================================
+
+    function bindClassList(container) {
+        var listContainer = container ? container.querySelector('#class-list') : document.getElementById('class-list');
+
+        if (!listContainer) {
+            // Try the container itself if it's the class list
+            if (container && container.id === 'class-list') {
+                listContainer = container;
+            }
+        }
+
+        if (!listContainer) {
+            console.warn('ClassesEvents: Class list container not found');
+            return;
+        }
+
+        addSafeEventListener(listContainer, 'click', function(e) {
+            // Find the clicked list item
+            var item = e.target.closest ? e.target.closest('.class-list-item') : null;
+            if (!item) return;
+            if (!listContainer.contains(item)) return;
+
+            var classId = item.dataset.id;
+            if (!classId) return;
+
+            // Update state
+            if (window.classesState) {
+                window.classesState.selectedClassId = classId;
+            }
+
+            refreshUI(container);
+        });
+    }
+
+    // ============================================================
+    // EVENT BINDING - Class Detail (Event Delegation)
+    // ============================================================
+
+    function bindClassDetail(container) {
+        var detailContainer = container ? container.querySelector('#class-detail') : document.getElementById('class-detail');
+
+        if (!detailContainer) {
+            // Try the container itself if it's the detail container
+            if (container && container.id === 'class-detail') {
+                detailContainer = container;
+            }
+        }
+
+        if (!detailContainer) {
+            console.warn('ClassesEvents: Class detail container not found');
+            return;
+        }
+
+        addSafeEventListener(detailContainer, 'click', function(e) {
+            var button = e.target.closest ? e.target.closest('button') : null;
+            if (!button) return;
+            if (!detailContainer.contains(button)) return;
+
+            var classId = button.dataset.id;
+
+            // If no classId on button, try to find it from the detail container's state
+            if (!classId && window.classesState) {
+                classId = window.classesState.selectedClassId;
+            }
+
+            if (!classId) return;
+
+            // Edit class
+            if (button.classList.contains('edit-class-btn')) {
+                e.stopPropagation();
+                handleEditClass(container, classId);
+                return;
+            }
+
+            // Delete class
+            if (button.classList.contains('delete-class-btn')) {
+                e.stopPropagation();
+                handleDeleteClass(container, classId);
+                return;
+            }
+
+            // Distribute
+            if (button.classList.contains('distribute-class-btn')) {
+                e.stopPropagation();
+                handleDistribute(container, classId);
+                return;
+            }
+
+            // Add student to class
+            if (button.classList.contains('add-student-btn')) {
+                e.stopPropagation();
+                var charId = button.dataset.characterId || prompt('Enter character ID:');
+                if (charId) {
+                    handleAddCharacterToClass(container, classId, charId);
+                }
+                return;
+            }
+
+            // Remove student from class
+            if (button.classList.contains('remove-student-btn')) {
+                e.stopPropagation();
+                var charId = button.dataset.characterId;
+                if (charId) {
+                    handleRemoveCharacterFromClass(container, classId, charId);
+                }
+                return;
+            }
+        });
+    }
+
+    // ============================================================
+    // EVENT BINDING - Form Modals
+    // ============================================================
+
+    function bindFormModals(container) {
+        // Close form modal
+        var closeFormBtn = document.getElementById('close-class-form');
+        if (closeFormBtn) {
+            addSafeEventListener(closeFormBtn, 'click', function() {
+                var modal = document.getElementById('class-form-modal');
+                if (modal) modal.classList.add('hidden');
+            });
+        }
+
+        // Cancel form
+        var cancelFormBtn = document.getElementById('cancel-class-form');
+        if (cancelFormBtn) {
+            addSafeEventListener(cancelFormBtn, 'click', function() {
+                var modal = document.getElementById('class-form-modal');
+                if (modal) modal.classList.add('hidden');
+            });
+        }
+
+        // Form submit
+        var form = document.getElementById('class-form-inner');
+        if (form) {
+            // Remove existing listener to avoid duplicates
+            form.removeEventListener('submit', function(e) { handleSaveClass(e, container); });
+            addSafeEventListener(form, 'submit', function(e) {
+                handleSaveClass(e, container);
+            });
+        }
+
+        // Click outside to close
+        var formModal = document.getElementById('class-form-modal');
+        if (formModal) {
+            addSafeEventListener(formModal, 'click', function(e) {
+                if (e.target === this) {
+                    this.classList.add('hidden');
+                }
+            });
+        }
+    }
+
+    // ============================================================
+    // EVENT BINDING - Distribute Modal
+    // ============================================================
+
+    function bindDistributeModal(container) {
+        var modal = document.getElementById('distribute-modal');
+        if (!modal) return;
+
+        // Close buttons
+        var closeBtn = document.getElementById('close-distribute-modal');
+        if (closeBtn) {
+            addSafeEventListener(closeBtn, 'click', function() {
+                modal.classList.add('hidden');
+            });
+        }
+
+        var cancelBtn = document.getElementById('cancel-distribute');
+        if (cancelBtn) {
+            addSafeEventListener(cancelBtn, 'click', function() {
+                modal.classList.add('hidden');
+            });
+        }
+
+        // Click outside to close
+        addSafeEventListener(modal, 'click', function(e) {
+            if (e.target === this) {
+                this.classList.add('hidden');
+            }
+        });
+
+        // Confirm distribute - handled by ClassesView
+        var confirmBtn = document.getElementById('confirm-distribute');
+        if (confirmBtn) {
+            addSafeEventListener(confirmBtn, 'click', function() {
+                if (window.ClassesView && typeof window.ClassesView.executeDistribution === 'function') {
+                    window.ClassesView.executeDistribution(container);
+                }
+            });
+        }
+
+        // Week and max size changes - handled by ClassesView
+        var weekInput = document.getElementById('distribute-week');
+        if (weekInput) {
+            addSafeEventListener(weekInput, 'change', function() {
+                if (window.ClassesView && typeof window.ClassesView.updateDistributeTeamList === 'function') {
+                    window.ClassesView.updateDistributeTeamList(container);
+                }
+            });
+        }
+
+        var maxSizeInput = document.getElementById('distribute-max-size');
+        if (maxSizeInput) {
+            addSafeEventListener(maxSizeInput, 'change', function() {
+                if (window.ClassesView && typeof window.ClassesView.updateDistributeTeamList === 'function') {
+                    window.ClassesView.updateDistributeTeamList(container);
+                }
+            });
         }
     }
 
@@ -751,11 +737,9 @@
     // ============================================================
 
     window.ClassesEvents = {
-        init: initEvents,
+        init: init,
         destroy: destroy,
-        refreshUI: refreshUI
+        removeAllEventListeners: removeAllEventListeners
     };
-
-    window.__classesEventsLoaded = true;
 
 })();
