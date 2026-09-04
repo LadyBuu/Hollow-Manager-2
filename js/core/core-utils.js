@@ -1,24 +1,48 @@
 /**
- * js/core/core-utils.js - Core Domain Utilities
- * Shared helper functions for domain operations
- * Path: utils/core-utils.js
+ * js/core/core-utils.js - Core Utilities
+ * Generic utility functions with no domain knowledge
+ * Path: js/core/core-utils.js
  * 
- * This module provides utilities for:
- *   - Characters, teams, classes
- *   - Period parsing
- *   - Type checking
- *   - Activity logging
- *   - Random generation
- *   - Elimination tracking
- *   - Tournament helpers
+ * This module provides GENERIC utilities that can be used by any module.
+ * These functions do NOT know about HollowBlades domain concepts.
  * 
  * IMPORTANT:
- *   - All functions are PURE where possible
- *   - No DOM manipulation
- *   - No UI logic
- *   - Query results are DEEP CLONED to prevent external mutation
- *   - This is the SINGLE SOURCE OF TRUTH for domain utilities
- *   - Core modules (ClassCore, ScheduleCore, etc.) should be used for mutations
+ *   - NO domain concepts (characters, teams, classes, etc.)
+ *   - NO DOM manipulation (that's dom-utils.js)
+ *   - NO notification logic (that's notification.js)
+ *   - NO activity logging (that's activity-log.js)
+ *   - PURE functions only (no side effects)
+ *   - Small, focused, composable
+ * 
+ * WHAT BELONGS HERE:
+ *   - Type checking (isObject, isSafeInteger, isPositiveInteger)
+ *   - Period parsing (parseOptionalPeriod, parsePositivePeriod, etc.)
+ *   - ID generation (generateId)
+ *   - Deep clone (deepClone) - delegates to ObjectUtils
+ *   - Formatting (formatDate, truncateString)
+ * 
+ * WHAT DOES NOT BELONG HERE (REMOVED):
+ *   - Team predicates (isTeamOperational, etc.) → TeamQueries
+ *   - Team queries (getTeamById, getTeams, etc.) → TeamQueries
+ *   - Character queries (getCharacterById, getDisplayName, etc.) → CharacterQueries
+ *   - Class queries (getClasses, getClass, etc.) → ClassesQueries
+ *   - Discipline queries (getDiscipline, etc.) → DisciplineCore
+ *   - Schedule queries (getStudentSchedule) → ScheduleCore
+ *   - Elimination queries (isCharacterEliminated) → Elimination
+ *   - Tournament helpers (getParticipantName) → TournamentCore
+ *   - Random generators (generateRandomStats) → CharacterGenerator
+ *   - Activity logging (_logActivity, recordActivity) → ActivityLog
+ * 
+ * DEPENDENCIES:
+ *   - window.ObjectUtils (optional, for deepClone)
+ *   - window.IdUtils (optional, for generateId)
+ *   - window.ValidationUtils (optional, for parsing)
+ * 
+ * USAGE:
+ *   var utils = window.CoreUtils;
+ *   var obj = utils.isObject(value);
+ *   var id = utils.generateId('user');
+ *   var parsed = utils.parseOptionalPeriod('42');
  */
 
 (function() {
@@ -31,64 +55,114 @@
     window.__coreUtilsLoaded = true;
 
     // ============================================================
+    // DEPENDENCY IMPORTS (optional, with fallbacks)
+    // ============================================================
+
+    var ObjectUtils = window.ObjectUtils || null;
+    var IdUtils = window.IdUtils || null;
+    var ValidationUtils = window.ValidationUtils || null;
+
+    // ============================================================
     // TYPE HELPERS
     // ============================================================
 
+    /**
+     * Check if a value is a plain object (not null, not array).
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value is a plain object
+     */
     function isObject(value) {
         return value !== null &&
                typeof value === 'object' &&
                !Array.isArray(value);
     }
 
+    /**
+     * Check if a value is a safe integer.
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value is a safe integer
+     */
     function isSafeInteger(value) {
         return Number.isSafeInteger(value);
     }
 
+    /**
+     * Check if a value is a positive integer (>= 1).
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value is a positive integer
+     */
     function isPositiveInteger(value) {
         return isSafeInteger(value) && value >= 1;
     }
 
     // ============================================================
-    // PERIOD PARSING - Strict integer-string parsing
+    // PERIOD PARSING - Generic integer-string parsing
     // ============================================================
 
+    /**
+     * Parse an optional period value to a number.
+     * Returns null for invalid, empty, or non-numeric values.
+     * This is a generic parser - domain interpretation (weeks, years)
+     * belongs in domain modules.
+     * 
+     * @param {*} value - Value to parse
+     * @returns {number|null} Parsed number or null
+     */
     function parseOptionalPeriod(value) {
         if (value === undefined || value === null || value === '') {
             return null;
         }
-        
         var str = String(value).trim();
         if (!/^\d+$/.test(str)) {
             return null;
         }
-        
         var parsed = Number(str);
         if (!isSafeInteger(parsed)) {
             return null;
         }
-        
         return parsed;
     }
 
+    /**
+     * Parse a positive period with a fallback value.
+     * @param {*} value - Value to parse
+     * @param {number} fallback - Fallback value if parsing fails
+     * @returns {number} Parsed number or fallback
+     */
     function parsePositivePeriod(value, fallback) {
         var parsed = parseOptionalPeriod(value);
         return (parsed !== null && parsed >= 1) ? parsed : fallback;
     }
 
+    /**
+     * Parse a strict positive period.
+     * Returns null for invalid, empty, or non-positive values.
+     * @param {*} value - Value to parse
+     * @returns {number|null} Parsed number or null
+     */
     function parseStrictPositivePeriod(value) {
         var parsed = parseOptionalPeriod(value);
         return (parsed !== null && parsed >= 1) ? parsed : null;
     }
 
+    /**
+     * Check if a value has a non-empty period value.
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value has content
+     */
     function hasPeriodValue(value) {
         return value !== undefined && value !== null && String(value).trim() !== '';
     }
 
+    /**
+     * Get detailed period information.
+     * @param {*} value - Value to check
+     * @returns {object} { present: boolean, valid: boolean, value: number|null }
+     */
     function getPeriodInfo(value) {
         if (!hasPeriodValue(value)) {
             return { present: false, valid: true, value: null };
         }
-        
         var parsed = parseOptionalPeriod(value);
         return {
             present: true,
@@ -101,27 +175,53 @@
     // ID GENERATION
     // ============================================================
 
+    /**
+     * Generate a unique ID with an optional prefix.
+     * Uses crypto.randomUUID if available, falls back to timestamp + random.
+     * 
+     * @param {string} prefix - ID prefix (default: 'id')
+     * @returns {string} Unique ID
+     */
     function generateId(prefix) {
         prefix = prefix || 'id';
-        
+
+        // Prefer IdUtils if available
+        if (IdUtils && typeof IdUtils.generateId === 'function') {
+            return IdUtils.generateId(prefix);
+        }
+
         if (window.crypto && typeof window.crypto.randomUUID === 'function') {
             return prefix + '_' + window.crypto.randomUUID();
         }
-        
+
         return prefix + '_' +
                Date.now() + '_' +
                Math.random().toString(36).slice(2, 10);
     }
 
     // ============================================================
-    // DEEP CLONE
+    // DEEP CLONE - Generic, delegates to ObjectUtils
     // ============================================================
 
+    /**
+     * Deep clone a value.
+     * Delegates to ObjectUtils if available, with fallback implementation.
+     * Returns null on failure.
+     * 
+     * @param {*} value - Value to clone
+     * @returns {*} Cloned value or null on failure
+     */
     function deepClone(value) {
         if (value === null || typeof value !== 'object') {
             return value;
         }
 
+        // Prefer ObjectUtils if available
+        if (ObjectUtils && typeof ObjectUtils.deepClone === 'function') {
+            return ObjectUtils.deepClone(value);
+        }
+
+        // Fallback implementation
         if (typeof structuredClone === 'function') {
             try {
                 return structuredClone(value);
@@ -140,822 +240,272 @@
     }
 
     // ============================================================
-    // OPERATIONAL TEAM PREDICATES
-    // ============================================================
-
-    function isTeamOperational(team) {
-        if (!team || typeof team !== 'object') return false;
-        if (!team.status) return true;
-        if (team.status === 'deleted' || 
-            team.status === 'inactive' || 
-            team.status === 'deprecated') {
-            return false;
-        }
-        return true;
-    }
-
-    function isTeamActiveCompat(team) {
-        if (!team || typeof team !== 'object') return false;
-        if (!team.status) return true;
-        return team.status === 'active';
-    }
-
-    function isTeamStatusActive(team) {
-        if (!team || typeof team !== 'object') return false;
-        return team.status === 'active';
-    }
-
-    function isValidTeamStatus(status) {
-        if (status === undefined || status === null) return false;
-        var validStatuses = ['active', 'inactive', 'deprecated', 'deleted'];
-        return validStatuses.indexOf(String(status)) !== -1;
-    }
-
-    function filterOperationalTeams(teams) {
-        if (!Array.isArray(teams)) return [];
-        return teams.filter(isTeamOperational);
-    }
-
-    // ============================================================
-    // ACTIVITY LOGGING
-    // ============================================================
-
-    function _logActivity(message, type) {
-        type = type || 'info';
-        
-        if (message === undefined || message === null) {
-            return;
-        }
-        
-        message = String(message);
-        
-        if (!window.data || typeof window.data !== 'object') {
-            window.data = {};
-        }
-        
-        if (!Array.isArray(window.data.activities)) {
-            window.data.activities = [];
-        }
-        
-        window.data.activities.unshift({
-            id: generateId(),
-            message: message,
-            type: type,
-            timestamp: new Date().toISOString()
-        });
-        
-        if (window.data.activities.length > 100) {
-            window.data.activities.length = 100;
-        }
-        
-        console.log('[' + type + ']', message);
-    }
-
-    function recordActivity(message, type) {
-        if (typeof window._logActivity !== 'function') return;
-        
-        try {
-            window._logActivity(message, type);
-        } catch (error) {
-            console.error('Activity logging failed:', error);
-        }
-    }
-
-    // ============================================================
-    // CHARACTER QUERIES
-    // ============================================================
-
-    function calculateAge(char) {
-        if (!char || typeof char !== 'object') return null;
-        
-        var birthYear = parseStrictPositivePeriod(char.birthYear);
-        if (birthYear === null) return null;
-        
-        var currentYear = window.data
-            ? parseStrictPositivePeriod(window.data.currentYear)
-            : null;
-        
-        if (currentYear === null) {
-            currentYear = new Date().getFullYear();
-        }
-        
-        if (birthYear > currentYear) return null;
-        
-        if (char.deceased) {
-            var deathAge = parseStrictPositivePeriod(char.deathAge);
-            if (deathAge !== null) return deathAge;
-            
-            var deathYear = parseStrictPositivePeriod(char.deathYear);
-            if (deathYear !== null) {
-                if (deathYear < birthYear) return null;
-                return deathYear - birthYear;
-            }
-            
-            return null;
-        }
-        
-        return currentYear - birthYear;
-    }
-
-    function getCharacterAge(char) {
-        var age = calculateAge(char);
-        return age !== null ? age + ' yrs' : '-';
-    }
-
-    function getDisplayName(char) {
-        if (!char || typeof char !== 'object') return 'Unknown';
-        
-        var firstName = String(char.firstName || '').trim();
-        var lastName = String(char.lastName || '').trim();
-        var nickname = String(char.nickname || '').trim();
-        var alias = String(char.alias || '').trim();
-        var format = char.nameFormat || 'firstlast';
-        
-        switch (format) {
-            case 'lastfirst':
-                if (lastName && firstName) return lastName + ', ' + firstName;
-                return lastName || firstName || 'Unknown';
-            
-            case 'nicklast':
-                return [nickname || firstName, lastName]
-                    .filter(Boolean)
-                    .join(' ') || 'Unknown';
-            
-            case 'firstnick':
-                if (!firstName && !nickname) {
-                    return lastName || 'Unknown';
-                }
-                
-                if (!nickname) {
-                    return [firstName, lastName].filter(Boolean).join(' ');
-                }
-                
-                return firstName
-                    ? firstName + ' "' + nickname + '"' + (lastName ? ' ' + lastName : '')
-                    : '"' + nickname + '"' + (lastName ? ' ' + lastName : '');
-            
-            case 'alias':
-                return alias || [firstName, lastName].filter(Boolean).join(' ') || 'Unknown';
-            
-            case 'firstlast':
-            default:
-                return [firstName, lastName].filter(Boolean).join(' ') || 'Unknown';
-        }
-    }
-
-    function getFullName(char) {
-        if (!char || typeof char !== 'object') return 'Unknown';
-        
-        var parts = [
-            char.firstName,
-            char.middleName,
-            char.lastName
-        ].filter(function(part) {
-            return part !== undefined &&
-                   part !== null &&
-                   String(part).trim() !== '';
-        }).map(function(part) {
-            return String(part).trim();
-        });
-        
-        return parts.length ? parts.join(' ') : 'Unknown';
-    }
-
-    function getNicknameOrFirstName(char) {
-        if (!char || typeof char !== 'object') return 'Unknown';
-        
-        var nickname = String(char.nickname || '').trim();
-        var firstName = String(char.firstName || '').trim();
-        
-        return nickname || firstName || 'Unknown';
-    }
-
-    function getCurrentStatus(char) {
-        if (!char || !char.careerStatus || char.careerStatus.length === 0) {
-            return 'Civilian';
-        }
-        
-        var currentYear = window.data
-            ? parseStrictPositivePeriod(window.data.currentYear)
-            : null;
-        
-        if (currentYear === null) {
-            currentYear = new Date().getFullYear();
-        }
-        
-        var bestStatus = 'Civilian';
-        var bestScore = {
-            isActive: false,
-            endYear: -Infinity,
-            startYear: -Infinity,
-            index: Infinity
-        };
-
-        char.careerStatus.forEach(function(status, index) {
-            if (!status || !status.status) return;
-            
-            var start = parseStrictPositivePeriod(status.startYear);
-            if (start === null || start > currentYear) return;
-            
-            var endInfo = getPeriodInfo(status.endYear);
-            if (endInfo.present && !endInfo.valid) return;
-            
-            var isActive = (!endInfo.present || currentYear <= endInfo.value);
-            var endYear = endInfo.present ? endInfo.value : Infinity;
-            
-            var isBetter = false;
-            
-            if (isActive !== bestScore.isActive) {
-                isBetter = isActive;
-            } else if (endYear !== bestScore.endYear) {
-                isBetter = endYear > bestScore.endYear;
-            } else if (start !== bestScore.startYear) {
-                isBetter = start > bestScore.startYear;
-            } else {
-                isBetter = index < bestScore.index;
-            }
-            
-            if (isBetter) {
-                bestScore = {
-                    isActive: isActive,
-                    endYear: endYear,
-                    startYear: start,
-                    index: index
-                };
-                var statusName = String(status.status);
-                bestStatus = statusName.charAt(0).toUpperCase() + statusName.slice(1);
-            }
-        });
-        
-        if (bestScore.isActive) {
-            return bestStatus;
-        }
-        
-        if (bestScore.endYear > -Infinity) {
-            return bestStatus + ' (Former)';
-        }
-        
-        return 'Civilian';
-    }
-
-    function getCharacterTeamCount(charId, period) {
-        var count = 0;
-        var teams = window.data ? window.data.teams : [];
-        if (!Array.isArray(teams)) return 0;
-        
-        var periodNum = parseStrictPositivePeriod(period);
-        if (periodNum === null) {
-            return 0;
-        }
-        
-        teams.forEach(function(team) {
-            if (!team || typeof team !== 'object') return;
-            if (!isTeamOperational(team)) return;
-            
-            var activeMembers = getActiveTeamMembers(team, periodNum);
-            if (activeMembers.some(function(member) {
-                return member && String(member.characterId) === String(charId);
-            })) {
-                count++;
-            }
-        });
-        
-        return count;
-    }
-
-    function getCharacterNameById(charId) {
-        if (!charId) return 'Unknown';
-        var chars = window.data ? window.data.characters : [];
-        if (!Array.isArray(chars)) return 'Unknown';
-        var char = chars.find(function(c) {
-            return c && String(c.id) === String(charId);
-        });
-        if (char) {
-            return getDisplayName(char);
-        }
-        return 'Unknown';
-    }
-
-    function getCharacterById(charId) {
-        if (!charId) return null;
-        var target = String(charId);
-        var chars = window.data ? window.data.characters : [];
-        if (!Array.isArray(chars)) return null;
-        return chars.find(function(c) {
-            return c && typeof c === 'object' && String(c.id) === target;
-        }) || null;
-    }
-
-    // ============================================================
-    // ELIMINATION QUERIES
-    // ============================================================
-
-    function isCharacterEliminated(charId, week) {
-        var char = getCharacterById(charId);
-        if (!char) return false;
-        if (char.deceased) return true;
-        
-        if (char.eliminatedWeeks && Array.isArray(char.eliminatedWeeks) && char.eliminatedWeeks.length > 0) {
-            var weekNum = parseStrictPositivePeriod(week);
-            if (weekNum === null) return false;
-            for (var i = 0; i < char.eliminatedWeeks.length; i++) {
-                var elimWeek = parseStrictPositivePeriod(char.eliminatedWeeks[i]);
-                if (elimWeek !== null && elimWeek <= weekNum) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    function getEliminatedCharacters(week) {
-        var weekNum = parseStrictPositivePeriod(week);
-        if (weekNum === null) return [];
-        
-        var result = [];
-        var chars = window.data ? window.data.characters : [];
-        if (!Array.isArray(chars)) return result;
-        chars.forEach(function(char) {
-            if (isCharacterEliminated(char.id, weekNum)) {
-                result.push(char.id);
-            }
-        });
-        return result;
-    }
-
-    // ============================================================
-    // TEAM QUERIES
-    // ============================================================
-
-    function getTeamById(teamId) {
-        if (!teamId) return null;
-        var target = String(teamId);
-        var teams = window.data ? window.data.teams : [];
-        if (!Array.isArray(teams)) return null;
-        return teams.find(function(t) {
-            return t && typeof t === 'object' && String(t.id) === target;
-        }) || null;
-    }
-
-    function getTeamName(teamId) {
-        if (!teamId) return 'Unassigned';
-        var team = getTeamById(teamId);
-        return team ? team.name : 'Unknown Team';
-    }
-
-    function getTeams(type, status, includeDeleted) {
-        var teams = window.data ? window.data.teams : [];
-        if (!Array.isArray(teams)) return [];
-        
-        var result = teams.slice().filter(function(t) {
-            return t && typeof t === 'object';
-        });
-        
-        if (type) {
-            result = result.filter(function(t) { return t.type === type; });
-        }
-        
-        if (status === 'active') {
-            result = result.filter(isTeamStatusActive);
-        } else if (status === 'operational') {
-            result = result.filter(isTeamOperational);
-        }
-        
-        if (!includeDeleted) {
-            result = result.filter(function(t) { return t.status !== 'deleted'; });
-        }
-        
-        return result.sort(function(a, b) {
-            var nameA = String(a.name || '');
-            var nameB = String(b.name || '');
-            return nameA.localeCompare(nameB);
-        });
-    }
-
-    function getActiveTeamsForWeek(week) {
-        var weekNum = parseStrictPositivePeriod(week);
-        if (weekNum === null) return [];
-        
-        var teams = getTeams('academic', 'operational', false);
-        
-        return teams.filter(function(team) {
-            if (!team || typeof team !== 'object') return false;
-            
-            var start = parseStrictPositivePeriod(team.startPeriod);
-            if (start === null) return false;
-            if (start > weekNum) return false;
-            
-            var endInfo = getPeriodInfo(team.endPeriod);
-            if (endInfo.present && !endInfo.valid) return false;
-            if (!endInfo.present) return true;
-            return endInfo.value >= weekNum;
-        });
-    }
-
-    function getAllOperationalTeams() {
-        return getTeams(null, 'operational', false);
-    }
-
-    function getAllActiveTeams() {
-        return getAllOperationalTeams();
-    }
-
-    function getTeamsByType(type, status) {
-        if (status === 'active') {
-            return getTeams(type, 'operational', false);
-        }
-        
-        if (status === undefined || status === null || status === '') {
-            return getTeams(type, 'all', false);
-        }
-        
-        if (status === 'operational' || status === 'all') {
-            return getTeams(type, status, false);
-        }
-        
-        return [];
-    }
-
-    function getActiveTeamMembers(team, period) {
-        if (!team || !team.members) return [];
-        if (!Array.isArray(team.members)) return [];
-        
-        var periodNum = parseStrictPositivePeriod(period);
-        if (periodNum === null) {
-            return [];
-        }
-        
-        return team.members.filter(function(member) {
-            if (!member || typeof member !== 'object') return false;
-            
-            var join = parseStrictPositivePeriod(member.joinPeriod);
-            if (join === null) return false;
-            
-            var leaveInfo = getPeriodInfo(member.leavePeriod);
-            if (leaveInfo.present && !leaveInfo.valid) return false;
-            if (!leaveInfo.present) return join <= periodNum;
-            return join <= periodNum && leaveInfo.value >= periodNum;
-        });
-    }
-
-    function getActiveTeamMemberCount(team, period) {
-        return getActiveTeamMembers(team, period).length;
-    }
-
-    // ============================================================
-    // STUDENT / INSTRUCTOR QUERIES
-    // ============================================================
-
-    function getStudents() {
-        if (!window.data || !window.data.characters) return [];
-        if (!Array.isArray(window.data.characters)) return [];
-        return window.data.characters.filter(function(c) {
-            if (!c || typeof c !== 'object') return false;
-            if (c.deceased) return false;
-            
-            var status = getCurrentStatus(c).toLowerCase();
-            return status === 'trainee' ||
-                   status === 'rookie' ||
-                   status === 'junior' ||
-                   status === 'student';
-        }).sort(function(a, b) {
-            return getDisplayName(a).localeCompare(getDisplayName(b));
-        });
-    }
-
-    function getInstructors() {
-        if (!window.data || !window.data.characters) return [];
-        if (!Array.isArray(window.data.characters)) return [];
-        return window.data.characters.filter(function(c) {
-            if (!c || typeof c !== 'object') return false;
-            if (c.deceased) return false;
-            
-            var status = getCurrentStatus(c).toLowerCase();
-            return status === 'instructor' ||
-                   status === 'teacher' ||
-                   status === 'professor' ||
-                   status === 'senior';
-        }).sort(function(a, b) {
-            return getDisplayName(a).localeCompare(getDisplayName(b));
-        });
-    }
-
-    function getNonCivilianCharacters() {
-        if (!window.data || !window.data.characters) return [];
-        if (!Array.isArray(window.data.characters)) return [];
-        return window.data.characters.filter(function(c) {
-            if (!c || typeof c !== 'object') return false;
-            if (c.deceased) return false;
-            var status = getCurrentStatus(c).toLowerCase();
-            return status !== 'civilian';
-        }).sort(function(a, b) {
-            return getDisplayName(a).localeCompare(getDisplayName(b));
-        });
-    }
-
-    // ============================================================
-    // DISCIPLINE QUERIES
-    // ============================================================
-
-    function getDiscipline(id) {
-        if (!window.data || !window.data.curriculum || !window.data.curriculum.disciplines) return null;
-        if (!Array.isArray(window.data.curriculum.disciplines)) return null;
-        return window.data.curriculum.disciplines.find(function(d) {
-            return d && String(d.id) === String(id);
-        }) || null;
-    }
-
-    function getAvailableDisciplines(week) {
-        var weekNum = parseStrictPositivePeriod(week);
-        if (weekNum === null) return [];
-        
-        if (!window.data || !window.data.curriculum || !Array.isArray(window.data.curriculum.disciplines)) {
-            return [];
-        }
-        
-        return window.data.curriculum.disciplines.filter(function(d) {
-            if (!d || typeof d !== 'object') return false;
-            
-            var start = parseStrictPositivePeriod(d.startWeek);
-            if (start === null) return false;
-            
-            var endInfo = getPeriodInfo(d.endWeek);
-            if (endInfo.present && !endInfo.valid) return false;
-            if (!endInfo.present) return start <= weekNum;
-            return start <= weekNum && endInfo.value >= weekNum;
-        });
-    }
-
-    // ============================================================
-    // SCHEDULE QUERIES
-    // ============================================================
-
-    function getStudentSchedule(studentId, week) {
-        var weekNum = parseStrictPositivePeriod(week);
-        if (weekNum === null) {
-            return {};
-        }
-        
-        var data = window.data || {};
-        if (!data.curriculum || !data.curriculum.schedules) {
-            return {};
-        }
-        
-        var studentSchedule = data.curriculum.schedules[studentId];
-        if (!studentSchedule) {
-            return {};
-        }
-        
-        var weekSchedule = studentSchedule[weekNum];
-        if (!weekSchedule) {
-            return {};
-        }
-        
-        return weekSchedule;
-    }
-
-    // ============================================================
-    // CLASS QUERIES (Queries only - mutations in ClassCore)
-    // ============================================================
-
-    function getClasses() {
-        var data = window.data || {};
-        if (!data.classes) {
-            return [];
-        }
-        if (!Array.isArray(data.classes)) {
-            return [];
-        }
-        return data.classes.slice().filter(function(c) {
-            return c && typeof c === 'object';
-        }).sort(function(a, b) {
-            var nameA = String(a.name || '');
-            var nameB = String(b.name || '');
-            return nameA.localeCompare(nameB);
-        });
-    }
-
-    function getClass(id) {
-        if (!id) return null;
-        var target = String(id);
-        var data = window.data || {};
-        if (!data.classes) return null;
-        if (!Array.isArray(data.classes)) return null;
-        return data.classes.find(function(c) {
-            return c && typeof c === 'object' && String(c.id) === target;
-        }) || null;
-    }
-
-    function getClassByName(name) {
-        if (!name) return null;
-        var data = window.data || {};
-        if (!data.classes) return null;
-        if (!Array.isArray(data.classes)) return null;
-        var target = String(name).toLowerCase();
-        return data.classes.find(function(c) {
-            if (!c || typeof c !== 'object') return false;
-            var className = String(c.name || '');
-            return className.toLowerCase() === target;
-        }) || null;
-    }
-
-    function getCharactersByClass(classId) {
-        if (!classId) return [];
-        var target = String(classId);
-        var data = window.data || {};
-        if (!data.characters) return [];
-        if (!Array.isArray(data.characters)) return [];
-        return data.characters.filter(function(c) {
-            return c &&
-                   typeof c === 'object' &&
-                   Array.isArray(c.classIds) &&
-                   c.classIds.some(function(cid) {
-                       return String(cid) === target;
-                   });
-        });
-    }
-
-    function getTeamsByClass(classId) {
-        if (!classId) return [];
-        var target = String(classId);
-        var data = window.data || {};
-        if (!data.teams) return [];
-        if (!Array.isArray(data.teams)) return [];
-        return data.teams.filter(function(t) {
-            return t &&
-                   typeof t === 'object' &&
-                   t.type === 'academic' &&
-                   String(t.classId) === target &&
-                   isTeamOperational(t);
-        });
-    }
-
-    function getAvailableStudentsForClass(classId, week) {
-        if (!classId) return [];
-        var weekNum = parseStrictPositivePeriod(week);
-        if (weekNum === null) return [];
-        
-        var data = window.data || {};
-        var classChars = getCharactersByClass(classId);
-        
-        var available = classChars.filter(function(char) {
-            if (!char || typeof char !== 'object') return false;
-            if (char.deceased) return false;
-            
-            if (isCharacterEliminated(char.id, weekNum)) {
-                return false;
-            }
-            
-            if (data.teams && Array.isArray(data.teams)) {
-                var occupied = data.teams.some(function(team) {
-                    if (!team || typeof team !== 'object') return false;
-                    if (team.type !== 'academic') return false;
-                    if (!isTeamOperational(team)) return false;
-                    if (String(team.classId) !== String(classId)) return false;
-                    
-                    return getActiveTeamMembers(team, weekNum).some(function(member) {
-                        return member && String(member.characterId) === String(char.id);
-                    });
-                });
-                
-                if (occupied) return false;
-            }
-            
-            return true;
-        });
-        
-        return available;
-    }
-
-    function getClassOptions() {
-        var classes = getClasses();
-        var options = [];
-        classes.forEach(function(c) {
-            var count = getCharactersByClass(c.id).length;
-            options.push({
-                id: c.id,
-                name: c.name,
-                count: count
-            });
-        });
-        return options;
-    }
-
-    function getClassDisplayName(classId) {
-        var cls = getClass(classId);
-        return cls ? cls.name : 'Unassigned';
-    }
-
-    function getCharacterClasses(char) {
-        if (!char || !char.classIds) return [];
-        if (!Array.isArray(char.classIds)) return [];
-        var classes = getClasses();
-        return classes.filter(function(c) {
-            return char.classIds.some(function(cid) { return String(cid) === String(c.id); });
-        });
-    }
-
-    function getCharacterClassNames(char) {
-        var classes = getCharacterClasses(char);
-        return classes.map(function(c) { return c.name; });
-    }
-
-    // ============================================================
-    // TOURNAMENT HELPERS
-    // ============================================================
-
-    function getParticipantName(participant) {
-        if (!participant) return 'Unknown';
-
-        if (typeof participant === 'string') {
-            var team = getTeamById(participant);
-            if (team) return team.name;
-
-            var char = getCharacterById(participant);
-            if (char) return getDisplayName(char);
-
-            return participant;
-        }
-
-        if (participant.type === 'char' || participant.type === 'character') {
-            var char = getCharacterById(participant.id);
-            return char ? getDisplayName(char) : 'Unknown Character';
-        }
-
-        if (participant.type === 'team') {
-            var team = getTeamById(participant.id);
-            return team ? team.name : 'Unknown Team';
-        }
-
-        return 'Unknown';
-    }
-
-    // ============================================================
-    // RANDOM GENERATORS
-    // ============================================================
-
-    function generateRandomStats() {
-        return {
-            str: Math.floor(Math.random() * 13) + 6,
-            dex: Math.floor(Math.random() * 13) + 6,
-            con: Math.floor(Math.random() * 13) + 6,
-            int: Math.floor(Math.random() * 13) + 6,
-            wis: Math.floor(Math.random() * 13) + 6,
-            cha: Math.floor(Math.random() * 13) + 6
-        };
-    }
-
-    function generateRandomMagic() {
-        var magic = {};
-        var types = ['earth','water','fire','air','metal','wood',
-                     'blood','bone','mind','morphic','life','death',
-                     'space','time','dimension','void','reality','transference'];
-        types.forEach(function(key) {
-            var roll = Math.random();
-            if (roll < 0.4) {
-                magic[key] = 0;
-            } else if (roll < 0.7) {
-                magic[key] = Math.floor(Math.random() * 4) + 1;
-            } else if (roll < 0.9) {
-                magic[key] = Math.floor(Math.random() * 4) + 5;
-            } else {
-                magic[key] = Math.floor(Math.random() * 3) + 9;
-            }
-        });
-        return magic;
-    }
-
-    // ============================================================
     // FORMATTING HELPERS
     // ============================================================
 
+    /**
+     * Format a date string to a localized date string.
+     * @param {string} dateString - ISO date string
+     * @returns {string} Formatted date or 'N/A'
+     */
     function formatDate(dateString) {
         if (!dateString) return 'N/A';
-        
         var date = new Date(dateString);
-        if (isNaN(date.getTime())) {
-            return 'N/A';
-        }
-        
+        if (isNaN(date.getTime())) return 'N/A';
         return date.toLocaleDateString();
     }
 
+    /**
+     * Truncate a string to a maximum length.
+     * @param {string} str - String to truncate
+     * @param {number} length - Maximum length
+     * @returns {string} Truncated string
+     */
     function truncateString(str, length) {
         if (str === undefined || str === null) return '';
-        
         str = String(str);
-        
-        if (!Number.isFinite(length) || length < 0) {
-            return str;
-        }
-        
+        if (!Number.isFinite(length) || length < 0) return str;
         if (str.length <= length) return str;
-        
         return str.substring(0, length) + '...';
     }
 
     // ============================================================
-    // EXPOSE
+    // NUMBER HELPERS
+    // ============================================================
+
+    /**
+     * Clamp a number between a minimum and maximum value.
+     * @param {number} value - Value to clamp
+     * @param {number} min - Minimum value
+     * @param {number} max - Maximum value
+     * @returns {number} Clamped value
+     */
+    function clamp(value, min, max) {
+        var num = Number(value);
+        if (isNaN(num) || !isFinite(num)) return min;
+        return Math.max(min, Math.min(max, num));
+    }
+
+    /**
+     * Check if a value is a finite number.
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value is a finite number
+     */
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && Number.isFinite(value);
+    }
+
+    /**
+     * Check if a value is a non-negative number (>= 0).
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value is a non-negative number
+     */
+    function isNonNegativeNumber(value) {
+        return isFiniteNumber(value) && value >= 0;
+    }
+
+    /**
+     * Parse a non-negative integer (>= 0).
+     * Returns null for invalid values.
+     * @param {*} value - Value to parse
+     * @returns {number|null} Parsed integer or null
+     */
+    function parseNonNegativeInteger(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        var num = Number(value);
+        if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0) {
+            return null;
+        }
+        return num;
+    }
+
+    // ============================================================
+    // ARRAY HELPERS
+    // ============================================================
+
+    /**
+     * Check if an array is defined and has elements.
+     * @param {*} arr - Value to check
+     * @returns {boolean} True if array has elements
+     */
+    function isNonEmptyArray(arr) {
+        return Array.isArray(arr) && arr.length > 0;
+    }
+
+    /**
+     * Get the last element of an array.
+     * @param {Array} arr - Array
+     * @returns {*} Last element or undefined
+     */
+    function last(arr) {
+        if (!Array.isArray(arr) || arr.length === 0) return undefined;
+        return arr[arr.length - 1];
+    }
+
+    /**
+     * Get the first element of an array.
+     * @param {Array} arr - Array
+     * @returns {*} First element or undefined
+     */
+    function first(arr) {
+        if (!Array.isArray(arr) || arr.length === 0) return undefined;
+        return arr[0];
+    }
+
+    /**
+     * Deduplicate an array of strings or numbers.
+     * @param {Array} arr - Array to deduplicate
+     * @returns {Array} Deduplicated array
+     */
+    function unique(arr) {
+        if (!Array.isArray(arr)) return [];
+        return arr.filter(function(item, index) {
+            return arr.indexOf(item) === index;
+        });
+    }
+
+    // ============================================================
+    // OBJECT HELPERS
+    // ============================================================
+
+    /**
+     * Safely get a nested property from an object.
+     * @param {object} obj - Object to traverse
+     * @param {string} path - Dot-separated path (e.g., 'user.profile.name')
+     * @param {*} defaultValue - Default value if property not found
+     * @returns {*} Property value or default
+     */
+    function get(obj, path, defaultValue) {
+        if (!obj || typeof obj !== 'object') return defaultValue;
+        if (typeof path !== 'string') return defaultValue;
+
+        var keys = path.split('.');
+        var current = obj;
+
+        for (var i = 0; i < keys.length; i++) {
+            if (current === null || current === undefined || typeof current !== 'object') {
+                return defaultValue;
+            }
+            current = current[keys[i]];
+        }
+
+        return current !== undefined ? current : defaultValue;
+    }
+
+    /**
+     * Safely set a nested property on an object.
+     * Creates intermediate objects if they don't exist.
+     * @param {object} obj - Object to modify
+     * @param {string} path - Dot-separated path
+     * @param {*} value - Value to set
+     * @returns {object} The modified object
+     */
+    function set(obj, path, value) {
+        if (!obj || typeof obj !== 'object') return obj;
+        if (typeof path !== 'string') return obj;
+
+        var keys = path.split('.');
+        var current = obj;
+
+        for (var i = 0; i < keys.length - 1; i++) {
+            var key = keys[i];
+            if (current[key] === undefined || current[key] === null || typeof current[key] !== 'object') {
+                current[key] = {};
+            }
+            current = current[key];
+        }
+
+        current[keys[keys.length - 1]] = value;
+        return obj;
+    }
+
+    /**
+     * Check if an object has a nested property.
+     * @param {object} obj - Object to check
+     * @param {string} path - Dot-separated path
+     * @returns {boolean} True if property exists
+     */
+    function has(obj, path) {
+        if (!obj || typeof obj !== 'object') return false;
+        if (typeof path !== 'string') return false;
+
+        var keys = path.split('.');
+        var current = obj;
+
+        for (var i = 0; i < keys.length; i++) {
+            if (current === null || current === undefined || typeof current !== 'object') {
+                return false;
+            }
+            if (!Object.prototype.hasOwnProperty.call(current, keys[i])) {
+                return false;
+            }
+            current = current[keys[i]];
+        }
+
+        return true;
+    }
+
+    // ============================================================
+    // STRING HELPERS
+    // ============================================================
+
+    /**
+     * Capitalize the first letter of a string.
+     * @param {string} str - String to capitalize
+     * @returns {string} Capitalized string
+     */
+    function capitalize(str) {
+        if (!str || typeof str !== 'string') return '';
+        if (str.length === 0) return str;
+        return str.charAt(0).toUpperCase() + str.slice(1);
+    }
+
+    /**
+     * Convert a string to title case.
+     * @param {string} str - String to convert
+     * @returns {string} Title case string
+     */
+    function titleCase(str) {
+        if (!str || typeof str !== 'string') return '';
+        return str
+            .toLowerCase()
+            .split(' ')
+            .map(function(word) {
+                return capitalize(word);
+            })
+            .join(' ');
+    }
+
+    /**
+     * Convert a string to kebab-case.
+     * @param {string} str - String to convert
+     * @returns {string} Kebab-case string
+     */
+    function kebabCase(str) {
+        if (!str || typeof str !== 'string') return '';
+        return str
+            .replace(/([a-z])([A-Z])/g, '$1-$2')
+            .replace(/[\s_]+/g, '-')
+            .toLowerCase();
+    }
+
+    /**
+     * Convert a string to snake_case.
+     * @param {string} str - String to convert
+     * @returns {string} Snake_case string
+     */
+    function snakeCase(str) {
+        if (!str || typeof str !== 'string') return '';
+        return str
+            .replace(/([a-z])([A-Z])/g, '$1_$2')
+            .replace(/[\s-]+/g, '_')
+            .toLowerCase();
+    }
+
+    // ============================================================
+    // EXPOSE - Minimal, Generic Only
     // ============================================================
 
     window.CoreUtils = {
@@ -963,6 +513,8 @@
         isObject: isObject,
         isSafeInteger: isSafeInteger,
         isPositiveInteger: isPositiveInteger,
+        isFiniteNumber: isFiniteNumber,
+        isNonNegativeNumber: isNonNegativeNumber,
 
         // Period parsing
         parseOptionalPeriod: parseOptionalPeriod,
@@ -970,6 +522,7 @@
         parseStrictPositivePeriod: parseStrictPositivePeriod,
         hasPeriodValue: hasPeriodValue,
         getPeriodInfo: getPeriodInfo,
+        parseNonNegativeInteger: parseNonNegativeInteger,
 
         // ID generation
         generateId: generateId,
@@ -977,170 +530,48 @@
         // Deep clone
         deepClone: deepClone,
 
-        // Team predicates
-        isTeamOperational: isTeamOperational,
-        isTeamActiveCompat: isTeamActiveCompat,
-        isTeamStatusActive: isTeamStatusActive,
-        isValidTeamStatus: isValidTeamStatus,
-        filterOperationalTeams: filterOperationalTeams,
-
-        // Activity logging
-        _logActivity: _logActivity,
-        recordActivity: recordActivity,
-
-        // Character queries
-        calculateAge: calculateAge,
-        getCharacterAge: getCharacterAge,
-        getDisplayName: getDisplayName,
-        getFullName: getFullName,
-        getNicknameOrFirstName: getNicknameOrFirstName,
-        getCurrentStatus: getCurrentStatus,
-        getCharacterTeamCount: getCharacterTeamCount,
-        getCharacterNameById: getCharacterNameById,
-        getCharacterById: getCharacterById,
-
-        // Elimination queries
-        isCharacterEliminated: isCharacterEliminated,
-        getEliminatedCharacters: getEliminatedCharacters,
-
-        // Team queries
-        getTeamById: getTeamById,
-        getTeamName: getTeamName,
-        getTeams: getTeams,
-        getActiveTeamsForWeek: getActiveTeamsForWeek,
-        getAllOperationalTeams: getAllOperationalTeams,
-        getAllActiveTeams: getAllActiveTeams,
-        getTeamsByType: getTeamsByType,
-        getActiveTeamMembers: getActiveTeamMembers,
-        getActiveTeamMemberCount: getActiveTeamMemberCount,
-
-        // Student/Instructor queries
-        getStudents: getStudents,
-        getInstructors: getInstructors,
-        getNonCivilianCharacters: getNonCivilianCharacters,
-
-        // Discipline queries
-        getDiscipline: getDiscipline,
-        getAvailableDisciplines: getAvailableDisciplines,
-
-        // Schedule queries
-        getStudentSchedule: getStudentSchedule,
-
-        // Class queries
-        getClasses: getClasses,
-        getClass: getClass,
-        getClassByName: getClassByName,
-        getCharactersByClass: getCharactersByClass,
-        getTeamsByClass: getTeamsByClass,
-        getAvailableStudentsForClass: getAvailableStudentsForClass,
-        getClassOptions: getClassOptions,
-        getClassDisplayName: getClassDisplayName,
-        getCharacterClasses: getCharacterClasses,
-        getCharacterClassNames: getCharacterClassNames,
-
-        // Tournament helpers
-        getParticipantName: getParticipantName,
-
-        // Random generators
-        generateRandomStats: generateRandomStats,
-        generateRandomMagic: generateRandomMagic,
-
         // Formatting
         formatDate: formatDate,
-        truncateString: truncateString
+        truncateString: truncateString,
+
+        // Number
+        clamp: clamp,
+
+        // Array
+        isNonEmptyArray: isNonEmptyArray,
+        last: last,
+        first: first,
+        unique: unique,
+
+        // Object
+        get: get,
+        set: set,
+        has: has,
+
+        // String
+        capitalize: capitalize,
+        titleCase: titleCase,
+        kebabCase: kebabCase,
+        snakeCase: snakeCase
     };
 
     // ============================================================
-    // LEGACY GLOBAL EXPORTS (Backward Compatibility)
+    // LEGACY COMPATIBILITY (Deprecated - will be removed)
     // ============================================================
 
-    // Type helpers
+    // These are kept for backward compatibility during migration.
+    // All new code should use the named exports above.
+
     window.isObject = isObject;
     window.isSafeInteger = isSafeInteger;
     window.isPositiveInteger = isPositiveInteger;
-
-    // Period parsing
     window.parseOptionalPeriod = parseOptionalPeriod;
     window.parsePositivePeriod = parsePositivePeriod;
     window.parseStrictPositivePeriod = parseStrictPositivePeriod;
     window.hasPeriodValue = hasPeriodValue;
     window.getPeriodInfo = getPeriodInfo;
-
-    // ID generation
     window.generateId = generateId;
-
-    // Deep clone
     window.deepClone = deepClone;
-
-    // Team predicates
-    window.isTeamOperational = isTeamOperational;
-    window.isTeamActiveCompat = isTeamActiveCompat;
-    window.isTeamStatusActive = isTeamStatusActive;
-    window.isValidTeamStatus = isValidTeamStatus;
-    window.filterOperationalTeams = filterOperationalTeams;
-
-    // Activity logging
-    window._logActivity = _logActivity;
-    window.recordActivity = recordActivity;
-
-    // Character queries
-    window.calculateAge = calculateAge;
-    window.getCharacterAge = getCharacterAge;
-    window.getDisplayName = getDisplayName;
-    window.getFullName = getFullName;
-    window.getNicknameOrFirstName = getNicknameOrFirstName;
-    window.getCurrentStatus = getCurrentStatus;
-    window.getCharacterTeamCount = getCharacterTeamCount;
-    window.getCharacterNameById = getCharacterNameById;
-    window.getCharacterById = getCharacterById;
-
-    // Elimination queries
-    window.isCharacterEliminated = isCharacterEliminated;
-    window.getEliminatedCharacters = getEliminatedCharacters;
-
-    // Team queries
-    window.getTeamById = getTeamById;
-    window.getTeamName = getTeamName;
-    window.getTeams = getTeams;
-    window.getActiveTeamsForWeek = getActiveTeamsForWeek;
-    window.getAllOperationalTeams = getAllOperationalTeams;
-    window.getAllActiveTeams = getAllActiveTeams;
-    window.getTeamsByType = getTeamsByType;
-    window.getActiveTeamMembers = getActiveTeamMembers;
-    window.getActiveTeamMemberCount = getActiveTeamMemberCount;
-
-    // Student/Instructor queries
-    window.getStudents = getStudents;
-    window.getInstructors = getInstructors;
-    window.getNonCivilianCharacters = getNonCivilianCharacters;
-
-    // Discipline queries
-    window.getDiscipline = getDiscipline;
-    window.getAvailableDisciplines = getAvailableDisciplines;
-
-    // Schedule queries
-    window.getStudentSchedule = getStudentSchedule;
-
-    // Class queries
-    window.getClasses = getClasses;
-    window.getClass = getClass;
-    window.getClassByName = getClassByName;
-    window.getCharactersByClass = getCharactersByClass;
-    window.getTeamsByClass = getTeamsByClass;
-    window.getAvailableStudentsForClass = getAvailableStudentsForClass;
-    window.getClassOptions = getClassOptions;
-    window.getClassDisplayName = getClassDisplayName;
-    window.getCharacterClasses = getCharacterClasses;
-    window.getCharacterClassNames = getCharacterClassNames;
-
-    // Tournament helpers
-    window.getParticipantName = getParticipantName;
-
-    // Random generators
-    window.generateRandomStats = generateRandomStats;
-    window.generateRandomMagic = generateRandomMagic;
-
-    // Formatting
     window.formatDate = formatDate;
     window.truncateString = truncateString;
 
