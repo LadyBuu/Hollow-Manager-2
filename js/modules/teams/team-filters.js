@@ -11,9 +11,11 @@
  * 
  * DEPENDENCIES:
  *   - window.TeamCore - Canonical team operations (required)
+ *   - window.TeamQueries - Team query operations (required)
  *   - window.CALENDAR_CONSTANTS - Week/year constants (from constants.js)
  *   - window.DomUtils - HTML escaping (from dom-utils.js)
- *   - window.getWeekBlock - Week block calculation (from utils)
+ *   - window.ValidationUtils - Period parsing (from validation-utils.js)
+ *   - window.CharacterQueries - Character data (from character-queries.js) - optional
  * 
  * IMPORTANT:
  *   - All data inserted into HTML is escaped to prevent XSS.
@@ -22,6 +24,8 @@
  *   - Filter results are pure (no mutation of source data).
  *   - Filters operate on a SHALLOW COPY of team data (array copy).
  *   - Team objects themselves are not mutated.
+ *   - Uses TeamQueries for all team data access
+ *   - Uses ValidationUtils for period parsing
  * 
  * FILTER SEMANTICS:
  *   - Academic: Teams active during a specific 2-week block
@@ -65,13 +69,28 @@
         return;
     }
 
+    if (!window.TeamQueries) {
+        console.error('TeamFilters: TeamQueries is required but not loaded.');
+        return;
+    }
+
     window.__teamFiltersLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var TeamCore = window.TeamCore;
+    var TeamQueries = window.TeamQueries;
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var DomUtils = window.DomUtils || window;
+    var ValidationUtils = window.ValidationUtils || window;
+    var CharacterQueries = window.CharacterQueries || window;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var CALENDAR = window.CALENDAR_CONSTANTS || {};
     var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
     var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
     var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
@@ -82,8 +101,8 @@
     // ============================================================
 
     function escapeHtml(value) {
-        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
-            return window.DomUtils.escapeHtml(value);
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
         }
         // Fallback
         return String(value == null ? '' : value)
@@ -95,19 +114,91 @@
     }
 
     // ============================================================
+    // PERIOD PARSING - Delegate to ValidationUtils
+    // ============================================================
+
+    function parseNumericPeriod(value) {
+        if (ValidationUtils && typeof ValidationUtils.parseStrictPositivePeriod === 'function') {
+            return ValidationUtils.parseStrictPositivePeriod(value);
+        }
+        // Fallback
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        var str = String(value).trim();
+        if (!/^\d+$/.test(str)) {
+            return null;
+        }
+        var parsed = Number(str);
+        return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+    }
+
+    function parsePositivePeriod(value) {
+        var parsed = parseNumericPeriod(value);
+        return (parsed !== null && parsed >= 1) ? parsed : null;
+    }
+
+    function isValidWeek(week) {
+        var num = parseNumericPeriod(week);
+        return num !== null && num >= MIN_WEEK && num <= MAX_WEEK;
+    }
+
+    function isValidYear(year) {
+        var num = parseNumericPeriod(year);
+        return num !== null && num >= MIN_YEAR && num <= MAX_YEAR;
+    }
+
+    // ============================================================
     // DEPENDENCY CHECK HELPERS
     // ============================================================
 
     function getWeekBlock(weekNum) {
-        if (typeof window.getWeekBlock !== 'function') {
-            console.warn('TeamFilters: window.getWeekBlock is not available.');
+        // Try CalendarUtils first
+        if (window.CalendarUtils && typeof window.CalendarUtils.getWeekBlock === 'function') {
+            return window.CalendarUtils.getWeekBlock(weekNum);
+        }
+
+        // Fallback: manual calculation
+        var num = parseNumericPeriod(weekNum);
+        if (num === null || num < MIN_WEEK || num > MAX_WEEK) {
             return null;
         }
-        return window.getWeekBlock(weekNum);
+
+        var WEEKS_PER_BLOCK = 2;
+        var blockIndex = Math.floor((num - 1) / WEEKS_PER_BLOCK);
+        var start = (blockIndex * WEEKS_PER_BLOCK) + 1;
+        var end = Math.min(start + WEEKS_PER_BLOCK - 1, MAX_WEEK);
+
+        return {
+            start: start,
+            end: end,
+            block: blockIndex + 1,
+            label: 'Wk ' + start + '-' + end
+        };
     }
 
     // ============================================================
-    // TEAM FILTERING
+    // CHARACTER HELPERS - Delegate to CharacterQueries
+    // ============================================================
+
+    function getCharacterName(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getDisplayName === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+        }
+        return 'Unknown';
+    }
+
+    function getCharacterStatus(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getCurrentStatus === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getCurrentStatus(char) : '';
+        }
+        return '';
+    }
+
+    // ============================================================
+    // TEAM FILTERING - Uses TeamQueries
     // ============================================================
 
     var TeamFilters = {
@@ -125,17 +216,13 @@
          */
         filterTeams: function(type, filter) {
             // Normalise type using TeamCore's canonical logic
-            var normalisedType = type;
-            if (window.TeamCore && typeof window.TeamCore.normalizeTeamType === 'function') {
-                normalisedType = window.TeamCore.normalizeTeamType(type);
-                if (normalisedType === null) {
-                    return [];
-                }
+            var normalisedType = TeamCore.normalizeTeamType(type);
+            if (normalisedType === null) {
+                return [];
             }
 
-            // Get teams and clone the array to ensure purity
-            var sourceTeams = window.TeamCore.getTeams(normalisedType);
-            var teams = Array.isArray(sourceTeams) ? sourceTeams.slice() : [];
+            // Get teams using TeamQueries
+            var teams = TeamQueries.getTeams(normalisedType, 'all', false);
 
             if (teams.length === 0) return [];
 
@@ -151,12 +238,12 @@
                 if (!block) return [];
 
                 teams = teams.filter(function(team) {
-                    var start = parseInt(team.startPeriod, 10);
-                    var end = parseInt(team.endPeriod, 10);
+                    var start = parsePositivePeriod(team.startPeriod);
+                    var end = parsePositivePeriod(team.endPeriod);
                     // Missing start = active indefinitely from beginning
-                    if (isNaN(start)) return true;
+                    if (start === null) return true;
                     // Interval overlap: team's period overlaps the selected block
-                    return start <= block.end && (isNaN(end) || end >= block.start);
+                    return start <= block.end && (end === null || end >= block.start);
                 });
 
                 var classFilter = filter.filterClass || 'all';
@@ -177,14 +264,14 @@
                 if (!isNaN(year) && year >= MIN_YEAR && year <= MAX_YEAR) {
                     // Filter by interval overlap: team's period includes the selected year
                     teams = teams.filter(function(team) {
-                        var start = parseInt(team.startPeriod, 10);
-                        var end = parseInt(team.endPeriod, 10);
+                        var start = parsePositivePeriod(team.startPeriod);
+                        var end = parsePositivePeriod(team.endPeriod);
                         // Missing start = active indefinitely from beginning
-                        if (isNaN(start)) return true;
+                        if (start === null) return true;
                         // Team starts after selected year → not active during this year
                         if (start > year) return false;
                         // Team ends before selected year → not active during this year
-                        if (!isNaN(end) && end < year) return false;
+                        if (end !== null && end < year) return false;
                         return true;
                     });
                 }
@@ -395,8 +482,8 @@
          * @returns {boolean} True if valid
          */
         isValidWeek: function(week) {
-            var num = parseInt(week, 10);
-            return !isNaN(num) && num >= MIN_WEEK && num <= MAX_WEEK;
+            var num = parseNumericPeriod(week);
+            return num !== null && num >= MIN_WEEK && num <= MAX_WEEK;
         },
 
         /**
@@ -405,8 +492,89 @@
          * @returns {boolean} True if valid
          */
         isValidYear: function(year) {
-            var num = parseInt(year, 10);
-            return !isNaN(num) && num >= MIN_YEAR && num <= MAX_YEAR;
+            var num = parseNumericPeriod(year);
+            return num !== null && num >= MIN_YEAR && num <= MAX_YEAR;
+        },
+
+        /**
+         * Get active member names for a team at a given period.
+         * Uses TeamQueries for membership data.
+         * 
+         * @param {object} team - Team object
+         * @param {number|string} period - Period (week or year)
+         * @returns {array} Array of member names
+         */
+        getActiveMemberNames: function(team, period) {
+            if (!team) return [];
+
+            var members = TeamQueries.getActiveTeamMembers(team, period);
+            var names = [];
+
+            for (var i = 0; i < members.length; i++) {
+                var member = members[i];
+                if (member && member.characterId) {
+                    var name = getCharacterName(member.characterId);
+                    if (name) names.push(name);
+                }
+            }
+
+            return names;
+        },
+
+        /**
+         * Get active member count for a team at a given period.
+         * Uses TeamQueries for membership data.
+         * 
+         * @param {object} team - Team object
+         * @param {number|string} period - Period (week or year)
+         * @returns {number} Count of active members
+         */
+        getActiveMemberCount: function(team, period) {
+            if (!team) return 0;
+            return TeamQueries.getActiveTeamMemberCount(team, period);
+        },
+
+        /**
+         * Get the class display name for a team.
+         * 
+         * @param {object} team - Team object
+         * @returns {string|null} Class display name or null
+         */
+        getTeamClassDisplayName: function(team) {
+            if (!team || team.type !== 'academic') return null;
+            return TeamQueries.getTeamClassDisplayName(team);
+        },
+
+        /**
+         * Get the period display for a team.
+         * 
+         * @param {object} team - Team object
+         * @returns {string} Period display string
+         */
+        getTeamPeriodDisplay: function(team) {
+            return TeamQueries.getTeamPeriodDisplay(team);
+        },
+
+        /**
+         * Get the type label for a team.
+         * 
+         * @param {object} team - Team object
+         * @returns {string} Type label
+         */
+        getTeamTypeLabel: function(team) {
+            if (!team) return 'Unknown';
+            return TeamQueries.getTypeLabel(team.type);
+        },
+
+        /**
+         * Get the current rank for a team.
+         * 
+         * @param {object} team - Team object
+         * @returns {string} Current rank
+         */
+        getTeamCurrentRank: function(team) {
+            if (!team) return '-';
+            return TeamQueries.getTeamCurrentRank(team) || '-';
         }
     };
 
