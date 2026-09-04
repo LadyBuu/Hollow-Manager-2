@@ -19,12 +19,12 @@
  *   - window.TeamCore
  *   - window.TeamQueries
  *   - window.TeamMembers
- *   - window.TeamRankings (must have getCurrentRank)
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.ClassesQueries (from classes-queries.js)
- *   - window.CALENDAR_CONSTANTS (from constants.js)
- *   - window.DomUtils (from dom-utils.js)
- *   - window.ValidationUtils (from validation-utils.js)
+ *   - window.TeamRankings
+ *   - window.CharacterQueries
+ *   - window.ClassesQueries
+ *   - window.CALENDAR_CONSTANTS
+ *   - window.DomUtils
+ *   - window.ValidationUtils
  */
 
 (function() {
@@ -36,31 +36,34 @@
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - Strict contract
+    // DEPENDENCY CHECK - NO FALLBACKS
     // ============================================================
 
     if (!window.TeamCore) {
-        console.error('TeamRender: TeamCore is required but not loaded.');
         return;
     }
-
     if (!window.TeamQueries) {
-        console.error('TeamRender: TeamQueries is required but not loaded.');
         return;
     }
-
     if (!window.TeamMembers) {
-        console.error('TeamRender: TeamMembers is required but not loaded.');
         return;
     }
-
     if (!window.TeamRankings) {
-        console.error('TeamRender: TeamRankings is required but not loaded.');
         return;
     }
-
-    if (typeof window.TeamRankings.getCurrentRank !== 'function') {
-        console.error('TeamRender: TeamRankings.getCurrentRank is required.');
+    if (!window.CharacterQueries) {
+        return;
+    }
+    if (!window.ClassesQueries) {
+        return;
+    }
+    if (!window.CALENDAR_CONSTANTS) {
+        return;
+    }
+    if (!window.DomUtils) {
+        return;
+    }
+    if (!window.ValidationUtils) {
         return;
     }
 
@@ -74,75 +77,37 @@
     var TeamQueries = window.TeamQueries;
     var TeamMembers = window.TeamMembers;
     var TeamRankings = window.TeamRankings;
-    var CharacterQueries = window.CharacterQueries || window;
-    var ClassesQueries = window.ClassesQueries || window;
-    var DomUtils = window.DomUtils || window;
-    var ValidationUtils = window.ValidationUtils || window;
-    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var CharacterQueries = window.CharacterQueries;
+    var ClassesQueries = window.ClassesQueries;
+    var CALENDAR = window.CALENDAR_CONSTANTS;
+    var DomUtils = window.DomUtils;
+    var ValidationUtils = window.ValidationUtils;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
-    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
-    var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
-    var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
+    var MIN_WEEK = CALENDAR.MIN_WEEK;
+    var MAX_WEEK = CALENDAR.MAX_WEEK;
+    var MIN_YEAR = CALENDAR.MIN_YEAR;
+    var MAX_YEAR = CALENDAR.MAX_YEAR;
 
     // ============================================================
-    // HTML ESCAPING - Use DomUtils when available
+    // HTML ESCAPING - Use DomUtils
     // ============================================================
 
     function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
+        return DomUtils.escapeHtml(value);
+    }
+
+    function escapeAttribute(value) {
+        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
+            return DomUtils.escapeAttribute(value);
         }
-        // Fallback
         return String(value == null ? '' : value)
             .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
-    }
-
-    // ============================================================
-    // CHARACTER HELPERS - Uses CharacterQueries
-    // ============================================================
-
-    function getCharacterName(charId) {
-        if (CharacterQueries && typeof CharacterQueries.getDisplayName === 'function') {
-            var char = CharacterQueries.getCharacterById(charId);
-            return char ? CharacterQueries.getDisplayName(char) : 'Unknown';
-        }
-        return 'Unknown';
-    }
-
-    function getCharacterAge(charId) {
-        if (CharacterQueries && typeof CharacterQueries.getCharacterAge === 'function') {
-            var char = CharacterQueries.getCharacterById(charId);
-            return char ? CharacterQueries.getCharacterAge(char) : '-';
-        }
-        return '-';
-    }
-
-    function getCharacterCurrentStatus(charId) {
-        if (CharacterQueries && typeof CharacterQueries.getCurrentStatus === 'function') {
-            var char = CharacterQueries.getCharacterById(charId);
-            return char ? CharacterQueries.getCurrentStatus(char) : '';
-        }
-        return '';
-    }
-
-    // ============================================================
-    // CLASS HELPERS - Uses ClassesQueries
-    // ============================================================
-
-    function getClassDisplayName(classId) {
-        if (ClassesQueries && typeof ClassesQueries.getClassDisplayName === 'function') {
-            return ClassesQueries.getClassDisplayName(classId);
-        }
-        return null;
     }
 
     // ============================================================
@@ -150,20 +115,50 @@
     // ============================================================
 
     function parseNumericPeriod(value) {
-        if (ValidationUtils && typeof ValidationUtils.parseStrictPositivePeriod === 'function') {
-            return ValidationUtils.parseStrictPositivePeriod(value);
-        }
-        // Fallback
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var str = String(value).trim();
-        if (!/^\d+$/.test(str)) {
-            return null;
-        }
-        var parsed = Number(str);
-        return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+        return ValidationUtils.parseStrictPositivePeriod(value);
     }
+
+    // ============================================================
+    // CHARACTER HELPERS - Uses CharacterQueries
+    // ============================================================
+
+    function getCharacterName(charId) {
+        var character = CharacterQueries.getCharacterById(charId);
+        return character ? CharacterQueries.getDisplayName(character) : 'Unknown';
+    }
+
+    function getCharacterAge(charId) {
+        var character = CharacterQueries.getCharacterById(charId);
+        return character ? CharacterQueries.getCharacterAge(character) : '-';
+    }
+
+    // ============================================================
+    // CLASS HELPERS - Uses ClassesQueries
+    // ============================================================
+
+    function getClassDisplayName(classId) {
+        return ClassesQueries.getClassDisplayName(classId);
+    }
+
+    // ============================================================
+    // STATUS CSS CLASSES
+    // ============================================================
+
+    function getStatusClass(status) {
+        var map = {
+            'active': 'status-active',
+            'left': 'status-left',
+            'deceased': 'status-deceased',
+            'eliminated': 'status-eliminated',
+            'future': 'status-future',
+            'unknown': 'status-unknown'
+        };
+        return map[status] || 'status-unknown';
+    }
+
+    // ============================================================
+    // PERIOD LABEL HELPERS
+    // ============================================================
 
     function getPeriodLabel(teamType) {
         return teamType === 'academic' ? 'Week' : 'Period';
@@ -181,24 +176,10 @@
     // ============================================================
 
     function getTeamRankDisplay(team) {
-        if (!team) return '-';
+        if (!team) {
+            return '-';
+        }
         return TeamRankings.getCurrentRank(team) || '-';
-    }
-
-    // ============================================================
-    // STATUS CSS CLASSES
-    // ============================================================
-
-    function getStatusClass(status) {
-        var map = {
-            'active': 'status-active',
-            'left': 'status-left',
-            'deceased': 'status-deceased',
-            'eliminated': 'status-eliminated',
-            'future': 'status-future',
-            'unknown': 'status-unknown'
-        };
-        return map[status] || 'status-unknown';
     }
 
     // ============================================================
@@ -225,22 +206,25 @@
                 return '<p class="empty-state" style="padding:20px;">No ' + (labels[type] || 'teams') + ' found.</p>';
             }
 
+            var periodNum = parseInt(filterPeriod, 10);
+            if (isNaN(periodNum) || periodNum < 1) {
+                periodNum = 1;
+            }
+
             var html = '';
-            var headerHtml = `
-                <div class="list-header team-header">
-                    <span>Team Name</span>
-                    <span>Period</span>
-                    <span>Rank</span>
-                    <span>Members</span>
-                    <span>Actions</span>
-                </div>
-            `;
-            html += headerHtml;
+            html += '<div class="list-header team-header">';
+            html += '<span>Team Name</span>';
+            html += '<span>Period</span>';
+            html += '<span>Rank</span>';
+            html += '<span>Members</span>';
+            html += '<span>Actions</span>';
+            html += '</div>';
 
-            var periodNum = parseInt(filterPeriod, 10) || 1;
-
-            teams.forEach(function(team) {
-                if (!team || typeof team !== 'object') return;
+            for (var i = 0; i < teams.length; i++) {
+                var team = teams[i];
+                if (!team || typeof team !== 'object') {
+                    continue;
+                }
 
                 var periodDisplay = TeamQueries.getTeamPeriodDisplay(team);
                 var typeLabel = TeamQueries.getTypeLabel(team.type);
@@ -263,7 +247,7 @@
                 }
 
                 // Team row - using CSS classes for styling
-                html += '<div class="list-item team-item ' + inactiveClass + '" data-id="' + escapeHtml(team.id) + '">';
+                html += '<div class="list-item team-item ' + inactiveClass + '" data-id="' + escapeAttribute(team.id) + '">';
                 html += '<span><strong>' + escapeHtml(team.name) + '</strong>' + classDisplay + ' <span class="team-type-label">' + escapeHtml(typeLabel) + '</span>';
                 if (isInactive) {
                     html += ' <span class="team-status-inactive">(Inactive)</span>';
@@ -273,18 +257,18 @@
                 html += '<span class="team-rank">' + escapeHtml(rankDisplay) + '</span>';
                 html += '<span class="team-member-count">' + memberCount + '</span>';
                 html += '<span class="actions">' +
-                    '<button class="small toggle-members" data-id="' + escapeHtml(team.id) + '">' + (isExpanded ? '▾' : '▸') + '</button>' +
-                    '<button class="small manage-members" data-id="' + escapeHtml(team.id) + '">Members</button>' +
-                    '<button class="small manage-rankings" data-id="' + escapeHtml(team.id) + '">Rankings</button>' +
-                    '<button class="small edit-team" data-id="' + escapeHtml(team.id) + '">Edit</button>' +
-                    '<button class="small danger delete-team" data-id="' + escapeHtml(team.id) + '">Delete</button>' +
+                    '<button class="small toggle-members" data-id="' + escapeAttribute(team.id) + '">' + (isExpanded ? '▾' : '▸') + '</button>' +
+                    '<button class="small manage-members" data-id="' + escapeAttribute(team.id) + '">Members</button>' +
+                    '<button class="small manage-rankings" data-id="' + escapeAttribute(team.id) + '">Rankings</button>' +
+                    '<button class="small edit-team" data-id="' + escapeAttribute(team.id) + '">Edit</button>' +
+                    '<button class="small danger delete-team" data-id="' + escapeAttribute(team.id) + '">Delete</button>' +
                     '</span>';
                 html += '</div>';
 
                 if (isExpanded) {
                     html += this.renderExpandedMembers(team, periodNum);
                 }
-            }, this);
+            }
 
             return html;
         },
@@ -296,34 +280,42 @@
          * @returns {string} HTML string
          */
         renderExpandedMembers: function(team, filterPeriod) {
-            if (!team || typeof team !== 'object') return '';
+            if (!team || typeof team !== 'object') {
+                return '';
+            }
 
-            var periodNum = parseInt(filterPeriod, 10) || 1;
+            var periodNum = parseInt(filterPeriod, 10);
+            if (isNaN(periodNum) || periodNum < 1) {
+                periodNum = 1;
+            }
+
             var activeMembers = TeamQueries.getActiveTeamMembers(team, periodNum);
             var labelText = formatActiveMembersLabel(team.type, periodNum);
 
-            var html = '<div class="team-members-expanded" data-team-id="' + escapeHtml(team.id) + '">';
+            var html = '<div class="team-members-expanded" data-team-id="' + escapeAttribute(team.id) + '">';
 
             if (activeMembers.length > 0) {
                 html += '<div class="members-expanded-header">' + labelText + '</div>';
-                activeMembers.forEach(function(member) {
-                    if (!member || typeof member !== 'object') return;
+                for (var i = 0; i < activeMembers.length; i++) {
+                    var member = activeMembers[i];
+                    if (!member || typeof member !== 'object') {
+                        continue;
+                    }
 
-                    var char = CharacterQueries.getCharacterById(member.characterId);
-                    var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
-                    var age = char ? CharacterQueries.getCharacterAge(char) : '-';
-                    var deadMarker = char && char.deceased ? ' ✝' : '';
+                    var character = CharacterQueries.getCharacterById(member.characterId);
+                    var name = character ? CharacterQueries.getDisplayName(character) : 'Unknown';
+                    var age = character ? CharacterQueries.getCharacterAge(character) : '-';
 
-                    // Use TeamMembers for status (required dependency)
+                    // Use TeamMembers for status
                     var status = TeamMembers.getStatusAtPeriod(member, periodNum, team.type);
                     var statusInfo = TeamCore.getMemberStatusInfo(status);
                     var statusClass = getStatusClass(status);
 
                     html += '<div class="member-entry ' + statusClass + '">';
-                    html += '<span>' + escapeHtml(name) + deadMarker + ' <span class="role">(' + escapeHtml(member.role || 'Member') + ')</span></span>';
+                    html += '<span>' + escapeHtml(name) + ' <span class="role">(' + escapeHtml(member.role || 'Member') + ')</span></span>';
                     html += '<span class="member-details">Age: ' + escapeHtml(age) + ' | Joined: ' + escapeHtml(member.joinPeriod || '?') + (member.leavePeriod ? ' → ' + escapeHtml(member.leavePeriod) : '') + ' | <span class="member-status">' + escapeHtml(statusInfo.label) + '</span></span>';
                     html += '</div>';
-                });
+                }
             } else {
                 var periodLabel = getPeriodLabel(team.type);
                 html += '<div class="member-entry empty">No active members this ' + periodLabel.toLowerCase() + '</div>';
@@ -340,34 +332,34 @@
          */
         renderContainer: function(activeTab) {
             activeTab = activeTab || 'academic';
-            return `
-                <div class="page-header">
-                    <h2>Team Manager</h2>
-                    <button id="add-team-btn" class="primary">+ Add Team</button>
-                </div>
-                <div class="tab-container">
-                    <div class="tab-nav" id="team-tab-nav">
-                        <button class="tab-btn ${activeTab === 'academic' ? 'active' : ''}" data-tab="academic">Academic</button>
-                        <button class="tab-btn ${activeTab === 'professional' ? 'active' : ''}" data-tab="professional">Professional</button>
-                        <button class="tab-btn ${activeTab === 'temporary' ? 'active' : ''}" data-tab="temporary">Temporary</button>
-                        <button class="tab-btn ${activeTab === 'civilian' ? 'active' : ''}" data-tab="civilian">Civilian</button>
-                    </div>
-                    <div class="tab-content" id="team-tab-content">
-                        <div id="tab-academic" class="tab-panel ${activeTab === 'academic' ? 'active' : ''}">
-                            <div id="academic-content"></div>
-                        </div>
-                        <div id="tab-professional" class="tab-panel ${activeTab === 'professional' ? 'active' : ''}">
-                            <div id="professional-content"></div>
-                        </div>
-                        <div id="tab-temporary" class="tab-panel ${activeTab === 'temporary' ? 'active' : ''}">
-                            <div id="temporary-content"></div>
-                        </div>
-                        <div id="tab-civilian" class="tab-panel ${activeTab === 'civilian' ? 'active' : ''}">
-                            <div id="civilian-content"></div>
-                        </div>
-                    </div>
-                </div>
-            `;
+            return [
+                '<div class="page-header">',
+                    '<h2>Team Manager</h2>',
+                    '<button id="add-team-btn" class="primary">+ Add Team</button>',
+                '</div>',
+                '<div class="tab-container">',
+                    '<div class="tab-nav" id="team-tab-nav">',
+                        '<button class="tab-btn ' + (activeTab === 'academic' ? 'active' : '') + '" data-tab="academic">Academic</button>',
+                        '<button class="tab-btn ' + (activeTab === 'professional' ? 'active' : '') + '" data-tab="professional">Professional</button>',
+                        '<button class="tab-btn ' + (activeTab === 'temporary' ? 'active' : '') + '" data-tab="temporary">Temporary</button>',
+                        '<button class="tab-btn ' + (activeTab === 'civilian' ? 'active' : '') + '" data-tab="civilian">Civilian</button>',
+                    '</div>',
+                    '<div class="tab-content" id="team-tab-content">',
+                        '<div id="tab-academic" class="tab-panel ' + (activeTab === 'academic' ? 'active' : '') + '">',
+                            '<div id="academic-content"></div>',
+                        '</div>',
+                        '<div id="tab-professional" class="tab-panel ' + (activeTab === 'professional' ? 'active' : '') + '">',
+                            '<div id="professional-content"></div>',
+                        '</div>',
+                        '<div id="tab-temporary" class="tab-panel ' + (activeTab === 'temporary' ? 'active' : '') + '">',
+                            '<div id="temporary-content"></div>',
+                        '</div>',
+                        '<div id="tab-civilian" class="tab-panel ' + (activeTab === 'civilian' ? 'active' : '') + '">',
+                            '<div id="civilian-content"></div>',
+                        '</div>',
+                    '</div>',
+                '</div>'
+            ].join('');
         },
 
         /**
@@ -377,9 +369,15 @@
          * @returns {string} HTML string
          */
         renderTeamCard: function(team, period) {
-            if (!team || typeof team !== 'object') return '';
+            if (!team || typeof team !== 'object') {
+                return '';
+            }
 
-            var periodNum = parseInt(period, 10) || 1;
+            var periodNum = parseInt(period, 10);
+            if (isNaN(periodNum) || periodNum < 1) {
+                periodNum = 1;
+            }
+
             var activeMembers = TeamQueries.getActiveTeamMembers(team, periodNum);
             var memberCount = activeMembers.length;
             var rankDisplay = getTeamRankDisplay(team);
@@ -397,7 +395,7 @@
                 }
             }
 
-            var html = '<div class="team-card ' + inactiveClass + '" data-id="' + escapeHtml(team.id) + '">';
+            var html = '<div class="team-card ' + inactiveClass + '" data-id="' + escapeAttribute(team.id) + '">';
             html += '<div class="team-card-header">';
             html += '<strong>' + escapeHtml(team.name) + '</strong>' + classDisplay;
             html += ' <span class="team-type-label">' + escapeHtml(typeLabel) + '</span>';
@@ -411,11 +409,11 @@
             html += '<span class="team-member-count">Members: ' + memberCount + '</span>';
             html += '</div>';
             html += '<div class="team-card-actions">';
-            html += '<button class="small toggle-members" data-id="' + escapeHtml(team.id) + '">▸</button>';
-            html += '<button class="small manage-members" data-id="' + escapeHtml(team.id) + '">Members</button>';
-            html += '<button class="small manage-rankings" data-id="' + escapeHtml(team.id) + '">Rankings</button>';
-            html += '<button class="small edit-team" data-id="' + escapeHtml(team.id) + '">Edit</button>';
-            html += '<button class="small danger delete-team" data-id="' + escapeHtml(team.id) + '">Delete</button>';
+            html += '<button class="small toggle-members" data-id="' + escapeAttribute(team.id) + '">▸</button>';
+            html += '<button class="small manage-members" data-id="' + escapeAttribute(team.id) + '">Members</button>';
+            html += '<button class="small manage-rankings" data-id="' + escapeAttribute(team.id) + '">Rankings</button>';
+            html += '<button class="small edit-team" data-id="' + escapeAttribute(team.id) + '">Edit</button>';
+            html += '<button class="small danger delete-team" data-id="' + escapeAttribute(team.id) + '">Delete</button>';
             html += '</div>';
             html += '</div>';
 
@@ -425,20 +423,29 @@
         /**
          * Render a team summary for dashboard or quick view
          * @param {object} team - Team object
+         * @param {number|string} period - Current period for member count
          * @returns {string} HTML string
          */
-        renderTeamSummary: function(team) {
-            if (!team || typeof team !== 'object') return '';
+        renderTeamSummary: function(team, period) {
+            if (!team || typeof team !== 'object') {
+                return '';
+            }
 
+            var periodNum = parseInt(period, 10);
+            if (isNaN(periodNum) || periodNum < 1) {
+                periodNum = 1;
+            }
+
+            var activeMembers = TeamQueries.getActiveTeamMembers(team, periodNum);
+            var memberCount = activeMembers.length;
             var rankDisplay = getTeamRankDisplay(team);
-            var memberCount = team.members ? team.members.length : 0;
             var typeLabel = TeamQueries.getTypeLabel(team.type);
 
             var html = '<div class="team-summary">';
             html += '<span class="team-name">' + escapeHtml(team.name) + '</span>';
             html += '<span class="team-type">' + escapeHtml(typeLabel) + '</span>';
             html += '<span class="team-rank">#' + escapeHtml(rankDisplay) + '</span>';
-            html += '<span class="team-members">' + memberCount + ' members</span>';
+            html += '<span class="team-members">' + memberCount + ' active members</span>';
             html += '</div>';
 
             return html;
@@ -457,26 +464,6 @@
          * @returns {string} Period label
          */
         getPeriodLabel: getPeriodLabel,
-
-        /**
-         * Get the period range for a team type
-         * @param {string} teamType - Team type
-         * @returns {object} { min, max, label }
-         */
-        getPeriodRange: function(teamType) {
-            if (teamType === 'academic') {
-                return {
-                    min: MIN_WEEK,
-                    max: MAX_WEEK,
-                    label: 'Week'
-                };
-            }
-            return {
-                min: MIN_YEAR,
-                max: MAX_YEAR,
-                label: 'Year'
-            };
-        },
 
         /**
          * Check if a team is active
