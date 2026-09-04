@@ -17,6 +17,7 @@
  *   - USES CharacterQueries for character data
  *   - USES NotificationSystem for notifications
  *   - USES DomUtils for DOM operations
+ *   - USES ActivityLog for activity logging
  * 
  * LIFECYCLE:
  *   - init(container) - Binds events to the current DOM
@@ -32,13 +33,14 @@
  *   - window.CharacterViews
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.NotificationSystem (from notification.js)
+ *   - window.ActivityLog (from activity-log.js)
  *   - window.DomUtils (from dom-utils.js)
  *   - window.getCurrentEditId (from index.js)
  *   - window.setCurrentEditId (from index.js)
  *   - window.showCharacterForm (from index.js)
  *   - window.toggleCharacterList (from index.js)
  *   - window.UI_CONSTANTS (from constants.js)
- *   - window.MAGIC_CONSTANTS (from constants.js)
+ *   - window.CharacterConstants (from character-constants.js)
  */
 
 (function() {
@@ -51,12 +53,20 @@
     window.__characterEventsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - NO FALLBACKS (MANDATORY DEPENDENCIES)
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries || window;
-    var NotificationSystem = window.NotificationSystem || window;
-    var DomUtils = window.DomUtils || window;
+    var CharacterQueries = window.CharacterQueries;
+    var CharacterCRUD = window.CharacterCRUD;
+    var CharacterClasses = window.CharacterClasses;
+    var CharacterEliminations = window.CharacterEliminations;
+    var CharacterStats = window.CharacterStats;
+    var CharacterStatsView = window.CharacterStatsView;
+    var CharacterViews = window.CharacterViews;
+    var NotificationSystem = window.NotificationSystem;
+    var ActivityLog = window.ActivityLog;
+    var DomUtils = window.DomUtils;
+    var CC = window.CharacterConstants;
     var UI_CONSTANTS = window.UI_CONSTANTS || {};
     var MAGIC_CONSTANTS = window.MAGIC_CONSTANTS || {};
 
@@ -67,7 +77,6 @@
     var _initialized = false;
     var _eventListeners = [];
     var _filterDebounceTimer = null;
-    var _mutationInProgress = false;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -76,6 +85,7 @@
     function checkDependencies() {
         var missing = [];
 
+        // Required functions from index.js
         var required = [
             'getCurrentEditId',
             'setCurrentEditId',
@@ -89,7 +99,21 @@
             }
         });
 
-        // Feature modules - required for their respective features
+        // Mandatory modules
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
+
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
+        }
+
+        if (!ActivityLog || typeof ActivityLog.record !== 'function') {
+            missing.push('ActivityLog.record');
+        }
+
+        // Feature modules - warn if missing but don't block
+        var featureMissing = [];
         var featureModules = {
             'CharacterCRUD': ['save'],
             'CharacterClasses': [
@@ -116,33 +140,17 @@
             ]
         };
 
-        var missingFeatures = [];
         for (var moduleName in featureModules) {
             if (typeof window[moduleName] === 'undefined' || window[moduleName] === null) {
-                missingFeatures.push(moduleName + ' (module missing)');
+                featureMissing.push(moduleName + ' (module missing)');
                 continue;
             }
             var methods = featureModules[moduleName];
             for (var i = 0; i < methods.length; i++) {
                 if (typeof window[moduleName][methods[i]] !== 'function') {
-                    missingFeatures.push(moduleName + '.' + methods[i]);
+                    featureMissing.push(moduleName + '.' + methods[i]);
                 }
             }
-        }
-
-        // CharacterQueries is MANDATORY
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-
-        // NotificationSystem is MANDATORY
-        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
-            missing.push('NotificationSystem.notify');
-        }
-
-        // DomUtils is MANDATORY
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
         }
 
         if (missing.length > 0) {
@@ -150,8 +158,8 @@
             return false;
         }
 
-        if (missingFeatures.length > 0) {
-            console.warn('CharacterEvents: Missing feature dependencies:', missingFeatures.join(', '));
+        if (featureMissing.length > 0) {
+            console.warn('CharacterEvents: Missing feature dependencies:', featureMissing.join(', '));
         }
 
         return true;
@@ -163,55 +171,7 @@
 
     function showNotification(message, type) {
         type = type || 'info';
-        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
-            NotificationSystem.notify(message, type);
-        } else if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
-    }
-
-    // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
-    // ============================================================
-
-    function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        // Emergency fallback (should never be reached)
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;')
-            .replace(/`/g, '&#x60;');
-    }
-
-    // ============================================================
-    // MAGIC TYPE HELPERS - Delegate to CharacterConstants
-    // ============================================================
-
-    function getMagicTypeKeys() {
-        if (window.CharacterConstants && typeof window.CharacterConstants.getMagicTypeKeys === 'function') {
-            return window.CharacterConstants.getMagicTypeKeys();
-        }
-        return window.MAGIC_CONSTANTS.TYPES ? window.MAGIC_CONSTANTS.TYPES.slice() : [];
-    }
-
-    function getMagicCategoryTypes(category) {
-        if (window.CharacterConstants && typeof window.CharacterConstants.getMagicCategoryTypes === 'function') {
-            return window.CharacterConstants.getMagicCategoryTypes(category);
-        }
-        if (window.MAGIC_CONSTANTS && window.MAGIC_CONSTANTS.CATEGORIES && window.MAGIC_CONSTANTS.CATEGORIES[category]) {
-            return window.MAGIC_CONSTANTS.CATEGORIES[category].types.slice();
-        }
-        return [];
+        NotificationSystem.notify(message, type);
     }
 
     // ============================================================
@@ -241,6 +201,28 @@
 
         clearTimeout(_filterDebounceTimer);
         _filterDebounceTimer = null;
+    }
+
+    // ============================================================
+    // MAGIC TYPE HELPERS - Delegate to CharacterConstants
+    // ============================================================
+
+    function getMagicTypeKeys() {
+        if (CC && typeof CC.getMagicTypeKeys === 'function') {
+            return CC.getMagicTypeKeys();
+        }
+        // Emergency fallback (should never be reached if constants loaded)
+        return MAGIC_CONSTANTS.TYPES ? MAGIC_CONSTANTS.TYPES.slice() : [];
+    }
+
+    function getMagicCategoryTypes(category) {
+        if (CC && typeof CC.getMagicCategoryTypes === 'function') {
+            return CC.getMagicCategoryTypes(category);
+        }
+        if (MAGIC_CONSTANTS && MAGIC_CONSTANTS.CATEGORIES && MAGIC_CONSTANTS.CATEGORIES[category]) {
+            return MAGIC_CONSTANTS.CATEGORIES[category].types.slice();
+        }
+        return [];
     }
 
     // ============================================================
@@ -294,7 +276,6 @@
     function destroy() {
         removeAllEventListeners();
         _initialized = false;
-        _mutationInProgress = false;
     }
 
     // ============================================================
@@ -343,8 +324,8 @@
         if (form) {
             addSafeEventListener(form, 'submit', function(e) {
                 e.preventDefault();
-                if (window.CharacterCRUD && typeof window.CharacterCRUD.save === 'function') {
-                    window.CharacterCRUD.save();
+                if (CharacterCRUD && typeof CharacterCRUD.save === 'function') {
+                    CharacterCRUD.save();
                 }
             });
         } else {
@@ -361,8 +342,8 @@
         if (deleteBtn) {
             addSafeEventListener(deleteBtn, 'click', function() {
                 var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-                if (id && window.CharacterCRUD && typeof window.CharacterCRUD.delete === 'function') {
-                    window.CharacterCRUD.delete(id);
+                if (id && CharacterCRUD && typeof CharacterCRUD.delete === 'function') {
+                    CharacterCRUD.delete(id);
                 }
             });
         }
@@ -456,8 +437,8 @@
         if (addStatusBtn) {
             addSafeEventListener(addStatusBtn, 'click', function() {
                 var statusContainer = document.getElementById('career-status-container');
-                if (window.CharacterViews && typeof window.CharacterViews.addCareerStatusEntry === 'function') {
-                    window.CharacterViews.addCareerStatusEntry(statusContainer);
+                if (CharacterViews && typeof CharacterViews.addCareerStatusEntry === 'function') {
+                    CharacterViews.addCareerStatusEntry(statusContainer);
                 }
             });
         }
@@ -503,8 +484,8 @@
         var addElimBtn = document.getElementById('add-standalone-elim-btn');
         if (addElimBtn) {
             addSafeEventListener(addElimBtn, 'click', function() {
-                if (window.CharacterEliminations && typeof window.CharacterEliminations.addStandalone === 'function') {
-                    window.CharacterEliminations.addStandalone();
+                if (CharacterEliminations && typeof CharacterEliminations.addStandalone === 'function') {
+                    CharacterEliminations.addStandalone();
                 }
             });
         }
@@ -519,8 +500,8 @@
                 var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
                 var eliminationId = target.dataset.id;
                 if (id && eliminationId) {
-                    if (window.CharacterEliminations && typeof window.CharacterEliminations.removeStandalone === 'function') {
-                        window.CharacterEliminations.removeStandalone(id, eliminationId);
+                    if (CharacterEliminations && typeof CharacterEliminations.removeStandalone === 'function') {
+                        CharacterEliminations.removeStandalone(id, eliminationId);
                     }
                 }
             });
@@ -540,8 +521,8 @@
                     var name = this.value.trim();
                     if (!name) return;
 
-                    if (window.CharacterClasses && typeof window.CharacterClasses.addClassByName === 'function') {
-                        var result = window.CharacterClasses.addClassByName(name);
+                    if (CharacterClasses && typeof CharacterClasses.addClassByName === 'function') {
+                        var result = CharacterClasses.addClassByName(name);
                         if (result && typeof result.then === 'function') {
                             result.then(function(success) {
                                 if (success && classInput) {
@@ -582,8 +563,8 @@
                     return;
                 }
 
-                if (window.CharacterClasses && typeof window.CharacterClasses.removeClassById === 'function') {
-                    window.CharacterClasses.removeClassById(charId, classId);
+                if (CharacterClasses && typeof CharacterClasses.removeClassById === 'function') {
+                    CharacterClasses.removeClassById(charId, classId);
                 } else {
                     showNotification('Character class functionality is not available.', 'error');
                 }
@@ -599,8 +580,8 @@
         var addToClassBtn = document.getElementById('add-to-class-btn');
         if (addToClassBtn) {
             addSafeEventListener(addToClassBtn, 'click', function() {
-                if (window.CharacterClasses && typeof window.CharacterClasses.addToClass === 'function') {
-                    window.CharacterClasses.addToClass();
+                if (CharacterClasses && typeof CharacterClasses.addToClass === 'function') {
+                    CharacterClasses.addToClass();
                 }
             });
         }
@@ -608,8 +589,8 @@
         var removeFromClassBtn = document.getElementById('remove-from-class-btn');
         if (removeFromClassBtn) {
             addSafeEventListener(removeFromClassBtn, 'click', function() {
-                if (window.CharacterClasses && typeof window.CharacterClasses.removeFromClass === 'function') {
-                    window.CharacterClasses.removeFromClass();
+                if (CharacterClasses && typeof CharacterClasses.removeFromClass === 'function') {
+                    CharacterClasses.removeFromClass();
                 }
             });
         }
@@ -703,21 +684,23 @@
             var el = document.getElementById(id);
             if (el) {
                 addSafeEventListener(el, 'change', function() {
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateClassSuggestion === 'function') {
-                        window.CharacterStatsView.updateClassSuggestion();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateClassSuggestion === 'function') {
+                        CharacterStatsView.updateClassSuggestion();
                     }
                 });
                 addSafeEventListener(el, 'blur', function() {
                     var val = parseInt(this.value, 10);
+                    var statMin = CC ? CC.STAT_MIN : 1;
+                    var statMax = CC ? CC.STAT_MAX : 50;
                     if (isNaN(val)) {
-                        this.value = 10;
-                    } else if (val < (window.STATS_CONSTANTS ? window.STATS_CONSTANTS.MIN : 1)) {
-                        this.value = window.STATS_CONSTANTS ? window.STATS_CONSTANTS.MIN : 1;
-                    } else if (val > (window.STATS_CONSTANTS ? window.STATS_CONSTANTS.MAX : 50)) {
-                        this.value = window.STATS_CONSTANTS ? window.STATS_CONSTANTS.MAX : 50;
+                        this.value = CC ? CC.STAT_DEFAULT : 10;
+                    } else if (val < statMin) {
+                        this.value = statMin;
+                    } else if (val > statMax) {
+                        this.value = statMax;
                     }
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateClassSuggestion === 'function') {
-                        window.CharacterStatsView.updateClassSuggestion();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateClassSuggestion === 'function') {
+                        CharacterStatsView.updateClassSuggestion();
                     }
                 });
             }
@@ -725,8 +708,8 @@
 
         var classSelect = document.getElementById('manual-class-select');
         if (classSelect) {
-            if (window.CharacterStatsView && typeof window.CharacterStatsView.populateClassSelect === 'function') {
-                window.CharacterStatsView.populateClassSelect();
+            if (CharacterStatsView && typeof CharacterStatsView.populateClassSelect === 'function') {
+                CharacterStatsView.populateClassSelect();
             }
 
             addSafeEventListener(classSelect, 'change', function() {
@@ -734,8 +717,8 @@
                 var descDisplay = document.getElementById('class-description-display');
 
                 if (this.value) {
-                    var classes = window.CharacterConstants && typeof window.CharacterConstants.CLASS_DEFINITIONS !== 'undefined'
-                        ? window.CharacterConstants.CLASS_DEFINITIONS
+                    var classes = CC && typeof CC.CLASS_DEFINITIONS !== 'undefined'
+                        ? CC.CLASS_DEFINITIONS
                         : [];
                     var selected = classes.find(function(c) { return c.id === this.value; }.bind(this));
                     if (selected && display) {
@@ -750,8 +733,8 @@
                         }
                     }
                 } else {
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateClassSuggestion === 'function') {
-                        window.CharacterStatsView.updateClassSuggestion();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateClassSuggestion === 'function') {
+                        CharacterStatsView.updateClassSuggestion();
                     }
                     if (descDisplay) {
                         descDisplay.textContent = 'Select a class to see its description here.';
@@ -766,8 +749,8 @@
         var applyClassBtn = document.getElementById('apply-class-btn');
         if (applyClassBtn) {
             addSafeEventListener(applyClassBtn, 'click', function() {
-                if (window.CharacterStatsView && typeof window.CharacterStatsView.applyPhysicalClass === 'function') {
-                    window.CharacterStatsView.applyPhysicalClass();
+                if (CharacterStatsView && typeof CharacterStatsView.applyPhysicalClass === 'function') {
+                    CharacterStatsView.applyPhysicalClass();
                 }
             });
         }
@@ -775,8 +758,8 @@
         var recalcBtn = document.getElementById('recalculate-class-btn');
         if (recalcBtn) {
             addSafeEventListener(recalcBtn, 'click', function() {
-                if (window.CharacterStatsView && typeof window.CharacterStatsView.updateClassSuggestion === 'function') {
-                    window.CharacterStatsView.updateClassSuggestion();
+                if (CharacterStatsView && typeof CharacterStatsView.updateClassSuggestion === 'function') {
+                    CharacterStatsView.updateClassSuggestion();
                 }
             });
         }
@@ -784,9 +767,14 @@
         var randomBtn = document.getElementById('random-stats-btn');
         if (randomBtn) {
             addSafeEventListener(randomBtn, 'click', function() {
-                var stats = window.CharacterGenerator && typeof window.CharacterGenerator.generateStats === 'function'
+                var stats = typeof window.CharacterGenerator !== 'undefined' && typeof window.CharacterGenerator.generateStats === 'function'
                     ? window.CharacterGenerator.generateStats()
-                    : { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
+                    : null;
+
+                if (!stats) {
+                    showNotification('Character generation is not available.', 'error');
+                    return;
+                }
 
                 var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
                 statKeys.forEach(function(key) {
@@ -794,8 +782,8 @@
                     if (el) el.value = stats[key] || 10;
                 });
 
-                if (window.CharacterStatsView && typeof window.CharacterStatsView.updateClassSuggestion === 'function') {
-                    window.CharacterStatsView.updateClassSuggestion();
+                if (CharacterStatsView && typeof CharacterStatsView.updateClassSuggestion === 'function') {
+                    CharacterStatsView.updateClassSuggestion();
                 }
             });
         }
@@ -812,30 +800,28 @@
             var el = document.getElementById('magic-' + key);
             if (el) {
                 addSafeEventListener(el, 'change', function() {
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                        window.CharacterStatsView.updateMagicClassSuggestion();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
+                        CharacterStatsView.updateMagicClassSuggestion();
                     }
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicPowerDisplay === 'function') {
-                        window.CharacterStatsView.updateMagicPowerDisplay();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicPowerDisplay === 'function') {
+                        CharacterStatsView.updateMagicPowerDisplay();
                     }
                 });
                 addSafeEventListener(el, 'blur', function() {
                     var val = parseInt(this.value, 10);
-                    var max = window.CharacterConstants && typeof window.CharacterConstants.MAGIC_MAX !== 'undefined'
-                        ? window.CharacterConstants.MAGIC_MAX
-                        : (window.MAGIC_CONSTANTS ? window.MAGIC_CONSTANTS.MAX : 10);
+                    var magicMax = CC ? CC.MAGIC_MAX : 10;
                     if (isNaN(val)) {
                         this.value = 0;
                     } else if (val < 0) {
                         this.value = 0;
-                    } else if (val > max) {
-                        this.value = max;
+                    } else if (val > magicMax) {
+                        this.value = magicMax;
                     }
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                        window.CharacterStatsView.updateMagicClassSuggestion();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
+                        CharacterStatsView.updateMagicClassSuggestion();
                     }
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicPowerDisplay === 'function') {
-                        window.CharacterStatsView.updateMagicPowerDisplay();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicPowerDisplay === 'function') {
+                        CharacterStatsView.updateMagicPowerDisplay();
                     }
                 });
             }
@@ -846,18 +832,37 @@
             addSafeEventListener(magicClassSelect, 'change', function() {
                 var display = document.getElementById('suggested-magic-class');
                 if (this.value && display) {
+                    // Map magic class values to display labels
                     var labels = {
                         'elementalist': 'Elementalist',
                         'body_mage': 'Body Mage',
-                        'aether_mage': 'Aether Mage'
+                        'aether_mage': 'Aether Mage',
+                        'geomancer': 'Geomancer',
+                        'hydromancer': 'Hydromancer',
+                        'pyromancer': 'Pyromancer',
+                        'aeromancer': 'Aeromancer',
+                        'ferromancer': 'Ferromancer',
+                        'dendromancer': 'Dendromancer',
+                        'hemomancer': 'Hemomancer',
+                        'osteomancer': 'Osteomancer',
+                        'psychomancer': 'Psychomancer',
+                        'morphomancer': 'Morphomancer',
+                        'vitalmancer': 'Vitalmancer',
+                        'necromancer': 'Necromancer',
+                        'spatiomancer': 'Spatiomancer',
+                        'chronomancer': 'Chronomancer',
+                        'dimensionist': 'Dimensionist',
+                        'voidmancer': 'Voidmancer',
+                        'reality_weaver': 'Reality Weaver',
+                        'transference_mage': 'Transference Mage'
                     };
                     display.textContent = labels[this.value] || this.value;
                     display.style.color = 'var(--info)';
                     display.style.background = 'var(--info-soft)';
                     display.style.borderColor = 'var(--info)';
                 } else {
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                        window.CharacterStatsView.updateMagicClassSuggestion();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
+                        CharacterStatsView.updateMagicClassSuggestion();
                     }
                 }
             });
@@ -867,8 +872,8 @@
         var applyMagicClassBtn = document.getElementById('apply-magic-class-btn');
         if (applyMagicClassBtn) {
             addSafeEventListener(applyMagicClassBtn, 'click', function() {
-                if (window.CharacterStatsView && typeof window.CharacterStatsView.applyMagicClass === 'function') {
-                    window.CharacterStatsView.applyMagicClass();
+                if (CharacterStatsView && typeof CharacterStatsView.applyMagicClass === 'function') {
+                    CharacterStatsView.applyMagicClass();
                 }
             });
         }
@@ -876,19 +881,20 @@
         var recalcMagicBtn = document.getElementById('recalculate-magic-class-btn');
         if (recalcMagicBtn) {
             addSafeEventListener(recalcMagicBtn, 'click', function() {
-                if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                    window.CharacterStatsView.updateMagicClassSuggestion();
+                if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
+                    CharacterStatsView.updateMagicClassSuggestion();
                 }
-                if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicPowerDisplay === 'function') {
-                    window.CharacterStatsView.updateMagicPowerDisplay();
+                if (CharacterStatsView && typeof CharacterStatsView.updateMagicPowerDisplay === 'function') {
+                    CharacterStatsView.updateMagicPowerDisplay();
                 }
             });
         }
 
+        // Random Elemental button
         var randomElementalBtn = document.getElementById('random-elemental-btn');
         if (randomElementalBtn) {
             addSafeEventListener(randomElementalBtn, 'click', function() {
-                if (window.CharacterGenerator && typeof window.CharacterGenerator.generateMagicCategory === 'function') {
+                if (typeof window.CharacterGenerator !== 'undefined' && typeof window.CharacterGenerator.generateMagicCategory === 'function') {
                     var magic = window.CharacterGenerator.generateMagicCategory('elemental');
                     var types = getMagicCategoryTypes('elemental');
                     types.forEach(function(key) {
@@ -897,20 +903,23 @@
                             input.value = magic[key];
                         }
                     });
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                        window.CharacterStatsView.updateMagicClassSuggestion();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
+                        CharacterStatsView.updateMagicClassSuggestion();
                     }
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicPowerDisplay === 'function') {
-                        window.CharacterStatsView.updateMagicPowerDisplay();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicPowerDisplay === 'function') {
+                        CharacterStatsView.updateMagicPowerDisplay();
                     }
+                } else {
+                    showNotification('Character generation is not available.', 'error');
                 }
             });
         }
 
+        // Random Body button
         var randomBodyBtn = document.getElementById('random-body-btn');
         if (randomBodyBtn) {
             addSafeEventListener(randomBodyBtn, 'click', function() {
-                if (window.CharacterGenerator && typeof window.CharacterGenerator.generateMagicCategory === 'function') {
+                if (typeof window.CharacterGenerator !== 'undefined' && typeof window.CharacterGenerator.generateMagicCategory === 'function') {
                     var magic = window.CharacterGenerator.generateMagicCategory('body');
                     var types = getMagicCategoryTypes('body');
                     types.forEach(function(key) {
@@ -919,20 +928,23 @@
                             input.value = magic[key];
                         }
                     });
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                        window.CharacterStatsView.updateMagicClassSuggestion();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
+                        CharacterStatsView.updateMagicClassSuggestion();
                     }
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicPowerDisplay === 'function') {
-                        window.CharacterStatsView.updateMagicPowerDisplay();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicPowerDisplay === 'function') {
+                        CharacterStatsView.updateMagicPowerDisplay();
                     }
+                } else {
+                    showNotification('Character generation is not available.', 'error');
                 }
             });
         }
 
+        // Random Aether button
         var randomAetherBtn = document.getElementById('random-aether-btn');
         if (randomAetherBtn) {
             addSafeEventListener(randomAetherBtn, 'click', function() {
-                if (window.CharacterGenerator && typeof window.CharacterGenerator.generateMagicCategory === 'function') {
+                if (typeof window.CharacterGenerator !== 'undefined' && typeof window.CharacterGenerator.generateMagicCategory === 'function') {
                     var magic = window.CharacterGenerator.generateMagicCategory('aether');
                     var types = getMagicCategoryTypes('aether');
                     types.forEach(function(key) {
@@ -941,12 +953,14 @@
                             input.value = magic[key];
                         }
                     });
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                        window.CharacterStatsView.updateMagicClassSuggestion();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
+                        CharacterStatsView.updateMagicClassSuggestion();
                     }
-                    if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicPowerDisplay === 'function') {
-                        window.CharacterStatsView.updateMagicPowerDisplay();
+                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicPowerDisplay === 'function') {
+                        CharacterStatsView.updateMagicPowerDisplay();
                     }
+                } else {
+                    showNotification('Character generation is not available.', 'error');
                 }
             });
         }
@@ -1033,8 +1047,8 @@
             return;
         }
 
-        if (window.CharacterStats && typeof window.CharacterStats.addSpecialMove === 'function') {
-            var result = window.CharacterStats.addSpecialMove(id, type, moveName, moveDesc);
+        if (CharacterStats && typeof CharacterStats.addSpecialMove === 'function') {
+            var result = CharacterStats.addSpecialMove(id, type, moveName, moveDesc);
 
             if (result && typeof result.then === 'function') {
                 result.then(function(success) {
@@ -1078,8 +1092,8 @@
         var index = parseInt(target.dataset.index, 10);
         if (isNaN(index)) return;
 
-        if (window.CharacterStats && typeof window.CharacterStats.removeSpecialMove === 'function') {
-            window.CharacterStats.removeSpecialMove(id, type, index);
+        if (CharacterStats && typeof CharacterStats.removeSpecialMove === 'function') {
+            CharacterStats.removeSpecialMove(id, type, index);
         } else {
             showNotification('Special move functionality is not available.', 'error');
             return;
@@ -1106,8 +1120,8 @@
         var index = parseInt(target.dataset.index, 10);
         if (isNaN(index)) return;
 
-        if (window.CharacterStatsView && typeof window.CharacterStatsView.editSpecialMove === 'function') {
-            window.CharacterStatsView.editSpecialMove(id, type, index);
+        if (CharacterStatsView && typeof CharacterStatsView.editSpecialMove === 'function') {
+            CharacterStatsView.editSpecialMove(id, type, index);
         } else {
             showNotification('Edit functionality is not available.', 'error');
         }
