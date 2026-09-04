@@ -10,25 +10,28 @@
  *   - Updating class suggestions in the UI
  *   - Updating magic class suggestions in the UI
  *   - Updating magic power display
- *   - Applying class requirements to stats (using minStats from CLASS_DEFINITIONS)
- *   - Applying magic class distributions
+ *   - Opening the special move editor modal
  * 
  * IMPORTANT:
- *   - This module is for RENDERING only - all logic is in character-stats.js
+ *   - This module is for RENDERING only - all domain logic is in character-stats.js
  *   - No data mutation
  *   - No persistence calls
  *   - Uses CharacterConstants for definitions
  *   - Uses CharacterQueries for character data
+ *   - Uses CharacterStats for domain logic
+ *   - Uses CharacterGenerator for random generation
  *   - Uses DomUtils for safe DOM operations
  *   - USES NotificationSystem for notifications
+ *   - USES Modal for modal lifecycle management
  * 
  * DEPENDENCIES:
- *   - window.CharacterConstants (from character-constants.js)
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.CharacterStats (from character-stats.js) - for logic
- *   - window.CharacterGenerator (from character-generator.js) - for random generation
- *   - window.DomUtils (from dom-utils.js)
- *   - window.NotificationSystem (from notification.js)
+ *   - window.CharacterConstants (from character-constants.js) - MANDATORY
+ *   - window.CharacterQueries (from character-queries.js) - MANDATORY
+ *   - window.CharacterStats (from character-stats.js) - MANDATORY
+ *   - window.CharacterGenerator (from character-generator.js) - MANDATORY
+ *   - window.DomUtils (from dom-utils.js) - MANDATORY
+ *   - window.NotificationSystem (from notification.js) - MANDATORY
+ *   - window.Modal (from modal.js) - MANDATORY
  */
 
 (function() {
@@ -41,15 +44,29 @@
     window.__characterStatsViewLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries || window;
-    var CharacterStats = window.CharacterStats || window;
-    var CharacterGenerator = window.CharacterGenerator || window;
-    var NotificationSystem = window.NotificationSystem || window;
-    var DomUtils = window.DomUtils || window;
-    var CC = window.CharacterConstants;
+    var CharacterConstants = window.CharacterConstants;
+    var CharacterQueries = window.CharacterQueries;
+    var CharacterStats = window.CharacterStats;
+    var CharacterGenerator = window.CharacterGenerator;
+    var DomUtils = window.DomUtils;
+    var NotificationSystem = window.NotificationSystem;
+    var Modal = window.Modal;
+
+    // ============================================================
+    // CONSTANTS - From CharacterConstants
+    // ============================================================
+
+    var MAGIC_MAX = CharacterConstants ? CharacterConstants.MAGIC_MAX : 10;
+    var STAT_MIN = CharacterConstants ? CharacterConstants.STAT_MIN : 1;
+    var STAT_MAX = CharacterConstants ? CharacterConstants.STAT_MAX : 50;
+    var STAT_DEFAULT = CharacterConstants ? CharacterConstants.STAT_DEFAULT : 10;
+    var STAT_KEYS = CharacterConstants ? CharacterConstants.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    var MAGIC_TYPE_KEYS = CharacterConstants ? CharacterConstants.MAGIC_TYPE_KEYS : [];
+    var MAGIC_CATEGORIES = CharacterConstants ? CharacterConstants.MAGIC_CATEGORIES : {};
+    var CLASS_DEFINITIONS = CharacterConstants ? CharacterConstants.CLASS_DEFINITIONS : [];
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -58,8 +75,12 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!CC) {
+        if (!CharacterConstants) {
             missing.push('CharacterConstants');
+        }
+
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
         }
 
         if (!CharacterStats) {
@@ -78,6 +99,10 @@
             missing.push('NotificationSystem');
         }
 
+        if (!Modal || typeof Modal.createModal !== 'function') {
+            missing.push('Modal');
+        }
+
         if (missing.length > 0) {
             console.warn('CharacterStatsView: Missing dependencies:', missing.join(', '));
             return false;
@@ -91,26 +116,8 @@
 
     function showNotification(message, type) {
         type = type || 'info';
-        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
-            NotificationSystem.notify(message, type);
-        } else if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
+        NotificationSystem.notify(message, type);
     }
-
-    // ============================================================
-    // CONSTANTS - From CharacterConstants
-    // ============================================================
-
-    var MAGIC_MAX = CC ? CC.MAGIC_MAX : 10;
-    var STAT_MIN = CC ? CC.STAT_MIN : 1;
-    var STAT_MAX = CC ? CC.STAT_MAX : 50;
-    var STAT_KEYS = CC ? CC.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-    var MAGIC_TYPE_KEYS = CC ? CC.MAGIC_TYPE_KEYS : [];
-    var MAGIC_CATEGORIES = CC ? CC.MAGIC_CATEGORIES : {};
-    var CLASS_DEFINITIONS = CC ? CC.CLASS_DEFINITIONS : [];
 
     // ============================================================
     // HELPERS
@@ -118,9 +125,9 @@
 
     function getStatFromDOM(id) {
         var el = document.getElementById(id);
-        if (!el) return STAT_DEFAULT || 10;
+        if (!el) return STAT_DEFAULT;
         var val = parseInt(el.value, 10);
-        if (isNaN(val)) return STAT_DEFAULT || 10;
+        if (isNaN(val)) return STAT_DEFAULT;
         return Math.max(STAT_MIN, Math.min(STAT_MAX, val));
     }
 
@@ -398,6 +405,7 @@
             magic[key] = getMagicFromDOM('magic-' + key);
         });
 
+        // CharacterStats.suggestMagicClass expects a character object
         var tempChar = { magic: magic };
         var suggested = CharacterStats.suggestMagicClass(tempChar);
         var display = document.getElementById('suggested-magic-class');
@@ -511,194 +519,7 @@
     }
 
     // ============================================================
-    // APPLY PHYSICAL CLASS - Uses minStats as source of truth
-    // ============================================================
-
-    function applyPhysicalClass() {
-        var select = document.getElementById('manual-class-select');
-        if (!select || !select.value) {
-            showNotification('Please select a class first.', 'warning');
-            return;
-        }
-
-        var classId = select.value;
-        var cls = CLASS_DEFINITIONS.find(function(c) { return c.id === classId; });
-        if (!cls) {
-            showNotification('Class not found.', 'error');
-            return;
-        }
-
-        // Start with base stats (minimum 10)
-        var stats = {
-            str: STAT_DEFAULT || 10,
-            dex: STAT_DEFAULT || 10,
-            con: STAT_DEFAULT || 10,
-            int: STAT_DEFAULT || 10,
-            wis: STAT_DEFAULT || 10,
-            cha: STAT_DEFAULT || 10
-        };
-
-        // ---- USE MINSTATS AS SOURCE OF TRUTH ----
-        // Apply minimum stat requirements from the class definition
-        for (var stat in cls.minStats) {
-            if (Object.prototype.hasOwnProperty.call(cls.minStats, stat)) {
-                stats[stat] = Math.max(stats[stat], cls.minStats[stat]);
-            }
-        }
-
-        // Apply secondary stats (if defined) - they get a moderate boost
-        if (cls.secondaryStats && cls.secondaryStats.length > 0) {
-            // Calculate the average secondary stat value from minStats
-            var secondaryTotal = 0;
-            var secondaryCount = 0;
-            cls.secondaryStats.forEach(function(stat) {
-                if (cls.minStats[stat] !== undefined) {
-                    secondaryTotal += cls.minStats[stat];
-                    secondaryCount++;
-                }
-            });
-            
-            var secondaryBase = secondaryCount > 0 ? Math.round(secondaryTotal / secondaryCount) : 12;
-            
-            // Apply to secondary stats that don't already exceed the base
-            cls.secondaryStats.forEach(function(stat) {
-                if (stats[stat] < secondaryBase) {
-                    stats[stat] = secondaryBase;
-                }
-            });
-        }
-
-        // ---- DISTRIBUTE REMAINING POINTS ----
-        // Calculate total invested vs target total
-        var investedTotal = 0;
-        STAT_KEYS.forEach(function(stat) {
-            investedTotal += stats[stat];
-        });
-
-        // Target: 10 + 6 bonus points distributed
-        var targetTotal = 10 * STAT_KEYS.length + 6;
-
-        // Calculate remaining points
-        var remainingPoints = Math.max(0, targetTotal - investedTotal);
-
-        // Prioritise stat distribution: primary stats first, then secondary, then others
-        var priorityStats = [];
-        cls.primaryStats.forEach(function(s) {
-            if (priorityStats.indexOf(s) === -1) {
-                priorityStats.push(s);
-            }
-        });
-        if (cls.secondaryStats) {
-            cls.secondaryStats.forEach(function(s) {
-                if (priorityStats.indexOf(s) === -1) {
-                    priorityStats.push(s);
-                }
-            });
-        }
-        STAT_KEYS.forEach(function(s) {
-            if (priorityStats.indexOf(s) === -1) {
-                priorityStats.push(s);
-            }
-        });
-
-        while (remainingPoints > 0) {
-            for (var i = 0; i < priorityStats.length && remainingPoints > 0; i++) {
-                var stat = priorityStats[i];
-                var bonus = Math.min(remainingPoints, Math.floor(Math.random() * 2) + 1);
-                stats[stat] += bonus;
-                remainingPoints -= bonus;
-            }
-        }
-
-        // ---- APPLY TO DOM ----
-        STAT_KEYS.forEach(function(stat) {
-            setFieldValue('char-' + stat, stats[stat]);
-        });
-
-        updateClassSuggestion();
-        showNotification('Applied ' + cls.label + ' class requirements!', 'success');
-    }
-
-    // ============================================================
-    // APPLY MAGIC CLASS
-    // ============================================================
-
-    function applyMagicClass() {
-        var select = document.getElementById('manual-magic-class-select');
-        if (!select || !select.value) {
-            showNotification('Please select a magic class first.', 'warning');
-            return;
-        }
-
-        var classType = select.value;
-        var magic = {};
-        var allKeys = MAGIC_TYPE_KEYS.slice();
-        allKeys.forEach(function(key) {
-            magic[key] = 0;
-        });
-
-        var classMap = {
-            'elementalist': { category: 'elemental', primary: null, label: 'Elementalist' },
-            'geomancer': { category: 'elemental', primary: 'earth', label: 'Geomancer' },
-            'hydromancer': { category: 'elemental', primary: 'water', label: 'Hydromancer' },
-            'pyromancer': { category: 'elemental', primary: 'fire', label: 'Pyromancer' },
-            'aeromancer': { category: 'elemental', primary: 'air', label: 'Aeromancer' },
-            'ferromancer': { category: 'elemental', primary: 'metal', label: 'Ferromancer' },
-            'dendromancer': { category: 'elemental', primary: 'wood', label: 'Dendromancer' },
-            'body_mage': { category: 'body', primary: null, label: 'Body Mage' },
-            'hemomancer': { category: 'body', primary: 'blood', label: 'Hemomancer' },
-            'osteomancer': { category: 'body', primary: 'bone', label: 'Osteomancer' },
-            'psychomancer': { category: 'body', primary: 'mind', label: 'Psychomancer' },
-            'morphomancer': { category: 'body', primary: 'morphic', label: 'Morphomancer' },
-            'vitalmancer': { category: 'body', primary: 'life', label: 'Vitalmancer' },
-            'necromancer': { category: 'body', primary: 'death', label: 'Necromancer' },
-            'aether_mage': { category: 'aether', primary: null, label: 'Aether Mage' },
-            'spatiomancer': { category: 'aether', primary: 'space', label: 'Spatiomancer' },
-            'chronomancer': { category: 'aether', primary: 'time', label: 'Chronomancer' },
-            'dimensionist': { category: 'aether', primary: 'dimension', label: 'Dimensionist' },
-            'voidmancer': { category: 'aether', primary: 'void', label: 'Voidmancer' },
-            'reality_weaver': { category: 'aether', primary: 'reality', label: 'Reality Weaver' },
-            'transference_mage': { category: 'aether', primary: 'transference', label: 'Transference Mage' }
-        };
-
-        var config = classMap[classType];
-        if (!config) {
-            showNotification('Unknown magic class.', 'error');
-            return;
-        }
-
-        var category = config.category;
-        var primary = config.primary;
-        var types = getMagicCategoryTypes(category);
-
-        types.forEach(function(key) {
-            magic[key] = Math.floor(Math.random() * 3) + 5;
-        });
-
-        if (primary && magic[primary] !== undefined) {
-            magic[primary] = Math.floor(Math.random() * 3) + 8;
-        }
-
-        allKeys.forEach(function(key) {
-            if (magic[key] === 0) {
-                magic[key] = Math.floor(Math.random() * 3) + 1;
-            }
-        });
-
-        allKeys.forEach(function(key) {
-            var input = document.getElementById('magic-' + key);
-            if (input) {
-                input.value = magic[key];
-            }
-        });
-
-        updateMagicClassSuggestion();
-        updateMagicPowerDisplay();
-        showNotification('Applied ' + config.label + ' magic distribution!', 'success');
-    }
-
-    // ============================================================
-    // EDIT SPECIAL MOVE - Opens edit modal
+    // EDIT SPECIAL MOVE - Opens edit modal using Modal utility
     // ============================================================
 
     function editSpecialMove(charId, type, index) {
@@ -748,14 +569,10 @@
         var moveName = move && move.name ? move.name : '';
         var moveDesc = move && move.description ? move.description : '';
 
-        // Use DomUtils for safe DOM creation
-        var modal = document.createElement('div');
-        modal.className = 'modal';
-        modal.style.display = 'flex';
+        // Use Modal utility for lifecycle management
+        var modal = Modal.createModal('modal-edit-special-move');
 
-        var modalContent = document.createElement('div');
-        modalContent.className = 'modal-content small';
-
+        // Build modal content using DomUtils for safety
         var header = document.createElement('div');
         header.className = 'modal-header';
 
@@ -766,16 +583,13 @@
         var closeBtn = document.createElement('button');
         closeBtn.className = 'close-modal';
         closeBtn.textContent = '×';
-        closeBtn.style.background = 'none';
-        closeBtn.style.border = 'none';
-        closeBtn.style.color = 'var(--text-dim)';
-        closeBtn.style.fontSize = '1.2rem';
-        closeBtn.style.cursor = 'pointer';
+        closeBtn.setAttribute('aria-label', 'Close');
         header.appendChild(closeBtn);
 
         var body = document.createElement('div');
         body.className = 'modal-body';
 
+        // Name field
         var nameLabel = document.createElement('label');
         nameLabel.textContent = 'Move Name';
         nameLabel.style.cssText = 'display:block;font-size:0.65rem;color:var(--text-dim);margin-bottom:2px;';
@@ -785,9 +599,11 @@
         nameInput.type = 'text';
         nameInput.id = 'edit-move-name';
         nameInput.value = moveName;
+        nameInput.placeholder = 'Enter move name';
         nameInput.style.cssText = 'width:100%;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;margin-bottom:8px;';
         body.appendChild(nameInput);
 
+        // Description field
         var descLabel = document.createElement('label');
         descLabel.textContent = 'Description (optional)';
         descLabel.style.cssText = 'display:block;font-size:0.65rem;color:var(--text-dim);margin-bottom:2px;';
@@ -796,10 +612,12 @@
         var descInput = document.createElement('textarea');
         descInput.id = 'edit-move-desc';
         descInput.value = moveDesc;
+        descInput.placeholder = 'Enter move description';
         descInput.rows = 3;
         descInput.style.cssText = 'width:100%;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;font-family:Inter,sans-serif;resize:vertical;min-height:50px;margin-bottom:8px;';
         body.appendChild(descInput);
 
+        // Actions
         var actions = document.createElement('div');
         actions.className = 'form-actions';
         actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
@@ -820,13 +638,28 @@
 
         body.appendChild(actions);
 
-        modalContent.appendChild(header);
-        modalContent.appendChild(body);
-        modal.appendChild(modalContent);
-        document.body.appendChild(modal);
+        var content = document.createElement('div');
+        content.className = 'modal-content small';
+        content.appendChild(header);
+        content.appendChild(body);
+        modal.appendChild(content);
+
+        // Setup modal behavior
+        Modal.modalSetup(modal);
+
+        // Show modal
+        Modal.showModal(modal);
+
+        // Focus name input after render
+        setTimeout(function() {
+            nameInput.focus();
+            nameInput.select();
+        }, 50);
+
+        // ---- Event Handlers ----
 
         function closeModal() {
-            if (modal.parentNode) modal.remove();
+            Modal.closeModal(modal);
         }
 
         function saveMove() {
@@ -838,7 +671,6 @@
                 return;
             }
 
-            // Use the ID-based update API from CharacterStats
             if (CharacterStats && typeof CharacterStats.updateSpecialMove === 'function') {
                 CharacterStats.updateSpecialMove(charId, type, idx, newName, newDesc)
                     .then(function(success) {
@@ -852,22 +684,24 @@
             }
         }
 
-        closeBtn.onclick = closeModal;
-        cancelBtn.onclick = closeModal;
-        saveBtn.onclick = saveMove;
+        // Close button
+        closeBtn.addEventListener('click', closeModal);
 
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) closeModal();
-        });
+        // Cancel button
+        cancelBtn.addEventListener('click', closeModal);
 
+        // Save button
+        saveBtn.addEventListener('click', saveMove);
+
+        // Enter key on name input
         nameInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') saveMove();
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                saveMove();
+            }
         });
 
-        setTimeout(function() {
-            nameInput.focus();
-            nameInput.select();
-        }, 50);
+        // Escape key is handled by Modal.modalSetup
     }
 
     // ============================================================
@@ -875,15 +709,15 @@
     // ============================================================
 
     function getMagicTypeKeys() {
-        if (CC && typeof CC.getMagicTypeKeys === 'function') {
-            return CC.getMagicTypeKeys();
+        if (CharacterConstants && typeof CharacterConstants.getMagicTypeKeys === 'function') {
+            return CharacterConstants.getMagicTypeKeys();
         }
         return MAGIC_TYPE_KEYS.slice();
     }
 
     function getMagicCategoryTypes(category) {
-        if (CC && typeof CC.getMagicCategoryTypes === 'function') {
-            return CC.getMagicCategoryTypes(category);
+        if (CharacterConstants && typeof CharacterConstants.getMagicCategoryTypes === 'function') {
+            return CharacterConstants.getMagicCategoryTypes(category);
         }
         var cat = MAGIC_CATEGORIES[category];
         return cat ? cat.types.slice() : [];
@@ -911,10 +745,6 @@
         // Special moves rendering
         renderSpecialMoves: renderSpecialMoves,
 
-        // Apply functions
-        applyPhysicalClass: applyPhysicalClass,
-        applyMagicClass: applyMagicClass,
-
         // Edit modal
         editSpecialMove: editSpecialMove,
 
@@ -926,7 +756,8 @@
         STAT_KEYS: STAT_KEYS,
         MAGIC_MAX: MAGIC_MAX,
         STAT_MIN: STAT_MIN,
-        STAT_MAX: STAT_MAX
+        STAT_MAX: STAT_MAX,
+        STAT_DEFAULT: STAT_DEFAULT
     };
 
 })();
