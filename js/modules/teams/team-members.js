@@ -1,13 +1,12 @@
 /**
  * js/modules/teams/team-members.js - Team Member Management
- * Handles member status, eligibility, and rendering
+ * Handles member status, eligibility, and candidate selection
  * Path: js/modules/teams/team-members.js
  * 
  * This module is responsible for:
  *   - Determining member status at a given period (historical timeline engine)
  *   - Determining character eligibility for teams
- *   - Rendering member lists (returns HTML)
- *   - Providing eligibility status for UI display
+ *   - Providing eligibility status for UI consumption
  * 
  * IMPORTANT: This module is READ-ONLY for data operations.
  * All mutations are delegated to TeamCore.
@@ -17,7 +16,7 @@
  *   - Candidate characters: Those whose career status at a SPECIFIC PERIOD
  *     makes them appropriate for a team type. This is PERIOD-AWARE.
  *   - Eligibility status: Whether a candidate can be added to a specific team
- *     at a specific period, with appropriate UI labels and styling
+ *     at a specific period, with appropriate UI labels
  * 
  * HISTORICAL TIMELINE ENGINE:
  *   - getStatusAtPeriod() is timeline-aware: it answers "what was this
@@ -38,18 +37,13 @@
  *   - Callers are responsible for saveData() after mutations
  *   - TeamCore owns all member mutations
  * 
- * SECURITY:
- *   - All user-controlled data is escaped before HTML insertion
- *   - Role names are escaped
- *   - Character names are escaped
- * 
  * DEPENDENCIES:
  *   - window.TeamCore - Core team operations (required)
  *   - window.TeamQueries - Team query operations (required)
- *   - window.CALENDAR_CONSTANTS - Week/year constants (from constants.js)
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.DomUtils (from dom-utils.js)
- *   - window.ValidationUtils (from validation-utils.js)
+ *   - window.CALENDAR_CONSTANTS - Week/year constants (required)
+ *   - window.CharacterQueries - Character data (required)
+ *   - window.ValidationUtils - Period parsing (required)
+ *   - window.CharacterConstants - Character status vocabulary (required)
  */
 
 (function() {
@@ -60,13 +54,26 @@
         return;
     }
 
+    // ============================================================
+    // DEPENDENCY CHECK - NO FALLBACKS
+    // ============================================================
+
     if (!window.TeamCore) {
-        console.error('TeamMembers: TeamCore is required but not loaded.');
         return;
     }
-
     if (!window.TeamQueries) {
-        console.error('TeamMembers: TeamQueries is required but not loaded.');
+        return;
+    }
+    if (!window.CALENDAR_CONSTANTS) {
+        return;
+    }
+    if (!window.CharacterQueries) {
+        return;
+    }
+    if (!window.ValidationUtils) {
+        return;
+    }
+    if (!window.CharacterConstants) {
         return;
     }
 
@@ -78,76 +85,25 @@
 
     var TeamCore = window.TeamCore;
     var TeamQueries = window.TeamQueries;
-    var CALENDAR = window.CALENDAR_CONSTANTS || {};
-    var CharacterQueries = window.CharacterQueries || window;
-    var DomUtils = window.DomUtils || window;
-    var ValidationUtils = window.ValidationUtils || window;
+    var CALENDAR = window.CALENDAR_CONSTANTS;
+    var CharacterQueries = window.CharacterQueries;
+    var ValidationUtils = window.ValidationUtils;
+    var CharacterConstants = window.CharacterConstants;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
-    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
-    var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
-    var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
-
-    var ALLOWED_NON_CIVILIAN = ['trainee', 'rookie', 'junior', 'senior', 'instructor', 'support'];
-
-    // ============================================================
-    // HTML ESCAPING - Use DomUtils when available
-    // ============================================================
-
-    function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        // Fallback
-        return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
-
-    // ============================================================
-    // CHARACTER HELPERS - Uses CharacterQueries
-    // ============================================================
-
-    function getCharacterName(charId) {
-        if (CharacterQueries && typeof CharacterQueries.getDisplayName === 'function') {
-            var char = CharacterQueries.getCharacterById(charId);
-            return char ? CharacterQueries.getDisplayName(char) : 'Unknown';
-        }
-        return 'Unknown';
-    }
-
-    function getCharacterAge(charId) {
-        if (CharacterQueries && typeof CharacterQueries.getCharacterAge === 'function') {
-            var char = CharacterQueries.getCharacterById(charId);
-            return char ? CharacterQueries.getCharacterAge(char) : '-';
-        }
-        return '-';
-    }
-
-    function getCharacterCurrentStatus(charId) {
-        if (CharacterQueries && typeof CharacterQueries.getCurrentStatus === 'function') {
-            var char = CharacterQueries.getCharacterById(charId);
-            return char ? CharacterQueries.getCurrentStatus(char) : '';
-        }
-        return '';
-    }
+    var MIN_WEEK = CALENDAR.MIN_WEEK;
+    var MAX_WEEK = CALENDAR.MAX_WEEK;
+    var MIN_YEAR = CALENDAR.MIN_YEAR;
+    var MAX_YEAR = CALENDAR.MAX_YEAR;
 
     // ============================================================
     // PERIOD PARSING - Delegate to ValidationUtils
     // ============================================================
 
     function parseNumericPeriod(value) {
-        if (ValidationUtils && typeof ValidationUtils.parseStrictPositivePeriod === 'function') {
-            return ValidationUtils.parseStrictPositivePeriod(value);
-        }
-        // Fallback
         if (value === undefined || value === null || value === '') {
             return null;
         }
@@ -180,7 +136,9 @@
      */
     function parseTypedPeriod(value, teamType) {
         var num = parseNumericPeriod(value);
-        if (num === null) return null;
+        if (num === null) {
+            return null;
+        }
 
         if (teamType === 'academic') {
             if (num >= MIN_WEEK && num <= MAX_WEEK) {
@@ -193,25 +151,6 @@
             }
             return null;
         }
-    }
-
-    // ============================================================
-    // PERIOD COMPARISON - Type-aware
-    // ============================================================
-
-    /**
-     * Compare two periods of potentially different types.
-     * Returns true if periodA <= periodB.
-     * 
-     * IMPORTANT: This only supports same-unit comparison.
-     * Week vs year comparison is NOT supported (returns false).
-     */
-    function isPeriodLessThanOrEqual(periodA, periodB, unitA, unitB) {
-        // Different units cannot be compared directly
-        if (unitA !== unitB) {
-            return false;
-        }
-        return periodA <= periodB;
     }
 
     // ============================================================
@@ -234,7 +173,9 @@
      * @returns {string} Status string
      */
     function getStatusAtPeriod(member, period, teamType) {
-        if (!member || typeof member !== 'object') return 'unknown';
+        if (!member || typeof member !== 'object') {
+            return 'unknown';
+        }
 
         // Parse period with type awareness
         var typedPeriod = parseTypedPeriod(period, teamType);
@@ -245,20 +186,17 @@
         var periodNum = typedPeriod.value;
         var periodUnit = typedPeriod.unit;
 
-        var char = CharacterQueries.getCharacterById(member.characterId);
+        var character = CharacterQueries.getCharacterById(member.characterId);
 
         // ============================================================
         // DECEASED CHECK - Only for year-based periods
         // ============================================================
-        if (char && char.deceased && periodUnit === 'year') {
-            var deathYear = parsePositivePeriod(char.deathYear);
+        if (character && character.deceased && periodUnit === 'year') {
+            var deathYear = parsePositivePeriod(character.deathYear);
             if (deathYear !== null) {
-                // Death year is a year, compare against year-based period
                 if (deathYear <= periodNum) {
                     return 'deceased';
                 }
-                // Death occurs in the future relative to this period
-                // Continue to membership check
             } else {
                 // Death date is unknown. Do not assume the character was dead
                 // at this historical period. Continue to membership history.
@@ -268,9 +206,9 @@
         // ============================================================
         // ELIMINATION CHECK - Only for week-based periods (academic)
         // ============================================================
-        if (periodUnit === 'week' && char && char.eliminatedWeeks && Array.isArray(char.eliminatedWeeks)) {
-            for (var i = 0; i < char.eliminatedWeeks.length; i++) {
-                var elimWeek = parsePositivePeriod(char.eliminatedWeeks[i]);
+        if (periodUnit === 'week' && character && character.eliminatedWeeks && Array.isArray(character.eliminatedWeeks)) {
+            for (var i = 0; i < character.eliminatedWeeks.length; i++) {
+                var elimWeek = parsePositivePeriod(character.eliminatedWeeks[i]);
                 if (elimWeek !== null && elimWeek <= periodNum) {
                     return 'eliminated';
                 }
@@ -280,19 +218,14 @@
         // ============================================================
         // MEMBERSHIP CHECK - Period type aware
         // ============================================================
-        var join = parsePositivePeriod(member.joinPeriod);
-        var leave = parsePositivePeriod(member.leavePeriod);
 
-        // If no join period, treat as unknown
-        if (join === null) {
+        // Check if join period exists and is valid
+        var hasJoin = member.joinPeriod !== undefined && member.joinPeriod !== null && String(member.joinPeriod).trim() !== '';
+        if (!hasJoin) {
             return 'unknown';
         }
 
-        // Parse join/leave with type awareness
         var typedJoin = parseTypedPeriod(member.joinPeriod, teamType);
-        var typedLeave = member.leavePeriod ? parseTypedPeriod(member.leavePeriod, teamType) : null;
-
-        // If join period doesn't match the team's period type, treat as unknown
         if (!typedJoin || typedJoin.unit !== periodUnit) {
             return 'unknown';
         }
@@ -302,14 +235,16 @@
             return 'future';
         }
 
-        // Active member: join <= period and (no leave or leave >= period)
-        if (typedLeave === null) {
+        // Check leave period
+        var hasLeave = member.leavePeriod !== undefined && member.leavePeriod !== null && String(member.leavePeriod).trim() !== '';
+
+        if (!hasLeave) {
             return 'active';
         }
 
-        // If leave exists but doesn't match unit type, treat as open-ended
-        if (typedLeave.unit !== periodUnit) {
-            return 'active';
+        var typedLeave = parseTypedPeriod(member.leavePeriod, teamType);
+        if (!typedLeave || typedLeave.unit !== periodUnit) {
+            return 'unknown';
         }
 
         // leavePeriod is INCLUSIVE: member remains active during leavePeriod
@@ -317,7 +252,6 @@
             return 'active';
         }
 
-        // Otherwise, they've left
         return 'left';
     }
 
@@ -334,40 +268,33 @@
     }
 
     // ============================================================
-    // ELIGIBILITY STATUS - For UI display
+    // ELIGIBILITY STATUS - Domain status, not presentation
     // ============================================================
 
     /**
      * Get eligibility status for a character in a team at a specific period.
-     * Returns { label, disabled, style } for UI rendering.
-     * This is the SINGLE AUTHORITY for eligibility classification.
+     * Returns domain status: 'available' | 'in-team' | 'future-member' | 'former-member' |
+     *   'deceased' | 'eliminated' | 'in-other-team' | 'unknown'
      * 
+     * This is the SINGLE AUTHORITY for eligibility classification.
      * Uses getStatusAtPeriod() as the underlying temporal authority.
      * 
      * @param {object} team - Team object
-     * @param {object} char - Character object
+     * @param {object} character - Character object
      * @param {number|string} currentPeriod - Current period
-     * @returns {object} { label, disabled, style }
+     * @returns {string} Status string
      */
-    function getEligibilityStatus(team, char, currentPeriod) {
-        if (!team || !char) {
-            return {
-                label: 'Unavailable',
-                disabled: true,
-                style: 'color:var(--text-dim);'
-            };
+    function getEligibilityStatus(team, character, currentPeriod) {
+        if (!team || !character) {
+            return 'unknown';
         }
 
-        var charId = char.id;
+        var charId = character.id;
 
         // Parse period with type awareness
         var typedPeriod = parseTypedPeriod(currentPeriod, team.type);
         if (!typedPeriod) {
-            return {
-                label: 'Invalid period',
-                disabled: true,
-                style: 'color:var(--text-dim);'
-            };
+            return 'unknown';
         }
 
         var periodNum = typedPeriod.value;
@@ -376,9 +303,13 @@
         // Find the actual member record if the character is in this team
         var existingMember = null;
         if (team.members && Array.isArray(team.members)) {
-            existingMember = team.members.find(function(member) {
-                return member && String(member.characterId) === String(charId);
-            });
+            for (var i = 0; i < team.members.length; i++) {
+                var m = team.members[i];
+                if (m && String(m.characterId) === String(charId)) {
+                    existingMember = m;
+                    break;
+                }
+            }
         }
 
         // If character is in this team, check their status using the canonical timeline engine
@@ -390,124 +321,62 @@
             );
 
             if (memberStatus === 'active') {
-                return {
-                    label: '✓ In Team',
-                    disabled: true,
-                    style: 'color:var(--accent);font-weight:bold;'
-                };
+                return 'in-team';
             }
 
             if (memberStatus === 'future') {
-                return {
-                    label: '⏳ Future Member',
-                    disabled: true,
-                    style: 'color:var(--warning);'
-                };
+                return 'future-member';
             }
 
             if (memberStatus === 'deceased') {
-                return {
-                    label: '✝ Deceased (Former)',
-                    disabled: true,
-                    style: 'color:var(--danger);text-decoration:line-through;'
-                };
+                return 'deceased';
             }
 
             if (memberStatus === 'eliminated') {
-                return {
-                    label: '⚠ Eliminated (Former)',
-                    disabled: true,
-                    style: 'color:var(--danger);'
-                };
+                return 'eliminated';
             }
 
             if (memberStatus === 'unknown') {
-                return {
-                    label: '? Unknown Status',
-                    disabled: true,
-                    style: 'color:var(--text-dim);font-style:italic;'
-                };
+                return 'unknown';
             }
 
-            return {
-                label: '↩ Former Member',
-                disabled: true,
-                style: 'color:var(--text-dim);font-style:italic;'
-            };
+            return 'former-member';
         }
 
         // Character is not in this team - check if they can be added
 
         // Character deceased (timeline-aware, only for year-based periods)
-        if (char.deceased && periodUnit === 'year') {
-            var deathYear = parsePositivePeriod(char.deathYear);
+        if (character.deceased && periodUnit === 'year') {
+            var deathYear = parsePositivePeriod(character.deathYear);
             if (deathYear !== null) {
                 if (deathYear <= periodNum) {
-                    return {
-                        label: '✝ Deceased',
-                        disabled: true,
-                        style: 'color:var(--danger);text-decoration:line-through;'
-                    };
+                    return 'deceased';
                 }
-                // If death is in the future, treat as available
-            } else {
-                // Death date unknown - treat as available (don't block)
-                // The user can decide if this is appropriate
             }
         }
 
         // Character eliminated (timeline-aware, only for week-based periods)
-        if (periodUnit === 'week' && char.eliminatedWeeks && Array.isArray(char.eliminatedWeeks)) {
-            for (var i = 0; i < char.eliminatedWeeks.length; i++) {
-                var elimWeek = parsePositivePeriod(char.eliminatedWeeks[i]);
+        if (periodUnit === 'week' && character.eliminatedWeeks && Array.isArray(character.eliminatedWeeks)) {
+            for (var j = 0; j < character.eliminatedWeeks.length; j++) {
+                var elimWeek = parsePositivePeriod(character.eliminatedWeeks[j]);
                 if (elimWeek !== null && elimWeek <= periodNum) {
-                    return {
-                        label: '⚠ Eliminated',
-                        disabled: true,
-                        style: 'color:var(--danger);'
-                    };
+                    return 'eliminated';
                 }
             }
         }
 
-        // Check if character is active/future in another team
-        var teams = TeamQueries.getAllOperationalTeams();
-
-        if (Array.isArray(teams)) {
-            for (var i = 0; i < teams.length; i++) {
-                var otherTeam = teams[i];
-                if (!otherTeam || typeof otherTeam !== 'object') continue;
-                if (String(otherTeam.id) === String(team.id)) continue;
-                if (otherTeam.status === 'deleted') continue;
-                if (!Array.isArray(otherTeam.members)) continue;
-
-                var otherMember = otherTeam.members.find(function(member) {
-                    return member && String(member.characterId) === String(charId);
-                });
-
-                if (otherMember) {
-                    var otherStatus = getStatusAtPeriod(
-                        otherMember,
-                        currentPeriod,
-                        otherTeam.type
-                    );
-                    if (otherStatus === 'active' || otherStatus === 'future') {
-                        return {
-                            label: '⊗ In Other Team',
-                            disabled: true,
-                            style: 'color:var(--text-dim);'
-                        };
-                    }
-                }
+        // Check if character is active in another team at this period
+        var otherTeams = TeamQueries.getTeamsForCharacter(charId, currentPeriod, null);
+        for (var k = 0; k < otherTeams.length; k++) {
+            var otherTeam = otherTeams[k];
+            if (String(otherTeam.id) === String(team.id)) {
+                continue;
             }
+            return 'in-other-team';
         }
 
         // Character is available
-        return {
-            label: '✓ Available',
-            disabled: false,
-            style: 'color:var(--accent);'
-        };
+        return 'available';
     }
 
     // ============================================================
@@ -529,41 +398,50 @@
     function getCandidateCharactersAtPeriod(teamType, period) {
         var data = window.data || {};
         var chars = data.characters || [];
-        if (!Array.isArray(chars)) return [];
+        if (!Array.isArray(chars)) {
+            return [];
+        }
 
         // Validate period for team type
         var typedPeriod = parseTypedPeriod(period, teamType);
-        if (!typedPeriod) return [];
+        if (!typedPeriod) {
+            return [];
+        }
 
         var result = [];
 
-        chars.forEach(function(c) {
-            if (!c || typeof c !== 'object') return;
+        // Get eligible statuses from CharacterConstants
+        var eligibleStatuses = [];
+        if (teamType === 'academic') {
+            eligibleStatuses = CharacterConstants.STUDENT_STATUSES || ['trainee', 'rookie', 'junior'];
+        } else if (teamType === 'civilian') {
+            eligibleStatuses = ['civilian'];
+        } else {
+            eligibleStatuses = CharacterConstants.NON_CIVILIAN_STATUSES || ['trainee', 'rookie', 'junior', 'senior', 'instructor', 'support'];
+        }
 
-            var status = CharacterQueries.getCurrentStatus(c);
+        for (var i = 0; i < chars.length; i++) {
+            var character = chars[i];
+            if (!character || typeof character !== 'object') {
+                continue;
+            }
 
-            if (teamType === 'academic') {
-                if (status === 'trainee' || status.startsWith('trainee')) {
-                    result.push(c);
-                }
-            } else if (teamType === 'civilian') {
-                if (status === 'civilian') {
-                    result.push(c);
-                }
-            } else {
-                // Professional, temporary, or other non-academic teams
-                var isAllowed = false;
-                for (var i = 0; i < ALLOWED_NON_CIVILIAN.length; i++) {
-                    if (status === ALLOWED_NON_CIVILIAN[i] || status.startsWith(ALLOWED_NON_CIVILIAN[i])) {
-                        isAllowed = true;
-                        break;
-                    }
-                }
-                if (isAllowed) {
-                    result.push(c);
+            // TODO: Replace with CharacterQueries.getStatusAtPeriod when available
+            // Currently using current status as fallback
+            var status = CharacterQueries.getCurrentStatus(character);
+
+            var isEligible = false;
+            for (var j = 0; j < eligibleStatuses.length; j++) {
+                if (status === eligibleStatuses[j] || status.startsWith(eligibleStatuses[j])) {
+                    isEligible = true;
+                    break;
                 }
             }
-        });
+
+            if (isEligible) {
+                result.push(character);
+            }
+        }
 
         // Sort by display name
         result.sort(function(a, b) {
@@ -585,9 +463,8 @@
      * @returns {array} Array of character objects
      */
     function getCandidateCharacters(teamType) {
-        // Default to current year/period
         var data = window.data || {};
-        var defaultPeriod = teamType === 'academic' ? 1 : (data.currentYear || new Date().getFullYear());
+        var defaultPeriod = teamType === 'academic' ? 1 : (data.currentYear || MIN_YEAR);
         return getCandidateCharactersAtPeriod(teamType, defaultPeriod);
     }
 
@@ -600,161 +477,70 @@
     }
 
     // ============================================================
-    // RENDER MEMBERS LIST
+    // PERIOD HELPERS
     // ============================================================
 
     /**
-     * Render members list for a team.
-     * PURE: Returns HTML string. Does NOT mutate data or DOM.
-     * 
-     * @param {object} team - Team object
-     * @param {number|string} filterPeriod - Current period
-     * @returns {string} HTML string
+     * Check if a period is valid for a team type.
+     * @param {string|number} period - Period to validate
+     * @param {string} teamType - Team type
+     * @returns {boolean} True if valid
      */
-    function renderList(team, filterPeriod) {
-        if (!team || !team.members || team.members.length === 0) {
-            return '<p class="empty-state">No members in this team</p>';
+    function isValidPeriod(period, teamType) {
+        if (teamType === 'academic') {
+            return isValidAcademicWeek(period);
         }
+        return isValidYear(period);
+    }
 
-        var typedPeriod = parseTypedPeriod(filterPeriod, team.type);
-        if (!typedPeriod) {
-            return '<p class="empty-state">Invalid period for this team type</p>';
+    /**
+     * Get the valid period range for a team type.
+     * @param {string} teamType - Team type
+     * @returns {object} { min, max, label }
+     */
+    function getPeriodRange(teamType) {
+        if (teamType === 'academic') {
+            return {
+                min: MIN_WEEK,
+                max: MAX_WEEK,
+                label: 'Week'
+            };
         }
+        return {
+            min: MIN_YEAR,
+            max: MAX_YEAR,
+            label: 'Year'
+        };
+    }
 
-        var periodNum = typedPeriod.value;
-        var periodUnit = typedPeriod.unit;
-        var periodLabel = team.type === 'academic' ? 'Wk' : 'Period';
-
-        var html = '';
-
-        // Separate current (active/future) and historical (former) members
-        var currentMembers = [];
-        var historicalMembers = [];
-
-        team.members.forEach(function(member, index) {
-            var status = getStatusAtPeriod(member, filterPeriod, team.type);
-
-            if (status === 'active' || status === 'future') {
-                currentMembers.push({ member: member, index: index, status: status });
-            } else {
-                historicalMembers.push({ member: member, index: index, status: status });
-            }
-        });
-
-        // Sort current by join period
-        currentMembers.sort(function(a, b) {
-            var aJoin = parsePositivePeriod(a.member.joinPeriod) || 0;
-            var bJoin = parsePositivePeriod(b.member.joinPeriod) || 0;
-            return aJoin - bJoin;
-        });
-
-        // Sort historical by priority
-        var priorityOrder = { 'left': 0, 'eliminated': 1, 'deceased': 2, 'unknown': 3 };
-        historicalMembers.sort(function(a, b) {
-            var aPriority = priorityOrder[a.status] !== undefined ? priorityOrder[a.status] : 4;
-            var bPriority = priorityOrder[b.status] !== undefined ? priorityOrder[b.status] : 4;
-            if (aPriority !== bPriority) return aPriority - bPriority;
-
-            // Fall back to character name
-            var aChar = CharacterQueries.getCharacterById(a.member.characterId);
-            var bChar = CharacterQueries.getCharacterById(b.member.characterId);
-            var aName = aChar ? CharacterQueries.getDisplayName(aChar) : 'Unknown';
-            var bName = bChar ? CharacterQueries.getDisplayName(bChar) : 'Unknown';
-            return aName.localeCompare(bName);
-        });
-
-        var allMembers = currentMembers.concat(historicalMembers);
-
-        allMembers.forEach(function(item) {
-            var member = item.member;
-            var index = item.index;
-            var status = item.status;
-            var char = CharacterQueries.getCharacterById(member.characterId);
-            var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
-            var age = char ? CharacterQueries.getCharacterAge(char) : '-';
-
-            var statusInfo = TeamCore.getMemberStatusInfo(status);
-            var statusColor = statusInfo.color;
-
-            // Build period display with proper formatting
-            var joinDisplay = member.joinPeriod || '?';
-            var leaveDisplay = member.leavePeriod || '';
-            var periodDisplay = team.type === 'academic'
-                ? 'Wk ' + joinDisplay + (leaveDisplay ? ' → Wk ' + leaveDisplay : '')
-                : joinDisplay + (leaveDisplay ? ' → ' + leaveDisplay : '');
-
-            var statusIcon = '';
-            var statusSuffix = '';
-            if (status === 'deceased') {
-                statusIcon = '✝ ';
-                statusSuffix = ' (Deceased)';
-            } else if (status === 'eliminated') {
-                statusIcon = '⚠ ';
-                statusSuffix = ' (Eliminated)';
-            } else if (status === 'left') {
-                statusIcon = '↩ ';
-                statusSuffix = ' (Former)';
-            } else if (status === 'future') {
-                statusIcon = '⏳ ';
-                statusSuffix = ' (Future)';
-            } else if (status === 'active') {
-                statusIcon = '✓ ';
-            } else if (status === 'unknown') {
-                statusIcon = '? ';
-                statusSuffix = ' (Unknown)';
-            }
-
-            // Escape all user-controlled values
-            var escapedName = escapeHtml(name);
-            var escapedRole = escapeHtml(member.role || 'Member');
-            var escapedPeriod = escapeHtml(periodDisplay);
-            var escapedAge = escapeHtml(age);
-            var escapedStatusLabel = escapeHtml(statusInfo.label);
-            var escapedCharId = escapeHtml(member.characterId);
-
-            // Use stable character ID for data attributes, not array index
-            var dataCharId = escapeHtml(member.characterId);
-
-            html += '<div class="member-entry" style="border-left:3px solid ' + statusColor + ';padding-left:8px;' +
-                (status === 'deceased' ? 'opacity:0.6;' : '') +
-                (status === 'left' ? 'opacity:0.7;' : '') +
-                (status === 'unknown' ? 'opacity:0.5;' : '') + '" data-character-id="' + dataCharId + '">' +
-                '<div class="member-info" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px;width:100%;">' +
-                '<span><strong>' + escapedName + '</strong></span>' +
-                '<span class="role" style="color:var(--accent);font-size:0.75rem;">' + escapedRole + '</span>' +
-                '<span class="years" style="color:var(--text-dim);font-size:0.7rem;">' + escapedPeriod + '</span>' +
-                '<span class="years" style="color:var(--text-dim);font-size:0.7rem;">Age: ' + escapedAge + '</span>' +
-                '<span style="color:' + statusColor + ';font-size:0.7rem;font-weight:600;">' + statusIcon + escapedStatusLabel + statusSuffix + '</span>' +
-                '<div class="member-actions" style="display:flex;gap:4px;">' +
-                '<button class="small edit-member" data-character-id="' + dataCharId + '">Edit</button>' +
-                '<button class="small danger remove-member" data-character-id="' + dataCharId + '">Remove</button>' +
-                '</div>' +
-                '</div>' +
-                '</div>';
-        });
-
-        return html;
+    /**
+     * Get the period label for a team type.
+     * @param {string} teamType - Team type
+     * @returns {string} Period label
+     */
+    function getPeriodLabel(teamType) {
+        return teamType === 'academic' ? 'Week' : 'Year';
     }
 
     // ============================================================
-    // PUBLIC API
+    // EXPOSE
     // ============================================================
 
-    var TeamMembers = {
+    window.TeamMembers = {
         // Status determination - period-aware
         getStatusAtPeriod: getStatusAtPeriod,
         getStatusAtWeek: getStatusAtWeek,
 
         // Eligibility - period-aware
         getCandidateCharactersAtPeriod: getCandidateCharactersAtPeriod,
-        getCandidateCharacters: getCandidateCharacters, // Legacy: current-status based
-        getEligibleCharacters: getEligibleCharacters, // Legacy alias
+        getCandidateCharacters: getCandidateCharacters,
+        getEligibleCharacters: getEligibleCharacters,
         getEligibilityStatus: getEligibilityStatus,
 
-        // Rendering
-        renderList: renderList,
-
-        // Validation helpers (exposed for external use)
+        // Validation helpers
+        isValidPeriod: isValidPeriod,
+        getPeriodRange: getPeriodRange,
+        getPeriodLabel: getPeriodLabel,
         isValidAcademicWeek: isValidAcademicWeek,
         isValidYear: isValidYear,
         parsePositivePeriod: parsePositivePeriod,
@@ -766,11 +552,5 @@
         MIN_YEAR: MIN_YEAR,
         MAX_YEAR: MAX_YEAR
     };
-
-    // ============================================================
-    // EXPOSE
-    // ============================================================
-
-    window.TeamMembers = TeamMembers;
 
 })();
