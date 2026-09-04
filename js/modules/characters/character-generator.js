@@ -16,10 +16,12 @@
  *   - No DOM manipulation
  *   - No persistence calls
  *   - Results can be used by CharacterForm or CharacterStats
+ *   - USES IdUtils for ID generation (if available)
+ *   - USES CharacterConstants for domain constants
  * 
  * DEPENDENCIES:
  *   - window.CharacterConstants (from character-constants.js)
- *   - window.CoreUtils (from core-utils.js)
+ *   - window.IdUtils (from id-utils.js) - optional, for ID generation
  */
 
 (function() {
@@ -32,18 +34,21 @@
     window.__characterGeneratorLoaded = true;
 
     // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var IdUtils = window.IdUtils || window;
+    var CC = window.CharacterConstants;
+
+    // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
-        if (!window.CharacterConstants) {
+        if (!CC) {
             missing.push('CharacterConstants');
-        }
-
-        if (!window.CoreUtils || typeof window.CoreUtils.generateId !== 'function') {
-            missing.push('CoreUtils.generateId');
         }
 
         if (missing.length > 0) {
@@ -263,9 +268,7 @@
      * @returns {object} Magic proficiencies object
      */
     function generateMagic(category) {
-        var magicTypeKeys = window.CharacterConstants 
-            ? window.CharacterConstants.MAGIC_TYPE_KEYS 
-            : [];
+        var magicTypeKeys = CC ? CC.MAGIC_TYPE_KEYS : [];
 
         if (magicTypeKeys.length === 0) {
             // Fallback if constants not available
@@ -275,8 +278,8 @@
         var magic = {};
         var categoryTypes = [];
 
-        if (category && window.CharacterConstants) {
-            var cat = window.CharacterConstants.MAGIC_CATEGORIES[category];
+        if (category && CC && CC.MAGIC_CATEGORIES) {
+            var cat = CC.MAGIC_CATEGORIES[category];
             if (cat) {
                 categoryTypes = cat.types.slice();
             }
@@ -495,6 +498,21 @@
         }
     }
 
+    /**
+     * Generate a unique ID for a character.
+     * Uses IdUtils if available, falls back to timestamp.
+     * @param {string} prefix - ID prefix (default: 'char')
+     * @returns {string} Unique ID
+     */
+    function generateId(prefix) {
+        prefix = prefix || 'char';
+        if (IdUtils && typeof IdUtils.generateId === 'function') {
+            return IdUtils.generateId(prefix);
+        }
+        // Fallback if IdUtils not available
+        return prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    }
+
     // ============================================================
     // EXPOSE
     // ============================================================
@@ -511,6 +529,7 @@
 
         // Utility
         getDisplayName: getDisplayName,
+        generateId: generateId,
         pickRandom: pickRandom,
         randomInt: randomInt,
 
