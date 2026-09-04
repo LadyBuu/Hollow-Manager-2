@@ -23,6 +23,7 @@
  *   USES NotificationSystem for notifications
  *   USES ActivityLog for activity logging
  *   USES DomUtils for safe DOM operations
+ *   USES TournamentQueries for tournament lookup
  * 
  * ELIMINATION SOURCES OF TRUTH:
  *   1. eliminations array - explicit elimination records (tournament or standalone)
@@ -42,6 +43,7 @@
  * 
  * DEPENDENCIES:
  *   - window.CharacterQueries (from character-queries.js)
+ *   - window.TournamentQueries (from tournaments-queries.js)
  *   - window.MutationUtils (from mutation-utils.js)
  *   - window.NotificationSystem (from notification.js)
  *   - window.ActivityLog (from activity-log.js)
@@ -61,22 +63,23 @@
     window.__characterEliminationsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries || window;
-    var MutationUtils = window.MutationUtils || window;
-    var NotificationSystem = window.NotificationSystem || window;
-    var ActivityLog = window.ActivityLog || window;
-    var DomUtils = window.DomUtils || window;
-    var CalendarConstants = window.CALENDAR_CONSTANTS || {};
+    var CharacterQueries = window.CharacterQueries;
+    var TournamentQueries = window.TournamentQueries || window;
+    var MutationUtils = window.MutationUtils;
+    var NotificationSystem = window.NotificationSystem;
+    var ActivityLog = window.ActivityLog;
+    var DomUtils = window.DomUtils;
+    var CalendarConstants = window.CALENDAR_CONSTANTS;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = CalendarConstants.MIN_WEEK || 1;
-    var MAX_WEEK = CalendarConstants.MAX_WEEK || 52;
+    var MIN_WEEK = CalendarConstants ? CalendarConstants.MIN_WEEK : 1;
+    var MAX_WEEK = CalendarConstants ? CalendarConstants.MAX_WEEK : 52;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -86,43 +89,25 @@
         var missing = [];
 
         var required = [
-            'getCurrentEditId',
-            'saveData'
+            { name: 'getCurrentEditId', obj: window, methods: ['getCurrentEditId'] },
+            { name: 'saveData', obj: window, methods: ['saveData'] },
+            { name: 'CharacterQueries', obj: CharacterQueries, methods: ['getCharacterById', 'getDisplayName'] },
+            { name: 'MutationUtils', obj: MutationUtils, methods: ['createSafeBackup', 'saveWithPromise'] },
+            { name: 'NotificationSystem', obj: NotificationSystem, methods: ['notify'] },
+            { name: 'DomUtils', obj: DomUtils, methods: ['escapeHtml'] }
         ];
 
-        required.forEach(function(name) {
-            if (name === 'saveData' && typeof window.saveData !== 'function') {
-                missing.push('saveData');
-            } else if (typeof window[name] !== 'function') {
-                missing.push(name);
+        required.forEach(function(req) {
+            if (!req.obj) {
+                missing.push(req.name + ' (not loaded)');
+                return;
             }
+            req.methods.forEach(function(method) {
+                if (typeof req.obj[method] !== 'function') {
+                    missing.push(req.name + '.' + method);
+                }
+            });
         });
-
-        // CharacterQueries is MANDATORY
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-
-        // MutationUtils is MANDATORY
-        if (!MutationUtils || typeof MutationUtils.createSafeBackup !== 'function') {
-            missing.push('MutationUtils.createSafeBackup');
-        }
-        if (MutationUtils && typeof MutationUtils.saveWithPromise !== 'function') {
-            missing.push('MutationUtils.saveWithPromise');
-        }
-
-        // NotificationSystem is MANDATORY
-        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
-            missing.push('NotificationSystem.notify');
-        }
-
-        // DomUtils is MANDATORY
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
-        }
 
         if (missing.length > 0) {
             console.warn('CharacterEliminations: Missing dependencies:', missing.join(', '));
@@ -168,15 +153,28 @@
     }
 
     // ============================================================
-    // SAFE BACKUP - Delegate to MutationUtils
+    // ACTIVITY LOGGING - Uses ActivityLog (SINGLE SOURCE OF TRUTH)
+    // ============================================================
+
+    function recordActivity(message) {
+        try {
+            if (ActivityLog && typeof ActivityLog.record === 'function') {
+                ActivityLog.record(message);
+            }
+        } catch (e) {
+            // Ignore logging errors
+        }
+    }
+
+    // ============================================================
+    // SAFE BACKUP - Uses MutationUtils (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
     function createSafeBackup(data) {
         if (MutationUtils && typeof MutationUtils.createSafeBackup === 'function') {
             return MutationUtils.createSafeBackup(data);
         }
-
-        // Emergency fallback (should never be needed)
+        // Emergency fallback (should never be reached)
         try {
             if (window.db && typeof window.db.createSafeCopy === 'function') {
                 return window.db.createSafeCopy(data);
@@ -192,24 +190,36 @@
     }
 
     // ============================================================
-    // SAFE RENDER HELPERS
+    // SAFE RENDER HELPERS (with error logging)
     // ============================================================
 
     function safeRenderCharacterList() {
         if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-            try { window.CharacterList.render(); } catch (e) { /* Ignore */ }
+            try {
+                window.CharacterList.render();
+            } catch (err) {
+                console.error('CharacterEliminations: Failed to render character list:', err);
+            }
         }
     }
 
     function safeShowCharacterForm(id) {
         if (typeof window.showCharacterForm === 'function') {
-            try { window.showCharacterForm(id); } catch (e) { /* Ignore */ }
+            try {
+                window.showCharacterForm(id);
+            } catch (err) {
+                console.error('CharacterEliminations: Failed to show character form:', err);
+            }
         }
     }
 
     function safeUpdateDashboardStats() {
         if (typeof window.updateDashboardStats === 'function') {
-            try { window.updateDashboardStats(); } catch (e) { /* Ignore */ }
+            try {
+                window.updateDashboardStats();
+            } catch (err) {
+                console.error('CharacterEliminations: Failed to update dashboard stats:', err);
+            }
         }
     }
 
@@ -238,6 +248,13 @@
     // REBUILD ELIMINATED WEEKS - Derived from eliminations
     // ============================================================
 
+    /**
+     * Rebuild the eliminatedWeeks array from eliminations.
+     * This is a DERIVED field - it should never be the source of truth.
+     * Does NOT mutate eliminations, only eliminatedWeeks.
+     * 
+     * @param {object} char - Character object
+     */
     function rebuildEliminatedWeeks(char) {
         if (!char) return;
 
@@ -274,6 +291,10 @@
     // Combines explicit elimination records with death timeline data.
     // Death with invalid deathWeek = unavailable entirely (fail-closed).
     // Accepts future weeks for timeline queries.
+    // 
+    // @param {object} char - Character object
+    // @param {number} week - Week number
+    // @returns {boolean} True if eliminated by or before the given week
     // ============================================================
 
     function isCharacterEliminatedByWeek(char, week) {
@@ -285,15 +306,14 @@
         }
 
         // Check explicit elimination records FIRST - only valid weeks
-        if (char.eliminations) {
-            for (var i = 0; i < char.eliminations.length; i++) {
-                var elimWeek = Number(char.eliminations[i].week);
-                if (Number.isInteger(elimWeek) &&
-                    elimWeek >= MIN_WEEK &&
-                    elimWeek <= MAX_WEEK &&
-                    elimWeek <= weekNum) {
-                    return true;
-                }
+        var eliminations = Array.isArray(char.eliminations) ? char.eliminations : [];
+        for (var i = 0; i < eliminations.length; i++) {
+            var elimWeek = Number(eliminations[i].week);
+            if (Number.isInteger(elimWeek) &&
+                elimWeek >= MIN_WEEK &&
+                elimWeek <= MAX_WEEK &&
+                elimWeek <= weekNum) {
+                return true;
             }
         }
 
@@ -370,10 +390,10 @@
 
         tournElims.forEach(function(elim) {
             var tournName = 'Unknown Tournament';
-            if (elim.tournamentId && data.tournaments) {
-                var tourn = data.tournaments.find(function(t) {
-                    return t && String(t.id) === String(elim.tournamentId);
-                });
+            if (elim.tournamentId) {
+                var tourn = TournamentQueries && typeof TournamentQueries.getTournamentById === 'function'
+                    ? TournamentQueries.getTournamentById(elim.tournamentId)
+                    : null;
                 if (tourn) tournName = tourn.name;
             }
 
@@ -457,7 +477,7 @@
     }
 
     // ============================================================
-    // ADD STANDALONE ELIMINATION - Fixed to use MutationUtils pattern
+    // ADD STANDALONE ELIMINATION - Full mutation pipeline
     // ============================================================
 
     function addStandaloneElimination() {
@@ -510,14 +530,14 @@
             return;
         }
 
-        // SNAPSHOT - Required, abort if fails
+        // ---- PHASE 1: SNAPSHOT - Required, abort if fails ----
         var backup = createSafeBackup(data);
         if (!backup) {
             showNotification('Unable to safely eliminate character. Please try again.', 'error');
             return;
         }
 
-        // MUTATE
+        // ---- PHASE 2: MUTATE ----
         if (!char.eliminations) char.eliminations = [];
         if (!char.eliminatedWeeks) char.eliminatedWeeks = [];
 
@@ -533,25 +553,23 @@
 
         rebuildEliminatedWeeks(char);
 
-        // PERSIST - Use saveWithPromise from MutationUtils
+        // ---- PHASE 3: PERSIST ----
         var savePromise = MutationUtils.saveWithPromise();
 
         savePromise
             .then(function() {
-                // LOG - failure-safe, persistence already succeeded
+                // ---- PHASE 4: LOG - failure-safe, persistence already succeeded ----
                 try {
-                    if (ActivityLog && typeof ActivityLog.record === 'function') {
-                        ActivityLog.record('Eliminated ' + name + ' (standalone, week ' + week + '): ' + reason);
-                    }
+                    recordActivity('Eliminated ' + name + ' (standalone, week ' + week + '): ' + reason);
                 } catch (logErr) {
                     // Ignore logging errors
                 }
 
-                // UI COMMIT
+                // ---- PHASE 5: UI COMMIT ----
                 onAddSuccess(charId);
             })
             .catch(function(err) {
-                // ROLLBACK
+                // ---- PHASE 6: ROLLBACK ----
                 if (backup) {
                     window.data = backup;
                     safeRenderCharacterList();
@@ -606,39 +624,37 @@
             return;
         }
 
-        // SNAPSHOT - Required, abort if fails
+        // ---- PHASE 1: SNAPSHOT - Required, abort if fails ----
         var backup = createSafeBackup(data);
         if (!backup) {
             showNotification('Unable to safely remove elimination. Please try again.', 'error');
             return;
         }
 
-        // MUTATE - filter by ID
+        // ---- PHASE 2: MUTATE - filter by ID ----
         char.eliminations = char.eliminations.filter(function(e) {
             return !(e.standalone && String(e.id) === String(eliminationId));
         });
         rebuildEliminatedWeeks(char);
 
-        // PERSIST - Use saveWithPromise from MutationUtils
+        // ---- PHASE 3: PERSIST ----
         var name = CharacterQueries.getDisplayName(char);
         var savePromise = MutationUtils.saveWithPromise();
 
         savePromise
             .then(function() {
-                // LOG - failure-safe, persistence already succeeded
+                // ---- PHASE 4: LOG - failure-safe, persistence already succeeded ----
                 try {
-                    if (ActivityLog && typeof ActivityLog.record === 'function') {
-                        ActivityLog.record('Removed standalone elimination for ' + name + ' (week ' + elim.week + ')');
-                    }
+                    recordActivity('Removed standalone elimination for ' + name + ' (week ' + elim.week + ')');
                 } catch (logErr) {
                     // Ignore logging errors
                 }
 
-                // UI COMMIT
+                // ---- PHASE 5: UI COMMIT ----
                 onRemoveSuccess(charId);
             })
             .catch(function(err) {
-                // ROLLBACK
+                // ---- PHASE 6: ROLLBACK ----
                 if (backup) {
                     window.data = backup;
                     safeRenderCharacterList();
@@ -699,14 +715,14 @@
             return Promise.resolve(false);
         }
 
-        // SNAPSHOT - Required, abort if fails
+        // ---- PHASE 1: SNAPSHOT - Required, abort if fails ----
         var backup = createSafeBackup(data);
         if (!backup) {
             showNotification('Unable to safely mark character eliminated. Please try again.', 'error');
             return Promise.resolve(false);
         }
 
-        // MUTATE
+        // ---- PHASE 2: MUTATE ----
         if (!char.eliminations) char.eliminations = [];
         if (!char.eliminatedWeeks) char.eliminatedWeeks = [];
 
@@ -721,35 +737,33 @@
 
         rebuildEliminatedWeeks(char);
 
-        // PERSIST - Use saveWithPromise from MutationUtils
+        // ---- PHASE 3: PERSIST ----
         var name = CharacterQueries.getDisplayName(char);
         var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
-                // LOG - failure-safe, persistence already succeeded
+                // ---- PHASE 4: LOG - failure-safe, persistence already succeeded ----
                 try {
-                    if (ActivityLog && typeof ActivityLog.record === 'function') {
-                        var tournName = 'Unknown Tournament';
-                        if (tournamentId && data.tournaments) {
-                            var tourn = data.tournaments.find(function(t) {
-                                return t && String(t.id) === String(tournamentId);
-                            });
-                            if (tourn) tournName = tourn.name;
-                        }
-                        ActivityLog.record(name + ' eliminated from ' + tournName + ' (week ' + weekNum + ')');
+                    var tournName = 'Unknown Tournament';
+                    if (tournamentId) {
+                        var tourn = TournamentQueries && typeof TournamentQueries.getTournamentById === 'function'
+                            ? TournamentQueries.getTournamentById(tournamentId)
+                            : null;
+                        if (tourn) tournName = tourn.name;
                     }
+                    recordActivity(name + ' eliminated from ' + tournName + ' (week ' + weekNum + ')');
                 } catch (logErr) {
                     // Ignore logging errors
                 }
 
-                // UI COMMIT
+                // ---- PHASE 5: UI COMMIT ----
                 safeRenderCharacterList();
                 safeUpdateDashboardStats();
                 return true;
             })
             .catch(function(err) {
-                // ROLLBACK
+                // ---- PHASE 6: ROLLBACK ----
                 if (backup) {
                     window.data = backup;
                     safeRenderCharacterList();
@@ -788,14 +802,14 @@
             return Promise.resolve(false);
         }
 
-        // SNAPSHOT - Required, abort if fails
+        // ---- PHASE 1: SNAPSHOT - Required, abort if fails ----
         var backup = createSafeBackup(data);
         if (!backup) {
             showNotification('Unable to safely unmark character eliminated. Please try again.', 'error');
             return Promise.resolve(false);
         }
 
-        // MUTATE
+        // ---- PHASE 2: MUTATE ----
         if (char.eliminations) {
             char.eliminations = char.eliminations.filter(function(e) {
                 return !(String(e.tournamentId) === String(tournamentId) && !e.standalone);
@@ -804,35 +818,33 @@
 
         rebuildEliminatedWeeks(char);
 
-        // PERSIST - Use saveWithPromise from MutationUtils
+        // ---- PHASE 3: PERSIST ----
         var name = CharacterQueries.getDisplayName(char);
         var savePromise = MutationUtils.saveWithPromise();
 
         return savePromise
             .then(function() {
-                // LOG - failure-safe, persistence already succeeded
+                // ---- PHASE 4: LOG - failure-safe, persistence already succeeded ----
                 try {
-                    if (ActivityLog && typeof ActivityLog.record === 'function') {
-                        var tournName = 'Unknown Tournament';
-                        if (tournamentId && data.tournaments) {
-                            var tourn = data.tournaments.find(function(t) {
-                                return t && String(t.id) === String(tournamentId);
-                            });
-                            if (tourn) tournName = tourn.name;
-                        }
-                        ActivityLog.record('Restored ' + name + ' from ' + tournName);
+                    var tournName = 'Unknown Tournament';
+                    if (tournamentId) {
+                        var tourn = TournamentQueries && typeof TournamentQueries.getTournamentById === 'function'
+                            ? TournamentQueries.getTournamentById(tournamentId)
+                            : null;
+                        if (tourn) tournName = tourn.name;
                     }
+                    recordActivity('Restored ' + name + ' from ' + tournName);
                 } catch (logErr) {
                     // Ignore logging errors
                 }
 
-                // UI COMMIT
+                // ---- PHASE 5: UI COMMIT ----
                 safeRenderCharacterList();
                 safeUpdateDashboardStats();
                 return true;
             })
             .catch(function(err) {
-                // ROLLBACK
+                // ---- PHASE 6: ROLLBACK ----
                 if (backup) {
                     window.data = backup;
                     safeRenderCharacterList();
