@@ -1007,4 +1007,120 @@
 
     // ============================================================
     // SPECIAL MOVES - Shared Handlers with Promise support
-    //
+    // ============================================================
+
+    function handleAddSpecialMove(type) {
+        var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!id) {
+            showNotification('Please save the character first.', 'error');
+            return;
+        }
+
+        var char = CharacterQueries.getCharacterById(id);
+        if (!char) {
+            showNotification('Character not found.', 'error');
+            return;
+        }
+
+        var nameInput = document.getElementById(type + '-move-name');
+        var descInput = document.getElementById(type + '-move-desc');
+
+        var moveName = nameInput ? nameInput.value.trim() : '';
+        var moveDesc = descInput ? descInput.value.trim() : '';
+
+        if (!moveName) {
+            showNotification('Please enter a move name.', 'error');
+            return;
+        }
+
+        if (window.CharacterStats && typeof window.CharacterStats.addSpecialMove === 'function') {
+            var result = window.CharacterStats.addSpecialMove(id, type, moveName, moveDesc);
+
+            if (result && typeof result.then === 'function') {
+                result.then(function(success) {
+                    if (success !== false) {
+                        if (nameInput) nameInput.value = '';
+                        if (descInput) descInput.value = '';
+                    }
+                }).catch(function() {
+                    // Don't clear on failure - user can retry
+                });
+            } else if (result !== false) {
+                if (nameInput) nameInput.value = '';
+                if (descInput) descInput.value = '';
+            }
+        } else {
+            showNotification('Special move functionality is not available.', 'error');
+            return;
+        }
+    }
+
+    function handleRemoveSpecialMove(e, defaultType) {
+        var target = e.target.closest ? e.target.closest('.remove-special-move') : null;
+        if (!target) return;
+
+        var container = target.closest('.moves-list');
+        if (!container) return;
+
+        var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!id) {
+            showNotification('Please save the character first.', 'error');
+            return;
+        }
+
+        var char = CharacterQueries.getCharacterById(id);
+        if (!char) {
+            showNotification('Character not found.', 'error');
+            return;
+        }
+
+        var type = target.dataset.type || defaultType || 'physical';
+        var index = parseInt(target.dataset.index, 10);
+        if (isNaN(index)) return;
+
+        if (window.CharacterStats && typeof window.CharacterStats.removeSpecialMove === 'function') {
+            window.CharacterStats.removeSpecialMove(id, type, index);
+        } else {
+            showNotification('Special move functionality is not available.', 'error');
+            return;
+        }
+    }
+
+    function handleEditSpecialMove(e, defaultType) {
+        var target = e.target.closest ? e.target.closest('.edit-special-move') : null;
+        if (!target) return;
+
+        var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!id) {
+            showNotification('Please save the character first.', 'error');
+            return;
+        }
+
+        var char = CharacterQueries.getCharacterById(id);
+        if (!char) {
+            showNotification('Character not found.', 'error');
+            return;
+        }
+
+        var type = target.dataset.type || defaultType || 'physical';
+        var index = parseInt(target.dataset.index, 10);
+        if (isNaN(index)) return;
+
+        if (window.CharacterStatsView && typeof window.CharacterStatsView.editSpecialMove === 'function') {
+            window.CharacterStatsView.editSpecialMove(id, type, index);
+        } else {
+            showNotification('Edit functionality is not available.', 'error');
+        }
+    }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
+    window.CharacterEvents = {
+        init: init,
+        destroy: destroy,
+        removeAllEventListeners: removeAllEventListeners
+    };
+
+})();
