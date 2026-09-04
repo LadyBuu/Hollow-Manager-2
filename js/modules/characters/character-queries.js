@@ -10,27 +10,28 @@
  *   - Current status determination
  *   - Student/instructor classification
  *   - Character lists (students, instructors, non-civilian)
- *   - Character team count (cross-domain query)
+ *   - Character stats and magic (read-only)
  * 
  * IMPORTANT:
  *   - READ-ONLY queries - no mutations
- *   - PURE functions - no side effects (except reading window.data)
  *   - No DOM manipulation
  *   - No direct window.data mutation
  *   - Uses ValidationUtils for period parsing
- *   - Uses FormatUtils for formatting
- *   - getCharacterTeamCount() is cross-domain (depends on TeamQueries)
- *   - All functions return DEEP CLONED data where appropriate
+ *   - Uses CharacterConstants for stat/magic definitions
+ *   - Returns LIVE REFERENCES to characters (no cloning by default)
+ *   - Callers should NOT mutate returned objects
+ *   - getCharacterTeamCount() has been MOVED to TeamQueries
  * 
  * DEPENDENCIES:
- *   - window.ValidationUtils (from validation-utils.js)
- *   - window.FormatUtils (from format-utils.js)
- *   - window.TeamQueries (from team-queries.js) - optional, for getCharacterTeamCount
+ *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
+ *   - window.CharacterConstants (from character-constants.js) - MANDATORY
+ *   - window.CALENDAR_CONSTANTS (from constants.js) - MANDATORY
+ *   - window.IdUtils (from id-utils.js) - OPTIONAL
  * 
  * STATE SOURCE OF TRUTH:
  *   - window.data.characters is the source of truth for character data
  *   - No caching - always reads fresh from window.data
- *   - Results are NOT cloned by default (caller should clone if needed)
+ *   - Results are live references (not cloned)
  * 
  * USAGE:
  *   var queries = window.CharacterQueries;
@@ -49,12 +50,24 @@
     window.__characterQueriesLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var ValidationUtils = window.ValidationUtils || window;
-    var FormatUtils = window.FormatUtils || window;
-    var TeamQueries = window.TeamQueries || window;
+    var ValidationUtils = window.ValidationUtils;
+    var CharacterConstants = window.CharacterConstants;
+    var CalendarConstants = window.CALENDAR_CONSTANTS;
+    var IdUtils = window.IdUtils;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var STAT_KEYS = CharacterConstants ? CharacterConstants.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    var STAT_DEFAULT = CharacterConstants ? CharacterConstants.STAT_DEFAULT : 10;
+    var MAGIC_TYPE_KEYS = CharacterConstants ? CharacterConstants.MAGIC_TYPE_KEYS : [];
+
+    var MIN_WEEK = CalendarConstants ? CalendarConstants.MIN_WEEK : 1;
+    var MAX_WEEK = CalendarConstants ? CalendarConstants.MAX_WEEK : 52;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -71,12 +84,17 @@
             missing.push('ValidationUtils.getPeriodInfo');
         }
 
-        // FormatUtils is MANDATORY
-        if (!FormatUtils || typeof FormatUtils.formatDate !== 'function') {
-            missing.push('FormatUtils.formatDate');
+        // CharacterConstants is MANDATORY
+        if (!CharacterConstants) {
+            missing.push('CharacterConstants');
         }
-        if (!FormatUtils || typeof FormatUtils.truncateString !== 'function') {
-            missing.push('FormatUtils.truncateString');
+        if (CharacterConstants && typeof CharacterConstants.STAT_KEYS === 'undefined') {
+            missing.push('CharacterConstants.STAT_KEYS');
+        }
+
+        // CalendarConstants is MANDATORY
+        if (!CalendarConstants) {
+            missing.push('CALENDAR_CONSTANTS');
         }
 
         if (missing.length > 0) {
@@ -92,41 +110,20 @@
     // ============================================================
 
     function parseStrictPositivePeriod(value) {
-        if (ValidationUtils && typeof ValidationUtils.parseStrictPositivePeriod === 'function') {
-            return ValidationUtils.parseStrictPositivePeriod(value);
-        }
-        // Emergency fallback
-        if (value === undefined || value === null || value === '') return null;
-        var num = parseInt(value, 10);
-        return (!isNaN(num) && num >= 1) ? num : null;
+        return ValidationUtils.parseStrictPositivePeriod(value);
     }
 
     function getPeriodInfo(value) {
-        if (ValidationUtils && typeof ValidationUtils.getPeriodInfo === 'function') {
-            return ValidationUtils.getPeriodInfo(value);
-        }
-        // Emergency fallback
-        if (value === undefined || value === null || value === '') {
-            return { present: false, valid: true, value: null };
-        }
-        var num = parseInt(value, 10);
-        return {
-            present: true,
-            valid: !isNaN(num),
-            value: !isNaN(num) ? num : null
-        };
+        return ValidationUtils.getPeriodInfo(value);
     }
 
     // ============================================================
-    // HELPER: Get Character from window.data
+    // HELPER: Get Character Data from window.data
     // ============================================================
 
     function getCharacterData() {
         var data = window.data || {};
-        if (!Array.isArray(data.characters)) {
-            data.characters = [];
-        }
-        return data.characters;
+        return Array.isArray(data.characters) ? data.characters : [];
     }
 
     // ============================================================
@@ -135,6 +132,7 @@
 
     /**
      * Get a character by ID.
+     * Returns a LIVE REFERENCE - do not mutate.
      * @param {string} charId - Character ID
      * @returns {object|null} Character object or null
      */
@@ -262,13 +260,8 @@
         var birthYear = parseStrictPositivePeriod(char.birthYear);
         if (birthYear === null) return null;
         
-        var currentYear = window.data
-            ? parseStrictPositivePeriod(window.data.currentYear)
-            : null;
-        
-        if (currentYear === null) {
-            currentYear = new Date().getFullYear();
-        }
+        var currentYear = getCurrentYear();
+        if (currentYear === null) return null;
         
         if (birthYear > currentYear) return null;
         
@@ -298,6 +291,18 @@
         return age !== null ? age + ' yrs' : '-';
     }
 
+    /**
+     * Get the application's current year.
+     * @returns {number|null} Current year or null
+     */
+    function getCurrentYear() {
+        if (window.data && typeof window.data.currentYear === 'number') {
+            return window.data.currentYear;
+        }
+        // No fallback to real-world year - fail closed
+        return null;
+    }
+
     // ============================================================
     // CURRENT STATUS
     // ============================================================
@@ -312,12 +317,10 @@
             return 'Civilian';
         }
         
-        var currentYear = window.data
-            ? parseStrictPositivePeriod(window.data.currentYear)
-            : null;
-        
+        var currentYear = getCurrentYear();
         if (currentYear === null) {
-            currentYear = new Date().getFullYear();
+            // Fail closed - no valid year means no valid status
+            return 'Unknown';
         }
         
         var bestStatus = 'Civilian';
@@ -426,7 +429,7 @@
 
     /**
      * Get all student characters.
-     * @returns {Array} Array of student characters
+     * @returns {Array} Array of student characters (live references)
      */
     function getStudents() {
         var chars = getCharacterData();
@@ -444,7 +447,7 @@
 
     /**
      * Get all instructor characters.
-     * @returns {Array} Array of instructor characters
+     * @returns {Array} Array of instructor characters (live references)
      */
     function getInstructors() {
         var chars = getCharacterData();
@@ -461,8 +464,8 @@
     }
 
     /**
-     * Get all non-civilian characters.
-     * @returns {Array} Array of non-civilian characters
+     * Get all non-civilian characters (living, non-civilian).
+     * @returns {Array} Array of non-civilian characters (live references)
      */
     function getNonCivilianCharacters() {
         var chars = getCharacterData();
@@ -479,90 +482,6 @@
     }
 
     // ============================================================
-    // CROSS-DOMAIN: CHARACTER TEAM COUNT
-    // ============================================================
-
-    /**
-     * Get the number of teams a character belongs to at a given period.
-     * NOTE: This is a cross-domain query that depends on TeamQueries.
-     * 
-     * @param {string} charId - Character ID
-     * @param {number|string} period - Period number
-     * @returns {number} Number of teams
-     */
-    function getCharacterTeamCount(charId, period) {
-        if (!charId) return 0;
-        
-        var count = 0;
-        var teams = window.data ? window.data.teams : [];
-        if (!Array.isArray(teams)) return 0;
-        
-        var periodNum = parseStrictPositivePeriod(period);
-        if (periodNum === null) return 0;
-        
-        // Use TeamQueries if available
-        if (TeamQueries && typeof TeamQueries.getActiveTeamMembers === 'function') {
-            for (var i = 0; i < teams.length; i++) {
-                var team = teams[i];
-                if (!team || typeof team !== 'object') continue;
-                
-                // Use TeamQueries for operational check if available
-                if (TeamQueries && typeof TeamQueries.isTeamOperational === 'function') {
-                    if (!TeamQueries.isTeamOperational(team)) continue;
-                } else {
-                    // Fallback
-                    if (team.status === 'deleted' || team.status === 'inactive' || team.status === 'deprecated') {
-                        continue;
-                    }
-                }
-                
-                var activeMembers = TeamQueries.getActiveTeamMembers(team, periodNum);
-                for (var j = 0; j < activeMembers.length; j++) {
-                    var member = activeMembers[j];
-                    if (member && String(member.characterId) === String(charId)) {
-                        count++;
-                        break;
-                    }
-                }
-            }
-        } else {
-            // Fallback implementation
-            for (var i = 0; i < teams.length; i++) {
-                var team = teams[i];
-                if (!team || typeof team !== 'object') continue;
-                if (team.status === 'deleted' || team.status === 'inactive' || team.status === 'deprecated') {
-                    continue;
-                }
-                
-                if (!team.members || !Array.isArray(team.members)) continue;
-                
-                for (var j = 0; j < team.members.length; j++) {
-                    var member = team.members[j];
-                    if (!member || typeof member !== 'object') continue;
-                    if (String(member.characterId) !== String(charId)) continue;
-                    
-                    var join = parseStrictPositivePeriod(member.joinPeriod);
-                    if (join === null) {
-                        // Invalid join period - assume active
-                        count++;
-                        break;
-                    }
-                    
-                    if (join <= periodNum) {
-                        var leaveInfo = getPeriodInfo(member.leavePeriod);
-                        if (!leaveInfo.present || leaveInfo.value >= periodNum) {
-                            count++;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        
-        return count;
-    }
-
-    // ============================================================
     // CHARACTER STATS - Read-only
     // ============================================================
 
@@ -573,20 +492,34 @@
      */
     function getCharacterStats(char) {
         if (!char) {
-            return { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
+            return createDefaultStats();
         }
         if (!char.stats || typeof char.stats !== 'object') {
-            return { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
+            return createDefaultStats();
         }
         var stats = char.stats;
-        return {
-            str: typeof stats.str === 'number' ? stats.str : 10,
-            dex: typeof stats.dex === 'number' ? stats.dex : 10,
-            con: typeof stats.con === 'number' ? stats.con : 10,
-            int: typeof stats.int === 'number' ? stats.int : 10,
-            wis: typeof stats.wis === 'number' ? stats.wis : 10,
-            cha: typeof stats.cha === 'number' ? stats.cha : 10
-        };
+        var result = {};
+        STAT_KEYS.forEach(function(key) {
+            var val = stats[key];
+            if (typeof val === 'number' && !isNaN(val) && isFinite(val)) {
+                result[key] = val;
+            } else {
+                result[key] = STAT_DEFAULT;
+            }
+        });
+        return result;
+    }
+
+    /**
+     * Create a default stats object.
+     * @returns {object} Default stats
+     */
+    function createDefaultStats() {
+        var result = {};
+        STAT_KEYS.forEach(function(key) {
+            result[key] = STAT_DEFAULT;
+        });
+        return result;
     }
 
     /**
@@ -596,43 +529,34 @@
      */
     function getCharacterMagic(char) {
         if (!char) {
-            var empty = {};
-            var magicTypes = getMagicTypeKeys();
-            for (var i = 0; i < magicTypes.length; i++) {
-                empty[magicTypes[i]] = 0;
-            }
-            return empty;
+            return createDefaultMagic();
         }
         if (!char.magic || typeof char.magic !== 'object') {
-            var empty = {};
-            var magicTypes = getMagicTypeKeys();
-            for (var i = 0; i < magicTypes.length; i++) {
-                empty[magicTypes[i]] = 0;
-            }
-            return empty;
+            return createDefaultMagic();
         }
         var magic = char.magic;
         var result = {};
-        var magicTypes = getMagicTypeKeys();
-        for (var i = 0; i < magicTypes.length; i++) {
-            var key = magicTypes[i];
-            result[key] = typeof magic[key] === 'number' ? magic[key] : 0;
-        }
+        MAGIC_TYPE_KEYS.forEach(function(key) {
+            var val = magic[key];
+            if (typeof val === 'number' && !isNaN(val) && isFinite(val)) {
+                result[key] = val;
+            } else {
+                result[key] = 0;
+            }
+        });
         return result;
     }
 
     /**
-     * Get magic type keys from CharacterConstants if available.
-     * @returns {Array} Array of magic type keys
+     * Create a default magic proficiencies object.
+     * @returns {object} Default magic
      */
-    function getMagicTypeKeys() {
-        if (window.CharacterConstants && typeof window.CharacterConstants.MAGIC_TYPE_KEYS !== 'undefined') {
-            return window.CharacterConstants.MAGIC_TYPE_KEYS.slice();
-        }
-        // Fallback
-        return ['earth','water','fire','air','metal','wood',
-                'blood','bone','mind','morphic','life','death',
-                'space','time','dimension','void','reality','transference'];
+    function createDefaultMagic() {
+        var result = {};
+        MAGIC_TYPE_KEYS.forEach(function(key) {
+            result[key] = 0;
+        });
+        return result;
     }
 
     /**
@@ -671,6 +595,7 @@
         // Age
         calculateAge: calculateAge,
         getCharacterAge: getCharacterAge,
+        getCurrentYear: getCurrentYear,
         
         // Status
         getCurrentStatus: getCurrentStatus,
@@ -686,10 +611,7 @@
         // Stats (read-only)
         getCharacterStats: getCharacterStats,
         getCharacterMagic: getCharacterMagic,
-        getCharacterSpecialMoves: getCharacterSpecialMoves,
-        
-        // Cross-domain (consider moving)
-        getCharacterTeamCount: getCharacterTeamCount
+        getCharacterSpecialMoves: getCharacterSpecialMoves
     };
 
     // ============================================================
@@ -714,6 +636,5 @@
     window.getStudents = getStudents;
     window.getInstructors = getInstructors;
     window.getNonCivilianCharacters = getNonCivilianCharacters;
-    window.getCharacterTeamCount = getCharacterTeamCount;
 
 })();
