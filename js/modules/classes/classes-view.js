@@ -20,8 +20,7 @@
  *   - USES CharacterQueries for character data
  *   - USES TeamQueries for team data
  *   - USES NotificationSystem for notifications
- *   - USES ActivityLog for activity logging
- *   - USES DomUtils for safe DOM operations
+ *   - USES CALENDAR_CONSTANTS for calendar bounds
  * 
  * LIFECYCLE:
  *   This module is rendered by classes-main.js via TabManager.
@@ -38,29 +37,17 @@
     if (window.__classesViewLoaded) {
         return;
     }
-    window.__classesViewLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var ClassesCore = window.ClassesCore || window;
-    var ClassesQueries = window.ClassesQueries || window;
-    var CharacterQueries = window.CharacterQueries || window;
-    var TeamQueries = window.TeamQueries || window;
-    var NotificationSystem = window.NotificationSystem || window;
-    var ActivityLog = window.ActivityLog || window;
-    var DomUtils = window.DomUtils || window;
-
-    // ============================================================
-    // STATE - Classes UI state
-    // ============================================================
-
-    var _state = {
-        selectedClassId: null,
-        distributionWeek: 1,
-        maxTeamSize: 4
-    };
+    var ClassesCore = window.ClassesCore;
+    var ClassesQueries = window.ClassesQueries;
+    var CharacterQueries = window.CharacterQueries;
+    var TeamQueries = window.TeamQueries;
+    var NotificationSystem = window.NotificationSystem;
+    var CalendarConstants = window.CALENDAR_CONSTANTS;
 
     // ============================================================
     // DEPENDENCY VALIDATION
@@ -69,7 +56,6 @@
     function validateDependencies(container) {
         var missing = [];
 
-        // ClassesQueries is MANDATORY
         if (!ClassesQueries || typeof ClassesQueries.getClasses !== 'function') {
             missing.push('ClassesQueries.getClasses');
         }
@@ -89,7 +75,6 @@
             missing.push('ClassesQueries.getClassDisplayName');
         }
 
-        // ClassesCore is MANDATORY
         if (!ClassesCore || typeof ClassesCore.createClass !== 'function') {
             missing.push('ClassesCore.createClass');
         }
@@ -106,7 +91,6 @@
             missing.push('ClassesCore.removeCharacterFromClass');
         }
 
-        // CharacterQueries is MANDATORY
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
@@ -117,7 +101,6 @@
             missing.push('CharacterQueries.getCurrentStatus');
         }
 
-        // TeamQueries is MANDATORY
         if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
             missing.push('TeamQueries.getActiveTeamMembers');
         }
@@ -125,19 +108,12 @@
             missing.push('TeamQueries.getTeamById');
         }
 
-        // ActivityLog is MANDATORY
-        if (!ActivityLog || typeof ActivityLog.record !== 'function') {
-            missing.push('ActivityLog.record');
-        }
-
-        // NotificationSystem is MANDATORY
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
             missing.push('NotificationSystem.notify');
         }
 
-        // DomUtils is MANDATORY
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
+        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
+            missing.push('CALENDAR_CONSTANTS');
         }
 
         if (missing.length > 0) {
@@ -150,26 +126,19 @@
         return true;
     }
 
+    if (!validateDependencies()) {
+        return;
+    }
+
+    window.__classesViewLoaded = true;
+
     // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
+    // CONSTANTS
     // ============================================================
 
-    function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        // Emergency fallback (should never be reached)
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;')
-            .replace(/`/g, '&#x60;');
-    }
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var MAX_TEAM_SIZE = 20;
 
     // ============================================================
     // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
@@ -177,13 +146,7 @@
 
     function showNotification(message, type) {
         type = type || 'info';
-        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
-            NotificationSystem.notify(message, type);
-        } else if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
+        NotificationSystem.notify(message, type);
     }
 
     // ============================================================
@@ -192,33 +155,12 @@
 
     function recordActivity(message) {
         try {
-            if (ActivityLog && typeof ActivityLog.record === 'function') {
-                ActivityLog.record(message);
+            if (window.ActivityLog && typeof window.ActivityLog.record === 'function') {
+                window.ActivityLog.record(message);
             }
         } catch (e) {
-            // Ignore logging errors
+            // Activity logging failure should not abort the operation
         }
-    }
-
-    // ============================================================
-    // PERSISTENCE HELPER
-    // ============================================================
-
-    function persistMutation(successMessage, errorMessage) {
-        if (typeof window.saveData !== 'function') {
-            console.warn('Persistence unavailable.');
-            showNotification('Changes were applied in memory, but persistent storage is unavailable.', 'error');
-            return;
-        }
-
-        window.saveData()
-            .then(function() {
-                if (successMessage) showNotification(successMessage, 'success');
-            })
-            .catch(function(err) {
-                console.error('Persistence error:', err);
-                if (errorMessage) showNotification(errorMessage, 'error');
-            });
     }
 
     // ============================================================
@@ -238,30 +180,28 @@
             return;
         }
 
-        // Ensure curriculum is initialized
-        if (typeof window.ensureCurriculum === 'function') {
-            try {
-                window.ensureCurriculum();
-            } catch (e) {
-                console.warn('ClassesView: ensureCurriculum() failed:', e);
-            }
-        }
-
-        if (!validateDependencies(container)) {
-            return;
-        }
-
         // Get state from classes-main if available
+        var selectedClassId = null;
+        var distributionWeek = 1;
+        var maxTeamSize = 4;
+
         if (window.classesState && typeof window.classesState.getState === 'function') {
             var mainState = window.classesState.getState();
-            _state.selectedClassId = mainState.selectedClassId || null;
-            _state.distributionWeek = mainState.distributionWeek || 1;
-            _state.maxTeamSize = mainState.maxTeamSize || 4;
+            selectedClassId = mainState.selectedClassId || null;
+            distributionWeek = mainState.distributionWeek || 1;
+            maxTeamSize = mainState.maxTeamSize || 4;
         }
 
+        // Store state for rendering functions
+        var renderState = {
+            selectedClassId: selectedClassId,
+            distributionWeek: distributionWeek,
+            maxTeamSize: maxTeamSize
+        };
+
         container.innerHTML = getClassesHTML();
-        renderClassList(container);
-        renderClassDetail(container);
+        renderClassList(container, renderState);
+        renderClassDetail(container, renderState);
     }
 
     // ============================================================
@@ -269,22 +209,22 @@
     // ============================================================
 
     function getClassesHTML() {
-        return `
-            <div id="class-list" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;max-height:500px;overflow-y:auto;">
-                <p class="empty-state">No classes created yet.</p>
-            </div>
-            <div id="class-detail" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px;">
-                <p class="empty-state">Select a class to view details.</p>
-            </div>
-        `;
+        return [
+            '<div id="class-list" class="class-list-panel">',
+                '<p class="empty-state">No classes created yet.</p>',
+            '</div>',
+            '<div id="class-detail" class="class-detail-panel">',
+                '<p class="empty-state">Select a class to view details.</p>',
+            '</div>'
+        ].join('');
     }
 
     // ============================================================
     // RENDER CLASS LIST
     // ============================================================
 
-    function renderClassList(container) {
-        var listContainer = container ? container.querySelector('#class-list') : document.getElementById('class-list');
+    function renderClassList(container, state) {
+        var listContainer = container.querySelector('#class-list');
         if (!listContainer) {
             return;
         }
@@ -296,21 +236,19 @@
             return;
         }
 
-        var html = '';
+        var selectedId = state ? state.selectedClassId : null;
 
+        var html = '';
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
             var count = ClassesQueries.getCharactersByClass(cls.id).length;
-            var isSelected = _state.selectedClassId === cls.id;
             var teamCount = ClassesQueries.getTeamsByClass(cls.id).length;
-            var safeName = escapeHtml(cls.name);
-            var safeId = escapeHtml(cls.id);
+            var isSelected = selectedId === cls.id;
 
-            html += '<div class="class-list-item" style="padding:8px 12px;border-bottom:1px solid var(--border-soft);cursor:pointer;' +
-                (isSelected ? 'background:var(--accent-soft);border-left:3px solid var(--accent);' : '') + '" data-id="' + safeId + '">';
-            html += '<div style="display:flex;justify-content:space-between;align-items:center;">';
-            html += '<span style="font-weight:600;">' + safeName + '</span>';
-            html += '<span style="font-size:0.7rem;color:var(--text-dim);">' + count + ' students, ' + teamCount + ' teams</span>';
+            html += '<div class="class-list-item' + (isSelected ? ' selected' : '') + '" data-id="' + escapeAttribute(cls.id) + '">';
+            html += '<div class="class-list-item-content">';
+            html += '<span class="class-list-item-name">' + escapeHtml(cls.name) + '</span>';
+            html += '<span class="class-list-item-meta">' + count + ' students, ' + teamCount + ' teams</span>';
             html += '</div>';
             html += '</div>';
         }
@@ -322,104 +260,88 @@
     // RENDER CLASS DETAIL
     // ============================================================
 
-    function renderClassDetail(container) {
-        var detailContainer = container ? container.querySelector('#class-detail') : document.getElementById('class-detail');
+    function renderClassDetail(container, state) {
+        var detailContainer = container.querySelector('#class-detail');
         if (!detailContainer) {
             return;
         }
 
-        if (!_state.selectedClassId) {
+        var selectedId = state ? state.selectedClassId : null;
+
+        if (!selectedId) {
             detailContainer.innerHTML = '<p class="empty-state">Select a class to view details.</p>';
             return;
         }
 
-        var cls = ClassesQueries.getClass(_state.selectedClassId);
+        var cls = ClassesQueries.getClass(selectedId);
 
         if (!cls) {
-            _state.selectedClassId = null;
             detailContainer.innerHTML = '<p class="empty-state">Select a class to view details.</p>';
             return;
         }
+
+        var distributionWeek = state ? state.distributionWeek || 1 : 1;
 
         var characters = ClassesQueries.getCharactersByClass(cls.id);
         var teams = ClassesQueries.getTeamsByClass(cls.id);
-        var available = ClassesQueries.getAvailableStudentsForClass(cls.id, _state.distributionWeek || 1);
-        var safeName = escapeHtml(cls.name);
+        var available = ClassesQueries.getAvailableStudentsForClass(cls.id, distributionWeek);
 
         var html = '';
-        html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
-        html += '<h3 style="color:var(--accent);">' + safeName + '</h3>';
-        html += '<div class="class-header-actions" style="display:flex;gap:4px;">';
-        html += '<button id="edit-class-btn" class="secondary small" data-id="' + escapeHtml(cls.id) + '">Edit</button>';
-        html += '<button id="distribute-class-btn" class="primary small" data-id="' + escapeHtml(cls.id) + '">+ Auto-Distribute</button>';
-        html += '<button id="delete-class-btn" class="danger small" data-id="' + escapeHtml(cls.id) + '">Delete Class</button>';
+        html += '<div class="class-detail-header">';
+        html += '<h3 class="class-detail-title">' + escapeHtml(cls.name) + '</h3>';
+        html += '<div class="class-detail-actions">';
+        html += '<button class="edit-class-btn secondary small" data-id="' + escapeAttribute(cls.id) + '">Edit</button>';
+        html += '<button class="distribute-class-btn primary small" data-id="' + escapeAttribute(cls.id) + '">+ Auto-Distribute</button>';
+        html += '<button class="delete-class-btn danger small" data-id="' + escapeAttribute(cls.id) + '">Delete Class</button>';
         html += '</div>';
         html += '</div>';
 
-        html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;">';
-        html += '<div style="background:var(--bg);padding:8px;border-radius:4px;text-align:center;">';
-        html += '<span style="font-size:0.6rem;color:var(--text-dim);">Students</span>';
-        html += '<div style="font-size:1.2rem;font-weight:700;color:var(--accent);">' + characters.length + '</div>';
-        html += '</div>';
-        html += '<div style="background:var(--bg);padding:8px;border-radius:4px;text-align:center;">';
-        html += '<span style="font-size:0.6rem;color:var(--text-dim);">Teams</span>';
-        html += '<div style="font-size:1.2rem;font-weight:700;color:var(--info);">' + teams.length + '</div>';
-        html += '</div>';
-        html += '<div style="background:var(--bg);padding:8px;border-radius:4px;text-align:center;">';
-        html += '<span style="font-size:0.6rem;color:var(--text-dim);">Available</span>';
-        html += '<div style="font-size:1.2rem;font-weight:700;color:var(--warning);">' + available.length + '</div>';
-        html += '</div>';
+        html += '<div class="class-detail-stats">';
+        html += '<div class="stat-item"><span class="stat-label">Students</span><span class="stat-value">' + characters.length + '</span></div>';
+        html += '<div class="stat-item"><span class="stat-label">Teams</span><span class="stat-value">' + teams.length + '</span></div>';
+        html += '<div class="stat-item"><span class="stat-label">Available</span><span class="stat-value">' + available.length + '</span></div>';
         html += '</div>';
 
         // Roster
-        html += '<h4 style="color:var(--text-dim);font-size:0.8rem;margin-bottom:4px;">Roster (' + characters.length + ')</h4>';
+        html += '<h4 class="class-detail-section-title">Roster (' + characters.length + ')</h4>';
 
         if (characters.length === 0) {
-            html += '<p class="empty-state" style="padding:8px;font-size:0.75rem;">No students in this class.</p>';
+            html += '<p class="empty-state small">No students in this class.</p>';
         } else {
-            html += '<div style="display:flex;flex-wrap:wrap;gap:4px;max-height:150px;overflow-y:auto;padding:4px;background:var(--bg);border-radius:4px;">';
-
+            html += '<div class="class-roster">';
             for (var i = 0; i < characters.length; i++) {
-                var char = characters[i];
-                var name = CharacterQueries.getDisplayName(char);
-                var status = CharacterQueries.getCurrentStatus(char);
-                var isDeceased = char.deceased || false;
-                var safeName2 = escapeHtml(name);
-                var safeStatus = escapeHtml(status);
+                var character = characters[i];
+                var name = CharacterQueries.getDisplayName(character);
+                var status = CharacterQueries.getCurrentStatus(character);
+                var isDeceased = character.deceased || false;
 
-                html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;' +
-                    (isDeceased ? 'opacity:0.4;text-decoration:line-through;' : '') + '">' +
-                    safeName2 + ' <span style="color:var(--text-dim);font-size:0.6rem;">(' + safeStatus + ')</span>' +
-                    ' <button class="remove-student-btn" data-character-id="' + escapeHtml(char.id) + '" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;">✕</button>' +
-                    '</span>';
+                html += '<span class="class-roster-item' + (isDeceased ? ' deceased' : '') + '">';
+                html += escapeHtml(name);
+                html += ' <span class="class-roster-status">(' + escapeHtml(status) + ')</span>';
+                html += ' <button class="remove-student-btn" data-character-id="' + escapeAttribute(character.id) + '">×</button>';
+                html += '</span>';
             }
-
             html += '</div>';
         }
 
         // Teams
-        html += '<h4 style="color:var(--text-dim);font-size:0.8rem;margin:8px 0 4px 0;">Teams (' + teams.length + ')</h4>';
+        html += '<h4 class="class-detail-section-title">Teams (' + teams.length + ')</h4>';
 
         if (teams.length === 0) {
-            html += '<p class="empty-state" style="padding:8px;font-size:0.75rem;">No academic teams for this class. Create teams in the Teams tab.</p>';
+            html += '<p class="empty-state small">No academic teams for this class. Create teams in the Teams tab.</p>';
         } else {
-            html += '<div style="display:flex;flex-wrap:wrap;gap:4px;">';
-
-            for (var i = 0; i < teams.length; i++) {
-                var team = teams[i];
-                var activeCount = TeamQueries.getActiveTeamMembers(team, _state.distributionWeek || 1).length;
-                var safeTeamName = escapeHtml(team.name);
-                var safeTeamNumber = escapeHtml(team.teamNumber || '');
-
-                html += '<span style="background:var(--panel-alt);padding:2px 10px;border-radius:12px;font-size:0.7rem;border:1px solid var(--border-soft);">';
-                html += '<strong>' + safeTeamName + '</strong>';
-                if (safeTeamNumber) {
-                    html += ' (#' + safeTeamNumber + ')';
+            html += '<div class="class-team-list">';
+            for (var j = 0; j < teams.length; j++) {
+                var team = teams[j];
+                var activeCount = TeamQueries.getActiveTeamMembers(team, distributionWeek).length;
+                html += '<span class="class-team-item">';
+                html += '<strong>' + escapeHtml(team.name) + '</strong>';
+                if (team.teamNumber) {
+                    html += ' (#' + escapeHtml(team.teamNumber) + ')';
                 }
                 html += ' - ' + activeCount + ' active members';
                 html += '</span>';
             }
-
             html += '</div>';
         }
 
@@ -436,15 +358,19 @@
             return;
         }
 
-        _state.selectedClassId = classId || null;
-
         // Update main state if available
-        if (window.classesState && typeof window.classesState.setState === 'function') {
-            window.classesState.setState({ selectedClassId: _state.selectedClassId });
+        if (window.classesState && typeof window.classesState.selectClass === 'function') {
+            window.classesState.selectClass(classId);
         }
 
-        renderClassList(container);
-        renderClassDetail(container);
+        // Get current state for rendering
+        var state = null;
+        if (window.classesState && typeof window.classesState.getState === 'function') {
+            state = window.classesState.getState();
+        }
+
+        renderClassList(container, state);
+        renderClassDetail(container, state);
     }
 
     // ============================================================
@@ -498,8 +424,15 @@
             return;
         }
 
-        var distributionWeek = _state.distributionWeek || 1;
-        var maxTeamSize = _state.maxTeamSize || 4;
+        // Get state from classes-main
+        var distributionWeek = 1;
+        var maxTeamSize = 4;
+
+        if (window.classesState && typeof window.classesState.getState === 'function') {
+            var mainState = window.classesState.getState();
+            distributionWeek = mainState.distributionWeek || 1;
+            maxTeamSize = mainState.maxTeamSize || 4;
+        }
 
         var teams = ClassesQueries.getTeamsByClass(classId);
         var available = ClassesQueries.getAvailableStudentsForClass(classId, distributionWeek);
@@ -522,54 +455,56 @@
             return;
         }
 
+        // Store classId on modal for use by executeDistribution
+        modal.dataset.classId = classId;
+
         var html = '';
-        html += '<p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:12px;">';
+        html += '<p class="distribute-info">';
         html += 'Distribute <strong id="distribute-available-count">' + available.length + '</strong> available students across selected teams.';
         html += ' Students will be assigned as "Member" with join period = selected week.';
         html += '</p>';
 
         html += '<div class="form-group">';
-        html += '<label>Week:</label>';
-        html += '<input type="number" id="distribute-week" value="' + distributionWeek + '" min="1" max="52" style="width:80px;padding:4px 8px;">';
+        html += '<label for="distribute-week">Week:</label>';
+        html += '<input type="number" id="distribute-week" value="' + distributionWeek + '" min="' + MIN_WEEK + '" max="' + MAX_WEEK + '">';
         html += '</div>';
 
         html += '<div class="form-group">';
-        html += '<label>Max Students Per Team:</label>';
-        html += '<input type="number" id="distribute-max-size" value="' + maxTeamSize + '" min="1" max="20" style="width:80px;padding:4px 8px;">';
+        html += '<label for="distribute-max-size">Max Students Per Team:</label>';
+        html += '<input type="number" id="distribute-max-size" value="' + maxTeamSize + '" min="1" max="' + MAX_TEAM_SIZE + '">';
         html += '</div>';
 
-        html += '<div style="margin:12px 0;">';
-        html += '<label style="font-weight:600;color:var(--text-dim);">Select Teams:</label>';
-        html += '<div id="distribute-team-list" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;">';
+        html += '<div class="distribute-teams-section">';
+        html += '<label class="distribute-teams-label">Select Teams:</label>';
+        html += '<div id="distribute-team-list" class="distribute-team-list">';
 
         for (var i = 0; i < teams.length; i++) {
             var team = teams[i];
             var activeCount = TeamQueries.getActiveTeamMembers(team, distributionWeek).length;
             var checked = activeCount < maxTeamSize ? 'checked' : '';
             var disabled = activeCount >= maxTeamSize ? 'disabled' : '';
-            var safeTeamName = escapeHtml(team.name);
-            var safeTeamNumber = escapeHtml(team.teamNumber || '');
-            var safeTeamId = escapeHtml(team.id);
 
-            html += '<label style="display:flex;align-items:center;gap:4px;font-size:0.75rem;cursor:pointer;padding:4px 8px;background:var(--bg);border-radius:4px;border:1px solid var(--border-soft);">';
-            html += '<input type="checkbox" class="team-checkbox" value="' + safeTeamId + '" ' + checked + ' ' + disabled + '>';
-            html += safeTeamName + (safeTeamNumber ? ' (#' + safeTeamNumber + ')' : '') + ' (' + activeCount + ' active members)';
-
-            if (disabled) {
-                html += ' <span style="color:var(--danger);font-size:0.6rem;">FULL</span>';
+            html += '<label class="distribute-team-option">';
+            html += '<input type="checkbox" class="team-checkbox" value="' + escapeAttribute(team.id) + '" ' + checked + ' ' + disabled + '>';
+            html += escapeHtml(team.name);
+            if (team.teamNumber) {
+                html += ' (#' + escapeHtml(team.teamNumber) + ')';
             }
-
+            html += ' (' + activeCount + ' active members)';
+            if (disabled) {
+                html += ' <span class="distribute-team-full">FULL</span>';
+            }
             html += '</label>';
         }
 
         html += '</div>';
         html += '</div>';
 
-        html += '<div style="padding:8px;background:var(--bg);border-radius:4px;font-size:0.75rem;color:var(--text-dim);">';
+        html += '<div class="distribute-note">';
         html += 'Students will be distributed evenly across selected teams.';
         html += '</div>';
 
-        html += '<div class="form-actions" style="margin-top:16px;">';
+        html += '<div class="form-actions">';
         html += '<button type="button" id="cancel-distribute" class="secondary">Cancel</button>';
         html += '<button type="button" id="confirm-distribute" class="primary">Distribute Students</button>';
         html += '</div>';
@@ -592,13 +527,6 @@
                 updateDistributeTeamList(container, classId);
             });
         }
-
-        // Confirm button - handled by ClassesEvents
-        var confirmBtn = document.getElementById('confirm-distribute');
-        if (confirmBtn) {
-            // Store classId for the event handler
-            confirmBtn.dataset.classId = classId;
-        }
     }
 
     // ============================================================
@@ -607,7 +535,9 @@
 
     function updateDistributeTeamList(container, classId) {
         var modal = document.getElementById('distribute-modal');
-        if (!modal) return;
+        if (!modal) {
+            return;
+        }
 
         var teams = ClassesQueries.getTeamsByClass(classId);
 
@@ -618,7 +548,9 @@
         var newMaxSize = parseInt(maxSizeInput ? maxSizeInput.value : 4, 10) || 4;
 
         var teamList = document.getElementById('distribute-team-list');
-        if (!teamList) return;
+        if (!teamList) {
+            return;
+        }
 
         var newAvailable = ClassesQueries.getAvailableStudentsForClass(classId, newWeek);
         var availableCount = document.getElementById('distribute-available-count');
@@ -627,6 +559,7 @@
             availableCount.textContent = newAvailable.length;
         }
 
+        // Preserve checkbox states
         var checkboxStates = {};
         var teamCheckboxes = teamList.querySelectorAll('.team-checkbox');
 
@@ -647,24 +580,22 @@
             if (activeCount >= newMaxSize) {
                 checked = '';
                 disabled = 'disabled';
-            } else if (Object.prototype.hasOwnProperty.call(checkboxStates, team.id)) {
+            } else if (checkboxStates[team.id] !== undefined) {
                 checked = checkboxStates[team.id] ? 'checked' : '';
             } else {
                 checked = 'checked';
             }
 
-            var safeTeamName = escapeHtml(team.name);
-            var safeTeamNumber = escapeHtml(team.teamNumber || '');
-            var safeTeamId = escapeHtml(team.id);
-
-            newHtml += '<label style="display:flex;align-items:center;gap:4px;font-size:0.75rem;cursor:pointer;padding:4px 8px;background:var(--bg);border-radius:4px;border:1px solid var(--border-soft);">';
-            newHtml += '<input type="checkbox" class="team-checkbox" value="' + safeTeamId + '" ' + checked + ' ' + disabled + '>';
-            newHtml += safeTeamName + (safeTeamNumber ? ' (#' + safeTeamNumber + ')' : '') + ' (' + activeCount + ' active members)';
-
-            if (disabled) {
-                newHtml += ' <span style="color:var(--danger);font-size:0.6rem;">FULL</span>';
+            newHtml += '<label class="distribute-team-option">';
+            newHtml += '<input type="checkbox" class="team-checkbox" value="' + escapeAttribute(team.id) + '" ' + checked + ' ' + disabled + '>';
+            newHtml += escapeHtml(team.name);
+            if (team.teamNumber) {
+                newHtml += ' (#' + escapeHtml(team.teamNumber) + ')';
             }
-
+            newHtml += ' (' + activeCount + ' active members)';
+            if (disabled) {
+                newHtml += ' <span class="distribute-team-full">FULL</span>';
+            }
             newHtml += '</label>';
         }
 
@@ -677,7 +608,9 @@
 
     function executeDistribution(container) {
         var modal = document.getElementById('distribute-modal');
-        if (!modal) return;
+        if (!modal) {
+            return;
+        }
 
         var classId = modal.dataset.classId;
         if (!classId) {
@@ -697,20 +630,17 @@
         var week = parseInt(weekInput ? weekInput.value : 1, 10) || 1;
         var maxSize = parseInt(maxSizeInput ? maxSizeInput.value : 4, 10) || 4;
 
-        if (week < 1 || week > 52) {
-            showNotification('Week must be between 1 and 52.', 'error');
+        if (week < MIN_WEEK || week > MAX_WEEK) {
+            showNotification('Week must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.', 'error');
             return;
         }
 
-        if (maxSize < 1 || maxSize > 20) {
-            showNotification('Max students per team must be between 1 and 20.', 'error');
+        if (maxSize < 1 || maxSize > MAX_TEAM_SIZE) {
+            showNotification('Max students per team must be between 1 and ' + MAX_TEAM_SIZE + '.', 'error');
             return;
         }
 
-        _state.distributionWeek = week;
-        _state.maxTeamSize = maxSize;
-
-        // Update main state if available
+        // Update state
         if (window.classesState && typeof window.classesState.setState === 'function') {
             window.classesState.setState({
                 distributionWeek: week,
@@ -747,16 +677,16 @@
 
         // Calculate available slots
         var teamActiveCounts = {};
-        for (var i = 0; i < teams.length; i++) {
-            var t = teams[i];
+        for (var tIdx = 0; tIdx < teams.length; tIdx++) {
+            var t = teams[tIdx];
             var activeMembers = TeamQueries.getActiveTeamMembers(t, week);
             teamActiveCounts[t.id] = activeMembers.length;
         }
 
         var totalAvailableSlots = 0;
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            var currentActive = teamActiveCounts[team.id] || 0;
+        for (var tIdx2 = 0; tIdx2 < teams.length; tIdx2++) {
+            var team2 = teams[tIdx2];
+            var currentActive = teamActiveCounts[team2.id] || 0;
             var availableSlots = Math.max(0, maxSize - currentActive);
             totalAvailableSlots += availableSlots;
         }
@@ -769,25 +699,25 @@
 
         // Shuffle students
         var shuffled = available.slice();
-        for (var i = shuffled.length - 1; i > 0; i--) {
-            var j = Math.floor(Math.random() * (i + 1));
-            var temp = shuffled[i];
-            shuffled[i] = shuffled[j];
+        for (var s = shuffled.length - 1; s > 0; s--) {
+            var j = Math.floor(Math.random() * (s + 1));
+            var temp = shuffled[s];
+            shuffled[s] = shuffled[j];
             shuffled[j] = temp;
         }
 
         var capacityExceeded = 0;
         var assignments = [];
 
-        for (var i = 0; i < shuffled.length; i++) {
-            var student = shuffled[i];
+        for (var assignIdx = 0; assignIdx < shuffled.length; assignIdx++) {
+            var student = shuffled[assignIdx];
 
             var availableTeams = [];
 
-            for (var j = 0; j < teams.length; j++) {
-                var t = teams[j];
-                if (teamActiveCounts[t.id] < maxSize) {
-                    availableTeams.push(t);
+            for (var teamIdx = 0; teamIdx < teams.length; teamIdx++) {
+                var tm = teams[teamIdx];
+                if (teamActiveCounts[tm.id] < maxSize) {
+                    availableTeams.push(tm);
                 }
             }
 
@@ -821,10 +751,9 @@
         var failCount = 0;
 
         // Add members using TeamCore
-        for (var i = 0; i < assignments.length; i++) {
-            var assignment = assignments[i];
+        for (var aIdx = 0; aIdx < assignments.length; aIdx++) {
+            var assignment = assignments[aIdx];
             try {
-                // Use TeamCore.addMember if available
                 if (window.TeamCore && typeof window.TeamCore.addMember === 'function') {
                     var result = window.TeamCore.addMember(assignment.teamId, {
                         characterId: assignment.studentId,
@@ -838,7 +767,6 @@
                         failCount++;
                     }
                 } else {
-                    // Fallback - show error
                     failCount++;
                 }
             } catch (e) {
@@ -876,7 +804,43 @@
             msg += '\n\nNo students were assigned. Please check team capacity and student availability.';
         }
 
-        persistMutation(msg, 'Distribution completed in memory, but persistence failed.');
+        showNotification(msg, 'success');
+
+        // Persist
+        if (typeof window.saveData === 'function') {
+            window.saveData().catch(function() {
+                showNotification('Distribution completed in memory, but persistence failed.', 'error');
+            });
+        }
+    }
+
+    // ============================================================
+    // HTML ESCAPING HELPERS
+    // ============================================================
+
+    function escapeHtml(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+        var str = String(value);
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;')
+            .replace(/`/g, '&#x60;');
+    }
+
+    function escapeAttribute(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+        var str = String(value);
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     // ============================================================
@@ -898,29 +862,9 @@
         updateDistributeTeamList: updateDistributeTeamList,
         executeDistribution: executeDistribution,
 
-        // State
-        getState: function() {
-            return {
-                selectedClassId: _state.selectedClassId,
-                distributionWeek: _state.distributionWeek,
-                maxTeamSize: _state.maxTeamSize
-            };
-        },
-        setState: function(newState) {
-            if (newState.selectedClassId !== undefined) {
-                _state.selectedClassId = newState.selectedClassId;
-            }
-            if (newState.distributionWeek !== undefined) {
-                _state.distributionWeek = newState.distributionWeek;
-            }
-            if (newState.maxTeamSize !== undefined) {
-                _state.maxTeamSize = newState.maxTeamSize;
-            }
-        },
-
         // Constants
-        MIN_WEEK: 1,
-        MAX_WEEK: 52
+        MIN_WEEK: MIN_WEEK,
+        MAX_WEEK: MAX_WEEK
     };
 
 })();
