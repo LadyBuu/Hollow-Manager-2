@@ -3,12 +3,34 @@
  * Handles form rendering, tab switching, and form field population
  * Path: js/modules/characters/character-form.js
  * 
+ * This module is responsible for:
+ *   - Rendering the character form in the right side container
+ *   - Tab switching between form sections
+ *   - Populating form fields from character data
+ *   - Collecting form data for save operations
+ *   - Delegating save operations to CharacterCRUD
+ * 
  * IMPORTANT:
  *   - USES CharacterQueries for character data and display names
- *   - USES ClassesQueries for class-related data
+ *   - USES CharacterCRUD for save operations (which uses the mutation pipeline)
+ *   - USES CharacterGenerator for random generation
+ *   - USES CharacterConstants for canonical constants
+ *   - USES NotificationSystem for notifications
  *   - USES DomUtils for safe DOM operations
- *   - Delegates save operations to CharacterCRUD
- *   - No direct data mutation or persistence calls
+ *   - No direct data mutation
+ *   - No direct persistence calls
+ *   - All user-controlled data is escaped using DomUtils.escapeHtml()
+ * 
+ * DEPENDENCIES:
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.CharacterCRUD (from character-crud.js)
+ *   - window.CharacterGenerator (from character-generator.js)
+ *   - window.CharacterConstants (from character-constants.js)
+ *   - window.NotificationSystem (from notification.js)
+ *   - window.DomUtils (from dom-utils.js)
+ *   - window.getCurrentEditId (from index.js)
+ *   - window.setCurrentEditId (from index.js)
+ *   - window.getGraduatingClasses (from classes-core.js)
  */
 
 (function() {
@@ -21,25 +43,23 @@
     window.__characterFormLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries || window;
-    var ClassesQueries = window.ClassesQueries || window;
-    var CharacterCRUD = window.CharacterCRUD || window;
-    var DomUtils = window.DomUtils || window;
-    var NotificationSystem = window.NotificationSystem || window;
+    var CharacterQueries = window.CharacterQueries;
+    var CharacterCRUD = window.CharacterCRUD;
+    var CharacterGenerator = window.CharacterGenerator;
+    var NotificationSystem = window.NotificationSystem;
+    var DomUtils = window.DomUtils;
     var CC = window.CharacterConstants;
 
     // ============================================================
-    // CONSTANTS
+    // CONSTANTS - From CharacterConstants (MANDATORY)
     // ============================================================
 
-    var STAT_MIN = CC ? CC.STAT_MIN : 1;
-    var STAT_MAX = CC ? CC.STAT_MAX : 50;
-    var STAT_DEFAULT = CC ? CC.STAT_DEFAULT : 10;
-    var MAGIC_MAX = CC ? CC.MAGIC_MAX : 10;
-    var MAGIC_TYPE_KEYS = CC ? CC.MAGIC_TYPE_KEYS : [];
+    var STAT_MIN = CC.STAT_MIN;
+    var STAT_MAX = CC.STAT_MAX;
+    var STAT_DEFAULT = CC.STAT_DEFAULT;
 
     // ============================================================
     // STATE
@@ -59,34 +79,29 @@
         var missing = [];
 
         var required = [
-            'getCurrentEditId',
-            'setCurrentEditId'
+            { name: 'CharacterQueries', obj: CharacterQueries, methods: ['getCharacterById', 'getDisplayName'] },
+            { name: 'CharacterCRUD', obj: CharacterCRUD, methods: ['save'] },
+            { name: 'CharacterGenerator', obj: CharacterGenerator, methods: ['generatePhysical', 'generatePersonality', 'generateStats'] },
+            { name: 'NotificationSystem', obj: NotificationSystem, methods: ['notify'] },
+            { name: 'DomUtils', obj: DomUtils, methods: ['escapeHtml'] },
+            { name: 'CharacterConstants', obj: CC, methods: [] },
+            { name: 'window.getCurrentEditId', obj: window, methods: ['getCurrentEditId'] },
+            { name: 'window.setCurrentEditId', obj: window, methods: ['setCurrentEditId'] }
         ];
 
-        required.forEach(function(name) {
-            if (typeof window[name] !== 'function') {
-                missing.push(name);
+        required.forEach(function(req) {
+            if (!req.obj) {
+                missing.push(req.name + ' (not loaded)');
+                return;
+            }
+            if (req.methods) {
+                req.methods.forEach(function(method) {
+                    if (typeof req.obj[method] !== 'function') {
+                        missing.push(req.name + '.' + method);
+                    }
+                });
             }
         });
-
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-
-        if (!CharacterCRUD || typeof CharacterCRUD.save !== 'function') {
-            missing.push('CharacterCRUD.save');
-        }
-
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
-        }
-
-        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
-            missing.push('NotificationSystem.notify');
-        }
 
         if (missing.length > 0) {
             console.warn('CharacterForm: Missing dependencies:', missing.join(', '));
@@ -96,46 +111,26 @@
     }
 
     // ============================================================
-    // NOTIFICATION
+    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
-        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
-            NotificationSystem.notify(message, type);
-        } else if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
+        NotificationSystem.notify(message, type);
     }
 
     // ============================================================
-    // HTML ESCAPING
+    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
     function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        if (value === undefined || value === null) return '';
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;')
-            .replace(/`/g, '&#x60;');
+        return DomUtils.escapeHtml(value);
     }
 
     // ============================================================
     // ENSURE FORM ELEMENTS EXIST
     // ============================================================
 
-    /**
-     * Ensure the character form and its content container exist.
-     * Creates them if they don't exist.
-     */
     function ensureFormElements() {
         var container = document.getElementById('character-form-container');
         if (!container) {
@@ -199,7 +194,6 @@
 
         var content = document.getElementById('character-form-content');
         if (!content) {
-            // This should never happen if form was created above, but just in case
             content = document.createElement('div');
             content.id = 'character-form-content';
             content.innerHTML = '<p class="empty-state">Select a character from the list to view and edit details.</p>';
@@ -230,7 +224,7 @@
         var content = elements.content;
 
         if (!editId) {
-            editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+            editId = window.getCurrentEditId();
         }
 
         var char = null;
@@ -261,7 +255,7 @@
         }
 
         // Get current year for age calculation
-        var currentYear = window.data && window.data.currentYear ? window.data.currentYear : new Date().getFullYear();
+        var currentYear = getCurrentYear();
 
         // Build the form HTML
         var html = getCharacterFormHTML(char, editId, currentYear);
@@ -280,17 +274,6 @@
 
         // Show the form
         form.style.display = 'block';
-
-        // Trigger any post-render updates
-        if (window.CharacterStatsView && typeof window.CharacterStatsView.updateClassSuggestion === 'function') {
-            window.CharacterStatsView.updateClassSuggestion();
-        }
-        if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicClassSuggestion === 'function') {
-            window.CharacterStatsView.updateMagicClassSuggestion();
-        }
-        if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicPowerDisplay === 'function') {
-            window.CharacterStatsView.updateMagicPowerDisplay();
-        }
     }
 
     /**
@@ -317,6 +300,22 @@
     }
 
     // ============================================================
+    // GET CURRENT YEAR - From canonical source
+    // ============================================================
+
+    function getCurrentYear() {
+        if (window.CalendarCore && typeof window.CalendarCore.getCurrentYear === 'function') {
+            return window.CalendarCore.getCurrentYear();
+        }
+        // Fallback to window.data
+        if (window.data && window.data.currentYear) {
+            return window.data.currentYear;
+        }
+        // Emergency fallback - should never be reached
+        return 1920;
+    }
+
+    // ============================================================
     // CHARACTER FORM HTML
     // ============================================================
 
@@ -340,7 +339,7 @@
                 </div>
                 <div class="form-actions" style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
                     <button type="button" id="cancel-character-form" class="secondary" style="font-size:0.75rem;padding:6px 12px;">Cancel</button>
-                    <button type="button" id="save-character-btn" class="primary" style="font-size:0.75rem;padding:6px 12px;">${editId ? 'Update' : 'Create'} Character</button>
+                    <button type="submit" id="save-character-btn" class="primary" style="font-size:0.75rem;padding:6px 12px;">${editId ? 'Update' : 'Create'} Character</button>
                 </div>
             </div>
         `;
@@ -372,12 +371,14 @@
     }
 
     // ============================================================
-    // NAME TAB
+    // NAME TAB - With Class Dropdown
     // ============================================================
 
     function getNameTabHTML(char, editId) {
         var active = state.currentTab === 'name' ? 'block' : 'none';
         var c = char || {};
+
+        // Get graduating class options for dropdown
         var classOptions = getClassOptionsHTML(c.graduatingClassId);
 
         return `
@@ -420,6 +421,8 @@
                         <input type="text" id="char-age" value="${c.birthYear ? getCurrentYear() - parseInt(c.birthYear, 10) : ''}" readonly style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
+
+                <!-- Graduating Class Dropdown -->
                 <div class="form-group" style="margin-top:8px;">
                     <label style="font-size:0.7rem;color:var(--text-dim);">Graduating Class</label>
                     <select id="char-graduatingClass" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
@@ -430,6 +433,7 @@
                         <label for="char-isInstructor" style="font-size:0.65rem;color:var(--text-dim);">Is an instructor (not a student)</label>
                     </div>
                 </div>
+
                 <div style="font-size:0.6rem;color:var(--text-dim);margin-top:4px;">* Required fields</div>
             </div>
         `;
@@ -451,12 +455,8 @@
         return html;
     }
 
-    function getCurrentYear() {
-        return window.data && window.data.currentYear ? window.data.currentYear : new Date().getFullYear();
-    }
-
     // ============================================================
-    // OTHER TABS
+    // OTHER TABS - Using CharacterQueries for display names
     // ============================================================
 
     function getPhysicalTabHTML(char) {
@@ -608,7 +608,7 @@
 
     function getStatsTabHTML(char) {
         var active = state.currentTab === 'stats' ? 'block' : 'none';
-        var stats = char && char.stats ? char.stats : { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
+        var stats = char && char.stats ? char.stats : {};
 
         var html = `
             <div class="tab-panel" data-tab="stats" style="display:${active};">
@@ -626,10 +626,11 @@
 
         for (var key in statLabels) {
             if (!Object.prototype.hasOwnProperty.call(statLabels, key)) continue;
+            var value = stats[key] !== undefined ? stats[key] : STAT_DEFAULT;
             html += `
                 <div class="form-group">
                     <label style="font-size:0.7rem;color:var(--text-dim);">${statLabels[key]}</label>
-                    <input type="number" id="char-stat-${key}" value="${stats[key] !== undefined ? stats[key] : 10}" min="${STAT_MIN}" max="${STAT_MAX}" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;text-align:center;">
+                    <input type="number" id="char-stat-${key}" value="${value}" min="${STAT_MIN}" max="${STAT_MAX}" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;text-align:center;">
                 </div>
             `;
         }
@@ -680,7 +681,7 @@
     }
 
     // ============================================================
-    // POPULATE CLASS DROPDOWN
+    // POPULATE CLASS DROPDOWN - Uses getGraduatingClasses
     // ============================================================
 
     function populateClassDropdown(char) {
@@ -714,6 +715,7 @@
     function populateFormFields(char) {
         if (!char) return;
 
+        // Name fields
         setFieldValue('char-firstName', char.firstName);
         setFieldValue('char-lastName', char.lastName);
         setFieldValue('char-middleName', char.middleName);
@@ -722,6 +724,7 @@
         setFieldValue('char-gender', char.gender);
         setFieldValue('char-birthYear', char.birthYear);
 
+        // Physical
         setFieldValue('char-eyes', char.eyes);
         setFieldValue('char-hair', char.hair);
         setFieldValue('char-skin', char.skin);
@@ -730,6 +733,7 @@
         setFieldValue('char-build', char.build);
         setFieldValue('char-appearanceNotes', char.appearanceNotes);
 
+        // Personality
         if (char.personality) {
             setFieldValue('char-personality-traits', char.personality.traits);
             setFieldValue('char-personality-ideals', char.personality.ideals);
@@ -743,28 +747,34 @@
             setFieldValue('char-personality-goals', char.personality.goals);
         }
 
+        // Professional
         if (Array.isArray(char.careerStatus)) {
             setFieldValue('char-careerStatus', JSON.stringify(char.careerStatus, null, 2));
         }
         setFieldValue('char-specialty', char.specialty);
 
+        // Social
         setFieldValue('char-attraction', char.attraction);
         setFieldValue('char-sexuality', char.sexuality);
 
+        // Notes
         setFieldValue('char-notes', char.notes);
 
+        // Class checkbox
         var checkbox = document.getElementById('char-isInstructor');
         if (checkbox) {
             checkbox.checked = char.graduatingClassInstructor || false;
         }
 
+        // Stats - use STAT_DEFAULT for missing values
         if (char.stats) {
             for (var key in char.stats) {
                 if (!Object.prototype.hasOwnProperty.call(char.stats, key)) continue;
-                setFieldValue('char-stat-' + key, char.stats[key]);
+                setFieldValue('char-stat-' + key, char.stats[key] !== undefined ? char.stats[key] : STAT_DEFAULT);
             }
         }
 
+        // Class IDs
         if (Array.isArray(char.classIds)) {
             setFieldValue('char-classIds', char.classIds.join(', '));
         }
@@ -782,8 +792,11 @@
     // ============================================================
 
     function bindFormEvents(editId, char) {
+        var formContainer = document.querySelector('.character-form-container');
+        if (!formContainer) return;
+
         // Tab switching
-        var tabBtns = document.querySelectorAll('.form-tab-btn');
+        var tabBtns = formContainer.querySelectorAll('.form-tab-btn');
         tabBtns.forEach(function(btn) {
             btn.addEventListener('click', function() {
                 var tab = this.dataset.tab;
@@ -808,70 +821,67 @@
             });
         }
 
-        // Random buttons
+        // Random Physical - Uses CharacterGenerator
         var randomPhysicalBtn = document.getElementById('random-physical-btn');
         if (randomPhysicalBtn) {
-            randomPhysicalBtn.addEventListener('click', fillRandomPhysical);
+            randomPhysicalBtn.addEventListener('click', function() {
+                fillRandomPhysical();
+            });
         }
 
+        // Random Personality - Uses CharacterGenerator
         var randomPersonalityBtn = document.getElementById('random-personality-btn');
         if (randomPersonalityBtn) {
-            randomPersonalityBtn.addEventListener('click', fillRandomPersonality);
+            randomPersonalityBtn.addEventListener('click', function() {
+                fillRandomPersonality();
+            });
         }
 
+        // Random Stats - Uses CharacterGenerator
         var randomStatsBtn = document.getElementById('random-stats-btn');
         if (randomStatsBtn) {
-            randomStatsBtn.addEventListener('click', fillRandomStats);
+            randomStatsBtn.addEventListener('click', function() {
+                fillRandomStats();
+            });
         }
 
-        // Cancel button
+        // Cancel button - clear selection
         var cancelBtn = document.getElementById('cancel-character-form');
         if (cancelBtn) {
             cancelBtn.addEventListener('click', function() {
-                if (typeof window.setCurrentEditId === 'function') {
-                    window.setCurrentEditId(null);
-                }
+                window.setCurrentEditId(null);
                 hideCharacterForm();
             });
         }
 
-        // Save button
+        // Save button - Uses CharacterCRUD
         var saveBtn = document.getElementById('save-character-btn');
         if (saveBtn) {
             saveBtn.addEventListener('click', function() {
-                if (CharacterCRUD && typeof CharacterCRUD.save === 'function') {
-                    CharacterCRUD.save()
-                        .then(function(success) {
-                            if (success) {
-                                var savedChar = CharacterQueries.getCharacterById(
-                                    typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null
-                                );
-                                if (savedChar) {
-                                    var nameDisplay = document.getElementById('current-char-name');
-                                    if (nameDisplay) {
-                                        nameDisplay.textContent = CharacterQueries.getDisplayName(savedChar);
-                                    }
+                CharacterCRUD.save()
+                    .then(function(success) {
+                        if (success) {
+                            var savedChar = CharacterQueries.getCharacterById(
+                                window.getCurrentEditId()
+                            );
+                            if (savedChar) {
+                                var nameDisplay = document.getElementById('current-char-name');
+                                if (nameDisplay) {
+                                    nameDisplay.textContent = CharacterQueries.getDisplayName(savedChar);
                                 }
                             }
-                        });
-                } else {
-                    showNotification('Save functionality not available.', 'error');
-                }
+                        }
+                    });
             });
         }
 
-        // Enter key
-        var formContainer = document.querySelector('.character-form-container');
-        if (formContainer) {
-            formContainer.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') {
-                    e.preventDefault();
-                    if (CharacterCRUD && typeof CharacterCRUD.save === 'function') {
-                        CharacterCRUD.save();
-                    }
-                }
-            });
-        }
+        // Enter key on form
+        formContainer.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') {
+                e.preventDefault();
+                CharacterCRUD.save();
+            }
+        });
     }
 
     // ============================================================
@@ -899,78 +909,39 @@
     }
 
     // ============================================================
-    // RANDOM GENERATORS
+    // RANDOM GENERATORS - Uses CharacterGenerator
     // ============================================================
 
     function fillRandomPhysical() {
-        var eyes = ['Blue', 'Brown', 'Green', 'Grey', 'Hazel', 'Amber', 'Violet', 'Black', 'Honey'];
-        var hair = ['Blonde', 'Brown', 'Black', 'Red', 'Auburn', 'Chestnut', 'Silver', 'White', 'Platinum', 'Honey'];
-        var skin = ['Fair', 'Olive', 'Light Brown', 'Dark Brown', 'Pale', 'Tan', 'Ebony', 'Porcelain'];
-        var heights = ['165', '170', '175', '180', '185', '190', '160', '167', '172', '178', '182', '188'];
-        var builds = ['Slim', 'Athletic', 'Broad', 'Stocky', 'Lithe', 'Muscular', 'Willowy', 'Compact', 'Heavy'];
-
-        setFieldValue('char-eyes', randomChoice(eyes));
-        setFieldValue('char-hair', randomChoice(hair));
-        setFieldValue('char-skin', randomChoice(skin));
-        setFieldValue('char-height', randomChoice(heights));
-        setFieldValue('char-build', randomChoice(builds));
-        setFieldValue('char-weight', (60 + Math.floor(Math.random() * 40)) + 'kg');
+        var physical = CharacterGenerator.generatePhysical();
+        setFieldValue('char-eyes', physical.eyes);
+        setFieldValue('char-hair', physical.hair);
+        setFieldValue('char-skin', physical.skin);
+        setFieldValue('char-height', physical.height);
+        setFieldValue('char-weight', physical.weight);
+        setFieldValue('char-build', physical.build);
     }
 
     function fillRandomPersonality() {
-        var traits = [
-            'Brave, Honest, Loyal', 'Cunning, Ambitious, Charming', 'Wise, Patient, Kind',
-            'Fierce, Proud, Determined', 'Quiet, Observant, Clever', 'Bold, Reckless, Passionate',
-            'Calm, Collected, Strategic', 'Playful, Curious, Optimistic', 'Gruff, Loyal, Protective',
-            'Elegant, Diplomatic, Calculating', 'Wild, Free-spirited, Intuitive', 'Stoic, Disciplined, Focused'
-        ];
-
-        var ideals = [
-            'Honor and Duty', 'Freedom and Choice', 'Knowledge and Truth',
-            'Justice and Fairness', 'Power and Ambition', 'Peace and Harmony',
-            'Tradition and Order', 'Change and Progress', 'Loyalty and Family'
-        ];
-
-        var bonds = [
-            'Protecting their family', 'A childhood friend', 'Their homeland',
-            'A mentor who saved them', 'A sacred oath', 'Their closest ally',
-            'A lost loved one', 'Their honor', 'A promise made'
-        ];
-
-        var flaws = [
-            'Too trusting', 'Quick to anger', 'Afraid of failure',
-            'Reckless in pursuit of goals', 'Too proud to ask for help',
-            'Haunted by a past mistake', 'Perfectionist', 'Distrustful of others'
-        ];
-
-        var alignments = [
-            'Lawful Good', 'Neutral Good', 'Chaotic Good',
-            'Lawful Neutral', 'True Neutral', 'Chaotic Neutral',
-            'Lawful Evil', 'Neutral Evil', 'Chaotic Evil'
-        ];
-
-        setFieldValue('char-personality-traits', randomChoice(traits));
-        setFieldValue('char-personality-ideals', randomChoice(ideals));
-        setFieldValue('char-personality-bonds', randomChoice(bonds));
-        setFieldValue('char-personality-flaws', randomChoice(flaws));
-        setFieldValue('char-personality-alignment', randomChoice(alignments));
-        setFieldValue('char-personality-likes', randomChoice(['Music', 'Books', 'Nature', 'Art', 'Animals', 'Good Food', 'Stories', 'Games']));
-        setFieldValue('char-personality-dislikes', randomChoice(['Lies', 'Cruelty', 'Arrogance', 'Crowds', 'Loud Noises', 'Injustice', 'Boredom']));
-        setFieldValue('char-personality-habits', randomChoice(['Hums while working', 'Taps fingers when thinking', 'Collects small trinkets', 'Talks to themselves', 'Fidgets with a lucky charm']));
-        setFieldValue('char-personality-fears', randomChoice(['Heights', 'Spiders', 'Claustrophobia', 'Being forgotten', 'Failure', 'Loss of control']));
-        setFieldValue('char-personality-goals', randomChoice(['To protect the innocent', 'To achieve greatness', 'To find purpose', 'To restore honor', 'To discover truth', 'To build something lasting']));
+        var personality = CharacterGenerator.generatePersonality();
+        setFieldValue('char-personality-traits', personality.traits);
+        setFieldValue('char-personality-ideals', personality.ideals);
+        setFieldValue('char-personality-bonds', personality.bonds);
+        setFieldValue('char-personality-flaws', personality.flaws);
+        setFieldValue('char-personality-alignment', personality.alignment);
+        setFieldValue('char-personality-likes', personality.likes);
+        setFieldValue('char-personality-dislikes', personality.dislikes);
+        setFieldValue('char-personality-habits', personality.habits);
+        setFieldValue('char-personality-fears', personality.fears);
+        setFieldValue('char-personality-goals', personality.goals);
     }
 
     function fillRandomStats() {
+        var stats = CharacterGenerator.generateStats();
         var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-        for (var i = 0; i < statKeys.length; i++) {
-            var val = 8 + Math.floor(Math.random() * 18);
-            setFieldValue('char-stat-' + statKeys[i], val);
-        }
-    }
-
-    function randomChoice(arr) {
-        return arr[Math.floor(Math.random() * arr.length)];
+        statKeys.forEach(function(key) {
+            setFieldValue('char-stat-' + key, stats[key] !== undefined ? stats[key] : STAT_DEFAULT);
+        });
     }
 
     // ============================================================
