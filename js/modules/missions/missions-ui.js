@@ -21,7 +21,7 @@
  *   - window.MissionsCore (required)
  *   - window.MissionsRender (required)
  *   - window.MissionsQueries (required)
- *   - window.saveData (required - but handled defensively)
+ *   - window.saveData (required)
  *   - window.NotificationSystem (from notification.js)
  *   - window.TabManager (from tab-manager.js)
  * 
@@ -37,30 +37,35 @@
     'use strict';
 
     // Guard: Check dependencies BEFORE marking as loaded
-    if (window.__missionsUILoaded) return;
-
-    // ============================================================
-    // DEPENDENCIES - Defensive loading
-    // ============================================================
-
-    // Create dummy saveData if not available (prevents errors during load)
-    if (typeof window.saveData !== 'function') {
-        console.warn('MissionsUI: saveData() is not available. Persistence will be disabled.');
-        window.saveData = function() {
-            return Promise.resolve(true);
-        };
+    if (window.__missionsUILoaded) {
+        return;
     }
+
+    // ============================================================
+    // DEPENDENCY CHECK - NO FALLBACKS
+    // ============================================================
 
     if (!window.MissionsCore) {
-        console.error('MissionsUI: MissionsCore required.');
         return;
     }
+
     if (!window.MissionsRender) {
-        console.error('MissionsUI: MissionsRender required.');
         return;
     }
+
     if (!window.MissionsQueries) {
-        console.error('MissionsUI: MissionsQueries required.');
+        return;
+    }
+
+    if (typeof window.saveData !== 'function') {
+        return;
+    }
+
+    if (!window.NotificationSystem || typeof window.NotificationSystem.notify !== 'function') {
+        return;
+    }
+
+    if (!window.TabManager || typeof window.TabManager.register !== 'function') {
         return;
     }
 
@@ -70,6 +75,8 @@
     var Core = window.MissionsCore;
     var Render = window.MissionsRender;
     var Queries = window.MissionsQueries;
+    var NotificationSystem = window.NotificationSystem;
+    var TabManager = window.TabManager;
 
     // ============================================================
     // CONSTANTS
@@ -87,6 +94,8 @@
         currentMissionId: null,
         currentFilter: 'all'
     };
+
+    var _eventListeners = [];
 
     // ============================================================
     // PERSISTENCE QUEUE - Serializes saves to prevent race conditions
@@ -107,28 +116,12 @@
     }
 
     // ============================================================
-    // NOTIFICATION SYSTEM (Private)
+    // NOTIFICATION SYSTEM
     // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
-
-        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
-            window.NotificationSystem.notify(message, type);
-            return;
-        }
-
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
-        }
-
-        if (typeof window.notify === 'function') {
-            window.notify(message, type);
-            return;
-        }
-
-        console.log('[' + type + ']', message);
+        NotificationSystem.notify(message, type);
     }
 
     /**
@@ -156,6 +149,35 @@
     }
 
     // ============================================================
+    // SAFE EVENT BINDING WITH CLEANUP
+    // ============================================================
+
+    function addSafeEventListener(element, eventName, handler, options) {
+        if (!element) {
+            return;
+        }
+        element.addEventListener(eventName, handler, options || false);
+        _eventListeners.push({
+            element: element,
+            eventName: eventName,
+            handler: handler,
+            options: options || false
+        });
+    }
+
+    function removeAllEventListeners() {
+        for (var i = 0; i < _eventListeners.length; i++) {
+            var item = _eventListeners[i];
+            try {
+                item.element.removeEventListener(item.eventName, item.handler, item.options);
+            } catch (e) {
+                // Ignore errors during cleanup
+            }
+        }
+        _eventListeners = [];
+    }
+
+    // ============================================================
     // PERSISTENCE HELPER
     // ============================================================
 
@@ -176,7 +198,6 @@
             var result = operation();
 
             if (!result) {
-                console.warn('MissionsUI: ' + operationName + ' failed.');
                 return false;
             }
 
@@ -188,11 +209,6 @@
                     }
                 })
                 .catch(function(err) {
-                    console.error('MissionsUI: Failed to persist ' + operationName + ':', err);
-                    showNotification(
-                        'Changes were made but could not be saved to storage. Please try again.',
-                        'error'
-                    );
                     if (typeof onError === 'function') {
                         onError(err);
                     }
@@ -204,7 +220,6 @@
 
             return true;
         } catch (err) {
-            console.error('MissionsUI: ' + operationName + ' threw an error:', err);
             showNotification('Operation failed: ' + err.message, 'error');
             return false;
         }
@@ -215,7 +230,7 @@
     // ============================================================
 
     function normaliseId(id) {
-        return id !== undefined && id !== null ? String(id) : null;
+        return Queries.normaliseId(id);
     }
 
     // ============================================================
@@ -223,35 +238,42 @@
     // ============================================================
 
     function populateTeamSelect(select, currentValue) {
-        if (!select) return;
+        if (!select) {
+            return;
+        }
 
         var data = window.data || {};
         var teams = Array.isArray(data.teams) ? data.teams : [];
 
         select.innerHTML = '<option value="">Unassigned</option>';
 
-        var activeTeams = teams.filter(function(t) {
-            return t && typeof t === 'object' && t.status === 'active';
-        });
+        var activeTeams = [];
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (team && typeof team === 'object' && team.status === 'active') {
+                activeTeams.push(team);
+            }
+        }
 
         activeTeams.sort(function(a, b) {
             return (a.name || '').localeCompare(b.name || '');
         });
 
-        activeTeams.forEach(function(team) {
+        for (var j = 0; j < activeTeams.length; j++) {
+            var team2 = activeTeams[j];
             var option = document.createElement('option');
-            option.value = team.id;
-            option.textContent = team.name || 'Unknown Team';
-            if (currentValue && String(team.id) === String(currentValue)) {
+            option.value = team2.id;
+            option.textContent = team2.name || 'Unknown Team';
+            if (currentValue && String(team2.id) === String(currentValue)) {
                 option.selected = true;
             }
             select.appendChild(option);
-        });
+        }
 
         if (currentValue) {
             var exists = false;
-            for (var i = 0; i < select.options.length; i++) {
-                if (select.options[i].value === currentValue) {
+            for (var k = 0; k < select.options.length; k++) {
+                if (select.options[k].value === currentValue) {
                     exists = true;
                     break;
                 }
@@ -265,9 +287,14 @@
     function getAvailableTeams() {
         var data = window.data || {};
         var teams = Array.isArray(data.teams) ? data.teams : [];
-        return teams.filter(function(t) {
-            return t && typeof t === 'object' && t.status === 'active';
-        });
+        var result = [];
+        for (var i = 0; i < teams.length; i++) {
+            var team = teams[i];
+            if (team && typeof team === 'object' && team.status === 'active') {
+                result.push(team);
+            }
+        }
+        return result;
     }
 
     function getTeamName(teamId) {
@@ -286,34 +313,57 @@
 
     function setupModalOutsideClick(modalId, closeFn) {
         var modal = document.getElementById(modalId);
-        if (!modal) return;
-        if (modal._outsideListener) return;
+        if (!modal) {
+            return;
+        }
+        if (modal._outsideListener) {
+            return;
+        }
         modal._outsideListener = true;
 
-        modal.addEventListener('click', function(e) {
+        addSafeEventListener(modal, 'click', function(e) {
             if (e.target === modal) {
                 closeFn();
             }
         });
     }
 
+    function setupModalCloseButton(modalId, closeFn) {
+        var modal = document.getElementById(modalId);
+        if (!modal) {
+            return;
+        }
+
+        var closeButtons = modal.querySelectorAll('.close-modal');
+        for (var i = 0; i < closeButtons.length; i++) {
+            var btn = closeButtons[i];
+            addSafeEventListener(btn, 'click', function(e) {
+                e.stopPropagation();
+                closeFn();
+            });
+        }
+    }
+
     // ============================================================
     // DETAIL EVENTS
     // ============================================================
 
-    function attachDetailEvents(modal) {
-        var content = modal.querySelector('#mission-detail-content');
-        if (!content) return;
+    function attachDetailEvents(container) {
+        if (container._detailEventsAttached) {
+            return;
+        }
+        container._detailEventsAttached = true;
 
-        if (content._detailEventsAttached) return;
-        content._detailEventsAttached = true;
-
-        content.addEventListener('click', function(e) {
-            var missionId = modal.dataset.missionId;
-            if (!missionId) return;
+        addSafeEventListener(container, 'click', function(e) {
+            var missionId = container.dataset.missionId;
+            if (!missionId) {
+                return;
+            }
 
             var mission = Core.getMission(missionId);
-            if (!mission) return;
+            if (!mission) {
+                return;
+            }
 
             var target = e.target;
 
@@ -330,7 +380,7 @@
             // Add objective
             var addBtn = target.closest('#add-objective-btn');
             if (addBtn) {
-                var input = content.querySelector('#new-objective-input');
+                var input = container.querySelector('#new-objective-input');
                 if (input && input.value.trim()) {
                     addObjective(missionId, input.value.trim());
                 }
@@ -350,20 +400,6 @@
                 showMissionForm(missionId);
                 return;
             }
-
-            // Complete mission
-            var completeBtn = target.closest('#complete-mission-btn');
-            if (completeBtn) {
-                completeMissionHandler(missionId);
-                return;
-            }
-
-            // Cancel mission
-            var cancelBtn = target.closest('#cancel-mission-btn');
-            if (cancelBtn) {
-                cancelMissionHandler(missionId);
-                return;
-            }
         });
     }
 
@@ -372,10 +408,12 @@
     // ============================================================
 
     function attachListEvents(container) {
-        if (container._listEventsAttached) return;
+        if (container._listEventsAttached) {
+            return;
+        }
         container._listEventsAttached = true;
 
-        container.addEventListener('click', function(e) {
+        addSafeEventListener(container, 'click', function(e) {
             var target = e.target;
 
             var viewBtn = target.closest('.view-mission');
@@ -410,7 +448,7 @@
         var addBtn = document.getElementById('add-mission-btn');
         if (addBtn && !addBtn._listener) {
             addBtn._listener = true;
-            addBtn.addEventListener('click', function() {
+            addSafeEventListener(addBtn, 'click', function() {
                 showMissionForm();
             });
         }
@@ -418,7 +456,7 @@
         var filterSelect = document.getElementById('mission-filter');
         if (filterSelect && !filterSelect._listener) {
             filterSelect._listener = true;
-            filterSelect.addEventListener('change', function() {
+            addSafeEventListener(filterSelect, 'change', function() {
                 state.currentFilter = this.value;
                 renderMissionList(document.getElementById('tab-missions'));
             });
@@ -433,89 +471,40 @@
         if (!container) {
             container = document.getElementById('tab-missions');
         }
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         if (!window.data) {
             container.innerHTML = '<p class="empty-state">Loading mission data...</p>';
             return;
         }
 
-        container.innerHTML = getMissionsHTML();
+        // Remove existing listeners before rendering
+        removeAllEventListeners();
+
+        container.innerHTML = Render.renderContainer();
         renderMissionList(container);
     }
 
-    function getMissionsHTML() {
-        var filterOptions = '';
-        var filterValues = ['all', 'active', 'completed', 'cancelled'];
-        var filterLabels = ['All Missions', 'Active', 'Completed', 'Cancelled'];
-
-        for (var i = 0; i < filterValues.length; i++) {
-            var selected = state.currentFilter === filterValues[i] ? ' selected' : '';
-            filterOptions += '<option value="' + filterValues[i] + '"' + selected + '>' + filterLabels[i] + '</option>';
-        }
-
-        return `
-            <div class="page-header">
-                <h2>Missions</h2>
-                <button id="add-mission-btn" class="primary">+ New Mission</button>
-            </div>
-            <div class="filter-section">
-                <label for="mission-filter">Filter:</label>
-                <select id="mission-filter">
-                    ${filterOptions}
-                </select>
-                <span id="mission-count" style="font-size:0.75rem;color:var(--text-dim);margin-left:8px;">Total: 0</span>
-            </div>
-            <div id="mission-list">
-                <div id="missions-container">
-                    <p class="empty-state">No missions created yet.</p>
-                </div>
-            </div>
-            ${getModalsHTML()}
-        `;
-    }
-
-    function getModalsHTML() {
-        return `
-            <div id="mission-form-modal" class="modal hidden">
-                <div class="modal-content modal-form-content">
-                    <div class="modal-header">
-                        <h3 id="mission-form-title">Create Mission</h3>
-                        <button class="close-modal" id="close-mission-form">&times;</button>
-                    </div>
-                    <div class="modal-body">
-                        <div id="mission-form-content"></div>
-                    </div>
-                </div>
-            </div>
-
-            <div id="mission-detail-modal" class="modal hidden">
-                <div class="modal-content modal-detail-content">
-                    <div class="modal-header">
-                        <h3 id="detail-mission-title">Mission</h3>
-                        <button class="close-modal" id="close-mission-detail">&times;</button>
-                    </div>
-                    <div class="modal-body">
-                        <div id="mission-detail-content"></div>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-
     function renderMissionList(container) {
-        var listContainer = container ? container.querySelector('#missions-container') : document.getElementById('missions-container');
+        var listContainer = container ? container.querySelector('#missions-list') : document.getElementById('missions-list');
         var countEl = container ? container.querySelector('#mission-count') : document.getElementById('mission-count');
 
-        if (!listContainer) return;
+        if (!listContainer) {
+            return;
+        }
 
         var filter = state.currentFilter || 'all';
         var missions = Core.getMissions();
 
-        var filteredMissions = missions.filter(function(m) {
-            if (filter === 'all') return true;
-            return m.status === filter;
-        });
+        var filteredMissions = [];
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            if (filter === 'all' || m.status === filter) {
+                filteredMissions.push(m);
+            }
+        }
 
         if (countEl) {
             countEl.textContent = 'Total: ' + filteredMissions.length;
@@ -525,6 +514,10 @@
         listContainer.innerHTML = html;
 
         attachListEvents(listContainer);
+    }
+
+    function destroyMissions() {
+        removeAllEventListeners();
     }
 
     // ============================================================
@@ -541,13 +534,19 @@
         state.currentMissionId = normaliseId(id);
 
         var modal = document.getElementById('mission-detail-modal');
-        if (!modal) return;
+        if (!modal) {
+            return;
+        }
 
         var title = document.getElementById('detail-mission-title');
-        if (title) title.textContent = mission.title;
+        if (title) {
+            title.textContent = mission.title;
+        }
 
         var content = document.getElementById('mission-detail-content');
-        if (!content) return;
+        if (!content) {
+            return;
+        }
 
         var html = Render.renderDetail(mission);
         content.innerHTML = html;
@@ -556,38 +555,12 @@
         modal.classList.remove('hidden');
 
         setupModalOutsideClick('mission-detail-modal', closeMissionDetail);
+        setupModalCloseButton('mission-detail-modal', closeMissionDetail);
 
-        // Bind close button
-        var closeBtn = document.getElementById('close-mission-detail');
-        if (closeBtn) {
-            var newCloseBtn = closeBtn.cloneNode(true);
-            closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
-            newCloseBtn.addEventListener('click', function(e) {
-                e.stopPropagation();
-                closeMissionDetail();
-            });
-        }
+        // Store missionId on content for event delegation
+        content.dataset.missionId = id;
 
-        // Also handle any .close-modal inside the modal
-        var modalCloseBtns = modal.querySelectorAll('.close-modal');
-        modalCloseBtns.forEach(function(btn) {
-            if (btn.id !== 'close-mission-detail') {
-                var newBtn = btn.cloneNode(true);
-                btn.parentNode.replaceChild(newBtn, btn);
-                newBtn.addEventListener('click', function(e) {
-                    e.stopPropagation();
-                    closeMissionDetail();
-                });
-            }
-        });
-
-        // Populate team select
-        var teamSelect = content.querySelector('#mission-team-select');
-        if (teamSelect) {
-            populateTeamSelect(teamSelect, mission.assignedTeamId);
-        }
-
-        attachDetailEvents(modal);
+        attachDetailEvents(content);
     }
 
     function closeMissionDetail() {
@@ -597,6 +570,7 @@
             var content = document.getElementById('mission-detail-content');
             if (content) {
                 content.innerHTML = '';
+                content.dataset.missionId = '';
             }
         }
         state.currentMissionId = null;
@@ -611,7 +585,9 @@
         var title = document.getElementById('mission-form-title');
         var content = document.getElementById('mission-form-content');
 
-        if (!modal || !title || !content) return;
+        if (!modal || !title || !content) {
+            return;
+        }
 
         var mission = editId ? Core.getMission(editId) : null;
 
@@ -622,51 +598,49 @@
 
         title.textContent = mission ? 'Edit Mission' : 'Create Mission';
 
-        var html = Render.renderForm(mission, {
-            statuses: VALID_STATUSES,
-            priorities: VALID_PRIORITIES,
-            difficulties: VALID_DIFFICULTIES
-        });
+        var teams = getAvailableTeams();
+        var characters = Queries.getCharacters();
 
+        var html = Render.renderForm(mission, teams, characters);
         content.innerHTML = html;
 
         modal.dataset.editId = editId || '';
         modal.classList.remove('hidden');
 
         setupModalOutsideClick('mission-form-modal', closeMissionForm);
+        setupModalCloseButton('mission-form-modal', closeMissionForm);
 
         attachFormEvents(modal, mission);
     }
 
     function attachFormEvents(modal, mission) {
-        var form = modal.querySelector('#mission-form');
-        if (!form) return;
-
-        var newForm = form.cloneNode(true);
-        form.parentNode.replaceChild(newForm, form);
+        var form = modal.querySelector('#mission-form-inner');
+        if (!form) {
+            return;
+        }
 
         // Populate team select
-        var teamSelect = newForm.querySelector('#mission-team');
+        var teamSelect = form.querySelector('#mission-team');
         if (teamSelect) {
             populateTeamSelect(teamSelect, mission ? mission.assignedTeamId : null);
         }
 
-        newForm.addEventListener('submit', function(e) {
+        // Form submit
+        addSafeEventListener(form, 'submit', function(e) {
             e.preventDefault();
 
             var editId = modal.dataset.editId;
 
             var data = {
-                title: this.querySelector('#mission-title').value.trim(),
-                status: this.querySelector('#mission-status').value,
-                priority: this.querySelector('#mission-priority').value,
-                difficulty: this.querySelector('#mission-difficulty').value,
-                assignedTeamId: this.querySelector('#mission-team').value || null,
-                location: this.querySelector('#mission-location').value.trim(),
-                duration: this.querySelector('#mission-duration').value.trim(),
-                pay: this.querySelector('#mission-pay').value.trim(),
-                description: this.querySelector('#mission-description').value.trim(),
-                notes: this.querySelector('#mission-notes').value.trim(),
+                title: form.querySelector('#mission-title').value.trim(),
+                status: form.querySelector('#mission-status').value,
+                priority: form.querySelector('#mission-priority').value,
+                difficulty: form.querySelector('#mission-difficulty').value,
+                assignedTeamId: form.querySelector('#mission-team').value || null,
+                location: form.querySelector('#mission-location').value.trim(),
+                duration: form.querySelector('#mission-duration').value.trim(),
+                description: form.querySelector('#mission-description').value.trim(),
+                notes: form.querySelector('#mission-notes').value.trim(),
                 objectives: []
             };
 
@@ -676,13 +650,11 @@
             }
 
             // Collect objectives
-            var objectiveInputs = this.querySelectorAll('.objective-input');
-            var objectiveChecks = this.querySelectorAll('.objective-done');
+            var objectiveInputs = form.querySelectorAll('.objective-input');
             for (var i = 0; i < objectiveInputs.length; i++) {
                 var text = objectiveInputs[i].value.trim();
                 if (text) {
-                    var done = objectiveChecks[i] ? objectiveChecks[i].checked : false;
-                    data.objectives.push({ text: text, done: done });
+                    data.objectives.push({ text: text, done: false });
                 }
             }
 
@@ -696,6 +668,8 @@
                     if (state.currentMissionId === normaliseId(editId)) {
                         viewMission(editId);
                     }
+                }, function(err) {
+                    showNotification('Failed to persist mission update: ' + err.message, 'error');
                 });
             } else {
                 success = persistOperation('createMission', function() {
@@ -703,6 +677,8 @@
                 }, function() {
                     closeMissionForm();
                     renderMissionList(document.getElementById('tab-missions'));
+                }, function(err) {
+                    showNotification('Failed to persist new mission: ' + err.message, 'error');
                 });
             }
 
@@ -711,57 +687,45 @@
             }
         });
 
-        // Cancel button
-        var cancelBtn = newForm.querySelector('.cancel-form-btn');
-        if (cancelBtn) {
-            var newCancel = cancelBtn.cloneNode(true);
-            cancelBtn.parentNode.replaceChild(newCancel, cancelBtn);
-            newCancel.addEventListener('click', closeMissionForm);
-        }
-
         // Add objective button
-        var addObjBtn = newForm.querySelector('#add-objective-btn');
+        var addObjBtn = form.querySelector('#add-objective-btn');
         if (addObjBtn) {
-            addObjBtn.addEventListener('click', function() {
-                var container = document.getElementById('objectives-container');
+            addSafeEventListener(addObjBtn, 'click', function() {
+                var container = form.querySelector('#mission-objectives-list');
                 if (container) {
                     addObjectiveRow(container);
                 }
             });
         }
 
-        // Close button
-        var closeBtn = document.getElementById('close-mission-form');
-        if (closeBtn) {
-            var newClose = closeBtn.cloneNode(true);
-            closeBtn.parentNode.replaceChild(newClose, closeBtn);
-            newClose.addEventListener('click', closeMissionForm);
+        // Cancel button
+        var cancelBtn = form.querySelector('#cancel-mission-form');
+        if (cancelBtn) {
+            addSafeEventListener(cancelBtn, 'click', function() {
+                closeMissionForm();
+            });
         }
     }
 
     function addObjectiveRow(container) {
         var row = document.createElement('div');
         row.className = 'objective-row';
-        row.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;align-items:center;';
 
         var checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.className = 'objective-done';
-        checkbox.style.cssText = 'accent-color:var(--accent);cursor:pointer;';
 
         var input = document.createElement('input');
         input.type = 'text';
         input.className = 'objective-input';
         input.placeholder = 'Objective text...';
-        input.style.cssText = 'flex:1;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;';
 
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'small danger remove-objective';
-        removeBtn.textContent = '✕';
-        removeBtn.style.cssText = 'padding:2px 6px;font-size:0.6rem;';
+        removeBtn.textContent = 'x';
 
-        removeBtn.addEventListener('click', function() {
+        addSafeEventListener(removeBtn, 'click', function() {
             if (container.children.length > 1) {
                 row.remove();
             } else {
@@ -777,7 +741,13 @@
 
     function closeMissionForm() {
         var modal = document.getElementById('mission-form-modal');
-        if (modal) modal.classList.add('hidden');
+        if (modal) {
+            modal.classList.add('hidden');
+            var content = document.getElementById('mission-form-content');
+            if (content) {
+                content.innerHTML = '';
+            }
+        }
     }
 
     // ============================================================
@@ -799,6 +769,8 @@
                     }, function() {
                         renderMissionList(document.getElementById('tab-missions'));
                         closeMissionDetail();
+                    }, function(err) {
+                        showNotification('Failed to persist mission deletion: ' + err.message, 'error');
                     });
                     if (!success) {
                         showNotification('Failed to delete mission.', 'error');
@@ -819,9 +791,12 @@
 
         var incompleteObjectives = 0;
         if (Array.isArray(mission.objectives)) {
-            incompleteObjectives = mission.objectives.filter(function(o) {
-                return o && !o.done;
-            }).length;
+            for (var i = 0; i < mission.objectives.length; i++) {
+                var obj = mission.objectives[i];
+                if (obj && !obj.done) {
+                    incompleteObjectives++;
+                }
+            }
         }
 
         var message = 'Complete "' + mission.title + '"';
@@ -833,52 +808,25 @@
         showConfirmation(message)
             .then(function(confirmed) {
                 if (confirmed) {
-                    // Set all objectives to done
                     var objectives = Array.isArray(mission.objectives) ? mission.objectives.slice() : [];
-                    for (var i = 0; i < objectives.length; i++) {
-                        if (objectives[i]) {
-                            objectives[i].done = true;
+                    for (var j = 0; j < objectives.length; j++) {
+                        if (objectives[j]) {
+                            objectives[j].done = true;
                         }
                     }
 
                     var success = persistOperation('completeMission', function() {
-                        return Core.completeMission(id, objectives);
+                        return Core.updateMission(id, { objectives: objectives, status: 'completed' });
                     }, function() {
                         renderMissionList(document.getElementById('tab-missions'));
                         if (state.currentMissionId === normaliseId(id)) {
                             viewMission(id);
                         }
+                    }, function(err) {
+                        showNotification('Failed to persist mission completion: ' + err.message, 'error');
                     });
                     if (!success) {
                         showNotification('Failed to complete mission.', 'error');
-                    }
-                }
-            })
-            .catch(function() {
-                // Ignore errors from confirmation
-            });
-    }
-
-    function cancelMissionHandler(id) {
-        var mission = Core.getMission(id);
-        if (!mission) {
-            showNotification('Mission not found.', 'error');
-            return;
-        }
-
-        showConfirmation('Cancel "' + mission.title + '"? This will mark it as cancelled.')
-            .then(function(confirmed) {
-                if (confirmed) {
-                    var success = persistOperation('cancelMission', function() {
-                        return Core.cancelMission(id);
-                    }, function() {
-                        renderMissionList(document.getElementById('tab-missions'));
-                        if (state.currentMissionId === normaliseId(id)) {
-                            viewMission(id);
-                        }
-                    });
-                    if (!success) {
-                        showNotification('Failed to cancel mission.', 'error');
                     }
                 }
             })
@@ -904,7 +852,10 @@
         }
 
         var objectives = mission.objectives.slice();
-        objectives[index] = Object.assign({}, objectives[index], { done: done });
+        objectives[index] = {
+            text: objectives[index].text,
+            done: done
+        };
 
         var success = persistOperation('updateMission', function() {
             return Core.updateMission(missionId, { objectives: objectives });
@@ -913,6 +864,8 @@
                 viewMission(missionId);
             }
             renderMissionList(document.getElementById('tab-missions'));
+        }, function(err) {
+            showNotification('Failed to persist objective update: ' + err.message, 'error');
         });
 
         if (!success) {
@@ -937,6 +890,8 @@
                 viewMission(missionId);
             }
             renderMissionList(document.getElementById('tab-missions'));
+        }, function(err) {
+            showNotification('Failed to persist objective addition: ' + err.message, 'error');
         });
 
         if (!success) {
@@ -948,35 +903,8 @@
     // LIFECYCLE MANAGEMENT
     // ============================================================
 
-    if (typeof window.TabManager !== 'undefined') {
-        window.TabManager.register('missions', renderMissions);
-    }
-
-    // Listen for data ready
-    document.addEventListener('dataReady', function() {
-        var container = document.getElementById('tab-missions');
-        if (container && container.style.display !== 'none') {
-            renderMissions(container);
-        }
-    });
-
-    document.addEventListener('tabChanged', function(e) {
-        if (e.detail && e.detail.tab === 'missions') {
-            var container = document.getElementById('tab-missions');
-            if (container) {
-                renderMissions(container);
-            }
-        }
-    });
-
-    if (window.data) {
-        setTimeout(function() {
-            var container = document.getElementById('tab-missions');
-            if (container && container.style.display !== 'none') {
-                renderMissions(container);
-            }
-        }, 100);
-    }
+    // TabManager is the single source of truth for lifecycle
+    TabManager.register('missions', renderMissions);
 
     // ============================================================
     // EXPOSE
@@ -985,13 +913,15 @@
     window.renderMissions = renderMissions;
     window.viewMission = viewMission;
     window.closeMissionDetail = closeMissionDetail;
+    window.destroyMissions = destroyMissions;
 
     window.MissionsUI = {
         render: renderMissions,
         viewMission: viewMission,
         closeMissionDetail: closeMissionDetail,
         showMissionForm: showMissionForm,
-        renderMissionList: renderMissionList
+        renderMissionList: renderMissionList,
+        destroy: destroyMissions
     };
 
 })();

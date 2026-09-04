@@ -17,24 +17,31 @@
  *   - Student schedules are the canonical source of truth
  *   - UI-level overlap detection is a guardrail; core is authoritative
  *   - All core functions are from the curriculum modules
+ * 
+ * DEPENDENCIES:
+ *   - window.CalendarUtils (required)
+ *   - window.CalendarRenderer (required)
+ *   - window.CalendarModes (required)
+ *   - window.CalendarDependencies (required)
+ *   - window.getStudents (required)
+ *   - window.getDisplayName (required)
+ *   - window.getCharacterById (required)
+ *   - window.getStudentSchedule (required)
+ *   - window.getStudentRestDays (required)
+ *   - window.getAvailableDisciplines (required)
+ *   - window.getDiscipline (required)
+ *   - window.getClassInstructor (required)
+ *   - window.getClassDuration (required)
+ *   - window.getClassLabel (required)
+ *   - window.getClassGroupLabel (required)
+ *   - window.setStudentScheduleClass (required)
+ *   - window.removeStudentScheduleClass (required)
+ *   - window.setStudentRestDays (required)
+ *   - window.saveData (required)
  */
 
 (function() {
     'use strict';
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    if (!window.CalendarUtils) {
-        console.error('StudentMode: CalendarUtils not loaded.');
-        return;
-    }
-
-    if (!window.CalendarRenderer) {
-        console.error('StudentMode: CalendarRenderer not loaded.');
-        return;
-    }
 
     // ============================================================
     // GUARD AGAINST DUPLICATE LOADING
@@ -43,10 +50,53 @@
     if (window.__studentModeLoaded) {
         return;
     }
+
+    // ============================================================
+    // DEPENDENCY CHECK - NO FALLBACKS
+    // ============================================================
+
+    if (!window.CalendarUtils) {
+        return;
+    }
+
+    if (!window.CalendarRenderer) {
+        return;
+    }
+
+    if (!window.CalendarModes || typeof window.CalendarModes.registerMode !== 'function') {
+        return;
+    }
+
+    if (!window.CalendarDependencies || typeof window.CalendarDependencies.validateMode !== 'function') {
+        return;
+    }
+
+    var requiredFunctions = [
+        'getStudents',
+        'getDisplayName',
+        'getCharacterById',
+        'getStudentSchedule',
+        'getStudentRestDays',
+        'getAvailableDisciplines',
+        'getDiscipline',
+        'getClassInstructor',
+        'getClassDuration',
+        'getClassLabel',
+        'getClassGroupLabel',
+        'setStudentScheduleClass',
+        'removeStudentScheduleClass',
+        'setStudentRestDays',
+        'saveData'
+    ];
+
+    if (!window.CalendarDependencies.validateMode('student', requiredFunctions)) {
+        return;
+    }
+
     window.__studentModeLoaded = true;
 
     // ============================================================
-    // CONSTANTS
+    // DEPENDENCY IMPORTS
     // ============================================================
 
     var CalendarUtils = window.CalendarUtils;
@@ -56,107 +106,21 @@
     var CALENDAR_END_HOUR = CalendarUtils.CALENDAR_END_HOUR || 23;
 
     // ============================================================
-    // DEPENDENCY VALIDATION
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        // Query functions from curriculum modules
-        if (typeof window.getStudents !== 'function') {
-            missing.push('getStudents');
-        }
-
-        if (typeof window.getDisplayName !== 'function') {
-            missing.push('getDisplayName');
-        }
-
-        if (typeof window.getCharacterById !== 'function') {
-            missing.push('getCharacterById');
-        }
-
-        if (typeof window.getStudentSchedule !== 'function') {
-            missing.push('getStudentSchedule');
-        }
-
-        if (typeof window.getStudentRestDays !== 'function') {
-            missing.push('getStudentRestDays');
-        }
-
-        if (typeof window.getAvailableDisciplines !== 'function') {
-            missing.push('getAvailableDisciplines');
-        }
-
-        if (typeof window.getDiscipline !== 'function') {
-            missing.push('getDiscipline');
-        }
-
-        // Metadata functions from curriculum modules
-        if (typeof window.getClassInstructor !== 'function') {
-            missing.push('getClassInstructor');
-        }
-
-        if (typeof window.getClassDuration !== 'function') {
-            missing.push('getClassDuration');
-        }
-
-        if (typeof window.getClassLabel !== 'function') {
-            missing.push('getClassLabel');
-        }
-
-        if (typeof window.getClassGroupLabel !== 'function') {
-            missing.push('getClassGroupLabel');
-        }
-
-        // Mutation functions from curriculum modules
-        if (typeof window.setStudentScheduleClass !== 'function') {
-            missing.push('setStudentScheduleClass');
-        }
-
-        if (typeof window.removeStudentScheduleClass !== 'function') {
-            missing.push('removeStudentScheduleClass');
-        }
-
-        if (typeof window.setStudentRestDays !== 'function') {
-            missing.push('setStudentRestDays');
-        }
-
-        // Persistence
-        if (typeof window.saveData !== 'function') {
-            missing.push('saveData');
-        }
-
-        if (missing.length > 0) {
-            console.warn('StudentMode: Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
-    }
-
-    // ============================================================
     // PUBLIC API
     // ============================================================
 
     function getStudents() {
-        return typeof window.getStudents === 'function' ? window.getStudents() : [];
+        return window.getStudents();
     }
 
     function getSchedule(state) {
         if (!state || !state.selectedId) {
             return {};
         }
-        return typeof window.getStudentSchedule === 'function'
-            ? window.getStudentSchedule(state.selectedId, state.week)
-            : {};
+        return window.getStudentSchedule(state.selectedId, state.week);
     }
 
     function render(container, state) {
-        if (!checkDependencies()) {
-            container.innerHTML = '<p class="empty-state">Student calendar dependencies not loaded.</p>';
-            return;
-        }
-
         if (!state || !state.selectedId) {
             container.innerHTML = '<div class="empty-state">Select a student to view their schedule</div>';
             return;
@@ -179,7 +143,6 @@
         var student = window.getCharacterById(studentId);
         var studentName = student ? window.getDisplayName(student) : 'Unknown';
 
-        // Prepare data for shared renderer
         var data = {
             schedule: schedule,
             restDays: restDays,
@@ -218,11 +181,9 @@
             slotLabelField: 'label'
         };
 
-        // Use shared renderer
         CalendarRenderer.renderGrid(container, state, data);
 
-        // Bind events with student-specific callbacks
-        CalendarRenderer.bindEvents(container, state, {
+        var cleanup = CalendarRenderer.bindEvents(container, state, {
             onSlotClick: function(day, hour) {
                 showAddClassModal(studentId, week, day, hour, container);
             },
@@ -241,6 +202,9 @@
                 showTimeSlotsModal(studentId, week, disciplineId, container);
             }
         });
+
+        // Store cleanup function on container for potential re-rendering
+        container._calendarCleanup = cleanup;
     }
 
     // ============================================================
@@ -253,7 +217,7 @@
             window.saveData()
                 .then(function() {
                     CalendarRenderer.showNotification('Rest days saved.', 'success');
-                    render(container, { selectedId: studentId, week: week });
+                    renderStudentSchedule(container, { selectedId: studentId, week: week });
                 })
                 .catch(function() {
                     CalendarRenderer.showNotification('Rest days saved in memory, but persistence failed.', 'error');
@@ -279,28 +243,27 @@
 
         CalendarRenderer.createAddClassModal({
             title: 'Add Class - ' + CalendarRenderer.DAY_NAMES[day] + ' at ' + hourDisplay,
-            disciplines: available.map(function(item) { return item.discipline; }),
+            disciplines: available.map(function(item) {
+                return item.discipline;
+            }),
             maxDuration: 4,
             getDisciplineLabel: function(d) {
                 return d.name;
             },
-            onConfirm: function(disciplineId, duration, label, groupLabel, closeModal) {
+            onConfirm: function(disciplineId, duration, label, closeModal) {
                 // Validate calendar boundary
                 if (hour + duration > CALENDAR_END_HOUR + 1) {
                     CalendarRenderer.showNotification('Class extends beyond the calendar boundary.', 'error');
                     return;
                 }
 
-                // Re-read schedule at commit time (defensive)
                 var currentSchedule = window.getStudentSchedule(studentId, week) || {};
 
-                // UI-level range overlap check (guardrail)
                 if (hasRangeOverlap(currentSchedule, studentId, week, day, hour, duration)) {
                     CalendarRenderer.showNotification('This would overlap with an existing class.', 'error');
                     return;
                 }
 
-                // Validate remaining weekly hours
                 var availableItem = null;
                 for (var i = 0; i < available.length; i++) {
                     if (available[i].discipline.id === disciplineId) {
@@ -329,7 +292,6 @@
                     ? discipline.instructorIds[0]
                     : null;
 
-                // Use the curriculum module function
                 var result = window.setStudentScheduleClass(
                     studentId,
                     week,
@@ -349,11 +311,11 @@
                 window.saveData()
                     .then(function() {
                         CalendarRenderer.showNotification('Class added successfully.', 'success');
-                        render(container, { selectedId: studentId, week: week });
+                        renderStudentSchedule(container, { selectedId: studentId, week: week });
                     })
                     .catch(function() {
                         CalendarRenderer.showNotification('Class added in memory, but persistence failed.', 'error');
-                        render(container, { selectedId: studentId, week: week });
+                        renderStudentSchedule(container, { selectedId: studentId, week: week });
                     });
             },
             onCancel: function() {
@@ -429,7 +391,6 @@
     // ============================================================
 
     function removeClass(studentId, week, day, hour, container) {
-        // Use the curriculum module function
         var result = window.removeStudentScheduleClass(studentId, week, day, hour);
 
         if (!result || !result.success) {
@@ -440,11 +401,11 @@
         window.saveData()
             .then(function() {
                 CalendarRenderer.showNotification('Class removed from schedule.', 'success');
-                render(container, { selectedId: studentId, week: week });
+                renderStudentSchedule(container, { selectedId: studentId, week: week });
             })
             .catch(function() {
                 CalendarRenderer.showNotification('Class removed in memory, but persistence failed.', 'error');
-                render(container, { selectedId: studentId, week: week });
+                renderStudentSchedule(container, { selectedId: studentId, week: week });
             });
     }
 
@@ -465,34 +426,25 @@
             return window.getClassDuration(studentId, week, day, hour) || 1;
         });
 
-        // Build time slots list
         var modal = document.createElement('div');
         modal.className = 'modal';
 
         var slotsHTML = '';
         var foundSlots = false;
-        var selectionHours = CalendarUtils.getSelectionHours ? CalendarUtils.getSelectionHours() : [];
-
-        if (selectionHours.length === 0) {
-            for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
-                selectionHours.push(h);
-            }
-        }
 
         for (var day = 1; day <= 7; day++) {
             if (restDays.indexOf(day) !== -1) {
                 continue;
             }
 
-            for (var i = 0; i < selectionHours.length; i++) {
-                var hour = selectionHours[i];
+            for (var hour = CALENDAR_START_HOUR; hour <= CALENDAR_END_HOUR; hour++) {
                 var isOccupied = occupiedMap[day] && occupiedMap[day][hour];
 
                 if (!isOccupied) {
                     foundSlots = true;
                     slotsHTML += (
-                        '<div style="padding:6px 10px;border-bottom:1px solid var(--border-soft);display:flex;justify-content:space-between;align-items:center;">' +
-                            '<span>' + CalendarRenderer.DAY_NAMES[day] + ' at ' + CalendarUtils.formatHour(hour) + '</span>' +
+                        '<div class="time-slot-row">' +
+                            '<span class="time-slot-label">' + CalendarRenderer.DAY_NAMES[day] + ' at ' + CalendarUtils.formatHour(hour) + '</span>' +
                             '<button class="add-to-slot-btn primary small" data-day="' + day + '" data-hour="' + hour + '">Add 1h</button>' +
                         '</div>'
                     );
@@ -505,19 +457,17 @@
         }
 
         modal.innerHTML = (
-            '<div class="modal-content" style="max-width:400px;">' +
+            '<div class="modal-content modal-slots-content">' +
                 '<div class="modal-header">' +
                     '<h3>' + CalendarRenderer.escapeHtml(discipline.name) + ' - Available Slots</h3>' +
                     '<button class="close-modal">&times;</button>' +
                 '</div>' +
                 '<div class="modal-body">' +
-                    '<p style="color:var(--text-dim);font-size:0.8rem;margin-bottom:12px;">' +
-                        'Click on a time slot to add a 1-hour class.' +
-                    '</p>' +
-                    '<div style="max-height:300px;overflow-y:auto;" id="time-slots-list">' +
+                    '<p class="slots-hint">Click on a time slot to add a 1-hour class.</p>' +
+                    '<div class="time-slots-list" id="time-slots-list">' +
                         slotsHTML +
                     '</div>' +
-                    '<div class="form-actions" style="margin-top:12px;">' +
+                    '<div class="form-actions">' +
                         '<button type="button" id="close-slots-modal" class="secondary">Close</button>' +
                     '</div>' +
                 '</div>' +
@@ -532,8 +482,16 @@
             }
         };
 
-        modal.querySelector('.close-modal').onclick = closeModal;
-        modal.querySelector('#close-slots-modal').onclick = closeModal;
+        var closeBtn = modal.querySelector('.close-modal');
+        if (closeBtn) {
+            closeBtn.onclick = closeModal;
+        }
+
+        var closeSlotsBtn = modal.querySelector('#close-slots-modal');
+        if (closeSlotsBtn) {
+            closeSlotsBtn.onclick = closeModal;
+        }
+
         modal.addEventListener('click', function(e) {
             if (e.target === modal) {
                 closeModal();
@@ -547,14 +505,12 @@
                 var day = parseInt(this.dataset.day, 10);
                 var hour = parseInt(this.dataset.hour, 10);
 
-                // Re-read schedule at commit time (defensive)
                 var currentSchedule = window.getStudentSchedule(studentId, week) || {};
 
-                // UI-level range overlap check (guardrail)
                 if (hasRangeOverlap(currentSchedule, studentId, week, day, hour, 1)) {
                     CalendarRenderer.showNotification('This slot is no longer available.', 'error');
                     closeModal();
-                    render(container, { selectedId: studentId, week: week });
+                    renderStudentSchedule(container, { selectedId: studentId, week: week });
                     return;
                 }
 
@@ -562,7 +518,6 @@
                     ? discipline.instructorIds[0]
                     : null;
 
-                // Use the curriculum module function
                 var result = window.setStudentScheduleClass(
                     studentId,
                     week,
@@ -582,11 +537,11 @@
                 window.saveData()
                     .then(function() {
                         CalendarRenderer.showNotification('Class added successfully.', 'success');
-                        render(container, { selectedId: studentId, week: week });
+                        renderStudentSchedule(container, { selectedId: studentId, week: week });
                     })
                     .catch(function() {
                         CalendarRenderer.showNotification('Class added in memory, but persistence failed.', 'error');
-                        render(container, { selectedId: studentId, week: week });
+                        renderStudentSchedule(container, { selectedId: studentId, week: week });
                     });
             });
         }
@@ -602,16 +557,24 @@
         var usedHours = {};
 
         for (var day in schedule) {
-            if (!Object.prototype.hasOwnProperty.call(schedule, day)) continue;
+            if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
+                continue;
+            }
             var daySchedule = schedule[day];
-            if (!daySchedule || typeof daySchedule !== 'object') continue;
+            if (!daySchedule || typeof daySchedule !== 'object') {
+                continue;
+            }
 
             for (var hour in daySchedule) {
-                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
+                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
+                    continue;
+                }
                 var discId = daySchedule[hour];
                 if (discId) {
                     var duration = window.getClassDuration(studentId, week, parseInt(day, 10), parseInt(hour, 10)) || 1;
-                    if (!usedHours[discId]) usedHours[discId] = 0;
+                    if (!usedHours[discId]) {
+                        usedHours[discId] = 0;
+                    }
                     usedHours[discId] += duration;
                 }
             }
@@ -660,19 +623,15 @@
     // REGISTER WITH CALENDAR MODES
     // ============================================================
 
-    if (window.CalendarModes && typeof window.CalendarModes.registerMode === 'function') {
-        window.CalendarModes.registerMode('student', {
-            label: 'Student',
-            hint: 'Click a slot to add class | Right-click to remove | Rest days are user-configurable',
-            render: render,
-            getEntities: getStudents,
-            getEntityDisplayName: function(entity) {
-                return typeof window.getDisplayName === 'function'
-                    ? window.getDisplayName(entity)
-                    : (entity.name || 'Unknown');
-            },
-            getData: getSchedule
-        });
-    }
+    window.CalendarModes.registerMode('student', {
+        label: 'Student',
+        hint: 'Click a slot to add class | Right-click to remove | Rest days are user-configurable',
+        render: render,
+        getEntities: getStudents,
+        getEntityDisplayName: function(entity) {
+            return window.getDisplayName(entity);
+        },
+        getData: getSchedule
+    });
 
 })();
