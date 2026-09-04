@@ -32,20 +32,18 @@
  * DEPENDENCIES:
  *   Required:
  *     - window.TeamCore
+ *     - window.TeamQueries
  *     - window.TeamFilters
  *   Optional:
  *     - window.TeamRankings (for ranking display)
  *     - window.TeamMembers (for member status)
- *     - window.getClasses
- *     - window.getDisplayName
- *     - window.getCharacterById
- *     - window.getCurrentStatus
- *     - window.updateDashboardStats
- *     - window.saveData
- *     - window.logActivity
+ *     - window.CharacterQueries (from character-queries.js)
+ *     - window.ClassesQueries (from classes-queries.js)
+ *     - window.ActivityLog (from activity-log.js)
  *     - window.NotificationSystem (from notification.js)
  *     - window.CALENDAR_CONSTANTS (from constants.js)
  *     - window.DomUtils (from dom-utils.js)
+ *     - window.TabManager (from tab-manager.js)
  */
 
 (function() {
@@ -55,7 +53,6 @@
     if (window.__teamManagerLoaded) {
         return;
     }
-    window.__teamManagerLoaded = true;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -66,35 +63,141 @@
         return;
     }
 
+    if (!window.TeamQueries) {
+        console.error('TeamManager: TeamQueries is required but not loaded.');
+        return;
+    }
+
     if (!window.TeamFilters) {
         console.error('TeamManager: TeamFilters is required but not loaded.');
         return;
     }
 
+    window.__teamManagerLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var TeamCore = window.TeamCore;
+    var TeamQueries = window.TeamQueries;
+    var TeamFilters = window.TeamFilters;
+    var TeamRankings = window.TeamRankings || null;
+    var TeamMembers = window.TeamMembers || null;
+    var CharacterQueries = window.CharacterQueries || window;
+    var ClassesQueries = window.ClassesQueries || window;
+    var ActivityLog = window.ActivityLog || window;
+    var NotificationSystem = window.NotificationSystem || window;
+    var DomUtils = window.DomUtils || window;
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+    var TabManager = window.TabManager || null;
+
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var CALENDAR = window.CALENDAR_CONSTANTS || {};
     var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
     var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
     var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
     var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
+    var DEFAULT_YEAR = CALENDAR.DEFAULT_YEAR ? CALENDAR.DEFAULT_YEAR() : new Date().getFullYear();
 
     // ============================================================
-    // HTML ESCAPING
+    // HTML ESCAPING - Use DomUtils when available
     // ============================================================
 
     function escapeHtml(value) {
-        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
-            return window.DomUtils.escapeHtml(value);
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
         }
+        // Fallback
         return String(value == null ? '' : value)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    }
+
+    // ============================================================
+    // CHARACTER HELPERS - Uses CharacterQueries
+    // ============================================================
+
+    function getCharacterName(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getDisplayName === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+        }
+        return 'Unknown';
+    }
+
+    function getCharacterAge(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getCharacterAge === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getCharacterAge(char) : '-';
+        }
+        return '-';
+    }
+
+    function getCharacterCurrentStatus(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getCurrentStatus === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getCurrentStatus(char) : '';
+        }
+        return '';
+    }
+
+    // ============================================================
+    // CLASS HELPERS - Uses ClassesQueries
+    // ============================================================
+
+    function getClassDisplayName(classId) {
+        if (ClassesQueries && typeof ClassesQueries.getClassDisplayName === 'function') {
+            return ClassesQueries.getClassDisplayName(classId);
+        }
+        return null;
+    }
+
+    function getClasses() {
+        if (ClassesQueries && typeof ClassesQueries.getClasses === 'function') {
+            return ClassesQueries.getClasses();
+        }
+        return [];
+    }
+
+    // ============================================================
+    // ACTIVITY LOGGING - Uses ActivityLog
+    // ============================================================
+
+    function recordActivity(message) {
+        try {
+            if (ActivityLog && typeof ActivityLog.record === 'function') {
+                ActivityLog.record(message);
+            }
+        } catch (err) {
+            // Swallow logging errors
+        }
+    }
+
+    // ============================================================
+    // NOTIFICATION - Uses NotificationSystem
+    // ============================================================
+
+    function showNotification(message, type) {
+        type = type || 'info';
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
+            return;
+        }
+        if (typeof window.showToast === 'function') {
+            window.showToast(message, type);
+            return;
+        }
+        if (type === 'error') {
+            alert('Error: ' + message);
+        } else {
+            alert(message);
+        }
     }
 
     // ============================================================
@@ -111,30 +214,6 @@
             civilian: { filterStatus: 'active' }
         }
     };
-
-    // ============================================================
-    // NOTIFICATION
-    // ============================================================
-
-    function showNotification(message, type) {
-        type = type || 'info';
-
-        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
-            window.NotificationSystem.notify(message, type);
-            return;
-        }
-
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
-        }
-
-        if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
-    }
 
     // ============================================================
     // PERSISTENCE HELPER
@@ -234,7 +313,7 @@
     }
 
     function getTeam(teamId) {
-        return window.TeamCore.getTeam(teamId);
+        return TeamCore.getTeam(teamId);
     }
 
     function getCurrentPeriodForType(teamType) {
@@ -242,7 +321,7 @@
             return teamState.filters.academic.filterWeek || 1;
         }
         var data = window.data || {};
-        return data.currentYear || new Date().getFullYear();
+        return data.currentYear || DEFAULT_YEAR;
     }
 
     // ============================================================
@@ -338,16 +417,16 @@
 
     function buildFilterHTML(tab) {
         var filter = teamState.filters[tab] || teamState.filters.academic;
-        var classes = typeof window.getClasses === 'function' ? window.getClasses() : [];
+        var classes = getClasses();
 
         if (tab === 'academic') {
-            return window.TeamFilters.buildFilterHTML('academic', filter, classes);
+            return TeamFilters.buildFilterHTML('academic', filter, classes);
         } else if (tab === 'professional') {
-            return window.TeamFilters.buildFilterHTML('professional', filter, classes);
+            return TeamFilters.buildFilterHTML('professional', filter, classes);
         } else if (tab === 'temporary') {
-            return window.TeamFilters.buildFilterHTML('temporary', filter, classes);
+            return TeamFilters.buildFilterHTML('temporary', filter, classes);
         } else if (tab === 'civilian') {
-            return window.TeamFilters.buildFilterHTML('civilian', filter, classes);
+            return TeamFilters.buildFilterHTML('civilian', filter, classes);
         }
         return '';
     }
@@ -360,13 +439,13 @@
         var filter = teamState.filters[tab] || teamState.filters.academic;
 
         if (tab === 'academic') {
-            return window.TeamFilters.filterTeams('academic', filter);
+            return TeamFilters.filterTeams('academic', filter);
         } else if (tab === 'professional') {
-            return window.TeamFilters.filterTeams('professional', filter);
+            return TeamFilters.filterTeams('professional', filter);
         } else if (tab === 'temporary') {
-            return window.TeamFilters.filterTeams('temporary', filter);
+            return TeamFilters.filterTeams('temporary', filter);
         } else if (tab === 'civilian') {
-            return window.TeamFilters.filterTeams('civilian', filter);
+            return TeamFilters.filterTeams('civilian', filter);
         }
         return [];
     }
@@ -431,26 +510,21 @@
         teams.forEach(function(team) {
             if (!team || typeof team !== 'object') return;
 
-            var periodDisplay = window.TeamCore.getPeriodDisplay(team);
-            var typeLabel = window.TeamCore.getTypeLabel(team.type);
+            var periodDisplay = TeamQueries.getTeamPeriodDisplay(team);
+            var typeLabel = TeamQueries.getTypeLabel(team.type);
 
-            var activeMembers = window.TeamCore.getActiveMembers(team, periodNum);
+            var activeMembers = TeamQueries.getActiveTeamMembers(team, periodNum);
             var memberCount = activeMembers.length;
 
             var isExpanded = (teamState.expandedTeamId === team.id);
             var isInactive = team.status === 'deprecated' || team.status === 'inactive';
             var inactiveClass = isInactive ? 'inactive' : '';
 
-            var rankDisplay = '-';
-            if (window.TeamRankings && typeof window.TeamRankings.getCurrentRank === 'function') {
-                rankDisplay = window.TeamRankings.getCurrentRank(team) || '-';
-            } else if (team.currentRank) {
-                rankDisplay = team.currentRank;
-            }
+            var rankDisplay = TeamQueries.getTeamCurrentRank(team) || '-';
 
             var classDisplay = '';
             if (team.type === 'academic' && team.classId) {
-                var className = window.getClassDisplayName ? window.getClassDisplayName(team.classId) : null;
+                var className = getClassDisplayName(team.classId);
                 if (className && className !== 'Unassigned') {
                     classDisplay = ' <span class="team-class">[' + escapeHtml(className) + ']</span>';
                 }
@@ -492,7 +566,7 @@
         if (!team || typeof team !== 'object') return '';
 
         var periodNum = parseInt(filterPeriod, 10) || 1;
-        var activeMembers = window.TeamCore.getActiveMembers(team, periodNum);
+        var activeMembers = TeamQueries.getActiveTeamMembers(team, periodNum);
         var periodLabel = team.type === 'academic' ? 'Week' : 'Period';
         var labelText = team.type === 'academic'
             ? 'Active Members at Week ' + escapeHtml(String(periodNum)) + ':'
@@ -505,17 +579,17 @@
             activeMembers.forEach(function(member) {
                 if (!member || typeof member !== 'object') return;
 
-                var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
-                var name = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
-                var age = char ? (window.getCharacterAge ? window.getCharacterAge(char) : '-') : '-';
+                var char = CharacterQueries.getCharacterById(member.characterId);
+                var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+                var age = char ? CharacterQueries.getCharacterAge(char) : '-';
                 var deadMarker = char && char.deceased ? ' ✝' : '';
 
                 // Use TeamMembers for status if available
                 var status = 'active';
                 var statusInfo = { label: 'Active', color: 'var(--accent)' };
-                if (window.TeamMembers && typeof window.TeamMembers.getStatusAtPeriod === 'function') {
-                    status = window.TeamMembers.getStatusAtPeriod(member, periodNum, team.type);
-                    statusInfo = window.TeamCore.getMemberStatusInfo(status);
+                if (TeamMembers && typeof TeamMembers.getStatusAtPeriod === 'function') {
+                    status = TeamMembers.getStatusAtPeriod(member, periodNum, team.type);
+                    statusInfo = TeamCore.getMemberStatusInfo(status);
                 }
 
                 html += '<div class="member-entry" style="display:flex;justify-content:space-between;align-items:center;padding:3px 8px;border-bottom:1px solid var(--border-soft);font-size:0.75rem;border-left:3px solid ' + statusInfo.color + ';padding-left:8px;">';
@@ -731,9 +805,7 @@
                 document.getElementById('team-end').value = team.endPeriod || '';
                 var rankingInput = document.getElementById('team-ranking');
                 if (rankingInput) {
-                    var currentRank = window.TeamRankings && typeof window.TeamRankings.getCurrentRank === 'function'
-                        ? window.TeamRankings.getCurrentRank(team)
-                        : team.currentRank || '';
+                    var currentRank = TeamQueries.getTeamCurrentRank(team);
                     rankingInput.value = currentRank;
                 }
                 document.getElementById('team-status').value = team.status || 'active';
@@ -858,13 +930,13 @@
 
         var result;
         if (editId) {
-            result = window.TeamCore.updateTeam(editId, teamData);
+            result = TeamCore.updateTeam(editId, teamData);
             if (!result) {
                 showNotification('Failed to update team.', 'error');
                 return;
             }
         } else {
-            result = window.TeamCore.createTeam(teamData);
+            result = TeamCore.createTeam(teamData);
             if (!result) {
                 showNotification('Failed to create team.', 'error');
                 return;
@@ -880,9 +952,7 @@
         refreshTeamStats();
         safeUpdateDashboardStats();
 
-        if (typeof window.logActivity === 'function') {
-            window.logActivity(editId ? 'Updated team: ' + teamData.name : 'Created team: ' + teamData.name);
-        }
+        recordActivity(editId ? 'Updated team: ' + teamData.name : 'Created team: ' + teamData.name);
 
         persistMutation({
             successMessage: editId ? 'Team updated successfully!' : 'Team created successfully!',
@@ -901,16 +971,14 @@
             return;
         }
 
-        var result = window.TeamCore.deleteTeam(id);
+        var result = TeamCore.deleteTeam(id);
 
         if (!result) {
             showNotification('Failed to delete team.', 'error');
             return;
         }
 
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Deleted team: ' + team.name);
-        }
+        recordActivity('Deleted team: ' + team.name);
 
         if (teamState.expandedTeamId === id) {
             teamState.expandedTeamId = null;
@@ -956,21 +1024,38 @@
         var team = getTeam(teamId);
         if (!team) return;
 
+        var currentPeriod = getCurrentPeriodForType(team.type);
+
         select.innerHTML = '<option value="">Select character...</option>';
-        var chars = window.data ? window.data.characters || [] : [];
-        var currentMemberIds = (team.members || []).map(function(m) { return m.characterId; });
+
+        // Get all characters
+        var data = window.data || {};
+        var chars = data.characters || [];
+
+        var currentMemberIds = (team.members || []).map(function(m) {
+            return m ? String(m.characterId) : null;
+        }).filter(function(id) { return id; });
 
         chars.forEach(function(char) {
-            var isInTeam = currentMemberIds.some(function(id) { return String(id) === String(char.id); });
+            if (!char || typeof char !== 'object') return;
+
+            var isInTeam = currentMemberIds.some(function(id) {
+                return String(id) === String(char.id);
+            });
+
             var option = document.createElement('option');
             option.value = char.id;
-            var displayName = window.getDisplayName ? window.getDisplayName(char) : char.firstName || 'Unknown';
-            option.textContent = displayName + ' [' + (window.getCurrentStatus ? window.getCurrentStatus(char) : '') + ']';
+
+            var displayName = CharacterQueries.getDisplayName(char);
+            var currentStatus = CharacterQueries.getCurrentStatus(char);
+            option.textContent = displayName + ' [' + currentStatus + ']';
+
             if (isInTeam) {
                 option.style.color = 'var(--accent)';
                 option.textContent += ' ✓ In Team';
                 option.disabled = true;
             }
+
             select.appendChild(option);
         });
     }
@@ -988,21 +1073,21 @@
         var period = getCurrentPeriodForType(team.type);
 
         team.members.forEach(function(member, index) {
-            var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
-            var name = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
+            var char = CharacterQueries.getCharacterById(member.characterId);
+            var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
             var deadMarker = char && char.deceased ? ' ✝' : '';
 
             var status = 'unknown';
-            if (window.TeamMembers && typeof window.TeamMembers.getStatusAtPeriod === 'function') {
-                status = window.TeamMembers.getStatusAtPeriod(member, period, team.type);
+            var statusInfo = { label: 'Unknown', color: 'var(--text-dim)' };
+            if (TeamMembers && typeof TeamMembers.getStatusAtPeriod === 'function') {
+                status = TeamMembers.getStatusAtPeriod(member, period, team.type);
+                statusInfo = TeamCore.getMemberStatusInfo(status);
             }
-            var statusInfo = window.TeamCore.getMemberStatusInfo(status);
-            var escapedStatusLabel = escapeHtml(statusInfo.label);
 
             html += '<div class="member-entry" style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border-soft);border-left:3px solid ' + statusInfo.color + ';padding-left:8px;">';
             html += '<span><strong>' + escapeHtml(name) + '</strong>' + deadMarker + ' <span class="role" style="color:var(--text-dim);font-size:0.75rem;">' + escapeHtml(member.role || 'Member') + '</span></span>';
             html += '<span style="color:var(--text-dim);font-size:0.7rem;">Joined: ' + escapeHtml(member.joinPeriod || '?') + (member.leavePeriod ? ' → ' + escapeHtml(member.leavePeriod) : '') + '</span>';
-            html += '<span style="color:' + statusInfo.color + ';font-size:0.65rem;font-weight:600;">' + escapedStatusLabel + '</span>';
+            html += '<span style="color:' + statusInfo.color + ';font-size:0.65rem;font-weight:600;">' + escapeHtml(statusInfo.label) + '</span>';
             html += '<div class="member-actions" style="display:flex;gap:4px;">';
             html += '<button class="small edit-member" data-index="' + index + '" style="padding:2px 8px;font-size:0.65rem;">Edit</button>';
             html += '<button class="small danger remove-member" data-char="' + escapeHtml(member.characterId) + '" style="padding:2px 8px;font-size:0.65rem;">Remove</button>';
@@ -1047,7 +1132,7 @@
             return;
         }
 
-        var result = window.TeamCore.addMember(teamId, {
+        var result = TeamCore.addMember(teamId, {
             characterId: charId,
             role: role,
             joinPeriod: joinPeriod,
@@ -1059,11 +1144,8 @@
             return;
         }
 
-        var char = window.getCharacterById ? window.getCharacterById(charId) : null;
-        var charName = char ? (window.getDisplayName ? window.getDisplayName(char) : 'character') : 'character';
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Added ' + charName + ' to team');
-        }
+        var charName = getCharacterName(charId);
+        recordActivity('Added ' + charName + ' to team');
 
         var updatedTeam = getTeam(teamId);
         if (updatedTeam) {
@@ -1085,17 +1167,14 @@
     }
 
     function removeMember(teamId, charId) {
-        var result = window.TeamCore.removeMember(teamId, charId);
+        var result = TeamCore.removeMember(teamId, charId);
         if (!result) {
             showNotification('Failed to remove member.', 'error');
             return;
         }
 
-        var char = window.getCharacterById ? window.getCharacterById(charId) : null;
-        var charName = char ? (window.getDisplayName ? window.getDisplayName(char) : 'character') : 'character';
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Removed ' + charName + ' from team');
-        }
+        var charName = getCharacterName(charId);
+        recordActivity('Removed ' + charName + ' from team');
 
         var updatedTeam = getTeam(teamId);
         if (updatedTeam) {
@@ -1118,8 +1197,8 @@
         }
 
         var member = team.members[index];
-        var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
-        var name = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
+        var char = CharacterQueries.getCharacterById(member.characterId);
+        var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
 
         document.getElementById('edit-member-name').textContent = name;
         document.getElementById('edit-member-role').value = member.role || '';
@@ -1146,7 +1225,7 @@
 
         var member = team.members[index];
 
-        var result = window.TeamCore.updateMember(teamId, member.characterId, {
+        var result = TeamCore.updateMember(teamId, member.characterId, {
             role: document.getElementById('edit-member-role').value.trim(),
             joinPeriod: document.getElementById('edit-member-join').value,
             leavePeriod: document.getElementById('edit-member-leave').value
@@ -1157,11 +1236,8 @@
             return;
         }
 
-        var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
-        var charName = char ? (window.getDisplayName ? window.getDisplayName(char) : 'character') : 'character';
-        if (typeof window.logActivity === 'function') {
-            window.logActivity('Updated member ' + charName + ' in team');
-        }
+        var charName = getCharacterName(member.characterId);
+        recordActivity('Updated member ' + charName + ' in team');
 
         var updatedTeam = getTeam(teamId);
         if (updatedTeam) {
@@ -1202,9 +1278,7 @@
         var container = document.getElementById('ranking-list');
         if (!container) return;
 
-        var rankings = window.TeamRankings && typeof window.TeamRankings.getSortedHistory === 'function'
-            ? window.TeamRankings.getSortedHistory(team)
-            : team.rankingHistory || [];
+        var rankings = TeamQueries.getSortedRankings(team);
 
         if (rankings.length === 0) {
             container.innerHTML = '<p class="empty-state">No ranking history</p>';
@@ -1253,16 +1327,14 @@
             return;
         }
 
-        var result = window.TeamCore.addRanking(teamId, period, rank);
+        var result = TeamCore.addRanking(teamId, period, rank);
         if (!result) {
             showNotification('Failed to add ranking.', 'error');
             return;
         }
 
-        if (typeof window.logActivity === 'function') {
-            var team = getTeam(teamId);
-            window.logActivity('Added ranking #' + rank + ' for ' + (team ? team.name : 'team'));
-        }
+        var team = getTeam(teamId);
+        recordActivity('Added ranking #' + rank + ' for ' + (team ? team.name : 'team'));
 
         var updatedTeam = getTeam(teamId);
         if (updatedTeam) {
@@ -1281,16 +1353,14 @@
     }
 
     function removeRanking(teamId, period) {
-        var result = window.TeamCore.removeRanking(teamId, period);
+        var result = TeamCore.removeRanking(teamId, period);
         if (!result) {
             showNotification('Failed to remove ranking.', 'error');
             return;
         }
 
-        if (typeof window.logActivity === 'function') {
-            var team = getTeam(teamId);
-            window.logActivity('Removed ranking for ' + (team ? team.name : 'team') + ' (' + period + ')');
-        }
+        var team = getTeam(teamId);
+        recordActivity('Removed ranking for ' + (team ? team.name : 'team') + ' (' + period + ')');
 
         var updatedTeam = getTeam(teamId);
         if (updatedTeam) {
@@ -1313,7 +1383,7 @@
         var select = document.getElementById('team-class');
         if (!select) return;
 
-        var classes = window.getClasses ? window.getClasses() : [];
+        var classes = getClasses();
         var currentValue = select.value;
         select.innerHTML = '<option value="">Unassigned</option>';
         classes.forEach(function(cls) {
@@ -1696,8 +1766,8 @@
     // REGISTER WITH TABMANAGER
     // ============================================================
 
-    if (typeof window.TabManager !== 'undefined') {
-        window.TabManager.register('teams', renderTeamManager);
+    if (TabManager && typeof TabManager.register === 'function') {
+        TabManager.register('teams', renderTeamManager);
     }
 
     document.addEventListener('dataReady', function() {
