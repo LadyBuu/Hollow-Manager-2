@@ -17,14 +17,14 @@
  * 
  * DEPENDENCIES (required):
  *   - window.TeamCore
+ *   - window.TeamQueries
  *   - window.TeamMembers
  *   - window.TeamRankings (must have getCurrentRank)
- *   - window.getDisplayName (from utils)
- *   - window.getCharacterById (from utils)
- *   - window.getCharacterAge (from utils)
- *   - window.getClassDisplayName (from utils)
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.ClassesQueries (from classes-queries.js)
  *   - window.CALENDAR_CONSTANTS (from constants.js)
  *   - window.DomUtils (from dom-utils.js)
+ *   - window.ValidationUtils (from validation-utils.js)
  */
 
 (function() {
@@ -34,7 +34,6 @@
     if (window.__teamRenderLoaded) {
         return;
     }
-    window.__teamRenderLoaded = true;
 
     // ============================================================
     // DEPENDENCY CHECK - Strict contract
@@ -42,6 +41,11 @@
 
     if (!window.TeamCore) {
         console.error('TeamRender: TeamCore is required but not loaded.');
+        return;
+    }
+
+    if (!window.TeamQueries) {
+        console.error('TeamRender: TeamQueries is required but not loaded.');
         return;
     }
 
@@ -60,11 +64,26 @@
         return;
     }
 
+    window.__teamRenderLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var TeamCore = window.TeamCore;
+    var TeamQueries = window.TeamQueries;
+    var TeamMembers = window.TeamMembers;
+    var TeamRankings = window.TeamRankings;
+    var CharacterQueries = window.CharacterQueries || window;
+    var ClassesQueries = window.ClassesQueries || window;
+    var DomUtils = window.DomUtils || window;
+    var ValidationUtils = window.ValidationUtils || window;
+    var CALENDAR = window.CALENDAR_CONSTANTS || {};
+
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var CALENDAR = window.CALENDAR_CONSTANTS || {};
     var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
     var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
     var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
@@ -75,8 +94,8 @@
     // ============================================================
 
     function escapeHtml(value) {
-        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
-            return window.DomUtils.escapeHtml(value);
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
         }
         // Fallback
         return String(value == null ? '' : value)
@@ -88,8 +107,63 @@
     }
 
     // ============================================================
-    // PERIOD HELPERS
+    // CHARACTER HELPERS - Uses CharacterQueries
     // ============================================================
+
+    function getCharacterName(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getDisplayName === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+        }
+        return 'Unknown';
+    }
+
+    function getCharacterAge(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getCharacterAge === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getCharacterAge(char) : '-';
+        }
+        return '-';
+    }
+
+    function getCharacterCurrentStatus(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getCurrentStatus === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getCurrentStatus(char) : '';
+        }
+        return '';
+    }
+
+    // ============================================================
+    // CLASS HELPERS - Uses ClassesQueries
+    // ============================================================
+
+    function getClassDisplayName(classId) {
+        if (ClassesQueries && typeof ClassesQueries.getClassDisplayName === 'function') {
+            return ClassesQueries.getClassDisplayName(classId);
+        }
+        return null;
+    }
+
+    // ============================================================
+    // PERIOD HELPERS - Delegate to ValidationUtils
+    // ============================================================
+
+    function parseNumericPeriod(value) {
+        if (ValidationUtils && typeof ValidationUtils.parseStrictPositivePeriod === 'function') {
+            return ValidationUtils.parseStrictPositivePeriod(value);
+        }
+        // Fallback
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        var str = String(value).trim();
+        if (!/^\d+$/.test(str)) {
+            return null;
+        }
+        var parsed = Number(str);
+        return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+    }
 
     function getPeriodLabel(teamType) {
         return teamType === 'academic' ? 'Week' : 'Period';
@@ -108,7 +182,7 @@
 
     function getTeamRankDisplay(team) {
         if (!team) return '-';
-        return window.TeamRankings.getCurrentRank(team) || '-';
+        return TeamRankings.getCurrentRank(team) || '-';
     }
 
     // ============================================================
@@ -168,10 +242,10 @@
             teams.forEach(function(team) {
                 if (!team || typeof team !== 'object') return;
 
-                var periodDisplay = window.TeamCore.getPeriodDisplay(team);
-                var typeLabel = window.TeamCore.getTypeLabel(team.type);
+                var periodDisplay = TeamQueries.getTeamPeriodDisplay(team);
+                var typeLabel = TeamQueries.getTypeLabel(team.type);
 
-                var activeMembers = window.TeamCore.getActiveMembers(team, periodNum);
+                var activeMembers = TeamQueries.getActiveTeamMembers(team, periodNum);
                 var memberCount = activeMembers.length;
 
                 var isExpanded = (expandedTeamId === team.id);
@@ -182,7 +256,7 @@
 
                 var classDisplay = '';
                 if (team.type === 'academic' && team.classId) {
-                    var className = window.getClassDisplayName ? window.getClassDisplayName(team.classId) : null;
+                    var className = getClassDisplayName(team.classId);
                     if (className && className !== 'Unassigned') {
                         classDisplay = ' <span class="team-class">[' + escapeHtml(className) + ']</span>';
                     }
@@ -225,7 +299,7 @@
             if (!team || typeof team !== 'object') return '';
 
             var periodNum = parseInt(filterPeriod, 10) || 1;
-            var activeMembers = window.TeamCore.getActiveMembers(team, periodNum);
+            var activeMembers = TeamQueries.getActiveTeamMembers(team, periodNum);
             var labelText = formatActiveMembersLabel(team.type, periodNum);
 
             var html = '<div class="team-members-expanded" data-team-id="' + escapeHtml(team.id) + '">';
@@ -235,14 +309,14 @@
                 activeMembers.forEach(function(member) {
                     if (!member || typeof member !== 'object') return;
 
-                    var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
-                    var name = char ? (window.getDisplayName ? window.getDisplayName(char) : 'Unknown') : 'Unknown';
-                    var age = char ? (window.getCharacterAge ? window.getCharacterAge(char) : '-') : '-';
+                    var char = CharacterQueries.getCharacterById(member.characterId);
+                    var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+                    var age = char ? CharacterQueries.getCharacterAge(char) : '-';
                     var deadMarker = char && char.deceased ? ' ✝' : '';
 
                     // Use TeamMembers for status (required dependency)
-                    var status = window.TeamMembers.getStatusAtPeriod(member, periodNum, team.type);
-                    var statusInfo = window.TeamCore.getMemberStatusInfo(status);
+                    var status = TeamMembers.getStatusAtPeriod(member, periodNum, team.type);
+                    var statusInfo = TeamCore.getMemberStatusInfo(status);
                     var statusClass = getStatusClass(status);
 
                     html += '<div class="member-entry ' + statusClass + '">';
@@ -306,18 +380,18 @@
             if (!team || typeof team !== 'object') return '';
 
             var periodNum = parseInt(period, 10) || 1;
-            var activeMembers = window.TeamCore.getActiveMembers(team, periodNum);
+            var activeMembers = TeamQueries.getActiveTeamMembers(team, periodNum);
             var memberCount = activeMembers.length;
             var rankDisplay = getTeamRankDisplay(team);
-            var periodDisplay = window.TeamCore.getPeriodDisplay(team);
-            var typeLabel = window.TeamCore.getTypeLabel(team.type);
+            var periodDisplay = TeamQueries.getTeamPeriodDisplay(team);
+            var typeLabel = TeamQueries.getTypeLabel(team.type);
 
             var isInactive = team.status === 'deprecated' || team.status === 'inactive';
             var inactiveClass = isInactive ? 'inactive' : '';
 
             var classDisplay = '';
             if (team.type === 'academic' && team.classId) {
-                var className = window.getClassDisplayName ? window.getClassDisplayName(team.classId) : null;
+                var className = getClassDisplayName(team.classId);
                 if (className && className !== 'Unassigned') {
                     classDisplay = ' <span class="team-class">[' + escapeHtml(className) + ']</span>';
                 }
@@ -358,7 +432,7 @@
 
             var rankDisplay = getTeamRankDisplay(team);
             var memberCount = team.members ? team.members.length : 0;
-            var typeLabel = window.TeamCore.getTypeLabel(team.type);
+            var typeLabel = TeamQueries.getTypeLabel(team.type);
 
             var html = '<div class="team-summary">';
             html += '<span class="team-name">' + escapeHtml(team.name) + '</span>';
@@ -382,7 +456,45 @@
          * @param {string} teamType - Team type
          * @returns {string} Period label
          */
-        getPeriodLabel: getPeriodLabel
+        getPeriodLabel: getPeriodLabel,
+
+        /**
+         * Get the period range for a team type
+         * @param {string} teamType - Team type
+         * @returns {object} { min, max, label }
+         */
+        getPeriodRange: function(teamType) {
+            if (teamType === 'academic') {
+                return {
+                    min: MIN_WEEK,
+                    max: MAX_WEEK,
+                    label: 'Week'
+                };
+            }
+            return {
+                min: MIN_YEAR,
+                max: MAX_YEAR,
+                label: 'Year'
+            };
+        },
+
+        /**
+         * Check if a team is active
+         * @param {object} team - Team object
+         * @returns {boolean} True if active
+         */
+        isTeamActive: function(team) {
+            return team && team.status === 'active';
+        },
+
+        /**
+         * Check if a team is inactive or deprecated
+         * @param {object} team - Team object
+         * @returns {boolean} True if inactive
+         */
+        isTeamInactive: function(team) {
+            return team && (team.status === 'inactive' || team.status === 'deprecated');
+        }
     };
 
     // ============================================================
