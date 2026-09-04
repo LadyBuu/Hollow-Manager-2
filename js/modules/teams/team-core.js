@@ -67,23 +67,25 @@
  * 
  * DEPENDENCIES:
  *   - window.CALENDAR_CONSTANTS (from constants.js)
- *   - window.STATUS_CONSTANTS (from constants.js)
- *   - window.ID_CONSTANTS (from constants.js)
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.ActivityLog (from activity-log.js)
+ *   - window.ObjectUtils (from object-utils.js)
  *   - window.DomUtils (from dom-utils.js)
- *   - window.CoreUtils (from core-utils.js)
- *   - window.logActivity (from app.js)
+ *   - window.ValidationUtils (from validation-utils.js)
  */
 
 (function() {
     'use strict';
 
     // Guard against duplicate script loading
-    // IMPORTANT: Check dependency BEFORE marking as loaded
     if (window.__teamCoreLoaded) {
         return;
     }
 
-    // Check dependencies before marking as loaded
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
+
     if (!window.CALENDAR_CONSTANTS) {
         console.error('TeamCore: CALENDAR_CONSTANTS is required but not loaded.');
         return;
@@ -92,12 +94,19 @@
     window.__teamCoreLoaded = true;
 
     // ============================================================
-    // CONSTANTS
+    // DEPENDENCY IMPORTS
     // ============================================================
 
     var CALENDAR = window.CALENDAR_CONSTANTS || {};
-    var STATUS = window.STATUS_CONSTANTS || {};
-    var ID = window.ID_CONSTANTS || {};
+    var CharacterQueries = window.CharacterQueries || window;
+    var ActivityLog = window.ActivityLog || window;
+    var ObjectUtils = window.ObjectUtils || window;
+    var DomUtils = window.DomUtils || window;
+    var ValidationUtils = window.ValidationUtils || window;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
 
     var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
     var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
@@ -106,7 +115,7 @@
     var DEFAULT_YEAR = CALENDAR.DEFAULT_YEAR ? CALENDAR.DEFAULT_YEAR() : new Date().getFullYear();
 
     var VALID_TEAM_TYPES = ['academic', 'professional', 'temporary', 'civilian'];
-    var VALID_TEAM_STATUSES = STATUS.VALID_TEAM_STATUSES || ['active', 'inactive', 'deprecated'];
+    var VALID_TEAM_STATUSES = ['active', 'inactive', 'deprecated'];
     var UPDATEABLE_PROPERTIES = [
         'name',
         'type',
@@ -121,7 +130,7 @@
     // currentRank is DERIVED, not updateable directly
 
     // ============================================================
-    // UTILITY HELPERS - Use shared utilities when available
+    // UTILITY HELPERS - Delegate to shared utilities
     // ============================================================
 
     function isString(value) {
@@ -137,8 +146,8 @@
     }
 
     function escapeHtml(value) {
-        if (window.DomUtils && typeof window.DomUtils.escapeHtml === 'function') {
-            return window.DomUtils.escapeHtml(value);
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
         }
         // Fallback
         return String(value == null ? '' : value)
@@ -150,8 +159,8 @@
     }
 
     function deepClone(value) {
-        if (window.CoreUtils && typeof window.CoreUtils.deepClone === 'function') {
-            return window.CoreUtils.deepClone(value);
+        if (ObjectUtils && typeof ObjectUtils.deepClone === 'function') {
+            return ObjectUtils.deepClone(value);
         }
         // Fallback
         if (value === null || typeof value !== 'object') return value;
@@ -164,53 +173,8 @@
     }
 
     // ============================================================
-    // DATA STORE ACCESS - Pure, no repair
+    // PERIOD PARSING - Delegate to ValidationUtils
     // ============================================================
-
-    function getDataStore() {
-        if (!window.data || typeof window.data !== 'object') {
-            return null;
-        }
-        if (!Array.isArray(window.data.teams)) {
-            return null;
-        }
-        return window.data;
-    }
-
-    // ============================================================
-    // VALIDATION HELPERS
-    // ============================================================
-
-    /**
-     * Check if a team type is valid.
-     * 'internship' is accepted as a legacy value.
-     */
-    function isValidTeamType(type) {
-        if (!type) return false;
-        if (type === 'internship') return true;
-        return VALID_TEAM_TYPES.indexOf(type) !== -1;
-    }
-
-    /**
-     * Normalise a team type to its canonical form.
-     * 'internship' is a legacy persisted value and is explicitly migrated
-     * to the canonical 'professional' type.
-     * Returns null for invalid types.
-     * NOTE: This does NOT mutate the stored data.
-     */
-    function normalizeTeamType(type) {
-        if (type === 'internship') {
-            return 'professional';
-        }
-        if (isValidTeamType(type)) {
-            return type;
-        }
-        return null;
-    }
-
-    function isValidTeamStatus(status) {
-        return status && VALID_TEAM_STATUSES.indexOf(status) !== -1;
-    }
 
     function parseNumericPeriod(value) {
         if (value === undefined || value === null || value === '') {
@@ -223,6 +187,107 @@
         var parsed = Number(str);
         return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
     }
+
+    function parseStrictPositivePeriod(value) {
+        if (ValidationUtils && typeof ValidationUtils.parseStrictPositivePeriod === 'function') {
+            return ValidationUtils.parseStrictPositivePeriod(value);
+        }
+        // Fallback
+        if (value === undefined || value === null || value === '') return null;
+        var num = parseInt(value, 10);
+        return (!isNaN(num) && num >= 1) ? num : null;
+    }
+
+    function getPeriodInfo(value) {
+        if (ValidationUtils && typeof ValidationUtils.getPeriodInfo === 'function') {
+            return ValidationUtils.getPeriodInfo(value);
+        }
+        // Fallback
+        if (value === undefined || value === null || value === '') {
+            return { present: false, valid: true, value: null };
+        }
+        var num = parseInt(value, 10);
+        return {
+            present: true,
+            valid: !isNaN(num),
+            value: !isNaN(num) ? num : null
+        };
+    }
+
+    function hasPeriodValue(value) {
+        return value !== undefined && value !== null && String(value).trim() !== '';
+    }
+
+    // ============================================================
+    // CHARACTER HELPERS - Delegate to CharacterQueries
+    // ============================================================
+
+    function getCharacterName(charId) {
+        if (CharacterQueries && typeof CharacterQueries.getDisplayName === 'function') {
+            var char = CharacterQueries.getCharacterById(charId);
+            return char ? CharacterQueries.getDisplayName(char) : 'character';
+        }
+        return 'character';
+    }
+
+    // ============================================================
+    // ACTIVITY LOGGING - Delegate to ActivityLog
+    // ============================================================
+
+    function recordActivity(message) {
+        try {
+            if (ActivityLog && typeof ActivityLog.record === 'function') {
+                ActivityLog.record(message);
+            }
+        } catch (err) {
+            // Swallow logging errors
+        }
+    }
+
+    // ============================================================
+    // TEAM TYPE NORMALISATION - Canonical
+    // ============================================================
+
+    /**
+     * Normalise a team type to its canonical form.
+     * 'internship' is a legacy persisted value and is explicitly migrated
+     * to the canonical 'professional' type.
+     * Returns null for invalid types.
+     * NOTE: This does NOT mutate the stored data.
+     */
+    function normalizeTeamType(type) {
+        if (!type) return null;
+        var normalized = String(type).toLowerCase().trim();
+        if (normalized === 'internship') {
+            return 'professional';
+        }
+        if (VALID_TEAM_TYPES.indexOf(normalized) !== -1) {
+            return normalized;
+        }
+        return null;
+    }
+
+    /**
+     * Check if a team type is valid.
+     * 'internship' is accepted as a legacy value.
+     */
+    function isValidTeamType(type) {
+        if (!type) return false;
+        var normalized = String(type).toLowerCase().trim();
+        if (normalized === 'internship') return true;
+        return VALID_TEAM_TYPES.indexOf(normalized) !== -1;
+    }
+
+    /**
+     * Check if a team status is valid.
+     */
+    function isValidTeamStatus(status) {
+        return status && VALID_TEAM_STATUSES.indexOf(status) !== -1;
+    }
+
+    // ============================================================
+    // PERIOD VALIDATION
+    // ============================================================
 
     function isValidAcademicWeek(value) {
         var num = parseNumericPeriod(value);
@@ -264,9 +329,50 @@
         return (num !== null && num >= 1) ? num : null;
     }
 
-    function hasValue(value) {
-        return value !== undefined && value !== null && String(value).trim() !== '';
+    // ============================================================
+    // DATA STORE ACCESS - Pure, no repair
+    // ============================================================
+
+    function getDataStore() {
+        if (!window.data || typeof window.data !== 'object') {
+            return null;
+        }
+        if (!Array.isArray(window.data.teams)) {
+            return null;
+        }
+        return window.data;
     }
+
+    // ============================================================
+    // TEAM LOOKUP HELPERS
+    // ============================================================
+
+    function getTeamData(id) {
+        if (!id) return null;
+        var data = getDataStore();
+        if (!data) return null;
+        return data.teams.find(function(t) {
+            return t && typeof t === 'object' && String(t.id) === String(id);
+        }) || null;
+    }
+
+    // ============================================================
+    // ID GENERATION
+    // ============================================================
+
+    function generateTeamId() {
+        if (window.IdUtils && typeof window.IdUtils.generateId === 'function') {
+            return window.IdUtils.generateId('team');
+        }
+        if (typeof window.generateId === 'function') {
+            return window.generateId('team');
+        }
+        return 'team_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    }
+
+    // ============================================================
+    // VALIDATION - Name History
+    // ============================================================
 
     function validateNameHistory(history) {
         if (!Array.isArray(history)) {
@@ -308,6 +414,10 @@
         }
         return result;
     }
+
+    // ============================================================
+    // VALIDATION - Members
+    // ============================================================
 
     function sanitizeMemberData(memberData) {
         if (!isObject(memberData)) return null;
@@ -363,6 +473,10 @@
         return { valid: true };
     }
 
+    // ============================================================
+    // VALIDATION - Rankings
+    // ============================================================
+
     function validateRankingHistory(history) {
         if (!Array.isArray(history)) {
             return { valid: false, message: 'Ranking history must be an array.' };
@@ -406,6 +520,10 @@
 
         return { valid: true };
     }
+
+    // ============================================================
+    // VALIDATION - Team Updates
+    // ============================================================
 
     function validateTeamUpdate(updates, team) {
         var errors = [];
@@ -652,45 +770,6 @@
     }
 
     // ============================================================
-    // TEAM LOOKUP HELPERS
-    // ============================================================
-
-    function getTeamData(id) {
-        if (!id) return null;
-        var data = getDataStore();
-        if (!data) return null;
-        return data.teams.find(function(t) {
-            return t && typeof t === 'object' && String(t.id) === String(id);
-        }) || null;
-    }
-
-    // ============================================================
-    // ACTIVITY LOGGING HELPER
-    // ============================================================
-
-    function recordActivity(message) {
-        try {
-            if (typeof window.logActivity === 'function') {
-                window.logActivity(message);
-            }
-        } catch (err) {
-            // Swallow logging errors
-        }
-    }
-
-    // ============================================================
-    // ID GENERATION
-    // ============================================================
-
-    function generateTeamId() {
-        var prefix = ID.PREFIXES ? ID.PREFIXES.TEAM : 'team';
-        if (typeof window.generateId === 'function') {
-            return window.generateId(prefix);
-        }
-        return prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    }
-
-    // ============================================================
     // TEAM CORE API
     // ============================================================
 
@@ -713,6 +792,13 @@
          * @returns {boolean} True if valid
          */
         isValidTeamType: isValidTeamType,
+
+        /**
+         * Check if a team status is valid.
+         * @param {string} status - Team status
+         * @returns {boolean} True if valid
+         */
+        isValidTeamStatus: isValidTeamStatus,
 
         /**
          * Get a team by ID
@@ -1071,8 +1157,7 @@
 
             team.members.push(newMember);
 
-            var char = window.getCharacterById ? window.getCharacterById(member.characterId) : null;
-            var charName = char ? window.getDisplayName ? window.getDisplayName(char) : 'character' : 'character';
+            var charName = getCharacterName(member.characterId);
             recordActivity('Added ' + charName + ' to team: ' + team.name);
 
             return newMember;
@@ -1101,8 +1186,7 @@
             var removed = team.members[index];
             team.members.splice(index, 1);
 
-            var char = window.getCharacterById ? window.getCharacterById(charId) : null;
-            var charName = char ? window.getDisplayName ? window.getDisplayName(char) : 'character' : 'character';
+            var charName = getCharacterName(charId);
             recordActivity('Removed ' + charName + ' from team: ' + team.name);
 
             return true;
@@ -1177,8 +1261,7 @@
                 member[key] = proposedMember[key];
             });
 
-            var char = window.getCharacterById ? window.getCharacterById(charId) : null;
-            var charName = char ? window.getDisplayName ? window.getDisplayName(char) : 'character' : 'character';
+            var charName = getCharacterName(charId);
             recordActivity('Updated member ' + charName + ' in team: ' + team.name + ' (' + changes.join(', ') + ')');
 
             return member;
@@ -1220,13 +1303,13 @@
                 var leave = parseNumericPeriod(m.leavePeriod);
 
                 // Check if join is present but malformed
-                var hasJoin = hasValue(m.joinPeriod);
+                var hasJoin = hasPeriodValue(m.joinPeriod);
                 if (hasJoin && join === null) {
                     return false; // Malformed member, exclude
                 }
 
                 // Check if leave is present but malformed
-                var hasLeave = hasValue(m.leavePeriod);
+                var hasLeave = hasPeriodValue(m.leavePeriod);
                 if (hasLeave && leave === null) {
                     return false; // Malformed member, exclude
                 }
@@ -1353,13 +1436,11 @@
             this._updateCurrentRank(team);
 
             // Activity logging
-            if (typeof window.logActivity === 'function') {
-                var teamName = team.name || 'Unknown Team';
-                if (isUpdate) {
-                    window.logActivity('Updated ranking for ' + teamName + ': #' + oldRank + ' → #' + rank + ' (' + periodNum + ')');
-                } else {
-                    window.logActivity('Added ranking #' + rank + ' for ' + teamName + ' (' + periodNum + ')');
-                }
+            var teamName = team.name || 'Unknown Team';
+            if (isUpdate) {
+                recordActivity('Updated ranking for ' + teamName + ': #' + oldRank + ' → #' + rank + ' (' + periodNum + ')');
+            } else {
+                recordActivity('Added ranking #' + rank + ' for ' + teamName + ' (' + periodNum + ')');
             }
 
             return true;
@@ -1416,11 +1497,9 @@
             this._updateCurrentRank(team);
 
             // Activity logging
-            if (typeof window.logActivity === 'function') {
-                var teamName = team.name || 'Unknown Team';
-                var rankInfo = removedEntry ? ' #' + removedEntry.rank : '';
-                window.logActivity('Removed ranking' + rankInfo + ' from ' + teamName + ' (' + periodNum + ')');
-            }
+            var teamName = team.name || 'Unknown Team';
+            var rankInfo = removedEntry ? ' #' + removedEntry.rank : '';
+            recordActivity('Removed ranking' + rankInfo + ' from ' + teamName + ' (' + periodNum + ')');
 
             return true;
         },
@@ -1562,12 +1641,18 @@
         getCurrentPeriod: function(teamType) {
             var data = window.data || {};
             if (teamType === 'academic') {
-                if (window.teamState && window.teamState.filters && window.teamState.filters.academic) {
-                    return window.teamState.filters.academic.filterWeek || 1;
-                }
-                return 1;
+                return data.currentWeek || 1;
             }
             return data.currentYear || DEFAULT_YEAR;
+        },
+
+        /**
+         * Get the period label for a team type
+         * @param {string} teamType - Team type
+         * @returns {string} Period label
+         */
+        getPeriodLabel: function(teamType) {
+            return teamType === 'academic' ? 'Week' : 'Year';
         }
     };
 
