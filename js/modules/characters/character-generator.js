@@ -16,12 +16,18 @@
  *   - No DOM manipulation
  *   - No persistence calls
  *   - Results can be used by CharacterForm or CharacterStats
- *   - USES IdUtils for ID generation (if available)
  *   - USES CharacterConstants for domain constants
+ *   - No ID generation here - that belongs to IdUtils at creation time
+ *   - No display name formatting here - that belongs to CharacterQueries
  * 
  * DEPENDENCIES:
- *   - window.CharacterConstants (from character-constants.js)
- *   - window.IdUtils (from id-utils.js) - optional, for ID generation
+ *   - window.CharacterConstants (from character-constants.js) - MANDATORY
+ * 
+ * USAGE:
+ *   var generator = window.CharacterGenerator;
+ *   var stats = generator.generateStats3d6();
+ *   var magic = generator.generateMagic('elemental');
+ *   var character = generator.generateCharacter({ currentYear: 1927 });
  */
 
 (function() {
@@ -34,14 +40,13 @@
     window.__characterGeneratorLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var IdUtils = window.IdUtils || window;
     var CC = window.CharacterConstants;
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // DEPENDENCY CHECK - MANDATORY
     // ============================================================
 
     function checkDependencies() {
@@ -49,6 +54,14 @@
 
         if (!CC) {
             missing.push('CharacterConstants');
+        }
+
+        if (CC && typeof CC.MAGIC_TYPE_KEYS === 'undefined') {
+            missing.push('CharacterConstants.MAGIC_TYPE_KEYS');
+        }
+
+        if (CC && typeof CC.MAGIC_CATEGORIES === 'undefined') {
+            missing.push('CharacterConstants.MAGIC_CATEGORIES');
         }
 
         if (missing.length > 0) {
@@ -59,7 +72,7 @@
     }
 
     // ============================================================
-    // GENERATION POOLS
+    // GENERATION POOLS (Internal - not exposed)
     // ============================================================
 
     var PHYSICAL_POOLS = {
@@ -164,7 +177,7 @@
     };
 
     // ============================================================
-    // UTILITY FUNCTIONS
+    // UTILITY FUNCTIONS - Internal only
     // ============================================================
 
     function pickRandom(arr) {
@@ -222,17 +235,21 @@
     }
 
     /**
-     * Generate random stats (6-18 range, 3d6 style).
+     * Generate random stats (3d6 style, clamped 6-18).
+     * This is the application's canonical stat generation method.
      * @returns {object} Stats object with str, dex, con, int, wis, cha
      */
-    function generateStats() {
+    function generateStats3d6() {
         var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
         var stats = {};
 
         statKeys.forEach(function(key) {
             // 3d6 style: sum of 3 random numbers 1-6
             var roll = randomInt(1, 6) + randomInt(1, 6) + randomInt(1, 6);
-            stats[key] = clamp(roll, 6, 18);
+            // Clamp to application's stat range (6-18)
+            var statMin = CC ? CC.STAT_MIN : 1;
+            var statMax = CC ? CC.STAT_MAX : 50;
+            stats[key] = clamp(roll, Math.max(6, statMin), Math.min(18, statMax));
         });
 
         return stats;
@@ -256,7 +273,10 @@
             ];
             rolls.sort(function(a, b) { return b - a; });
             var sum = rolls[0] + rolls[1] + rolls[2];
-            stats[key] = clamp(sum, 6, 18);
+            // Clamp to application's stat range
+            var statMin = CC ? CC.STAT_MIN : 1;
+            var statMax = CC ? CC.STAT_MAX : 50;
+            stats[key] = clamp(sum, Math.max(6, statMin), Math.min(18, statMax));
         });
 
         return stats;
@@ -264,25 +284,27 @@
 
     /**
      * Generate random magic proficiencies.
+     * Uses CharacterConstants for magic type keys and categories.
+     * 
      * @param {string} category - Optional category to favour ('elemental', 'body', 'aether')
      * @returns {object} Magic proficiencies object
      */
     function generateMagic(category) {
-        var magicTypeKeys = CC ? CC.MAGIC_TYPE_KEYS : [];
-
-        if (magicTypeKeys.length === 0) {
-            // Fallback if constants not available
+        // Ensure dependencies are available
+        if (!CC || !CC.MAGIC_TYPE_KEYS) {
+            console.warn('CharacterGenerator: CharacterConstants.MAGIC_TYPE_KEYS not available.');
             return {};
         }
+
+        var magicTypeKeys = CC.MAGIC_TYPE_KEYS;
+        var magicCategories = CC.MAGIC_CATEGORIES || {};
+        var magicMax = CC.MAGIC_MAX || 10;
 
         var magic = {};
         var categoryTypes = [];
 
-        if (category && CC && CC.MAGIC_CATEGORIES) {
-            var cat = CC.MAGIC_CATEGORIES[category];
-            if (cat) {
-                categoryTypes = cat.types.slice();
-            }
+        if (category && magicCategories[category]) {
+            categoryTypes = magicCategories[category].types || [];
         }
 
         magicTypeKeys.forEach(function(key) {
@@ -314,6 +336,9 @@
                     magic[key] = randomInt(7, 8);
                 }
             }
+
+            // Clamp to application's magic max
+            magic[key] = Math.min(magic[key], magicMax);
         });
 
         return magic;
@@ -321,6 +346,7 @@
 
     /**
      * Generate random magic for a specific category only.
+     * 
      * @param {string} category - Category to generate ('elemental', 'body', 'aether')
      * @returns {object} Magic proficiencies for that category
      */
@@ -330,17 +356,28 @@
 
     /**
      * Generate a complete random character.
+     * Returns a character DTO with generated values.
+     * Does NOT include application-specific fields (id, classIds, etc.)
+     * 
      * @param {object} options - Generation options
+     * @param {number} options.currentYear - Application current year (required)
      * @param {boolean} options.includeStats - Generate stats (default: true)
      * @param {boolean} options.includeMagic - Generate magic (default: true)
      * @param {boolean} options.includePersonality - Generate personality (default: true)
      * @param {boolean} options.includePhysical - Generate physical (default: true)
      * @param {string} options.magicCategory - Magic category to favour
      * @param {string} options.statsMethod - '3d6' or '4d6' (default: '3d6')
-     * @returns {object} Complete character data
+     * @returns {object} Complete character DTO
      */
     function generateCharacter(options) {
         options = options || {};
+
+        // Validate required options
+        if (options.currentYear === undefined || options.currentYear === null) {
+            console.warn('CharacterGenerator.generateCharacter: currentYear is required. Using fallback.');
+        }
+
+        var currentYear = options.currentYear || new Date().getFullYear();
 
         var includeStats = options.includeStats !== false;
         var includeMagic = options.includeMagic !== false;
@@ -405,8 +442,7 @@
             character.alias = pickRandom(aliases) || '';
         }
 
-        // Birth year: random 18-30 years ago from current year
-        var currentYear = new Date().getFullYear();
+        // Birth year: random 18-45 years ago from current year
         var age = randomInt(18, 45);
         character.birthYear = String(currentYear - age);
 
@@ -432,7 +468,7 @@
         if (includeStats) {
             character.stats = statsMethod === '4d6' 
                 ? generateStats4d6() 
-                : generateStats();
+                : generateStats3d6();
         }
 
         // Magic
@@ -466,53 +502,6 @@
         return character;
     }
 
-    /**
-     * Generate a display name for a generated character.
-     * @param {object} char - Character data
-     * @returns {string} Display name
-     */
-    function getDisplayName(char) {
-        if (!char) return 'Unknown';
-
-        var firstName = char.firstName || '';
-        var lastName = char.lastName || '';
-        var nickname = char.nickname || '';
-        var alias = char.alias || '';
-        var format = char.nameFormat || 'firstlast';
-
-        switch (format) {
-            case 'lastfirst':
-                return lastName && firstName ? lastName + ', ' + firstName : lastName || firstName || 'Unknown';
-            case 'nicklast':
-                return [nickname || firstName, lastName].filter(Boolean).join(' ') || 'Unknown';
-            case 'firstnick':
-                if (!firstName && !nickname) return lastName || 'Unknown';
-                if (!nickname) return [firstName, lastName].filter(Boolean).join(' ');
-                return firstName 
-                    ? firstName + ' "' + nickname + '"' + (lastName ? ' ' + lastName : '')
-                    : '"' + nickname + '"' + (lastName ? ' ' + lastName : '');
-            case 'alias':
-                return alias || [firstName, lastName].filter(Boolean).join(' ') || 'Unknown';
-            default:
-                return [firstName, lastName].filter(Boolean).join(' ') || 'Unknown';
-        }
-    }
-
-    /**
-     * Generate a unique ID for a character.
-     * Uses IdUtils if available, falls back to timestamp.
-     * @param {string} prefix - ID prefix (default: 'char')
-     * @returns {string} Unique ID
-     */
-    function generateId(prefix) {
-        prefix = prefix || 'char';
-        if (IdUtils && typeof IdUtils.generateId === 'function') {
-            return IdUtils.generateId(prefix);
-        }
-        // Fallback if IdUtils not available
-        return prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    }
-
     // ============================================================
     // EXPOSE
     // ============================================================
@@ -521,21 +510,15 @@
         // Generation
         generatePhysical: generatePhysical,
         generatePersonality: generatePersonality,
-        generateStats: generateStats,
+        generateStats3d6: generateStats3d6,
         generateStats4d6: generateStats4d6,
         generateMagic: generateMagic,
         generateMagicCategory: generateMagicCategory,
         generateCharacter: generateCharacter,
 
-        // Utility
-        getDisplayName: getDisplayName,
-        generateId: generateId,
+        // Utility (internal helpers exposed for testing/extensibility)
         pickRandom: pickRandom,
-        randomInt: randomInt,
-
-        // Pools (for extension/customisation)
-        PHYSICAL_POOLS: PHYSICAL_POOLS,
-        PERSONALITY_POOLS: PERSONALITY_POOLS
+        randomInt: randomInt
     };
 
 })();
