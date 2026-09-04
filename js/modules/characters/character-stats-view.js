@@ -18,14 +18,17 @@
  *   - No data mutation
  *   - No persistence calls
  *   - Uses CharacterConstants for definitions
+ *   - Uses CharacterQueries for character data
  *   - Uses DomUtils for safe DOM operations
- *   - applyPhysicalClass() uses minStats as the source of truth
+ *   - USES NotificationSystem for notifications
  * 
  * DEPENDENCIES:
  *   - window.CharacterConstants (from character-constants.js)
- *   - window.DomUtils (from dom-utils.js)
+ *   - window.CharacterQueries (from character-queries.js)
  *   - window.CharacterStats (from character-stats.js) - for logic
  *   - window.CharacterGenerator (from character-generator.js) - for random generation
+ *   - window.DomUtils (from dom-utils.js)
+ *   - window.NotificationSystem (from notification.js)
  */
 
 (function() {
@@ -38,26 +41,41 @@
     window.__characterStatsViewLoaded = true;
 
     // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var CharacterQueries = window.CharacterQueries || window;
+    var CharacterStats = window.CharacterStats || window;
+    var CharacterGenerator = window.CharacterGenerator || window;
+    var NotificationSystem = window.NotificationSystem || window;
+    var DomUtils = window.DomUtils || window;
+    var CC = window.CharacterConstants;
+
+    // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
-        if (!window.CharacterConstants) {
+        if (!CC) {
             missing.push('CharacterConstants');
         }
 
-        if (!window.DomUtils || typeof window.DomUtils.createElement !== 'function') {
-            missing.push('DomUtils');
-        }
-
-        if (!window.CharacterStats) {
+        if (!CharacterStats) {
             missing.push('CharacterStats');
         }
 
-        if (!window.CharacterGenerator) {
+        if (!CharacterGenerator) {
             missing.push('CharacterGenerator');
+        }
+
+        if (!DomUtils || typeof DomUtils.createElement !== 'function') {
+            missing.push('DomUtils');
+        }
+
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem');
         }
 
         if (missing.length > 0) {
@@ -68,47 +86,14 @@
     }
 
     // ============================================================
-    // CONSTANTS - From CharacterConstants
-    // ============================================================
-
-    var MAGIC_MAX = window.CharacterConstants ? window.CharacterConstants.MAGIC_MAX : 10;
-    var STAT_MIN = window.CharacterConstants ? window.CharacterConstants.STAT_MIN : 1;
-    var STAT_MAX = window.CharacterConstants ? window.CharacterConstants.STAT_MAX : 50;
-    var STAT_KEYS = window.CharacterConstants ? window.CharacterConstants.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-    var MAGIC_TYPE_KEYS = window.CharacterConstants ? window.CharacterConstants.MAGIC_TYPE_KEYS : [];
-    var MAGIC_CATEGORIES = window.CharacterConstants ? window.CharacterConstants.MAGIC_CATEGORIES : {};
-    var CLASS_DEFINITIONS = window.CharacterConstants ? window.CharacterConstants.CLASS_DEFINITIONS : [];
-
-    // ============================================================
-    // NOTIFICATION
+    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
-
-        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
-            window.NotificationSystem.notify(message, type);
-            return;
-        }
-
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type);
-            return;
-        }
-
-        if (typeof window.setSession === 'function') {
-            window.setSession('toast', {
-                message: message,
-                type: type,
-                timestamp: Date.now()
-            });
-            if (typeof window.renderToast === 'function') {
-                window.renderToast();
-            }
-            return;
-        }
-
-        if (type === 'error') {
+        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
+            NotificationSystem.notify(message, type);
+        } else if (type === 'error') {
             alert('Error: ' + message);
         } else {
             alert(message);
@@ -116,21 +101,33 @@
     }
 
     // ============================================================
+    // CONSTANTS - From CharacterConstants
+    // ============================================================
+
+    var MAGIC_MAX = CC ? CC.MAGIC_MAX : 10;
+    var STAT_MIN = CC ? CC.STAT_MIN : 1;
+    var STAT_MAX = CC ? CC.STAT_MAX : 50;
+    var STAT_KEYS = CC ? CC.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    var MAGIC_TYPE_KEYS = CC ? CC.MAGIC_TYPE_KEYS : [];
+    var MAGIC_CATEGORIES = CC ? CC.MAGIC_CATEGORIES : {};
+    var CLASS_DEFINITIONS = CC ? CC.CLASS_DEFINITIONS : [];
+
+    // ============================================================
     // HELPERS
     // ============================================================
 
     function getStatFromDOM(id) {
         var el = document.getElementById(id);
-        if (!el) return 10;
-        var val = parseInt(el.value);
-        if (isNaN(val)) return 10;
+        if (!el) return STAT_DEFAULT || 10;
+        var val = parseInt(el.value, 10);
+        if (isNaN(val)) return STAT_DEFAULT || 10;
         return Math.max(STAT_MIN, Math.min(STAT_MAX, val));
     }
 
     function getMagicFromDOM(id) {
         var el = document.getElementById(id);
         if (!el) return 0;
-        var val = parseInt(el.value);
+        var val = parseInt(el.value, 10);
         if (isNaN(val)) return 0;
         return Math.max(0, Math.min(MAGIC_MAX, val));
     }
@@ -353,7 +350,7 @@
     // ============================================================
 
     function updateClassSuggestion() {
-        if (!window.CharacterStats || typeof window.CharacterStats.suggestClass !== 'function') {
+        if (!CharacterStats || typeof CharacterStats.suggestClass !== 'function') {
             return;
         }
 
@@ -362,7 +359,7 @@
             stats[key] = getStatFromDOM('char-' + key);
         });
 
-        var suggested = window.CharacterStats.suggestClass(stats);
+        var suggested = CharacterStats.suggestClass(stats);
         var display = document.getElementById('suggested-class');
         var descDisplay = document.getElementById('class-description-display');
 
@@ -392,7 +389,7 @@
     }
 
     function updateMagicClassSuggestion() {
-        if (!window.CharacterStats || typeof window.CharacterStats.suggestMagicClass !== 'function') {
+        if (!CharacterStats || typeof CharacterStats.suggestMagicClass !== 'function') {
             return;
         }
 
@@ -402,7 +399,7 @@
         });
 
         var tempChar = { magic: magic };
-        var suggested = window.CharacterStats.suggestMagicClass(tempChar);
+        var suggested = CharacterStats.suggestMagicClass(tempChar);
         var display = document.getElementById('suggested-magic-class');
 
         if (display) {
@@ -421,7 +418,7 @@
     }
 
     function updateMagicPowerDisplay() {
-        if (!window.CharacterStats || typeof window.CharacterStats.getMagicPowerDisplay !== 'function') {
+        if (!CharacterStats || typeof CharacterStats.getMagicPowerDisplay !== 'function') {
             return;
         }
 
@@ -433,7 +430,7 @@
         var tempChar = { magic: magic };
         var display = document.getElementById('magic-power-display-text');
         if (display) {
-            display.textContent = window.CharacterStats.getMagicPowerDisplay(tempChar);
+            display.textContent = CharacterStats.getMagicPowerDisplay(tempChar);
         }
     }
 
@@ -514,7 +511,7 @@
     }
 
     // ============================================================
-    // APPLY PHYSICAL CLASS - FIXED: Uses minStats as source of truth
+    // APPLY PHYSICAL CLASS - Uses minStats as source of truth
     // ============================================================
 
     function applyPhysicalClass() {
@@ -533,12 +530,12 @@
 
         // Start with base stats (minimum 10)
         var stats = {
-            str: 10,
-            dex: 10,
-            con: 10,
-            int: 10,
-            wis: 10,
-            cha: 10
+            str: STAT_DEFAULT || 10,
+            dex: STAT_DEFAULT || 10,
+            con: STAT_DEFAULT || 10,
+            int: STAT_DEFAULT || 10,
+            wis: STAT_DEFAULT || 10,
+            cha: STAT_DEFAULT || 10
         };
 
         // ---- USE MINSTATS AS SOURCE OF TRUTH ----
@@ -721,7 +718,7 @@
             return;
         }
 
-        var char = typeof window.getCharacterById === 'function' ? window.getCharacterById(charId) : null;
+        var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             showNotification('Character not found.', 'error');
             return;
@@ -751,6 +748,7 @@
         var moveName = move && move.name ? move.name : '';
         var moveDesc = move && move.description ? move.description : '';
 
+        // Use DomUtils for safe DOM creation
         var modal = document.createElement('div');
         modal.className = 'modal';
         modal.style.display = 'flex';
@@ -840,9 +838,9 @@
                 return;
             }
 
-            // Use the ID-based update API
-            if (window.CharacterStats && typeof window.CharacterStats.updateSpecialMove === 'function') {
-                window.CharacterStats.updateSpecialMove(charId, type, idx, newName, newDesc)
+            // Use the ID-based update API from CharacterStats
+            if (CharacterStats && typeof CharacterStats.updateSpecialMove === 'function') {
+                CharacterStats.updateSpecialMove(charId, type, idx, newName, newDesc)
                     .then(function(success) {
                         if (success) {
                             closeModal();
@@ -877,15 +875,15 @@
     // ============================================================
 
     function getMagicTypeKeys() {
-        if (window.CharacterConstants && typeof window.CharacterConstants.getMagicTypeKeys === 'function') {
-            return window.CharacterConstants.getMagicTypeKeys();
+        if (CC && typeof CC.getMagicTypeKeys === 'function') {
+            return CC.getMagicTypeKeys();
         }
         return MAGIC_TYPE_KEYS.slice();
     }
 
     function getMagicCategoryTypes(category) {
-        if (window.CharacterConstants && typeof window.CharacterConstants.getMagicCategoryTypes === 'function') {
-            return window.CharacterConstants.getMagicCategoryTypes(category);
+        if (CC && typeof CC.getMagicCategoryTypes === 'function') {
+            return CC.getMagicCategoryTypes(category);
         }
         var cat = MAGIC_CATEGORIES[category];
         return cat ? cat.types.slice() : [];
