@@ -4,7 +4,7 @@
  * Path: js/modules/characters/character-form.js
  * 
  * This module is responsible for:
- *   - Rendering the character form modal
+ *   - Rendering the character form in the right side container
  *   - Tab switching between form sections
  *   - Populating form fields from character data
  *   - Collecting form data for save operations
@@ -156,12 +156,19 @@
     }
 
     // ============================================================
-    // CHARACTER FORM - Public API
+    // CHARACTER FORM - Public API (Renders in container, not modal)
     // ============================================================
 
     function showCharacterForm(editId) {
         if (!checkDependencies()) {
             showNotification('Dependencies not loaded. Please refresh the page.', 'error');
+            return;
+        }
+
+        // Find the container - the right side panel
+        var container = document.getElementById('character-form-container');
+        if (!container) {
+            console.warn('CharacterForm: Container #character-form-container not found');
             return;
         }
 
@@ -178,25 +185,42 @@
             }
         }
 
-        showFormModal(editId, char);
-    }
-
-    function showFormModal(editId, char) {
-        var modal = document.getElementById('character-form-modal');
-        if (!modal) {
-            modal = createCharacterFormModal();
+        // Get the form element
+        var form = document.getElementById('character-form');
+        if (!form) {
+            console.warn('CharacterForm: Form #character-form not found');
+            return;
         }
 
-        var title = document.getElementById('character-form-title');
+        // Update the form title
+        var title = document.getElementById('form-title');
+        if (title) {
+            title.textContent = editId ? 'Edit Character' : 'New Character';
+        }
+
+        // Update character name display
+        var nameDisplay = document.getElementById('current-char-name');
+        if (nameDisplay) {
+            if (char) {
+                nameDisplay.textContent = CharacterQueries.getDisplayName(char);
+                nameDisplay.style.display = 'inline';
+            } else {
+                nameDisplay.textContent = '';
+                nameDisplay.style.display = 'none';
+            }
+        }
+
+        // Get the form content area
         var content = document.getElementById('character-form-content');
-
-        if (!title || !content) return;
-
-        title.textContent = editId ? 'Edit Character' : 'Add Character';
+        if (!content) {
+            console.warn('CharacterForm: Content #character-form-content not found');
+            return;
+        }
 
         // Get current year for age calculation
         var currentYear = window.data && window.data.currentYear ? window.data.currentYear : new Date().getFullYear();
 
+        // Build the form HTML
         var html = getCharacterFormHTML(char, editId, currentYear);
         content.innerHTML = html;
 
@@ -209,36 +233,44 @@
         }
 
         // Bind events
-        bindFormEvents(modal, editId, char);
+        bindFormEvents(container, editId, char);
 
-        modal.classList.remove('hidden');
-        modal.style.display = 'flex';
+        // Show the form
+        form.style.display = 'block';
+
+        // Trigger any post-render updates
+        if (window.CharacterStatsView && typeof window.CharacterStatsView.updateClassSuggestion === 'function') {
+            window.CharacterStatsView.updateClassSuggestion();
+        }
+        if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicClassSuggestion === 'function') {
+            window.CharacterStatsView.updateMagicClassSuggestion();
+        }
+        if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicPowerDisplay === 'function') {
+            window.CharacterStatsView.updateMagicPowerDisplay();
+        }
     }
 
-    // ============================================================
-    // CREATE CHARACTER FORM MODAL
-    // ============================================================
-
-    function createCharacterFormModal() {
-        var modal = document.createElement('div');
-        modal.id = 'character-form-modal';
-        modal.className = 'modal hidden';
-        modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:1000;';
-
-        modal.innerHTML = `
-            <div class="modal-content" style="max-width:650px;max-height:90vh;overflow-y:auto;background:var(--panel);border-radius:var(--radius);padding:20px;position:relative;">
-                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                    <h3 id="character-form-title" style="margin:0;font-size:1rem;">Add Character</h3>
-                    <button class="close-modal" id="close-character-form" style="background:none;border:none;font-size:1.5rem;cursor:pointer;color:var(--text-dim);">&times;</button>
-                </div>
-                <div class="modal-body">
-                    <div id="character-form-content"></div>
-                </div>
-            </div>
-        `;
-
-        document.body.appendChild(modal);
-        return modal;
+    /**
+     * Hide the character form (clear selection).
+     */
+    function hideCharacterForm() {
+        var form = document.getElementById('character-form');
+        if (form) {
+            form.style.display = 'none';
+        }
+        var title = document.getElementById('form-title');
+        if (title) {
+            title.textContent = 'No Character Selected';
+        }
+        var nameDisplay = document.getElementById('current-char-name');
+        if (nameDisplay) {
+            nameDisplay.textContent = '';
+            nameDisplay.style.display = 'none';
+        }
+        var content = document.getElementById('character-form-content');
+        if (content) {
+            content.innerHTML = '<p class="empty-state">Select a character from the list to view and edit details.</p>';
+        }
     }
 
     // ============================================================
@@ -247,16 +279,15 @@
 
     function getCharacterFormHTML(char, editId, currentYear) {
         var tabs = getTabsHTML();
-        var age = char && char.birthYear ? currentYear - parseInt(char.birthYear, 10) : '';
 
         return `
-            <div class="character-form">
+            <div class="character-form-container">
                 <div class="form-tabs" style="display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:12px;">
                     ${tabs}
                 </div>
                 <div class="form-tab-content" id="form-tab-content">
                     ${getNameTabHTML(char, editId)}
-                    ${getPhysicalTabHTML(char, age)}
+                    ${getPhysicalTabHTML(char)}
                     ${getPersonalityTabHTML(char)}
                     ${getAcademicTabHTML(char)}
                     ${getProfessionalTabHTML(char)}
@@ -298,14 +329,14 @@
     }
 
     // ============================================================
-    // NAME TAB - Uses ClassesQueries for class dropdown
+    // NAME TAB - With Class Dropdown
     // ============================================================
 
     function getNameTabHTML(char, editId) {
         var active = state.currentTab === 'name' ? 'block' : 'none';
         var c = char || {};
 
-        // Get graduating class options
+        // Get graduating class options for dropdown
         var classOptions = getClassOptionsHTML(c.graduatingClassId);
 
         return `
@@ -721,9 +752,9 @@
     // BIND FORM EVENTS
     // ============================================================
 
-    function bindFormEvents(modal, editId, char) {
+    function bindFormEvents(container, editId, char) {
         // Tab switching
-        var tabBtns = modal.querySelectorAll('.form-tab-btn');
+        var tabBtns = container.querySelectorAll('.form-tab-btn');
         tabBtns.forEach(function(btn) {
             btn.addEventListener('click', function() {
                 var tab = this.dataset.tab;
@@ -772,44 +803,34 @@
             });
         }
 
-        // Close buttons
-        var closeBtn = document.getElementById('close-character-form');
-        if (closeBtn) {
-            closeBtn.addEventListener('click', function() {
-                modal.classList.add('hidden');
-                modal.style.display = 'none';
-            });
-        }
-
+        // Cancel button - clear selection
         var cancelBtn = document.getElementById('cancel-character-form');
         if (cancelBtn) {
             cancelBtn.addEventListener('click', function() {
-                modal.classList.add('hidden');
-                modal.style.display = 'none';
+                if (typeof window.setCurrentEditId === 'function') {
+                    window.setCurrentEditId(null);
+                }
+                hideCharacterForm();
             });
         }
-
-        modal.addEventListener('click', function(e) {
-            if (e.target === this) {
-                this.classList.add('hidden');
-                this.style.display = 'none';
-            }
-        });
 
         // Save - Uses CharacterCRUD.save()
         var saveBtn = document.getElementById('save-character-btn');
         if (saveBtn) {
             saveBtn.addEventListener('click', function() {
-                // Use CharacterCRUD which implements the proper mutation pipeline
                 if (CharacterCRUD && typeof CharacterCRUD.save === 'function') {
                     CharacterCRUD.save()
                         .then(function(success) {
                             if (success) {
-                                // Close the modal on success
-                                var modal = document.getElementById('character-form-modal');
-                                if (modal) {
-                                    modal.classList.add('hidden');
-                                    modal.style.display = 'none';
+                                // Update the displayed name after save
+                                var savedChar = CharacterQueries.getCharacterById(
+                                    typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null
+                                );
+                                if (savedChar) {
+                                    var nameDisplay = document.getElementById('current-char-name');
+                                    if (nameDisplay) {
+                                        nameDisplay.textContent = CharacterQueries.getDisplayName(savedChar);
+                                    }
                                 }
                             }
                         });
@@ -819,23 +840,14 @@
             });
         }
 
-        // Enter key on form
-        var form = modal.querySelector('.character-form');
-        if (form) {
-            form.addEventListener('keydown', function(e) {
+        // Enter key on form - find the form element
+        var formElement = container.querySelector('.character-form-container');
+        if (formElement) {
+            formElement.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') {
                     e.preventDefault();
                     if (CharacterCRUD && typeof CharacterCRUD.save === 'function') {
-                        CharacterCRUD.save()
-                            .then(function(success) {
-                                if (success) {
-                                    var modal = document.getElementById('character-form-modal');
-                                    if (modal) {
-                                        modal.classList.add('hidden');
-                                        modal.style.display = 'none';
-                                    }
-                                }
-                            });
+                        CharacterCRUD.save();
                     }
                 }
             });
@@ -948,8 +960,11 @@
     // ============================================================
 
     window.showCharacterForm = showCharacterForm;
+    window.hideCharacterForm = hideCharacterForm;
+
     window.CharacterForm = {
         show: showCharacterForm,
+        hide: hideCharacterForm,
         switchTab: switchFormTab,
         getCurrentTab: function() { return state.currentTab; }
     };
