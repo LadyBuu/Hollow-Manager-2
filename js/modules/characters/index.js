@@ -8,10 +8,11 @@
  *   - Rendering the character container
  *   - Initializing all character sub-modules
  *   - Managing character lifecycle
+ *   - Coordinating character state
  * 
  * LIFECYCLE:
- *   TabManager registers 'characters' → mountCharacters() → 
- *   CharacterList.render() → CharacterForm.init() → CharacterEvents.init()
+ *   TabManager.register('characters') → mountCharacters() → 
+ *   CharacterList.render() → CharacterForm.render() → CharacterEvents.init()
  * 
  * IMPORTANT:
  *   - This module is the only external entry point for characters
@@ -20,6 +21,7 @@
  *   - It delegates to sub-modules for all operations
  *   - mountCharacters() is the ONLY function that constructs the full HTML
  *   - TabManager is the single source of truth for lifecycle
+ *   - No dataReady/tabChanged listeners - TabManager handles lifecycle
  * 
  * STATE SOURCE OF TRUTH:
  *   - _currentEditId is the canonical edit state (PRIVATE)
@@ -27,18 +29,18 @@
  *   - window.data is the source of truth for persisted application data
  * 
  * DEPENDENCIES:
- *   - window.CharacterList (from character-list.js)
- *   - window.CharacterForm (from character-form.js)
- *   - window.CharacterEvents (from character-events.js)
- *   - window.CharacterCRUD (from character-crud.js)
- *   - window.CharacterClasses (from character-classes.js)
- *   - window.CharacterEliminations (from character-eliminations.js)
- *   - window.CharacterViews (from character-views.js)
- *   - window.CharacterStats (from character-stats.js)
- *   - window.CharacterStatsView (from character-stats-view.js)
- *   - window.CharacterDetail (from character-detail.js)
- *   - window.TabManager (from tab-manager.js)
- *   - window.MutationUtils (from mutation-utils.js)
+ *   - window.TabManager (from tab-manager.js) - MANDATORY
+ *   - window.CharacterList (from character-list.js) - MANDATORY
+ *   - window.CharacterForm (from character-form.js) - MANDATORY
+ *   - window.CharacterEvents (from character-events.js) - MANDATORY
+ *   - window.DataLoader (from loader.js) - OPTIONAL (for compatibility)
+ * 
+ * EXPOSED API:
+ *   - window.mountCharacters(container) - Mount the character feature
+ *   - window.showCharacterForm(id) - Show character form
+ *   - window.toggleCharacterList(forceState) - Toggle character list
+ *   - window.getCurrentEditId() - Get current edit ID (internal)
+ *   - window.setCurrentEditId(id) - Set current edit ID (internal)
  */
 
 (function() {
@@ -51,50 +53,60 @@
     window.__charactersModuleLoaded = true;
 
     // ============================================================
+    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // ============================================================
+
+    var TabManager = window.TabManager;
+    var CharacterList = window.CharacterList;
+    var CharacterForm = window.CharacterForm;
+    var CharacterEvents = window.CharacterEvents;
+    var DataLoader = window.DataLoader;
+    var CharacterClassView = window.CharacterClassView;
+
+    // ============================================================
     // STATE - Single source of truth for character edit state
     // ============================================================
     
     // Private module-scoped variable - NOT exposed directly
     var _currentEditId = null;
+    var _initialized = false;
+    var _mounted = false;
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // DEPENDENCY CHECK - Only immediate collaborators
     // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
-        var required = [
-            'CharacterList',
-            'CharacterForm',
-            'CharacterEvents',
-            'CharacterCRUD',
-            'CharacterClasses',
-            'CharacterEliminations',
-            'CharacterViews',
-            'CharacterStats',
-            'CharacterStatsView',
-            'CharacterDetail'
-        ];
-
-        required.forEach(function(name) {
-            if (typeof window[name] === 'undefined' || window[name] === null) {
-                missing.push(name);
-            }
-        });
-
-        // Check for MutationUtils
-        if (!window.MutationUtils || typeof window.MutationUtils.refreshUI !== 'function') {
-            missing.push('MutationUtils.refreshUI');
+        // TabManager is MANDATORY
+        if (!TabManager || typeof TabManager.register !== 'function') {
+            missing.push('TabManager.register');
         }
 
-        // Check for DomUtils
-        if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
+        // CharacterList is MANDATORY
+        if (!CharacterList || typeof CharacterList.render !== 'function') {
+            missing.push('CharacterList.render');
+        }
+
+        // CharacterForm is MANDATORY
+        if (!CharacterForm || typeof CharacterForm.render !== 'function') {
+            missing.push('CharacterForm.render');
+        }
+        if (!CharacterForm || typeof CharacterForm.collect !== 'function') {
+            missing.push('CharacterForm.collect');
+        }
+
+        // CharacterEvents is MANDATORY
+        if (!CharacterEvents || typeof CharacterEvents.init !== 'function') {
+            missing.push('CharacterEvents.init');
+        }
+        if (!CharacterEvents || typeof CharacterEvents.destroy !== 'function') {
+            missing.push('CharacterEvents.destroy');
         }
 
         if (missing.length > 0) {
-            console.warn('CharactersModule: Missing dependencies:', missing.join(', '));
+            console.warn('[CharactersModule] Missing dependencies:', missing.join(', '));
             return false;
         }
 
@@ -111,7 +123,7 @@
         }
 
         if (!container) {
-            console.warn('CharactersModule: Container not found');
+            console.warn('[CharactersModule] Container not found');
             return;
         }
 
@@ -125,45 +137,71 @@
             return;
         }
 
+        // If already mounted, clean up first
+        if (_mounted) {
+            unmountCharacters();
+        }
+
         // Render the character container
         container.innerHTML = getCharactersHTML();
 
         // Initialize character list
-        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+        if (CharacterList && typeof CharacterList.render === 'function') {
             try {
-                window.CharacterList.render();
+                CharacterList.render();
             } catch (e) {
-                console.warn('CharactersModule: CharacterList.render failed:', e);
+                console.warn('[CharactersModule] CharacterList.render failed:', e);
             }
         }
 
-        // Initialize character form
-        if (window.CharacterForm && typeof window.CharacterForm.init === 'function') {
+        // Populate class filter
+        if (CharacterClassView && typeof CharacterClassView.populateClassFilter === 'function') {
             try {
-                window.CharacterForm.init(container);
+                CharacterClassView.populateClassFilter();
             } catch (e) {
-                console.warn('CharactersModule: CharacterForm.init failed:', e);
+                console.warn('[CharactersModule] CharacterClassView.populateClassFilter failed:', e);
             }
         }
 
-        // Initialize character events
-        if (window.CharacterEvents && typeof window.CharacterEvents.init === 'function') {
+        // Initialize character events (binds all listeners)
+        if (CharacterEvents && typeof CharacterEvents.init === 'function') {
             try {
-                window.CharacterEvents.init(container);
+                CharacterEvents.init(container);
             } catch (e) {
-                console.warn('CharactersModule: CharacterEvents.init failed:', e);
+                console.warn('[CharactersModule] CharacterEvents.init failed:', e);
             }
         }
 
         // Show the current character if any
         var editId = getCurrentEditId();
-        if (editId && window.CharacterForm && typeof window.CharacterForm.show === 'function') {
+        if (editId && CharacterForm && typeof CharacterForm.render === 'function') {
             try {
-                window.CharacterForm.show(editId);
+                CharacterForm.render(editId);
             } catch (e) {
-                console.warn('CharactersModule: CharacterForm.show failed:', e);
+                console.warn('[CharactersModule] CharacterForm.render failed:', e);
             }
         }
+
+        _mounted = true;
+        _initialized = true;
+
+        dispatchReady();
+    }
+
+    function unmountCharacters() {
+        if (!_mounted) return;
+
+        // Destroy events (removes all listeners)
+        if (CharacterEvents && typeof CharacterEvents.destroy === 'function') {
+            try {
+                CharacterEvents.destroy();
+            } catch (e) {
+                // Ignore destroy errors
+            }
+        }
+
+        _mounted = false;
+        _initialized = false;
     }
 
     // ============================================================
@@ -204,57 +242,21 @@
                 </div>
                 <div class="characters-form-container">
                     <div id="character-form-container">
-                        ${getCharacterFormHTML()}
+                        <form id="character-form" style="display:none;">
+                            <div class="form-header">
+                                <h3 id="form-title">No Character Selected</h3>
+                                <span id="current-char-name" class="char-name-display" style="display:none;"></span>
+                                <div class="form-actions">
+                                    <button type="button" id="delete-char-btn" class="danger small">Delete</button>
+                                    <button type="submit" id="save-char-btn" class="primary">Save</button>
+                                </div>
+                            </div>
+                            <div id="character-form-content">
+                                <p class="empty-state">Select a character from the list to view and edit details.</p>
+                            </div>
+                        </form>
                     </div>
                 </div>
-            </div>
-        `;
-    }
-
-    // ============================================================
-    // CHARACTER FORM HTML - Delegates to sub-modules
-    // ============================================================
-
-    function getCharacterFormHTML() {
-        // Build tabs HTML from sub-modules
-        var tabsHTML = '';
-        if (window.CharacterForm && typeof window.CharacterForm.getTabsHTML === 'function') {
-            tabsHTML = window.CharacterForm.getTabsHTML();
-        } else {
-            tabsHTML = getFallbackTabsHTML();
-        }
-
-        return `
-            <form id="character-form" style="display:none;">
-                <div class="form-header">
-                    <h3 id="form-title">New Character</h3>
-                    <span id="current-char-name" class="char-name-display"></span>
-                    <div class="form-actions">
-                        <button type="button" id="delete-char-btn" class="danger small">Delete</button>
-                        <button type="submit" id="save-char-btn" class="primary">Save</button>
-                    </div>
-                </div>
-                
-                <!-- Tabs rendered by CharacterForm -->
-                ${tabsHTML}
-            </form>
-        `;
-    }
-
-    function getFallbackTabsHTML() {
-        return `
-            <div class="char-tabs">
-                <button type="button" class="char-tab-btn active" data-tab="name">Name</button>
-                <button type="button" class="char-tab-btn" data-tab="physical">Physical</button>
-                <button type="button" class="char-tab-btn" data-tab="personality">Personality</button>
-                <button type="button" class="char-tab-btn" data-tab="academic">Academic</button>
-                <button type="button" class="char-tab-btn" data-tab="professional">Professional</button>
-                <button type="button" class="char-tab-btn" data-tab="stats">Stats</button>
-                <button type="button" class="char-tab-btn" data-tab="social">Social</button>
-                <button type="button" class="char-tab-btn" data-tab="notes">Notes</button>
-            </div>
-            <div id="char-tab-name" class="char-tab-panel active">
-                <p class="empty-state">Character form module not loaded.</p>
             </div>
         `;
     }
@@ -293,8 +295,8 @@
         var normalisedId = (id !== undefined && id !== null && id !== '') ? String(id) : null;
         setCurrentEditId(normalisedId);
 
-        if (window.CharacterForm && typeof window.CharacterForm.show === 'function') {
-            window.CharacterForm.show(normalisedId);
+        if (CharacterForm && typeof CharacterForm.render === 'function') {
+            CharacterForm.render(normalisedId);
         }
     }
 
@@ -317,19 +319,40 @@
      * Internal use only.
      */
     function clearEditState() {
-        _currentEditId = null;
-        if (window.CharacterForm && typeof window.CharacterForm.show === 'function') {
-            window.CharacterForm.show(null);
+        setCurrentEditId(null);
+        if (CharacterForm && typeof CharacterForm.hide === 'function') {
+            CharacterForm.hide();
         }
     }
 
     // ============================================================
-    // REGISTER WITH TABMANAGER - Single lifecycle path
+    // EVENTS
+    // ============================================================
+
+    function dispatchReady() {
+        try {
+            var event = new CustomEvent('charactersReady', {
+                detail: {
+                    mounted: _mounted,
+                    initialized: _initialized,
+                    timestamp: Date.now()
+                },
+                bubbles: true,
+                cancelable: false
+            });
+            document.dispatchEvent(event);
+        } catch (e) {
+            // Ignore event dispatch errors
+        }
+    }
+
+    // ============================================================
+    // TAB MANAGER REGISTRATION
     // ============================================================
 
     function registerWithTabManager() {
-        if (window.TabManager && typeof window.TabManager.register === 'function') {
-            window.TabManager.register('characters', mountCharacters);
+        if (TabManager && typeof TabManager.register === 'function') {
+            TabManager.register('characters', mountCharacters);
             return true;
         }
         return false;
@@ -344,16 +367,32 @@
     }
 
     // ============================================================
-    // EXPOSE - Controlled public API only
+    // DATA READY HANDLING (minimal - TabManager owns lifecycle)
+    // ============================================================
+
+    // Listen for data ready to handle initial mount if needed
+    if (DataLoader && typeof DataLoader.whenReady === 'function') {
+        DataLoader.whenReady(function(data) {
+            if (data && !_mounted) {
+                // If the characters tab is currently active, mount it
+                if (TabManager && TabManager.getCurrentTab() === 'characters') {
+                    var container = document.getElementById('tab-characters');
+                    if (container) {
+                        mountCharacters(container);
+                    }
+                }
+            }
+        });
+    }
+
+    // ============================================================
+    // EXPOSE - Controlled public API
     // ============================================================
 
     // Main mount function
     window.mountCharacters = mountCharacters;
 
-    // Legacy compatibility (deprecated, use mountCharacters)
-    window.renderCharacters = mountCharacters;
-
-    // State management (internal use only, but exposed for sub-modules)
+    // State management (internal use only, exposed for sub-modules)
     window.getCurrentEditId = getCurrentEditId;
     window.setCurrentEditId = setCurrentEditId;
 

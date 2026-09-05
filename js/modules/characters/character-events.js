@@ -2,22 +2,23 @@
  * js/modules/characters/character-events.js - Character Events
  * Path: js/modules/characters/character-events.js
  * 
- * This module is responsible for UI event binding for the character module.
- * Feature-specific internal events may be delegated to their owning feature module.
+ * This module is responsible for UI event orchestration for the character module.
  * 
  * IMPORTANT:
- *   - This module binds events AFTER the DOM is rendered
- *   - Uses event delegation where possible for dynamic elements
+ *   - ORCHESTRATION ONLY - no domain logic, no direct mutations
  *   - All mutations delegate to the appropriate module (CharacterCRUD, CharacterClasses, etc.)
+ *   - Uses CharacterForm.collect() to get form data
+ *   - Uses CharacterCRUD for save/delete operations
+ *   - Uses CharacterClassView for class rendering
+ *   - Uses CharacterEliminationView for elimination rendering
+ *   - Uses CharacterDetailQueries for detail data
+ *   - Uses FormUtils for form field operations
+ *   - Uses NotificationSystem for notifications
  *   - Safe event binding with proper cleanup
- *   - No inline event handlers in HTML
  *   - Can be re-initialized after DOM replacement
- *   - Mutation modules own their own persistence lifecycle
+ *   - No inline event handlers in HTML
  *   - No direct mutation of window.data
- *   - USES CharacterQueries for character data
- *   - USES NotificationSystem for notifications
- *   - USES DomUtils for DOM operations
- *   - USES ActivityLog for activity logging
+ *   - No direct DOM manipulation (delegates to views)
  * 
  * LIFECYCLE:
  *   - init(container) - Binds events to the current DOM
@@ -25,22 +26,19 @@
  *   - Re-initialization is supported for dynamic DOM replacement
  * 
  * DEPENDENCIES:
- *   - window.CharacterCRUD
- *   - window.CharacterClasses
- *   - window.CharacterEliminations
- *   - window.CharacterStats (domain logic)
- *   - window.CharacterStatsView (UI rendering/updates)
- *   - window.CharacterViews
  *   - window.CharacterQueries (from character-queries.js)
+ *   - window.CharacterCRUD (from character-crud.js)
+ *   - window.CharacterForm (from character-form.js)
+ *   - window.CharacterClassView (from character-class-view.js)
+ *   - window.CharacterEliminationView (from character-elimination-view.js)
+ *   - window.CharacterDetailQueries (from character-detail-queries.js)
+ *   - window.CharacterGenerator (from character-generator.js)
+ *   - window.FormUtils (from form-utils.js)
  *   - window.NotificationSystem (from notification.js)
- *   - window.ActivityLog (from activity-log.js)
- *   - window.DomUtils (from dom-utils.js)
  *   - window.getCurrentEditId (from index.js)
  *   - window.setCurrentEditId (from index.js)
- *   - window.showCharacterForm (from index.js)
  *   - window.toggleCharacterList (from index.js)
  *   - window.UI_CONSTANTS (from constants.js)
- *   - window.CharacterConstants (from character-constants.js)
  */
 
 (function() {
@@ -53,22 +51,19 @@
     window.__characterEventsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - NO FALLBACKS (MANDATORY DEPENDENCIES)
+    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
     // ============================================================
 
     var CharacterQueries = window.CharacterQueries;
     var CharacterCRUD = window.CharacterCRUD;
-    var CharacterClasses = window.CharacterClasses;
-    var CharacterEliminations = window.CharacterEliminations;
-    var CharacterStats = window.CharacterStats;
-    var CharacterStatsView = window.CharacterStatsView;
-    var CharacterViews = window.CharacterViews;
+    var CharacterForm = window.CharacterForm;
+    var CharacterClassView = window.CharacterClassView;
+    var CharacterEliminationView = window.CharacterEliminationView;
+    var CharacterDetailQueries = window.CharacterDetailQueries;
+    var CharacterGenerator = window.CharacterGenerator;
+    var FormUtils = window.FormUtils;
     var NotificationSystem = window.NotificationSystem;
-    var ActivityLog = window.ActivityLog;
-    var DomUtils = window.DomUtils;
-    var CC = window.CharacterConstants;
-    var UI_CONSTANTS = window.UI_CONSTANTS || {};
-    var MAGIC_CONSTANTS = window.MAGIC_CONSTANTS || {};
+    var UI_CONSTANTS = window.UI_CONSTANTS;
 
     // ============================================================
     // STATE
@@ -89,7 +84,6 @@
         var required = [
             'getCurrentEditId',
             'setCurrentEditId',
-            'showCharacterForm',
             'toggleCharacterList'
         ];
 
@@ -103,73 +97,55 @@
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
+        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+
+        if (!CharacterCRUD || typeof CharacterCRUD.save !== 'function') {
+            missing.push('CharacterCRUD.save');
+        }
+        if (!CharacterCRUD || typeof CharacterCRUD.delete !== 'function') {
+            missing.push('CharacterCRUD.delete');
+        }
+
+        if (!CharacterForm || typeof CharacterForm.render !== 'function') {
+            missing.push('CharacterForm.render');
+        }
+        if (!CharacterForm || typeof CharacterForm.collect !== 'function') {
+            missing.push('CharacterForm.collect');
+        }
+
+        if (!CharacterGenerator || typeof CharacterGenerator.generatePhysical !== 'function') {
+            missing.push('CharacterGenerator.generatePhysical');
+        }
+        if (!CharacterGenerator || typeof CharacterGenerator.generatePersonality !== 'function') {
+            missing.push('CharacterGenerator.generatePersonality');
+        }
+        if (!CharacterGenerator || typeof CharacterGenerator.generateStats !== 'function') {
+            missing.push('CharacterGenerator.generateStats');
+        }
 
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
             missing.push('NotificationSystem.notify');
         }
 
-        if (!ActivityLog || typeof ActivityLog.record !== 'function') {
-            missing.push('ActivityLog.record');
-        }
-
-        // Feature modules - warn if missing but don't block
-        var featureMissing = [];
-        var featureModules = {
-            'CharacterCRUD': ['save'],
-            'CharacterClasses': [
-                'addClassByName',
-                'removeClassById',
-                'addToClass',
-                'removeFromClass'
-            ],
-            'CharacterEliminations': ['addStandalone', 'removeStandalone'],
-            'CharacterStats': [
-                'addSpecialMove',
-                'removeSpecialMove',
-                'updateSpecialMove'
-            ],
-            'CharacterStatsView': [
-                'updateClassSuggestion',
-                'updateMagicClassSuggestion',
-                'updateMagicPowerDisplay',
-                'populateClassSelect',
-                'applyPhysicalClass',
-                'applyMagicClass',
-                'editSpecialMove',
-                'renderSpecialMoves'
-            ]
-        };
-
-        for (var moduleName in featureModules) {
-            if (typeof window[moduleName] === 'undefined' || window[moduleName] === null) {
-                featureMissing.push(moduleName + ' (module missing)');
-                continue;
-            }
-            var methods = featureModules[moduleName];
-            for (var i = 0; i < methods.length; i++) {
-                if (typeof window[moduleName][methods[i]] !== 'function') {
-                    featureMissing.push(moduleName + '.' + methods[i]);
-                }
-            }
+        if (!FormUtils || typeof FormUtils.setField !== 'function') {
+            missing.push('FormUtils.setField');
         }
 
         if (missing.length > 0) {
-            console.warn('CharacterEvents: Missing required dependencies:', missing.join(', '));
+            console.warn('CharacterEvents: Missing dependencies:', missing.join(', '));
             return false;
-        }
-
-        if (featureMissing.length > 0) {
-            console.warn('CharacterEvents: Missing feature dependencies:', featureMissing.join(', '));
         }
 
         return true;
     }
 
     // ============================================================
-    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
+    // NOTIFICATION - Delegates to NotificationSystem
     // ============================================================
 
-    function showNotification(message, type) {
+    function notify(message, type) {
         type = type || 'info';
         NotificationSystem.notify(message, type);
     }
@@ -189,6 +165,24 @@
         });
     }
 
+    function addSafeDelegatedListener(selector, eventName, handler) {
+        function wrappedHandler(e) {
+            var target = e.target.closest ? e.target.closest(selector) : null;
+            if (!target) return;
+            handler(e, target);
+        }
+
+        document.addEventListener(eventName, wrappedHandler);
+        _eventListeners.push({
+            element: document,
+            eventName: eventName,
+            handler: wrappedHandler,
+            options: false
+        });
+
+        return wrappedHandler;
+    }
+
     function removeAllEventListeners() {
         _eventListeners.forEach(function(item) {
             try {
@@ -204,35 +198,17 @@
     }
 
     // ============================================================
-    // MAGIC TYPE HELPERS - Delegate to CharacterConstants
-    // ============================================================
-
-    function getMagicTypeKeys() {
-        if (CC && typeof CC.getMagicTypeKeys === 'function') {
-            return CC.getMagicTypeKeys();
-        }
-        // Emergency fallback (should never be reached if constants loaded)
-        return MAGIC_CONSTANTS.TYPES ? MAGIC_CONSTANTS.TYPES.slice() : [];
-    }
-
-    function getMagicCategoryTypes(category) {
-        if (CC && typeof CC.getMagicCategoryTypes === 'function') {
-            return CC.getMagicCategoryTypes(category);
-        }
-        if (MAGIC_CONSTANTS && MAGIC_CONSTANTS.CATEGORIES && MAGIC_CONSTANTS.CATEGORIES[category]) {
-            return MAGIC_CONSTANTS.CATEGORIES[category].types.slice();
-        }
-        return [];
-    }
-
-    // ============================================================
-    // MAIN INITIALIZATION - Supports re-initialization
+    // MAIN INITIALIZATION
     // ============================================================
 
     function init(container) {
         if (!checkDependencies()) {
             console.warn('CharacterEvents: Dependencies not met, skipping initialization');
             return;
+        }
+
+        if (_initialized) {
+            destroy();
         }
 
         if (!container) {
@@ -253,25 +229,15 @@
         bindDeleteButton(container);
         bindTabSwitching(container);
         bindFilters(container);
-        bindCareerStatus(container);
         bindDeceasedToggle(container);
-        bindEliminationControls(container);
         bindClassTagInput(container);
         bindClassTagRemoval(container);
-        bindAcademicClassControls(container);
-        bindSocialButton(container);
         bindClickOutside(container);
         bindCharacterList(container);
-        bindStatsEvents(container);
-        bindMagicEvents(container);
-        bindSpecialMovesEvents(container);
+        bindRandomButtons(container);
 
         _initialized = true;
     }
-
-    // ============================================================
-    // DESTROY - Clean up for re-initialization
-    // ============================================================
 
     function destroy() {
         removeAllEventListeners();
@@ -305,9 +271,7 @@
                 if (typeof window.setCurrentEditId === 'function') {
                     window.setCurrentEditId(null);
                 }
-                if (typeof window.showCharacterForm === 'function') {
-                    window.showCharacterForm(null);
-                }
+                CharacterForm.render(null);
                 if (window.innerWidth < (UI_CONSTANTS.MOBILE_BREAKPOINT || 768) && typeof window.toggleCharacterList === 'function') {
                     window.toggleCharacterList(false);
                 }
@@ -324,13 +288,33 @@
         if (form) {
             addSafeEventListener(form, 'submit', function(e) {
                 e.preventDefault();
-                if (CharacterCRUD && typeof CharacterCRUD.save === 'function') {
-                    CharacterCRUD.save();
-                }
+                handleSave();
             });
-        } else {
-            console.warn('CharacterEvents: Form #character-form not found');
         }
+    }
+
+    function handleSave() {
+        var dto = CharacterForm.collect();
+        if (!dto) {
+            notify('Failed to collect form data.', 'error');
+            return;
+        }
+
+        CharacterCRUD.save(dto)
+            .then(function(result) {
+                if (result && result.success) {
+                    var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+                    if (editId) {
+                        var char = CharacterQueries.getCharacterById(editId);
+                        CharacterForm.render(editId);
+                        refreshUI(char);
+                    }
+                }
+            })
+            .catch(function(err) {
+                notify('An error occurred while saving.', 'error');
+                console.error('[CharacterEvents] Save error:', err);
+            });
     }
 
     // ============================================================
@@ -342,11 +326,42 @@
         if (deleteBtn) {
             addSafeEventListener(deleteBtn, 'click', function() {
                 var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-                if (id && CharacterCRUD && typeof CharacterCRUD.delete === 'function') {
-                    CharacterCRUD.delete(id);
+                if (id) {
+                    handleDelete(id);
                 }
             });
         }
+    }
+
+    function handleDelete(id) {
+        if (!id) return;
+
+        var char = CharacterQueries.getCharacterById(id);
+        if (!char) {
+            notify('Character not found.', 'error');
+            return;
+        }
+
+        var name = CharacterQueries.getDisplayName(char);
+        if (!confirm('Delete "' + name + '" permanently?')) {
+            return;
+        }
+
+        CharacterCRUD.delete(id)
+            .then(function(result) {
+                if (result && result.success) {
+                    if (typeof window.setCurrentEditId === 'function') {
+                        window.setCurrentEditId(null);
+                    }
+                    CharacterForm.hide();
+                    refreshUI(null);
+                    notify('Character deleted successfully!', 'success');
+                }
+            })
+            .catch(function(err) {
+                notify('An error occurred while deleting.', 'error');
+                console.error('[CharacterEvents] Delete error:', err);
+            });
     }
 
     // ============================================================
@@ -354,18 +369,16 @@
     // ============================================================
 
     function bindTabSwitching(container) {
-        container.querySelectorAll('.char-tab-btn').forEach(function(btn) {
-            addSafeEventListener(btn, 'click', function() {
-                var tab = this.dataset.tab;
-                if (window.CharacterForm && typeof window.CharacterForm.switchTab === 'function') {
-                    window.CharacterForm.switchTab(tab);
-                }
-            });
+        addSafeDelegatedListener('.form-tab-btn', 'click', function(e, target) {
+            var tab = target.dataset.tab;
+            if (tab) {
+                CharacterForm.switchTab(tab);
+            }
         });
     }
 
     // ============================================================
-    // FILTERS - With checkbox support
+    // FILTERS
     // ============================================================
 
     function bindFilters(container) {
@@ -429,38 +442,6 @@
     }
 
     // ============================================================
-    // CAREER STATUS - DOM-based with event delegation
-    // ============================================================
-
-    function bindCareerStatus(container) {
-        var addStatusBtn = document.getElementById('add-status-btn');
-        if (addStatusBtn) {
-            addSafeEventListener(addStatusBtn, 'click', function() {
-                var statusContainer = document.getElementById('career-status-container');
-                if (CharacterViews && typeof CharacterViews.addCareerStatusEntry === 'function') {
-                    CharacterViews.addCareerStatusEntry(statusContainer);
-                }
-            });
-        }
-
-        var statusContainer = document.getElementById('career-status-container');
-        if (statusContainer) {
-            addSafeEventListener(statusContainer, 'click', function(e) {
-                var target = e.target.closest ? e.target.closest('.remove-status') : null;
-                if (!target) return;
-                if (!statusContainer.contains(target)) return;
-
-                var entry = target.closest('.career-status-entry');
-                if (entry && statusContainer.children.length > 1) {
-                    entry.remove();
-                } else if (entry) {
-                    showNotification('You need at least one status entry.', 'error');
-                }
-            });
-        }
-    }
-
-    // ============================================================
     // DECEASED TOGGLE
     // ============================================================
 
@@ -477,39 +458,7 @@
     }
 
     // ============================================================
-    // ELIMINATION CONTROLS
-    // ============================================================
-
-    function bindEliminationControls(container) {
-        var addElimBtn = document.getElementById('add-standalone-elim-btn');
-        if (addElimBtn) {
-            addSafeEventListener(addElimBtn, 'click', function() {
-                if (CharacterEliminations && typeof CharacterEliminations.addStandalone === 'function') {
-                    CharacterEliminations.addStandalone();
-                }
-            });
-        }
-
-        var standaloneContainer = document.getElementById('standalone-eliminations-container');
-        if (standaloneContainer) {
-            addSafeEventListener(standaloneContainer, 'click', function(e) {
-                var target = e.target.closest ? e.target.closest('.remove-standalone-elim') : null;
-                if (!target) return;
-                if (!standaloneContainer.contains(target)) return;
-
-                var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-                var eliminationId = target.dataset.id;
-                if (id && eliminationId) {
-                    if (CharacterEliminations && typeof CharacterEliminations.removeStandalone === 'function') {
-                        CharacterEliminations.removeStandalone(id, eliminationId);
-                    }
-                }
-            });
-        }
-    }
-
-    // ============================================================
-    // CLASS TAG INPUT - Add class by name with feedback
+    // CLASS TAG INPUT
     // ============================================================
 
     function bindClassTagInput(container) {
@@ -519,102 +468,80 @@
                 if (e.key === 'Enter') {
                     e.preventDefault();
                     var name = this.value.trim();
-                    if (!name) return;
-
-                    if (CharacterClasses && typeof CharacterClasses.addClassByName === 'function') {
-                        var result = CharacterClasses.addClassByName(name);
-                        if (result && typeof result.then === 'function') {
-                            result.then(function(success) {
-                                if (success && classInput) {
-                                    classInput.value = '';
-                                }
-                            }).catch(function() {
-                                // Don't clear on failure - user can retry
-                            });
-                        } else {
-                            if (classInput) classInput.value = '';
-                        }
-                    } else {
-                        showNotification('Class functionality is not available.', 'error');
+                    if (name) {
+                        handleAddClassByName(name);
                     }
                 }
             });
         }
     }
 
+    function handleAddClassByName(name) {
+        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify('Please save the character first.', 'error');
+            return;
+        }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            notify('Character not found.', 'error');
+            return;
+        }
+
+        // Use CharacterClasses.addClassByName
+        if (window.CharacterClasses && typeof window.CharacterClasses.addClassByName === 'function') {
+            window.CharacterClasses.addClassByName(name)
+                .then(function(result) {
+                    if (result && result.success) {
+                        var input = document.getElementById('class-tag-input');
+                        if (input) input.value = '';
+                        refreshUI(char);
+                    }
+                })
+                .catch(function(err) {
+                    notify('Failed to add class.', 'error');
+                    console.error('[CharacterEvents] Add class error:', err);
+                });
+        } else {
+            notify('Class functionality is not available.', 'error');
+        }
+    }
+
     // ============================================================
-    // CLASS TAG REMOVAL - Delegate to CharacterClasses
+    // CLASS TAG REMOVAL
     // ============================================================
 
     function bindClassTagRemoval(container) {
-        var tagContainer = document.getElementById('class-tag-container');
-        if (tagContainer) {
-            addSafeEventListener(tagContainer, 'click', function(e) {
-                var target = e.target.closest ? e.target.closest('.remove-class-tag') : null;
-                if (!target) return;
-                if (!tagContainer.contains(target)) return;
-
-                var classId = target.dataset.id;
-                if (!classId) return;
-
-                var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-                if (!charId) {
-                    showNotification('No character selected.', 'error');
-                    return;
-                }
-
-                if (CharacterClasses && typeof CharacterClasses.removeClassById === 'function') {
-                    CharacterClasses.removeClassById(charId, classId);
-                } else {
-                    showNotification('Character class functionality is not available.', 'error');
-                }
-            });
-        }
+        addSafeDelegatedListener('.remove-class-tag', 'click', function(e, target) {
+            e.stopPropagation();
+            var classId = target.dataset.id;
+            if (classId) {
+                handleRemoveClass(classId);
+            }
+        });
     }
 
-    // ============================================================
-    // ACADEMIC CLASS CONTROLS
-    // ============================================================
-
-    function bindAcademicClassControls(container) {
-        var addToClassBtn = document.getElementById('add-to-class-btn');
-        if (addToClassBtn) {
-            addSafeEventListener(addToClassBtn, 'click', function() {
-                if (CharacterClasses && typeof CharacterClasses.addToClass === 'function') {
-                    CharacterClasses.addToClass();
-                }
-            });
+    function handleRemoveClass(classId) {
+        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify('No character selected.', 'error');
+            return;
         }
 
-        var removeFromClassBtn = document.getElementById('remove-from-class-btn');
-        if (removeFromClassBtn) {
-            addSafeEventListener(removeFromClassBtn, 'click', function() {
-                if (CharacterClasses && typeof CharacterClasses.removeFromClass === 'function') {
-                    CharacterClasses.removeFromClass();
-                }
-            });
-        }
-    }
-
-    // ============================================================
-    // SOCIAL BUTTON
-    // ============================================================
-
-    function bindSocialButton(container) {
-        var socialBtn = document.getElementById('add-social-relation-btn');
-        if (socialBtn) {
-            addSafeEventListener(socialBtn, 'click', function() {
-                var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-                if (!id) {
-                    showNotification('Please save the character first.', 'error');
-                    return;
-                }
-                if (typeof window.showRelationshipForm === 'function') {
-                    window.showRelationshipForm(null, id);
-                } else {
-                    showNotification('Relationship functionality is not available. Please use the Social tab.', 'error');
-                }
-            });
+        if (window.CharacterClasses && typeof window.CharacterClasses.removeClassById === 'function') {
+            window.CharacterClasses.removeClassById(charId, classId)
+                .then(function(result) {
+                    if (result && result.success) {
+                        refreshUI(null);
+                    }
+                })
+                .catch(function(err) {
+                    notify('Failed to remove class.', 'error');
+                    console.error('[CharacterEvents] Remove class error:', err);
+                });
+        } else {
+            notify('Class functionality is not available.', 'error');
         }
     }
 
@@ -641,489 +568,191 @@
     }
 
     // ============================================================
-    // CHARACTER LIST - Event delegation with scroll to form
+    // CHARACTER LIST - Event delegation
     // ============================================================
 
     function bindCharacterList(container) {
-        var listContainer = document.getElementById('characters-container');
-        if (!listContainer) return;
-
-        addSafeEventListener(listContainer, 'click', function(e) {
-            var item = e.target.closest ? e.target.closest('.char-list-item') : null;
-            if (!item) return;
-            if (!listContainer.contains(item)) return;
-
-            var id = item.dataset.id;
-            if (!id) return;
-
-            if (typeof window.showCharacterForm === 'function') {
-                window.showCharacterForm(id);
-            }
-
-            // Scroll the form into view
-            var formContainer = document.getElementById('character-form-container');
-            if (formContainer) {
-                setTimeout(function() {
-                    formContainer.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-                }, 100);
-            }
-
-            if (window.innerWidth < (UI_CONSTANTS.MOBILE_BREAKPOINT || 768) && typeof window.toggleCharacterList === 'function') {
-                window.toggleCharacterList(false);
+        addSafeDelegatedListener('.char-list-item', 'click', function(e, target) {
+            var id = target.dataset.id;
+            if (id) {
+                handleCharacterSelect(id);
             }
         });
     }
 
+    function handleCharacterSelect(id) {
+        if (!id) return;
+
+        var char = CharacterQueries.getCharacterById(id);
+        if (!char) {
+            notify('Character not found.', 'error');
+            return;
+        }
+
+        if (typeof window.setCurrentEditId === 'function') {
+            window.setCurrentEditId(id);
+        }
+
+        CharacterForm.render(id);
+        refreshUI(char);
+
+        // Scroll the form into view
+        var formContainer = document.getElementById('character-form-container');
+        if (formContainer) {
+            setTimeout(function() {
+                formContainer.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }, 100);
+        }
+
+        if (window.innerWidth < (UI_CONSTANTS.MOBILE_BREAKPOINT || 768) && typeof window.toggleCharacterList === 'function') {
+            window.toggleCharacterList(false);
+        }
+    }
+
     // ============================================================
-    // STATS EVENTS - Delegate to CharacterStatsView
+    // RANDOM BUTTONS
     // ============================================================
 
-    function bindStatsEvents(container) {
-        var statInputs = ['char-str', 'char-dex', 'char-con', 'char-int', 'char-wis', 'char-cha'];
-        statInputs.forEach(function(id) {
-            var el = document.getElementById(id);
-            if (el) {
-                addSafeEventListener(el, 'change', function() {
-                    if (CharacterStatsView && typeof CharacterStatsView.updateClassSuggestion === 'function') {
-                        CharacterStatsView.updateClassSuggestion();
-                    }
-                });
-                addSafeEventListener(el, 'blur', function() {
-                    var val = parseInt(this.value, 10);
-                    var statMin = CC ? CC.STAT_MIN : 1;
-                    var statMax = CC ? CC.STAT_MAX : 50;
-                    if (isNaN(val)) {
-                        this.value = CC ? CC.STAT_DEFAULT : 10;
-                    } else if (val < statMin) {
-                        this.value = statMin;
-                    } else if (val > statMax) {
-                        this.value = statMax;
-                    }
-                    if (CharacterStatsView && typeof CharacterStatsView.updateClassSuggestion === 'function') {
-                        CharacterStatsView.updateClassSuggestion();
-                    }
-                });
-            }
+    function bindRandomButtons(container) {
+        var randomPhysicalBtn = document.getElementById('random-physical-btn');
+        if (randomPhysicalBtn) {
+            addSafeEventListener(randomPhysicalBtn, 'click', function() {
+                fillRandomPhysical();
+            });
+        }
+
+        var randomPersonalityBtn = document.getElementById('random-personality-btn');
+        if (randomPersonalityBtn) {
+            addSafeEventListener(randomPersonalityBtn, 'click', function() {
+                fillRandomPersonality();
+            });
+        }
+
+        var randomStatsBtn = document.getElementById('random-stats-btn');
+        if (randomStatsBtn) {
+            addSafeEventListener(randomStatsBtn, 'click', function() {
+                fillRandomStats();
+            });
+        }
+    }
+
+    function fillRandomPhysical() {
+        var physical = CharacterGenerator.generatePhysical();
+        FormUtils.setField('char-eyes', physical.eyes);
+        FormUtils.setField('char-hair', physical.hair);
+        FormUtils.setField('char-skin', physical.skin);
+        FormUtils.setField('char-height', physical.height);
+        FormUtils.setField('char-weight', physical.weight);
+        FormUtils.setField('char-build', physical.build);
+        notify('Random physical appearance generated!', 'info');
+    }
+
+    function fillRandomPersonality() {
+        var personality = CharacterGenerator.generatePersonality();
+        FormUtils.setField('char-personality-traits', personality.traits);
+        FormUtils.setField('char-personality-ideals', personality.ideals);
+        FormUtils.setField('char-personality-bonds', personality.bonds);
+        FormUtils.setField('char-personality-flaws', personality.flaws);
+        FormUtils.setField('char-personality-alignment', personality.alignment);
+        FormUtils.setField('char-personality-likes', personality.likes);
+        FormUtils.setField('char-personality-dislikes', personality.dislikes);
+        FormUtils.setField('char-personality-habits', personality.habits);
+        FormUtils.setField('char-personality-fears', personality.fears);
+        FormUtils.setField('char-personality-goals', personality.goals);
+        notify('Random personality generated!', 'info');
+    }
+
+    function fillRandomStats() {
+        var stats = CharacterGenerator.generateStats();
+        var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+        statKeys.forEach(function(key) {
+            var value = stats[key] !== undefined ? stats[key] : 10;
+            FormUtils.setField('char-stat-' + key, value);
         });
+        notify('Random stats generated!', 'info');
+    }
 
-        var classSelect = document.getElementById('manual-class-select');
+    // ============================================================
+    // UI REFRESH
+    // ============================================================
+
+    function refreshUI(char) {
+        // Refresh character list
+        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+            try {
+                window.CharacterList.render();
+            } catch (e) {
+                // Ignore render errors
+            }
+        }
+
+        // Refresh class tags
+        var classTagContainer = document.getElementById('class-tag-container');
+        if (classTagContainer) {
+            CharacterClassView.renderClassTags(char, classTagContainer);
+        }
+
+        // Refresh current classes display
+        var currentClassesDisplay = document.getElementById('current-classes-list');
+        if (currentClassesDisplay) {
+            CharacterClassView.updateCurrentClassesDisplay(char, currentClassesDisplay);
+        }
+
+        // Refresh class selector
+        var classSelect = document.getElementById('academic-class-select');
         if (classSelect) {
-            if (CharacterStatsView && typeof CharacterStatsView.populateClassSelect === 'function') {
-                CharacterStatsView.populateClassSelect();
+            CharacterClassView.populateClassSelector(char, classSelect);
+        }
+
+        // Refresh tournament eliminations
+        var tournElimContainer = document.getElementById('tournament-eliminations-view');
+        if (tournElimContainer) {
+            CharacterEliminationView.renderTournamentEliminations(char, tournElimContainer);
+        }
+
+        // Refresh standalone eliminations
+        var standaloneElimContainer = document.getElementById('standalone-eliminations-container');
+        if (standaloneElimContainer) {
+            CharacterEliminationView.renderStandaloneEliminations(char, standaloneElimContainer);
+        }
+
+        // Refresh academic view
+        var academicView = document.getElementById('academic-view');
+        if (academicView && window.CharacterViews && typeof window.CharacterViews.renderAcademic === 'function') {
+            try {
+                window.CharacterViews.renderAcademic(char);
+            } catch (e) {
+                // Ignore render errors
             }
-
-            addSafeEventListener(classSelect, 'change', function() {
-                var display = document.getElementById('suggested-class');
-                var descDisplay = document.getElementById('class-description-display');
-
-                if (this.value) {
-                    var classes = CC && typeof CC.CLASS_DEFINITIONS !== 'undefined'
-                        ? CC.CLASS_DEFINITIONS
-                        : [];
-                    var selected = classes.find(function(c) { return c.id === this.value; }.bind(this));
-                    if (selected && display) {
-                        display.textContent = (selected.icon || '') + ' ' + (selected.label || '');
-                        display.style.color = 'var(--accent)';
-                        display.style.background = 'var(--accent-soft)';
-                        display.style.borderColor = 'var(--accent)';
-                        if (descDisplay) {
-                            descDisplay.textContent = selected.description || 'No description available.';
-                            descDisplay.style.borderLeftColor = 'var(--accent)';
-                            descDisplay.style.color = 'var(--text)';
-                        }
-                    }
-                } else {
-                    if (CharacterStatsView && typeof CharacterStatsView.updateClassSuggestion === 'function') {
-                        CharacterStatsView.updateClassSuggestion();
-                    }
-                    if (descDisplay) {
-                        descDisplay.textContent = 'Select a class to see its description here.';
-                        descDisplay.style.borderLeftColor = 'var(--accent)';
-                        descDisplay.style.color = 'var(--text-dim)';
-                    }
-                }
-            });
         }
 
-        // Apply Physical Class button
-        var applyClassBtn = document.getElementById('apply-class-btn');
-        if (applyClassBtn) {
-            addSafeEventListener(applyClassBtn, 'click', function() {
-                if (CharacterStatsView && typeof CharacterStatsView.applyPhysicalClass === 'function') {
-                    CharacterStatsView.applyPhysicalClass();
-                }
-            });
-        }
-
-        var recalcBtn = document.getElementById('recalculate-class-btn');
-        if (recalcBtn) {
-            addSafeEventListener(recalcBtn, 'click', function() {
-                if (CharacterStatsView && typeof CharacterStatsView.updateClassSuggestion === 'function') {
-                    CharacterStatsView.updateClassSuggestion();
-                }
-            });
-        }
-
-        var randomBtn = document.getElementById('random-stats-btn');
-        if (randomBtn) {
-            addSafeEventListener(randomBtn, 'click', function() {
-                var stats = typeof window.CharacterGenerator !== 'undefined' && typeof window.CharacterGenerator.generateStats === 'function'
-                    ? window.CharacterGenerator.generateStats()
-                    : null;
-
-                if (!stats) {
-                    showNotification('Character generation is not available.', 'error');
-                    return;
-                }
-
-                var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-                statKeys.forEach(function(key) {
-                    var el = document.getElementById('char-' + key);
-                    if (el) el.value = stats[key] || 10;
-                });
-
-                if (CharacterStatsView && typeof CharacterStatsView.updateClassSuggestion === 'function') {
-                    CharacterStatsView.updateClassSuggestion();
-                }
-            });
-        }
-    }
-
-    // ============================================================
-    // MAGIC EVENTS - Delegate to CharacterStatsView
-    // ============================================================
-
-    function bindMagicEvents(container) {
-        var magicTypes = getMagicTypeKeys();
-
-        magicTypes.forEach(function(key) {
-            var el = document.getElementById('magic-' + key);
-            if (el) {
-                addSafeEventListener(el, 'change', function() {
-                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                        CharacterStatsView.updateMagicClassSuggestion();
-                    }
-                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicPowerDisplay === 'function') {
-                        CharacterStatsView.updateMagicPowerDisplay();
-                    }
-                });
-                addSafeEventListener(el, 'blur', function() {
-                    var val = parseInt(this.value, 10);
-                    var magicMax = CC ? CC.MAGIC_MAX : 10;
-                    if (isNaN(val)) {
-                        this.value = 0;
-                    } else if (val < 0) {
-                        this.value = 0;
-                    } else if (val > magicMax) {
-                        this.value = magicMax;
-                    }
-                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                        CharacterStatsView.updateMagicClassSuggestion();
-                    }
-                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicPowerDisplay === 'function') {
-                        CharacterStatsView.updateMagicPowerDisplay();
-                    }
-                });
+        // Refresh professional view
+        var professionalView = document.getElementById('professional-view');
+        if (professionalView && window.CharacterViews && typeof window.CharacterViews.renderProfessional === 'function') {
+            try {
+                window.CharacterViews.renderProfessional(char);
+            } catch (e) {
+                // Ignore render errors
             }
-        });
-
-        var magicClassSelect = document.getElementById('manual-magic-class-select');
-        if (magicClassSelect) {
-            addSafeEventListener(magicClassSelect, 'change', function() {
-                var display = document.getElementById('suggested-magic-class');
-                if (this.value && display) {
-                    // Map magic class values to display labels
-                    var labels = {
-                        'elementalist': 'Elementalist',
-                        'body_mage': 'Body Mage',
-                        'aether_mage': 'Aether Mage',
-                        'geomancer': 'Geomancer',
-                        'hydromancer': 'Hydromancer',
-                        'pyromancer': 'Pyromancer',
-                        'aeromancer': 'Aeromancer',
-                        'ferromancer': 'Ferromancer',
-                        'dendromancer': 'Dendromancer',
-                        'hemomancer': 'Hemomancer',
-                        'osteomancer': 'Osteomancer',
-                        'psychomancer': 'Psychomancer',
-                        'morphomancer': 'Morphomancer',
-                        'vitalmancer': 'Vitalmancer',
-                        'necromancer': 'Necromancer',
-                        'spatiomancer': 'Spatiomancer',
-                        'chronomancer': 'Chronomancer',
-                        'dimensionist': 'Dimensionist',
-                        'voidmancer': 'Voidmancer',
-                        'reality_weaver': 'Reality Weaver',
-                        'transference_mage': 'Transference Mage'
-                    };
-                    display.textContent = labels[this.value] || this.value;
-                    display.style.color = 'var(--info)';
-                    display.style.background = 'var(--info-soft)';
-                    display.style.borderColor = 'var(--info)';
-                } else {
-                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                        CharacterStatsView.updateMagicClassSuggestion();
-                    }
-                }
-            });
         }
 
-        // Apply Magic Class button
-        var applyMagicClassBtn = document.getElementById('apply-magic-class-btn');
-        if (applyMagicClassBtn) {
-            addSafeEventListener(applyMagicClassBtn, 'click', function() {
-                if (CharacterStatsView && typeof CharacterStatsView.applyMagicClass === 'function') {
-                    CharacterStatsView.applyMagicClass();
-                }
-            });
-        }
-
-        var recalcMagicBtn = document.getElementById('recalculate-magic-class-btn');
-        if (recalcMagicBtn) {
-            addSafeEventListener(recalcMagicBtn, 'click', function() {
-                if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                    CharacterStatsView.updateMagicClassSuggestion();
-                }
-                if (CharacterStatsView && typeof CharacterStatsView.updateMagicPowerDisplay === 'function') {
-                    CharacterStatsView.updateMagicPowerDisplay();
-                }
-            });
-        }
-
-        // Random Elemental button
-        var randomElementalBtn = document.getElementById('random-elemental-btn');
-        if (randomElementalBtn) {
-            addSafeEventListener(randomElementalBtn, 'click', function() {
-                if (typeof window.CharacterGenerator !== 'undefined' && typeof window.CharacterGenerator.generateMagicCategory === 'function') {
-                    var magic = window.CharacterGenerator.generateMagicCategory('elemental');
-                    var types = getMagicCategoryTypes('elemental');
-                    types.forEach(function(key) {
-                        var input = document.getElementById('magic-' + key);
-                        if (input && magic[key] !== undefined) {
-                            input.value = magic[key];
-                        }
-                    });
-                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                        CharacterStatsView.updateMagicClassSuggestion();
-                    }
-                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicPowerDisplay === 'function') {
-                        CharacterStatsView.updateMagicPowerDisplay();
-                    }
-                } else {
-                    showNotification('Character generation is not available.', 'error');
-                }
-            });
-        }
-
-        // Random Body button
-        var randomBodyBtn = document.getElementById('random-body-btn');
-        if (randomBodyBtn) {
-            addSafeEventListener(randomBodyBtn, 'click', function() {
-                if (typeof window.CharacterGenerator !== 'undefined' && typeof window.CharacterGenerator.generateMagicCategory === 'function') {
-                    var magic = window.CharacterGenerator.generateMagicCategory('body');
-                    var types = getMagicCategoryTypes('body');
-                    types.forEach(function(key) {
-                        var input = document.getElementById('magic-' + key);
-                        if (input && magic[key] !== undefined) {
-                            input.value = magic[key];
-                        }
-                    });
-                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                        CharacterStatsView.updateMagicClassSuggestion();
-                    }
-                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicPowerDisplay === 'function') {
-                        CharacterStatsView.updateMagicPowerDisplay();
-                    }
-                } else {
-                    showNotification('Character generation is not available.', 'error');
-                }
-            });
-        }
-
-        // Random Aether button
-        var randomAetherBtn = document.getElementById('random-aether-btn');
-        if (randomAetherBtn) {
-            addSafeEventListener(randomAetherBtn, 'click', function() {
-                if (typeof window.CharacterGenerator !== 'undefined' && typeof window.CharacterGenerator.generateMagicCategory === 'function') {
-                    var magic = window.CharacterGenerator.generateMagicCategory('aether');
-                    var types = getMagicCategoryTypes('aether');
-                    types.forEach(function(key) {
-                        var input = document.getElementById('magic-' + key);
-                        if (input && magic[key] !== undefined) {
-                            input.value = magic[key];
-                        }
-                    });
-                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicClassSuggestion === 'function') {
-                        CharacterStatsView.updateMagicClassSuggestion();
-                    }
-                    if (CharacterStatsView && typeof CharacterStatsView.updateMagicPowerDisplay === 'function') {
-                        CharacterStatsView.updateMagicPowerDisplay();
-                    }
-                } else {
-                    showNotification('Character generation is not available.', 'error');
-                }
-            });
-        }
-    }
-
-    // ============================================================
-    // SPECIAL MOVES EVENTS - Delegate to CharacterStats
-    // ============================================================
-
-    function bindSpecialMovesEvents(container) {
-        var addPhysicalBtn = document.getElementById('add-physical-move-btn');
-        if (addPhysicalBtn) {
-            addSafeEventListener(addPhysicalBtn, 'click', function() {
-                handleAddSpecialMove('physical');
-            });
-        }
-
-        var addMagicalBtn = document.getElementById('add-magical-move-btn');
-        if (addMagicalBtn) {
-            addSafeEventListener(addMagicalBtn, 'click', function() {
-                handleAddSpecialMove('magical');
-            });
-        }
-
-        // Handle delete and edit buttons via delegation
-        var physicalList = document.getElementById('physical-moves-list');
-        if (physicalList) {
-            addSafeEventListener(physicalList, 'click', function(e) {
-                var target = e.target.closest ? e.target.closest('.remove-special-move') : null;
-                if (target) {
-                    handleRemoveSpecialMove(e, 'physical');
-                    return;
-                }
-                var editTarget = e.target.closest ? e.target.closest('.edit-special-move') : null;
-                if (editTarget) {
-                    handleEditSpecialMove(e, 'physical');
-                    return;
-                }
-            });
-        }
-
-        var magicalList = document.getElementById('magical-moves-list');
-        if (magicalList) {
-            addSafeEventListener(magicalList, 'click', function(e) {
-                var target = e.target.closest ? e.target.closest('.remove-special-move') : null;
-                if (target) {
-                    handleRemoveSpecialMove(e, 'magical');
-                    return;
-                }
-                var editTarget = e.target.closest ? e.target.closest('.edit-special-move') : null;
-                if (editTarget) {
-                    handleEditSpecialMove(e, 'magical');
-                    return;
-                }
-            });
-        }
-    }
-
-    // ============================================================
-    // SPECIAL MOVES - Shared Handlers with Promise support
-    // ============================================================
-
-    function handleAddSpecialMove(type) {
-        var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        if (!id) {
-            showNotification('Please save the character first.', 'error');
-            return;
-        }
-
-        var char = CharacterQueries.getCharacterById(id);
-        if (!char) {
-            showNotification('Character not found.', 'error');
-            return;
-        }
-
-        var nameInput = document.getElementById(type + '-move-name');
-        var descInput = document.getElementById(type + '-move-desc');
-
-        var moveName = nameInput ? nameInput.value.trim() : '';
-        var moveDesc = descInput ? descInput.value.trim() : '';
-
-        if (!moveName) {
-            showNotification('Please enter a move name.', 'error');
-            return;
-        }
-
-        if (CharacterStats && typeof CharacterStats.addSpecialMove === 'function') {
-            var result = CharacterStats.addSpecialMove(id, type, moveName, moveDesc);
-
-            if (result && typeof result.then === 'function') {
-                result.then(function(success) {
-                    if (success !== false) {
-                        if (nameInput) nameInput.value = '';
-                        if (descInput) descInput.value = '';
-                    }
-                }).catch(function() {
-                    // Don't clear on failure - user can retry
-                });
-            } else if (result !== false) {
-                if (nameInput) nameInput.value = '';
-                if (descInput) descInput.value = '';
+        // Refresh social view
+        var socialView = document.getElementById('social-view');
+        if (socialView && window.CharacterViews && typeof window.CharacterViews.renderSocial === 'function') {
+            try {
+                window.CharacterViews.renderSocial(char);
+            } catch (e) {
+                // Ignore render errors
             }
-        } else {
-            showNotification('Special move functionality is not available.', 'error');
-            return;
-        }
-    }
-
-    function handleRemoveSpecialMove(e, defaultType) {
-        var target = e.target.closest ? e.target.closest('.remove-special-move') : null;
-        if (!target) return;
-
-        var container = target.closest('.moves-list');
-        if (!container) return;
-
-        var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        if (!id) {
-            showNotification('Please save the character first.', 'error');
-            return;
         }
 
-        var char = CharacterQueries.getCharacterById(id);
-        if (!char) {
-            showNotification('Character not found.', 'error');
-            return;
-        }
-
-        var type = target.dataset.type || defaultType || 'physical';
-        var index = parseInt(target.dataset.index, 10);
-        if (isNaN(index)) return;
-
-        if (CharacterStats && typeof CharacterStats.removeSpecialMove === 'function') {
-            CharacterStats.removeSpecialMove(id, type, index);
-        } else {
-            showNotification('Special move functionality is not available.', 'error');
-            return;
-        }
-    }
-
-    function handleEditSpecialMove(e, defaultType) {
-        var target = e.target.closest ? e.target.closest('.edit-special-move') : null;
-        if (!target) return;
-
-        var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        if (!id) {
-            showNotification('Please save the character first.', 'error');
-            return;
-        }
-
-        var char = CharacterQueries.getCharacterById(id);
-        if (!char) {
-            showNotification('Character not found.', 'error');
-            return;
-        }
-
-        var type = target.dataset.type || defaultType || 'physical';
-        var index = parseInt(target.dataset.index, 10);
-        if (isNaN(index)) return;
-
-        if (CharacterStatsView && typeof CharacterStatsView.editSpecialMove === 'function') {
-            CharacterStatsView.editSpecialMove(id, type, index);
-        } else {
-            showNotification('Edit functionality is not available.', 'error');
+        // Update dashboard stats
+        if (typeof window.updateDashboardStats === 'function') {
+            try {
+                window.updateDashboardStats();
+            } catch (e) {
+                // Ignore render errors
+            }
         }
     }
 
@@ -1134,7 +763,8 @@
     window.CharacterEvents = {
         init: init,
         destroy: destroy,
-        removeAllEventListeners: removeAllEventListeners
+        removeAllEventListeners: removeAllEventListeners,
+        refreshUI: refreshUI
     };
 
 })();

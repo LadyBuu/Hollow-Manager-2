@@ -4,53 +4,36 @@
  * Path: js/modules/characters/character-classes.js
  * 
  * This module is responsible for:
- *   - Adding characters to classes (with VALIDATE → SNAPSHOT → MUTATE → SAVE → LOG → UI COMMIT)
- *   - Removing characters from classes (with VALIDATE → SNAPSHOT → MUTATE → SAVE → LOG → UI COMMIT)
- *   - Rendering class tags in the form
- *   - Populating class selectors
- *   - Querying character-class relationships
+ *   - Adding characters to classes (via MutationPipeline)
+ *   - Removing characters from classes (via MutationPipeline)
+ *   - Adding classes by name (via MutationPipeline)
  * 
- * IMPORTANT: All mutations follow the correct pattern:
- *   VALIDATE → SNAPSHOT → MUTATE → SAVE → LOG (failure-safe) → UI COMMIT
- *   User-controlled text is inserted using safe DOM APIs/textContent
- *   rather than raw HTML, preventing XSS.
- *   Rollback is performed on save failure.
- *   Normalisation occurs AFTER snapshot, not before validation.
+ * IMPORTANT: All mutations use MutationPipeline:
+ *   VALIDATE → SNAPSHOT → MUTATE → PERSIST → LOG → UI COMMIT
+ *   Returns structured results for caller handling
+ *   No UI dependencies (no notifications, no confirm, no rendering)
+ *   No DOM access
  *   USES CharacterQueries for character data and display names
  *   USES ClassesQueries for class data
  *   USES ClassesCore for class creation (NON-PERSISTING when used in transactions)
- *   USES MutationUtils for backup and persistence
- *   USES NotificationSystem for notifications
- *   USES ActivityLog for activity logging
- *   USES DomUtils for safe DOM operations
+ *   USES MutationPipeline for transaction management
+ *   USES IdUtils for ID generation
  * 
- * MUTATION CONTRACT:
- *   1. Validate inputs (no mutation)
- *   2. Create backup of current state (abort if fails)
- *   3. Normalise data structures (ONLY AFTER snapshot)
- *   4. Apply mutation
- *   5. Persist via saveWithPromise() (wrapped for safety)
- *   6. Log activity (failure-safe, no rollback)
- *   7. On persistence failure, restore backup and refresh UI
+ * DEPENDENCIES:
+ *   - window.CharacterQueries (from character-queries.js) - MANDATORY
+ *   - window.ClassesQueries (from classes-queries.js) - MANDATORY
+ *   - window.ClassesCore (from classes-core.js) - MANDATORY
+ *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
+ *   - window.IdUtils (from id-utils.js) - MANDATORY
  * 
- * STATE SOURCE OF TRUTH:
- *   - Uses getCurrentEditId() for current character selection
- *   - Uses window.data for domain data
- *   - DOM is rendered from state, not the other way around
- *   - DOM is the source of unsaved form input only
- * 
- * DEPENDENCIES (ALL REQUIRED):
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.ClassesQueries (from classes-queries.js)
- *   - window.ClassesCore (from classes-core.js)
- *   - window.MutationUtils (from mutation-utils.js)
- *   - window.NotificationSystem (from notification.js)
- *   - window.ActivityLog (from activity-log.js)
- *   - window.DomUtils (from dom-utils.js)
- *   - window.getCurrentEditId (from index.js)
- *   - window.setCurrentEditId (from index.js)
- *   - window.saveData (from database.js)
- *   - window.CALENDAR_CONSTANTS (from constants.js)
+ * USAGE:
+ *   var CC = window.CharacterClasses;
+ *   CC.addToClass('char_123', 'class_456')
+ *      .then(function(result) { ... });
+ *   CC.removeClassById('char_123', 'class_456')
+ *      .then(function(result) { ... });
+ *   CC.addClassByName('char_123', 'New Class')
+ *      .then(function(result) { ... });
  */
 
 (function() {
@@ -63,24 +46,14 @@
     window.__characterClassesLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - NO FALLBACKS
+    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
     // ============================================================
 
     var CharacterQueries = window.CharacterQueries;
     var ClassesQueries = window.ClassesQueries;
     var ClassesCore = window.ClassesCore;
-    var MutationUtils = window.MutationUtils;
-    var NotificationSystem = window.NotificationSystem;
-    var ActivityLog = window.ActivityLog;
-    var DomUtils = window.DomUtils;
-    var CalendarConstants = window.CALENDAR_CONSTANTS;
-
-    // ============================================================
-    // CONSTANTS
-    // ============================================================
-
-    var MIN_WEEK = CalendarConstants ? CalendarConstants.MIN_WEEK : 1;
-    var MAX_WEEK = CalendarConstants ? CalendarConstants.MAX_WEEK : 52;
+    var MutationPipeline = window.MutationPipeline;
+    var IdUtils = window.IdUtils;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -88,21 +61,6 @@
 
     function checkDependencies() {
         var missing = [];
-
-        // Required functions
-        var required = [
-            'getCurrentEditId',
-            'setCurrentEditId',
-            'saveData'
-        ];
-
-        required.forEach(function(name) {
-            if (name === 'saveData' && typeof window.saveData !== 'function') {
-                missing.push('saveData');
-            } else if (typeof window[name] !== 'function') {
-                missing.push(name);
-            }
-        });
 
         // CharacterQueries is MANDATORY
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
@@ -123,32 +81,19 @@
             missing.push('ClassesQueries.getClassByName');
         }
 
-        // ClassesCore is MANDATORY (for class creation)
-        if (!ClassesCore || typeof ClassesCore.createClass !== 'function') {
-            missing.push('ClassesCore.createClass');
+        // ClassesCore is MANDATORY
+        if (!ClassesCore || typeof ClassesCore.createClassInState !== 'function') {
+            missing.push('ClassesCore.createClassInState');
         }
 
-        // MutationUtils is MANDATORY
-        if (!MutationUtils || typeof MutationUtils.createSafeBackup !== 'function') {
-            missing.push('MutationUtils.createSafeBackup');
-        }
-        if (!MutationUtils || typeof MutationUtils.saveWithPromise !== 'function') {
-            missing.push('MutationUtils.saveWithPromise');
+        // MutationPipeline is MANDATORY
+        if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
+            missing.push('MutationPipeline.performMutation');
         }
 
-        // NotificationSystem is MANDATORY
-        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
-            missing.push('NotificationSystem.notify');
-        }
-
-        // DomUtils is MANDATORY
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
-        }
-
-        // ActivityLog is MANDATORY
-        if (!ActivityLog || typeof ActivityLog.record !== 'function') {
-            missing.push('ActivityLog.record');
+        // IdUtils is MANDATORY
+        if (!IdUtils || typeof IdUtils.generateId !== 'function') {
+            missing.push('IdUtils.generateId');
         }
 
         if (missing.length > 0) {
@@ -159,89 +104,7 @@
     }
 
     // ============================================================
-    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
-    // ============================================================
-
-    function showNotification(message, type) {
-        type = type || 'info';
-        NotificationSystem.notify(message, type);
-    }
-
-    // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
-    // ============================================================
-
-    function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        // Emergency fallback (should never be reached)
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;')
-            .replace(/`/g, '&#x60;');
-    }
-
-    // ============================================================
-    // SAFE BACKUP - Delegates to MutationUtils
-    // ============================================================
-
-    function createSafeBackup(data) {
-        return MutationUtils.createSafeBackup(data);
-    }
-
-    // ============================================================
-    // STATE ACCESS - Single source of truth
-    // ============================================================
-
-    function getCurrentEditId() {
-        return window.getCurrentEditId();
-    }
-
-    function setCurrentEditId(id) {
-        window.setCurrentEditId(id);
-    }
-
-    // ============================================================
-    // SAFE RENDER HELPERS
-    // ============================================================
-
-    function safeRenderCharacterList() {
-        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-            try { window.CharacterList.render(); } catch (e) { /* Ignore */ }
-        }
-    }
-
-    function safeShowCharacterForm(id) {
-        if (typeof window.showCharacterForm === 'function') {
-            try { window.showCharacterForm(id); } catch (e) { /* Ignore */ }
-        }
-    }
-
-    function safeUpdateDashboardStats() {
-        if (typeof window.updateDashboardStats === 'function') {
-            try { window.updateDashboardStats(); } catch (e) { /* Ignore */ }
-        }
-    }
-
-    function safeRefreshUI(char) {
-        safeRenderCharacterList();
-        populateAcademicClassSelector(char);
-        updateCurrentClassesDisplay(char);
-        safeUpdateDashboardStats();
-        if (char) {
-            safeShowCharacterForm(char.id);
-        }
-    }
-
-    // ============================================================
-    // NORMALISE CLASS IDS - Called AFTER snapshot
+    // NORMALISATION HELPERS
     // ============================================================
 
     function normaliseClassIds(char) {
@@ -261,10 +124,6 @@
         });
     }
 
-    // ============================================================
-    // GET NORMALISED CLASS IDS - Pure function for validation
-    // ============================================================
-
     function getNormalisedClassIds(char) {
         if (!char) return [];
         if (!Array.isArray(char.classIds)) return [];
@@ -280,622 +139,508 @@
     }
 
     // ============================================================
-    // CORE REMOVE FUNCTION - Single source of truth for removal
+    // ADD TO CLASS - Uses MutationPipeline
     // ============================================================
 
-    function removeClassById(charId, classId) {
+    /**
+     * Add a character to a class.
+     * 
+     * @param {string} charId - Character ID
+     * @param {string} classId - Class ID
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     */
+    function addToClass(charId, classId) {
         if (!checkDependencies()) {
-            showNotification('Dependencies not loaded. Please refresh the page.', 'error');
-            return Promise.resolve(false);
+            return Promise.resolve({
+                success: false,
+                message: 'Dependencies not loaded. Please refresh the page.'
+            });
+        }
+
+        if (!charId) {
+            return Promise.resolve({
+                success: false,
+                message: 'Character ID is required.'
+            });
+        }
+
+        if (!classId) {
+            return Promise.resolve({
+                success: false,
+                message: 'Class ID is required.'
+            });
         }
 
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
-            showNotification('Character not found.', 'error');
-            return Promise.resolve(false);
+            return Promise.resolve({
+                success: false,
+                message: 'Character not found.'
+            });
         }
 
         var cls = ClassesQueries.getClass(classId);
         if (!cls) {
-            showNotification('Class not found.', 'error');
-            return Promise.resolve(false);
+            return Promise.resolve({
+                success: false,
+                message: 'Class not found.'
+            });
         }
 
-        // Use pure function for validation - no mutation
         var classIds = getNormalisedClassIds(char);
-
-        if (!classIds.some(function(cid) { return String(cid) === String(classId); })) {
-            showNotification('Character is not in this class.', 'error');
-            return Promise.resolve(false);
+        if (classIds.some(function(cid) { return String(cid) === String(classId); })) {
+            return Promise.resolve({
+                success: false,
+                message: 'Character is already in this class.'
+            });
         }
 
         var name = CharacterQueries.getDisplayName(char);
-        if (!confirm('Remove ' + name + ' from class "' + cls.name + '"?')) {
-            return Promise.resolve(false);
-        }
 
-        // ---- PHASE 1: SNAPSHOT - Required, abort if fails ----
-        var data = window.data || {};
-        var backup = createSafeBackup(data);
-        if (!backup) {
-            showNotification('Unable to safely remove class. Please try again.', 'error');
-            return Promise.resolve(false);
-        }
-
-        // ---- PHASE 2: NORMALISE and MUTATE (ONLY AFTER snapshot) ----
-        var currentChar = data.characters.find(function(c) {
-            return c && String(c.id) === String(charId);
-        });
-
-        if (!currentChar) {
-            showNotification('Character not found.', 'error');
-            return Promise.resolve(false);
-        }
-
-        normaliseClassIds(currentChar);
-        currentChar.classIds = currentChar.classIds.filter(function(cid) {
-            return String(cid) !== String(classId);
-        });
-
-        // ---- PHASE 3: PERSIST ----
-        var savePromise = MutationUtils.saveWithPromise();
-
-        return savePromise
-            .then(function() {
-                // ---- PHASE 4: LOG - failure-safe, persistence already succeeded ----
-                try {
-                    if (ActivityLog && typeof ActivityLog.record === 'function') {
-                        ActivityLog.record('Removed ' + name + ' from class: ' + cls.name);
-                    }
-                } catch (logErr) {
-                    // Ignore logging errors
+        return MutationPipeline.performMutation({
+            validate: function(data) {
+                // Re-validate within transaction
+                var currentChar = CharacterQueries.getCharacterById(charId);
+                if (!currentChar) {
+                    return {
+                        valid: false,
+                        message: 'Character no longer exists.'
+                    };
                 }
 
-                // ---- PHASE 5: UI COMMIT ----
-                var savedChar = CharacterQueries.getCharacterById(charId);
-                safeRefreshUI(savedChar);
-                showNotification('Character removed from class successfully!', 'success');
-                return true;
-            })
-            .catch(function(err) {
-                // ---- PHASE 6: ROLLBACK ----
-                if (backup) {
-                    window.data = backup;
-                    var restoredChar = CharacterQueries.getCharacterById(charId);
-                    safeRefreshUI(restoredChar);
+                var currentClass = ClassesQueries.getClass(classId);
+                if (!currentClass) {
+                    return {
+                        valid: false,
+                        message: 'Class no longer exists.'
+                    };
                 }
-                showNotification('Failed to remove character from class. Please try again.', 'error');
-                return false;
-            });
+
+                var currentClassIds = getNormalisedClassIds(currentChar);
+                if (currentClassIds.some(function(cid) { return String(cid) === String(classId); })) {
+                    return {
+                        valid: false,
+                        message: 'Character is already in this class.'
+                    };
+                }
+
+                return { valid: true };
+            },
+
+            mutate: function(data) {
+                var currentChar = data.characters.find(function(c) {
+                    return c && String(c.id) === String(charId);
+                });
+
+                if (!currentChar) {
+                    throw new Error('Character not found in data store.');
+                }
+
+                normaliseClassIds(currentChar);
+
+                // Prevent duplicate in case of race
+                if (currentChar.classIds.some(function(cid) { return String(cid) === String(classId); })) {
+                    throw new Error('Character is already in this class.');
+                }
+
+                currentChar.classIds.push(classId);
+
+                return {
+                    characterId: charId,
+                    classId: classId,
+                    className: cls.name
+                };
+            },
+
+            logMessage: function(result) {
+                return 'Added ' + name + ' to class: ' + cls.name;
+            },
+
+            successMessage: function(result) {
+                return 'Character added to class successfully!';
+            },
+            failureMessage: 'Failed to add character to class.'
+        });
     }
 
     // ============================================================
-    // ADD TO CLASS
+    // REMOVE FROM CLASS BY ID - Uses MutationPipeline
     // ============================================================
 
-    function addToClass() {
+    /**
+     * Remove a character from a class by class ID.
+     * 
+     * @param {string} charId - Character ID
+     * @param {string} classId - Class ID
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     */
+    function removeClassById(charId, classId) {
         if (!checkDependencies()) {
-            showNotification('Dependencies not loaded. Please refresh the page.', 'error');
-            return Promise.resolve(false);
+            return Promise.resolve({
+                success: false,
+                message: 'Dependencies not loaded. Please refresh the page.'
+            });
         }
 
-        var select = document.getElementById('academic-class-select');
-        if (!select) {
-            showNotification('Class selector not found. Please refresh the page.', 'error');
-            return Promise.resolve(false);
-        }
-
-        var classId = select.value;
-        if (!classId) {
-            showNotification('Please select a class.', 'error');
-            return Promise.resolve(false);
-        }
-
-        var charId = getCurrentEditId();
         if (!charId) {
-            showNotification('No character selected.', 'error');
-            return Promise.resolve(false);
+            return Promise.resolve({
+                success: false,
+                message: 'Character ID is required.'
+            });
+        }
+
+        if (!classId) {
+            return Promise.resolve({
+                success: false,
+                message: 'Class ID is required.'
+            });
         }
 
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
-            showNotification('Character not found.', 'error');
-            return Promise.resolve(false);
+            return Promise.resolve({
+                success: false,
+                message: 'Character not found.'
+            });
         }
 
         var cls = ClassesQueries.getClass(classId);
         if (!cls) {
-            showNotification('Class not found.', 'error');
-            return Promise.resolve(false);
-        }
-
-        // Use pure function for validation - no mutation
-        var classIds = getNormalisedClassIds(char);
-
-        if (classIds.some(function(cid) { return String(cid) === String(classId); })) {
-            showNotification('Character is already in this class.', 'error');
-            return Promise.resolve(false);
-        }
-
-        // ---- PHASE 1: SNAPSHOT - Required, abort if fails ----
-        var data = window.data || {};
-        var backup = createSafeBackup(data);
-        if (!backup) {
-            showNotification('Unable to safely add class. Please try again.', 'error');
-            return Promise.resolve(false);
-        }
-
-        // ---- PHASE 2: NORMALISE and MUTATE (ONLY AFTER snapshot) ----
-        var currentChar = data.characters.find(function(c) {
-            return c && String(c.id) === String(charId);
-        });
-
-        if (!currentChar) {
-            showNotification('Character not found.', 'error');
-            return Promise.resolve(false);
-        }
-
-        normaliseClassIds(currentChar);
-        currentChar.classIds.push(classId);
-
-        // ---- PHASE 3: PERSIST ----
-        var savePromise = MutationUtils.saveWithPromise();
-
-        return savePromise
-            .then(function() {
-                // ---- PHASE 4: LOG - failure-safe, persistence already succeeded ----
-                var charName = CharacterQueries.getDisplayName(currentChar);
-                try {
-                    if (ActivityLog && typeof ActivityLog.record === 'function') {
-                        ActivityLog.record('Added ' + charName + ' to class: ' + cls.name);
-                    }
-                } catch (logErr) {
-                    // Ignore logging errors
-                }
-
-                // ---- PHASE 5: UI COMMIT ----
-                var savedChar = CharacterQueries.getCharacterById(charId);
-                safeRefreshUI(savedChar);
-                showNotification('Character added to class successfully!', 'success');
-                return true;
-            })
-            .catch(function(err) {
-                // ---- PHASE 6: ROLLBACK ----
-                if (backup) {
-                    window.data = backup;
-                    var restoredChar = CharacterQueries.getCharacterById(charId);
-                    safeRefreshUI(restoredChar);
-                }
-                showNotification('Failed to add character to class. Please try again.', 'error');
-                return false;
+            return Promise.resolve({
+                success: false,
+                message: 'Class not found.'
             });
+        }
+
+        var classIds = getNormalisedClassIds(char);
+        if (!classIds.some(function(cid) { return String(cid) === String(classId); })) {
+            return Promise.resolve({
+                success: false,
+                message: 'Character is not in this class.'
+            });
+        }
+
+        var name = CharacterQueries.getDisplayName(char);
+
+        return MutationPipeline.performMutation({
+            validate: function(data) {
+                var currentChar = CharacterQueries.getCharacterById(charId);
+                if (!currentChar) {
+                    return {
+                        valid: false,
+                        message: 'Character no longer exists.'
+                    };
+                }
+
+                var currentClass = ClassesQueries.getClass(classId);
+                if (!currentClass) {
+                    return {
+                        valid: false,
+                        message: 'Class no longer exists.'
+                    };
+                }
+
+                var currentClassIds = getNormalisedClassIds(currentChar);
+                if (!currentClassIds.some(function(cid) { return String(cid) === String(classId); })) {
+                    return {
+                        valid: false,
+                        message: 'Character is not in this class.'
+                    };
+                }
+
+                return { valid: true };
+            },
+
+            mutate: function(data) {
+                var currentChar = data.characters.find(function(c) {
+                    return c && String(c.id) === String(charId);
+                });
+
+                if (!currentChar) {
+                    throw new Error('Character not found in data store.');
+                }
+
+                normaliseClassIds(currentChar);
+
+                var found = false;
+                currentChar.classIds = currentChar.classIds.filter(function(cid) {
+                    if (String(cid) === String(classId)) {
+                        found = true;
+                        return false;
+                    }
+                    return true;
+                });
+
+                if (!found) {
+                    throw new Error('Character is not in this class.');
+                }
+
+                return {
+                    characterId: charId,
+                    classId: classId,
+                    className: cls.name
+                };
+            },
+
+            logMessage: function(result) {
+                return 'Removed ' + name + ' from class: ' + cls.name;
+            },
+
+            successMessage: function(result) {
+                return 'Character removed from class successfully!';
+            },
+            failureMessage: 'Failed to remove character from class.'
+        });
     }
 
     // ============================================================
-    // ADD CLASS BY NAME - Fixed: Validates BEFORE creating class
+    // ADD CLASS BY NAME - Uses MutationPipeline
     // ============================================================
 
-    function addClassByName(name) {
+    /**
+     * Add a character to a class by class name.
+     * Creates the class if it doesn't exist.
+     * 
+     * @param {string} charId - Character ID
+     * @param {string} className - Class name
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     */
+    function addClassByName(charId, className) {
         if (!checkDependencies()) {
-            showNotification('Dependencies not loaded. Please refresh the page.', 'error');
-            return Promise.resolve(false);
+            return Promise.resolve({
+                success: false,
+                message: 'Dependencies not loaded. Please refresh the page.'
+            });
         }
 
-        var charId = getCurrentEditId();
         if (!charId) {
-            showNotification('No character selected.', 'error');
-            return Promise.resolve(false);
+            return Promise.resolve({
+                success: false,
+                message: 'Character ID is required.'
+            });
         }
+
+        if (!className || typeof className !== 'string' || className.trim() === '') {
+            return Promise.resolve({
+                success: false,
+                message: 'Class name is required.'
+            });
+        }
+
+        var trimmedName = className.trim();
 
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
-            showNotification('Character not found.', 'error');
-            return Promise.resolve(false);
+            return Promise.resolve({
+                success: false,
+                message: 'Character not found.'
+            });
         }
 
-        if (!name || typeof name !== 'string' || name.trim() === '') {
-            showNotification('Please enter a class name.', 'error');
-            return Promise.resolve(false);
-        }
-
-        var trimmedName = name.trim();
-
-        // ---- PHASE 1: VALIDATE CHARACTER STATE (READ-ONLY, NO MUTATION) ----
-        // Check if character is already in this class (using existing data)
         var existingClass = ClassesQueries.getClassByName(trimmedName);
+        var name = CharacterQueries.getDisplayName(char);
+
+        // Check if character already in this class
         if (existingClass) {
-            // Character is already in this class
-            var currentClassIds = getNormalisedClassIds(char);
-            if (currentClassIds.some(function(cid) { return String(cid) === String(existingClass.id); })) {
-                showNotification('Character is already in this class.', 'error');
-                return Promise.resolve(false);
+            var classIds = getNormalisedClassIds(char);
+            if (classIds.some(function(cid) { return String(cid) === String(existingClass.id); })) {
+                return Promise.resolve({
+                    success: false,
+                    message: 'Character is already in this class.'
+                });
             }
         }
 
-        // ---- PHASE 2: SNAPSHOT (BEFORE CREATING CLASS) ----
-        var data = window.data || {};
-        var backup = createSafeBackup(data);
-        if (!backup) {
-            showNotification('Unable to safely add class. Please try again.', 'error');
-            return Promise.resolve(false);
-        }
-
-        // ---- PHASE 3: FIND OR CREATE CLASS (NOW INSIDE THE TRANSACTION) ----
-        var cls = existingClass;
-        var classCreated = false;
-
-        if (!cls) {
-            // Use ClassesCore.createClass() - but we will NOT persist yet
-            // This creates the class in the candidate state
-            var result = ClassesCore.createClass(trimmedName);
-
-            if (result && result.success) {
-                cls = result.class || result.data;
-                classCreated = true;
-
-                // The class was added to data.classes, but we haven't persisted yet
-                // We'll handle persistence in the main save
-            } else {
-                // Rollback: restore backup since we created a class but failed
-                if (backup) {
-                    window.data = backup;
+        return MutationPipeline.performMutation({
+            validate: function(data) {
+                var currentChar = CharacterQueries.getCharacterById(charId);
+                if (!currentChar) {
+                    return {
+                        valid: false,
+                        message: 'Character no longer exists.'
+                    };
                 }
-                showNotification(result ? result.message : 'Failed to create class.', 'error');
-                return Promise.resolve(false);
-            }
-        }
 
-        // ---- PHASE 4: RE-VALIDATE CHARACTER (CLASS NOW EXISTS) ----
-        // Re-fetch character from the (potentially restored) data
-        var currentChar = CharacterQueries.getCharacterById(charId);
-        if (!currentChar) {
-            // Rollback: class was created but character is gone
-            if (classCreated && backup) {
-                window.data = backup;
-            }
-            showNotification('Character not found.', 'error');
-            return Promise.resolve(false);
-        }
-
-        var currentClassIds = getNormalisedClassIds(currentChar);
-        if (currentClassIds.some(function(cid) { return String(cid) === String(cls.id); })) {
-            // Class was created but character is already in it (shouldn't happen, but be safe)
-            if (classCreated && backup) {
-                // If we created the class and the character is somehow already in it,
-                // we should rollback the class creation
-                window.data = backup;
-            }
-            showNotification('Character is already in this class.', 'error');
-            return Promise.resolve(false);
-        }
-
-        // ---- PHASE 5: MUTATE ----
-        normaliseClassIds(currentChar);
-        currentChar.classIds.push(cls.id);
-
-        // ---- PHASE 6: PERSIST ----
-        var savePromise = MutationUtils.saveWithPromise();
-
-        return savePromise
-            .then(function() {
-                // ---- PHASE 7: LOG - failure-safe, persistence already succeeded ----
-                var charName = CharacterQueries.getDisplayName(currentChar);
-                try {
-                    if (ActivityLog && typeof ActivityLog.record === 'function') {
-                        ActivityLog.record('Added ' + charName + ' to class: ' + cls.name);
+                // Check if class exists and character is already in it
+                var currentClass = ClassesQueries.getClassByName(trimmedName);
+                if (currentClass) {
+                    var currentClassIds = getNormalisedClassIds(currentChar);
+                    if (currentClassIds.some(function(cid) { return String(cid) === String(currentClass.id); })) {
+                        return {
+                            valid: false,
+                            message: 'Character is already in this class.'
+                        };
                     }
-                } catch (logErr) {
-                    // Ignore logging errors
                 }
 
-                // ---- PHASE 8: UI COMMIT ----
-                addClassTag(cls.id, cls.name);
-                var savedChar = CharacterQueries.getCharacterById(charId);
-                safeRefreshUI(savedChar);
-                showNotification('Character added to class successfully!', 'success');
-                return true;
-            })
-            .catch(function(err) {
-                // ---- PHASE 9: ROLLBACK - restore backup ----
-                if (backup) {
-                    window.data = backup;
-                    var restoredChar = CharacterQueries.getCharacterById(charId);
-                    safeRefreshUI(restoredChar);
+                return { valid: true };
+            },
+
+            mutate: function(data) {
+                // Find or create class (in-state, non-persisting)
+                var cls = ClassesQueries.getClassByName(trimmedName);
+
+                if (!cls) {
+                    var result = ClassesCore.createClassInState(data, trimmedName);
+                    if (!result || !result.success) {
+                        throw new Error(result ? result.message : 'Failed to create class.');
+                    }
+                    cls = result.class;
                 }
-                showNotification('Failed to add character to class. Please try again.', 'error');
-                return false;
-            });
+
+                // Add character to class
+                var currentChar = data.characters.find(function(c) {
+                    return c && String(c.id) === String(charId);
+                });
+
+                if (!currentChar) {
+                    throw new Error('Character not found in data store.');
+                }
+
+                normaliseClassIds(currentChar);
+
+                // Prevent duplicate
+                if (currentChar.classIds.some(function(cid) { return String(cid) === String(cls.id); })) {
+                    throw new Error('Character is already in this class.');
+                }
+
+                currentChar.classIds.push(cls.id);
+
+                return {
+                    characterId: charId,
+                    classId: cls.id,
+                    className: cls.name,
+                    classCreated: !existingClass
+                };
+            },
+
+            logMessage: function(result) {
+                var action = result.classCreated ? 'created and added to' : 'added to';
+                return action + ' class "' + result.className + '" for ' + name;
+            },
+
+            successMessage: function(result) {
+                var action = result.classCreated ? 'created and added to' : 'added to';
+                return 'Character ' + action + ' class "' + result.className + '"!';
+            },
+            failureMessage: 'Failed to add character to class.'
+        });
     }
 
     // ============================================================
-    // REMOVE FROM CLASS - Selector-based, XSS-safe
+    // BULK OPERATIONS
     // ============================================================
 
-    function removeFromClass() {
+    /**
+     * Remove a character from all classes.
+     * 
+     * @param {string} charId - Character ID
+     * @returns {Promise<{ success: boolean, count?: number, message?: string }>}
+     */
+    function removeFromAllClasses(charId) {
         if (!checkDependencies()) {
-            showNotification('Dependencies not loaded. Please refresh the page.', 'error');
-            return Promise.resolve(false);
+            return Promise.resolve({
+                success: false,
+                message: 'Dependencies not loaded. Please refresh the page.'
+            });
         }
 
-        var charId = getCurrentEditId();
         if (!charId) {
-            showNotification('No character selected.', 'error');
-            return Promise.resolve(false);
+            return Promise.resolve({
+                success: false,
+                message: 'Character ID is required.'
+            });
         }
 
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
-            showNotification('Character not found.', 'error');
-            return Promise.resolve(false);
+            return Promise.resolve({
+                success: false,
+                message: 'Character not found.'
+            });
         }
 
-        // Use pure function for validation - no mutation
         var classIds = getNormalisedClassIds(char);
-
         if (classIds.length === 0) {
-            showNotification('Character is not in any classes.', 'error');
-            return Promise.resolve(false);
+            return Promise.resolve({
+                success: true,
+                count: 0,
+                message: 'Character is not in any classes.'
+            });
         }
 
-        // Get currently assigned classes with display names
-        var classes = ClassesQueries.getClasses();
-        var assignedClasses = classIds.map(function(cid) {
-            var cls = classes.find(function(c) { return String(c.id) === String(cid); });
-            return cls ? { id: cls.id, name: cls.name } : null;
-        }).filter(function(c) { return c; });
+        var name = CharacterQueries.getDisplayName(char);
 
-        if (assignedClasses.length === 0) {
-            showNotification('Character is not in any valid classes.', 'error');
-            return Promise.resolve(false);
-        }
-
-        // Build selector UI - XSS-safe with DOM APIs
-        var modal = document.createElement('div');
-        modal.className = 'modal';
-        modal.style.display = 'flex';
-
-        var header = document.createElement('div');
-        header.className = 'modal-header';
-
-        var title = document.createElement('h3');
-        title.textContent = 'Remove from Class';
-        header.appendChild(title);
-
-        var closeBtn = document.createElement('button');
-        closeBtn.className = 'close-modal';
-        closeBtn.id = 'remove-class-close';
-        closeBtn.textContent = '×';
-        header.appendChild(closeBtn);
-
-        var body = document.createElement('div');
-        body.className = 'modal-body';
-
-        var info = document.createElement('p');
-        info.style.cssText = 'color:var(--text-dim);font-size:0.85rem;margin-bottom:12px;';
-        var charName = CharacterQueries.getDisplayName(char);
-        info.textContent = 'Select a class to remove ' + charName + ' from:';
-        body.appendChild(info);
-
-        var formGroup = document.createElement('div');
-        formGroup.className = 'form-group';
-
-        var select = document.createElement('select');
-        select.id = 'remove-class-select';
-        select.style.cssText = 'width:100%;padding:8px;';
-
-        assignedClasses.forEach(function(c) {
-            var option = document.createElement('option');
-            option.value = c.id;
-            option.textContent = c.name;
-            select.appendChild(option);
-        });
-
-        formGroup.appendChild(select);
-        body.appendChild(formGroup);
-
-        var actions = document.createElement('div');
-        actions.className = 'form-actions';
-
-        var cancelBtn = document.createElement('button');
-        cancelBtn.type = 'button';
-        cancelBtn.id = 'remove-class-cancel';
-        cancelBtn.className = 'secondary';
-        cancelBtn.textContent = 'Cancel';
-        actions.appendChild(cancelBtn);
-
-        var confirmBtn = document.createElement('button');
-        confirmBtn.type = 'button';
-        confirmBtn.id = 'remove-class-confirm';
-        confirmBtn.className = 'danger';
-        confirmBtn.textContent = 'Remove';
-        actions.appendChild(confirmBtn);
-
-        body.appendChild(actions);
-
-        var content = document.createElement('div');
-        content.className = 'modal-content small';
-        content.appendChild(header);
-        content.appendChild(body);
-        modal.appendChild(content);
-
-        document.body.appendChild(modal);
-
-        return new Promise(function(resolve) {
-            function cleanup() {
-                if (modal.parentNode) modal.remove();
-            }
-
-            closeBtn.onclick = function() {
-                cleanup();
-                resolve(false);
-            };
-
-            cancelBtn.onclick = function() {
-                cleanup();
-                resolve(false);
-            };
-
-            modal.addEventListener('click', function(e) {
-                if (e.target === modal) {
-                    cleanup();
-                    resolve(false);
+        return MutationPipeline.performMutation({
+            validate: function(data) {
+                var currentChar = CharacterQueries.getCharacterById(charId);
+                if (!currentChar) {
+                    return {
+                        valid: false,
+                        message: 'Character no longer exists.'
+                    };
                 }
-            });
+                return { valid: true };
+            },
 
-            confirmBtn.onclick = function() {
-                var selectEl = document.getElementById('remove-class-select');
-                var selectedId = selectEl ? selectEl.value : null;
-                cleanup();
+            mutate: function(data) {
+                var currentChar = data.characters.find(function(c) {
+                    return c && String(c.id) === String(charId);
+                });
 
-                if (selectedId) {
-                    removeClassById(charId, selectedId)
-                        .then(resolve)
-                        .catch(function() { resolve(false); });
-                } else {
-                    resolve(false);
+                if (!currentChar) {
+                    throw new Error('Character not found in data store.');
                 }
-            };
+
+                var count = getNormalisedClassIds(currentChar).length;
+                currentChar.classIds = [];
+
+                return { removedCount: count };
+            },
+
+            logMessage: function(result) {
+                return 'Removed ' + result.removedCount + ' classes from ' + name;
+            },
+
+            successMessage: function(result) {
+                return 'Removed ' + result.removedCount + ' classes from ' + name + '.';
+            },
+            failureMessage: 'Failed to remove classes.'
         });
     }
 
     // ============================================================
-    // ADD CLASS TAG - IDEMPOTENT, XSS-SAFE, NO EVENT BINDING
+    // QUERY HELPERS (delegated to ClassesQueries)
     // ============================================================
 
-    function addClassTag(classId, className) {
-        var container = document.getElementById('class-tag-container');
-        if (!container) return;
-
-        var emptyMsg = container.querySelector('span[style*="text-dim"]');
-        if (emptyMsg) emptyMsg.remove();
-
-        var existing = Array.from(container.querySelectorAll('[data-class-id]')).find(function(tag) {
-            return String(tag.dataset.classId) === String(classId);
-        });
-        if (existing) return;
-
-        var tag = document.createElement('span');
-        tag.style.cssText = 'background:var(--accent-soft);padding:2px 8px;border-radius:10px;font-size:0.7rem;border:1px solid var(--accent);display:inline-flex;align-items:center;gap:4px;';
-        tag.dataset.classId = classId;
-
-        var nameSpan = document.createElement('span');
-        nameSpan.textContent = className;
-
-        var button = document.createElement('button');
-        button.className = 'remove-class-tag';
-        button.dataset.id = classId;
-        button.textContent = '✕';
-        button.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;';
-        button.setAttribute('aria-label', 'Remove class ' + className);
-
-        tag.appendChild(nameSpan);
-        tag.appendChild(button);
-        container.appendChild(tag);
-    }
-
-    // ============================================================
-    // CLASS TAG HELPERS
-    // ============================================================
-
-    function getClassTags() {
-        var ids = [];
-        var container = document.getElementById('class-tag-container');
-        if (container) {
-            container.querySelectorAll('[data-class-id]').forEach(function(tag) {
-                ids.push(tag.dataset.classId);
-            });
-        }
-        return ids;
-    }
-
-    function clearClassTags() {
-        var container = document.getElementById('class-tag-container');
-        if (!container) return;
-
-        container.textContent = '';
-        var empty = document.createElement('span');
-        empty.style.cssText = 'color:var(--text-dim);font-size:0.7rem;padding:4px;';
-        empty.textContent = 'No classes assigned';
-        container.appendChild(empty);
-    }
-
-    function populateClassTags(classIds) {
-        clearClassTags();
-        if (!classIds || classIds.length === 0) return;
-
-        var classes = ClassesQueries.getClasses();
-        classIds.forEach(function(cid) {
-            var cls = classes.find(function(c) { return String(c.id) === String(cid); });
-            if (cls) {
-                addClassTag(cls.id, cls.name);
-            }
-        });
-    }
-
-    // ============================================================
-    // UI HELPERS
-    // ============================================================
-
-    function populateAcademicClassSelector(char) {
-        var select = document.getElementById('academic-class-select');
-        if (!select) return;
-
-        var classes = ClassesQueries.getClasses();
-
-        select.innerHTML = '<option value="">Select a class...</option>';
-
-        var existingClassIds = (char && Array.isArray(char.classIds)) ? char.classIds : [];
-
-        classes.forEach(function(cls) {
-            var isAssigned = existingClassIds.some(function(cid) {
-                return String(cid) === String(cls.id);
-            });
-            if (!isAssigned) {
-                var option = document.createElement('option');
-                option.value = cls.id;
-                option.textContent = cls.name;
-                select.appendChild(option);
-            }
-        });
-
-        select.value = '';
-    }
-
-    function updateCurrentClassesDisplay(char) {
-        var display = document.getElementById('current-classes-list');
-        if (!display) return;
-
-        var classIds = (char && Array.isArray(char.classIds)) ? char.classIds : [];
-        if (classIds.length === 0) {
-            display.textContent = 'None';
-            return;
-        }
-
-        var classes = ClassesQueries.getClasses();
-        var names = [];
-        classIds.forEach(function(cid) {
-            var cls = classes.find(function(c) { return String(c.id) === String(cid); });
-            if (cls) names.push(cls.name);
-        });
-        display.textContent = names.length > 0 ? names.join(', ') : 'None';
-    }
-
-    // ============================================================
-    // QUERY FUNCTIONS - Delegates to ClassesQueries
-    // ============================================================
-
+    /**
+     * Get classes for a character.
+     * Delegated to ClassesQueries.
+     */
     function getCharacterClasses(char) {
         return ClassesQueries.getCharacterClasses(char);
     }
 
+    /**
+     * Get class names for a character.
+     * Delegated to ClassesQueries.
+     */
     function getCharacterClassNames(char) {
         return ClassesQueries.getCharacterClassNames(char);
     }
 
+    /**
+     * Get characters by class.
+     * Delegated to ClassesQueries.
+     */
     function getCharactersByClass(classId) {
         return ClassesQueries.getCharactersByClass(classId);
     }
 
+    /**
+     * Get available students for a class.
+     * Delegated to ClassesQueries.
+     */
     function getAvailableStudentsForClass(classId, week) {
         return ClassesQueries.getAvailableStudentsForClass(classId, week);
     }
@@ -907,17 +652,9 @@
     window.CharacterClasses = {
         // Mutations
         addToClass: addToClass,
-        removeFromClass: removeFromClass,
         removeClassById: removeClassById,
         addClassByName: addClassByName,
-
-        // Rendering
-        populateAcademicClassSelector: populateAcademicClassSelector,
-        updateCurrentClassesDisplay: updateCurrentClassesDisplay,
-        addClassTag: addClassTag,
-        getClassTags: getClassTags,
-        clearClassTags: clearClassTags,
-        populateClassTags: populateClassTags,
+        removeFromAllClasses: removeFromAllClasses,
 
         // Queries (delegated to ClassesQueries)
         getCharacterClasses: getCharacterClasses,
@@ -925,16 +662,9 @@
         getCharactersByClass: getCharactersByClass,
         getAvailableStudentsForClass: getAvailableStudentsForClass,
 
-        // UI Refresh
-        refreshUI: safeRefreshUI,
-
-        // State access (delegated to index)
-        getCurrentEditId: function() {
-            return getCurrentEditId();
-        },
-        setCurrentEditId: function(id) {
-            return setCurrentEditId(id);
-        }
+        // Helpers
+        normaliseClassIds: normaliseClassIds,
+        getNormalisedClassIds: getNormalisedClassIds
     };
 
 })();

@@ -16,8 +16,9 @@
  *   - Does not mutate application/domain data
  *   - Does not persist notifications
  *   - Has no domain knowledge
- *   - No DOM dependencies (direct DOM manipulation only)
+ *   - Self-contained (direct DOM manipulation only)
  *   - Uses IdUtils for notification IDs (SINGLE SOURCE OF TRUTH)
+ *   - No "pure" claims - this is a UI subsystem
  * 
  * DEPENDENCIES:
  *   - window.IdUtils (for notification IDs)
@@ -50,10 +51,29 @@
     window.__notificationLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
     // ============================================================
 
     var IdUtils = window.IdUtils;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
+
+    function checkDependencies() {
+        var missing = [];
+
+        if (!IdUtils || typeof IdUtils.generateId !== 'function') {
+            missing.push('IdUtils.generateId');
+        }
+
+        if (missing.length > 0) {
+            console.warn('[NotificationSystem] Missing dependencies:', missing.join(', '));
+            return false;
+        }
+
+        return true;
+    }
 
     // ============================================================
     // CONSTANTS
@@ -98,6 +118,7 @@
     var _queue = [];
     var _activeNotifications = [];
     var _nextId = 1;
+    var _initialized = false;
 
     // ============================================================
     // NOTIFICATION IDENTITY
@@ -107,7 +128,7 @@
         if (IdUtils && typeof IdUtils.generateId === 'function') {
             return IdUtils.generateId('notif');
         }
-        // Emergency fallback (should never be reached)
+        // Emergency fallback (should never be reached if checkDependencies passes)
         return 'notif_' + (_nextId++);
     }
 
@@ -286,7 +307,7 @@
         icon.textContent = typeConfig.icon;
         notification.appendChild(icon);
 
-        // Content
+        // Content (textContent is safe - no escaping needed)
         var content = document.createElement('span');
         content.className = 'notification-content';
         content.textContent = item.message;
@@ -313,6 +334,7 @@
 
         notification._timer = timer;
         notification._dismissed = false;
+        notification._id = notificationId;
 
         return notification;
     }
@@ -322,10 +344,18 @@
     // ============================================================
 
     function dismissNotification(notificationId) {
-        // Find the notification by ID
-        var notification = _activeNotifications.find(function(n) {
-            return n.dataset && n.dataset.notificationId === notificationId;
-        });
+        // Find the notification by ID in active list
+        var notification = null;
+        var index = -1;
+
+        for (var i = 0; i < _activeNotifications.length; i++) {
+            var n = _activeNotifications[i];
+            if (n && n._id === notificationId) {
+                notification = n;
+                index = i;
+                break;
+            }
+        }
 
         if (!notification || notification._dismissed) {
             return;
@@ -341,24 +371,25 @@
         }
 
         // Remove from active list
-        var index = _activeNotifications.indexOf(notification);
         if (index !== -1) {
             _activeNotifications.splice(index, 1);
         }
 
         // Find the queue item and execute callback
-        var queueIndex = _queue.findIndex(function(item) {
-            return item.id === notificationId;
-        });
-
+        var queueIndex = -1;
         var onDismiss = null;
-        if (queueIndex !== -1) {
-            var item = _queue[queueIndex];
-            onDismiss = item.onDismiss;
-            // Remove from queue if it was still there
-            if (queueIndex !== -1) {
-                _queue.splice(queueIndex, 1);
+
+        for (var j = 0; j < _queue.length; j++) {
+            if (_queue[j] && _queue[j].id === notificationId) {
+                queueIndex = j;
+                onDismiss = _queue[j].onDismiss;
+                break;
             }
+        }
+
+        // Remove from queue if found
+        if (queueIndex !== -1) {
+            _queue.splice(queueIndex, 1);
         }
 
         // Animate out
@@ -378,7 +409,7 @@
             try {
                 onDismiss();
             } catch (e) {
-                // Ignore callback errors
+                // Ignore callback errors - notification dismissal should not throw
             }
         }
     }
@@ -426,6 +457,34 @@
     }
 
     // ============================================================
+    // INITIALIZATION
+    // ============================================================
+
+    function init() {
+        if (_initialized) return;
+
+        if (!checkDependencies()) {
+            console.warn('[NotificationSystem] Dependencies not met - notifications may not work correctly.');
+        }
+
+        ensureContainerStyles();
+        getContainer();
+        _initialized = true;
+    }
+
+    function destroy() {
+        // Clear all notifications
+        clearNotifications();
+
+        // Remove container
+        if (_container && _container.parentNode) {
+            _container.parentNode.removeChild(_container);
+        }
+        _container = null;
+        _initialized = false;
+    }
+
+    // ============================================================
     // PUBLIC API
     // ============================================================
 
@@ -440,13 +499,12 @@
      */
     function notify(message, type, duration, onDismiss) {
         if (!message) {
-            console.warn('Notification: No message provided.');
+            console.warn('[NotificationSystem] No message provided.');
             return null;
         }
 
-        // Ensure container and styles exist
-        ensureContainerStyles();
-        getContainer();
+        // Ensure container exists
+        init();
 
         // Generate unique ID for this notification
         var id = generateNotificationId();
@@ -468,11 +526,25 @@
                 dismissNotification(id);
             },
             isDismissed: function() {
-                // Check if notification is still in queue or active
-                var inQueue = _queue.some(function(q) { return q.id === id; });
-                var inActive = _activeNotifications.some(function(n) {
-                    return n.dataset && n.dataset.notificationId === id && !n._dismissed;
-                });
+                // Check if notification is still in queue
+                var inQueue = false;
+                for (var i = 0; i < _queue.length; i++) {
+                    if (_queue[i] && _queue[i].id === id) {
+                        inQueue = true;
+                        break;
+                    }
+                }
+
+                // Check if notification is still active
+                var inActive = false;
+                for (var j = 0; j < _activeNotifications.length; j++) {
+                    var n = _activeNotifications[j];
+                    if (n && n._id === id && !n._dismissed) {
+                        inActive = true;
+                        break;
+                    }
+                }
+
                 return !inQueue && !inActive;
             }
         };
@@ -508,30 +580,43 @@
 
     /**
      * Clear all active notifications.
+     * 
+     * @param {boolean} callCallbacks - Whether to call onDismiss for cleared notifications
      */
-    function clearNotifications() {
+    function clearNotifications(callCallbacks) {
+        callCallbacks = callCallbacks !== false;
+
         // Clear queue
         var queuedItems = _queue.slice();
         _queue = [];
 
         // Dismiss all active notifications
         var activeCopy = _activeNotifications.slice();
+        _activeNotifications = [];
+
         activeCopy.forEach(function(notification) {
-            if (notification.dataset && notification.dataset.notificationId) {
-                dismissNotification(notification.dataset.notificationId);
+            if (notification._timer) {
+                clearTimeout(notification._timer);
+                notification._timer = null;
+            }
+
+            if (notification.parentNode) {
+                notification.parentNode.removeChild(notification);
             }
         });
 
-        // Call onDismiss for queued items that were cleared
-        queuedItems.forEach(function(item) {
-            if (typeof item.onDismiss === 'function') {
-                try {
-                    item.onDismiss();
-                } catch (e) {
-                    // Ignore callback errors
+        // Call onDismiss for queued items if requested
+        if (callCallbacks) {
+            queuedItems.forEach(function(item) {
+                if (typeof item.onDismiss === 'function') {
+                    try {
+                        item.onDismiss();
+                    } catch (e) {
+                        // Ignore callback errors
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     /**
@@ -542,7 +627,7 @@
     }
 
     /**
-     * Get the notification container.
+     * Get the notification container element.
      */
     function getNotificationContainer() {
         return getContainer();
@@ -570,6 +655,13 @@
     function getDefaultDuration(type) {
         var config = TYPES[type];
         return config ? config.defaultDuration : DEFAULT_DURATION;
+    }
+
+    /**
+     * Check if the notification system is initialized.
+     */
+    function isInitialized() {
+        return _initialized;
     }
 
     // ============================================================
@@ -604,6 +696,11 @@
         getMaxNotifications: getMaxNotifications,
         getDefaultDuration: getDefaultDuration,
 
+        // Lifecycle
+        init: init,
+        destroy: destroy,
+        isInitialized: isInitialized,
+
         // Compatibility
         showToast: showToast,
 
@@ -619,13 +716,9 @@
 
     // Auto-init container
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        ensureContainerStyles();
-        getContainer();
+        init();
     } else {
-        document.addEventListener('DOMContentLoaded', function() {
-            ensureContainerStyles();
-            getContainer();
-        });
+        document.addEventListener('DOMContentLoaded', init);
     }
 
 })();

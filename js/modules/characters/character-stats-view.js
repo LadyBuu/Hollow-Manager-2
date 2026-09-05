@@ -13,25 +13,31 @@
  *   - Opening the special move editor modal
  * 
  * IMPORTANT:
- *   - This module is for RENDERING only - all domain logic is in character-stats.js
+ *   - RENDER ONLY - all domain logic is in character-stats.js
  *   - No data mutation
  *   - No persistence calls
  *   - Uses CharacterConstants for definitions
  *   - Uses CharacterQueries for character data
  *   - Uses CharacterStats for domain logic
- *   - Uses CharacterGenerator for random generation
+ *   - Uses FormUtils for form field operations
  *   - Uses DomUtils for safe DOM operations
- *   - USES NotificationSystem for notifications
- *   - USES Modal for modal lifecycle management
+ *   - Uses Modal for modal lifecycle
+ *   - All callbacks are delegated to CharacterEvents
  * 
  * DEPENDENCIES:
  *   - window.CharacterConstants (from character-constants.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.CharacterStats (from character-stats.js) - MANDATORY
- *   - window.CharacterGenerator (from character-generator.js) - MANDATORY
+ *   - window.FormUtils (from form-utils.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
- *   - window.NotificationSystem (from notification.js) - MANDATORY
  *   - window.Modal (from modal.js) - MANDATORY
+ *   - window.MagicConstants (from magic-constants.js) - MANDATORY
+ * 
+ * USAGE:
+ *   var CSV = window.CharacterStatsView;
+ *   CSV.renderStatsTab(char);
+ *   CSV.renderSpecialMoves('physical-moves-list', moves, 'physical');
+ *   CSV.openEditModal(charId, 'physical', index);
  */
 
 (function() {
@@ -41,31 +47,36 @@
     if (window.__characterStatsViewLoaded) {
         return;
     }
+    window.__characterStatsViewLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - NO FALLBACKS
+    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
     // ============================================================
 
     var CharacterConstants = window.CharacterConstants;
     var CharacterQueries = window.CharacterQueries;
     var CharacterStats = window.CharacterStats;
-    var CharacterGenerator = window.CharacterGenerator;
+    var MagicConstants = window.MagicConstants;
+    var FormUtils = window.FormUtils;
     var DomUtils = window.DomUtils;
-    var NotificationSystem = window.NotificationSystem;
     var Modal = window.Modal;
 
     // ============================================================
-    // CONSTANTS - From CharacterConstants
+    // CONSTANTS - From CharacterConstants (MANDATORY)
     // ============================================================
 
-    var MAGIC_MAX = CharacterConstants ? CharacterConstants.MAGIC_MAX : 10;
-    var STAT_MIN = CharacterConstants ? CharacterConstants.STAT_MIN : 1;
-    var STAT_MAX = CharacterConstants ? CharacterConstants.STAT_MAX : 50;
-    var STAT_DEFAULT = CharacterConstants ? CharacterConstants.STAT_DEFAULT : 10;
-    var STAT_KEYS = CharacterConstants ? CharacterConstants.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-    var MAGIC_TYPE_KEYS = CharacterConstants ? CharacterConstants.MAGIC_TYPE_KEYS : [];
-    var MAGIC_CATEGORIES = CharacterConstants ? CharacterConstants.MAGIC_CATEGORIES : {};
-    var CLASS_DEFINITIONS = CharacterConstants ? CharacterConstants.CLASS_DEFINITIONS : [];
+    var STAT_KEYS = CharacterConstants.STAT_KEYS;
+    var STAT_MIN = CharacterConstants.STAT_MIN;
+    var STAT_MAX = CharacterConstants.STAT_MAX;
+    var STAT_DEFAULT = CharacterConstants.STAT_DEFAULT;
+    var STAT_DEFINITIONS = CharacterConstants.STAT_DEFINITIONS;
+    var MAGIC_MAX = CharacterConstants.MAGIC_MAX;
+    var MAGIC_TYPES = CharacterConstants.MAGIC_TYPES;
+    var MAGIC_CATEGORIES = CharacterConstants.MAGIC_CATEGORIES;
+    var CLASS_DEFINITIONS = CharacterConstants.CLASS_DEFINITIONS;
+    var MAX_SPECIAL_MOVES = CharacterConstants.MAX_SPECIAL_MOVES;
+    var MAX_MOVE_NAME_LENGTH = CharacterConstants.MAX_MOVE_NAME_LENGTH;
+    var MAX_MOVE_DESCRIPTION_LENGTH = CharacterConstants.MAX_MOVE_DESCRIPTION_LENGTH;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -86,20 +97,20 @@
             missing.push('CharacterStats');
         }
 
-        if (!CharacterGenerator) {
-            missing.push('CharacterGenerator');
+        if (!FormUtils || typeof FormUtils.setField !== 'function') {
+            missing.push('FormUtils.setField');
         }
 
         if (!DomUtils || typeof DomUtils.createElement !== 'function') {
-            missing.push('DomUtils');
-        }
-
-        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
-            missing.push('NotificationSystem');
+            missing.push('DomUtils.createElement');
         }
 
         if (!Modal || typeof Modal.createModal !== 'function') {
-            missing.push('Modal');
+            missing.push('Modal.createModal');
+        }
+
+        if (!MagicConstants) {
+            missing.push('MagicConstants');
         }
 
         if (missing.length > 0) {
@@ -110,39 +121,23 @@
     }
 
     // ============================================================
-    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
+    // HELPER - Get values from DOM using FormUtils
     // ============================================================
 
-    function showNotification(message, type) {
-        type = type || 'info';
-        NotificationSystem.notify(message, type);
+    function getStatValue(key) {
+        var val = FormUtils.getField('char-' + key);
+        if (val === null || val === undefined) return STAT_DEFAULT;
+        var num = Number(val);
+        if (isNaN(num)) return STAT_DEFAULT;
+        return Math.max(STAT_MIN, Math.min(STAT_MAX, num));
     }
 
-    // ============================================================
-    // HELPERS
-    // ============================================================
-
-    function getStatFromDOM(id) {
-        var el = document.getElementById(id);
-        if (!el) return STAT_DEFAULT;
-        var val = parseInt(el.value, 10);
-        if (isNaN(val)) return STAT_DEFAULT;
-        return Math.max(STAT_MIN, Math.min(STAT_MAX, val));
-    }
-
-    function getMagicFromDOM(id) {
-        var el = document.getElementById(id);
-        if (!el) return 0;
-        var val = parseInt(el.value, 10);
-        if (isNaN(val)) return 0;
-        return Math.max(0, Math.min(MAGIC_MAX, val));
-    }
-
-    function setFieldValue(id, value) {
-        var el = document.getElementById(id);
-        if (el) {
-            el.value = value !== undefined && value !== null ? value : '';
-        }
+    function getMagicValue(key) {
+        var val = FormUtils.getField('magic-' + key);
+        if (val === null || val === undefined) return 0;
+        var num = Number(val);
+        if (isNaN(num)) return 0;
+        return Math.max(0, Math.min(MAGIC_MAX, num));
     }
 
     // ============================================================
@@ -156,11 +151,12 @@
 
         return `
             <div class="stat-input-group" style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px;">
-                ${STAT_KEYS.map(function(stat) {
+                ${STAT_KEYS.map(function(key) {
+                    var def = STAT_DEFINITIONS[key] || {};
                     return `
                         <div class="form-group">
-                            <label style="font-size:0.55rem;text-align:center;display:block;">${stat.toUpperCase()}</label>
-                            <input type="number" id="char-${stat}" min="${STAT_MIN}" max="${STAT_MAX}" value="10" 
+                            <label style="font-size:0.55rem;text-align:center;display:block;">${def.abbreviation || key.toUpperCase()}</label>
+                            <input type="number" id="char-${key}" min="${STAT_MIN}" max="${STAT_MAX}" value="10" 
                                    style="text-align:center;font-size:0.75rem;padding:4px;width:100%;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;" />
                         </div>
                     `;
@@ -173,9 +169,6 @@
                     <select id="manual-class-select" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;">
                         <option value="">Auto-suggest</option>
                     </select>
-                    <button type="button" id="apply-class-btn" class="small primary" style="font-size:0.6rem;padding:2px 8px;">Apply Class</button>
-                    <button type="button" id="recalculate-class-btn" class="small secondary" style="font-size:0.6rem;padding:2px 8px;">Recalc</button>
-                    <button type="button" id="random-stats-btn" class="small secondary" style="font-size:0.6rem;padding:2px 8px;">Random</button>
                 </div>
             </div>
             <div id="class-description-display" style="margin-top:6px;padding:6px 10px;background:var(--panel-alt);border-radius:4px;font-size:0.7rem;color:var(--text-dim);border-left:3px solid var(--accent);">
@@ -192,28 +185,25 @@
     function getMagicTabHTML() {
         var magicHTML = '';
         var categories = ['elemental', 'body', 'aether'];
-        var categoryLabels = {
-            'elemental': { label: 'Elemental', color: 'var(--accent)' },
-            'body': { label: 'Body', color: 'var(--danger)' },
-            'aether': { label: 'Aether', color: 'var(--info)' }
-        };
-        var categoryButtons = {
-            'elemental': 'random-elemental-btn',
-            'body': 'random-body-btn',
-            'aether': 'random-aether-btn'
+        var categoryColors = {
+            'elemental': 'var(--accent)',
+            'body': 'var(--danger)',
+            'aether': 'var(--info)'
         };
 
         magicHTML += '<div class="magic-stats-grid" style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-top:12px;">';
 
         categories.forEach(function(cat) {
-            var types = getMagicCategoryTypes(cat);
+            var types = MagicConstants.getCategoryTypes(cat) || [];
+            var catLabel = MagicConstants.getCategoryLabel(cat) || cat;
+
             magicHTML += '<div class="form-group" style="grid-column:1/-1;margin:6px 0 2px 0;display:flex;align-items:center;gap:8px;">';
-            magicHTML += '<label style="color:' + categoryLabels[cat].color + ';font-weight:600;font-size:0.7rem;">' + categoryLabels[cat].label + '</label>';
-            magicHTML += '<button type="button" id="' + categoryButtons[cat] + '" class="small secondary" style="font-size:0.5rem;padding:1px 6px;">Random</button>';
+            magicHTML += '<label style="color:' + categoryColors[cat] + ';font-weight:600;font-size:0.7rem;">' + catLabel + '</label>';
+            magicHTML += '<button type="button" id="random-' + cat + '-btn" class="small secondary" style="font-size:0.5rem;padding:1px 6px;">Random</button>';
             magicHTML += '</div>';
 
             types.forEach(function(key) {
-                var label = key.charAt(0).toUpperCase() + key.slice(1);
+                var label = MagicConstants.getTypeLabel(key) || key;
                 magicHTML += `
                     <div class="form-group">
                         <label style="font-size:0.55rem;text-align:center;display:block;">${label}</label>
@@ -234,8 +224,6 @@
                     <option value="">Auto-suggest</option>
                     ${getMagicClassOptionsHTML()}
                 </select>
-                <button type="button" id="apply-magic-class-btn" class="small primary" style="font-size:0.6rem;padding:2px 8px;">Apply Class</button>
-                <button type="button" id="recalculate-magic-class-btn" class="small secondary" style="font-size:0.6rem;padding:2px 8px;">Recalc</button>
             </div>
             <div class="magic-power-display" style="margin-top:6px;font-size:0.7rem;color:var(--text-dim);">
                 Magic Power: <span id="magic-power-display-text">☆☆☆☆☆ (0/100) - Untrained</span>
@@ -247,37 +235,37 @@
     }
 
     // ============================================================
-    // MAGIC CLASS OPTIONS
+    // MAGIC CLASS OPTIONS HTML
     // ============================================================
 
     function getMagicClassOptionsHTML() {
         return `
             <optgroup label="Elemental Magic">
-                <option value="elementalist">Elementalist (General)</option>
-                <option value="geomancer">Geomancer (Earth)</option>
-                <option value="hydromancer">Hydromancer (Water)</option>
-                <option value="pyromancer">Pyromancer (Fire)</option>
-                <option value="aeromancer">Aeromancer (Air)</option>
-                <option value="ferromancer">Ferromancer (Metal)</option>
-                <option value="dendromancer">Dendromancer (Wood)</option>
+                <option value="Elementalist">Elementalist (General)</option>
+                <option value="Geomancer">Geomancer (Earth)</option>
+                <option value="Hydromancer">Hydromancer (Water)</option>
+                <option value="Pyromancer">Pyromancer (Fire)</option>
+                <option value="Aeromancer">Aeromancer (Air)</option>
+                <option value="Ferromancer">Ferromancer (Metal)</option>
+                <option value="Dendromancer">Dendromancer (Wood)</option>
             </optgroup>
             <optgroup label="Body Magic">
-                <option value="body_mage">Body Mage (General)</option>
-                <option value="hemomancer">Hemomancer (Blood)</option>
-                <option value="osteomancer">Osteomancer (Bone)</option>
-                <option value="psychomancer">Psychomancer (Mind)</option>
-                <option value="morphomancer">Morphomancer (Morphic)</option>
-                <option value="vitalmancer">Vitalmancer (Life)</option>
-                <option value="necromancer">Necromancer (Death)</option>
+                <option value="Body Mage">Body Mage (General)</option>
+                <option value="Hemomancer">Hemomancer (Blood)</option>
+                <option value="Osteomancer">Osteomancer (Bone)</option>
+                <option value="Psychomancer">Psychomancer (Mind)</option>
+                <option value="Morphomancer">Morphomancer (Morphic)</option>
+                <option value="Vitalmancer">Vitalmancer (Life)</option>
+                <option value="Necromancer">Necromancer (Death)</option>
             </optgroup>
             <optgroup label="Aether Magic">
-                <option value="aether_mage">Aether Mage (General)</option>
-                <option value="spatiomancer">Spatiomancer (Space)</option>
-                <option value="chronomancer">Chronomancer (Time)</option>
-                <option value="dimensionist">Dimensionist (Dimension)</option>
-                <option value="voidmancer">Voidmancer (Void)</option>
-                <option value="reality_weaver">Reality Weaver (Reality)</option>
-                <option value="transference_mage">Transference Mage (Transference)</option>
+                <option value="Aether Mage">Aether Mage (General)</option>
+                <option value="Spatiomancer">Spatiomancer (Space)</option>
+                <option value="Chronomancer">Chronomancer (Time)</option>
+                <option value="Dimensionist">Dimensionist (Dimension)</option>
+                <option value="Voidmancer">Voidmancer (Void)</option>
+                <option value="Reality Weaver">Reality Weaver (Reality)</option>
+                <option value="Transference Mage">Transference Mage (Transference)</option>
             </optgroup>
         `;
     }
@@ -352,7 +340,7 @@
     }
 
     // ============================================================
-    // UI UPDATE FUNCTIONS
+    // UI UPDATE FUNCTIONS - Render only, no domain logic
     // ============================================================
 
     function updateClassSuggestion() {
@@ -362,7 +350,7 @@
 
         var stats = {};
         STAT_KEYS.forEach(function(key) {
-            stats[key] = getStatFromDOM('char-' + key);
+            stats[key] = getStatValue(key);
         });
 
         var suggested = CharacterStats.suggestClass(stats);
@@ -400,11 +388,11 @@
         }
 
         var magic = {};
-        MAGIC_TYPE_KEYS.forEach(function(key) {
-            magic[key] = getMagicFromDOM('magic-' + key);
+        MagicConstants.getTypeKeys().forEach(function(key) {
+            magic[key] = getMagicValue(key);
         });
 
-        // CharacterStats.suggestMagicClass expects a character object
+        // Create temporary character for suggestion
         var tempChar = { magic: magic };
         var suggested = CharacterStats.suggestMagicClass(tempChar);
         var display = document.getElementById('suggested-magic-class');
@@ -430,8 +418,8 @@
         }
 
         var magic = {};
-        MAGIC_TYPE_KEYS.forEach(function(key) {
-            magic[key] = getMagicFromDOM('magic-' + key);
+        MagicConstants.getTypeKeys().forEach(function(key) {
+            magic[key] = getMagicValue(key);
         });
 
         var tempChar = { magic: magic };
@@ -448,150 +436,6 @@
             }
             display.textContent = stars + ' (' + Math.round(power) + '/100) - ' + rank;
         }
-    }
-
-    function applyPhysicalClass() {
-        var select = document.getElementById('manual-class-select');
-        var display = document.getElementById('suggested-class');
-        
-        if (!select || !select.value) {
-            showNotification('Please select a class from the dropdown.', 'error');
-            return;
-        }
-
-        var charId = CharacterStats.getCurrentEditId ? CharacterStats.getCurrentEditId() : null;
-        if (!charId) {
-            showNotification('No character selected.', 'error');
-            return;
-        }
-
-        // The physical class is determined by stats, not stored directly
-        // This applies the selected class by adjusting stats to match requirements
-        var selectedId = select.value;
-        var classDef = CLASS_DEFINITIONS.find(function(c) { return c.id === selectedId; });
-        
-        if (!classDef) {
-            showNotification('Class definition not found.', 'error');
-            return;
-        }
-
-        // Suggest stat adjustments based on class requirements
-        var stats = {};
-        STAT_KEYS.forEach(function(key) {
-            stats[key] = getStatFromDOM('char-' + key);
-        });
-
-        // Apply minimum stat requirements
-        var changed = false;
-        var changes = [];
-
-        if (classDef.minStats) {
-            for (var stat in classDef.minStats) {
-                if (Object.prototype.hasOwnProperty.call(classDef.minStats, stat)) {
-                    var min = classDef.minStats[stat];
-                    if (stats[stat] < min) {
-                        stats[stat] = min;
-                        changed = true;
-                        changes.push(stat.toUpperCase() + ' -> ' + min);
-                    }
-                }
-            }
-        }
-
-        if (!changed) {
-            showNotification('Stats already meet the requirements for ' + classDef.label + '.', 'info');
-            return;
-        }
-
-        // Apply stats to DOM
-        for (var key in stats) {
-            if (Object.prototype.hasOwnProperty.call(stats, key)) {
-                setFieldValue('char-' + key, stats[key]);
-            }
-        }
-
-        showNotification('Applied ' + classDef.label + ' requirements: ' + changes.join(', '), 'success');
-        updateClassSuggestion();
-    }
-
-    function applyMagicClass() {
-        var select = document.getElementById('manual-magic-class-select');
-        var display = document.getElementById('suggested-magic-class');
-        
-        if (!select || !select.value) {
-            showNotification('Please select a magic class from the dropdown.', 'error');
-            return;
-        }
-
-        var charId = CharacterStats.getCurrentEditId ? CharacterStats.getCurrentEditId() : null;
-        if (!charId) {
-            showNotification('No character selected.', 'error');
-            return;
-        }
-
-        var magicClass = select.value;
-        var magic = {};
-        MAGIC_TYPE_KEYS.forEach(function(key) {
-            magic[key] = getMagicFromDOM('magic-' + key);
-        });
-
-        // Apply magic class by setting minimum proficiency values
-        var classMap = {
-            'elementalist': { types: ['earth', 'water', 'fire', 'air', 'metal', 'wood'], min: 4 },
-            'geomancer': { types: ['earth'], min: 7 },
-            'hydromancer': { types: ['water'], min: 7 },
-            'pyromancer': { types: ['fire'], min: 7 },
-            'aeromancer': { types: ['air'], min: 7 },
-            'ferromancer': { types: ['metal'], min: 7 },
-            'dendromancer': { types: ['wood'], min: 7 },
-            'body_mage': { types: ['blood', 'bone', 'mind', 'morphic', 'life', 'death'], min: 4 },
-            'hemomancer': { types: ['blood'], min: 7 },
-            'osteomancer': { types: ['bone'], min: 7 },
-            'psychomancer': { types: ['mind'], min: 7 },
-            'morphomancer': { types: ['morphic'], min: 7 },
-            'vitalmancer': { types: ['life'], min: 7 },
-            'necromancer': { types: ['death'], min: 7 },
-            'aether_mage': { types: ['space', 'time', 'dimension', 'void', 'reality', 'transference'], min: 4 },
-            'spatiomancer': { types: ['space'], min: 7 },
-            'chronomancer': { types: ['time'], min: 7 },
-            'dimensionist': { types: ['dimension'], min: 7 },
-            'voidmancer': { types: ['void'], min: 7 },
-            'reality_weaver': { types: ['reality'], min: 7 },
-            'transference_mage': { types: ['transference'], min: 7 }
-        };
-
-        var config = classMap[magicClass];
-        if (!config) {
-            showNotification('Magic class configuration not found.', 'error');
-            return;
-        }
-
-        var changed = false;
-        var changes = [];
-
-        config.types.forEach(function(type) {
-            if (magic[type] < config.min) {
-                magic[type] = config.min;
-                changed = true;
-                changes.push(type + ' -> ' + config.min);
-            }
-        });
-
-        if (!changed) {
-            showNotification('Magic proficiencies already meet the requirements.', 'info');
-            return;
-        }
-
-        // Apply magic to DOM
-        for (var key in magic) {
-            if (Object.prototype.hasOwnProperty.call(magic, key)) {
-                setFieldValue('magic-' + key, magic[key]);
-            }
-        }
-
-        showNotification('Applied magic class requirements: ' + changes.join(', '), 'success');
-        updateMagicClassSuggestion();
-        updateMagicPowerDisplay();
     }
 
     // ============================================================
@@ -615,10 +459,10 @@
 
         var color = type === 'physical' ? 'var(--accent)' : 'var(--info)';
 
-        moves.forEach(function(move, index) {
+        moves.forEach(function(move) {
             move = move || {};
             if (typeof move !== 'object' || Array.isArray(move)) {
-                move = { name: 'Invalid Move', description: '' };
+                move = { id: 'invalid', name: 'Invalid Move', description: '' };
             }
 
             var div = document.createElement('div');
@@ -641,7 +485,7 @@
             editBtn.className = 'edit-special-move small secondary';
             editBtn.style.cssText = 'font-size:0.5rem;padding:1px 6px;';
             editBtn.dataset.type = type;
-            editBtn.dataset.index = index;
+            editBtn.dataset.moveId = move.id;
             editBtn.textContent = '✎';
             editBtn.setAttribute('aria-label', 'Edit move');
             actionsDiv.appendChild(editBtn);
@@ -650,7 +494,7 @@
             deleteBtn.className = 'remove-special-move small';
             deleteBtn.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 4px;';
             deleteBtn.dataset.type = type;
-            deleteBtn.dataset.index = index;
+            deleteBtn.dataset.moveId = move.id;
             deleteBtn.textContent = '✕';
             deleteBtn.setAttribute('aria-label', 'Delete move');
             actionsDiv.appendChild(deleteBtn);
@@ -671,60 +515,32 @@
     }
 
     // ============================================================
-    // EDIT SPECIAL MOVE - Opens edit modal using Modal utility
+    // EDIT SPECIAL MOVE MODAL
     // ============================================================
 
-    function editSpecialMove(charId, type, index) {
+    function openEditModal(charId, type, moveId, name, description) {
+        if (!checkDependencies()) {
+            return;
+        }
+
         if (!charId) {
-            showNotification('Character ID is required.', 'error');
+            console.warn('CharacterStatsView: charId is required');
             return;
         }
 
         if (type !== 'physical' && type !== 'magical') {
-            showNotification('Invalid move type.', 'error');
+            console.warn('CharacterStatsView: invalid move type');
             return;
         }
 
-        var idx = Number(index);
-        if (!Number.isInteger(idx) || idx < 0) {
-            showNotification('Invalid move index.', 'error');
+        if (!moveId) {
+            console.warn('CharacterStatsView: moveId is required');
             return;
         }
 
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            showNotification('Character not found.', 'error');
-            return;
-        }
-
-        if (!char.specialMoves || typeof char.specialMoves !== 'object') {
-            showNotification('No special moves found.', 'error');
-            return;
-        }
-
-        if (!Array.isArray(char.specialMoves.physical) || !Array.isArray(char.specialMoves.magical)) {
-            showNotification('Special moves data is corrupted.', 'error');
-            return;
-        }
-
-        if (!char.specialMoves[type] || !Array.isArray(char.specialMoves[type])) {
-            showNotification('No ' + type + ' moves found.', 'error');
-            return;
-        }
-
-        if (idx < 0 || idx >= char.specialMoves[type].length) {
-            showNotification('Move not found.', 'error');
-            return;
-        }
-
-        var move = char.specialMoves[type][idx];
-        var moveName = move && move.name ? move.name : '';
-        var moveDesc = move && move.description ? move.description : '';
-
-        // Use Modal utility for lifecycle management
         var modal = Modal.createModal('modal-edit-special-move');
 
-        // Build modal content using DomUtils for safety
+        // Build modal content
         var header = document.createElement('div');
         header.className = 'modal-header';
 
@@ -750,7 +566,7 @@
         var nameInput = document.createElement('input');
         nameInput.type = 'text';
         nameInput.id = 'edit-move-name';
-        nameInput.value = moveName;
+        nameInput.value = name || '';
         nameInput.placeholder = 'Enter move name';
         nameInput.style.cssText = 'width:100%;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;margin-bottom:8px;';
         body.appendChild(nameInput);
@@ -763,7 +579,7 @@
 
         var descInput = document.createElement('textarea');
         descInput.id = 'edit-move-desc';
-        descInput.value = moveDesc;
+        descInput.value = description || '';
         descInput.placeholder = 'Enter move description';
         descInput.rows = 3;
         descInput.style.cssText = 'width:100%;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:0.7rem;font-family:Inter,sans-serif;resize:vertical;min-height:50px;margin-bottom:8px;';
@@ -809,7 +625,6 @@
         }, 50);
 
         // ---- Event Handlers ----
-
         function closeModal() {
             Modal.closeModal(modal);
         }
@@ -817,23 +632,27 @@
         function saveMove() {
             var newName = document.getElementById('edit-move-name').value;
             var newDesc = document.getElementById('edit-move-desc').value;
-            
+
             if (!newName || newName.trim() === '') {
-                showNotification('Move name is required.', 'error');
+                // Notification is caller responsibility
                 return;
             }
 
-            if (CharacterStats && typeof CharacterStats.updateSpecialMove === 'function') {
-                CharacterStats.updateSpecialMove(charId, type, idx, newName, newDesc)
-                    .then(function(success) {
-                        if (success) {
-                            closeModal();
-                        }
-                    })
-                    .catch(function() {
-                        // Error already shown by updateSpecialMove
-                    });
-            }
+            // Dispatch event for CharacterEvents to handle
+            var event = new CustomEvent('specialMoveEdit', {
+                detail: {
+                    charId: charId,
+                    type: type,
+                    moveId: moveId,
+                    name: newName.trim(),
+                    description: newDesc.trim()
+                },
+                bubbles: true,
+                cancelable: false
+            });
+            document.dispatchEvent(event);
+
+            closeModal();
         }
 
         // Close button
@@ -857,27 +676,8 @@
     }
 
     // ============================================================
-    // MAGIC TYPE HELPERS (delegate to constants)
-    // ============================================================
-
-    function getMagicTypeKeys() {
-        if (CharacterConstants && typeof CharacterConstants.getMagicTypeKeys === 'function') {
-            return CharacterConstants.getMagicTypeKeys();
-        }
-        return MAGIC_TYPE_KEYS.slice();
-    }
-
-    function getMagicCategoryTypes(category) {
-        if (CharacterConstants && typeof CharacterConstants.getMagicCategoryTypes === 'function') {
-            return CharacterConstants.getMagicCategoryTypes(category);
-        }
-        var cat = MAGIC_CATEGORIES[category];
-        return cat ? cat.types.slice() : [];
-    }
-
-    // ============================================================
     // EXPOSE
-    // ============================================================
+    ============================================================
 
     window.CharacterStatsView = {
         // HTML generation
@@ -889,31 +689,26 @@
         // Class select
         populateClassSelect: populateClassSelect,
 
-        // UI updates
+        // UI updates (render only)
         updateClassSuggestion: updateClassSuggestion,
         updateMagicClassSuggestion: updateMagicClassSuggestion,
         updateMagicPowerDisplay: updateMagicPowerDisplay,
-
-        // Apply class
-        applyPhysicalClass: applyPhysicalClass,
-        applyMagicClass: applyMagicClass,
 
         // Special moves rendering
         renderSpecialMoves: renderSpecialMoves,
 
         // Edit modal
-        editSpecialMove: editSpecialMove,
+        openEditModal: openEditModal,
 
-        // Magic type helpers
-        getMagicTypeKeys: getMagicTypeKeys,
-        getMagicCategoryTypes: getMagicCategoryTypes,
-
-        // Constants
+        // Constants (read-only)
         STAT_KEYS: STAT_KEYS,
         MAGIC_MAX: MAGIC_MAX,
         STAT_MIN: STAT_MIN,
         STAT_MAX: STAT_MAX,
-        STAT_DEFAULT: STAT_DEFAULT
+        STAT_DEFAULT: STAT_DEFAULT,
+        MAX_SPECIAL_MOVES: MAX_SPECIAL_MOVES,
+        MAX_MOVE_NAME_LENGTH: MAX_MOVE_NAME_LENGTH,
+        MAX_MOVE_DESCRIPTION_LENGTH: MAX_MOVE_DESCRIPTION_LENGTH
     };
 
 })();
