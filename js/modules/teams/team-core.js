@@ -87,21 +87,27 @@
     // ============================================================
 
     if (!window.CALENDAR_CONSTANTS) {
+        console.warn('TeamCore: CALENDAR_CONSTANTS not available.');
         return;
     }
     if (!window.CharacterQueries) {
+        console.warn('TeamCore: CharacterQueries not available.');
         return;
     }
     if (!window.ActivityLog) {
+        console.warn('TeamCore: ActivityLog not available.');
         return;
     }
     if (!window.ObjectUtils) {
+        console.warn('TeamCore: ObjectUtils not available.');
         return;
     }
     if (!window.IdUtils) {
+        console.warn('TeamCore: IdUtils not available.');
         return;
     }
     if (!window.ValidationUtils) {
+        console.warn('TeamCore: ValidationUtils not available.');
         return;
     }
 

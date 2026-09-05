@@ -1,5 +1,5 @@
 /**
- * modules/characters/character-stats-view.js - Character Stats View
+ * js/modules/characters/character-stats-view.js - Character Stats View
  * Renders stats, magic, and special moves UI for the character form
  * Path: js/modules/characters/character-stats-view.js
  * 
@@ -41,7 +41,6 @@
     if (window.__characterStatsViewLoaded) {
         return;
     }
-    window.__characterStatsViewLoaded = true;
 
     // ============================================================
     // DEPENDENCY IMPORTS - NO FALLBACKS
@@ -426,7 +425,7 @@
     }
 
     function updateMagicPowerDisplay() {
-        if (!CharacterStats || typeof CharacterStats.getMagicPowerDisplay !== 'function') {
+        if (!CharacterStats || typeof CharacterStats.calculateMagicPower !== 'function') {
             return;
         }
 
@@ -436,10 +435,163 @@
         });
 
         var tempChar = { magic: magic };
+        var power = CharacterStats.calculateMagicPower(tempChar);
         var display = document.getElementById('magic-power-display-text');
+        var rank = CharacterStats.getMagicRank(power);
+
         if (display) {
-            display.textContent = CharacterStats.getMagicPowerDisplay(tempChar);
+            var stars = '';
+            var maxStars = 5;
+            var filledStars = Math.round(power / 20);
+            for (var i = 0; i < maxStars; i++) {
+                stars += (i < filledStars) ? '★' : '☆';
+            }
+            display.textContent = stars + ' (' + Math.round(power) + '/100) - ' + rank;
         }
+    }
+
+    function applyPhysicalClass() {
+        var select = document.getElementById('manual-class-select');
+        var display = document.getElementById('suggested-class');
+        
+        if (!select || !select.value) {
+            showNotification('Please select a class from the dropdown.', 'error');
+            return;
+        }
+
+        var charId = CharacterStats.getCurrentEditId ? CharacterStats.getCurrentEditId() : null;
+        if (!charId) {
+            showNotification('No character selected.', 'error');
+            return;
+        }
+
+        // The physical class is determined by stats, not stored directly
+        // This applies the selected class by adjusting stats to match requirements
+        var selectedId = select.value;
+        var classDef = CLASS_DEFINITIONS.find(function(c) { return c.id === selectedId; });
+        
+        if (!classDef) {
+            showNotification('Class definition not found.', 'error');
+            return;
+        }
+
+        // Suggest stat adjustments based on class requirements
+        var stats = {};
+        STAT_KEYS.forEach(function(key) {
+            stats[key] = getStatFromDOM('char-' + key);
+        });
+
+        // Apply minimum stat requirements
+        var changed = false;
+        var changes = [];
+
+        if (classDef.minStats) {
+            for (var stat in classDef.minStats) {
+                if (Object.prototype.hasOwnProperty.call(classDef.minStats, stat)) {
+                    var min = classDef.minStats[stat];
+                    if (stats[stat] < min) {
+                        stats[stat] = min;
+                        changed = true;
+                        changes.push(stat.toUpperCase() + ' -> ' + min);
+                    }
+                }
+            }
+        }
+
+        if (!changed) {
+            showNotification('Stats already meet the requirements for ' + classDef.label + '.', 'info');
+            return;
+        }
+
+        // Apply stats to DOM
+        for (var key in stats) {
+            if (Object.prototype.hasOwnProperty.call(stats, key)) {
+                setFieldValue('char-' + key, stats[key]);
+            }
+        }
+
+        showNotification('Applied ' + classDef.label + ' requirements: ' + changes.join(', '), 'success');
+        updateClassSuggestion();
+    }
+
+    function applyMagicClass() {
+        var select = document.getElementById('manual-magic-class-select');
+        var display = document.getElementById('suggested-magic-class');
+        
+        if (!select || !select.value) {
+            showNotification('Please select a magic class from the dropdown.', 'error');
+            return;
+        }
+
+        var charId = CharacterStats.getCurrentEditId ? CharacterStats.getCurrentEditId() : null;
+        if (!charId) {
+            showNotification('No character selected.', 'error');
+            return;
+        }
+
+        var magicClass = select.value;
+        var magic = {};
+        MAGIC_TYPE_KEYS.forEach(function(key) {
+            magic[key] = getMagicFromDOM('magic-' + key);
+        });
+
+        // Apply magic class by setting minimum proficiency values
+        var classMap = {
+            'elementalist': { types: ['earth', 'water', 'fire', 'air', 'metal', 'wood'], min: 4 },
+            'geomancer': { types: ['earth'], min: 7 },
+            'hydromancer': { types: ['water'], min: 7 },
+            'pyromancer': { types: ['fire'], min: 7 },
+            'aeromancer': { types: ['air'], min: 7 },
+            'ferromancer': { types: ['metal'], min: 7 },
+            'dendromancer': { types: ['wood'], min: 7 },
+            'body_mage': { types: ['blood', 'bone', 'mind', 'morphic', 'life', 'death'], min: 4 },
+            'hemomancer': { types: ['blood'], min: 7 },
+            'osteomancer': { types: ['bone'], min: 7 },
+            'psychomancer': { types: ['mind'], min: 7 },
+            'morphomancer': { types: ['morphic'], min: 7 },
+            'vitalmancer': { types: ['life'], min: 7 },
+            'necromancer': { types: ['death'], min: 7 },
+            'aether_mage': { types: ['space', 'time', 'dimension', 'void', 'reality', 'transference'], min: 4 },
+            'spatiomancer': { types: ['space'], min: 7 },
+            'chronomancer': { types: ['time'], min: 7 },
+            'dimensionist': { types: ['dimension'], min: 7 },
+            'voidmancer': { types: ['void'], min: 7 },
+            'reality_weaver': { types: ['reality'], min: 7 },
+            'transference_mage': { types: ['transference'], min: 7 }
+        };
+
+        var config = classMap[magicClass];
+        if (!config) {
+            showNotification('Magic class configuration not found.', 'error');
+            return;
+        }
+
+        var changed = false;
+        var changes = [];
+
+        config.types.forEach(function(type) {
+            if (magic[type] < config.min) {
+                magic[type] = config.min;
+                changed = true;
+                changes.push(type + ' -> ' + config.min);
+            }
+        });
+
+        if (!changed) {
+            showNotification('Magic proficiencies already meet the requirements.', 'info');
+            return;
+        }
+
+        // Apply magic to DOM
+        for (var key in magic) {
+            if (Object.prototype.hasOwnProperty.call(magic, key)) {
+                setFieldValue('magic-' + key, magic[key]);
+            }
+        }
+
+        showNotification('Applied magic class requirements: ' + changes.join(', '), 'success');
+        updateMagicClassSuggestion();
+        updateMagicPowerDisplay();
     }
 
     // ============================================================
@@ -741,6 +893,10 @@
         updateClassSuggestion: updateClassSuggestion,
         updateMagicClassSuggestion: updateMagicClassSuggestion,
         updateMagicPowerDisplay: updateMagicPowerDisplay,
+
+        // Apply class
+        applyPhysicalClass: applyPhysicalClass,
+        applyMagicClass: applyMagicClass,
 
         // Special moves rendering
         renderSpecialMoves: renderSpecialMoves,
