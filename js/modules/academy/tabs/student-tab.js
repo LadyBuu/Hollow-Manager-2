@@ -12,15 +12,20 @@
  * 
  * IMPORTANT:
  *   - CharacterList is REUSED (not duplicated)
- *   - All mutations delegate to AcademyCore
- *   - This module is RENDER-ONLY + event delegation
- *   - No direct data mutation
+ *   - All mutations delegate to domain cores
+ *   - This module is UI-ONLY - all mutations delegate to domain cores
+ *   - Uses AcademyGrades for grade operations
+ *   - Uses AcademyRanking for ranking operations
+ *   - Uses AcademySchedule for schedule operations
+ *   - Uses AcademyQueries for read-only access
  *   - All HTML escaping uses DomUtils.escapeHtml()
  *   - All notifications use NotificationSystem.notify()
  *   - All modals use Modal system
  * 
  * DEPENDENCIES:
- *   - window.AcademyCore (from academy-core.js)
+ *   - window.AcademyGrades (from academy-grades.js)
+ *   - window.AcademyRanking (from academy-ranking.js)
+ *   - window.AcademySchedule (from academy-schedule.js)
  *   - window.AcademyQueries (from academy-queries.js)
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.CharacterList (from character-list.js)
@@ -42,7 +47,9 @@
     // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var AcademyCore = window.AcademyCore;
+    var AcademyGrades = window.AcademyGrades;
+    var AcademyRanking = window.AcademyRanking;
+    var AcademySchedule = window.AcademySchedule;
     var AcademyQueries = window.AcademyQueries;
     var CharacterQueries = window.CharacterQueries;
     var CharacterList = window.CharacterList;
@@ -57,51 +64,72 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!AcademyCore || typeof AcademyCore.getStudentGrades !== 'function') {
-            missing.push('AcademyCore.getStudentGrades');
+        if (!AcademyGrades || typeof AcademyGrades.getGrades !== 'function') {
+            missing.push('AcademyGrades.getGrades');
         }
-        if (!AcademyCore || typeof AcademyCore.saveGrades !== 'function') {
-            missing.push('AcademyCore.saveGrades');
+        if (!AcademyGrades || typeof AcademyGrades.saveGrades !== 'function') {
+            missing.push('AcademyGrades.saveGrades');
         }
-        if (!AcademyCore || typeof AcademyCore.calculateGradeSummary !== 'function') {
-            missing.push('AcademyCore.calculateGradeSummary');
+        if (!AcademyGrades || typeof AcademyGrades.calculateSummary !== 'function') {
+            missing.push('AcademyGrades.calculateSummary');
         }
-        if (!AcademyCore || typeof AcademyCore.getRankings !== 'function') {
-            missing.push('AcademyCore.getRankings');
+        if (!AcademyGrades || typeof AcademyGrades.getClassSummary !== 'function') {
+            missing.push('AcademyGrades.getClassSummary');
         }
-        if (!AcademyCore || typeof AcademyCore.getStudentRank !== 'function') {
-            missing.push('AcademyCore.getStudentRank');
+
+        if (!AcademyRanking || typeof AcademyRanking.getRankings !== 'function') {
+            missing.push('AcademyRanking.getRankings');
         }
-        if (!AcademyCore || typeof AcademyCore.autoGenerateRankings !== 'function') {
-            missing.push('AcademyCore.autoGenerateRankings');
+        if (!AcademyRanking || typeof AcademyRanking.getStudentRank !== 'function') {
+            missing.push('AcademyRanking.getStudentRank');
         }
-        if (!AcademyCore || typeof AcademyCore.updateStudentRank !== 'function') {
-            missing.push('AcademyCore.updateStudentRank');
+        if (!AcademyRanking || typeof AcademyRanking.autoGenerate !== 'function') {
+            missing.push('AcademyRanking.autoGenerate');
         }
-        if (!AcademyCore || typeof AcademyCore.removeStudentFromRankings !== 'function') {
-            missing.push('AcademyCore.removeStudentFromRankings');
+        if (!AcademyRanking || typeof AcademyRanking.updateStudentRank !== 'function') {
+            missing.push('AcademyRanking.updateStudentRank');
         }
-        if (!AcademyCore || typeof AcademyCore.getStudentSchedule !== 'function') {
-            missing.push('AcademyCore.getStudentSchedule');
+        if (!AcademyRanking || typeof AcademyRanking.removeStudentFromRankings !== 'function') {
+            missing.push('AcademyRanking.removeStudentFromRankings');
         }
-        if (!AcademyCore || typeof AcademyCore.getStudentRestDays !== 'function') {
-            missing.push('AcademyCore.getStudentRestDays');
+        if (!AcademyRanking || typeof AcademyRanking.getRankingsWithDetails !== 'function') {
+            missing.push('AcademyRanking.getRankingsWithDetails');
         }
-        if (!AcademyCore || typeof AcademyCore.setStudentRestDays !== 'function') {
-            missing.push('AcademyCore.setStudentRestDays');
+        if (!AcademyRanking || typeof AcademyRanking.getClassRankings !== 'function') {
+            missing.push('AcademyRanking.getClassRankings');
         }
-        if (!AcademyCore || typeof AcademyCore.getGradeLetter !== 'function') {
-            missing.push('AcademyCore.getGradeLetter');
+
+        if (!AcademySchedule || typeof AcademySchedule.getStudentSchedule !== 'function') {
+            missing.push('AcademySchedule.getStudentSchedule');
         }
-        if (!AcademyCore || typeof AcademyCore.getClassInstructor !== 'function') {
-            missing.push('AcademyCore.getClassInstructor');
+        if (!AcademySchedule || typeof AcademySchedule.getStudentRestDays !== 'function') {
+            missing.push('AcademySchedule.getStudentRestDays');
         }
-        if (!AcademyCore || typeof AcademyCore.getClassDuration !== 'function') {
-            missing.push('AcademyCore.getClassDuration');
+        if (!AcademySchedule || typeof AcademySchedule.setRestDays !== 'function') {
+            missing.push('AcademySchedule.setRestDays');
+        }
+        if (!AcademySchedule || typeof AcademySchedule.getClassDetails !== 'function') {
+            missing.push('AcademySchedule.getClassDetails');
+        }
+        if (!AcademySchedule || typeof AcademySchedule.getConflicts !== 'function') {
+            missing.push('AcademySchedule.getConflicts');
+        }
+
+        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
+            missing.push('AcademyQueries.getClass');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getAvailableDisciplines !== 'function') {
+            missing.push('AcademyQueries.getAvailableDisciplines');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getDiscipline !== 'function') {
+            missing.push('AcademyQueries.getDiscipline');
         }
 
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
         }
         if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
             missing.push('CharacterQueries.getCurrentStatus');
@@ -186,8 +214,8 @@
         var selectedStudentId = state.selectedStudentId;
         var week = state.selectedWeek || 1;
 
-        var selectedClass = selectedClassId ? AcademyCore.getClass(selectedClassId) : null;
-        var selectedStudent = selectedStudentId ? AcademyCore.getCharacterById(selectedStudentId) : null;
+        var selectedClass = selectedClassId ? AcademyQueries.getClass(selectedClassId) : null;
+        var selectedStudent = selectedStudentId ? CharacterQueries.getCharacterById(selectedStudentId) : null;
 
         var html = '';
 
@@ -293,8 +321,8 @@
         var studentId = student.id;
         var week = state.selectedWeek || 1;
 
-        var grades = AcademyCore.getStudentGrades(studentId, week);
-        var summary = AcademyCore.calculateGradeSummary(studentId, week);
+        var grades = AcademyGrades.getGrades(studentId, week);
+        var summary = AcademyGrades.calculateSummary(studentId, week);
 
         var html = '';
 
@@ -340,7 +368,7 @@
                 if (score !== '' && score !== null) {
                     var numScore = parseFloat(score);
                     if (!isNaN(numScore) && numScore >= 0 && numScore <= 100) {
-                        letter = AcademyCore.getGradeLetter(disc, numScore);
+                        letter = AcademyGrades.getGradeLetter ? AcademyGrades.getGradeLetter(disc, numScore) : '';
                         var weight = parseFloat(disc.weight) || 1;
                         weighted = (numScore * weight).toFixed(1);
                     }
@@ -382,8 +410,8 @@
         var studentId = student.id;
         var week = state.selectedWeek || 1;
 
-        var rankings = AcademyCore.getRankings(week);
-        var studentRank = AcademyCore.getStudentRank(week, studentId);
+        var rankings = AcademyRanking.getRankingsWithDetails(week);
+        var studentRank = AcademyRanking.getStudentRank(week, studentId);
 
         var html = '';
 
@@ -418,12 +446,12 @@
 
             for (var i = 0; i < rankings.length; i++) {
                 var entry = rankings[i];
-                var char = AcademyCore.getCharacterById(entry.studentId);
+                var char = CharacterQueries.getCharacterById(entry.studentId);
                 var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
                 var status = char ? CharacterQueries.getCurrentStatus(char) : '';
                 var isCurrent = String(entry.studentId) === String(studentId);
 
-                var summary = AcademyCore.calculateGradeSummary(entry.studentId, week);
+                var summary = AcademyGrades.calculateSummary(entry.studentId, week);
                 var avg = summary && summary.average !== null ? summary.average.toFixed(1) + '%' : '--';
 
                 html += '<tr class="' + (isCurrent ? 'current-student' : '') + '">';
@@ -450,8 +478,8 @@
         var studentId = student.id;
         var week = state.selectedWeek || 1;
 
-        var schedule = AcademyCore.getStudentSchedule(studentId, week);
-        var restDays = AcademyCore.getStudentRestDays(studentId, week);
+        var schedule = AcademySchedule.getStudentSchedule(studentId, week);
+        var restDays = AcademySchedule.getStudentRestDays(studentId, week);
 
         var dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
         var hours = [];
@@ -505,17 +533,11 @@
                     display = '--';
                     className = 'schedule-rest';
                 } else if (classId) {
-                    var disc = AcademyCore.getDiscipline(classId);
-                    display = disc ? disc.name : 'Unknown';
+                    var details = AcademySchedule.getClassDetails(studentId, week, d3, hour);
+                    display = details ? details.disciplineName : 'Unknown';
                     className = 'schedule-class';
-                    duration = AcademyCore.getClassDuration(studentId, week, d3, hour) || 1;
-                    var instructorId = AcademyCore.getClassInstructor(studentId, week, d3, hour);
-                    if (instructorId) {
-                        var instructor = AcademyCore.getCharacterById(instructorId);
-                        if (instructor) {
-                            instructorName = CharacterQueries.getDisplayName(instructor);
-                        }
-                    }
+                    duration = details ? details.duration : 1;
+                    instructorName = details ? details.instructorName : '';
                 } else {
                     display = '·';
                     className = 'schedule-empty';
@@ -724,13 +746,13 @@
 
         if (!disciplineId) { return; }
 
-        var disc = AcademyCore.getDiscipline(disciplineId);
+        var disc = AcademyQueries.getDiscipline(disciplineId);
         if (!disc) { return; }
 
         if (value !== '' && !isNaN(Number(value))) {
             var numericScore = Number(value);
             if (numericScore >= 0 && numericScore <= 100) {
-                var letter = AcademyCore.getGradeLetter(disc, numericScore);
+                var letter = AcademyGrades.getGradeLetter ? AcademyGrades.getGradeLetter(disc, numericScore) : '';
                 if (letterEl) {
                     letterEl.textContent = letter || '--';
                 }
@@ -794,7 +816,7 @@
 
         if (invalidInputs.length > 0) {
             var names = invalidInputs.map(function(id) {
-                var d = AcademyCore.getDiscipline(id);
+                var d = AcademyQueries.getDiscipline(id);
                 return d ? d.name : id;
             });
             showNotification('Invalid scores for: ' + names.join(', '), 'error');
@@ -806,7 +828,7 @@
             return;
         }
 
-        var result = AcademyCore.saveGrades(studentId, week, grades);
+        var result = AcademyGrades.saveGrades(studentId, week, grades);
 
         if (result && result.success) {
             showNotification('Grades saved successfully.', 'success');
@@ -830,7 +852,7 @@
             return;
         }
 
-        var result = AcademyCore.autoGenerateRankings(week);
+        var result = AcademyRanking.autoGenerate(week);
 
         if (result && result.success) {
             var count = result.count || 0;
@@ -863,7 +885,7 @@
             days.push(parseInt(checkboxes[i].value, 10));
         }
 
-        var result = AcademyCore.setStudentRestDays(studentId, week, days);
+        var result = AcademySchedule.setRestDays(studentId, week, days);
 
         if (result && result.success) {
             showNotification('Rest days saved successfully.', 'success');

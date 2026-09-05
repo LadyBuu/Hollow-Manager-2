@@ -11,24 +11,22 @@
  *   - Discipline/curriculum management
  * 
  * IMPORTANT:
- *   - All mutations delegate to AcademyCore
- *   - This module is RENDER-ONLY + event delegation
- *   - No direct data mutation
+ *   - This module is UI-ONLY - all mutations delegate to domain cores
+ *   - Uses CalendarCore for schedule operations
+ *   - Uses AcademyGroups for auto-group operations
+ *   - Uses AcademyQueries for read-only access
  *   - All HTML escaping uses DomUtils.escapeHtml()
  *   - All notifications use NotificationSystem.notify()
  *   - All modals use Modal system
- *   - Calendar grid reuses CalendarRenderer when available
  * 
  * DEPENDENCIES:
- *   - window.AcademyCore (from academy-core.js)
+ *   - window.CalendarCore (from calendar/core/index.js)
+ *   - window.AcademyGroups (from academy-groups.js)
  *   - window.AcademyQueries (from academy-queries.js)
- *   - window.AcademyViews (from academy-views.js)
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.NotificationSystem (from notification.js)
  *   - window.DomUtils (from dom-utils.js)
  *   - window.Modal (from modal.js)
- *   - window.CalendarRenderer (from calendar-renderer.js) - optional
- *   - window.CalendarUtils (from calendar-utils.js) - optional
  *   - window.saveData (from database.js)
  */
 
@@ -44,15 +42,13 @@
     // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var AcademyCore = window.AcademyCore;
+    var CalendarCore = window.CalendarCore;
+    var AcademyGroups = window.AcademyGroups;
     var AcademyQueries = window.AcademyQueries;
-    var AcademyViews = window.AcademyViews;
     var CharacterQueries = window.CharacterQueries;
     var NotificationSystem = window.NotificationSystem;
     var DomUtils = window.DomUtils;
     var Modal = window.Modal;
-    var CalendarRenderer = window.CalendarRenderer;
-    var CalendarUtils = window.CalendarUtils;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -61,81 +57,80 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!AcademyCore || typeof AcademyCore.getInstructorTemplates !== 'function') {
-            missing.push('AcademyCore.getInstructorTemplates');
+        if (!CalendarCore || typeof CalendarCore.getInstructorTemplates !== 'function') {
+            missing.push('CalendarCore.getInstructorTemplates');
         }
-        if (!AcademyCore || typeof AcademyCore.addInstructorClassTemplate !== 'function') {
-            missing.push('AcademyCore.addInstructorClassTemplate');
+        if (!CalendarCore || typeof CalendarCore.setInstructorTemplate !== 'function') {
+            missing.push('CalendarCore.setInstructorTemplate');
         }
-        if (!AcademyCore || typeof AcademyCore.removeInstructorClassTemplate !== 'function') {
-            missing.push('AcademyCore.removeInstructorClassTemplate');
+        if (!CalendarCore || typeof CalendarCore.removeInstructorTemplate !== 'function') {
+            missing.push('CalendarCore.removeInstructorTemplate');
         }
-        if (!AcademyCore || typeof AcademyCore.getInstructorBlocks !== 'function') {
-            missing.push('AcademyCore.getInstructorBlocks');
+        if (!CalendarCore || typeof CalendarCore.getInstructorBlocks !== 'function') {
+            missing.push('CalendarCore.getInstructorBlocks');
         }
-        if (!AcademyCore || typeof AcademyCore.addInstructorBlock !== 'function') {
-            missing.push('AcademyCore.addInstructorBlock');
+        if (!CalendarCore || typeof CalendarCore.setInstructorBlock !== 'function') {
+            missing.push('CalendarCore.setInstructorBlock');
         }
-        if (!AcademyCore || typeof AcademyCore.removeInstructorBlock !== 'function') {
-            missing.push('AcademyCore.removeInstructorBlock');
+        if (!CalendarCore || typeof CalendarCore.removeInstructorBlock !== 'function') {
+            missing.push('CalendarCore.removeInstructorBlock');
         }
-        if (!AcademyCore || typeof AcademyCore.getLocationSchedule !== 'function') {
-            missing.push('AcademyCore.getLocationSchedule');
+        if (!CalendarCore || typeof CalendarCore.getLocationSchedule !== 'function') {
+            missing.push('CalendarCore.getLocationSchedule');
         }
-        if (!AcademyCore || typeof AcademyCore.setLocationClass !== 'function') {
-            missing.push('AcademyCore.setLocationClass');
+        if (!CalendarCore || typeof CalendarCore.setLocationClass !== 'function') {
+            missing.push('CalendarCore.setLocationClass');
         }
-        if (!AcademyCore || typeof AcademyCore.removeLocationClass !== 'function') {
-            missing.push('AcademyCore.removeLocationClass');
+        if (!CalendarCore || typeof CalendarCore.removeLocationClass !== 'function') {
+            missing.push('CalendarCore.removeLocationClass');
         }
-        if (!AcademyCore || typeof AcademyCore.getAllAutoGroups !== 'function') {
-            missing.push('AcademyCore.getAllAutoGroups');
+
+        if (!AcademyGroups || typeof AcademyGroups.getAllAutoGroups !== 'function') {
+            missing.push('AcademyGroups.getAllAutoGroups');
         }
-        if (!AcademyCore || typeof AcademyCore.createAutoGroup !== 'function') {
-            missing.push('AcademyCore.createAutoGroup');
+        if (!AcademyGroups || typeof AcademyGroups.createAutoGroup !== 'function') {
+            missing.push('AcademyGroups.createAutoGroup');
         }
-        if (!AcademyCore || typeof AcademyCore.deleteAutoGroup !== 'function') {
-            missing.push('AcademyCore.deleteAutoGroup');
+        if (!AcademyGroups || typeof AcademyGroups.deleteAutoGroup !== 'function') {
+            missing.push('AcademyGroups.deleteAutoGroup');
         }
-        if (!AcademyCore || typeof AcademyCore.addStudentToAutoGroup !== 'function') {
-            missing.push('AcademyCore.addStudentToAutoGroup');
+        if (!AcademyGroups || typeof AcademyGroups.addStudentToAutoGroup !== 'function') {
+            missing.push('AcademyGroups.addStudentToAutoGroup');
         }
-        if (!AcademyCore || typeof AcademyCore.removeStudentFromAutoGroup !== 'function') {
-            missing.push('AcademyCore.removeStudentFromAutoGroup');
+        if (!AcademyGroups || typeof AcademyGroups.removeStudentFromAutoGroup !== 'function') {
+            missing.push('AcademyGroups.removeStudentFromAutoGroup');
         }
-        if (!AcademyCore || typeof AcademyCore.addSlotToAutoGroup !== 'function') {
-            missing.push('AcademyCore.addSlotToAutoGroup');
+        if (!AcademyGroups || typeof AcademyGroups.addSlotToAutoGroup !== 'function') {
+            missing.push('AcademyGroups.addSlotToAutoGroup');
         }
-        if (!AcademyCore || typeof AcademyCore.removeSlotFromAutoGroup !== 'function') {
-            missing.push('AcademyCore.removeSlotFromAutoGroup');
+        if (!AcademyGroups || typeof AcademyGroups.removeSlotFromAutoGroup !== 'function') {
+            missing.push('AcademyGroups.removeSlotFromAutoGroup');
         }
-        if (!AcademyCore || typeof AcademyCore.rebuildAutoGroups !== 'function') {
-            missing.push('AcademyCore.rebuildAutoGroups');
+        if (!AcademyGroups || typeof AcademyGroups.rebuildGroupsFromSchedules !== 'function') {
+            missing.push('AcademyGroups.rebuildGroupsFromSchedules');
         }
-        if (!AcademyCore || typeof AcademyCore.getDisciplines !== 'function') {
-            missing.push('AcademyCore.getDisciplines');
+
+        if (!AcademyQueries || typeof AcademyQueries.getDisciplines !== 'function') {
+            missing.push('AcademyQueries.getDisciplines');
         }
-        if (!AcademyCore || typeof AcademyCore.createDiscipline !== 'function') {
-            missing.push('AcademyCore.createDiscipline');
+        if (!AcademyQueries || typeof AcademyQueries.getAvailableDisciplines !== 'function') {
+            missing.push('AcademyQueries.getAvailableDisciplines');
         }
-        if (!AcademyCore || typeof AcademyCore.updateDiscipline !== 'function') {
-            missing.push('AcademyCore.updateDiscipline');
+        if (!AcademyQueries || typeof AcademyQueries.getLocations !== 'function') {
+            missing.push('AcademyQueries.getLocations');
         }
-        if (!AcademyCore || typeof AcademyCore.deleteDiscipline !== 'function') {
-            missing.push('AcademyCore.deleteDiscipline');
+        if (!AcademyQueries || typeof AcademyQueries.getInstructors !== 'function') {
+            missing.push('AcademyQueries.getInstructors');
         }
-        if (!AcademyCore || typeof AcademyCore.getLocations !== 'function') {
-            missing.push('AcademyCore.getLocations');
-        }
-        if (!AcademyCore || typeof AcademyCore.getInstructors !== 'function') {
-            missing.push('AcademyCore.getInstructors');
-        }
-        if (!AcademyCore || typeof AcademyCore.getStudents !== 'function') {
-            missing.push('AcademyCore.getStudents');
+        if (!AcademyQueries || typeof AcademyQueries.getStudents !== 'function') {
+            missing.push('AcademyQueries.getStudents');
         }
 
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
         }
 
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
@@ -208,24 +203,10 @@
     // CALENDAR HELPERS
     // ============================================================
 
+    var DAY_NAMES = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    var SHORT_DAY_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     var CALENDAR_START_HOUR = 5;
     var CALENDAR_END_HOUR = 23;
-    var DAY_NAMES = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-
-    function formatHour(hour, includeMinutes) {
-        if (CalendarUtils && typeof CalendarUtils.formatHour === 'function') {
-            return CalendarUtils.formatHour(hour, includeMinutes);
-        }
-        includeMinutes = includeMinutes !== false;
-        var num = parseInt(hour, 10);
-        if (isNaN(num) || num < 0 || num > 23) {
-            return String(hour);
-        }
-        var displayHour = num > 12 ? num - 12 : num;
-        if (num === 0) displayHour = 12;
-        var ampm = num >= 12 ? 'PM' : 'AM';
-        return displayHour + (includeMinutes ? ':00 ' : ' ') + ampm;
-    }
 
     // ============================================================
     // RENDER FACULTY TAB
@@ -236,10 +217,10 @@
         var selectedInstructorId = state.selectedInstructorId;
         var week = state.selectedWeek || 1;
 
-        var selectedClass = selectedClassId ? AcademyCore.getClass(selectedClassId) : null;
-        var selectedInstructor = selectedInstructorId ? AcademyCore.getCharacterById(selectedInstructorId) : null;
+        var selectedClass = selectedClassId ? AcademyQueries.getClass(selectedClassId) : null;
+        var selectedInstructor = selectedInstructorId ? CharacterQueries.getCharacterById(selectedInstructorId) : null;
 
-        var instructors = selectedClassId ? AcademyCore.getClassInstructors(selectedClassId) : [];
+        var instructors = selectedClassId ? AcademyQueries.getClassInstructors(selectedClassId) : [];
 
         var html = '';
 
@@ -338,7 +319,7 @@
         // Instructor detail
         html += '<div class="instructors-detail">';
         if (selectedInstructorId) {
-            var instructor = AcademyCore.getCharacterById(selectedInstructorId);
+            var instructor = CharacterQueries.getCharacterById(selectedInstructorId);
             if (instructor) {
                 html += renderInstructorDetail(state, instructor);
             } else {
@@ -362,8 +343,8 @@
         var week = state.selectedWeek || 1;
         var name = CharacterQueries.getDisplayName(instructor);
 
-        var templates = AcademyCore.getInstructorTemplates(instructorId, week);
-        var blocks = AcademyCore.getInstructorBlocks(instructorId, week);
+        var templates = CalendarCore.getInstructorTemplates(instructorId, week);
+        var blocks = CalendarCore.getInstructorBlocks(instructorId, week);
 
         var html = '';
 
@@ -435,7 +416,7 @@
         html += '<thead>';
         html += '<tr><th>Time</th>';
         for (var d3 = 1; d3 <= 7; d3++) {
-            html += '<th>' + days[d3 - 1] + '</th>';
+            html += '<th>' + SHORT_DAY_NAMES[d3] + '</th>';
         }
         html += '</tr>';
         html += '</thead>';
@@ -452,7 +433,7 @@
                 var className = 'schedule-empty';
 
                 if (template) {
-                    var disc = AcademyCore.getDiscipline(template.disciplineId);
+                    var disc = AcademyQueries.getDiscipline(template.disciplineId);
                     display = disc ? disc.name : 'Unknown';
                     className = 'schedule-class';
                     if (template.assignedStudents && template.assignedStudents.length > 0) {
@@ -564,7 +545,7 @@
 
     function renderLocationsView(state) {
         var week = state.selectedWeek || 1;
-        var locations = AcademyCore.getLocations();
+        var locations = AcademyQueries.getLocations();
 
         var html = '';
 
@@ -579,7 +560,7 @@
             html += '<div class="locations-grid">';
             for (var i = 0; i < locations.length; i++) {
                 var loc = locations[i];
-                var schedule = AcademyCore.getLocationSchedule(loc.id, week);
+                var schedule = CalendarCore.getLocationSchedule(loc.id, week);
 
                 html += '<div class="location-card">';
                 html += '<div class="location-card-header">';
@@ -614,7 +595,7 @@
                         for (var h in daySchedule2) {
                             if (!Object.prototype.hasOwnProperty.call(daySchedule2, h)) { continue; }
                             if (daySchedule2[h]) {
-                                var disc = AcademyCore.getDiscipline(daySchedule2[h]);
+                                var disc = AcademyQueries.getDiscipline(daySchedule2[h]);
                                 dayEntries.push({
                                     hour: parseInt(h, 10),
                                     name: disc ? disc.name : 'Unknown'
@@ -652,7 +633,7 @@
 
     function renderAutoGroupsView(state) {
         var week = state.selectedWeek || 1;
-        var groups = AcademyCore.getAllAutoGroups();
+        var groups = AcademyGroups.getAllAutoGroups();
 
         var html = '';
 
@@ -665,7 +646,7 @@
         html += '<div class="autogroups-add-form">';
         html += '<select id="autogroup-discipline-select" class="small">';
         html += '<option value="">Select discipline...</option>';
-        var disciplines = AcademyCore.getDisciplines();
+        var disciplines = AcademyQueries.getDisciplines();
         for (var i = 0; i < disciplines.length; i++) {
             var d = disciplines[i];
             html += '<option value="' + escapeHtml(d.id) + '">' + escapeHtml(d.name) + '</option>';
@@ -673,7 +654,7 @@
         html += '</select>';
         html += '<select id="autogroup-instructor-select" class="small">';
         html += '<option value="">Select instructor...</option>';
-        var instructors = AcademyCore.getInstructors();
+        var instructors = AcademyQueries.getInstructors();
         for (var j = 0; j < instructors.length; j++) {
             var inst = instructors[j];
             var name = CharacterQueries.getDisplayName(inst);
@@ -690,8 +671,8 @@
             for (var key in groups) {
                 if (!Object.prototype.hasOwnProperty.call(groups, key)) { continue; }
                 var group = groups[key];
-                var disc = AcademyCore.getDiscipline(group.disciplineId);
-                var instructor = AcademyCore.getCharacterById(group.instructorId);
+                var disc = AcademyQueries.getDiscipline(group.disciplineId);
+                var instructor = CharacterQueries.getCharacterById(group.instructorId);
                 var discName = disc ? disc.name : 'Unknown';
                 var instName = instructor ? CharacterQueries.getDisplayName(instructor) : 'Unknown';
 
@@ -718,7 +699,7 @@
                 if (group.students && group.students.length > 0) {
                     html += '<div class="autogroup-students">';
                     for (var s = 0; s < group.students.length; s++) {
-                        var student = AcademyCore.getCharacterById(group.students[s]);
+                        var student = CharacterQueries.getCharacterById(group.students[s]);
                         var studentName = student ? CharacterQueries.getDisplayName(student) : 'Unknown';
                         html += '<span class="autogroup-student">' + escapeHtml(studentName) + '</span>';
                     }
@@ -729,7 +710,7 @@
                 html += '<div class="autogroup-add-student">';
                 html += '<select class="autogroup-student-select small">';
                 html += '<option value="">Add student...</option>';
-                var availableStudents = AcademyCore.getStudents();
+                var availableStudents = AcademyQueries.getStudents();
                 var currentStudents = group.students || [];
                 for (var a = 0; a < availableStudents.length; a++) {
                     var stu = availableStudents[a];
@@ -776,7 +757,7 @@
     // ============================================================
 
     function renderDisciplinesView(state) {
-        var disciplines = AcademyCore.getDisciplines();
+        var disciplines = AcademyQueries.getDisciplines();
 
         var html = '';
 
@@ -793,7 +774,7 @@
                 var d = disciplines[i];
                 var instructors = d.instructorIds || [];
                 var instructorNames = instructors.map(function(id) {
-                    var inst = AcademyCore.getCharacterById(id);
+                    var inst = CharacterQueries.getCharacterById(id);
                     return inst ? CharacterQueries.getDisplayName(inst) : 'Unknown';
                 });
 
@@ -1184,7 +1165,7 @@
             return;
         }
 
-        var result = AcademyCore.addInstructorClassTemplate(instructorId, week, day, hour, {
+        var result = CalendarCore.setInstructorTemplate(instructorId, week, day, hour, {
             disciplineId: disciplineId,
             duration: duration,
             label: '',
@@ -1211,7 +1192,7 @@
 
         var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
 
-        var result = AcademyCore.removeInstructorClassTemplate(instructorId, week, day, hour);
+        var result = CalendarCore.removeInstructorTemplate(instructorId, week, day, hour);
 
         if (result && result.success) {
             showNotification('Schedule removed successfully.', 'success');
@@ -1247,7 +1228,7 @@
         var duration = durationSelect ? parseInt(durationSelect.value, 10) : 1;
         var label = labelInput ? labelInput.value.trim() : 'Blocked';
 
-        var result = AcademyCore.addInstructorBlock(instructorId, week, day, hour, {
+        var result = CalendarCore.setInstructorBlock(instructorId, week, day, hour, {
             duration: duration,
             label: label
         });
@@ -1273,7 +1254,7 @@
 
         var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
 
-        var result = AcademyCore.removeInstructorBlock(instructorId, week, day, hour);
+        var result = CalendarCore.removeInstructorBlock(instructorId, week, day, hour);
 
         if (result && result.success) {
             showNotification('Block removed successfully.', 'success');
@@ -1319,7 +1300,7 @@
                 
                 if (locationId && select && select.value) {
                     var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
-                    var result = AcademyCore.setLocationClass(locationId, week, day, hour, select.value);
+                    var result = CalendarCore.setLocationClass(locationId, week, day, hour, select.value);
                     if (result && result.success) {
                         showNotification('Class assigned to location.', 'success');
                         refreshLocationModal(locationId);
@@ -1340,7 +1321,7 @@
                 var hour = parseInt(btn.dataset.hour, 10);
                 if (locationId && confirm('Remove this class from location?')) {
                     var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
-                    var result = AcademyCore.removeLocationClass(locationId, week, day, hour);
+                    var result = CalendarCore.removeLocationClass(locationId, week, day, hour);
                     if (result && result.success) {
                         showNotification('Class removed from location.', 'success');
                         refreshLocationModal(locationId);
@@ -1362,7 +1343,7 @@
             return;
         }
 
-        var loc = AcademyCore.getLocation(locationId);
+        var loc = AcademyQueries.getLocation(locationId);
         if (loc) {
             title.textContent = 'Manage: ' + loc.name;
         }
@@ -1376,14 +1357,14 @@
         var content = document.getElementById('faculty-location-content');
         if (!content) { return; }
 
-        var loc = AcademyCore.getLocation(locationId);
+        var loc = AcademyQueries.getLocation(locationId);
         if (!loc) {
             content.innerHTML = '<p class="empty-state">Location not found.</p>';
             return;
         }
 
         var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
-        var schedule = AcademyCore.getLocationSchedule(locationId, week);
+        var schedule = CalendarCore.getLocationSchedule(locationId, week);
         var disciplines = AcademyQueries.getAvailableDisciplines(week);
 
         var days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -1406,7 +1387,7 @@
                 var className = 'location-modal-slot empty';
 
                 if (classId) {
-                    var disc = AcademyCore.getDiscipline(classId);
+                    var disc = AcademyQueries.getDiscipline(classId);
                     display = disc ? disc.name : 'Unknown';
                     className = 'location-modal-slot occupied';
                 } else {
@@ -1471,7 +1452,7 @@
             return;
         }
 
-        var result = AcademyCore.createAutoGroup(disciplineId, instructorId);
+        var result = AcademyGroups.createAutoGroup(disciplineId, instructorId);
 
         if (result && result.success) {
             showNotification('Auto-group created successfully.', 'success');
@@ -1485,7 +1466,7 @@
     }
 
     function handleDeleteAutoGroup(key) {
-        var result = AcademyCore.deleteAutoGroup(key);
+        var result = AcademyGroups.deleteAutoGroup(key);
 
         if (result && result.success) {
             showNotification('Auto-group deleted successfully.', 'success');
@@ -1499,7 +1480,7 @@
     }
 
     function handleAddStudentToAutoGroup(key, studentId) {
-        var result = AcademyCore.addStudentToAutoGroup(key, studentId);
+        var result = AcademyGroups.addStudentToAutoGroup(key, studentId);
 
         if (result && result.success) {
             showNotification('Student added to auto-group.', 'success');
@@ -1515,7 +1496,7 @@
     function handleAddSlotToAutoGroup(key, day, hour, duration) {
         var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
 
-        var result = AcademyCore.addSlotToAutoGroup(key, week, day, hour, duration);
+        var result = AcademyGroups.addSlotToAutoGroup(key, week, day, hour, duration);
 
         if (result && result.success) {
             showNotification('Slot added to auto-group.', 'success');
@@ -1529,7 +1510,7 @@
     }
 
     function handleRebuildAutoGroups() {
-        var result = AcademyCore.rebuildAutoGroups();
+        var result = AcademyGroups.rebuildGroupsFromSchedules();
 
         if (result && result.success) {
             var count = result.count || 0;
@@ -1580,9 +1561,6 @@
                 handleSaveDiscipline(form);
             });
         }
-
-        // Populate instructor select when modal opens
-        // This is triggered by showDisciplineForm
     }
 
     function showDisciplineForm(editId) {
@@ -1604,7 +1582,7 @@
 
         // Populate instructor select
         if (instSelect) {
-            var instructors = AcademyCore.getInstructors();
+            var instructors = AcademyQueries.getInstructors();
             instSelect.innerHTML = '';
             for (var i = 0; i < instructors.length; i++) {
                 var inst = instructors[i];
@@ -1617,7 +1595,7 @@
         }
 
         if (editId) {
-            var disc = AcademyCore.getDiscipline(editId);
+            var disc = AcademyQueries.getDiscipline(editId);
             if (!disc) {
                 showNotification('Discipline not found.', 'error');
                 return;
@@ -1688,9 +1666,9 @@
         var result;
 
         if (editId) {
-            result = AcademyCore.updateDiscipline(editId, data);
+            result = DisciplineCore.updateDiscipline(editId, data);
         } else {
-            result = AcademyCore.createDiscipline(data);
+            result = DisciplineCore.createDiscipline(data);
         }
 
         if (result && result.success) {
@@ -1707,7 +1685,7 @@
     }
 
     function handleDeleteDiscipline(id) {
-        var result = AcademyCore.deleteDiscipline(id);
+        var result = DisciplineCore.deleteDiscipline(id);
 
         if (result && result.success) {
             showNotification('Discipline deleted successfully.', 'success');
