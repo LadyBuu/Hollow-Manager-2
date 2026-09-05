@@ -40,30 +40,39 @@
     // ============================================================
 
     if (!window.TeamCore) {
+        console.warn('TeamRender: TeamCore not available.');
         return;
     }
     if (!window.TeamQueries) {
+        console.warn('TeamRender: TeamQueries not available.');
         return;
     }
     if (!window.TeamMembers) {
+        console.warn('TeamRender: TeamMembers not available.');
         return;
     }
     if (!window.TeamRankings) {
+        console.warn('TeamRender: TeamRankings not available.');
         return;
     }
     if (!window.CharacterQueries) {
+        console.warn('TeamRender: CharacterQueries not available.');
         return;
     }
     if (!window.ClassesQueries) {
+        console.warn('TeamRender: ClassesQueries not available.');
         return;
     }
     if (!window.CALENDAR_CONSTANTS) {
+        console.warn('TeamRender: CALENDAR_CONSTANTS not available.');
         return;
     }
     if (!window.DomUtils) {
+        console.warn('TeamRender: DomUtils not available.');
         return;
     }
     if (!window.ValidationUtils) {
+        console.warn('TeamRender: ValidationUtils not available.');
         return;
     }
 
@@ -161,13 +170,10 @@
     // ============================================================
 
     function getPeriodLabel(teamType) {
-        return teamType === 'academic' ? 'Week' : 'Period';
+        return 'Period';
     }
 
     function formatActiveMembersLabel(teamType, period) {
-        if (teamType === 'academic') {
-            return 'Active Members at Week ' + escapeHtml(String(period)) + ':';
-        }
         return 'Active Members in ' + escapeHtml(String(period)) + ':';
     }
 
@@ -198,7 +204,6 @@
         renderList: function(teams, type, filterPeriod, expandedTeamId) {
             if (!teams || teams.length === 0) {
                 var labels = {
-                    'academic': 'academic teams',
                     'professional': 'professional teams',
                     'temporary': 'temporary teams',
                     'civilian': 'civilian teams'
@@ -257,7 +262,7 @@
                 html += '<span class="team-rank">' + escapeHtml(rankDisplay) + '</span>';
                 html += '<span class="team-member-count">' + memberCount + '</span>';
                 html += '<span class="actions">' +
-                    '<button class="small toggle-members" data-id="' + escapeAttribute(team.id) + '">' + (isExpanded ? '▾' : '▸') + '</button>' +
+                    '<button class="small toggle-members" data-id="' + escapeAttribute(team.id) + '">' + (isExpanded ? '\u25be' : '\u25b8') + '</button>' +
                     '<button class="small manage-members" data-id="' + escapeAttribute(team.id) + '">Members</button>' +
                     '<button class="small manage-rankings" data-id="' + escapeAttribute(team.id) + '">Rankings</button>' +
                     '<button class="small edit-team" data-id="' + escapeAttribute(team.id) + '">Edit</button>' +
@@ -313,7 +318,7 @@
 
                     html += '<div class="member-entry ' + statusClass + '">';
                     html += '<span>' + escapeHtml(name) + ' <span class="role">(' + escapeHtml(member.role || 'Member') + ')</span></span>';
-                    html += '<span class="member-details">Age: ' + escapeHtml(age) + ' | Joined: ' + escapeHtml(member.joinPeriod || '?') + (member.leavePeriod ? ' → ' + escapeHtml(member.leavePeriod) : '') + ' | <span class="member-status">' + escapeHtml(statusInfo.label) + '</span></span>';
+                    html += '<span class="member-details">Age: ' + escapeHtml(age) + ' | Joined: ' + escapeHtml(member.joinPeriod || '?') + (member.leavePeriod ? ' \u2192 ' + escapeHtml(member.leavePeriod) : '') + ' | <span class="member-status">' + escapeHtml(statusInfo.label) + '</span></span>';
                     html += '</div>';
                 }
             } else {
@@ -331,7 +336,7 @@
          * @returns {string} HTML string
          */
         renderContainer: function(activeTab) {
-            activeTab = activeTab || 'academic';
+            activeTab = activeTab || 'professional';
             return [
                 '<div class="page-header">',
                     '<h2>Team Manager</h2>',
@@ -339,15 +344,11 @@
                 '</div>',
                 '<div class="tab-container">',
                     '<div class="tab-nav" id="team-tab-nav">',
-                        '<button class="tab-btn ' + (activeTab === 'academic' ? 'active' : '') + '" data-tab="academic">Academic</button>',
                         '<button class="tab-btn ' + (activeTab === 'professional' ? 'active' : '') + '" data-tab="professional">Professional</button>',
                         '<button class="tab-btn ' + (activeTab === 'temporary' ? 'active' : '') + '" data-tab="temporary">Temporary</button>',
                         '<button class="tab-btn ' + (activeTab === 'civilian' ? 'active' : '') + '" data-tab="civilian">Civilian</button>',
                     '</div>',
                     '<div class="tab-content" id="team-tab-content">',
-                        '<div id="tab-academic" class="tab-panel ' + (activeTab === 'academic' ? 'active' : '') + '">',
-                            '<div id="academic-content"></div>',
-                        '</div>',
                         '<div id="tab-professional" class="tab-panel ' + (activeTab === 'professional' ? 'active' : '') + '">',
                             '<div id="professional-content"></div>',
                         '</div>',
@@ -409,7 +410,7 @@
             html += '<span class="team-member-count">Members: ' + memberCount + '</span>';
             html += '</div>';
             html += '<div class="team-card-actions">';
-            html += '<button class="small toggle-members" data-id="' + escapeAttribute(team.id) + '">▸</button>';
+            html += '<button class="small toggle-members" data-id="' + escapeAttribute(team.id) + '">\u25b8</button>';
             html += '<button class="small manage-members" data-id="' + escapeAttribute(team.id) + '">Members</button>';
             html += '<button class="small manage-rankings" data-id="' + escapeAttribute(team.id) + '">Rankings</button>';
             html += '<button class="small edit-team" data-id="' + escapeAttribute(team.id) + '">Edit</button>';
