@@ -5,14 +5,25 @@
  * Path: js/utils/validation-utils.js
  * 
  * This module provides:
- *   - Type checking (isObject, isSafeInteger, isPositiveInteger)
- *   - Period/Week parsing (parseOptionalPeriod, parsePositivePeriod, etc.)
+ *   - Type checking (isPlainObject, isSafeInteger, isPositiveInteger)
+ *   - Integer parsing (parseOptionalInteger, parsePositiveInteger, etc.)
  * 
  * IMPORTANT:
  *   - These functions are PURE - no side effects
  *   - No knowledge of HollowBlades domain concepts
- *   - "Period" here means generic positive integer time representation
- *   - Domain interpretation (weeks, years) belongs in domain modules
+ *   - Delegates to CoreUtils - the SINGLE SOURCE OF TRUTH
+ *   - This module exists for backward compatibility during migration
+ *   - New code should use CoreUtils directly
+ * 
+ * DEPENDENCIES:
+ *   - window.CoreUtils (for all validation logic)
+ * 
+ * USAGE:
+ *   // Legacy (still works)
+ *   var isValid = ValidationUtils.isSafeInteger(42);
+ * 
+ *   // Preferred (new code)
+ *   var isValid = CoreUtils.isSafeInteger(42);
  */
 
 (function() {
@@ -22,65 +33,119 @@
     window.__validationUtilsLoaded = true;
 
     // ============================================================
-    // TYPE HELPERS
+    // DEPENDENCY IMPORTS
     // ============================================================
 
-    function isObject(value) {
-        return value !== null &&
-               typeof value === 'object' &&
-               !Array.isArray(value);
+    var CoreUtils = window.CoreUtils;
+
+    // ============================================================
+    // DELEGATE TO COREUTILS
+    // ============================================================
+
+    /**
+     * Check if a value is a plain object.
+     * @deprecated Use CoreUtils.isPlainObject() instead.
+     */
+    function isPlainObject(value) {
+        if (CoreUtils && typeof CoreUtils.isPlainObject === 'function') {
+            return CoreUtils.isPlainObject(value);
+        }
+        // Emergency fallback (should never be reached)
+        return value !== null && typeof value === 'object' && !Array.isArray(value);
     }
 
+    /**
+     * Check if a value is a safe integer.
+     * @deprecated Use CoreUtils.isSafeInteger() instead.
+     */
     function isSafeInteger(value) {
+        if (CoreUtils && typeof CoreUtils.isSafeInteger === 'function') {
+            return CoreUtils.isSafeInteger(value);
+        }
         return Number.isSafeInteger(value);
     }
 
+    /**
+     * Check if a value is a positive integer (>= 1).
+     * @deprecated Use CoreUtils.isPositiveInteger() instead.
+     */
     function isPositiveInteger(value) {
-        return isSafeInteger(value) && value >= 1;
+        if (CoreUtils && typeof CoreUtils.isPositiveInteger === 'function') {
+            return CoreUtils.isPositiveInteger(value);
+        }
+        return Number.isSafeInteger(value) && value >= 1;
     }
 
-    // ============================================================
-    // PERIOD PARSING - Generic integer-string parsing
-    // ============================================================
-
-    function parseOptionalPeriod(value) {
+    /**
+     * Parse an optional integer value.
+     * @deprecated Use CoreUtils.parseOptionalInteger() instead.
+     */
+    function parseOptionalInteger(value) {
+        if (CoreUtils && typeof CoreUtils.parseOptionalInteger === 'function') {
+            return CoreUtils.parseOptionalInteger(value);
+        }
+        // Emergency fallback (should never be reached)
         if (value === undefined || value === null || value === '') {
             return null;
         }
-        
         var str = String(value).trim();
         if (!/^\d+$/.test(str)) {
             return null;
         }
-        
         var parsed = Number(str);
-        if (!isSafeInteger(parsed)) {
+        if (!Number.isSafeInteger(parsed)) {
             return null;
         }
-        
         return parsed;
     }
 
-    function parsePositivePeriod(value, fallback) {
-        var parsed = parseOptionalPeriod(value);
+    /**
+     * Parse a positive integer with a fallback value.
+     * @deprecated Use CoreUtils.parsePositiveInteger() instead.
+     */
+    function parsePositiveInteger(value, fallback) {
+        if (CoreUtils && typeof CoreUtils.parsePositiveInteger === 'function') {
+            return CoreUtils.parsePositiveInteger(value, fallback);
+        }
+        var parsed = parseOptionalInteger(value);
         return (parsed !== null && parsed >= 1) ? parsed : fallback;
     }
 
-    function parseStrictPositivePeriod(value) {
-        var parsed = parseOptionalPeriod(value);
+    /**
+     * Parse a strict positive integer.
+     * @deprecated Use CoreUtils.parseStrictPositiveInteger() instead.
+     */
+    function parseStrictPositiveInteger(value) {
+        if (CoreUtils && typeof CoreUtils.parseStrictPositiveInteger === 'function') {
+            return CoreUtils.parseStrictPositiveInteger(value);
+        }
+        var parsed = parseOptionalInteger(value);
         return (parsed !== null && parsed >= 1) ? parsed : null;
     }
 
-    function hasPeriodValue(value) {
+    /**
+     * Check if a value has content (non-empty after trimming).
+     * @deprecated Use CoreUtils.hasValue() instead.
+     */
+    function hasValue(value) {
+        if (CoreUtils && typeof CoreUtils.hasValue === 'function') {
+            return CoreUtils.hasValue(value);
+        }
         return value !== undefined && value !== null && String(value).trim() !== '';
     }
 
-    function getPeriodInfo(value) {
-        if (!hasPeriodValue(value)) {
+    /**
+     * Get detailed integer information.
+     * @deprecated Use CoreUtils.getIntegerInfo() instead.
+     */
+    function getIntegerInfo(value) {
+        if (CoreUtils && typeof CoreUtils.getIntegerInfo === 'function') {
+            return CoreUtils.getIntegerInfo(value);
+        }
+        if (!hasValue(value)) {
             return { present: false, valid: true, value: null };
         }
-        
-        var parsed = parseOptionalPeriod(value);
+        var parsed = parseOptionalInteger(value);
         return {
             present: true,
             valid: parsed !== null,
@@ -89,13 +154,70 @@
     }
 
     // ============================================================
+    // LEGACY ALIASES (DEPRECATED)
+    // ============================================================
+
+    /**
+     * @deprecated Use parseOptionalInteger() instead.
+     */
+    function parseOptionalPeriod(value) {
+        return parseOptionalInteger(value);
+    }
+
+    /**
+     * @deprecated Use parsePositiveInteger() instead.
+     */
+    function parsePositivePeriod(value, fallback) {
+        return parsePositiveInteger(value, fallback);
+    }
+
+    /**
+     * @deprecated Use parseStrictPositiveInteger() instead.
+     */
+    function parseStrictPositivePeriod(value) {
+        return parseStrictPositiveInteger(value);
+    }
+
+    /**
+     * @deprecated Use hasValue() instead.
+     */
+    function hasPeriodValue(value) {
+        return hasValue(value);
+    }
+
+    /**
+     * @deprecated Use getIntegerInfo() instead.
+     */
+    function getPeriodInfo(value) {
+        return getIntegerInfo(value);
+    }
+
+    /**
+     * @deprecated Use isPlainObject() instead.
+     */
+    function isObject(value) {
+        return isPlainObject(value);
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.ValidationUtils = {
-        isObject: isObject,
+        // Type checking
+        isPlainObject: isPlainObject,
+        isObject: isObject, // Deprecated alias
         isSafeInteger: isSafeInteger,
         isPositiveInteger: isPositiveInteger,
+
+        // Integer parsing
+        parseOptionalInteger: parseOptionalInteger,
+        parsePositiveInteger: parsePositiveInteger,
+        parseStrictPositiveInteger: parseStrictPositiveInteger,
+        hasValue: hasValue,
+        getIntegerInfo: getIntegerInfo,
+
+        // Deprecated period aliases
         parseOptionalPeriod: parseOptionalPeriod,
         parsePositivePeriod: parsePositivePeriod,
         parseStrictPositivePeriod: parseStrictPositivePeriod,

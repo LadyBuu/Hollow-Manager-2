@@ -51,13 +51,13 @@
     'use strict';
 
     var DB_NAME = 'HollowBladesDB';
-    var DB_VERSION = 13; // Updated from 1 to 13 to match existing database
-    var DATA_VERSION = 13;
+    var DB_VERSION = 1;  // IndexedDB structural version (only 1 object store)
+    var DATA_VERSION = 13;  // Application data schema version
     var STORE_NAME = 'appData';
 
     // INTERNAL: The actual IndexedDB connection (private)
     var _indexedDB = null;
-    var _data = null;
+    var _data = null;  // SINGLE SOURCE OF TRUTH for application state
     var _dbOpenPromise = null;
     var _dbInitPromise = null;
     var _loadPromise = null;
@@ -214,16 +214,14 @@
             try {
                 return structuredClone(value);
             } catch (e) {
-                console.error('Database: structuredClone failed:', e);
-                return null;
+                // Fall through to JSON fallback
             }
         }
 
         try {
             return JSON.parse(JSON.stringify(value));
         } catch (e) {
-            console.error('Database: JSON clone failed:', e);
-            return null;
+            throw new Error('Database: Failed to clone value: ' + e.message);
         }
     }
 
@@ -342,17 +340,6 @@
     }
 
     // ============================================================
-    // ENSURE MIGRATION BASE STRUCTURE
-    // ============================================================
-
-    function ensureMigrationBaseStructure(data) {
-        if (!Array.isArray(data.characters)) data.characters = [];
-        if (!Array.isArray(data.teams)) data.teams = [];
-        if (!Array.isArray(data.tournaments)) data.tournaments = [];
-        if (!Array.isArray(data.missions)) data.missions = [];
-    }
-
-    // ============================================================
     // DATA MIGRATION - VERSIONED
     // ============================================================
 
@@ -361,7 +348,11 @@
             throw new Error('Invalid database data format');
         }
 
-        ensureMigrationBaseStructure(data);
+        // Ensure base arrays exist
+        if (!Array.isArray(data.characters)) data.characters = [];
+        if (!Array.isArray(data.teams)) data.teams = [];
+        if (!Array.isArray(data.tournaments)) data.tournaments = [];
+        if (!Array.isArray(data.missions)) data.missions = [];
 
         if (
             typeof data._dataVersion !== 'number' ||
@@ -623,10 +614,10 @@
     }
 
     // ============================================================
-    // ENSURE DATA STRUCTURE - Tracks repairs
+    // NORMALISE DATA STRUCTURE - Current schema defaults
     // ============================================================
 
-    function ensureDataStructure(data) {
+    function normaliseDataStructure(data) {
         var repaired = false;
 
         if (!Array.isArray(data.tournaments)) { data.tournaments = []; repaired = true; }
@@ -694,14 +685,7 @@
             repaired = true;
         } else {
             var curriculumDefaults = getDefaultCurriculumData();
-            var mergedCurriculum = deepMergeDefaults(data.curriculum, curriculumDefaults);
-            for (var key in curriculumDefaults) {
-                if (data.curriculum[key] === undefined) {
-                    repaired = true;
-                    break;
-                }
-            }
-            data.curriculum = mergedCurriculum;
+            data.curriculum = deepMergeDefaults(data.curriculum, curriculumDefaults);
         }
 
         if (!data.social || typeof data.social !== 'object' || Array.isArray(data.social)) {
@@ -709,14 +693,7 @@
             repaired = true;
         } else {
             var socialDefaults = getDefaultSocialData();
-            var mergedSocial = deepMergeDefaults(data.social, socialDefaults);
-            for (var key in socialDefaults) {
-                if (data.social[key] === undefined) {
-                    repaired = true;
-                    break;
-                }
-            }
-            data.social = mergedSocial;
+            data.social = deepMergeDefaults(data.social, socialDefaults);
         }
 
         if (!data.statsConfig || typeof data.statsConfig !== 'object' || Array.isArray(data.statsConfig)) {
@@ -724,32 +701,26 @@
             repaired = true;
         } else {
             var statsDefaults = getDefaultStatsConfig();
-            var mergedStats = deepMergeDefaults(data.statsConfig, statsDefaults);
-            for (var key in statsDefaults) {
-                if (data.statsConfig[key] === undefined) {
-                    repaired = true;
-                    break;
-                }
-            }
-            data.statsConfig = mergedStats;
+            data.statsConfig = deepMergeDefaults(data.statsConfig, statsDefaults);
         }
 
         return repaired;
     }
 
     // ============================================================
-    // SAFE CLONE
+    // CREATE SAFE COPY - Strict structuredClone
     // ============================================================
 
     function createSafeCopy(data) {
+        if (data === null || typeof data !== 'object') {
+            throw new Error('Cannot clone non-object data');
+        }
+
         if (typeof structuredClone !== 'function') {
             throw new Error('This browser does not support structuredClone().');
         }
-        try {
-            return structuredClone(data);
-        } catch (err) {
-            throw err;
-        }
+
+        return structuredClone(data);
     }
 
     // ============================================================
@@ -797,7 +768,9 @@
                     }
 
                     var originalVersion = migrateData(_data);
-                    var repaired = ensureDataStructure(_data);
+                    var repaired = normaliseDataStructure(_data);
+                    
+                    // _data is the single source of truth
                     window.data = _data;
 
                     var needsPersistence = false;
@@ -885,7 +858,7 @@
                     try {
                         waiter.resolve(true);
                     } catch (err) {
-                        console.error('Error resolving save waiter:', err);
+                        // Ignore resolver errors
                     }
                 });
 
@@ -900,7 +873,7 @@
                     try {
                         waiter.reject(err);
                     } catch (rejectErr) {
-                        console.error('Error rejecting save waiter:', rejectErr);
+                        // Ignore rejector errors
                     }
                 });
 
@@ -933,16 +906,18 @@
             }
 
             try {
-                var sourceData = window.data || _data;
+                // _data is the single source of truth
+                var sourceData = _data;
 
                 if (!sourceData) {
                     sourceData = getEmptyData();
                 }
 
+                // Keep window.data in sync
                 window.data = sourceData;
                 _data = sourceData;
 
-                ensureDataStructure(sourceData);
+                normaliseDataStructure(sourceData);
                 var safeData = createSafeCopy(sourceData);
 
                 var transaction = _indexedDB.transaction([STORE_NAME], 'readwrite');

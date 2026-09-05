@@ -11,38 +11,43 @@
  *   - NO DOM manipulation (that's dom-utils.js)
  *   - NO notification logic (that's notification.js)
  *   - NO activity logging (that's activity-log.js)
- *   - PURE functions only (no side effects)
+ *   - NO application state mutation
+ *   - NO dependencies on other modules
  *   - Small, focused, composable
  * 
  * WHAT BELONGS HERE:
- *   - Type checking (isObject, isSafeInteger, isPositiveInteger)
- *   - Period parsing (parseOptionalPeriod, parsePositivePeriod, etc.)
+ *   - Type checking (isPlainObject, isSafeInteger, isPositiveInteger)
+ *   - Integer parsing (parseOptionalInteger, parsePositiveInteger, etc.)
  *   - ID generation (generateId)
- *   - Deep clone (deepClone) - delegates to ObjectUtils
+ *   - Deep clone (deepClone)
  *   - Formatting (formatDate, truncateString)
+ *   - Number helpers (clamp, isFiniteNumber, isNonNegativeNumber)
+ *   - Array helpers (isNonEmptyArray, last, first, unique)
+ *   - String helpers (capitalize, titleCase, kebabCase, snakeCase)
  * 
  * WHAT DOES NOT BELONG HERE (REMOVED):
- *   - Team predicates (isTeamOperational, etc.) → TeamQueries
- *   - Team queries (getTeamById, getTeams, etc.) → TeamQueries
- *   - Character queries (getCharacterById, getDisplayName, etc.) → CharacterQueries
- *   - Class queries (getClasses, getClass, etc.) → ClassesQueries
- *   - Discipline queries (getDiscipline, etc.) → DisciplineCore
- *   - Schedule queries (getStudentSchedule) → ScheduleCore
- *   - Elimination queries (isCharacterEliminated) → Elimination
- *   - Tournament helpers (getParticipantName) → TournamentCore
- *   - Random generators (generateRandomStats) → CharacterGenerator
- *   - Activity logging (_logActivity, recordActivity) → ActivityLog
+ *   - Team predicates → TeamQueries
+ *   - Character queries → CharacterQueries
+ *   - Class queries → ClassesQueries
+ *   - Discipline queries → DisciplineCore
+ *   - Schedule queries → ScheduleCore
+ *   - Elimination queries → Elimination
+ *   - Tournament helpers → TournamentCore
+ *   - Random generators → CharacterGenerator
+ *   - Activity logging → ActivityLog
+ *   - DOM operations → DomUtils
+ *   - Form operations → FormUtils
+ *   - Timing utilities → TimingUtils
+ *   - Object cloning → ObjectUtils
  * 
  * DEPENDENCIES:
- *   - window.ObjectUtils (optional, for deepClone)
- *   - window.IdUtils (optional, for generateId)
- *   - window.ValidationUtils (optional, for parsing)
+ *   - None
  * 
  * USAGE:
  *   var utils = window.CoreUtils;
- *   var obj = utils.isObject(value);
+ *   var obj = utils.isPlainObject(value);
  *   var id = utils.generateId('user');
- *   var parsed = utils.parseOptionalPeriod('42');
+ *   var parsed = utils.parseOptionalInteger('42');
  */
 
 (function() {
@@ -55,26 +60,22 @@
     window.__coreUtilsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS (optional, with fallbacks)
-    // ============================================================
-
-    var ObjectUtils = window.ObjectUtils || null;
-    var IdUtils = window.IdUtils || null;
-    var ValidationUtils = window.ValidationUtils || null;
-
-    // ============================================================
     // TYPE HELPERS
     // ============================================================
 
     /**
      * Check if a value is a plain object (not null, not array).
+     * Plain objects have Object.prototype as their prototype.
      * @param {*} value - Value to check
      * @returns {boolean} True if value is a plain object
      */
-    function isObject(value) {
-        return value !== null &&
-               typeof value === 'object' &&
-               !Array.isArray(value);
+    function isPlainObject(value) {
+        if (value === null || typeof value !== 'object') {
+            return false;
+        }
+
+        var prototype = Object.getPrototypeOf(value);
+        return prototype === Object.prototype || prototype === null;
     }
 
     /**
@@ -95,75 +96,110 @@
         return isSafeInteger(value) && value >= 1;
     }
 
+    /**
+     * Check if a value is a finite number.
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value is a finite number
+     */
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && Number.isFinite(value);
+    }
+
+    /**
+     * Check if a value is a non-negative number (>= 0).
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value is a non-negative number
+     */
+    function isNonNegativeNumber(value) {
+        return isFiniteNumber(value) && value >= 0;
+    }
+
     // ============================================================
-    // PERIOD PARSING - Generic integer-string parsing
+    // INTEGER PARSING - Generic integer-string parsing
     // ============================================================
 
     /**
-     * Parse an optional period value to a number.
+     * Parse an optional integer value.
      * Returns null for invalid, empty, or non-numeric values.
      * This is a generic parser - domain interpretation (weeks, years)
      * belongs in domain modules.
      * 
      * @param {*} value - Value to parse
-     * @returns {number|null} Parsed number or null
+     * @returns {number|null} Parsed integer or null
      */
-    function parseOptionalPeriod(value) {
+    function parseOptionalInteger(value) {
         if (value === undefined || value === null || value === '') {
             return null;
         }
+
         var str = String(value).trim();
+
         if (!/^\d+$/.test(str)) {
             return null;
         }
+
         var parsed = Number(str);
+
         if (!isSafeInteger(parsed)) {
             return null;
         }
+
         return parsed;
     }
 
     /**
-     * Parse a positive period with a fallback value.
+     * Parse a positive integer with a fallback value.
      * @param {*} value - Value to parse
      * @param {number} fallback - Fallback value if parsing fails
-     * @returns {number} Parsed number or fallback
+     * @returns {number} Parsed integer or fallback
      */
-    function parsePositivePeriod(value, fallback) {
-        var parsed = parseOptionalPeriod(value);
+    function parsePositiveInteger(value, fallback) {
+        var parsed = parseOptionalInteger(value);
         return (parsed !== null && parsed >= 1) ? parsed : fallback;
     }
 
     /**
-     * Parse a strict positive period.
+     * Parse a strict positive integer.
      * Returns null for invalid, empty, or non-positive values.
      * @param {*} value - Value to parse
-     * @returns {number|null} Parsed number or null
+     * @returns {number|null} Parsed integer or null
      */
-    function parseStrictPositivePeriod(value) {
-        var parsed = parseOptionalPeriod(value);
+    function parseStrictPositiveInteger(value) {
+        var parsed = parseOptionalInteger(value);
         return (parsed !== null && parsed >= 1) ? parsed : null;
     }
 
     /**
-     * Check if a value has a non-empty period value.
+     * Parse a non-negative integer (>= 0).
+     * Returns null for invalid values.
+     * @param {*} value - Value to parse
+     * @returns {number|null} Parsed integer or null
+     */
+    function parseNonNegativeInteger(value) {
+        var parsed = parseOptionalInteger(value);
+        return (parsed !== null && parsed >= 0) ? parsed : null;
+    }
+
+    /**
+     * Check if a value has content (non-empty after trimming).
      * @param {*} value - Value to check
      * @returns {boolean} True if value has content
      */
-    function hasPeriodValue(value) {
+    function hasValue(value) {
         return value !== undefined && value !== null && String(value).trim() !== '';
     }
 
     /**
-     * Get detailed period information.
+     * Get detailed integer information.
      * @param {*} value - Value to check
      * @returns {object} { present: boolean, valid: boolean, value: number|null }
      */
-    function getPeriodInfo(value) {
-        if (!hasPeriodValue(value)) {
+    function getIntegerInfo(value) {
+        if (!hasValue(value)) {
             return { present: false, valid: true, value: null };
         }
-        var parsed = parseOptionalPeriod(value);
+
+        var parsed = parseOptionalInteger(value);
         return {
             present: true,
             valid: parsed !== null,
@@ -185,11 +221,6 @@
     function generateId(prefix) {
         prefix = prefix || 'id';
 
-        // Prefer IdUtils if available
-        if (IdUtils && typeof IdUtils.generateId === 'function') {
-            return IdUtils.generateId(prefix);
-        }
-
         if (window.crypto && typeof window.crypto.randomUUID === 'function') {
             return prefix + '_' + window.crypto.randomUUID();
         }
@@ -200,42 +231,35 @@
     }
 
     // ============================================================
-    // DEEP CLONE - Generic, delegates to ObjectUtils
+    // DEEP CLONE - Generic, self-contained
     // ============================================================
 
     /**
      * Deep clone a value.
-     * Delegates to ObjectUtils if available, with fallback implementation.
-     * Returns null on failure.
+     * Uses structuredClone if available, falls back to JSON clone.
+     * Throws an error if cloning fails.
      * 
      * @param {*} value - Value to clone
-     * @returns {*} Cloned value or null on failure
+     * @returns {*} Cloned value
+     * @throws {Error} If cloning fails
      */
     function deepClone(value) {
         if (value === null || typeof value !== 'object') {
             return value;
         }
 
-        // Prefer ObjectUtils if available
-        if (ObjectUtils && typeof ObjectUtils.deepClone === 'function') {
-            return ObjectUtils.deepClone(value);
-        }
-
-        // Fallback implementation
         if (typeof structuredClone === 'function') {
             try {
                 return structuredClone(value);
             } catch (e) {
-                console.error('CoreUtils: structuredClone failed:', e);
-                return null;
+                // Fall through to JSON fallback
             }
         }
 
         try {
             return JSON.parse(JSON.stringify(value));
         } catch (e) {
-            console.error('CoreUtils: JSON clone failed:', e);
-            return null;
+            throw new Error('CoreUtils.deepClone: Failed to clone value: ' + e.message);
         }
     }
 
@@ -245,27 +269,50 @@
 
     /**
      * Format a date string to a localized date string.
+     * NOTE: Date-only strings (e.g., "2026-09-05") are interpreted as UTC.
+     * For precise date handling, use a dedicated date library.
+     * 
      * @param {string} dateString - ISO date string
-     * @returns {string} Formatted date or 'N/A'
+     * @param {string} fallback - Fallback value if date is invalid (default: 'N/A')
+     * @returns {string} Formatted date or fallback
      */
-    function formatDate(dateString) {
-        if (!dateString) return 'N/A';
+    function formatDate(dateString, fallback) {
+        fallback = fallback || 'N/A';
+
+        if (!dateString) {
+            return fallback;
+        }
+
         var date = new Date(dateString);
-        if (isNaN(date.getTime())) return 'N/A';
+
+        if (isNaN(date.getTime())) {
+            return fallback;
+        }
+
         return date.toLocaleDateString();
     }
 
     /**
      * Truncate a string to a maximum length.
-     * @param {string} str - String to truncate
-     * @param {number} length - Maximum length
-     * @returns {string} Truncated string
+     * @param {*} value - Value to truncate
+     * @param {number} length - Maximum length (must be a non-negative finite integer)
+     * @returns {string} Truncated string or original string if invalid length
      */
-    function truncateString(str, length) {
-        if (str === undefined || str === null) return '';
-        str = String(str);
-        if (!Number.isFinite(length) || length < 0) return str;
-        if (str.length <= length) return str;
+    function truncateString(value, length) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+
+        var str = String(value);
+
+        if (!Number.isFinite(length) || length < 0 || !Number.isInteger(length)) {
+            return str;
+        }
+
+        if (str.length <= length) {
+            return str;
+        }
+
         return str.substring(0, length) + '...';
     }
 
@@ -282,43 +329,10 @@
      */
     function clamp(value, min, max) {
         var num = Number(value);
-        if (isNaN(num) || !isFinite(num)) return min;
+        if (isNaN(num) || !Number.isFinite(num)) {
+            return min;
+        }
         return Math.max(min, Math.min(max, num));
-    }
-
-    /**
-     * Check if a value is a finite number.
-     * @param {*} value - Value to check
-     * @returns {boolean} True if value is a finite number
-     */
-    function isFiniteNumber(value) {
-        return typeof value === 'number' && Number.isFinite(value);
-    }
-
-    /**
-     * Check if a value is a non-negative number (>= 0).
-     * @param {*} value - Value to check
-     * @returns {boolean} True if value is a non-negative number
-     */
-    function isNonNegativeNumber(value) {
-        return isFiniteNumber(value) && value >= 0;
-    }
-
-    /**
-     * Parse a non-negative integer (>= 0).
-     * Returns null for invalid values.
-     * @param {*} value - Value to parse
-     * @returns {number|null} Parsed integer or null
-     */
-    function parseNonNegativeInteger(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0) {
-            return null;
-        }
-        return num;
     }
 
     // ============================================================
@@ -340,7 +354,9 @@
      * @returns {*} Last element or undefined
      */
     function last(arr) {
-        if (!Array.isArray(arr) || arr.length === 0) return undefined;
+        if (!Array.isArray(arr) || arr.length === 0) {
+            return undefined;
+        }
         return arr[arr.length - 1];
     }
 
@@ -350,7 +366,9 @@
      * @returns {*} First element or undefined
      */
     function first(arr) {
-        if (!Array.isArray(arr) || arr.length === 0) return undefined;
+        if (!Array.isArray(arr) || arr.length === 0) {
+            return undefined;
+        }
         return arr[0];
     }
 
@@ -360,91 +378,12 @@
      * @returns {Array} Deduplicated array
      */
     function unique(arr) {
-        if (!Array.isArray(arr)) return [];
+        if (!Array.isArray(arr)) {
+            return [];
+        }
         return arr.filter(function(item, index) {
             return arr.indexOf(item) === index;
         });
-    }
-
-    // ============================================================
-    // OBJECT HELPERS
-    // ============================================================
-
-    /**
-     * Safely get a nested property from an object.
-     * @param {object} obj - Object to traverse
-     * @param {string} path - Dot-separated path (e.g., 'user.profile.name')
-     * @param {*} defaultValue - Default value if property not found
-     * @returns {*} Property value or default
-     */
-    function get(obj, path, defaultValue) {
-        if (!obj || typeof obj !== 'object') return defaultValue;
-        if (typeof path !== 'string') return defaultValue;
-
-        var keys = path.split('.');
-        var current = obj;
-
-        for (var i = 0; i < keys.length; i++) {
-            if (current === null || current === undefined || typeof current !== 'object') {
-                return defaultValue;
-            }
-            current = current[keys[i]];
-        }
-
-        return current !== undefined ? current : defaultValue;
-    }
-
-    /**
-     * Safely set a nested property on an object.
-     * Creates intermediate objects if they don't exist.
-     * @param {object} obj - Object to modify
-     * @param {string} path - Dot-separated path
-     * @param {*} value - Value to set
-     * @returns {object} The modified object
-     */
-    function set(obj, path, value) {
-        if (!obj || typeof obj !== 'object') return obj;
-        if (typeof path !== 'string') return obj;
-
-        var keys = path.split('.');
-        var current = obj;
-
-        for (var i = 0; i < keys.length - 1; i++) {
-            var key = keys[i];
-            if (current[key] === undefined || current[key] === null || typeof current[key] !== 'object') {
-                current[key] = {};
-            }
-            current = current[key];
-        }
-
-        current[keys[keys.length - 1]] = value;
-        return obj;
-    }
-
-    /**
-     * Check if an object has a nested property.
-     * @param {object} obj - Object to check
-     * @param {string} path - Dot-separated path
-     * @returns {boolean} True if property exists
-     */
-    function has(obj, path) {
-        if (!obj || typeof obj !== 'object') return false;
-        if (typeof path !== 'string') return false;
-
-        var keys = path.split('.');
-        var current = obj;
-
-        for (var i = 0; i < keys.length; i++) {
-            if (current === null || current === undefined || typeof current !== 'object') {
-                return false;
-            }
-            if (!Object.prototype.hasOwnProperty.call(current, keys[i])) {
-                return false;
-            }
-            current = current[keys[i]];
-        }
-
-        return true;
     }
 
     // ============================================================
@@ -453,25 +392,32 @@
 
     /**
      * Capitalize the first letter of a string.
-     * @param {string} str - String to capitalize
+     * @param {*} value - Value to capitalize
      * @returns {string} Capitalized string
      */
-    function capitalize(str) {
-        if (!str || typeof str !== 'string') return '';
-        if (str.length === 0) return str;
+    function capitalize(value) {
+        if (!value || typeof value !== 'string') {
+            return '';
+        }
+        var str = String(value);
+        if (str.length === 0) {
+            return str;
+        }
         return str.charAt(0).toUpperCase() + str.slice(1);
     }
 
     /**
      * Convert a string to title case.
-     * @param {string} str - String to convert
+     * @param {*} value - Value to convert
      * @returns {string} Title case string
      */
-    function titleCase(str) {
-        if (!str || typeof str !== 'string') return '';
-        return str
+    function titleCase(value) {
+        if (!value || typeof value !== 'string') {
+            return '';
+        }
+        return String(value)
             .toLowerCase()
-            .split(' ')
+            .split(/\s+/)
             .map(function(word) {
                 return capitalize(word);
             })
@@ -480,12 +426,14 @@
 
     /**
      * Convert a string to kebab-case.
-     * @param {string} str - String to convert
+     * @param {*} value - Value to convert
      * @returns {string} Kebab-case string
      */
-    function kebabCase(str) {
-        if (!str || typeof str !== 'string') return '';
-        return str
+    function kebabCase(value) {
+        if (!value || typeof value !== 'string') {
+            return '';
+        }
+        return String(value)
             .replace(/([a-z])([A-Z])/g, '$1-$2')
             .replace(/[\s_]+/g, '-')
             .toLowerCase();
@@ -493,12 +441,14 @@
 
     /**
      * Convert a string to snake_case.
-     * @param {string} str - String to convert
+     * @param {*} value - Value to convert
      * @returns {string} Snake_case string
      */
-    function snakeCase(str) {
-        if (!str || typeof str !== 'string') return '';
-        return str
+    function snakeCase(value) {
+        if (!value || typeof value !== 'string') {
+            return '';
+        }
+        return String(value)
             .replace(/([a-z])([A-Z])/g, '$1_$2')
             .replace(/[\s-]+/g, '_')
             .toLowerCase();
@@ -510,19 +460,19 @@
 
     window.CoreUtils = {
         // Type helpers
-        isObject: isObject,
+        isPlainObject: isPlainObject,
         isSafeInteger: isSafeInteger,
         isPositiveInteger: isPositiveInteger,
         isFiniteNumber: isFiniteNumber,
         isNonNegativeNumber: isNonNegativeNumber,
 
-        // Period parsing
-        parseOptionalPeriod: parseOptionalPeriod,
-        parsePositivePeriod: parsePositivePeriod,
-        parseStrictPositivePeriod: parseStrictPositivePeriod,
-        hasPeriodValue: hasPeriodValue,
-        getPeriodInfo: getPeriodInfo,
+        // Integer parsing
+        parseOptionalInteger: parseOptionalInteger,
+        parsePositiveInteger: parsePositiveInteger,
+        parseStrictPositiveInteger: parseStrictPositiveInteger,
         parseNonNegativeInteger: parseNonNegativeInteger,
+        hasValue: hasValue,
+        getIntegerInfo: getIntegerInfo,
 
         // ID generation
         generateId: generateId,
@@ -543,36 +493,11 @@
         first: first,
         unique: unique,
 
-        // Object
-        get: get,
-        set: set,
-        has: has,
-
         // String
         capitalize: capitalize,
         titleCase: titleCase,
         kebabCase: kebabCase,
         snakeCase: snakeCase
     };
-
-    // ============================================================
-    // LEGACY COMPATIBILITY (Deprecated - will be removed)
-    // ============================================================
-
-    // These are kept for backward compatibility during migration.
-    // All new code should use the named exports above.
-
-    window.isObject = isObject;
-    window.isSafeInteger = isSafeInteger;
-    window.isPositiveInteger = isPositiveInteger;
-    window.parseOptionalPeriod = parseOptionalPeriod;
-    window.parsePositivePeriod = parsePositivePeriod;
-    window.parseStrictPositivePeriod = parseStrictPositivePeriod;
-    window.hasPeriodValue = hasPeriodValue;
-    window.getPeriodInfo = getPeriodInfo;
-    window.generateId = generateId;
-    window.deepClone = deepClone;
-    window.formatDate = formatDate;
-    window.truncateString = truncateString;
 
 })();

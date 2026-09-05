@@ -8,12 +8,11 @@
  *   - Safe element creation with textContent
  *   - DOM traversal helpers
  *   - Event delegation helpers
- *   - Modal lifecycle management (with proper cleanup and race prevention)
- *   - Notification helpers (delegates to NotificationSystem)
- *   - Form helpers with consistent checkbox/radio semantics
- *   - Throttle utility
+ *   - DOM manipulation helpers (empty, remove, prepend, insertAfter, etc.)
+ *   - Class manipulation helpers
  *   - Scroll helpers
  *   - Visibility helpers
+ *   - Style helpers
  * 
  * IMPORTANT:
  *   - THIS IS THE SINGLE SOURCE OF TRUTH for escapeHtml()
@@ -22,9 +21,11 @@
  *   - DOM mutation is intentional and limited to UI operations
  *   - All user-controlled content must go through escapeHtml()
  *   - Attribute names are NOT sanitised - they must be developer-controlled
- *   - debounce() is NOT provided here (use CoreUtils.debounce if needed)
+ *   - Timing utilities moved to timing-utils.js
+ *   - Form utilities moved to form-utils.js
+ *   - Modal utilities moved to modal.js
+ *   - Notification utilities moved to notification.js
  *   - This module is UI-focused, domain utilities belong in core-utils.js
- *   - Notification helpers delegate to NotificationSystem
  */
 
 (function() {
@@ -107,14 +108,6 @@
     }
 
     /**
-     * Alias for encodeUrlComponent for backward compatibility.
-     * @deprecated Use encodeUrlComponent instead.
-     */
-    function escapeUrl(value) {
-        return encodeUrlComponent(value);
-    }
-
-    /**
      * Validate that a value is safe for use in CSS.
      * This is a validator for CSS VALUES, not a general-purpose CSS escaper.
      * Allows: hex colors, rgb/rgba, hsl/hsla, safe CSS identifiers.
@@ -151,6 +144,75 @@
         }
 
         return '';
+    }
+
+    // ============================================================
+    // SAFE HTML BUILDING
+    // ============================================================
+
+    /**
+     * Build HTML with escaped content.
+     * Use this for building HTML strings with user-controlled content.
+     * 
+     * NOTE: All interpolated values are escaped. Static markup belongs
+     * in the template literal itself, not in interpolated positions.
+     * There is no way to intentionally interpolate raw HTML through
+     * this function - that is intentional for security.
+     * 
+     * @param {TemplateStringsArray} strings - Template strings
+     * @param {...*} args - Values to interpolate (auto-escaped)
+     * @returns {string} Safe HTML string
+     * 
+     * USAGE:
+     *   var html = DomUtils.safeHtml`<div>${userName}</div>`;
+     */
+    function safeHtml(strings) {
+        var args = Array.prototype.slice.call(arguments, 1);
+        var result = '';
+
+        for (var i = 0; i < strings.length; i++) {
+            result += strings[i];
+            if (i < args.length) {
+                result += escapeHtml(args[i]);
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Build an HTML attribute string with escaped values.
+     * NOTE: Attribute name must be developer-controlled.
+     * 
+     * @param {string} name - Attribute name (developer-controlled)
+     * @param {*} value - Attribute value (auto-escaped)
+     * @returns {string} Safe attribute string
+     */
+    function safeAttr(name, value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return ' ' + name + '="' + escapeAttribute(value) + '"';
+    }
+
+    /**
+     * Build multiple HTML attributes with escaped values.
+     * NOTE: Attribute names must be developer-controlled.
+     * 
+     * @param {object} attrs - Key-value pairs of attributes
+     * @returns {string} Safe attribute string
+     */
+    function safeAttrs(attrs) {
+        var result = '';
+        for (var key in attrs) {
+            if (Object.prototype.hasOwnProperty.call(attrs, key)) {
+                var value = attrs[key];
+                if (value !== undefined && value !== null) {
+                    result += ' ' + key + '="' + escapeAttribute(value) + '"';
+                }
+            }
+        }
+        return result;
     }
 
     // ============================================================
@@ -301,75 +363,6 @@
     }
 
     // ============================================================
-    // SAFE HTML BUILDING
-    // ============================================================
-
-    /**
-     * Build HTML with escaped content.
-     * Use this for building HTML strings with user-controlled content.
-     * 
-     * NOTE: All interpolated values are escaped. Static markup belongs
-     * in the template literal itself, not in interpolated positions.
-     * There is no way to intentionally interpolate raw HTML through
-     * this function - that is intentional for security.
-     * 
-     * @param {TemplateStringsArray} strings - Template strings
-     * @param {...*} args - Values to interpolate (auto-escaped)
-     * @returns {string} Safe HTML string
-     * 
-     * USAGE:
-     *   var html = DomUtils.safeHtml`<div>${userName}</div>`;
-     */
-    function safeHtml(strings) {
-        var args = Array.prototype.slice.call(arguments, 1);
-        var result = '';
-
-        for (var i = 0; i < strings.length; i++) {
-            result += strings[i];
-            if (i < args.length) {
-                result += escapeHtml(args[i]);
-            }
-        }
-
-        return result;
-    }
-
-    /**
-     * Build an HTML attribute string with escaped values.
-     * NOTE: Attribute name must be developer-controlled.
-     * 
-     * @param {string} name - Attribute name (developer-controlled)
-     * @param {*} value - Attribute value (auto-escaped)
-     * @returns {string} Safe attribute string
-     */
-    function safeAttr(name, value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return ' ' + name + '="' + escapeAttribute(value) + '"';
-    }
-
-    /**
-     * Build multiple HTML attributes with escaped values.
-     * NOTE: Attribute names must be developer-controlled.
-     * 
-     * @param {object} attrs - Key-value pairs of attributes
-     * @returns {string} Safe attribute string
-     */
-    function safeAttrs(attrs) {
-        var result = '';
-        for (var key in attrs) {
-            if (Object.prototype.hasOwnProperty.call(attrs, key)) {
-                var value = attrs[key];
-                if (value !== undefined && value !== null) {
-                    result += ' ' + key + '="' + escapeAttribute(value) + '"';
-                }
-            }
-        }
-        return result;
-    }
-
-    // ============================================================
     // DOM TRAVERSAL
     // ============================================================
 
@@ -516,80 +509,6 @@
         // Return cleanup function
         return function() {
             parent.removeEventListener(eventName, wrappedHandler);
-        };
-    }
-
-    /**
-     * Create a throttled function (leading-edge).
-     * Calls made during the cooldown are discarded.
-     * 
-     * @param {Function} fn - Function to throttle
-     * @param {number} limit - Throttle limit in milliseconds
-     * @returns {Function} Throttled function
-     */
-    function throttle(fn, limit) {
-        var inThrottle = false;
-        var lastResult = null;
-
-        return function() {
-            var context = this;
-            var args = arguments;
-
-            if (!inThrottle) {
-                inThrottle = true;
-                lastResult = fn.apply(context, args);
-                setTimeout(function() {
-                    inThrottle = false;
-                }, limit);
-            }
-
-            return lastResult;
-        };
-    }
-
-    /**
-     * Create a debounced function.
-     * Calls made during the wait period reset the timer.
-     * 
-     * @param {Function} fn - Function to debounce
-     * @param {number} wait - Wait time in milliseconds
-     * @returns {Function} Debounced function
-     */
-    function debounce(fn, wait) {
-        var timer = null;
-
-        return function() {
-            var context = this;
-            var args = arguments;
-
-            if (timer) {
-                clearTimeout(timer);
-                timer = null;
-            }
-
-            timer = setTimeout(function() {
-                timer = null;
-                fn.apply(context, args);
-            }, wait);
-        };
-    }
-
-    /**
-     * Run a function once.
-     * 
-     * @param {Function} fn - Function to run once
-     * @returns {Function} Function that runs only once
-     */
-    function once(fn) {
-        var called = false;
-        var result = null;
-
-        return function() {
-            if (!called) {
-                called = true;
-                result = fn.apply(this, arguments);
-            }
-            return result;
         };
     }
 
@@ -771,11 +690,17 @@
     // ============================================================
 
     /**
-     * Check if an element is visible in the viewport.
+     * Check if an element's bounding rectangle intersects the viewport.
+     * 
+     * NOTE: This checks geometric visibility only. An element can be
+     * geometrically visible while being display:none, visibility:hidden,
+     * opacity:0, or covered by another element.
      * 
      * @param {HTMLElement} el - Element to check
-     * @param {object} options - IntersectionObserver options
-     * @returns {boolean} True if visible
+     * @param {object} options - Options
+     * @param {number} options.verticalMargin - Vertical margin in pixels (default: 0)
+     * @param {number} options.horizontalMargin - Horizontal margin in pixels (default: 0)
+     * @returns {boolean} True if element intersects the viewport
      */
     function isVisible(el, options) {
         if (!el) return false;
@@ -785,7 +710,6 @@
         var viewHeight = window.innerHeight || document.documentElement.clientHeight;
         var viewWidth = window.innerWidth || document.documentElement.clientWidth;
 
-        var threshold = options.threshold || 0;
         var verticalMargin = options.verticalMargin || 0;
         var horizontalMargin = options.horizontalMargin || 0;
 
@@ -850,745 +774,7 @@
     }
 
     // ============================================================
-    // MODAL HELPERS - With proper lifecycle management
-    // ============================================================
-
-    // Internal store for modal state
-    var _modalState = new WeakMap();
-
-    function _getModalState(modal) {
-        var state = _modalState.get(modal);
-        if (!state) {
-            state = {
-                hideTimer: null,
-                animationFrame: null,
-                cleanups: [],
-                isShowing: false,
-                generation: 0,
-                hideResolvers: []
-            };
-            _modalState.set(modal, state);
-        }
-        return state;
-    }
-
-    /**
-     * Create a modal overlay.
-     * 
-     * @param {string} className - Additional CSS class
-     * @returns {HTMLElement} Modal element
-     */
-    function createModal(className) {
-        var overlay = createDiv('modal' + (className ? ' ' + className : ''));
-        overlay.style.display = 'none';
-
-        var content = createDiv('modal-content');
-        overlay.appendChild(content);
-
-        return overlay;
-    }
-
-    /**
-     * Show a modal.
-     * Clears any pending hide timer for this modal.
-     * Increments generation to invalidate stale operations.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     */
-    function showModal(modal) {
-        if (!modal) return;
-
-        var state = _getModalState(modal);
-
-        // Bump generation to invalidate any stale close/hide operations
-        state.generation++;
-
-        // Clear any pending hide timer
-        if (state.hideTimer) {
-            clearTimeout(state.hideTimer);
-            state.hideTimer = null;
-        }
-
-        // Cancel any pending animation frame
-        if (state.animationFrame) {
-            cancelAnimationFrame(state.animationFrame);
-            state.animationFrame = null;
-        }
-
-        // Resolve any pending hide promises (they are superseded)
-        if (state.hideResolvers.length > 0) {
-            var resolvers = state.hideResolvers;
-            state.hideResolvers = [];
-            resolvers.forEach(function(resolve) {
-                try {
-                    resolve();
-                } catch (e) {
-                    // Ignore resolver errors
-                }
-            });
-        }
-
-        modal.style.display = 'flex';
-        document.body.appendChild(modal);
-
-        // Use animation frame with state tracking
-        state.isShowing = true;
-        state.animationFrame = requestAnimationFrame(function() {
-            state.animationFrame = null;
-            if (state.isShowing) {
-                modal.classList.add('visible');
-            }
-        });
-    }
-
-    /**
-     * Hide a modal.
-     * Returns a promise that resolves when the animation completes.
-     * The modal remains alive (listeners intact) for potential re-showing.
-     * Multiple calls to hideModal() on the same modal will chain correctly.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     * @returns {Promise<void>}
-     */
-    function hideModal(modal) {
-        if (!modal) return Promise.resolve();
-
-        var state = _getModalState(modal);
-
-        // Mark as not showing so animation frame won't add .visible
-        state.isShowing = false;
-
-        // Cancel any pending animation frame
-        if (state.animationFrame) {
-            cancelAnimationFrame(state.animationFrame);
-            state.animationFrame = null;
-        }
-
-        // Clear any existing hide timer
-        if (state.hideTimer) {
-            clearTimeout(state.hideTimer);
-            state.hideTimer = null;
-        }
-
-        return new Promise(function(resolve) {
-            // Store resolver for potential superseding
-            state.hideResolvers.push(resolve);
-
-            modal.classList.remove('visible');
-
-            state.hideTimer = setTimeout(function() {
-                state.hideTimer = null;
-                modal.style.display = 'none';
-
-                // Resolve all pending hide promises
-                var resolvers = state.hideResolvers;
-                state.hideResolvers = [];
-                resolvers.forEach(function(r) {
-                    try {
-                        r();
-                    } catch (e) {
-                        // Ignore resolver errors
-                    }
-                });
-            }, 300);
-        });
-    }
-
-    /**
-     * Close a modal (remove from DOM).
-     * Executes all cleanup functions associated with the modal.
-     * After close, the modal is fully destroyed and cannot be re-shown.
-     * Uses generation tracking to prevent stale operations from destroying
-     * a modal that was re-shown between close and its animation completion.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     * @returns {Promise<void>}
-     */
-    function closeModal(modal) {
-        if (!modal) return Promise.resolve();
-
-        var state = _getModalState(modal);
-        var generation = state.generation;
-
-        return hideModal(modal).then(function() {
-            // Check if a new show operation happened during the hide animation
-            if (state.generation !== generation) {
-                // Modal was re-shown - do not destroy it
-                return;
-            }
-
-            // Execute all cleanup functions for this modal
-            if (state.cleanups) {
-                state.cleanups.forEach(function(fn) {
-                    try {
-                        fn();
-                    } catch (e) {
-                        console.error('Modal cleanup error:', e);
-                    }
-                });
-                state.cleanups = [];
-            }
-
-            // Cancel any remaining timer
-            if (state.hideTimer) {
-                clearTimeout(state.hideTimer);
-                state.hideTimer = null;
-            }
-
-            // Cancel any remaining animation frame
-            if (state.animationFrame) {
-                cancelAnimationFrame(state.animationFrame);
-                state.animationFrame = null;
-            }
-
-            _modalState.delete(modal);
-
-            if (modal.parentNode) {
-                modal.parentNode.removeChild(modal);
-            }
-        });
-    }
-
-    /**
-     * Register a cleanup function for a modal.
-     * Internal use only - used by modal event setup functions.
-     */
-    function _registerCleanup(modal, fn) {
-        if (!modal) return;
-        var state = _getModalState(modal);
-        state.cleanups.push(fn);
-    }
-
-    /**
-     * Setup click-outside to close a modal.
-     * Does not prevent the modal from being hidden and re-shown.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     * @param {Function} onClose - Optional callback when closed
-     * @returns {Function} Cleanup function
-     */
-    function modalClickOutside(modal, onClose) {
-        if (!modal) return function() {};
-
-        var handler = function(e) {
-            if (e.target === modal) {
-                if (typeof onClose === 'function') {
-                    onClose();
-                } else {
-                    closeModal(modal);
-                }
-            }
-        };
-
-        modal.addEventListener('click', handler);
-
-        var cleanup = function() {
-            modal.removeEventListener('click', handler);
-        };
-
-        _registerCleanup(modal, cleanup);
-
-        return cleanup;
-    }
-
-    /**
-     * Setup escape key to close a modal.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     * @param {Function} onClose - Optional callback when closed
-     * @returns {Function} Cleanup function
-     */
-    function modalEscapeKey(modal, onClose) {
-        if (!modal) return function() {};
-
-        var handler = function(e) {
-            if (e.key === 'Escape') {
-                if (typeof onClose === 'function') {
-                    onClose();
-                } else {
-                    closeModal(modal);
-                }
-            }
-        };
-
-        document.addEventListener('keydown', handler);
-
-        var cleanup = function() {
-            document.removeEventListener('keydown', handler);
-        };
-
-        _registerCleanup(modal, cleanup);
-
-        return cleanup;
-    }
-
-    /**
-     * Setup both click-outside and escape-key for a modal.
-     * Convenience function for common case.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     * @param {Function} onClose - Optional callback when closed
-     */
-    function modalSetup(modal, onClose) {
-        modalClickOutside(modal, onClose);
-        modalEscapeKey(modal, onClose);
-    }
-
-    // ============================================================
-    // NOTIFICATION HELPERS - Delegates to NotificationSystem
-    // ============================================================
-
-    /**
-     * Get the NotificationSystem instance.
-     * Returns null if not available.
-     */
-    function _getNotificationSystem() {
-        return window.NotificationSystem || null;
-    }
-
-    /**
-     * Show a notification toast.
-     * Delegates to NotificationSystem if available.
-     * 
-     * @param {string} message - Notification message
-     * @param {string} type - 'success' | 'error' | 'warning' | 'info'
-     * @param {number} duration - Duration in ms (0 = persistent)
-     * @param {function} onDismiss - Callback when dismissed
-     * @returns {object|null} Notification object or null
-     */
-    function notify(message, type, duration, onDismiss) {
-        var ns = _getNotificationSystem();
-        if (ns && typeof ns.notify === 'function') {
-            return ns.notify(message, type, duration, onDismiss);
-        }
-
-        // Fallback to alert if NotificationSystem not available
-        if (typeof alert === 'function') {
-            alert(message);
-        }
-        return null;
-    }
-
-    /**
-     * Show a success notification.
-     */
-    function notifySuccess(message, duration, onDismiss) {
-        return notify(message, 'success', duration, onDismiss);
-    }
-
-    /**
-     * Show an error notification.
-     */
-    function notifyError(message, duration, onDismiss) {
-        return notify(message, 'error', duration, onDismiss);
-    }
-
-    /**
-     * Show a warning notification.
-     */
-    function notifyWarning(message, duration, onDismiss) {
-        return notify(message, 'warning', duration, onDismiss);
-    }
-
-    /**
-     * Show an info notification.
-     */
-    function notifyInfo(message, duration, onDismiss) {
-        return notify(message, 'info', duration, onDismiss);
-    }
-
-    /**
-     * Compatibility wrapper for showToast.
-     * Delegates to NotificationSystem.
-     */
-    function showToast(message, type) {
-        return notify(message, type || 'info');
-    }
-
-    /**
-     * Clear all active notifications.
-     * Delegates to NotificationSystem if available.
-     */
-    function clearNotifications() {
-        var ns = _getNotificationSystem();
-        if (ns && typeof ns.clearNotifications === 'function') {
-            ns.clearNotifications();
-        }
-    }
-
-    /**
-     * Create a notification toast element directly.
-     * This is a low-level function for when NotificationSystem is not available.
-     * 
-     * @param {string} message - Notification message
-     * @param {string} type - 'success' | 'error' | 'warning' | 'info'
-     * @param {number} duration - Duration in ms (0 = persistent)
-     * @returns {HTMLElement} Toast element (for manual dismissal)
-     */
-    function createToast(message, type, duration) {
-        type = type || 'info';
-        duration = duration || 3000;
-
-        var toast = createDiv('toast ' + type);
-        toast.textContent = message;
-
-        document.body.appendChild(toast);
-
-        // Show with animation
-        requestAnimationFrame(function() {
-            toast.classList.add('visible');
-        });
-
-        // Auto-hide
-        if (duration > 0) {
-            var timer = setTimeout(function() {
-                toast.classList.remove('visible');
-                setTimeout(function() {
-                    if (toast.parentNode) {
-                        toast.parentNode.removeChild(toast);
-                    }
-                }, 300);
-            }, duration);
-
-            // Store timer for potential cancellation
-            toast._hideTimer = timer;
-        }
-
-        return toast;
-    }
-
-    /**
-     * Show a success notification (compatibility wrapper).
-     */
-    function showSuccess(message, duration) {
-        return notify(message, 'success', duration);
-    }
-
-    /**
-     * Show an error notification (compatibility wrapper).
-     */
-    function showError(message, duration) {
-        return notify(message, 'error', duration);
-    }
-
-    /**
-     * Show a warning notification (compatibility wrapper).
-     */
-    function showWarning(message, duration) {
-        return notify(message, 'warning', duration);
-    }
-
-    /**
-     * Show an info notification (compatibility wrapper).
-     */
-    function showInfo(message, duration) {
-        return notify(message, 'info', duration);
-    }
-
-    // ============================================================
-    // FORM HELPERS - With consistent checkbox/radio semantics
-    // ============================================================
-
-    /**
-     * Get a form field value safely.
-     * - Single checkbox → boolean
-     * - Radio → boolean for this specific input (use getFormData for group value)
-     * - Multi-select → array of selected values
-     * - Other inputs → string value
-     * 
-     * @param {string} id - Element ID
-     * @returns {*} Field value
-     */
-    function getField(id) {
-        var el = document.getElementById(id);
-        if (!el) return null;
-
-        // Checkbox: return boolean
-        if (el.type === 'checkbox') {
-            return el.checked;
-        }
-
-        // Radio: return boolean for this specific input
-        if (el.type === 'radio') {
-            return el.checked;
-        }
-
-        // Multi-select: return array of selected values
-        if (el.tagName === 'SELECT' && el.multiple) {
-            var values = [];
-            for (var i = 0; i < el.options.length; i++) {
-                if (el.options[i].selected) {
-                    values.push(el.options[i].value);
-                }
-            }
-            return values;
-        }
-
-        return el.value;
-    }
-
-    /**
-     * Set a form field value safely.
-     * 
-     * @param {string} id - Element ID
-     * @param {*} value - Value to set
-     */
-    function setField(id, value) {
-        var el = document.getElementById(id);
-        if (!el) return;
-
-        // Checkbox: treat as boolean
-        if (el.type === 'checkbox') {
-            el.checked = !!value;
-            return;
-        }
-
-        // Radio: set checked if value matches
-        if (el.type === 'radio') {
-            el.checked = String(el.value) === String(value);
-            return;
-        }
-
-        // Multi-select: treat as array
-        if (el.tagName === 'SELECT' && el.multiple) {
-            if (Array.isArray(value)) {
-                for (var i = 0; i < el.options.length; i++) {
-                    el.options[i].selected = value.indexOf(el.options[i].value) !== -1;
-                }
-            }
-            return;
-        }
-
-        el.value = value !== undefined && value !== null ? value : '';
-    }
-
-    /**
-     * Get all form data as an object.
-     * Semantics:
-     * - Radio groups: returns the selected value (string), or null if none selected
-     * - Single checkbox: returns boolean (true/false)
-     * - Multiple checkboxes with same name: returns array of selected values (empty array if none)
-     * - Multi-select: returns array of selected values (empty array if none)
-     * - Other inputs: returns string value
-     * 
-     * @param {HTMLFormElement} form - Form element
-     * @returns {object} Form data object
-     */
-    function getFormData(form) {
-        if (!form) return {};
-
-        var data = {};
-        var elements = form.elements;
-        var radioGroups = Object.create(null);
-        var checkboxGroups = Object.create(null);
-
-        for (var i = 0; i < elements.length; i++) {
-            var el = elements[i];
-            if (!el.name) continue;
-
-            // Radio: collect by name, track selected value
-            if (el.type === 'radio') {
-                if (!radioGroups[el.name]) {
-                    radioGroups[el.name] = { selected: null, found: false };
-                }
-                if (el.checked) {
-                    radioGroups[el.name].selected = el.value;
-                    radioGroups[el.name].found = true;
-                }
-                continue;
-            }
-
-            // Checkbox: collect by name with count and values
-            if (el.type === 'checkbox') {
-                if (!checkboxGroups[el.name]) {
-                    checkboxGroups[el.name] = {
-                        count: 0,
-                        values: []
-                    };
-                }
-                checkboxGroups[el.name].count++;
-                if (el.checked) {
-                    checkboxGroups[el.name].values.push(el.value);
-                }
-                continue;
-            }
-
-            // Multi-select: array of selected values
-            if (el.tagName === 'SELECT' && el.multiple) {
-                var values = [];
-                for (var j = 0; j < el.options.length; j++) {
-                    if (el.options[j].selected) {
-                        values.push(el.options[j].value);
-                    }
-                }
-                data[el.name] = values;
-                continue;
-            }
-
-            // Regular input: string value
-            data[el.name] = el.value;
-        }
-
-        // Merge radio groups
-        for (var name in radioGroups) {
-            if (Object.prototype.hasOwnProperty.call(radioGroups, name)) {
-                data[name] = radioGroups[name].selected;
-            }
-        }
-
-        // Merge checkbox groups with correct semantics
-        for (var name in checkboxGroups) {
-            if (Object.prototype.hasOwnProperty.call(checkboxGroups, name)) {
-                var group = checkboxGroups[name];
-
-                if (group.count === 1) {
-                    // Single checkbox → boolean
-                    data[name] = group.values.length > 0;
-                } else {
-                    // Multiple checkboxes → array of selected values
-                    data[name] = group.values;
-                }
-            }
-        }
-
-        return data;
-    }
-
-    /**
-     * Set form data from an object.
-     * Semantics mirror getFormData:
-     * - Radio groups: set the radio with matching value
-     * - Single checkbox: boolean → checked state
-     * - Multiple checkboxes: array → check matching values
-     * - Multi-select: array → select matching values
-     * 
-     * @param {HTMLFormElement} form - Form element
-     * @param {object} data - Data object
-     */
-    function setFormData(form, data) {
-        if (!form || !data) return;
-
-        var elements = form.elements;
-
-        for (var i = 0; i < elements.length; i++) {
-            var el = elements[i];
-            if (!el.name) continue;
-            if (!(el.name in data)) continue;
-
-            var value = data[el.name];
-
-            // Radio: set checked if value matches
-            if (el.type === 'radio') {
-                el.checked = String(el.value) === String(value);
-                continue;
-            }
-
-            // Checkbox: set checked based on value
-            if (el.type === 'checkbox') {
-                if (Array.isArray(value)) {
-                    // Array → check if this value is in the array
-                    el.checked = value.indexOf(el.value) !== -1;
-                } else {
-                    // Boolean → direct checked state
-                    el.checked = !!value;
-                }
-                continue;
-            }
-
-            // Multi-select: treat as array
-            if (el.tagName === 'SELECT' && el.multiple) {
-                if (Array.isArray(value)) {
-                    for (var j = 0; j < el.options.length; j++) {
-                        el.options[j].selected = value.indexOf(el.options[j].value) !== -1;
-                    }
-                }
-                continue;
-            }
-
-            el.value = value !== undefined && value !== null ? value : '';
-        }
-    }
-
-    /**
-     * Reset a form.
-     * 
-     * @param {HTMLFormElement} form - Form element
-     */
-    function resetForm(form) {
-        if (!form) return;
-        form.reset();
-    }
-
-    /**
-     * Validate that a field has a value.
-     * Semantics:
-     * - String: non-empty
-     * - Boolean: true (for checkboxes)
-     * - Array: at least one element selected
-     * - Number: not NaN
-     * 
-     * @param {string} id - Element ID
-     * @returns {boolean} True if field has value
-     */
-    function validateRequired(id) {
-        var value = getField(id);
-
-        if (value === null || value === undefined) {
-            return false;
-        }
-
-        if (typeof value === 'boolean') {
-            return value;
-        }
-
-        if (Array.isArray(value)) {
-            return value.length > 0;
-        }
-
-        return String(value).trim() !== '';
-    }
-
-    /**
-     * Validate that a field is a number.
-     * 
-     * @param {string} id - Element ID
-     * @returns {boolean} True if field is a number
-     */
-    function validateNumber(id) {
-        var value = getField(id);
-        if (value === null || value === undefined || value === '') return false;
-        return !isNaN(Number(value));
-    }
-
-    /**
-     * Validate that a field is an integer.
-     * 
-     * @param {string} id - Element ID
-     * @returns {boolean} True if field is an integer
-     */
-    function validateInteger(id) {
-        var value = getField(id);
-        if (value === null || value === undefined || value === '') return false;
-        return Number.isInteger(Number(value));
-    }
-
-    /**
-     * Validate that a field is in a range.
-     * 
-     * @param {string} id - Element ID
-     * @param {number} min - Minimum value
-     * @param {number} max - Maximum value
-     * @returns {boolean} True if field is in range
-     */
-    function validateRange(id, min, max) {
-        var value = getField(id);
-        if (value === null || value === undefined || value === '') return false;
-        var num = Number(value);
-        return !isNaN(num) && num >= min && num <= max;
-    }
-
-    // ============================================================
-    // LEGACY COMPATIBILITY
+    // LEGACY COMPATIBILITY (Deprecated)
     // ============================================================
 
     /**
@@ -1612,8 +798,12 @@
         escapeHtml: escapeHtml,
         escapeAttribute: escapeAttribute,
         encodeUrlComponent: encodeUrlComponent,
-        escapeUrl: escapeUrl, // Deprecated alias
         sanitizeCssValue: sanitizeCssValue,
+
+        // Safe HTML
+        safeHtml: safeHtml,
+        safeAttr: safeAttr,
+        safeAttrs: safeAttrs,
 
         // Element creation
         createElement: createElement,
@@ -1624,11 +814,6 @@
         createInput: createInput,
         createSelect: createSelect,
         createOption: createOption,
-
-        // Safe HTML
-        safeHtml: safeHtml,
-        safeAttr: safeAttr,
-        safeAttrs: safeAttrs,
 
         // Traversal
         closest: closest,
@@ -1641,9 +826,6 @@
 
         // Events
         delegate: delegate,
-        throttle: throttle,
-        debounce: debounce,
-        once: once,
 
         // Manipulation
         empty: empty,
@@ -1667,41 +849,7 @@
 
         // Style
         setStyles: setStyles,
-        getStyle: getStyle,
-
-        // Modal helpers
-        createModal: createModal,
-        showModal: showModal,
-        hideModal: hideModal,
-        closeModal: closeModal,
-        modalClickOutside: modalClickOutside,
-        modalEscapeKey: modalEscapeKey,
-        modalSetup: modalSetup,
-
-        // Notification helpers (delegates to NotificationSystem)
-        notify: notify,
-        notifySuccess: notifySuccess,
-        notifyError: notifyError,
-        notifyWarning: notifyWarning,
-        notifyInfo: notifyInfo,
-        showToast: showToast,
-        clearNotifications: clearNotifications,
-        createToast: createToast,
-        showSuccess: showSuccess,
-        showError: showError,
-        showWarning: showWarning,
-        showInfo: showInfo,
-
-        // Form helpers
-        getField: getField,
-        setField: setField,
-        getFormData: getFormData,
-        setFormData: setFormData,
-        resetForm: resetForm,
-        validateRequired: validateRequired,
-        validateNumber: validateNumber,
-        validateInteger: validateInteger,
-        validateRange: validateRange
+        getStyle: getStyle
     };
 
 })();

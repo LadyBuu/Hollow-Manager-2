@@ -13,6 +13,8 @@
  *   - Moved from dom-utils.js
  *   - No DOM manipulation beyond reading/writing form values
  *   - Consistent checkbox/radio semantics
+ *   - getField() operates on ONE control; getFormData() handles groups
+ *   - These are PRESENTATION validation helpers, not domain validation
  */
 
 (function() {
@@ -25,6 +27,20 @@
     // FIELD OPERATIONS
     // ============================================================
 
+    /**
+     * Get a form field value.
+     * 
+     * SEMANTICS:
+     *   - Single checkbox: returns boolean (true/false)
+     *   - Radio button: returns boolean for THAT SPECIFIC radio
+     *   - Multi-select: returns array of selected values
+     *   - Other inputs: returns string value
+     * 
+     * NOTE: For radio groups, use getFormData() instead.
+     * 
+     * @param {string} id - Element ID
+     * @returns {*} Field value
+     */
     function getField(id) {
         var el = document.getElementById(id);
         if (!el) return null;
@@ -50,6 +66,20 @@
         return el.value;
     }
 
+    /**
+     * Set a form field value.
+     * 
+     * SEMANTICS:
+     *   - Single checkbox: treats value as boolean
+     *   - Radio button: sets checked state for THAT SPECIFIC radio
+     *   - Multi-select: treats value as array
+     *   - Other inputs: sets string value
+     * 
+     * NOTE: For radio groups, use setFormData() instead.
+     * 
+     * @param {string} id - Element ID
+     * @param {*} value - Value to set
+     */
     function setField(id, value) {
         var el = document.getElementById(id);
         if (!el) return;
@@ -80,6 +110,19 @@
     // FORM DATA OPERATIONS
     // ============================================================
 
+    /**
+     * Get all form data as an object.
+     * 
+     * SEMANTICS:
+     *   - Radio groups: returns the selected value (string), or null if none selected
+     *   - Single checkbox: returns boolean (true/false)
+     *   - Multiple checkboxes with same name: returns array of selected values
+     *   - Multi-select: returns array of selected values
+     *   - Other inputs: returns string value
+     * 
+     * @param {HTMLFormElement} form - Form element
+     * @returns {object} Form data object
+     */
     function getFormData(form) {
         if (!form) return {};
 
@@ -148,6 +191,18 @@
         return data;
     }
 
+    /**
+     * Set form data from an object.
+     * 
+     * SEMANTICS mirror getFormData:
+     *   - Radio groups: set the radio with matching value
+     *   - Single checkbox: boolean -> checked state
+     *   - Multiple checkboxes: array -> check matching values
+     *   - Multi-select: array -> select matching values
+     * 
+     * @param {HTMLFormElement} form - Form element
+     * @param {object} data - Data object
+     */
     function setFormData(form, data) {
         if (!form || !data) return;
 
@@ -156,7 +211,7 @@
         for (var i = 0; i < elements.length; i++) {
             var el = elements[i];
             if (!el.name) continue;
-            if (!(el.name in data)) continue;
+            if (!Object.prototype.hasOwnProperty.call(data, el.name)) continue;
 
             var value = data[el.name];
 
@@ -193,35 +248,104 @@
     }
 
     // ============================================================
-    // VALIDATION HELPERS
+    // VALIDATION HELPERS - Presentation validation only
     // ============================================================
 
+    /**
+     * Validate that a field has a value.
+     * 
+     * SEMANTICS:
+     *   - String: non-empty after trimming
+     *   - Boolean: true (for checkboxes)
+     *   - Array: at least one element selected
+     *   - Number: not NaN
+     * 
+     * @param {string} id - Element ID
+     * @returns {boolean} True if field has value
+     */
     function validateRequired(id) {
         var value = getField(id);
 
-        if (value === null || value === undefined) return false;
-        if (typeof value === 'boolean') return value;
-        if (Array.isArray(value)) return value.length > 0;
+        if (value === null || value === undefined) {
+            return false;
+        }
+
+        if (typeof value === 'boolean') {
+            return value;
+        }
+
+        if (Array.isArray(value)) {
+            return value.length > 0;
+        }
+
         return String(value).trim() !== '';
     }
 
+    /**
+     * Validate that a field is a finite number.
+     * Rejects whitespace-only strings, Infinity, and NaN.
+     * 
+     * @param {string} id - Element ID
+     * @returns {boolean} True if field is a finite number
+     */
     function validateNumber(id) {
         var value = getField(id);
-        if (value === null || value === undefined || value === '') return false;
-        return !isNaN(Number(value));
+        if (value === null || value === undefined || value === '') {
+            return false;
+        }
+
+        var str = String(value).trim();
+        if (str === '') {
+            return false;
+        }
+
+        var num = Number(str);
+        return Number.isFinite(num);
     }
 
+    /**
+     * Validate that a field is a finite integer.
+     * Rejects whitespace-only strings, Infinity, and NaN.
+     * 
+     * @param {string} id - Element ID
+     * @returns {boolean} True if field is a finite integer
+     */
     function validateInteger(id) {
         var value = getField(id);
-        if (value === null || value === undefined || value === '') return false;
-        return Number.isInteger(Number(value));
+        if (value === null || value === undefined || value === '') {
+            return false;
+        }
+
+        var str = String(value).trim();
+        if (str === '') {
+            return false;
+        }
+
+        var num = Number(str);
+        return Number.isFinite(num) && Number.isInteger(num);
     }
 
+    /**
+     * Validate that a field is a finite number in a range.
+     * 
+     * @param {string} id - Element ID
+     * @param {number} min - Minimum value
+     * @param {number} max - Maximum value
+     * @returns {boolean} True if field is in range
+     */
     function validateRange(id, min, max) {
         var value = getField(id);
-        if (value === null || value === undefined || value === '') return false;
-        var num = Number(value);
-        return !isNaN(num) && num >= min && num <= max;
+        if (value === null || value === undefined || value === '') {
+            return false;
+        }
+
+        var str = String(value).trim();
+        if (str === '') {
+            return false;
+        }
+
+        var num = Number(str);
+        return Number.isFinite(num) && num >= min && num <= max;
     }
 
     // ============================================================

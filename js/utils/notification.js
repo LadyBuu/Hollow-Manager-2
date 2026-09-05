@@ -8,28 +8,36 @@
  *   - Notification types (success, error, warning, info)
  *   - Notification queue management
  *   - Persistent notification support
- *   - Notification history
- *   - Customizable duration and styling
+ *   - Proper notification identity (dismiss by ID, not message text)
+ *   - Reliable onDismiss callbacks (called exactly once)
  * 
  * IMPORTANT:
- *   - All functions are PURE where possible
- *   - No data mutation
- *   - Safe for use in any context
- *   - Works with or without DOM
- *   - USES DomUtils.escapeHtml() - SINGLE SOURCE OF TRUTH
+ *   - Owns notification UI lifecycle
+ *   - Does not mutate application/domain data
+ *   - Does not persist notifications
+ *   - Has no domain knowledge
+ *   - No DOM dependencies (direct DOM manipulation only)
+ *   - Uses IdUtils for notification IDs (SINGLE SOURCE OF TRUTH)
+ * 
+ * DEPENDENCIES:
+ *   - window.IdUtils (for notification IDs)
+ *   - DOM APIs (document, window)
  * 
  * USAGE:
  *   // Simple toast
- *   notify('Hello world!');
+ *   var notif = NotificationSystem.notify('Hello world!');
  * 
- *   // With type
- *   notify('Success!', 'success');
+ *   // With type and callback
+ *   var notif = NotificationSystem.notify('Saved!', 'success', 3000, function() {
+ *       console.log('Notification dismissed');
+ *   });
  * 
- *   // With custom duration
- *   notify('Warning!', 'warning', 5000);
+ *   // Dismiss manually
+ *   notif.dismiss();
  * 
  *   // Persistent (must be dismissed manually)
- *   notify('Important message', 'info', 0);
+ *   var notif = NotificationSystem.notify('Important', 'warning', 0);
+ *   notif.dismiss(); // Must be called explicitly
  */
 
 (function() {
@@ -45,42 +53,14 @@
     // DEPENDENCY IMPORTS
     // ============================================================
 
-    var DomUtils = window.DomUtils || window;
-
-    // ============================================================
-    // HTML ESCAPING - DELEGATES TO DomUtils (SINGLE SOURCE OF TRUTH)
-    // ============================================================
-
-    /**
-     * Escape HTML special characters to prevent XSS.
-     * Delegates to DomUtils.escapeHtml() - the SINGLE SOURCE OF TRUTH.
-     * 
-     * @param {*} value - Value to escape
-     * @returns {string} Escaped string
-     */
-    function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        // Emergency fallback (should never be reached)
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;')
-            .replace(/`/g, '&#x60;');
-    }
+    var IdUtils = window.IdUtils;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
     var DEFAULT_DURATION = 3000;
-    var MAX_NOTIFICATIONS = 5;
+    var _maxNotifications = 5;
     var ANIMATION_DURATION = 300;
 
     var TYPES = {
@@ -117,7 +97,19 @@
     var _container = null;
     var _queue = [];
     var _activeNotifications = [];
-    var _isRendering = false;
+    var _nextId = 1;
+
+    // ============================================================
+    // NOTIFICATION IDENTITY
+    // ============================================================
+
+    function generateNotificationId() {
+        if (IdUtils && typeof IdUtils.generateId === 'function') {
+            return IdUtils.generateId('notif');
+        }
+        // Emergency fallback (should never be reached)
+        return 'notif_' + (_nextId++);
+    }
 
     // ============================================================
     // CONTAINER MANAGEMENT
@@ -274,20 +266,19 @@
     // NOTIFICATION CREATION
     // ============================================================
 
-    function createNotificationDOM(message, type, duration, onDismiss) {
-        type = type || 'info';
-        duration = duration !== undefined ? duration : TYPES[type] ? TYPES[type].defaultDuration : DEFAULT_DURATION;
-        var isPersistent = duration === 0 || duration === null || duration === undefined;
+    function createNotificationDOM(item) {
+        var type = item.type || 'info';
+        var duration = item.duration !== undefined ? item.duration : TYPES[type] ? TYPES[type].defaultDuration : DEFAULT_DURATION;
+        var isPersistent = duration === 0;
 
         var typeConfig = TYPES[type] || TYPES.info;
-
-        // Escape message content for safety
-        var escapedMessage = escapeHtml(message);
+        var notificationId = item.id;
 
         var notification = document.createElement('div');
         notification.className = 'notification ' + typeConfig.className;
         notification.role = 'alert';
         notification.setAttribute('aria-label', typeConfig.ariaLabel || 'Notification');
+        notification.dataset.notificationId = notificationId;
 
         // Icon
         var icon = document.createElement('span');
@@ -298,50 +289,76 @@
         // Content
         var content = document.createElement('span');
         content.className = 'notification-content';
-        content.textContent = message; // textContent is safe, but we already escaped above
+        content.textContent = item.message;
         notification.appendChild(content);
 
-        // Close button (always show for persistent, show for others on hover)
+        // Close button
         var closeBtn = document.createElement('button');
         closeBtn.className = 'notification-close';
         closeBtn.setAttribute('aria-label', 'Dismiss notification');
         closeBtn.textContent = '×';
         closeBtn.addEventListener('click', function(e) {
             e.stopPropagation();
-            dismissNotification(notification);
-            if (typeof onDismiss === 'function') {
-                onDismiss();
-            }
+            dismissNotification(notificationId);
         });
         notification.appendChild(closeBtn);
 
         // Auto-dismiss
         var timer = null;
-
         if (!isPersistent) {
             timer = setTimeout(function() {
-                dismissNotification(notification);
-                if (typeof onDismiss === 'function') {
-                    onDismiss();
-                }
+                dismissNotification(notificationId);
             }, duration);
         }
 
         notification._timer = timer;
-        notification._onDismiss = onDismiss;
+        notification._dismissed = false;
 
         return notification;
     }
 
-    function dismissNotification(notification) {
-        if (!notification || notification._dismissed) return;
+    // ============================================================
+    // NOTIFICATION DISMISSAL
+    // ============================================================
 
+    function dismissNotification(notificationId) {
+        // Find the notification by ID
+        var notification = _activeNotifications.find(function(n) {
+            return n.dataset && n.dataset.notificationId === notificationId;
+        });
+
+        if (!notification || notification._dismissed) {
+            return;
+        }
+
+        // Mark as dismissed to prevent double dismissal
         notification._dismissed = true;
 
         // Clear timer
         if (notification._timer) {
             clearTimeout(notification._timer);
             notification._timer = null;
+        }
+
+        // Remove from active list
+        var index = _activeNotifications.indexOf(notification);
+        if (index !== -1) {
+            _activeNotifications.splice(index, 1);
+        }
+
+        // Find the queue item and execute callback
+        var queueIndex = _queue.findIndex(function(item) {
+            return item.id === notificationId;
+        });
+
+        var onDismiss = null;
+        if (queueIndex !== -1) {
+            var item = _queue[queueIndex];
+            onDismiss = item.onDismiss;
+            // Remove from queue if it was still there
+            if (queueIndex !== -1) {
+                _queue.splice(queueIndex, 1);
+            }
         }
 
         // Animate out
@@ -352,13 +369,18 @@
             if (notification.parentNode) {
                 notification.parentNode.removeChild(notification);
             }
-            var index = _activeNotifications.indexOf(notification);
-            if (index !== -1) {
-                _activeNotifications.splice(index, 1);
-            }
             // Process queue
             processQueue();
         }, ANIMATION_DURATION);
+
+        // Execute callback exactly once
+        if (typeof onDismiss === 'function') {
+            try {
+                onDismiss();
+            } catch (e) {
+                // Ignore callback errors
+            }
+        }
     }
 
     // ============================================================
@@ -366,23 +388,20 @@
     // ============================================================
 
     function processQueue() {
-        if (_isRendering) return;
-        if (_activeNotifications.length >= MAX_NOTIFICATIONS) return;
-        if (_queue.length === 0) return;
+        if (_activeNotifications.length >= _maxNotifications) {
+            return;
+        }
 
-        _isRendering = true;
+        if (_queue.length === 0) {
+            return;
+        }
 
+        // Dequeue next notification
         var item = _queue.shift();
         var container = getContainer();
-        var notification = createNotificationDOM(
-            item.message,
-            item.type,
-            item.duration,
-            function() {
-                // On dismiss callback
-            }
-        );
 
+        // Create DOM notification
+        var notification = createNotificationDOM(item);
         container.appendChild(notification);
         _activeNotifications.push(notification);
 
@@ -391,23 +410,17 @@
             notification.classList.add('visible');
         });
 
-        _isRendering = false;
-
         // Process next if we have room
-        if (_activeNotifications.length < MAX_NOTIFICATIONS && _queue.length > 0) {
-            setTimeout(processQueue, 100);
+        if (_activeNotifications.length < _maxNotifications && _queue.length > 0) {
+            // Small delay to prevent visual overlap issues
+            setTimeout(processQueue, 50);
         }
     }
 
-    function enqueue(message, type, duration, onDismiss) {
-        _queue.push({
-            message: message,
-            type: type || 'info',
-            duration: duration,
-            onDismiss: onDismiss
-        });
+    function enqueue(item) {
+        _queue.push(item);
 
-        if (_activeNotifications.length < MAX_NOTIFICATIONS) {
+        if (_activeNotifications.length < _maxNotifications) {
             processQueue();
         }
     }
@@ -422,8 +435,8 @@
      * @param {string} message - The message to display
      * @param {string} type - 'success' | 'error' | 'warning' | 'info'
      * @param {number} duration - Duration in ms (0 = persistent)
-     * @param {function} onDismiss - Callback when dismissed
-     * @returns {object} The notification object (for manual dismissal)
+     * @param {function} onDismiss - Callback when dismissed (called exactly once)
+     * @returns {object} Notification handle with dismiss() method
      */
     function notify(message, type, duration, onDismiss) {
         if (!message) {
@@ -435,24 +448,32 @@
         ensureContainerStyles();
         getContainer();
 
-        enqueue(message, type, duration, onDismiss);
+        // Generate unique ID for this notification
+        var id = generateNotificationId();
 
+        var item = {
+            id: id,
+            message: String(message),
+            type: type || 'info',
+            duration: duration !== undefined ? duration : TYPES[type] ? TYPES[type].defaultDuration : DEFAULT_DURATION,
+            onDismiss: onDismiss || null
+        };
+
+        enqueue(item);
+
+        // Return handle with dismiss method
         return {
+            id: id,
             dismiss: function() {
-                // Find and dismiss the notification
-                var container = getContainer();
-                var notifications = container.querySelectorAll('.notification');
-                var target = null;
-                for (var i = 0; i < notifications.length; i++) {
-                    var content = notifications[i].querySelector('.notification-content');
-                    if (content && content.textContent === message) {
-                        target = notifications[i];
-                        break;
-                    }
-                }
-                if (target) {
-                    dismissNotification(target);
-                }
+                dismissNotification(id);
+            },
+            isDismissed: function() {
+                // Check if notification is still in queue or active
+                var inQueue = _queue.some(function(q) { return q.id === id; });
+                var inActive = _activeNotifications.some(function(n) {
+                    return n.dataset && n.dataset.notificationId === id && !n._dismissed;
+                });
+                return !inQueue && !inActive;
             }
         };
     }
@@ -489,12 +510,28 @@
      * Clear all active notifications.
      */
     function clearNotifications() {
-        var container = getContainer();
-        var notifications = container.querySelectorAll('.notification');
-        for (var i = notifications.length - 1; i >= 0; i--) {
-            dismissNotification(notifications[i]);
-        }
+        // Clear queue
+        var queuedItems = _queue.slice();
         _queue = [];
+
+        // Dismiss all active notifications
+        var activeCopy = _activeNotifications.slice();
+        activeCopy.forEach(function(notification) {
+            if (notification.dataset && notification.dataset.notificationId) {
+                dismissNotification(notification.dataset.notificationId);
+            }
+        });
+
+        // Call onDismiss for queued items that were cleared
+        queuedItems.forEach(function(item) {
+            if (typeof item.onDismiss === 'function') {
+                try {
+                    item.onDismiss();
+                } catch (e) {
+                    // Ignore callback errors
+                }
+            }
+        });
     }
 
     /**
@@ -516,8 +553,15 @@
      */
     function setMaxNotifications(max) {
         if (typeof max === 'number' && max > 0) {
-            MAX_NOTIFICATIONS = max;
+            _maxNotifications = max;
         }
+    }
+
+    /**
+     * Get the maximum number of simultaneous notifications.
+     */
+    function getMaxNotifications() {
+        return _maxNotifications;
     }
 
     /**
@@ -534,22 +578,10 @@
 
     /**
      * Compatibility wrapper for window.showToast.
-     * Used by modules that expect the old API.
+     * @deprecated Use NotificationSystem.notify() instead.
      */
     function showToast(message, type) {
         return notify(message, type || 'info');
-    }
-
-    /**
-     * Compatibility wrapper for window.alert.
-     * Only use when notifications are not suitable.
-     */
-    function alertFallback(message, type) {
-        if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
     }
 
     // ============================================================
@@ -569,16 +601,16 @@
         getNotificationCount: getNotificationCount,
         getNotificationContainer: getNotificationContainer,
         setMaxNotifications: setMaxNotifications,
+        getMaxNotifications: getMaxNotifications,
         getDefaultDuration: getDefaultDuration,
 
         // Compatibility
         showToast: showToast,
-        alertFallback: alertFallback,
 
-        // Constants
-        TYPES: TYPES,
+        // Constants (read-only)
+        TYPES: Object.freeze(TYPES),
         DEFAULT_DURATION: DEFAULT_DURATION,
-        MAX_NOTIFICATIONS: MAX_NOTIFICATIONS
+        get MAX_NOTIFICATIONS() { return _maxNotifications; }
     };
 
     // Global aliases for backward compatibility

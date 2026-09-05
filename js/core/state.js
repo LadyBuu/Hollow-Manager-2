@@ -8,6 +8,7 @@
  * - Domain data (characters, teams, etc.) lives in window.data.
  * - UI state is NOT persisted to IndexedDB.
  * - All UI state is stored in a single object for easy debugging.
+ * - DefaultAppState is a TEMPLATE for resets - treat as immutable.
  * 
  * STATE HIERARCHY:
  * - AppState is the root state object.
@@ -17,6 +18,7 @@
  * NAVIGATION STATE:
  * - Which tab is currently active is managed by TabManager.
  * - State values here are view-specific (e.g., which week to show).
+ * - SessionState.lastTab tracks the previously visited tab for navigation flow.
  * 
  * PERSISTENCE:
  * - UI state does NOT auto-save.
@@ -25,12 +27,17 @@
  * 
  * STATE CATEGORIES:
  *   1. AppState - UI state that should survive view switches but not page reloads
- *   2. SessionState - Very ephemeral UI state (mobile menu, toasts, etc.)
+ *   2. SessionState - Very ephemeral UI state (mobile menu, lastTab, etc.)
  *   3. window.data - Persistent domain data (IndexedDB)
+ * 
+ * NOTIFICATIONS:
+ * - SessionState.toast has been REMOVED.
+ * - NotificationSystem is the single source of truth for notifications.
  * 
  * DEFAULT STATE:
  * - DefaultAppState provides immutable defaults for resetting modules.
  * - AppState is initialised from DefaultAppState.
+ * - DefaultAppState should NOT be modified directly.
  */
 
 // ============================================================
@@ -140,7 +147,7 @@ var AppState = JSON.parse(JSON.stringify(DefaultAppState));
 var DefaultSessionState = {
     characterListOpen: false,
     navOpen: false,
-    toast: null,
+    // lastTab tracks the previously visited tab (TabManager is the authority for current tab)
     lastTab: 'dashboard'
 };
 
@@ -162,6 +169,28 @@ function hasStateKey(module, key) {
 }
 
 // ============================================================
+// DEVELOPMENT WARNINGS
+// ============================================================
+
+function warnUnknownKey(module, key) {
+    if (typeof console !== 'undefined' && console.warn) {
+        console.warn(
+            '[AppState] Unknown key "' + key + '" in module "' + module + '". ' +
+            'Available keys: ' + Object.keys(AppState[module] || {}).join(', ')
+        );
+    }
+}
+
+function warnUnknownModule(module) {
+    if (typeof console !== 'undefined' && console.warn) {
+        console.warn(
+            '[AppState] Unknown module "' + module + '". ' +
+            'Available modules: ' + Object.keys(AppState).join(', ')
+        );
+    }
+}
+
+// ============================================================
 // STATE GETTERS / SETTERS
 // ============================================================
 
@@ -173,6 +202,7 @@ function hasStateKey(module, key) {
  */
 function getState(module, key) {
     if (!AppState[module]) {
+        warnUnknownModule(module);
         return undefined;
     }
 
@@ -181,6 +211,7 @@ function getState(module, key) {
     }
 
     if (!hasStateKey(module, key)) {
+        warnUnknownKey(module, key);
         return undefined;
     }
 
@@ -195,10 +226,12 @@ function getState(module, key) {
  */
 function setState(module, key, value) {
     if (!AppState[module]) {
+        warnUnknownModule(module);
         return;
     }
 
     if (!hasStateKey(module, key)) {
+        warnUnknownKey(module, key);
         return;
     }
 
@@ -212,11 +245,18 @@ function setState(module, key, value) {
  */
 function updateState(module, updates) {
     if (!AppState[module]) {
+        warnUnknownModule(module);
+        return;
+    }
+
+    if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
+        console.warn('[AppState] updateState: updates must be a plain object.');
         return;
     }
 
     Object.keys(updates).forEach(function(key) {
         if (!hasStateKey(module, key)) {
+            warnUnknownKey(module, key);
             return;
         }
         AppState[module][key] = updates[key];
@@ -229,7 +269,11 @@ function updateState(module, updates) {
  * @returns {object|null} The module's state object
  */
 function getModuleState(module) {
-    return AppState[module] || null;
+    if (!AppState[module]) {
+        warnUnknownModule(module);
+        return null;
+    }
+    return AppState[module];
 }
 
 /**
@@ -239,9 +283,11 @@ function getModuleState(module) {
  */
 function resetModuleState(module) {
     if (!DefaultAppState[module]) {
+        warnUnknownModule(module);
         return;
     }
 
+    // Deep clone the default template
     AppState[module] = JSON.parse(JSON.stringify(DefaultAppState[module]));
 }
 
@@ -306,6 +352,7 @@ function getDashboardState() {
 function getCurriculumViewWeek(viewName) {
     var view = AppState.curriculum[viewName];
     if (!view) {
+        warnUnknownKey('curriculum', viewName);
         return 1;
     }
     return typeof view.currentWeek === 'number' ? view.currentWeek : 1;
@@ -314,15 +361,21 @@ function getCurriculumViewWeek(viewName) {
 /**
  * Set the current week for a specific curriculum view.
  * @param {string} viewName - The curriculum view name
- * @param {number} week - The week number to set (must be a finite number)
+ * @param {number} week - The week number to set (must be a positive finite integer)
  */
 function setCurriculumViewWeek(viewName, week) {
     var view = AppState.curriculum[viewName];
     if (!view) {
+        warnUnknownKey('curriculum', viewName);
         return;
     }
 
-    if (typeof week !== 'number' || !Number.isFinite(week)) {
+    // Validate week is a positive finite integer
+    if (typeof week !== 'number' || !Number.isFinite(week) || !Number.isInteger(week) || week < 1) {
+        console.warn(
+            '[AppState] setCurriculumViewWeek: week must be a positive finite integer. ' +
+            'Received: ' + week
+        );
         return;
     }
 
@@ -408,8 +461,8 @@ function getStateDiff() {
 
         if (JSON.stringify(current) !== JSON.stringify(defaults)) {
             diff[module] = {
-                current: current,
-                defaults: defaults
+                current: JSON.parse(JSON.stringify(current)),
+                defaults: JSON.parse(JSON.stringify(defaults))
             };
         }
     });
