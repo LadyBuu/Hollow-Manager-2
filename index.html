@@ -19,25 +19,18 @@
             <a href="#" data-tab="dashboard" class="active">Dashboard</a>
             <a href="#" data-tab="characters">Characters</a>
             <a href="#" data-tab="teams">Teams</a>
-            <a href="#" data-tab="curriculum">Curriculum</a>
             <a href="#" data-tab="classes">Classes</a>
-            <a href="#" data-tab="school-year">School Year</a>
             <a href="#" data-tab="missions">Missions</a>
             <a href="#" data-tab="social">Social</a>
         </nav>
         <div class="header-actions" id="header-actions">
-            <!-- JSON (Full Backup) -->
             <button id="export-json-btn" class="small">Export JSON</button>
             <button id="import-json-btn" class="small">Import JSON</button>
             <input type="file" id="json-file-input" accept=".json" style="display:none" />
-
-            <!-- Character CSV -->
             <button id="export-characters-csv-btn" class="small">Export Characters</button>
             <button id="import-characters-csv-btn" class="small">Import Characters</button>
             <button id="template-characters-csv-btn" class="small">Character Template</button>
             <input type="file" id="characters-csv-file-input" accept=".csv" style="display:none" />
-
-            <!-- Mission CSV -->
             <button id="export-missions-csv-btn" class="small">Export Missions</button>
             <button id="import-missions-csv-btn" class="small">Import Missions</button>
             <button id="template-missions-csv-btn" class="small">Mission Template</button>
@@ -50,9 +43,7 @@
         <div id="tab-dashboard" class="tab-content active"></div>
         <div id="tab-characters" class="tab-content"></div>
         <div id="tab-teams" class="tab-content"></div>
-        <div id="tab-curriculum" class="tab-content"></div>
         <div id="tab-classes" class="tab-content"></div>
-        <div id="tab-school-year" class="tab-content"></div>
         <div id="tab-missions" class="tab-content"></div>
         <div id="tab-social" class="tab-content"><p class="empty-state">Social module coming soon...</p></div>
     </main>
@@ -105,67 +96,58 @@
     <!-- 6. DASHBOARD -->
     <script src="js/modules/dashboard.js"></script>
 
-    <!-- 7. DOMAIN QUERY MODULES (READ-ONLY) -->
-    <!-- 7a. Character Queries -->
+    <!-- 7. CHARACTER QUERIES (READ-ONLY) -->
     <script src="js/modules/characters/character-queries.js"></script>
 
-    <!-- 7b. Team Queries -->
+    <!-- 8. TEAM QUERIES (READ-ONLY) -->
     <script src="js/modules/teams/team-queries.js"></script>
 
-    <!-- 7c. Classes Queries -->
+    <!-- 9. CLASSES QUERIES (READ-ONLY) -->
     <script src="js/modules/classes/classes-queries.js"></script>
 
-    <!-- 8. CHARACTER MODULES -->
-    <!-- 8a. Character Generator -->
+    <!-- 10. CHARACTER GENERATOR -->
     <script src="js/modules/characters/character-generator.js"></script>
 
-    <!-- 8b. Character Stats (Domain Logic) -->
+    <!-- 11. CHARACTER STATS (Domain Logic) -->
     <script src="js/modules/characters/character-stats.js"></script>
 
-    <!-- 8c. Character Stats View (Rendering) -->
+    <!-- 12. CHARACTER STATS VIEW (Rendering) -->
     <script src="js/modules/characters/character-stats-view.js"></script>
 
-    <!-- 8d. Character CRUD -->
+    <!-- 13. CHARACTER CRUD -->
     <script src="js/modules/characters/character-crud.js"></script>
 
-    <!-- 8e. Character Classes -->
+    <!-- 14. CHARACTER CLASSES -->
     <script src="js/modules/characters/character-classes.js"></script>
 
-    <!-- 8f. Character Eliminations -->
+    <!-- 15. CHARACTER ELIMINATIONS -->
     <script src="js/modules/characters/character-eliminations.js"></script>
 
-    <!-- 8g. Character Views -->
+    <!-- 16. CHARACTER VIEWS -->
     <script src="js/modules/characters/character-views.js"></script>
 
-    <!-- 8h. Character List -->
+    <!-- 17. CHARACTER LIST -->
     <script src="js/modules/characters/character-list.js"></script>
 
-    <!-- 8i. Character Form -->
+    <!-- 18. CHARACTER FORM -->
     <script src="js/modules/characters/character-form.js"></script>
 
-    <!-- 8j. Character Detail -->
+    <!-- 19. CHARACTER DETAIL -->
     <script src="js/modules/characters/character-detail.js"></script>
 
-    <!-- 8k. Character Events -->
+    <!-- 20. CHARACTER EVENTS -->
     <script src="js/modules/characters/character-events.js"></script>
 
-    <!-- 8l. Characters Module Entry Point -->
+    <!-- 21. CHARACTERS MODULE ENTRY POINT -->
     <script src="js/modules/characters/index.js"></script>
 
-    <!-- 9. CLASSES MODULES (Refactored) -->
-    <!-- 9a. Classes Core (CRUD) -->
+    <!-- 22. CLASSES MODULES -->
     <script src="js/modules/classes/classes-core.js"></script>
-
-    <!-- 9b. Classes View (RENDER ONLY) -->
     <script src="js/modules/classes/classes-view.js"></script>
-
-    <!-- 9c. Classes Events -->
     <script src="js/modules/classes/classes-events.js"></script>
-
-    <!-- 9d. Classes Main Entry Point -->
     <script src="js/modules/classes/classes-main.js"></script>
 
-    <!-- 10. TEAM MODULES -->
+    <!-- 23. TEAM MODULES -->
     <script src="js/modules/teams/team-core.js"></script>
     <script src="js/modules/teams/team-filters.js"></script>
     <script src="js/modules/teams/team-rankings.js"></script>
@@ -174,58 +156,7 @@
     <script src="js/modules/teams/team-modals.js"></script>
     <script src="js/modules/teams/team-manager.js"></script>
 
-    <!-- 11. DISCIPLINE CORE -->
-    <script src="js/modules/discipline-core.js"></script>
-
-    <!-- 12. SCHEDULE CORE -->
-    <script src="js/modules/schedule-core.js"></script>
-
-    <!-- 13. GRADE CORE -->
-    <script src="js/modules/grade-core.js"></script>
-
-    <!-- 14. RANKING CORE -->
-    <script src="js/modules/ranking-core.js"></script>
-
-    <!-- 15. LOCATION CORE -->
-    <script src="js/modules/location-core.js"></script>
-
-    <!-- 16. GROUP CORE -->
-    <script src="js/modules/group-core.js"></script>
-
-    <!-- 17. CURRICULUM MODULES -->
-    <script src="js/modules/curriculum/curriculum-helpers.js"></script>
-    <script src="js/modules/curriculum/curriculum-validators.js"></script>
-    <script src="js/modules/curriculum/curriculum-schema.js"></script>
-    <script src="js/modules/curriculum/curriculum-disciplines.js"></script>
-    <script src="js/modules/curriculum/curriculum-groups.js"></script>
-    <script src="js/modules/curriculum/curriculum-schedule.js"></script>
-    <script src="js/modules/curriculum/curriculum-ranking.js"></script>
-    <script src="js/modules/curriculum/curriculum-instructor.js"></script>
-    <script src="js/modules/curriculum/curriculum-grades.js"></script>
-    <script src="js/modules/curriculum/curriculum-locations.js"></script>
-    <script src="js/modules/curriculum/curriculum-location-schedule.js"></script>
-    <script src="js/modules/curriculum/curriculum-index.js"></script>
-
-    <!-- 18. CURRICULUM UI MODULES -->
-    <script src="js/modules/curriculum/curriculum-main.js"></script>
-    <script src="js/modules/curriculum/disciplines-view.js"></script>
-    <script src="js/modules/curriculum/locations.js"></script>
-    <script src="js/modules/curriculum/ranking-view.js"></script>
-    <script src="js/modules/curriculum/groups-view.js"></script>
-    <script src="js/modules/curriculum/class-view.js"></script>
-    <script src="js/modules/curriculum/classes-view.js"></script>
-
-    <!-- 19. CALENDAR MODULES -->
-    <script src="js/modules/calendar/calendar-utils.js"></script>
-    <script src="js/modules/calendar/modes/index.js"></script>
-    <script src="js/modules/calendar/calendar-renderer.js"></script>
-    <script src="js/modules/calendar/calendar-ui.js"></script>
-    <script src="js/modules/calendar/modes/student.js"></script>
-    <script src="js/modules/calendar/modes/instructor.js"></script>
-    <script src="js/modules/calendar/modes/location.js"></script>
-    <script src="js/modules/calendar/index.js"></script>
-
-    <!-- 20. MISSION MODULES -->
+    <!-- 24. MISSION MODULES -->
     <script src="js/modules/missions/missions-schema.js"></script>
     <script src="js/modules/missions/missions-core.js"></script>
     <script src="js/modules/missions/missions-queries.js"></script>
@@ -233,10 +164,10 @@
     <script src="js/modules/missions/missions-ui.js"></script>
     <script src="js/modules/missions/index.js"></script>
 
-    <!-- 21. SOCIAL MODULE -->
+    <!-- 25. SOCIAL MODULE -->
     <script src="js/modules/social.js"></script>
 
-    <!-- 22. TOURNAMENT MODULES -->
+    <!-- 26. TOURNAMENT MODULES -->
     <script src="js/modules/tournaments/tournaments-schema.js"></script>
     <script src="js/modules/tournaments/tournaments-core.js"></script>
     <script src="js/modules/tournaments/tournaments-queries.js"></script>
@@ -245,28 +176,19 @@
     <script src="js/modules/tournaments/tournaments-repair.js"></script>
     <script src="js/modules/tournaments/tournaments-ui.js"></script>
 
-    <!-- 23. EXPORT MODULES -->
-    <!-- 23a. Shared Export Utilities -->
+    <!-- 27. EXPORT MODULES -->
     <script src="js/export/export-utils.js"></script>
     <script src="js/export/csv-parser.js"></script>
-
-    <!-- 23b. JSON (Full Backup) -->
     <script src="js/export/json-io.js"></script>
-
-    <!-- 23c. Character CSV -->
     <script src="js/export/character-export.js"></script>
     <script src="js/export/character-import.js"></script>
     <script src="js/export/character-template.js"></script>
-
-    <!-- 23d. Mission CSV -->
     <script src="js/export/mission-export.js"></script>
     <script src="js/export/mission-import.js"></script>
     <script src="js/export/mission-template.js"></script>
-
-    <!-- 23e. Export Index (UI Wiring) -->
     <script src="js/export/index.js"></script>
 
-    <!-- 24. APP BOOTSTRAPPER -->
+    <!-- 28. APP BOOTSTRAPPER -->
     <script src="js/app.js"></script>
 
 </body>
