@@ -55,39 +55,51 @@
     // ============================================================
 
     if (!window.TeamCore) {
+        console.warn('TeamManager: TeamCore not available.');
         return;
     }
     if (!window.TeamQueries) {
+        console.warn('TeamManager: TeamQueries not available.');
         return;
     }
     if (!window.TeamFilters) {
+        console.warn('TeamManager: TeamFilters not available.');
         return;
     }
     if (!window.TeamModals) {
+        console.warn('TeamManager: TeamModals not available.');
         return;
     }
     if (!window.TeamMembers) {
+        console.warn('TeamManager: TeamMembers not available.');
         return;
     }
     if (!window.TeamRankings) {
+        console.warn('TeamManager: TeamRankings not available.');
         return;
     }
     if (!window.TeamRender) {
+        console.warn('TeamManager: TeamRender not available.');
         return;
     }
     if (!window.CharacterQueries) {
+        console.warn('TeamManager: CharacterQueries not available.');
         return;
     }
     if (!window.ClassesQueries) {
+        console.warn('TeamManager: ClassesQueries not available.');
         return;
     }
     if (!window.NotificationSystem) {
+        console.warn('TeamManager: NotificationSystem not available.');
         return;
     }
     if (!window.CALENDAR_CONSTANTS) {
+        console.warn('TeamManager: CALENDAR_CONSTANTS not available.');
         return;
     }
     if (!window.TabManager) {
+        console.warn('TeamManager: TabManager not available.');
         return;
     }
 
@@ -171,10 +183,9 @@
     // ============================================================
 
     var teamState = {
-        currentTab: 'academic',
+        currentTab: 'professional',
         expandedTeamId: null,
         filters: {
-            academic: { filterWeek: 1, filterStatus: 'active', filterClass: 'all' },
             professional: { filterYear: '', filterStatus: 'active' },
             temporary: { filterYear: '', filterStatus: 'active' },
             civilian: { filterStatus: 'active' }
@@ -231,20 +242,19 @@
             }
         }
 
-        var allAcad = 0;
+        // Only count professional, temporary, civilian (academic is in academy module)
         var allProf = 0;
         var allTemp = 0;
         var allCiv = 0;
 
         for (var j = 0; j < visibleTeams.length; j++) {
             var t = visibleTeams[j];
-            if (t.type === 'academic') {
-                allAcad++;
-            } else if (t.type === 'professional' || t.type === 'internship') {
+            var normalizedType = TeamCore.normalizeTeamType(t.type);
+            if (normalizedType === 'professional') {
                 allProf++;
-            } else if (t.type === 'temporary') {
+            } else if (normalizedType === 'temporary') {
                 allTemp++;
-            } else if (t.type === 'civilian') {
+            } else if (normalizedType === 'civilian') {
                 allCiv++;
             }
         }
@@ -252,7 +262,6 @@
         // Update tab button labels
         var tabButtons = container.querySelectorAll('.tab-btn');
         var tabMap = {
-            'academic': allAcad,
             'professional': allProf,
             'temporary': allTemp,
             'civilian': allCiv
@@ -268,7 +277,7 @@
 
         // Update stat cards
         var statCards = container.querySelectorAll('.stat-card .stat-number');
-        var counts = [allAcad, allProf, allTemp, allCiv];
+        var counts = [allProf, allTemp, allCiv];
         for (var l = 0; l < statCards.length && l < counts.length; l++) {
             statCards[l].textContent = counts[l];
         }
@@ -320,20 +329,19 @@
             }
         }
 
-        var allAcad = 0;
+        // Only count professional, temporary, civilian (academic is in academy module)
         var allProf = 0;
         var allTemp = 0;
         var allCiv = 0;
 
         for (var j = 0; j < visibleTeams.length; j++) {
             var t = visibleTeams[j];
-            if (t.type === 'academic') {
-                allAcad++;
-            } else if (t.type === 'professional' || t.type === 'internship') {
+            var normalizedType = TeamCore.normalizeTeamType(t.type);
+            if (normalizedType === 'professional') {
                 allProf++;
-            } else if (t.type === 'temporary') {
+            } else if (normalizedType === 'temporary') {
                 allTemp++;
-            } else if (t.type === 'civilian') {
+            } else if (normalizedType === 'civilian') {
                 allCiv++;
             }
         }
@@ -348,15 +356,13 @@
 
         // Stats
         html += '<div class="stats-grid">';
-        html += '<div class="stat-card"><h3>Academic</h3><p class="stat-number">' + allAcad + '</p></div>';
         html += '<div class="stat-card"><h3>Professional</h3><p class="stat-number">' + allProf + '</p></div>';
         html += '<div class="stat-card"><h3>Temporary</h3><p class="stat-number">' + allTemp + '</p></div>';
         html += '<div class="stat-card"><h3>Civilian</h3><p class="stat-number">' + allCiv + '</p></div>';
         html += '</div>';
 
-        // Tab buttons
+        // Tab buttons - academic removed (handled in academy module)
         html += '<div class="tab-nav" id="team-tab-nav">';
-        html += '<button class="tab-btn ' + (teamState.currentTab === 'academic' ? 'active' : '') + '" data-tab="academic">Academic (' + allAcad + ')</button>';
         html += '<button class="tab-btn ' + (teamState.currentTab === 'professional' ? 'active' : '') + '" data-tab="professional">Professional (' + allProf + ')</button>';
         html += '<button class="tab-btn ' + (teamState.currentTab === 'temporary' ? 'active' : '') + '" data-tab="temporary">Temporary (' + allTemp + ')</button>';
         html += '<button class="tab-btn ' + (teamState.currentTab === 'civilian' ? 'active' : '') + '" data-tab="civilian">Civilian (' + allCiv + ')</button>';
@@ -385,19 +391,60 @@
     // ============================================================
 
     function buildFilterHTML(tab) {
-        var filter = teamState.filters[tab] || teamState.filters.academic;
-        var classes = getClasses();
+        var filter = teamState.filters[tab] || teamState.filters.professional;
 
-        if (tab === 'academic') {
-            return TeamFilters.buildFilterHTML ? TeamFilters.buildFilterHTML('academic', filter, classes) : '';
-        } else if (tab === 'professional') {
-            return TeamFilters.buildFilterHTML ? TeamFilters.buildFilterHTML('professional', filter, classes) : '';
+        if (tab === 'professional') {
+            return getProfessionalFilterHTML(filter);
         } else if (tab === 'temporary') {
-            return TeamFilters.buildFilterHTML ? TeamFilters.buildFilterHTML('temporary', filter, classes) : '';
+            return getTemporaryFilterHTML(filter);
         } else if (tab === 'civilian') {
-            return TeamFilters.buildFilterHTML ? TeamFilters.buildFilterHTML('civilian', filter, classes) : '';
+            return getCivilianFilterHTML(filter);
         }
         return '';
+    }
+
+    function getProfessionalFilterHTML(filter) {
+        var html = '';
+        html += '<div class="filter-row">';
+        html += '<div class="filter-group">';
+        html += '<label for="team-filter-year">Year:</label>';
+        html += '<input type="number" id="team-filter-year" value="' + (filter.filterYear || '') + '" min="' + MIN_YEAR + '" max="' + MAX_YEAR + '" placeholder="All">';
+        html += '</div>';
+        html += '<div class="filter-group">';
+        html += '<label for="professional-show-inactive">Show Inactive:</label>';
+        html += '<input type="checkbox" id="professional-show-inactive" ' + (filter.filterStatus === 'inactive' ? 'checked' : '') + '>';
+        html += '</div>';
+        html += '<button id="apply-filter-btn" class="small primary">Apply</button>';
+        html += '</div>';
+        return html;
+    }
+
+    function getTemporaryFilterHTML(filter) {
+        var html = '';
+        html += '<div class="filter-row">';
+        html += '<div class="filter-group">';
+        html += '<label for="team-filter-year">Year:</label>';
+        html += '<input type="number" id="team-filter-year" value="' + (filter.filterYear || '') + '" min="' + MIN_YEAR + '" max="' + MAX_YEAR + '" placeholder="All">';
+        html += '</div>';
+        html += '<div class="filter-group">';
+        html += '<label for="temporary-show-inactive">Show Inactive:</label>';
+        html += '<input type="checkbox" id="temporary-show-inactive" ' + (filter.filterStatus === 'inactive' ? 'checked' : '') + '>';
+        html += '</div>';
+        html += '<button id="apply-filter-btn" class="small primary">Apply</button>';
+        html += '</div>';
+        return html;
+    }
+
+    function getCivilianFilterHTML(filter) {
+        var html = '';
+        html += '<div class="filter-row">';
+        html += '<div class="filter-group">';
+        html += '<label for="civilian-show-inactive">Show Inactive:</label>';
+        html += '<input type="checkbox" id="civilian-show-inactive" ' + (filter.filterStatus === 'inactive' ? 'checked' : '') + '>';
+        html += '</div>';
+        html += '<button id="apply-filter-btn" class="small primary">Apply</button>';
+        html += '</div>';
+        return html;
     }
 
     // ============================================================
@@ -405,11 +452,9 @@
     // ============================================================
 
     function getFilteredTeamsForTab(tab) {
-        var filter = teamState.filters[tab] || teamState.filters.academic;
+        var filter = teamState.filters[tab] || teamState.filters.professional;
 
-        if (tab === 'academic') {
-            return TeamFilters.filterTeams('academic', filter);
-        } else if (tab === 'professional') {
+        if (tab === 'professional') {
             return TeamFilters.filterTeams('professional', filter);
         } else if (tab === 'temporary') {
             return TeamFilters.filterTeams('temporary', filter);
@@ -442,9 +487,7 @@
             return;
         }
 
-        var periodNum = teamState.currentTab === 'academic'
-            ? (teamState.filters.academic.filterWeek || 1)
-            : 1;
+        var periodNum = 1;
 
         var html = TeamRender.renderList(
             filteredTeams,
@@ -466,9 +509,7 @@
             listContainer = container;
         }
 
-        var periodNum = teamState.currentTab === 'academic'
-            ? (teamState.filters.academic.filterWeek || 1)
-            : 1;
+        var periodNum = 1;
 
         var html = TeamRender.renderList(
             teams,
@@ -503,7 +544,6 @@
                                 '<div class="form-group">',
                                     '<label>Team Type *</label>',
                                     '<select id="team-type" required>',
-                                        '<option value="academic">Academic</option>',
                                         '<option value="professional">Professional</option>',
                                         '<option value="temporary">Temporary</option>',
                                         '<option value="civilian">Civilian</option>',
@@ -511,11 +551,11 @@
                                 '</div>',
                                 '<div class="form-group">',
                                     '<label id="team-start-label">Start Period</label>',
-                                    '<input type="text" id="team-start" placeholder="Week or Year">',
+                                    '<input type="text" id="team-start" placeholder="Year">',
                                 '</div>',
                                 '<div class="form-group">',
                                     '<label id="team-end-label">End Period (optional)</label>',
-                                    '<input type="text" id="team-end" placeholder="Week or Year">',
+                                    '<input type="text" id="team-end" placeholder="Year">',
                                 '</div>',
                                 '<div class="form-group">',
                                     '<label>Current Ranking</label>',
@@ -530,19 +570,7 @@
                                         '<option value="deprecated">Deprecated</option>',
                                     '</select>',
                                 '</div>',
-                                '<div id="academic-team-fields" style="display:none;grid-column:1/-1;">',
-                                    '<div class="form-group">',
-                                        '<label>Class</label>',
-                                        '<select id="team-class" style="width:100%;padding:8px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">',
-                                            '<option value="">Unassigned</option>',
-                                        '</select>',
-                                    '</div>',
-                                    '<div class="form-group">',
-                                        '<label>Team Number (optional)</label>',
-                                        '<input type="text" id="team-number" placeholder="e.g., A, B, 1, 2...">',
-                                    '</div>',
-                                '</div>',
-                                '<div class="form-group full-width" id="temporary-mission-field" style="display:none;">',
+                                '<div class="form-group full-width" id="temporary-mission-field">',
                                     '<label>Associated Mission</label>',
                                     '<select id="team-mission">',
                                         '<option value="">None</option>',
@@ -674,12 +702,6 @@
             startPeriod: document.getElementById('team-start').value || '',
             endPeriod: document.getElementById('team-end').value || '',
             status: document.getElementById('team-status').value || 'active',
-            classId: type === 'academic'
-                ? (document.getElementById('team-class').value || null)
-                : null,
-            teamNumber: type === 'academic'
-                ? (document.getElementById('team-number').value.trim() || '')
-                : '',
             temporaryMission: (type === 'temporary' || type === 'professional')
                 ? (document.getElementById('team-mission').value || null)
                 : null,
@@ -807,26 +829,9 @@
     // ============================================================
 
     function applyFilters(tab) {
-        var filter = teamState.filters[tab] || teamState.filters.academic;
+        var filter = teamState.filters[tab] || teamState.filters.professional;
 
-        if (tab === 'academic') {
-            var weekInput = document.getElementById('team-filter-week');
-            var classFilter = document.getElementById('team-class-filter');
-            var inactiveCheck = document.getElementById('academic-show-inactive');
-
-            if (weekInput) {
-                var week = parseInt(weekInput.value, 10);
-                if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
-                    filter.filterWeek = week;
-                }
-            }
-            if (classFilter) {
-                filter.filterClass = classFilter.value;
-            }
-            if (inactiveCheck) {
-                filter.filterStatus = inactiveCheck.checked ? 'inactive' : 'active';
-            }
-        } else if (tab === 'professional') {
+        if (tab === 'professional') {
             var yearInput = document.getElementById('team-filter-year');
             var profInactiveCheck = document.getElementById('professional-show-inactive');
 
@@ -855,6 +860,11 @@
             }
             if (tempInactiveCheck) {
                 filter.filterStatus = tempInactiveCheck.checked ? 'inactive' : 'active';
+            }
+        } else if (tab === 'civilian') {
+            var civInactiveCheck = document.getElementById('civilian-show-inactive');
+            if (civInactiveCheck) {
+                filter.filterStatus = civInactiveCheck.checked ? 'inactive' : 'active';
             }
         }
 
@@ -901,7 +911,7 @@
                             applyFilters(tab);
                         });
                     }
-                    var inactiveCheck = filterContainer.querySelector('#academic-show-inactive, #professional-show-inactive, #temporary-show-inactive');
+                    var inactiveCheck = filterContainer.querySelector('#professional-show-inactive, #temporary-show-inactive, #civilian-show-inactive');
                     if (inactiveCheck) {
                         inactiveCheck.addEventListener('change', function() {
                             applyFilters(tab);
@@ -1108,7 +1118,7 @@
         }
 
         // Filter inactive checkboxes
-        var inactiveChecks = container.querySelectorAll('#academic-show-inactive, #professional-show-inactive, #temporary-show-inactive');
+        var inactiveChecks = container.querySelectorAll('#professional-show-inactive, #temporary-show-inactive, #civilian-show-inactive');
         for (var i = 0; i < inactiveChecks.length; i++) {
             var check = inactiveChecks[i];
             check.addEventListener('change', function() {
