@@ -1,13 +1,29 @@
 /**
- * js/calendar/calendar-utils.js - Calendar Utilities
- * Path: js/utils/calendar-utils.js
+ * js/modules/calendar/calendar-utils.js - Calendar Utilities
+ * Path: js/modules/calendar/calendar-utils.js
  * 
- * This module provides calendar-related utility functions:
+ * This module provides calendar-domain utility functions:
  *   - Week block calculation for academic schedules
  *   - Week number calculation
- *   - Day name formatting
- *   - Period validation helpers
- *   - Hour formatting helpers
+ *   - Academic week calculation
+ *   - Week/year validation
+ * 
+ * IMPORTANT:
+ *   - No DOM dependencies
+ *   - No persistence
+ *   - No application state
+ *   - Uses CalendarConstants for all bounds
+ *   - Formatting functions moved to FormatUtils
+ *   - Validation functions moved to CalendarConstants
+ * 
+ * DEPENDENCIES:
+ *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ * 
+ * USAGE:
+ *   var CU = window.CalendarUtils;
+ *   var block = CU.getWeekBlock(3);
+ *   var blocks = CU.getAllWeekBlocks();
+ *   var weekNum = CU.getWeekNumber(new Date());
  */
 
 (function() {
@@ -20,13 +36,24 @@
     window.__calendarUtilsLoaded = true;
 
     // ============================================================
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
+    // ============================================================
+
+    if (!window.CalendarConstants) {
+        console.error('[CalendarUtils] CalendarConstants is required.');
+        return;
+    }
+
+    var CalendarConstants = window.CalendarConstants;
+
+    // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var CALENDAR = window.CALENDAR_CONSTANTS || {};
-    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
-    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
-    var WEEKS_PER_BLOCK = 2;
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var WEEKS_PER_BLOCK = CalendarConstants.WEEKS_PER_BLOCK;
+    var DAYS_IN_WEEK = CalendarConstants.DAYS_IN_WEEK;
 
     // ============================================================
     // WEEK BLOCK HELPERS
@@ -37,15 +64,14 @@
      * Blocks are: 1-2, 3-4, 5-6, etc.
      * 
      * @param {number|string} weekNum - Week number (1-52)
-     * @returns {object|null} { start: number, end: number } or null if invalid
+     * @returns {object|null} { start: number, end: number, block: number, label: string } or null if invalid
      */
     function getWeekBlock(weekNum) {
-        var num = parseInt(weekNum, 10);
-        if (isNaN(num) || num < MIN_WEEK || num > MAX_WEEK) {
+        var num = CalendarConstants.isValidWeek(weekNum);
+        if (num === null) {
             return null;
         }
 
-        // Calculate block: 1-2 -> block 1, 3-4 -> block 2, etc.
         var blockIndex = Math.floor((num - 1) / WEEKS_PER_BLOCK);
         var start = (blockIndex * WEEKS_PER_BLOCK) + 1;
         var end = Math.min(start + WEEKS_PER_BLOCK - 1, MAX_WEEK);
@@ -61,7 +87,7 @@
     /**
      * Get all week blocks for the academic year.
      * 
-     * @returns {array} Array of block objects
+     * @returns {Array} Array of block objects
      */
     function getAllWeekBlocks() {
         var blocks = [];
@@ -86,8 +112,8 @@
      * @returns {number|null} Block number or null if invalid
      */
     function getWeekBlockNumber(weekNum) {
-        var num = parseInt(weekNum, 10);
-        if (isNaN(num) || num < MIN_WEEK || num > MAX_WEEK) {
+        var num = CalendarConstants.isValidWeek(weekNum);
+        if (num === null) {
             return null;
         }
         return Math.floor((num - 1) / WEEKS_PER_BLOCK) + 1;
@@ -97,11 +123,12 @@
      * Get the week range for a given block number.
      * 
      * @param {number} blockNum - Block number (1-26)
-     * @returns {object|null} { start: number, end: number } or null if invalid
+     * @returns {object|null} { start: number, end: number, label: string } or null if invalid
      */
     function getBlockRange(blockNum) {
-        var num = parseInt(blockNum, 10);
-        if (isNaN(num) || num < 1 || num > Math.ceil(MAX_WEEK / WEEKS_PER_BLOCK)) {
+        var num = Number(blockNum);
+        var maxBlocks = Math.ceil(MAX_WEEK / WEEKS_PER_BLOCK);
+        if (!Number.isInteger(num) || num < 1 || num > maxBlocks) {
             return null;
         }
 
@@ -120,25 +147,30 @@
     // ============================================================
 
     /**
-     * Get the week number from a date.
+     * Get the ISO week number from a date.
+     * Based on ISO 8601: weeks start on Monday, week 1 contains Jan 4.
      * 
      * @param {Date|string} date - Date object or ISO date string
-     * @param {number} firstDayOfWeek - 1 = Monday, 0 = Sunday (default: 1)
      * @returns {number} Week number (1-52)
      */
-    function getWeekNumber(date, firstDayOfWeek) {
-        firstDayOfWeek = firstDayOfWeek || 1;
+    function getWeekNumber(date) {
         var d = new Date(date);
+        if (isNaN(d.getTime())) {
+            return 1;
+        }
+
         d.setHours(0, 0, 0, 0);
-        
+
         // Set to Thursday of the same week to get ISO week number
         var dayOffset = (d.getDay() + 6) % 7; // Monday = 0, Sunday = 6
         d.setDate(d.getDate() - dayOffset + 3);
-        
+
+        // Get week 1 of the year
         var week1 = new Date(d.getFullYear(), 0, 4);
         var week1Offset = (week1.getDay() + 6) % 7;
         week1.setDate(week1.getDate() - week1Offset);
-        
+
+        // Calculate week number
         var diff = (d - week1) / 86400000;
         return Math.floor(diff / 7) + 1;
     }
@@ -155,224 +187,127 @@
         startWeek = startWeek || 1;
         var weekNum = getWeekNumber(date);
         // Adjust so week 1 of the academic year starts at the given offset
-        return ((weekNum - startWeek) % 52) + 1;
-    }
-
-    // ============================================================
-    // DAY NAME HELPERS
-    // ============================================================
-
-    /**
-     * Get the day name for a given day number (1-7).
-     * 1 = Monday, 7 = Sunday
-     * 
-     * @param {number} day - Day number (1-7)
-     * @param {string} format - 'long', 'short', or 'min' (default: 'long')
-     * @returns {string} Day name
-     */
-    function getDayName(day, format) {
-        format = format || 'long';
-        var names = {
-            'long': ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
-            'short': ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-            'min': ['', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
-        };
-        var dayNames = names[format] || names['long'];
-        var num = parseInt(day, 10);
-        if (isNaN(num) || num < 1 || num > 7) return 'Unknown';
-        return dayNames[num] || 'Unknown';
-    }
-
-    /**
-     * Get the day number (1-7) from a day name.
-     * 1 = Monday, 7 = Sunday
-     * 
-     * @param {string} dayName - Day name (e.g., 'Monday', 'Mon', 'Mo')
-     * @returns {number} Day number (1-7) or null if not found
-     */
-    function getDayNumber(dayName) {
-        var names = {
-            'monday': 1, 'mon': 1, 'mo': 1,
-            'tuesday': 2, 'tue': 2, 'tu': 2,
-            'wednesday': 3, 'wed': 3, 'we': 3,
-            'thursday': 4, 'thu': 4, 'th': 4,
-            'friday': 5, 'fri': 5, 'fr': 5,
-            'saturday': 6, 'sat': 6, 'sa': 6,
-            'sunday': 7, 'sun': 7, 'su': 7
-        };
-        var key = String(dayName).toLowerCase();
-        return names[key] || null;
-    }
-
-    // ============================================================
-    // HOUR FORMATTING HELPERS
-    // ============================================================
-
-    /**
-     * Format an hour number to a display string (e.g., 9 -> "9:00 AM", 14 -> "2:00 PM")
-     * 
-     * @param {number} hour - Hour number (0-23)
-     * @param {boolean} includeMinutes - Whether to include ":00" (default: true)
-     * @returns {string} Formatted hour string
-     */
-    function formatHour(hour, includeMinutes) {
-        includeMinutes = includeMinutes !== false;
-        
-        var num = parseInt(hour, 10);
-        if (isNaN(num) || num < 0 || num > 23) {
-            return String(hour);
+        var academicWeek = ((weekNum - startWeek) % 52) + 1;
+        // Ensure positive result (JavaScript % can be negative)
+        while (academicWeek < 1) {
+            academicWeek += 52;
         }
-        
-        var displayHour = num > 12 ? num - 12 : num;
-        if (num === 0) displayHour = 12;
-        var ampm = num >= 12 ? 'PM' : 'AM';
-        
-        return displayHour + (includeMinutes ? ':00 ' : ' ') + ampm;
+        return academicWeek;
     }
 
     /**
-     * Parse a time string to hour number.
+     * Get the ISO week number from a date (alias for getWeekNumber).
      * 
-     * @param {string} timeStr - Time string (e.g., "9:00 AM", "14:00")
-     * @returns {number|null} Hour number (0-23) or null if invalid
+     * @param {Date|string} date - Date object or ISO date string
+     * @returns {number} Week number (1-52)
      */
-    function parseHour(timeStr) {
-        if (!timeStr || typeof timeStr !== 'string') {
+    function getISOWeekNumber(date) {
+        return getWeekNumber(date);
+    }
+
+    // ============================================================
+    // DATE HELPERS
+    // ============================================================
+
+    /**
+     * Get the first day of the week for a given date.
+     * 
+     * @param {Date|string} date - Date object or ISO date string
+     * @param {number} firstDayOfWeek - 1 = Monday, 0 = Sunday (default: 1)
+     * @returns {Date} Date of the first day of the week
+     */
+    function getFirstDayOfWeek(date, firstDayOfWeek) {
+        firstDayOfWeek = firstDayOfWeek || 1;
+        var d = new Date(date);
+        if (isNaN(d.getTime())) {
+            return new Date();
+        }
+
+        d.setHours(0, 0, 0, 0);
+        var dayOffset = (d.getDay() + 6) % 7; // Monday = 0, Sunday = 6
+        var targetOffset = firstDayOfWeek === 1 ? 0 : 6;
+        d.setDate(d.getDate() - dayOffset + targetOffset);
+        return d;
+    }
+
+    /**
+     * Get the last day of the week for a given date.
+     * 
+     * @param {Date|string} date - Date object or ISO date string
+     * @param {number} firstDayOfWeek - 1 = Monday, 0 = Sunday (default: 1)
+     * @returns {Date} Date of the last day of the week
+     */
+    function getLastDayOfWeek(date, firstDayOfWeek) {
+        firstDayOfWeek = firstDayOfWeek || 1;
+        var firstDay = getFirstDayOfWeek(date, firstDayOfWeek);
+        var lastDay = new Date(firstDay);
+        lastDay.setDate(firstDay.getDate() + 6);
+        return lastDay;
+    }
+
+    /**
+     * Get the date range for a week.
+     * 
+     * @param {number} weekNum - Week number (1-52)
+     * @param {number} year - Year
+     * @param {number} firstDayOfWeek - 1 = Monday, 0 = Sunday (default: 1)
+     * @returns {object|null} { start: Date, end: Date } or null if invalid
+     */
+    function getWeekDateRange(weekNum, year, firstDayOfWeek) {
+        var week = CalendarConstants.isValidWeek(weekNum);
+        if (week === null) {
             return null;
         }
-        
-        var trimmed = timeStr.trim().toUpperCase();
-        
-        // Try 24-hour format first
-        var match24 = trimmed.match(/^(\d{1,2}):(\d{2})$/);
-        if (match24) {
-            var hour = parseInt(match24[1], 10);
-            var minute = parseInt(match24[2], 10);
-            if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
-                return hour;
-            }
-        }
-        
-        // Try 12-hour format
-        var match12 = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
-        if (match12) {
-            var hour = parseInt(match12[1], 10);
-            var minute = parseInt(match12[2], 10);
-            var ampm = match12[3];
-            if (minute >= 0 && minute <= 59) {
-                if (ampm === 'PM' && hour < 12) hour += 12;
-                if (ampm === 'AM' && hour === 12) hour = 0;
-                return hour;
-            }
-        }
-        
-        // Try without minutes
-        var matchSimple = trimmed.match(/^(\d{1,2})\s*(AM|PM)?$/);
-        if (matchSimple) {
-            var hour = parseInt(matchSimple[1], 10);
-            if (matchSimple[2]) {
-                var ampm = matchSimple[2];
-                if (ampm === 'PM' && hour < 12) hour += 12;
-                if (ampm === 'AM' && hour === 12) hour = 0;
-                return hour;
-            }
-            // 24-hour without AM/PM
-            if (hour >= 0 && hour <= 23) {
-                return hour;
-            }
-        }
-        
-        return null;
-    }
 
-    /**
-     * Get a list of hour options for select dropdowns.
-     * 
-     * @param {number} startHour - Start hour (default: 5)
-     * @param {number} endHour - End hour (default: 23)
-     * @param {boolean} includeMinutes - Whether to include ":00" (default: true)
-     * @returns {Array<{value: number, label: string}>} Array of hour options
-     */
-    function getHourOptions(startHour, endHour, includeMinutes) {
-        startHour = startHour || 5;
-        endHour = endHour || 23;
-        includeMinutes = includeMinutes !== false;
-        
-        var options = [];
-        for (var h = startHour; h <= endHour; h++) {
-            options.push({
-                value: h,
-                label: formatHour(h, includeMinutes)
-            });
+        firstDayOfWeek = firstDayOfWeek || 1;
+        year = year || new Date().getFullYear();
+
+        // Get Jan 4 of the year (ISO week 1 starts here)
+        var jan4 = new Date(year, 0, 4);
+        var jan4Offset = (jan4.getDay() + 6) % 7;
+        var week1Start = new Date(jan4);
+        week1Start.setDate(jan4.getDate() - jan4Offset);
+
+        // Calculate week start
+        var startDate = new Date(week1Start);
+        startDate.setDate(week1Start.getDate() + (week - 1) * 7);
+
+        // If first day is Sunday, adjust
+        if (firstDayOfWeek === 0) {
+            startDate.setDate(startDate.getDate() + 6);
+            var startDay = startDate.getDay();
+            if (startDay !== 0) {
+                startDate.setDate(startDate.getDate() - startDay);
+            }
         }
-        return options;
+
+        var endDate = new Date(startDate);
+        endDate.setDate(startDate.getDate() + 6);
+
+        return {
+            start: startDate,
+            end: endDate
+        };
     }
 
     // ============================================================
-    // PERIOD VALIDATION HELPERS
+    // VALIDATION HELPERS (delegated to CalendarConstants)
     // ============================================================
 
     /**
      * Check if a value is a valid week number (1-52).
-     * 
-     * @param {*} value - Value to check
-     * @returns {boolean} True if valid
+     * @deprecated Use CalendarConstants.isValidWeek() instead.
      */
     function isValidWeek(value) {
-        var num = parseInt(value, 10);
-        return !isNaN(num) && num >= MIN_WEEK && num <= MAX_WEEK;
+        return CalendarConstants.isValidWeek(value) !== null;
     }
 
     /**
-     * Check if a value is a valid year (1900-2100).
-     * 
-     * @param {*} value - Value to check
-     * @returns {boolean} True if valid
+     * Check if a value is a valid year.
+     * @deprecated Use CalendarConstants.isValidYear() instead.
      */
     function isValidYear(value) {
-        var num = parseInt(value, 10);
-        var MIN_YEAR = CALENDAR.MIN_YEAR || 1900;
-        var MAX_YEAR = CALENDAR.MAX_YEAR || 2100;
-        return !isNaN(num) && num >= MIN_YEAR && num <= MAX_YEAR;
-    }
-
-    /**
-     * Parse a period value to a number.
-     * 
-     * @param {*} value - Value to parse
-     * @returns {number|null} Parsed number or null if invalid
-     */
-    function parsePeriod(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = parseInt(value, 10);
-        return !isNaN(num) ? num : null;
-    }
-
-    // ============================================================
-    // DATE FORMATTING HELPERS
-    // ============================================================
-
-    /**
-     * Format a date as a string.
-     * 
-     * @param {Date|string} date - Date object or ISO date string
-     * @param {string} format - 'iso', 'date', or 'full' (default: 'date')
-     * @returns {string} Formatted date string
-     */
-    function formatDate(date, format) {
-        format = format || 'date';
-        var d = new Date(date);
-        if (isNaN(d.getTime())) return 'Invalid Date';
-
-        var options = {
-            'iso': { year: 'numeric', month: '2-digit', day: '2-digit' },
-            'date': { year: 'numeric', month: 'long', day: 'numeric' },
-            'full': { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }
-        };
-
-        return d.toLocaleDateString('en-US', options[format] || options['date']);
+        return CalendarConstants.isValidYear(value) !== null;
     }
 
     // ============================================================
@@ -389,31 +324,39 @@
         // Week number helpers
         getWeekNumber: getWeekNumber,
         getAcademicWeek: getAcademicWeek,
+        getISOWeekNumber: getISOWeekNumber,
 
-        // Day name helpers
-        getDayName: getDayName,
-        getDayNumber: getDayNumber,
+        // Date helpers
+        getFirstDayOfWeek: getFirstDayOfWeek,
+        getLastDayOfWeek: getLastDayOfWeek,
+        getWeekDateRange: getWeekDateRange,
 
-        // Hour formatting helpers
-        formatHour: formatHour,
-        parseHour: parseHour,
-        getHourOptions: getHourOptions,
-
-        // Period validation
+        // Validation (deprecated - use CalendarConstants)
         isValidWeek: isValidWeek,
         isValidYear: isValidYear,
-        parsePeriod: parsePeriod,
 
-        // Date formatting
-        formatDate: formatDate,
-
-        // Constants
+        // Constants (deprecated - use CalendarConstants)
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK,
-        WEEKS_PER_BLOCK: WEEKS_PER_BLOCK
+        WEEKS_PER_BLOCK: WEEKS_PER_BLOCK,
+        DAYS_IN_WEEK: DAYS_IN_WEEK
     };
 
-    // Also expose the key function globally for backward compatibility
+    // ============================================================
+    // LEGACY COMPATIBILITY (DEPRECATED - Will be removed)
+    // ============================================================
+
+    // These aliases are provided for backward compatibility
+    // during the migration from old CalendarUtils structure.
+    // They will be removed in a future version.
+
     window.getWeekBlock = getWeekBlock;
+    window.getAllWeekBlocks = getAllWeekBlocks;
+    window.getWeekBlockNumber = getWeekBlockNumber;
+    window.getBlockRange = getBlockRange;
+    window.getWeekNumber = getWeekNumber;
+    window.getAcademicWeek = getAcademicWeek;
+    window.isValidWeek = isValidWeek;
+    window.isValidYear = isValidYear;
 
 })();

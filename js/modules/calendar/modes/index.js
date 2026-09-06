@@ -1,17 +1,48 @@
 /**
- * js/modules/calendar/modes/index.js - Calendar Mode Registry
- * Registers all calendar modes and provides factory functions
+ * js/modules/calendar/modes/index.js - Calendar Modes Registry
+ * Central registry for all calendar modes
  * Path: js/modules/calendar/modes/index.js
  * 
- * This module is responsible for:
- *   - Maintaining the calendar mode registry
- *   - Providing lookup functions for modes
- *   - Validating mode existence
+ * This module provides:
+ *   - registerMode - Register a new calendar mode
+ *   - getMode - Get a mode by name
+ *   - getModeNames - Get all registered mode names
+ *   - getModeOptions - Get mode options for UI selectors
+ *   - hasMode - Check if a mode is registered
+ *   - getModeCount - Get the number of registered modes
+ *   - unregisterMode - Remove a mode registration (testing only)
  * 
  * IMPORTANT:
- *   - This module has NO dependencies on CalendarUI or any other module
- *   - It should load before anything else in the calendar system
- *   - Individual mode modules register themselves with this registry
+ *   - Registry is STATELESS - no mode state, no selection state
+ *   - Modes are registered by name with a required contract
+ *   - Mode objects are FROZEN to prevent mutation
+ *   - No dependencies on other modules
+ *   - No DOM, no persistence, no UI state
+ * 
+ * MODE CONTRACT:
+ *   Each mode must provide:
+ *   - label: string - Display name
+ *   - hint: string - User guidance text
+ *   - render(container, state): function - Render the mode
+ *   - getEntities(): function - Get list of entities for this mode
+ *   - getEntityDisplayName(entity): function - Get display name for an entity
+ *   - getData(state): function - Get schedule data for rendering
+ * 
+ * USAGE:
+ *   // Register a mode
+ *   CalendarModes.registerMode('student', {
+ *       label: 'Student',
+ *       hint: 'Click a slot to add a class...',
+ *       render: function(container, state) { ... },
+ *       getEntities: function() { return students; },
+ *       getEntityDisplayName: function(entity) { return entity.name; },
+ *       getData: function(state) { return schedule; }
+ *   });
+ * 
+ *   // Look up a mode
+ *   var mode = CalendarModes.getMode('student');
+ *   var names = CalendarModes.getModeNames();
+ *   var options = CalendarModes.getModeOptions();
  */
 
 (function() {
@@ -24,145 +55,281 @@
     if (window.__calendarModesLoaded) {
         return;
     }
-    window.__calendarModesLoaded = true;
 
     // ============================================================
-    // MODE REGISTRY
+    // PRIVATE STATE - Null-prototype registry
     // ============================================================
 
-    // Use Object.create(null) to avoid prototype pollution
-    var modes = Object.create(null);
+    var _modes = Object.create(null);
+    var _isTestEnvironment = false;
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
 
     /**
-     * Register a calendar mode
-     * @param {string} name - Unique mode identifier
+     * Check if a value is a non-empty string.
+     */
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
+    }
+
+    /**
+     * Check if a value is a function.
+     */
+    function isFunction(value) {
+        return typeof value === 'function';
+    }
+
+    /**
+     * Deep freeze an object.
+     */
+    function deepFreeze(obj) {
+        if (!obj || typeof obj !== 'object' || Object.isFrozen(obj)) {
+            return obj;
+        }
+
+        var keys = Object.getOwnPropertyNames(obj);
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            var value = obj[key];
+            if (value && typeof value === 'object' && !Array.isArray(value)) {
+                deepFreeze(value);
+            }
+        }
+
+        return Object.freeze(obj);
+    }
+
+    // ============================================================
+    // REGISTRY FUNCTIONS
+    // ============================================================
+
+    /**
+     * Register a new calendar mode.
+     * 
+     * @param {string} name - Mode name (e.g., 'student', 'instructor', 'location')
      * @param {object} mode - Mode implementation
-     * @param {string} mode.label - Display label for the mode
-     * @param {string} [mode.hint] - User hint for the mode
+     * @param {string} mode.label - Display label
+     * @param {string} mode.hint - User guidance hint
      * @param {function} mode.render - Render function (container, state) => void
-     * @param {function} mode.getEntities - Get list of entities for this mode
-     * @param {function} mode.getEntityDisplayName - Get display name for an entity
-     * @param {function} mode.getData - Get schedule data for the current state
-     * @returns {boolean} - True if registration succeeded
+     * @param {function} mode.getEntities - Get entities function () => array
+     * @param {function} mode.getEntityDisplayName - Get entity display name (entity) => string
+     * @param {function} mode.getData - Get schedule data (state) => object
+     * @returns {boolean} True if registration was successful
      */
     function registerMode(name, mode) {
-        if (!name || typeof name !== 'string' || name.trim() === '') {
-            return false;
-        }
-
-        if (!mode || typeof mode !== 'object') {
-            return false;
-        }
-
-        if (typeof mode.render !== 'function') {
-            return false;
-        }
-
-        if (typeof mode.getEntities !== 'function') {
-            return false;
-        }
-
-        if (typeof mode.getEntityDisplayName !== 'function') {
-            return false;
-        }
-
-        if (typeof mode.getData !== 'function') {
+        // ---- PHASE 1: VALIDATE NAME ----
+        if (!isNonEmptyString(name)) {
+            console.warn('[CalendarModes] Mode name must be a non-empty string.');
             return false;
         }
 
         var key = name.trim();
 
-        // Enforce uniqueness
-        if (modes[key]) {
+        // Check for duplicate registration
+        if (Object.prototype.hasOwnProperty.call(_modes, key)) {
+            console.warn('[CalendarModes] Mode "' + key + '" is already registered.');
             return false;
         }
 
-        modes[key] = {
-            label: mode.label || key.charAt(0).toUpperCase() + key.slice(1),
-            hint: mode.hint || null,
+        // ---- PHASE 2: VALIDATE MODE CONTRACT ----
+        if (!mode || typeof mode !== 'object') {
+            console.warn('[CalendarModes] Mode must be an object.');
+            return false;
+        }
+
+        // Validate label
+        if (!isNonEmptyString(mode.label)) {
+            console.warn('[CalendarModes] Mode must have a non-empty label.');
+            return false;
+        }
+
+        // Validate hint
+        if (!isNonEmptyString(mode.hint)) {
+            console.warn('[CalendarModes] Mode must have a non-empty hint.');
+            return false;
+        }
+
+        // Validate render
+        if (!isFunction(mode.render)) {
+            console.warn('[CalendarModes] Mode must have a render function.');
+            return false;
+        }
+
+        // Validate getEntities
+        if (!isFunction(mode.getEntities)) {
+            console.warn('[CalendarModes] Mode must have a getEntities function.');
+            return false;
+        }
+
+        // Validate getEntityDisplayName
+        if (!isFunction(mode.getEntityDisplayName)) {
+            console.warn('[CalendarModes] Mode must have a getEntityDisplayName function.');
+            return false;
+        }
+
+        // Validate getData
+        if (!isFunction(mode.getData)) {
+            console.warn('[CalendarModes] Mode must have a getData function.');
+            return false;
+        }
+
+        // ---- PHASE 3: BUILD AND FREEZE REGISTRATION RECORD ----
+        var registeredMode = {
+            label: mode.label.trim(),
+            hint: mode.hint.trim(),
             render: mode.render,
             getEntities: mode.getEntities,
             getEntityDisplayName: mode.getEntityDisplayName,
             getData: mode.getData
         };
 
+        // Freeze to prevent mutation
+        deepFreeze(registeredMode);
+
+        // Store in registry
+        _modes[key] = registeredMode;
+
         return true;
     }
 
     /**
-     * Get a registered mode by name
-     * @param {string} name - Mode identifier
-     * @returns {object|null} - The mode implementation or null
+     * Get a registered mode by name.
+     * 
+     * @param {string} name - Mode name
+     * @returns {object|null} Mode object or null if not found
      */
     function getMode(name) {
-        if (!name || typeof name !== 'string') {
+        if (!isNonEmptyString(name)) {
             return null;
         }
+
         var key = name.trim();
-        return modes[key] || null;
+
+        if (Object.prototype.hasOwnProperty.call(_modes, key)) {
+            return _modes[key];
+        }
+
+        return null;
     }
 
     /**
-     * Get all registered mode names
-     * @returns {string[]} - Array of mode names
+     * Get all registered mode names.
+     * 
+     * @returns {Array} Array of mode names
      */
     function getModeNames() {
-        return Object.keys(modes);
+        var names = [];
+        for (var key in _modes) {
+            if (Object.prototype.hasOwnProperty.call(_modes, key)) {
+                names.push(key);
+            }
+        }
+        return names.sort();
     }
 
     /**
-     * Get mode options for UI selectors
-     * @returns {Array<{value: string, label: string}>} - Mode options
+     * Get mode options for UI selectors.
+     * 
+     * @returns {Array} Array of { value, label } objects
      */
     function getModeOptions() {
-        var result = [];
-        var names = Object.keys(modes);
+        var options = [];
+        var names = getModeNames();
+
         for (var i = 0; i < names.length; i++) {
             var name = names[i];
-            result.push({
-                value: name,
-                label: modes[name].label || name.charAt(0).toUpperCase() + name.slice(1)
-            });
+            var mode = _modes[name];
+            if (mode && mode.label) {
+                options.push({
+                    value: name,
+                    label: mode.label
+                });
+            }
         }
-        return result;
+
+        return options;
     }
 
     /**
-     * Check if a mode is registered
-     * @param {string} name - Mode identifier
-     * @returns {boolean} - True if the mode exists
+     * Check if a mode is registered.
+     * 
+     * @param {string} name - Mode name
+     * @returns {boolean} True if the mode is registered
      */
     function hasMode(name) {
-        if (!name || typeof name !== 'string') {
+        if (!isNonEmptyString(name)) {
             return false;
         }
+
         var key = name.trim();
-        return !!modes[key];
+        return Object.prototype.hasOwnProperty.call(_modes, key);
     }
 
     /**
-     * Get the count of registered modes
-     * @returns {number} - Number of registered modes
+     * Get the number of registered modes.
+     * 
+     * @returns {number} Number of registered modes
      */
     function getModeCount() {
-        return Object.keys(modes).length;
+        return Object.keys(_modes).length;
     }
 
     /**
-     * Unregister a mode (useful for testing or hot-reload)
-     * @param {string} name - Mode identifier
-     * @returns {boolean} - True if the mode was removed
+     * Unregister a mode.
+     * USE WITH CAUTION - primarily for testing and hot-reload.
+     * 
+     * @param {string} name - Mode name
+     * @returns {boolean} True if the mode was unregistered
      */
     function unregisterMode(name) {
-        if (!name || typeof name !== 'string') {
+        // Only allow in test environment or when explicitly enabled
+        if (!_isTestEnvironment) {
+            console.warn('[CalendarModes] unregisterMode is only available in test environments.');
             return false;
         }
+
+        if (!isNonEmptyString(name)) {
+            return false;
+        }
+
         var key = name.trim();
-        if (!modes[key]) {
+
+        if (!Object.prototype.hasOwnProperty.call(_modes, key)) {
             return false;
         }
-        delete modes[key];
+
+        delete _modes[key];
         return true;
+    }
+
+    /**
+     * Enable test mode for unregisterMode.
+     * INTERNAL USE ONLY - for testing.
+     */
+    function _enableTestMode() {
+        _isTestEnvironment = true;
+    }
+
+    /**
+     * Disable test mode.
+     * INTERNAL USE ONLY - for testing.
+     */
+    function _disableTestMode() {
+        _isTestEnvironment = false;
+    }
+
+    /**
+     * Reset the registry.
+     * INTERNAL USE ONLY - for testing.
+     */
+    function _reset() {
+        if (!_isTestEnvironment) {
+            console.warn('[CalendarModes] _reset is only available in test environments.');
+            return;
+        }
+        _modes = Object.create(null);
     }
 
     // ============================================================
@@ -170,13 +337,21 @@
     // ============================================================
 
     window.CalendarModes = {
+        // Core
         registerMode: registerMode,
-        unregisterMode: unregisterMode,
         getMode: getMode,
         getModeNames: getModeNames,
         getModeOptions: getModeOptions,
         hasMode: hasMode,
-        getModeCount: getModeCount
+        getModeCount: getModeCount,
+
+        // Testing (internal only)
+        unregisterMode: unregisterMode,
+        _enableTestMode: _enableTestMode,
+        _disableTestMode: _disableTestMode,
+        _reset: _reset
     };
+
+    window.__calendarModesLoaded = true;
 
 })();

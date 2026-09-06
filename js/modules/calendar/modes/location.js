@@ -1,101 +1,131 @@
 /**
  * js/modules/calendar/modes/location.js - Location Calendar Mode
- * Full implementation of location schedule calendar
+ * Full implementation of location calendar
  * Path: js/modules/calendar/modes/location.js
  * 
  * This module is responsible for:
- *   - Rendering location schedule grid (using shared renderer)
- *   - Assigning classes to locations
- *   - Displaying which students are assigned to each location
+ *   - Rendering location calendar grid (using shared renderer)
+ *   - Displaying location schedule
+ *   - Showing which students are at each location
+ *   - Adding/removing classes from location
+ *   - Showing location usage statistics
  * 
  * IMPORTANT:
- *   - This module uses core functions for ALL mutations
- *   - NO direct window.data mutations
- *   - Duration is retrieved from metadata when available
- *   - Duration inference is ONLY used as a fallback when metadata is missing
- *   - The core is authoritative for all data mutations
- *   - Removal is handled via right-click or details modal, not the assignment modal
- *   - getCharacterById is optional; instructor names degrade gracefully
- *   - All core functions are from the curriculum modules
+ *   - ORCHESTRATION ONLY - no domain logic
+ *   - Uses LocationQueries for all data
+ *   - Uses LocationView for all rendering
+ *   - Uses CalendarLocationCore for mutations
+ *   - Uses MutationUtils for transaction/persistence
+ *   - No direct window.data access
+ *   - No direct DOM manipulation
+ *   - No saveData() calls
  * 
  * DEPENDENCIES:
- *   - window.CalendarUtils (required)
- *   - window.CalendarRenderer (required)
- *   - window.CalendarModes (required)
- *   - window.CalendarDependencies (required)
- *   - window.getLocations (required)
- *   - window.getLocation (required)
- *   - window.getLocationSchedule (required)
- *   - window.getAvailableDisciplines (required)
- *   - window.getDiscipline (required)
- *   - window.getStudents (required)
- *   - window.getStudentSchedule (required)
- *   - window.getDisplayName (required)
- *   - window.getCharacterById (required)
- *   - window.getLocationClassDuration (required)
- *   - window.getClassLocation (required)
- *   - window.setLocationClass (required)
- *   - window.removeLocationClass (required)
- *   - window.clearLocationSchedule (required)
- *   - window.getLocationUsage (required)
- *   - window.getLocationUsageByWeek (required)
- *   - window.getLocationCapacity (required)
- *   - window.saveData (required)
+ *   - window.LocationQueries (from queries/location-queries.js) - MANDATORY
+ *   - window.LocationView (from views/location-view.js) - MANDATORY
+ *   - window.CalendarRenderer (from calendar-renderer.js) - MANDATORY
+ *   - window.CalendarUtils (from calendar-utils.js) - MANDATORY
+ *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarModes (from modes/index.js) - MANDATORY
+ *   - window.CalendarLocationCore (from core/location-core.js) - MANDATORY
+ *   - window.MutationUtils (from mutation-pipeline.js) - MANDATORY
+ *   - window.LocationQueries (from location-queries.js) - MANDATORY
+ *   - window.DisciplineQueries (from discipline-queries.js) - MANDATORY
  */
 
 (function() {
     'use strict';
 
     // ============================================================
-    // GUARD AGAINST DUPLICATE LOADING
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
     // ============================================================
 
-    if (window.__locationModeLoaded) {
-        return;
+    var missing = [];
+
+    if (!window.LocationQueries || typeof window.LocationQueries.getLocationSchedule !== 'function') {
+        missing.push('LocationQueries.getLocationSchedule');
+    }
+    if (!window.LocationQueries || typeof window.LocationQueries.getLocationDisciplineAvailability !== 'function') {
+        missing.push('LocationQueries.getLocationDisciplineAvailability');
+    }
+    if (!window.LocationQueries || typeof window.LocationQueries.getLocationUsage !== 'function') {
+        missing.push('LocationQueries.getLocationUsage');
+    }
+    if (!window.LocationQueries || typeof window.LocationQueries.getLocationClassDetails !== 'function') {
+        missing.push('LocationQueries.getLocationClassDetails');
+    }
+    if (!window.LocationQueries || typeof window.LocationQueries.getStudentsAtLocation !== 'function') {
+        missing.push('LocationQueries.getStudentsAtLocation');
     }
 
-    // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
-    // ============================================================
-
-    if (!window.CalendarUtils) {
-        return;
+    if (!window.LocationView || typeof window.LocationView.renderLocationSidebar !== 'function') {
+        missing.push('LocationView.renderLocationSidebar');
+    }
+    if (!window.LocationView || typeof window.LocationView.renderLocationDetailsModal !== 'function') {
+        missing.push('LocationView.renderLocationDetailsModal');
+    }
+    if (!window.LocationView || typeof window.LocationView.renderAddClassModal !== 'function') {
+        missing.push('LocationView.renderAddClassModal');
+    }
+    if (!window.LocationView || typeof window.LocationView.renderLocationStudentsModal !== 'function') {
+        missing.push('LocationView.renderLocationStudentsModal');
+    }
+    if (!window.LocationView || typeof window.LocationView.renderLocationUsageView !== 'function') {
+        missing.push('LocationView.renderLocationUsageView');
+    }
+    if (!window.LocationView || typeof window.LocationView.renderDisciplineAvailabilityView !== 'function') {
+        missing.push('LocationView.renderDisciplineAvailabilityView');
     }
 
-    if (!window.CalendarRenderer) {
-        return;
+    if (!window.CalendarRenderer || typeof window.CalendarRenderer.renderGrid !== 'function') {
+        missing.push('CalendarRenderer.renderGrid');
+    }
+    if (!window.CalendarRenderer || typeof window.CalendarRenderer.bindEvents !== 'function') {
+        missing.push('CalendarRenderer.bindEvents');
+    }
+    if (!window.CalendarRenderer || typeof window.CalendarRenderer.showNotification !== 'function') {
+        missing.push('CalendarRenderer.showNotification');
+    }
+
+    if (!window.CalendarUtils || typeof window.CalendarUtils.formatHour !== 'function') {
+        missing.push('CalendarUtils.formatHour');
+    }
+
+    if (!window.CalendarConstants) {
+        missing.push('CalendarConstants');
     }
 
     if (!window.CalendarModes || typeof window.CalendarModes.registerMode !== 'function') {
-        return;
+        missing.push('CalendarModes.registerMode');
     }
 
-    if (!window.CalendarDependencies || typeof window.CalendarDependencies.validateMode !== 'function') {
-        return;
+    if (!window.CalendarLocationCore || typeof window.CalendarLocationCore.setLocationClass !== 'function') {
+        missing.push('CalendarLocationCore.setLocationClass');
+    }
+    if (!window.CalendarLocationCore || typeof window.CalendarLocationCore.removeLocationClass !== 'function') {
+        missing.push('CalendarLocationCore.removeLocationClass');
+    }
+    if (!window.CalendarLocationCore || typeof window.CalendarLocationCore.clearLocationSchedule !== 'function') {
+        missing.push('CalendarLocationCore.clearLocationSchedule');
     }
 
-    var requiredFunctions = [
-        'getLocations',
-        'getLocation',
-        'getLocationSchedule',
-        'getAvailableDisciplines',
-        'getDiscipline',
-        'getStudents',
-        'getStudentSchedule',
-        'getDisplayName',
-        'getCharacterById',
-        'getLocationClassDuration',
-        'getClassLocation',
-        'setLocationClass',
-        'removeLocationClass',
-        'clearLocationSchedule',
-        'getLocationUsage',
-        'getLocationUsageByWeek',
-        'getLocationCapacity',
-        'saveData'
-    ];
+    if (!window.MutationUtils || typeof window.MutationUtils.performMutation !== 'function') {
+        missing.push('MutationUtils.performMutation');
+    }
 
-    if (!window.CalendarDependencies.validateMode('location', requiredFunctions)) {
+    if (!window.LocationQueries || typeof window.LocationQueries.getLocation !== 'function') {
+        missing.push('LocationQueries.getLocation');
+    }
+    if (!window.LocationQueries || typeof window.LocationQueries.getLocations !== 'function') {
+        missing.push('LocationQueries.getLocations');
+    }
+
+    if (!window.DisciplineQueries || typeof window.DisciplineQueries.getDiscipline !== 'function') {
+        missing.push('DisciplineQueries.getDiscipline');
+    }
+
+    if (missing.length > 0) {
+        console.error('[LocationMode] Missing dependencies:', missing.join(', '));
         return;
     }
 
@@ -105,28 +135,62 @@
     // DEPENDENCY IMPORTS
     // ============================================================
 
-    var CalendarUtils = window.CalendarUtils;
+    var LocationQueries = window.LocationQueries;
+    var LocationView = window.LocationView;
     var CalendarRenderer = window.CalendarRenderer;
-
-    var CALENDAR_START_HOUR = CalendarUtils.CALENDAR_START_HOUR || 5;
-    var CALENDAR_END_HOUR = CalendarUtils.CALENDAR_END_HOUR || 23;
+    var CalendarUtils = window.CalendarUtils;
+    var CalendarConstants = window.CalendarConstants;
+    var CalendarModes = window.CalendarModes;
+    var LocationCore = window.CalendarLocationCore;
+    var MutationUtils = window.MutationUtils;
+    var DisciplineQueries = window.DisciplineQueries;
 
     // ============================================================
-    // PUBLIC API
+    // CONSTANTS
+    // ============================================================
+
+    var CALENDAR_START_HOUR = CalendarConstants.CALENDAR_START_HOUR;
+    var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
+    var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+
+    // ============================================================
+    // HELPERS
     // ============================================================
 
     function getLocations() {
-        return window.getLocations();
+        return LocationQueries.getLocations() || [];
     }
+
+    function getEntityDisplayName(entity) {
+        return entity.name || entity.id || 'Unknown';
+    }
+
+    // ============================================================
+    // DATA QUERY
+    // ============================================================
 
     function getSchedule(state) {
         if (!state || !state.selectedId) {
             return {};
         }
-        return window.getLocationSchedule(state.selectedId, state.week);
+
+        return LocationQueries.getLocationSchedule(
+            state.selectedId,
+            state.week
+        );
     }
 
+    // ============================================================
+    // RENDER
+    // ============================================================
+
     function render(container, state) {
+        if (!container) {
+            return;
+        }
+
         if (!state || !state.selectedId) {
             container.innerHTML = '<div class="empty-state">Select a location to view its schedule</div>';
             return;
@@ -136,516 +200,380 @@
     }
 
     // ============================================================
-    // GET LOCATION BY ID
-    // ============================================================
-
-    function getLocationById(id) {
-        return window.getLocation(id);
-    }
-
-    // ============================================================
-    // DURATION HELPERS
-    // ============================================================
-
-    /**
-     * Get the display duration of a class at a location slot.
-     * Prefers metadata from getLocationClassDuration().
-     * Falls back to inference ONLY if metadata is missing.
-     * 
-     * This is a UI display helper. The core is authoritative for duration.
-     */
-    function getLocationDisplayDuration(locationId, week, day, hour, schedule) {
-        // Try metadata first using curriculum module
-        var duration = window.getLocationClassDuration(locationId, week, day, hour);
-        if (duration !== null && duration !== undefined && duration >= 1) {
-            return duration;
-        }
-
-        // Fallback: infer from contiguous schedule entries
-        // This is ONLY used when metadata is missing (legacy data or migration)
-        if (schedule && schedule[day]) {
-            var disciplineId = schedule[day][hour];
-            if (disciplineId) {
-                var inferred = 1;
-                for (var h = hour + 1; h <= CALENDAR_END_HOUR; h++) {
-                    if (schedule[day] && String(schedule[day][h]) === String(disciplineId)) {
-                        inferred++;
-                    } else {
-                        break;
-                    }
-                }
-                return inferred;
-            }
-        }
-
-        return 1;
-    }
-
-    // ============================================================
-    // STUDENT HELPERS
-    // ============================================================
-
-    function getStudentsAtLocation(locationId, week, day, hour, disciplineId) {
-        var allStudents = window.getStudents() || [];
-        var studentNames = [];
-
-        for (var s = 0; s < allStudents.length; s++) {
-            var student = allStudents[s];
-            var classLocation = window.getClassLocation(student.id, week, day, hour);
-            if (classLocation && String(classLocation) === String(locationId)) {
-                var sched = window.getStudentSchedule(student.id, week) || {};
-                if (sched[day] && String(sched[day][hour]) === String(disciplineId)) {
-                    studentNames.push(window.getDisplayName(student));
-                }
-            }
-        }
-
-        return studentNames;
-    }
-
-    // ============================================================
-    // AVAILABLE DISCIPLINES FOR LOCATION
-    // ============================================================
-
-    function getAvailableDisciplinesForLocation(locationId, week) {
-        var allDisciplines = window.getAvailableDisciplines(week) || [];
-        var schedule = window.getLocationSchedule(locationId, week) || {};
-
-        // Get occupied hours
-        var occupied = {};
-        for (var day in schedule) {
-            if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
-                continue;
-            }
-            var daySchedule = schedule[day];
-            if (!daySchedule || typeof daySchedule !== 'object') {
-                continue;
-            }
-
-            for (var hour in daySchedule) {
-                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
-                    continue;
-                }
-                var discId = daySchedule[hour];
-                if (discId) {
-                    if (!occupied[discId]) {
-                        occupied[discId] = [];
-                    }
-                    occupied[discId].push({ day: parseInt(day, 10), hour: parseInt(hour, 10) });
-                }
-            }
-        }
-
-        // Filter disciplines that are not already assigned
-        var available = [];
-        for (var i = 0; i < allDisciplines.length; i++) {
-            var d = allDisciplines[i];
-            if (!occupied[d.id] || occupied[d.id].length === 0) {
-                available.push({
-                    id: d.id,
-                    label: d.name,
-                    subtitle: 'Not assigned'
-                });
-            } else {
-                available.push({
-                    id: d.id,
-                    label: d.name,
-                    subtitle: occupied[d.id].length + ' slot(s)'
-                });
-            }
-        }
-
-        return available;
-    }
-
-    // ============================================================
-    // RENDER LOCATION SCHEDULE - Using Shared Renderer
+    // RENDER LOCATION SCHEDULE
     // ============================================================
 
     function renderLocationSchedule(container, state) {
         var locationId = state.selectedId;
         var week = state.week;
 
-        var schedule = window.getLocationSchedule(locationId, week) || {};
-        var location = getLocationById(locationId);
-        var locationName = location ? location.name : 'Unknown';
+        var schedule = LocationQueries.getLocationSchedule(locationId, week);
+        var location = LocationQueries.getLocation(locationId);
+        var locationName = location ? location.name || location.id : 'Unknown';
 
+        // Get available disciplines for sidebar
+        var availableDisciplines = LocationQueries.getLocationDisciplineAvailability(locationId, week) || [];
+
+        // Prepare data for shared renderer
         var data = {
             schedule: schedule,
             restDays: [],
             entityName: locationName,
             getDiscipline: function(id) {
-                return window.getDiscipline(id);
+                return DisciplineQueries.getDiscipline(id);
             },
             getDuration: function(day, hour) {
-                return getLocationDisplayDuration(locationId, week, day, hour, schedule);
+                var slot = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
+                return slot ? slot.duration || 1 : 1;
             },
-            getLabel: function() {
-                return '';
+            getLabel: function(day, hour) {
+                var slot = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
+                return slot ? slot.label || '' : '';
             },
-            getGroupLabel: function() {
-                return '';
+            getGroupLabel: function(day, hour) {
+                var slot = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
+                return slot ? slot.groupLabel || '' : '';
             },
-            getInstructorName: function() {
-                return '';
+            getInstructorName: function(day, hour) {
+                var slot = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
+                if (!slot || !slot.instructorId) return '';
+                var instructor = window.CharacterQueries ? window.CharacterQueries.getCharacterById(slot.instructorId) : null;
+                return instructor ? window.CharacterQueries.getDisplayName(instructor) : '';
             },
             isBlock: function() {
-                return false;
+                return false; // Locations don't have blocks
             },
             slotMetadata: function(day, hour) {
-                var disciplineId = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
-                if (!disciplineId) {
-                    return '';
+                var slot = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
+                if (!slot) return '';
+
+                var metadata = [];
+
+                if (slot.students && slot.students.length > 0) {
+                    metadata.push(slot.students.length + ' student' + (slot.students.length > 1 ? 's' : ''));
                 }
 
-                var studentNames = getStudentsAtLocation(locationId, week, day, hour, disciplineId);
-                if (studentNames.length > 0) {
-                    return ' - ' + CalendarRenderer.escapeHtml(studentNames.join(', '));
+                if (metadata.length > 0) {
+                    return ' [' + metadata.join(' | ') + ']';
                 }
+
                 return '';
             },
-            extraSidebar: getLocationSidebarHTML(locationId, week),
+            extraSidebar: LocationView.renderLocationSidebar(locationId, week),
             availableItems: getAvailableDisciplinesForLocation(locationId, week),
             availableLabel: 'Available Disciplines'
         };
 
+        // Use shared renderer
         CalendarRenderer.renderGrid(container, state, data);
 
-        var cleanup = CalendarRenderer.bindEvents(container, state, {
+        // Bind events with location-specific callbacks
+        CalendarRenderer.bindEvents(container, state, {
             onSlotClick: function(day, hour) {
-                showAssignClassModal(locationId, week, day, hour, container);
+                handleAddClass(locationId, week, day, hour, container);
             },
             onSlotRightClick: function(day, hour) {
-                if (confirm('Remove this class from this location?')) {
-                    removeLocationClass(locationId, week, day, hour, container);
-                }
+                handleRemoveClass(locationId, week, day, hour, container);
             },
             onSlotDetails: function(day, hour) {
-                showLocationClassDetailsModal(locationId, week, day, hour, container);
+                handleSlotDetails(locationId, week, day, hour, container);
             },
             onAvailableItemClick: function(disciplineId) {
-                showAssignClassModalWithDiscipline(locationId, week, null, null, container, disciplineId);
-            },
-            onClearWeek: function() {
-                clearLocationWeek(locationId, week, container);
+                handleAddClassWithDiscipline(locationId, week, null, null, container, disciplineId);
             }
         });
-
-        container._calendarCleanup = cleanup;
     }
 
     // ============================================================
-    // LOCATION SIDEBAR
+    // AVAILABLE DISCIPLINES
     // ============================================================
 
-    function getLocationSidebarHTML(locationId, week) {
-        var usageCount = window.getLocationUsage(locationId);
-        var weekUsage = window.getLocationUsageByWeek(locationId, week);
-        var capacity = window.getLocationCapacity(locationId);
+    function getAvailableDisciplinesForLocation(locationId, week) {
+        var disciplines = LocationQueries.getLocationDisciplineAvailability(locationId, week) || [];
 
-        var html = '';
-        html += '<div class="sidebar-section">';
-        html += '<h4 class="sidebar-section-title">Location Info</h4>';
-        html += '<div class="stats-list">';
-        html += '<div class="stat-item">Total Usage: <strong>' + usageCount + '</strong> slots</div>';
-        html += '<div class="stat-item">This Week: <strong>' + weekUsage + '</strong> slots</div>';
-
-        if (capacity !== null && capacity !== undefined) {
-            var capacityDisplay = capacity === 0 ? 'Unlimited' : capacity;
-            html += '<div class="stat-item">Capacity: <strong>' + capacityDisplay + '</strong></div>';
-        }
-
-        html += '</div>';
-        html += '</div>';
-
-        return html;
+        return disciplines
+            .filter(function(d) {
+                return d.available && d.canHost;
+            })
+            .map(function(d) {
+                return {
+                    id: d.id,
+                    label: d.name,
+                    subtitle: d.maxSlots > 0 ? d.usedCount + '/' + d.maxSlots + ' slots used' : 'Available'
+                };
+            });
     }
 
     // ============================================================
-    // ASSIGN CLASS MODAL - Using Shared Renderer
+    // HANDLE ADD CLASS
     // ============================================================
 
-    function showAssignClassModal(locationId, week, day, hour, container) {
-        var disciplines = window.getAvailableDisciplines(week) || [];
+    function handleAddClass(locationId, week, day, hour, container) {
+        var disciplines = LocationQueries.getLocationDisciplineAvailability(locationId, week)
+            .filter(function(d) {
+                return d.available && d.canHost;
+            });
 
         if (disciplines.length === 0) {
-            CalendarRenderer.showNotification('No disciplines available for week ' + week + '.', 'error');
+            CalendarRenderer.showNotification('No disciplines available for this location.', 'error');
             return;
         }
 
         var hourDisplay = CalendarUtils.formatHour(hour);
-        var location = getLocationById(locationId);
-        var locationName = location ? location.name : 'Unknown';
+        var dayName = CalendarConstants.getDayName(day);
 
-        CalendarRenderer.createAddClassModal({
-            title: 'Assign Class - ' + locationName + ' - ' + CalendarRenderer.DAY_NAMES[day] + ' at ' + hourDisplay,
+        LocationView.renderAddClassModal({
+            locationId: locationId,
+            week: week,
+            day: day,
+            hour: hour,
+            title: 'Assign Class - ' + dayName + ' at ' + hourDisplay,
             disciplines: disciplines,
-            maxDuration: 4,
-            getDisciplineLabel: function(d) {
-                var label = d.name;
-                if (d.instructorIds && d.instructorIds.length > 0) {
-                    var instructorNames = [];
-                    for (var j = 0; j < d.instructorIds.length; j++) {
-                        var inst = window.getCharacterById(d.instructorIds[j]);
-                        if (inst) {
-                            instructorNames.push(window.getDisplayName(inst));
-                        }
-                    }
-                    if (instructorNames.length > 0) {
-                        label += ' (' + instructorNames.join(', ') + ')';
-                    }
-                }
-                return label;
-            },
+            maxDuration: MAX_DURATION
+        }, {
             onConfirm: function(disciplineId, duration, label, closeModal) {
-                var currentSchedule = window.getLocationSchedule(locationId, week) || {};
-
-                if (currentSchedule[day] && currentSchedule[day][hour]) {
-                    CalendarRenderer.showNotification('This slot is no longer available.', 'error');
-                    closeModal();
-                    renderLocationSchedule(container, { selectedId: locationId, week: week });
-                    return;
-                }
-
-                var result = window.setLocationClass(locationId, week, day, hour, disciplineId);
-
-                if (!result || !result.success) {
-                    CalendarRenderer.showNotification(result && result.message ? result.message : 'Failed to assign class.', 'error');
-                    return;
-                }
-
-                closeModal();
-                window.saveData()
-                    .then(function() {
-                        CalendarRenderer.showNotification('Class assigned to location.', 'success');
-                        renderLocationSchedule(container, { selectedId: locationId, week: week });
-                    })
-                    .catch(function() {
-                        CalendarRenderer.showNotification('Class assigned in memory, but persistence failed.', 'error');
-                        renderLocationSchedule(container, { selectedId: locationId, week: week });
-                    });
-            },
-            onCancel: function() {
-                // No-op
+                performAddClass(locationId, week, day, hour, disciplineId, closeModal, container);
             }
         });
     }
 
-    function showAssignClassModalWithDiscipline(locationId, week, day, hour, container, preSelectedDisciplineId) {
-        var disciplines = window.getAvailableDisciplines(week) || [];
+    function handleAddClassWithDiscipline(locationId, week, day, hour, container, preSelectedDisciplineId) {
+        var disciplines = LocationQueries.getLocationDisciplineAvailability(locationId, week)
+            .filter(function(d) {
+                return d.available && d.canHost;
+            });
 
         if (disciplines.length === 0) {
-            CalendarRenderer.showNotification('No disciplines available for week ' + week + '.', 'error');
+            CalendarRenderer.showNotification('No disciplines available for this location.', 'error');
             return;
         }
 
-        var hourDisplay = day !== null && hour !== null ? CalendarUtils.formatHour(hour) : 'any slot';
-        var dayDisplay = day !== null ? CalendarRenderer.DAY_NAMES[day] : 'any day';
-        var location = getLocationById(locationId);
-        var locationName = location ? location.name : 'Unknown';
+        // For "any slot" mode, find an available slot
+        if (day === null || hour === null) {
+            var schedule = LocationQueries.getLocationSchedule(locationId, week);
+            var found = false;
 
-        var modal = CalendarRenderer.createAddClassModal({
-            title: 'Assign ' + (preSelectedDisciplineId ? 'Class' : 'Class') + ' - ' + locationName + ' - ' + dayDisplay + ' at ' + hourDisplay,
-            disciplines: disciplines,
-            maxDuration: 4,
-            getDisciplineLabel: function(d) {
-                var label = d.name;
-                if (d.instructorIds && d.instructorIds.length > 0) {
-                    var instructorNames = [];
-                    for (var j = 0; j < d.instructorIds.length; j++) {
-                        var inst = window.getCharacterById(d.instructorIds[j]);
-                        if (inst) {
-                            instructorNames.push(window.getDisplayName(inst));
-                        }
-                    }
-                    if (instructorNames.length > 0) {
-                        label += ' (' + instructorNames.join(', ') + ')';
-                    }
-                }
-                return label;
-            },
-            onConfirm: function(disciplineId, duration, label, closeModal) {
-                if (day === null || hour === null) {
-                    var schedule = window.getLocationSchedule(locationId, week) || {};
-                    var foundSlot = false;
+            for (var d = 1; d <= 7; d++) {
+                for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
+                    if (!schedule[d] || !schedule[d][h]) {
+                        // Found available slot
+                        var discipline = DisciplineQueries.getDiscipline(preSelectedDisciplineId);
+                        var disciplineName = discipline ? discipline.name : 'Unknown';
+                        var dayName = CalendarConstants.getDayName(d);
 
-                    for (var d = 1; d <= 7; d++) {
-                        for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
-                            if (!schedule[d] || !schedule[d][h]) {
-                                var result = window.setLocationClass(locationId, week, d, h, disciplineId);
-                                if (result && result.success) {
-                                    foundSlot = true;
-                                    closeModal();
-                                    window.saveData()
-                                        .then(function() {
-                                            CalendarRenderer.showNotification('Class assigned to location.', 'success');
-                                            renderLocationSchedule(container, { selectedId: locationId, week: week });
-                                        })
-                                        .catch(function() {
-                                            CalendarRenderer.showNotification('Class assigned in memory, but persistence failed.', 'error');
-                                            renderLocationSchedule(container, { selectedId: locationId, week: week });
-                                        });
-                                    return;
-                                }
+                        LocationView.renderAddClassModal({
+                            locationId: locationId,
+                            week: week,
+                            day: d,
+                            hour: h,
+                            title: 'Assign Class - ' + dayName + ' at ' + CalendarUtils.formatHour(h),
+                            disciplines: disciplines,
+                            maxDuration: MAX_DURATION,
+                            preSelectedDisciplineId: preSelectedDisciplineId
+                        }, {
+                            onConfirm: function(disciplineId, duration, label, closeModal) {
+                                performAddClass(locationId, week, d, h, disciplineId, closeModal, container);
                             }
-                        }
+                        });
+
+                        found = true;
+                        break;
                     }
-
-                    if (!foundSlot) {
-                        CalendarRenderer.showNotification('No available slots found.', 'error');
-                    }
-                    return;
                 }
-
-                var currentSchedule = window.getLocationSchedule(locationId, week) || {};
-
-                if (currentSchedule[day] && currentSchedule[day][hour]) {
-                    CalendarRenderer.showNotification('This slot is no longer available.', 'error');
-                    closeModal();
-                    renderLocationSchedule(container, { selectedId: locationId, week: week });
-                    return;
-                }
-
-                var result = window.setLocationClass(locationId, week, day, hour, disciplineId);
-
-                if (!result || !result.success) {
-                    CalendarRenderer.showNotification(result && result.message ? result.message : 'Failed to assign class.', 'error');
-                    return;
-                }
-
-                closeModal();
-                window.saveData()
-                    .then(function() {
-                        CalendarRenderer.showNotification('Class assigned to location.', 'success');
-                        renderLocationSchedule(container, { selectedId: locationId, week: week });
-                    })
-                    .catch(function() {
-                        CalendarRenderer.showNotification('Class assigned in memory, but persistence failed.', 'error');
-                        renderLocationSchedule(container, { selectedId: locationId, week: week });
-                    });
-            },
-            onCancel: function() {
-                // No-op
+                if (found) break;
             }
-        });
 
-        if (preSelectedDisciplineId) {
-            var select = modal.querySelector('#add-class-select');
-            if (select) {
-                select.value = preSelectedDisciplineId;
+            if (!found) {
+                CalendarRenderer.showNotification('No available slots found.', 'error');
             }
+            return;
         }
 
-        return modal;
+        // Specific slot assignment
+        var hourDisplay = CalendarUtils.formatHour(hour);
+        var dayName = CalendarConstants.getDayName(day);
+
+        LocationView.renderAddClassModal({
+            locationId: locationId,
+            week: week,
+            day: day,
+            hour: hour,
+            title: 'Assign Class - ' + dayName + ' at ' + hourDisplay,
+            disciplines: disciplines,
+            maxDuration: MAX_DURATION,
+            preSelectedDisciplineId: preSelectedDisciplineId
+        }, {
+            onConfirm: function(disciplineId, duration, label, closeModal) {
+                performAddClass(locationId, week, day, hour, disciplineId, closeModal, container);
+            }
+        });
     }
 
     // ============================================================
-    // CLASS DETAILS MODAL - Using Shared Renderer
+    // PERFORM ADD CLASS
     // ============================================================
 
-    function showLocationClassDetailsModal(locationId, week, day, hour, container) {
-        var schedule = window.getLocationSchedule(locationId, week) || {};
-        var disciplineId = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
+    function performAddClass(locationId, week, day, hour, disciplineId, closeModal, container) {
+        // Validate calendar boundary
+        var duration = 1; // Location classes default to 1 hour
+        if (hour + duration > CALENDAR_END_HOUR + 1) {
+            CalendarRenderer.showNotification('Class extends beyond the calendar boundary.', 'error');
+            return;
+        }
 
-        if (!disciplineId) {
+        // Check if slot is already occupied
+        var schedule = LocationQueries.getLocationSchedule(locationId, week);
+        if (schedule[day] && schedule[day][hour]) {
+            CalendarRenderer.showNotification('This slot is already occupied.', 'error');
+            return;
+        }
+
+        // Use MutationUtils for transaction
+        MutationUtils.performMutation({
+            validate: function() {
+                return { valid: true };
+            },
+            mutate: function() {
+                return LocationCore.setLocationClass(locationId, week, day, hour, disciplineId);
+            },
+            logMessage: function() {
+                var discipline = DisciplineQueries.getDiscipline(disciplineId);
+                var disciplineName = discipline ? discipline.name : 'Unknown';
+                return 'Assigned class to location: ' + disciplineName;
+            },
+            successMessage: 'Class assigned to location successfully!',
+            failureMessage: 'Failed to assign class to location.'
+        }).then(function(result) {
+            if (result.success) {
+                if (closeModal) closeModal();
+                render(container, { selectedId: locationId, week: week });
+            } else {
+                CalendarRenderer.showNotification(result.message || 'Failed to assign class.', 'error');
+            }
+        });
+    }
+
+    // ============================================================
+    // HANDLE REMOVE CLASS
+    // ============================================================
+
+    function handleRemoveClass(locationId, week, day, hour, container) {
+        var schedule = LocationQueries.getLocationSchedule(locationId, week);
+        var slot = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
+
+        if (!slot) {
+            CalendarRenderer.showNotification('No class at this time.', 'error');
+            return;
+        }
+
+        if (!confirm('Remove this class from the location?')) {
+            return;
+        }
+
+        performRemoveClass(locationId, week, day, hour, container);
+    }
+
+    function performRemoveClass(locationId, week, day, hour, container) {
+        MutationUtils.performMutation({
+            validate: function() {
+                return { valid: true };
+            },
+            mutate: function() {
+                return LocationCore.removeLocationClass(locationId, week, day, hour);
+            },
+            logMessage: 'Removed class from location',
+            successMessage: 'Class removed from location successfully!',
+            failureMessage: 'Failed to remove class from location.'
+        }).then(function(result) {
+            if (result.success) {
+                render(container, { selectedId: locationId, week: week });
+            } else {
+                CalendarRenderer.showNotification(result.message || 'Failed to remove class.', 'error');
+            }
+        });
+    }
+
+    // ============================================================
+    // HANDLE SLOT DETAILS
+    // ============================================================
+
+    function handleSlotDetails(locationId, week, day, hour, container) {
+        var data = LocationQueries.getLocationClassDetails(locationId, week, day, hour);
+
+        if (!data) {
             CalendarRenderer.showNotification('Class not found.', 'error');
             return;
         }
 
-        var discipline = window.getDiscipline(disciplineId);
-        var hourDisplay = CalendarUtils.formatHour(hour);
-
-        var duration = getLocationDisplayDuration(locationId, week, day, hour, schedule);
-        var studentNames = getStudentsAtLocation(locationId, week, day, hour, disciplineId);
-
-        var disciplineName = discipline ? discipline.name : 'Unknown';
-        var location = getLocationById(locationId);
-        var locationName = location ? location.name : 'Unknown';
-
-        CalendarRenderer.createDetailsModal({
-            title: disciplineName,
-            details: [
-                { label: 'Location', value: locationName },
-                { label: 'Day/Time', value: CalendarRenderer.DAY_NAMES[day] + ' at ' + hourDisplay },
-                { label: 'Duration', value: duration + ' hour' + (duration > 1 ? 's' : '') },
-                { label: 'Students', value: studentNames.length > 0 ? studentNames.length + ' - ' + studentNames.join(', ') : 'None' }
-            ],
-            actions: [
-                {
-                    label: 'Remove from Location',
-                    className: 'danger',
-                    handler: function(closeModal) {
-                        if (confirm('Remove this class from this location?')) {
-                            closeModal();
-                            removeLocationClass(locationId, week, day, hour, container);
-                        }
-                    }
+        LocationView.renderLocationDetailsModal(data, {
+            onEdit: function(closeModal) {
+                closeModal();
+                handleEditClass(locationId, week, day, hour, container);
+            },
+            onRemove: function(closeModal) {
+                closeModal();
+                if (confirm('Remove this class from the location?')) {
+                    performRemoveClass(locationId, week, day, hour, container);
                 }
-            ],
-            onClose: function() {
-                // No-op
             }
         });
     }
 
     // ============================================================
-    // REMOVE CLASS
+    // HANDLE EDIT CLASS
     // ============================================================
 
-    function removeLocationClass(locationId, week, day, hour, container) {
-        var result = window.removeLocationClass(locationId, week, day, hour);
+    function handleEditClass(locationId, week, day, hour, container) {
+        var data = LocationQueries.getLocationClassDetails(locationId, week, day, hour);
 
-        if (!result || !result.success) {
-            CalendarRenderer.showNotification(result && result.message ? result.message : 'Failed to remove class.', 'error');
+        if (!data) {
+            CalendarRenderer.showNotification('Class not found.', 'error');
             return;
         }
 
-        window.saveData()
-            .then(function() {
-                CalendarRenderer.showNotification('Class removed from location.', 'success');
-                renderLocationSchedule(container, { selectedId: locationId, week: week });
-            })
-            .catch(function() {
-                CalendarRenderer.showNotification('Class removed in memory, but persistence failed.', 'error');
-                renderLocationSchedule(container, { selectedId: locationId, week: week });
+        var disciplines = LocationQueries.getLocationDisciplineAvailability(locationId, week)
+            .filter(function(d) {
+                return d.available && d.canHost;
             });
-    }
 
-    // ============================================================
-    // CLEAR WEEK
-    // ============================================================
-
-    function clearLocationWeek(locationId, week, container) {
-        var result = window.clearLocationSchedule(locationId, week);
-
-        if (!result || !result.success) {
-            CalendarRenderer.showNotification(result && result.message ? result.message : 'Failed to clear schedule.', 'error');
+        if (disciplines.length === 0) {
+            CalendarRenderer.showNotification('No disciplines available for this location.', 'error');
             return;
         }
 
-        window.saveData()
-            .then(function() {
-                CalendarRenderer.showNotification('Location schedule cleared.', 'success');
-                renderLocationSchedule(container, { selectedId: locationId, week: week });
-            })
-            .catch(function() {
-                CalendarRenderer.showNotification('Location schedule cleared in memory, but persistence failed.', 'error');
-                renderLocationSchedule(container, { selectedId: locationId, week: week });
-            });
+        var dayName = CalendarConstants.getDayName(day);
+        var hourDisplay = CalendarUtils.formatHour(hour);
+
+        LocationView.renderAddClassModal({
+            locationId: locationId,
+            week: week,
+            day: day,
+            hour: hour,
+            title: 'Edit Class - ' + dayName + ' at ' + hourDisplay,
+            disciplines: disciplines,
+            maxDuration: MAX_DURATION,
+            preSelectedDisciplineId: data.disciplineId
+        }, {
+            onConfirm: function(disciplineId, duration, label, closeModal) {
+                // First remove existing class, then add new one
+                performRemoveClass(locationId, week, day, hour, container, function() {
+                    performAddClass(locationId, week, day, hour, disciplineId, closeModal, container);
+                });
+            }
+        });
     }
 
     // ============================================================
-    // REGISTER WITH CALENDAR MODES
+    // EXPOSE PUBLIC API
     // ============================================================
 
-    window.CalendarModes.registerMode('location', {
+    // Register with CalendarModes
+    CalendarModes.registerMode('location', {
         label: 'Location',
-        hint: 'Click a slot to assign a class | Right-click to remove | Click available discipline to auto-assign',
+        hint: 'Click an empty slot to assign a class | Right-click to remove | Click a class for details',
         render: render,
         getEntities: getLocations,
-        getEntityDisplayName: function(entity) {
-            return entity.name || 'Unknown';
-        },
+        getEntityDisplayName: getEntityDisplayName,
         getData: getSchedule
     });
 

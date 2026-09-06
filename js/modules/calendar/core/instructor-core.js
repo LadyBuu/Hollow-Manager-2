@@ -9,47 +9,94 @@
  *   - Instructor template/block CRUD operations
  * 
  * IMPORTANT:
- *   - All mutations are candidate-based: validate, clone, modify, commit
+ *   - All mutations use copy-before-commit candidate semantics
  *   - No mutation of live state occurs before candidate validation completes
  *   - This module does NOT call saveData() - callers own persistence
- *   - All deep cloning uses ObjectUtils.deepClone (or structuredClone fallback)
+ *   - All deep cloning uses ObjectUtils.deepClone (MANDATORY)
  *   - All ID normalisation is consistent
  *   - Instructor templates define the instructor's scheduled teaching slots
  *   - Blocks are time periods when the instructor is unavailable
+ *   - Duration metadata is stored in the template/block itself
  * 
  * DEPENDENCIES:
- *   - window.ObjectUtils (from object-utils.js)
- *   - window.getDiscipline (from curriculum modules)
- *   - window.getCharacterById (from curriculum modules)
- *   - window.logActivity (for activity logging)
+ *   - window.ObjectUtils (from object-utils.js) - MANDATORY
+ *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarScheduleCore (from schedule-core.js) - MANDATORY
+ *   - window.DisciplineQueries (from discipline-queries.js) - MANDATORY
+ *   - window.CharacterQueries (from character-queries.js) - MANDATORY
+ * 
+ * USAGE:
+ *   var IC = window.CalendarInstructorCore;
+ *   var result = IC.setInstructorTemplate(instructorId, week, day, hour, {
+ *       disciplineId: 'math_101',
+ *       duration: 2,
+ *       label: 'A'
+ *   });
+ *   if (result.success) { console.log('Template added'); }
  */
 
 (function() {
     'use strict';
 
-    // ============================================================
-    // GUARD AGAINST DUPLICATE LOADING
-    // ============================================================
-
+    // Guard against duplicate loading
     if (window.__calendarInstructorCoreLoaded) {
         return;
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
     // ============================================================
 
+    var missing = [];
+
     if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
+        missing.push('ObjectUtils.deepClone');
+    }
+
+    if (!window.CalendarConstants) {
+        missing.push('CalendarConstants');
+    }
+
+    if (!window.CalendarScheduleCore) {
+        missing.push('CalendarScheduleCore');
+    }
+
+    if (!window.DisciplineQueries || typeof window.DisciplineQueries.getDiscipline !== 'function') {
+        missing.push('DisciplineQueries.getDiscipline');
+    }
+
+    if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
+        missing.push('CharacterQueries.getCharacterById');
+    }
+
+    if (missing.length > 0) {
+        console.error('[CalendarInstructorCore] Missing dependencies:', missing.join(', '));
         return;
     }
 
     window.__calendarInstructorCoreLoaded = true;
 
     // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var ObjectUtils = window.ObjectUtils;
+    var CalendarConstants = window.CalendarConstants;
+    var ScheduleCore = window.CalendarScheduleCore;
+    var DisciplineQueries = window.DisciplineQueries;
+    var CharacterQueries = window.CharacterQueries;
+
+    // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var METADATA_KEYS = ['classInstructors', 'classLabels', 'classGroupLabels', 'classDurations', 'classLocations'];
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var MIN_DAY = CalendarConstants.MIN_DAY;
+    var MAX_DAY = CalendarConstants.MAX_DAY;
+    var MIN_HOUR = CalendarConstants.MIN_HOUR;
+    var MAX_HOUR = CalendarConstants.MAX_HOUR;
+    var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
 
     // ============================================================
     // HELPERS
@@ -63,58 +110,8 @@
         return typeof value === 'string' && value.trim() !== '';
     }
 
-    function getDataStore() {
-        if (!window.data || typeof window.data !== 'object') {
-            return null;
-        }
-        return window.data;
-    }
-
-    function getDiscipline(id) {
-        if (typeof window.getDiscipline === 'function') {
-            return window.getDiscipline(id);
-        }
-        var data = getDataStore();
-        if (!data || !data.curriculum || !Array.isArray(data.curriculum.disciplines)) {
-            return null;
-        }
-        for (var i = 0; i < data.curriculum.disciplines.length; i++) {
-            if (data.curriculum.disciplines[i] && String(data.curriculum.disciplines[i].id) === String(id)) {
-                return data.curriculum.disciplines[i];
-            }
-        }
-        return null;
-    }
-
-    function getCharacterById(id) {
-        if (typeof window.getCharacterById === 'function') {
-            return window.getCharacterById(id);
-        }
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.characters)) {
-            return null;
-        }
-        for (var i = 0; i < data.characters.length; i++) {
-            if (data.characters[i] && String(data.characters[i].id) === String(id)) {
-                return data.characters[i];
-            }
-        }
-        return null;
-    }
-
-    function logActivity(message, type) {
-        type = type || 'info';
-        if (typeof window.logActivity === 'function') {
-            try {
-                window.logActivity(message, type);
-            } catch (e) {
-                // Activity logging failure should not abort mutations
-            }
-        }
-    }
-
     function deepClone(value) {
-        return window.ObjectUtils.deepClone(value);
+        return ObjectUtils.deepClone(value);
     }
 
     function normaliseId(value) {
@@ -125,38 +122,44 @@
         return str !== '' ? str : null;
     }
 
-    function normaliseIdArray(arr) {
-        if (!Array.isArray(arr)) {
-            return [];
+    function parseInteger(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
         }
-        var result = [];
-        for (var i = 0; i < arr.length; i++) {
-            var id = normaliseId(arr[i]);
-            if (id !== null && result.indexOf(id) === -1) {
-                result.push(id);
-            }
-        }
-        return result;
+        var num = Number(value);
+        return Number.isInteger(num) ? num : null;
     }
 
     function validateWeek(value) {
-        var num = parseInt(value, 10);
-        return (!isNaN(num) && num >= 1 && num <= 52) ? num : null;
+        var num = parseInteger(value);
+        if (num === null || num < MIN_WEEK || num > MAX_WEEK) {
+            return null;
+        }
+        return num;
     }
 
     function validateDay(value) {
-        var num = parseInt(value, 10);
-        return (!isNaN(num) && num >= 1 && num <= 7) ? num : null;
+        var num = parseInteger(value);
+        if (num === null || num < MIN_DAY || num > MAX_DAY) {
+            return null;
+        }
+        return num;
     }
 
     function validateHour(value) {
-        var num = parseInt(value, 10);
-        return (!isNaN(num) && num >= 0 && num <= 23) ? num : null;
+        var num = parseInteger(value);
+        if (num === null || num < MIN_HOUR || num > MAX_HOUR) {
+            return null;
+        }
+        return num;
     }
 
     function validateDuration(value) {
-        var num = parseInt(value, 10);
-        return (!isNaN(num) && num >= 1 && num <= 4) ? num : null;
+        var num = parseInteger(value);
+        if (num === null || num < 1 || num > MAX_DURATION) {
+            return null;
+        }
+        return num;
     }
 
     function validateCurriculumStructure(data) {
@@ -176,80 +179,7 @@
             return { success: false, message: 'Instructor blocks data is corrupted.' };
         }
 
-        for (var i = 0; i < METADATA_KEYS.length; i++) {
-            var key = METADATA_KEYS[i];
-            if (data.curriculum[key] !== undefined && !isObject(data.curriculum[key])) {
-                return { success: false, message: 'Metadata store "' + key + '" is corrupted.' };
-            }
-        }
-
         return { success: true, data: data };
-    }
-
-    function buildMetadataCandidates(curriculum) {
-        var metadata = {};
-        for (var i = 0; i < METADATA_KEYS.length; i++) {
-            var key = METADATA_KEYS[i];
-            var source = curriculum && curriculum[key] ? curriculum[key] : {};
-            var cloned = deepClone(source);
-            if (cloned === null) {
-                return null;
-            }
-            metadata[key] = cloned;
-        }
-        return metadata;
-    }
-
-    function commitMetadataCandidates(curriculum, metadataCandidates) {
-        for (var i = 0; i < METADATA_KEYS.length; i++) {
-            var key = METADATA_KEYS[i];
-            curriculum[key] = metadataCandidates[key];
-        }
-    }
-
-    /**
-     * Check if a new duration-based entry overlaps with existing entries.
-     * Treats malformed existing entries as OCCUPIED to prevent overwriting garbage.
-     */
-    function hasDurationOverlap(entries, day, hour, duration) {
-        if (!entries || !entries[day]) {
-            return false;
-        }
-
-        var dayEntries = entries[day];
-
-        for (var existingHour in dayEntries) {
-            if (!Object.prototype.hasOwnProperty.call(dayEntries, existingHour)) {
-                continue;
-            }
-
-            var existingStart = parseInt(existingHour, 10);
-            if (isNaN(existingStart)) {
-                continue;
-            }
-
-            var entry = dayEntries[existingHour];
-            var existingDuration = entry && entry.duration ? parseInt(entry.duration, 10) : null;
-
-            // If the existing entry is malformed, treat it as occupied
-            if (existingDuration === null || isNaN(existingDuration) || existingDuration < 1 || existingDuration > 4) {
-                var existingEnd = existingStart + 1;
-                var newEnd = hour + duration;
-                if (hour < existingEnd && existingStart < newEnd) {
-                    return true;
-                }
-                continue;
-            }
-
-            var existingEnd = existingStart + existingDuration;
-            var newEnd = hour + duration;
-
-            if (hour < existingEnd && existingStart < newEnd) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     function failure(message) {
@@ -274,7 +204,7 @@
             return {};
         }
 
-        var data = getDataStore();
+        var data = window.data;
         if (!data || !data.curriculum || !data.curriculum.instructorTemplates) {
             return {};
         }
@@ -288,7 +218,6 @@
     /**
      * Set an instructor class template.
      * Candidate-based: validates, clones, modifies, commits.
-     * Duration-aware overlap detection.
      */
     function setInstructorTemplate(instructorId, week, day, hour, templateData) {
         // ---- PHASE 1: VALIDATE ----
@@ -325,35 +254,27 @@
             return failure('Discipline ID is required.');
         }
 
-        var discipline = getDiscipline(normalisedDisciplineId);
+        var discipline = DisciplineQueries.getDiscipline(normalisedDisciplineId);
         if (!discipline) {
             return failure('Discipline not found.');
         }
 
         var durationNum = validateDuration(templateData.duration);
         if (durationNum === null) {
-            return failure('Duration must be between 1 and 4 hours.');
+            return failure('Duration must be between 1 and ' + MAX_DURATION + ' hours.');
         }
 
-        if (hourNum + durationNum > 24) {
+        if (hourNum + durationNum > MAX_HOUR + 1) {
             return failure('Class duration extends beyond the end of the day.');
         }
 
-        var instructor = getCharacterById(normalisedInstructorId);
+        var instructor = CharacterQueries.getCharacterById(normalisedInstructorId);
         if (!instructor) {
             return failure('Instructor not found.');
         }
 
-        var assignedStudents = normaliseIdArray(templateData.assignedStudents);
-        for (var i = 0; i < assignedStudents.length; i++) {
-            var student = getCharacterById(assignedStudents[i]);
-            if (!student) {
-                return failure('Student not found: ' + assignedStudents[i]);
-            }
-        }
-
         // ---- PHASE 2: VALIDATE CURRICULUM STRUCTURE ----
-        var data = getDataStore();
+        var data = window.data;
         if (!data) {
             return failure('Data store is not available.');
         }
@@ -369,18 +290,13 @@
             return failure('Failed to prepare template data.');
         }
 
-        var metadataCandidates = buildMetadataCandidates(data.curriculum);
-        if (metadataCandidates === null) {
-            return failure('Failed to prepare metadata data.');
-        }
-
         var templateKey = normalisedInstructorId + '_' + weekNum;
         if (!candidateTemplates[templateKey]) {
             candidateTemplates[templateKey] = {};
         }
 
-        // Duration-aware overlap check
-        if (hasDurationOverlap(candidateTemplates[templateKey], dayNum, hourNum, durationNum)) {
+        // Duration-aware overlap check using ScheduleCore
+        if (ScheduleCore.hasDurationOverlap(candidateTemplates[templateKey], dayNum, hourNum, durationNum)) {
             return failure('Class template overlaps with an existing template at this time.');
         }
 
@@ -391,13 +307,12 @@
             label: templateData.label || '',
             groupLabel: templateData.groupLabel || '',
             duration: durationNum,
-            assignedStudents: assignedStudents
+            assignedStudents: templateData.assignedStudents || []
         };
 
         // ---- PHASE 4: COMMIT ----
         data.curriculum.instructorTemplates = candidateTemplates;
 
-        logActivity('Added instructor class template: ' + discipline.name);
         return success({ added: true });
     }
 
@@ -428,7 +343,7 @@
         }
 
         // ---- PHASE 2: VALIDATE CURRICULUM STRUCTURE ----
-        var data = getDataStore();
+        var data = window.data;
         if (!data) {
             return failure('Data store is not available.');
         }
@@ -463,7 +378,6 @@
         // ---- PHASE 4: COMMIT ----
         data.curriculum.instructorTemplates = candidateTemplates;
 
-        logActivity('Removed instructor class template');
         return success({ removed: true });
     }
 
@@ -481,7 +395,7 @@
             return {};
         }
 
-        var data = getDataStore();
+        var data = window.data;
         if (!data || !data.curriculum || !data.curriculum.instructorBlocks) {
             return {};
         }
@@ -495,7 +409,6 @@
     /**
      * Set an instructor block.
      * Candidate-based: validates, clones, modifies, commits.
-     * Duration-aware overlap detection.
      */
     function setInstructorBlock(instructorId, week, day, hour, blockData) {
         // ---- PHASE 1: VALIDATE ----
@@ -525,14 +438,14 @@
 
         var durationNum = validateDuration(blockData.duration);
         if (durationNum === null) {
-            return failure('Duration must be between 1 and 4 hours.');
+            return failure('Duration must be between 1 and ' + MAX_DURATION + ' hours.');
         }
 
-        if (hourNum + durationNum > 24) {
+        if (hourNum + durationNum > MAX_HOUR + 1) {
             return failure('Block duration extends beyond the end of the day.');
         }
 
-        var instructor = getCharacterById(normalisedInstructorId);
+        var instructor = CharacterQueries.getCharacterById(normalisedInstructorId);
         if (!instructor) {
             return failure('Instructor not found.');
         }
@@ -541,7 +454,7 @@
         if (blockData.disciplineId) {
             var normalisedDisciplineId = normaliseId(blockData.disciplineId);
             if (normalisedDisciplineId !== null) {
-                var discipline = getDiscipline(normalisedDisciplineId);
+                var discipline = DisciplineQueries.getDiscipline(normalisedDisciplineId);
                 if (!discipline) {
                     return failure('Discipline not found: ' + blockData.disciplineId);
                 }
@@ -549,7 +462,7 @@
         }
 
         // ---- PHASE 2: VALIDATE CURRICULUM STRUCTURE ----
-        var data = getDataStore();
+        var data = window.data;
         if (!data) {
             return failure('Data store is not available.');
         }
@@ -573,8 +486,8 @@
             candidateBlocks[blockKey][dayNum] = {};
         }
 
-        // Duration-aware overlap check
-        if (hasDurationOverlap(candidateBlocks[blockKey], dayNum, hourNum, durationNum)) {
+        // Duration-aware overlap check using ScheduleCore
+        if (ScheduleCore.hasDurationOverlap(candidateBlocks[blockKey], dayNum, hourNum, durationNum)) {
             return failure('Time slot already has a block.');
         }
 
@@ -596,7 +509,6 @@
         // ---- PHASE 4: COMMIT ----
         data.curriculum.instructorBlocks = candidateBlocks;
 
-        logActivity('Added instructor block');
         return success({ added: true });
     }
 
@@ -627,7 +539,7 @@
         }
 
         // ---- PHASE 2: VALIDATE CURRICULUM STRUCTURE ----
-        var data = getDataStore();
+        var data = window.data;
         if (!data) {
             return failure('Data store is not available.');
         }
@@ -663,7 +575,6 @@
         // ---- PHASE 4: COMMIT ----
         data.curriculum.instructorBlocks = candidateBlocks;
 
-        logActivity('Removed instructor block');
         return success({ removed: true });
     }
 

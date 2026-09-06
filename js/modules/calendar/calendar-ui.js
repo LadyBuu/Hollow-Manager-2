@@ -11,18 +11,32 @@
  *   - Coordinating with mode-specific renderers
  * 
  * IMPORTANT:
- *   - This module depends ONLY on CalendarModes registry
+ *   - This module depends on CalendarModes registry for mode behaviour
  *   - It does not know about students, instructors, or locations directly
  *   - All entity-specific logic is delegated to the registered modes
  *   - USES DomUtils.escapeHtml() - SINGLE SOURCE OF TRUTH
- *   - USES DomUtils for DOM manipulation
- *   - USES NotificationSystem for notifications (via DomUtils)
+ *   - Uses CalendarConstants for bounds
+ *   - No direct window.data access
+ *   - State mutations are validated before being applied
+ *   - Rendering does NOT mutate state (except through setState)
  * 
  * LIFECYCLE:
  *   - init(container, options, callbacks) - Initialize the calendar UI
  *   - render() - Re-render the current view
  *   - destroy() - Clean up event listeners
  *   - getState() / setState() - State management
+ * 
+ * DEPENDENCIES:
+ *   - window.CalendarModes (from modes/index.js) - MANDATORY
+ *   - window.CalendarUtils (from calendar-utils.js) - MANDATORY
+ *   - window.DomUtils (from dom-utils.js) - MANDATORY
+ *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ * 
+ * USAGE:
+ *   var ui = window.CalendarUI;
+ *   ui.init(container, { mode: 'student', week: 1 }, {
+ *       onStateChange: function(state) { console.log(state); }
+ *   });
  */
 
 (function() {
@@ -37,40 +51,60 @@
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
     // ============================================================
 
-    if (!window.CalendarModes) {
-        return;
+    var missing = [];
+
+    if (!window.CalendarModes || typeof window.CalendarModes.getMode !== 'function') {
+        missing.push('CalendarModes.getMode');
+    }
+    if (!window.CalendarModes || typeof window.CalendarModes.getModeOptions !== 'function') {
+        missing.push('CalendarModes.getModeOptions');
+    }
+    if (!window.CalendarModes || typeof window.CalendarModes.hasMode !== 'function') {
+        missing.push('CalendarModes.hasMode');
+    }
+    if (!window.CalendarModes || typeof window.CalendarModes.getModeNames !== 'function') {
+        missing.push('CalendarModes.getModeNames');
     }
 
-    if (!window.CalendarRenderer) {
-        return;
-    }
-
-    if (!window.CalendarUtils) {
-        return;
+    if (!window.CalendarUtils || typeof window.CalendarUtils.formatHour !== 'function') {
+        missing.push('CalendarUtils.formatHour');
     }
 
     if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
-        return;
+        missing.push('DomUtils.escapeHtml');
     }
 
-    if (!window.NotificationSystem || typeof window.NotificationSystem.notify !== 'function') {
+    if (!window.CalendarConstants) {
+        missing.push('CalendarConstants');
+    }
+
+    if (missing.length > 0) {
+        console.error('[CalendarUI] Missing dependencies:', missing.join(', '));
         return;
     }
 
     window.__calendarUILoaded = true;
 
     // ============================================================
-    // CONSTANTS
+    // DEPENDENCY IMPORTS
     // ============================================================
 
     var CalendarModes = window.CalendarModes;
-    var CalendarRenderer = window.CalendarRenderer;
     var CalendarUtils = window.CalendarUtils;
     var DomUtils = window.DomUtils;
-    var NotificationSystem = window.NotificationSystem;
+    var CalendarConstants = window.CalendarConstants;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var MIN_DAY = CalendarConstants.MIN_DAY;
+    var MAX_DAY = CalendarConstants.MAX_DAY;
 
     // ============================================================
     // STATE
@@ -92,7 +126,7 @@
 
     var _eventListeners = [];
 
-    function addSafeEventListener(element, eventName, handler, options) {
+    function addEventListener(element, eventName, handler, options) {
         if (!element) {
             return;
         }
@@ -118,15 +152,6 @@
     }
 
     // ============================================================
-    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
-    // ============================================================
-
-    function showNotification(message, type) {
-        type = type || 'info';
-        NotificationSystem.notify(message, type);
-    }
-
-    // ============================================================
     // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
     // ============================================================
 
@@ -135,72 +160,33 @@
     }
 
     // ============================================================
-    // DEPENDENCY VALIDATION
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        if (!CalendarModes) {
-            missing.push('CalendarModes');
-        } else {
-            if (typeof CalendarModes.getMode !== 'function') {
-                missing.push('CalendarModes.getMode');
-            }
-            if (typeof CalendarModes.getModeOptions !== 'function') {
-                missing.push('CalendarModes.getModeOptions');
-            }
-            if (typeof CalendarModes.hasMode !== 'function') {
-                missing.push('CalendarModes.hasMode');
-            }
-        }
-
-        if (!CalendarRenderer || typeof CalendarRenderer.renderGrid !== 'function') {
-            missing.push('CalendarRenderer.renderGrid');
-        }
-
-        if (!CalendarUtils || typeof CalendarUtils.formatHour !== 'function') {
-            missing.push('CalendarUtils.formatHour');
-        }
-
-        if (missing.length > 0) {
-            return false;
-        }
-
-        return true;
-    }
-
-    // ============================================================
     // INIT
     // ============================================================
 
     function init(container, options, callbacks) {
-        if (!checkDependencies()) {
-            if (container) {
-                container.innerHTML = '<p class="empty-state">Calendar dependencies not loaded.</p>';
-            }
-            return;
-        }
-
         // Remove existing listeners before initializing
         removeAllEventListeners();
 
         _container = container;
 
+        // Apply options
         if (options) {
             if (options.mode && CalendarModes.hasMode(options.mode)) {
                 _state.mode = options.mode;
             }
-            if (options.week) {
-                var week = parseInt(options.week, 10);
-                if (!isNaN(week) && week >= 1 && week <= 52) {
+            if (options.week !== undefined) {
+                var week = validateWeek(options.week);
+                if (week !== null) {
                     _state.week = week;
                 }
             }
-            if (options.selectedId) {
+            if (options.selectedId !== undefined) {
                 _state.selectedId = options.selectedId;
             }
         }
+
+        // Validate selection
+        validateSelection();
 
         if (callbacks && typeof callbacks.onStateChange === 'function') {
             _onStateChange = callbacks.onStateChange;
@@ -229,7 +215,7 @@
         removeAllEventListeners();
 
         // Ensure selection is valid before rendering
-        ensureValidSelection();
+        validateSelection();
 
         _container.innerHTML = getCalendarUIHTML();
 
@@ -254,16 +240,29 @@
     // STATE VALIDATION
     // ============================================================
 
-    function ensureValidSelection() {
+    function validateWeek(value) {
+        var num = Number(value);
+        if (!Number.isInteger(num) || num < MIN_WEEK || num > MAX_WEEK) {
+            return null;
+        }
+        return num;
+    }
+
+    function validateSelection() {
         var mode = CalendarModes.getMode(_state.mode);
         if (!mode || typeof mode.getEntities !== 'function') {
             _state.selectedId = null;
             return;
         }
 
-        var entities = mode.getEntities() || [];
-        var exists = false;
+        var entities = mode.getEntities();
+        if (!Array.isArray(entities) || entities.length === 0) {
+            _state.selectedId = null;
+            return;
+        }
 
+        // Check if current selectedId exists
+        var exists = false;
         for (var i = 0; i < entities.length; i++) {
             if (String(entities[i].id) === String(_state.selectedId)) {
                 exists = true;
@@ -272,9 +271,69 @@
         }
 
         if (!exists) {
-            _state.selectedId = entities.length > 0 ? entities[0].id : null;
+            _state.selectedId = entities[0].id;
+        }
+    }
+
+    // ============================================================
+    // STATE MANAGEMENT
+    // ============================================================
+
+    function getState() {
+        return {
+            mode: _state.mode,
+            week: _state.week,
+            selectedId: _state.selectedId
+        };
+    }
+
+    function setState(newState) {
+        if (!newState || typeof newState !== 'object') {
+            return;
+        }
+
+        var changed = false;
+        var previousState = {
+            mode: _state.mode,
+            week: _state.week,
+            selectedId: _state.selectedId
+        };
+
+        // Handle mode change
+        if (newState.mode !== undefined && newState.mode !== _state.mode) {
+            if (!CalendarModes.hasMode(newState.mode)) {
+                return;
+            }
+            _state.mode = newState.mode;
+            _state.selectedId = null;
+            changed = true;
+        }
+
+        // Handle week change
+        if (newState.week !== undefined && newState.week !== _state.week) {
+            var week = validateWeek(newState.week);
+            if (week !== null) {
+                _state.week = week;
+                changed = true;
+            }
+        }
+
+        // Handle selected ID change
+        if (newState.selectedId !== undefined && newState.selectedId !== _state.selectedId) {
+            _state.selectedId = newState.selectedId;
+            changed = true;
+        }
+
+        if (changed) {
+            // Validate selection after state change
+            validateSelection();
+
+            render();
+
+            // Fire callback exactly once
             if (_onStateChange) {
-                _onStateChange(getState());
+                var currentState = getState();
+                _onStateChange(currentState);
             }
         }
     }
@@ -323,7 +382,7 @@
     }
 
     // ============================================================
-    // MODE HINT - Dynamic from registry
+    // MODE HINT
     // ============================================================
 
     function getModeHint() {
@@ -369,8 +428,6 @@
 
         select.innerHTML = '<option value="">Select ' + modeLabel.toLowerCase() + '...</option>';
 
-        var selectionExists = false;
-
         for (var i = 0; i < entities.length; i++) {
             var entity = entities[i];
             var name = mode.getEntityDisplayName(entity);
@@ -380,22 +437,9 @@
 
             if (String(entity.id) === String(_state.selectedId)) {
                 option.selected = true;
-                selectionExists = true;
             }
 
             select.appendChild(option);
-        }
-
-        if (!selectionExists && entities.length > 0) {
-            if (String(_state.selectedId) !== String(entities[0].id)) {
-                _state.selectedId = entities[0].id;
-                select.value = String(_state.selectedId);
-                if (_onStateChange) {
-                    _onStateChange(getState());
-                }
-            }
-        } else if (!selectionExists) {
-            _state.selectedId = null;
         }
     }
 
@@ -425,77 +469,28 @@
     }
 
     // ============================================================
-    // STATE MANAGEMENT
-    // ============================================================
-
-    function getState() {
-        return {
-            mode: _state.mode,
-            week: _state.week,
-            selectedId: _state.selectedId
-        };
-    }
-
-    function setState(newState) {
-        if (!newState || typeof newState !== 'object') {
-            return;
-        }
-
-        var changed = false;
-
-        if (newState.mode !== undefined && newState.mode !== _state.mode) {
-            if (!CalendarModes.hasMode(newState.mode)) {
-                return;
-            }
-            _state.mode = newState.mode;
-            changed = true;
-            _state.selectedId = null;
-        }
-
-        if (newState.week !== undefined && newState.week !== _state.week) {
-            var week = parseInt(newState.week, 10);
-            if (!isNaN(week) && week >= 1 && week <= 52) {
-                _state.week = week;
-                changed = true;
-            }
-        }
-
-        if (newState.selectedId !== undefined && newState.selectedId !== _state.selectedId) {
-            _state.selectedId = newState.selectedId;
-            changed = true;
-        }
-
-        if (changed) {
-            render();
-            if (_onStateChange) {
-                _onStateChange(getState());
-            }
-        }
-    }
-
-    // ============================================================
     // EVENTS
     // ============================================================
 
     function bindEvents() {
         var modeSelect = document.getElementById('calendar-mode-select');
         if (modeSelect) {
-            addSafeEventListener(modeSelect, 'change', function() {
+            addEventListener(modeSelect, 'change', function() {
                 setState({ mode: this.value });
             });
         }
 
         var entitySelect = document.getElementById('calendar-entity-select');
         if (entitySelect) {
-            addSafeEventListener(entitySelect, 'change', function() {
+            addEventListener(entitySelect, 'change', function() {
                 setState({ selectedId: this.value });
             });
         }
 
         var prevBtn = document.getElementById('calendar-prev-week');
         if (prevBtn) {
-            addSafeEventListener(prevBtn, 'click', function() {
-                if (_state.week > 1) {
+            addEventListener(prevBtn, 'click', function() {
+                if (_state.week > MIN_WEEK) {
                     setState({ week: _state.week - 1 });
                 }
             });
@@ -503,8 +498,8 @@
 
         var nextBtn = document.getElementById('calendar-next-week');
         if (nextBtn) {
-            addSafeEventListener(nextBtn, 'click', function() {
-                if (_state.week < 52) {
+            addEventListener(nextBtn, 'click', function() {
+                if (_state.week < MAX_WEEK) {
                     setState({ week: _state.week + 1 });
                 }
             });

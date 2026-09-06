@@ -1,92 +1,85 @@
 /**
  * js/modules/calendar/core/grid-core.js - Calendar Grid Core
- * Shared grid helpers, overlap detection, and schedule integrity validation
+ * Shared grid building and occupancy helpers
  * Path: js/modules/calendar/core/grid-core.js
  * 
  * This module handles:
  *   - Building calendar grids from schedule data
  *   - Occupied hour detection
  *   - Availability slot calculation
- *   - Duration-aware conflict detection
- *   - Class start hour resolution
- *   - Schedule integrity validation
+ *   - Duration-aware availability
+ *   - Continuous occupied hour analysis
  * 
  * IMPORTANT:
  *   - This module is PURE - no side effects, no data mutation
- *   - All functions are read-only queries
  *   - No direct window.data access
- *   - All ID normalisation is consistent
- *   - Duration metadata is respected for availability calculations
- *   - Student schedules are the canonical source of truth
- *   - UI-level overlap detection is a guardrail; core is authoritative
+ *   - Uses CalendarScheduleCore for schedule semantics
+ *   - Uses CalendarConstants for bounds
+ *   - Grid is a VIEW-READY projection, not domain data
  * 
  * DEPENDENCIES:
- *   - window.ObjectUtils (from object-utils.js) - for deepClone where needed
+ *   - window.CalendarScheduleCore (from schedule-core.js) - MANDATORY
+ *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ * 
+ * USAGE:
+ *   var GC = window.CalendarGridCore;
+ *   var grid = GC.buildGrid(schedule, { days: [1,2,3], hours: [5,6,7] });
+ *   var occupied = GC.getOccupiedHours(schedule, 1);
+ *   var available = GC.getAvailableHours(schedule, 1);
  */
 
 (function() {
     'use strict';
 
-    // ============================================================
-    // GUARD AGAINST DUPLICATE LOADING
-    // ============================================================
-
+    // Guard against duplicate loading
     if (window.__calendarGridCoreLoaded) {
         return;
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
     // ============================================================
 
-    if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
+    if (!window.CalendarScheduleCore) {
+        console.error('[CalendarGridCore] CalendarScheduleCore is required.');
         return;
     }
 
-    window.__calendarGridCoreLoaded = true;
+    if (!window.CalendarConstants) {
+        console.error('[CalendarGridCore] CalendarConstants is required.');
+        return;
+    }
+
+    var ScheduleCore = window.CalendarScheduleCore;
+    var CalendarConstants = window.CalendarConstants;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var CALENDAR_START_HOUR = 5;
-    var CALENDAR_END_HOUR = 23;
-    var DAY_NAMES = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    var MIN_DAY = CalendarConstants.MIN_DAY;
+    var MAX_DAY = CalendarConstants.MAX_DAY;
+    var MIN_HOUR = CalendarConstants.MIN_HOUR;
+    var MAX_HOUR = CalendarConstants.MAX_HOUR;
+    var CALENDAR_START_HOUR = CalendarConstants.CALENDAR_START_HOUR;
+    var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
+    var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
+    var DAY_NAMES = CalendarConstants.DAY_NAMES;
 
     // ============================================================
     // HELPERS
     // ============================================================
 
-    function isObject(value) {
-        return value !== null && typeof value === 'object' && !Array.isArray(value);
+    function parseInteger(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        var num = Number(value);
+        return Number.isInteger(num) ? num : null;
     }
 
-    function deepClone(value) {
-        return window.ObjectUtils.deepClone(value);
-    }
-
-    function getScheduleKey(studentId, week, day, hour) {
-        return String(studentId) + '_' + String(week) + '_' + String(day) + '_' + String(hour);
-    }
-
-    function validateDuration(value) {
-        var num = parseInt(value, 10);
-        return (!isNaN(num) && num >= 1 && num <= 4) ? num : null;
-    }
-
-    function validateWeek(value) {
-        var num = parseInt(value, 10);
-        return (!isNaN(num) && num >= 1 && num <= 52) ? num : null;
-    }
-
-    function validateDay(value) {
-        var num = parseInt(value, 10);
-        return (!isNaN(num) && num >= 1 && num <= 7) ? num : null;
-    }
-
-    function validateHour(value) {
-        var num = parseInt(value, 10);
-        return (!isNaN(num) && num >= 0 && num <= 23) ? num : null;
+    function getDayName(day) {
+        return CalendarConstants.getDayName(day) || 'Unknown';
     }
 
     // ============================================================
@@ -100,28 +93,36 @@
      * @param {object} schedule - Schedule data { day: { hour: disciplineId } }
      * @param {object} options - Grid options
      * @param {array} options.days - Days to include (default: 1-7)
-     * @param {array} options.hours - Hours to include (default: 5-23)
-     * @param {object} options.metadata - Metadata object with classDurations, etc.
+     * @param {array} options.hours - Hours to include (default: CALENDAR_START_HOUR to CALENDAR_END_HOUR)
+     * @param {object} options.durations - Class durations map { scheduleKey: duration }
      * @param {string} options.studentId - Student ID for metadata lookup
      * @param {number} options.week - Week number for metadata lookup
+     * @param {function} options.isBlock - Function to check if a slot is blocked
      * @returns {object} Grid with class starts and continuations
      */
     function buildGrid(schedule, options) {
         options = options || {};
-        var grid = {};
 
-        var days = options.days || [1, 2, 3, 4, 5, 6, 7];
+        var days = options.days || [];
+        if (days.length === 0) {
+            for (var d = MIN_DAY; d <= MAX_DAY; d++) {
+                days.push(d);
+            }
+        }
+
         var hours = options.hours || [];
-
         if (hours.length === 0) {
             for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
                 hours.push(h);
             }
         }
 
-        var metadata = options.metadata || {};
+        var durations = options.durations || {};
         var studentId = options.studentId || null;
         var week = options.week || null;
+        var isBlock = options.isBlock || function() { return false; };
+
+        var grid = {};
 
         for (var d = 0; d < days.length; d++) {
             var day = days[d];
@@ -134,10 +135,17 @@
                 if (isOccupied) {
                     var disciplineId = schedule[day][hour];
 
-                    // Try to find class start
+                    // Try to find class start using ScheduleCore
                     var classStart = null;
-                    if (studentId && week && metadata.classDurations) {
-                        classStart = findClassStartHour(schedule, metadata, studentId, week, day, hour);
+                    if (studentId && week) {
+                        classStart = ScheduleCore.findClassStartHour(
+                            schedule,
+                            durations,
+                            studentId,
+                            week,
+                            day,
+                            hour
+                        );
                     }
 
                     if (classStart && classStart.startHour === hour) {
@@ -145,42 +153,33 @@
                         grid[day][hour] = {
                             occupied: true,
                             disciplineId: disciplineId,
-                            duration: classStart.duration,
-                            students: [],
-                            label: metadata.classLabels ? metadata.classLabels[classStart.key] || null : null,
-                            groupLabel: metadata.classGroupLabels ? metadata.classGroupLabels[classStart.key] || null : null,
-                            instructorId: metadata.classInstructors ? metadata.classInstructors[classStart.key] || null : null,
+                            duration: classStart.duration || 1,
                             isContinuation: false,
                             startHour: hour,
-                            key: classStart.key
+                            key: classStart.key || null,
+                            isBlock: isBlock(day, hour)
                         };
                     } else if (classStart) {
                         // This is a continuation
                         grid[day][hour] = {
                             occupied: true,
                             disciplineId: disciplineId,
-                            duration: classStart.duration,
-                            students: [],
-                            label: null,
-                            groupLabel: null,
-                            instructorId: null,
+                            duration: classStart.duration || 1,
                             isContinuation: true,
-                            startHour: classStart.startHour,
-                            key: classStart.key
+                            startHour: classStart.startHour || hour,
+                            key: classStart.key || null,
+                            isBlock: isBlock(day, hour)
                         };
                     } else {
-                        // No metadata found - data corruption
+                        // No metadata found - data corruption or simple occupancy
                         grid[day][hour] = {
                             occupied: true,
                             disciplineId: disciplineId,
                             duration: 1,
-                            students: [],
-                            label: null,
-                            groupLabel: null,
-                            instructorId: null,
                             isContinuation: false,
                             startHour: hour,
                             key: null,
+                            isBlock: isBlock(day, hour),
                             isCorrupted: true
                         };
                     }
@@ -189,13 +188,10 @@
                         occupied: false,
                         disciplineId: null,
                         duration: 1,
-                        students: [],
-                        label: null,
-                        groupLabel: null,
-                        instructorId: null,
                         isContinuation: false,
                         startHour: null,
-                        key: null
+                        key: null,
+                        isBlock: isBlock(day, hour)
                     };
                 }
             }
@@ -216,57 +212,119 @@
      * @returns {object} Occupied hours { hour: true }
      */
     function getOccupiedHours(schedule, day) {
+        var dayNum = parseInteger(day);
+        if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
+            return {};
+        }
+
         var occupied = {};
-        if (!schedule || !schedule[day]) {
+        if (!schedule || !schedule[dayNum]) {
             return occupied;
         }
 
-        for (var hour in schedule[day]) {
-            if (schedule[day][hour]) {
-                occupied[hour] = true;
+        var daySchedule = schedule[dayNum];
+        for (var hour in daySchedule) {
+            if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
+                continue;
+            }
+            var hourNum = parseInteger(hour);
+            if (hourNum === null || hourNum < MIN_HOUR || hourNum > MAX_HOUR) {
+                continue;
+            }
+            if (daySchedule[hour]) {
+                occupied[hourNum] = true;
             }
         }
+
         return occupied;
     }
 
     /**
-     * Get available slots for a day.
+     * Get available hours for a day.
+     * Returns individual empty cells (not duration-aware).
      * 
      * @param {object} schedule - Schedule data { day: { hour: disciplineId } }
      * @param {number} day - Day number (1-7)
-     * @param {number} startHour - Start hour (optional)
-     * @param {number} endHour - End hour (optional)
-     * @returns {array} Array of available hours
+     * @param {number} startHour - Start hour (optional, default: CALENDAR_START_HOUR)
+     * @param {number} endHour - End hour (optional, default: CALENDAR_END_HOUR)
+     * @returns {Array} Array of available hours
      */
-    function getAvailableSlots(schedule, day, startHour, endHour) {
-        if (startHour === undefined || startHour === null) {
-            startHour = CALENDAR_START_HOUR;
+    function getAvailableHours(schedule, day, startHour, endHour) {
+        var dayNum = parseInteger(day);
+        if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
+            return [];
         }
-        if (endHour === undefined || endHour === null) {
-            endHour = CALENDAR_END_HOUR;
+
+        startHour = startHour !== undefined ? parseInteger(startHour) : CALENDAR_START_HOUR;
+        endHour = endHour !== undefined ? parseInteger(endHour) : CALENDAR_END_HOUR;
+
+        if (startHour === null || endHour === null || startHour > endHour) {
+            return [];
         }
 
         var available = [];
 
-        if (!schedule || !schedule[day]) {
+        if (!schedule || !schedule[dayNum]) {
             for (var h = startHour; h <= endHour; h++) {
                 available.push(h);
             }
             return available;
         }
 
+        var daySchedule = schedule[dayNum];
         for (var h = startHour; h <= endHour; h++) {
-            if (!schedule[day][h]) {
+            if (!daySchedule[h]) {
                 available.push(h);
             }
         }
+
+        return available;
+    }
+
+    /**
+     * Get available start hours for a given duration.
+     * Duration-aware: checks if a class of the given duration can start at each hour.
+     * 
+     * @param {object} schedule - Schedule data { day: { hour: disciplineId } }
+     * @param {number} day - Day number (1-7)
+     * @param {number} duration - Duration in hours
+     * @param {number} startHour - Start hour (optional, default: CALENDAR_START_HOUR)
+     * @param {number} endHour - End hour (optional, default: CALENDAR_END_HOUR)
+     * @returns {Array} Array of available start hours
+     */
+    function getAvailableStartHours(schedule, day, duration, startHour, endHour) {
+        var dayNum = parseInteger(day);
+        var durationNum = parseInteger(duration);
+
+        if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
+            return [];
+        }
+
+        if (durationNum === null || durationNum < 1 || durationNum > MAX_DURATION) {
+            return [];
+        }
+
+        startHour = startHour !== undefined ? parseInteger(startHour) : CALENDAR_START_HOUR;
+        endHour = endHour !== undefined ? parseInteger(endHour) : CALENDAR_END_HOUR;
+
+        if (startHour === null || endHour === null || startHour > endHour) {
+            return [];
+        }
+
+        var available = [];
+
+        for (var h = startHour; h <= endHour - durationNum + 1; h++) {
+            if (!ScheduleCore.hasConflict(schedule, dayNum, h, durationNum)) {
+                available.push(h);
+            }
+        }
+
         return available;
     }
 
     /**
      * Get continuous occupied hours of the same discipline.
-     * This measures OCCUPIED HOURS, not class duration.
-     * For class duration, use metadata.classDurations.
+     * Measures OCCUPIED HOURS, not class duration.
      * 
      * @param {object} schedule - Schedule data { day: { hour: disciplineId } }
      * @param {number} day - Day number (1-7)
@@ -274,448 +332,172 @@
      * @returns {number} Number of continuous occupied hours
      */
     function getContinuousOccupiedHours(schedule, day, hour) {
-        if (!schedule || !schedule[day] || !schedule[day][hour]) {
+        var dayNum = parseInteger(day);
+        var hourNum = parseInteger(hour);
+
+        if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
             return 0;
         }
 
-        var disciplineId = schedule[day][hour];
-        var startHour = hour;
-        while (startHour > 0 && String(schedule[day][startHour - 1]) === String(disciplineId)) {
+        if (hourNum === null || hourNum < MIN_HOUR || hourNum > MAX_HOUR) {
+            return 0;
+        }
+
+        if (!schedule || !schedule[dayNum] || !schedule[dayNum][hourNum]) {
+            return 0;
+        }
+
+        var disciplineId = schedule[dayNum][hourNum];
+
+        // Find start of continuous run
+        var startHour = hourNum;
+        while (startHour > 0 && String(schedule[dayNum][startHour - 1]) === String(disciplineId)) {
             startHour--;
         }
 
-        var endHour = hour;
-        while (endHour < 23 && String(schedule[day][endHour + 1]) === String(disciplineId)) {
+        // Find end of continuous run
+        var endHour = hourNum;
+        while (endHour < MAX_HOUR && String(schedule[dayNum][endHour + 1]) === String(disciplineId)) {
             endHour++;
         }
 
         return endHour - startHour + 1;
     }
 
-    // ============================================================
-    // CONFLICT DETECTION
-    // ============================================================
-
     /**
-     * Check if a slot has a conflict.
-     * Duration-aware.
+     * Check if a day has any occupied hours.
      * 
      * @param {object} schedule - Schedule data { day: { hour: disciplineId } }
      * @param {number} day - Day number (1-7)
-     * @param {number} hour - Hour to check
-     * @param {number} duration - Duration in hours
-     * @returns {boolean} True if there is a conflict
+     * @returns {boolean} True if the day has any occupied hours
      */
-    function hasConflict(schedule, day, hour, duration) {
-        if (duration === undefined || duration === null) {
-            duration = 1;
-        }
-
-        var durationNum = validateDuration(duration);
-        if (durationNum === null) {
-            return false;
-        }
-
-        if (!schedule || !schedule[day]) {
-            return false;
-        }
-
-        for (var h = hour; h < hour + durationNum && h <= 23; h++) {
-            if (schedule[day][h]) {
-                return true;
-            }
-        }
-        return false;
+    function hasOccupiedHours(schedule, day) {
+        var occupied = getOccupiedHours(schedule, day);
+        return Object.keys(occupied).length > 0;
     }
 
     /**
-     * Check if a new duration-based entry overlaps with existing entries.
-     * Treats malformed existing entries as OCCUPIED to prevent overwriting garbage.
-     * 
-     * @param {object} entries - Entries object { day: { hour: { duration: N } } }
-     * @param {number} day - Day number (1-7)
-     * @param {number} hour - Hour to check
-     * @param {number} duration - Duration in hours
-     * @returns {boolean} True if there is an overlap
-     */
-    function hasDurationOverlap(entries, day, hour, duration) {
-        if (!entries || !entries[day]) {
-            return false;
-        }
-
-        var dayEntries = entries[day];
-
-        for (var existingHour in dayEntries) {
-            if (!Object.prototype.hasOwnProperty.call(dayEntries, existingHour)) {
-                continue;
-            }
-
-            var existingStart = parseInt(existingHour, 10);
-            if (isNaN(existingStart)) {
-                continue;
-            }
-
-            var entry = dayEntries[existingHour];
-            var existingDuration = entry && entry.duration ? parseInt(entry.duration, 10) : null;
-
-            // If the existing entry is malformed, treat it as occupied
-            if (existingDuration === null || isNaN(existingDuration) || existingDuration < 1 || existingDuration > 4) {
-                var existingEnd = existingStart + 1;
-                var newEnd = hour + duration;
-                if (hour < existingEnd && existingStart < newEnd) {
-                    return true;
-                }
-                continue;
-            }
-
-            var existingEnd = existingStart + existingDuration;
-            var newEnd = hour + duration;
-
-            if (hour < existingEnd && existingStart < newEnd) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if a student schedule slot has conflicts.
-     * Duration-aware: checks all occupied hours in the range.
+     * Get all occupied days in a schedule.
      * 
      * @param {object} schedule - Schedule data { day: { hour: disciplineId } }
-     * @param {number} day - Day number (1-7)
-     * @param {number} hour - Hour to check
-     * @param {number} duration - Duration in hours
-     * @returns {boolean} True if there is a conflict
+     * @returns {Array} Array of day numbers that have occupied hours
      */
-    function hasStudentScheduleConflict(schedule, day, hour, duration) {
-        if (!schedule || !schedule[day]) {
-            return false;
-        }
-
-        for (var h = hour; h < hour + duration && h <= 23; h++) {
-            if (schedule[day][h]) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // ============================================================
-    // CLASS START RESOLUTION
-    // ============================================================
-
-    /**
-     * Find the class start hour for a given occupied hour.
-     * Uses metadata to find the start, with occupancy fallback.
-     * Returns null if no class start can be found.
-     * 
-     * @param {object} schedule - Schedule data { day: { hour: disciplineId } }
-     * @param {object} metadata - Metadata object with classDurations, etc.
-     * @param {string} studentId - Student ID for metadata lookup
-     * @param {number} week - Week number for metadata lookup
-     * @param {number} day - Day number (1-7)
-     * @param {number} hour - Hour to check
-     * @returns {object|null} { startHour, duration, disciplineId, key } or null
-     */
-    function findClassStartHour(schedule, metadata, studentId, week, day, hour) {
-        if (!schedule || !schedule[day]) {
-            return null;
-        }
-
-        var disciplineId = schedule[day][hour];
-        if (!disciplineId) {
-            return null;
-        }
-
-        // First, check if this hour itself has metadata (is a start)
-        var key = getScheduleKey(studentId, week, day, hour);
-        var duration = getValidClassDuration(metadata, key);
-
-        if (duration !== null) {
-            // Validate that the duration matches the actual occupied cells
-            var actualDuration = validateOccupiedDuration(schedule, day, hour, disciplineId);
-            if (actualDuration !== null && duration === actualDuration) {
-                return {
-                    startHour: hour,
-                    duration: duration,
-                    disciplineId: disciplineId,
-                    key: key
-                };
-            }
-        }
-
-        // Search backwards for a metadata-defined class start
-        for (var candidate = hour - 1; candidate >= 0; candidate--) {
-            if (String(schedule[day][candidate]) !== String(disciplineId)) {
-                break;
-            }
-
-            var candidateKey = getScheduleKey(studentId, week, day, candidate);
-            var candidateDuration = getValidClassDuration(metadata, candidateKey);
-
-            if (candidateDuration !== null) {
-                var actualDuration = validateOccupiedDuration(schedule, day, candidate, disciplineId);
-                if (actualDuration !== null && candidateDuration === actualDuration) {
-                    if (hour < candidate + candidateDuration) {
-                        return {
-                            startHour: candidate,
-                            duration: candidateDuration,
-                            disciplineId: disciplineId,
-                            key: candidateKey
-                        };
-                    }
-                }
-                break;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Validate that occupied hours match the expected duration.
-     * Returns the actual duration if consistent, null otherwise.
-     * 
-     * @param {object} schedule - Schedule data { day: { hour: disciplineId } }
-     * @param {number} day - Day number (1-7)
-     * @param {number} startHour - Start hour
-     * @param {string} disciplineId - Discipline ID
-     * @returns {number|null} Actual duration or null if inconsistent
-     */
-    function validateOccupiedDuration(schedule, day, startHour, disciplineId) {
-        var duration = 0;
-        var maxHour = 23;
-
-        for (var h = startHour; h <= maxHour; h++) {
-            if (String(schedule[day][h]) === String(disciplineId)) {
-                duration++;
-            } else {
-                break;
-            }
-        }
-
-        // Check that the class is contiguous - no gaps
-        for (var h = startHour + duration; h <= Math.min(startHour + duration + 4, maxHour); h++) {
-            if (String(schedule[day][h]) === String(disciplineId)) {
-                return null;
-            }
-        }
-
-        return duration;
-    }
-
-    /**
-     * Get valid class duration from metadata.
-     * 
-     * @param {object} metadata - Metadata object with classDurations
-     * @param {string} key - Schedule key (studentId_week_day_hour)
-     * @returns {number|null} Duration or null if invalid
-     */
-    function getValidClassDuration(metadata, key) {
-        if (!metadata || !metadata.classDurations) {
-            return null;
-        }
-        var duration = metadata.classDurations[key];
-        if (duration === undefined || duration === null) {
-            return null;
-        }
-        var num = parseInt(duration, 10);
-        return (!isNaN(num) && num >= 1 && num <= 4) ? num : null;
-    }
-
-    // ============================================================
-    // INTEGRITY VALIDATION
-    // ============================================================
-
-    /**
-     * Validate the integrity of a schedule.
-     * Checks:
-     * - All class starts have valid duration metadata
-     * - All occupied hours belong to a valid class
-     * - No overlapping classes
-     * - All metadata keys correspond to actual classes
-     * 
-     * @param {object} schedule - Schedule data { day: { hour: disciplineId } }
-     * @param {object} metadata - Metadata object with classDurations, etc.
-     * @param {string} studentId - Student ID for metadata lookup
-     * @param {number} week - Week number for metadata lookup
-     * @returns {object} { valid: boolean, issues: array, warnings: array }
-     */
-    function validateScheduleIntegrity(schedule, metadata, studentId, week) {
-        var results = {
-            valid: true,
-            issues: [],
-            warnings: []
-        };
-
+    function getOccupiedDays(schedule) {
         if (!schedule || typeof schedule !== 'object') {
-            results.valid = false;
-            results.issues.push('Schedule is not available.');
-            return results;
+            return [];
         }
 
-        // Find all class starts
-        var classStarts = [];
-        var seenHours = {};
-
+        var days = [];
         for (var day in schedule) {
             if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
                 continue;
             }
-            if (!isObject(schedule[day])) {
+            var dayNum = parseInteger(day);
+            if (dayNum === null) {
                 continue;
             }
-
-            for (var hour in schedule[day]) {
-                if (!Object.prototype.hasOwnProperty.call(schedule[day], hour)) {
-                    continue;
-                }
-                var hourNum = parseInt(hour, 10);
-                if (isNaN(hourNum)) {
-                    continue;
-                }
-
-                var disciplineId = schedule[day][hour];
-                if (!disciplineId) {
-                    continue;
-                }
-
-                var key = getScheduleKey(studentId, week, day, hourNum);
-
-                // Check if this hour has valid duration metadata
-                var duration = getValidClassDuration(metadata, key);
-                if (duration !== null) {
-                    // This is a class start
-                    var actualDuration = validateOccupiedDuration(schedule, day, hourNum, disciplineId);
-                    if (actualDuration === null || actualDuration !== duration) {
-                        var dayName = getDayName(day);
-                        results.issues.push('Class at ' + dayName + ' ' + hourNum + ': Duration mismatch (metadata: ' + duration + ', actual: ' + (actualDuration || 'inconsistent') + ')');
-                        results.valid = false;
-                    }
-                    classStarts.push({
-                        day: parseInt(day, 10),
-                        hour: hourNum,
-                        duration: duration,
-                        disciplineId: disciplineId,
-                        key: key
-                    });
-                }
+            if (hasOccupiedHours(schedule, dayNum)) {
+                days.push(dayNum);
             }
         }
 
-        // Check for overlapping classes
-        for (var i = 0; i < classStarts.length; i++) {
-            for (var j = i + 1; j < classStarts.length; j++) {
-                var a = classStarts[i];
-                var b = classStarts[j];
-                if (a.day !== b.day) {
-                    continue;
-                }
-
-                var aStart = a.hour;
-                var aEnd = a.hour + a.duration;
-                var bStart = b.hour;
-                var bEnd = b.hour + b.duration;
-
-                if (aStart < bEnd && bStart < aEnd) {
-                    var dayName = getDayName(a.day);
-                    results.issues.push('Overlapping classes on ' + dayName + ': ' + a.hour + '-' + aEnd + ' and ' + b.hour + '-' + bEnd);
-                    results.valid = false;
-                }
-            }
-        }
-
-        // Check that all metadata keys correspond to actual classes
-        var prefix = studentId + '_' + week + '_';
-        var metadataKeys = ['classDurations', 'classInstructors', 'classLabels', 'classGroupLabels', 'classLocations'];
-
-        for (var m = 0; m < metadataKeys.length; m++) {
-            var storeKey = metadataKeys[m];
-            var store = metadata[storeKey];
-            if (!store) {
-                continue;
-            }
-
-            for (var metaKey in store) {
-                if (!Object.prototype.hasOwnProperty.call(store, metaKey)) {
-                    continue;
-                }
-                if (metaKey.indexOf(prefix) !== 0) {
-                    continue;
-                }
-
-                var parts = metaKey.split('_');
-                if (parts.length !== 4) {
-                    results.warnings.push('Malformed metadata key: ' + metaKey);
-                    continue;
-                }
-
-                var dayKey = parseInt(parts[2], 10);
-                var hourKey = parseInt(parts[3], 10);
-                if (isNaN(dayKey) || isNaN(hourKey)) {
-                    results.warnings.push('Invalid metadata key format: ' + metaKey);
-                    continue;
-                }
-
-                if (!schedule[dayKey] || !schedule[dayKey][hourKey]) {
-                    var dayName = getDayName(dayKey);
-                    results.warnings.push('Orphan metadata at ' + dayName + ' ' + hourKey + ' (no class)');
-                }
-            }
-        }
-
-        return results;
+        return days.sort(function(a, b) {
+            return a - b;
+        });
     }
 
     /**
-     * Get day name from day number.
+     * Get the total number of occupied hours in a schedule.
      * 
-     * @param {number} day - Day number (1-7)
-     * @returns {string} Day name
+     * @param {object} schedule - Schedule data { day: { hour: disciplineId } }
+     * @returns {number} Total occupied hours
      */
-    function getDayName(day) {
-        return DAY_NAMES[day] || 'Unknown';
+    function getTotalOccupiedHours(schedule) {
+        if (!schedule || typeof schedule !== 'object') {
+            return 0;
+        }
+
+        var total = 0;
+        for (var day in schedule) {
+            if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
+                continue;
+            }
+            var daySchedule = schedule[day];
+            if (!daySchedule || typeof daySchedule !== 'object') {
+                continue;
+            }
+            for (var hour in daySchedule) {
+                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
+                    continue;
+                }
+                var hourNum = parseInteger(hour);
+                if (hourNum === null) {
+                    continue;
+                }
+                if (daySchedule[hour]) {
+                    total++;
+                }
+            }
+        }
+
+        return total;
+    }
+
+    /**
+     * Get the total number of available hours in a schedule.
+     * 
+     * @param {object} schedule - Schedule data { day: { hour: disciplineId } }
+     * @param {number} startHour - Start hour (optional, default: CALENDAR_START_HOUR)
+     * @param {number} endHour - End hour (optional, default: CALENDAR_END_HOUR)
+     * @returns {number} Total available hours
+     */
+    function getTotalAvailableHours(schedule, startHour, endHour) {
+        startHour = startHour !== undefined ? parseInteger(startHour) : CALENDAR_START_HOUR;
+        endHour = endHour !== undefined ? parseInteger(endHour) : CALENDAR_END_HOUR;
+
+        if (startHour === null || endHour === null || startHour > endHour) {
+            return 0;
+        }
+
+        var total = 0;
+        var totalSlots = 7 * (endHour - startHour + 1);
+
+        for (var day = MIN_DAY; day <= MAX_DAY; day++) {
+            var occupied = getOccupiedHours(schedule, day);
+            for (var h = startHour; h <= endHour; h++) {
+                if (!occupied[h]) {
+                    total++;
+                }
+            }
+        }
+
+        return total;
     }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
+    window.__calendarGridCoreLoaded = true;
+
     window.CalendarGridCore = {
         // Grid building
         buildGrid: buildGrid,
 
-        // Occupancy helpers
+        // Occupancy
         getOccupiedHours: getOccupiedHours,
-        getAvailableSlots: getAvailableSlots,
+        getAvailableHours: getAvailableHours,
+        getAvailableStartHours: getAvailableStartHours,
         getContinuousOccupiedHours: getContinuousOccupiedHours,
-
-        // Conflict detection
-        hasConflict: hasConflict,
-        hasDurationOverlap: hasDurationOverlap,
-        hasStudentScheduleConflict: hasStudentScheduleConflict,
-
-        // Class start resolution
-        findClassStartHour: findClassStartHour,
-        validateOccupiedDuration: validateOccupiedDuration,
-        getValidClassDuration: getValidClassDuration,
-
-        // Integrity validation
-        validateScheduleIntegrity: validateScheduleIntegrity,
-
-        // Utilities
-        getDayName: getDayName,
-        getScheduleKey: getScheduleKey,
-        validateWeek: validateWeek,
-        validateDay: validateDay,
-        validateHour: validateHour,
-        validateDuration: validateDuration,
+        hasOccupiedHours: hasOccupiedHours,
+        getOccupiedDays: getOccupiedDays,
+        getTotalOccupiedHours: getTotalOccupiedHours,
+        getTotalAvailableHours: getTotalAvailableHours,
 
         // Constants
         CALENDAR_START_HOUR: CALENDAR_START_HOUR,
         CALENDAR_END_HOUR: CALENDAR_END_HOUR,
+        MAX_DURATION: MAX_DURATION,
         DAY_NAMES: DAY_NAMES
     };
 

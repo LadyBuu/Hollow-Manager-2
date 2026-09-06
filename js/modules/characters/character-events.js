@@ -11,7 +11,6 @@
  *   - Uses CharacterCRUD for save/delete operations
  *   - Uses CharacterClassView for class rendering
  *   - Uses CharacterEliminationView for elimination rendering
- *   - Uses CharacterDetailQueries for detail data
  *   - Uses FormUtils for form field operations
  *   - Uses NotificationSystem for notifications
  *   - Safe event binding with proper cleanup
@@ -25,20 +24,21 @@
  *   - destroy() - Removes all event listeners and resets state
  *   - Re-initialization is supported for dynamic DOM replacement
  * 
- * DEPENDENCIES:
+ * DEPENDENCIES (ALL MANDATORY):
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.CharacterCRUD (from character-crud.js)
  *   - window.CharacterForm (from character-form.js)
  *   - window.CharacterClassView (from character-class-view.js)
  *   - window.CharacterEliminationView (from character-elimination-view.js)
- *   - window.CharacterDetailQueries (from character-detail-queries.js)
  *   - window.CharacterGenerator (from character-generator.js)
+ *   - window.CharacterClasses (from character-classes.js)
  *   - window.FormUtils (from form-utils.js)
  *   - window.NotificationSystem (from notification.js)
  *   - window.getCurrentEditId (from index.js)
  *   - window.setCurrentEditId (from index.js)
  *   - window.toggleCharacterList (from index.js)
  *   - window.UI_CONSTANTS (from constants.js)
+ *   - window.CALENDAR_CONSTANTS (from constants.js)
  */
 
 (function() {
@@ -59,11 +59,12 @@
     var CharacterForm = window.CharacterForm;
     var CharacterClassView = window.CharacterClassView;
     var CharacterEliminationView = window.CharacterEliminationView;
-    var CharacterDetailQueries = window.CharacterDetailQueries;
     var CharacterGenerator = window.CharacterGenerator;
+    var CharacterClasses = window.CharacterClasses;
     var FormUtils = window.FormUtils;
     var NotificationSystem = window.NotificationSystem;
     var UI_CONSTANTS = window.UI_CONSTANTS;
+    var CALENDAR_CONSTANTS = window.CALENDAR_CONSTANTS;
 
     // ============================================================
     // STATE
@@ -74,7 +75,7 @@
     var _filterDebounceTimer = null;
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // DEPENDENCY CHECK - All dependencies mandatory
     // ============================================================
 
     function checkDependencies() {
@@ -115,6 +116,20 @@
             missing.push('CharacterForm.collect');
         }
 
+        if (!CharacterClassView || typeof CharacterClassView.renderClassTags !== 'function') {
+            missing.push('CharacterClassView.renderClassTags');
+        }
+        if (!CharacterClassView || typeof CharacterClassView.populateClassSelector !== 'function') {
+            missing.push('CharacterClassView.populateClassSelector');
+        }
+
+        if (!CharacterEliminationView || typeof CharacterEliminationView.renderTournamentEliminations !== 'function') {
+            missing.push('CharacterEliminationView.renderTournamentEliminations');
+        }
+        if (!CharacterEliminationView || typeof CharacterEliminationView.renderStandaloneEliminations !== 'function') {
+            missing.push('CharacterEliminationView.renderStandaloneEliminations');
+        }
+
         if (!CharacterGenerator || typeof CharacterGenerator.generatePhysical !== 'function') {
             missing.push('CharacterGenerator.generatePhysical');
         }
@@ -125,16 +140,31 @@
             missing.push('CharacterGenerator.generateStats');
         }
 
-        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
-            missing.push('NotificationSystem.notify');
+        if (!CharacterClasses || typeof CharacterClasses.addClassByName !== 'function') {
+            missing.push('CharacterClasses.addClassByName');
+        }
+        if (!CharacterClasses || typeof CharacterClasses.removeClassById !== 'function') {
+            missing.push('CharacterClasses.removeClassById');
         }
 
         if (!FormUtils || typeof FormUtils.setField !== 'function') {
             missing.push('FormUtils.setField');
         }
 
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
+        }
+
+        if (!UI_CONSTANTS || typeof UI_CONSTANTS.MOBILE_BREAKPOINT !== 'number') {
+            missing.push('UI_CONSTANTS.MOBILE_BREAKPOINT');
+        }
+
+        if (!CALENDAR_CONSTANTS || typeof CALENDAR_CONSTANTS.DEBOUNCE_DELAY !== 'number') {
+            missing.push('CALENDAR_CONSTANTS.DEBOUNCE_DELAY');
+        }
+
         if (missing.length > 0) {
-            console.warn('CharacterEvents: Missing dependencies:', missing.join(', '));
+            console.warn('CharacterEvents: Missing required dependencies:', missing.join(', '));
             return false;
         }
 
@@ -272,7 +302,7 @@
                     window.setCurrentEditId(null);
                 }
                 CharacterForm.render(null);
-                if (window.innerWidth < (UI_CONSTANTS.MOBILE_BREAKPOINT || 768) && typeof window.toggleCharacterList === 'function') {
+                if (window.innerWidth < UI_CONSTANTS.MOBILE_BREAKPOINT && typeof window.toggleCharacterList === 'function') {
                     window.toggleCharacterList(false);
                 }
             });
@@ -300,13 +330,20 @@
             return;
         }
 
+        // Add the current edit ID to the DTO
+        var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        dto._editId = editId;
+
         CharacterCRUD.save(dto)
             .then(function(result) {
                 if (result && result.success) {
-                    var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-                    if (editId) {
-                        var char = CharacterQueries.getCharacterById(editId);
-                        CharacterForm.render(editId);
+                    var savedId = result.data ? result.data.id : editId;
+                    if (savedId) {
+                        if (typeof window.setCurrentEditId === 'function') {
+                            window.setCurrentEditId(savedId);
+                        }
+                        var char = CharacterQueries.getCharacterById(savedId);
+                        CharacterForm.render(savedId);
                         refreshUI(char);
                     }
                 }
@@ -390,7 +427,7 @@
                     if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                         window.CharacterList.render();
                     }
-                }, UI_CONSTANTS.DEBOUNCE_DELAY || 300);
+                }, CALENDAR_CONSTANTS.DEBOUNCE_DELAY);
             });
         }
 
@@ -489,23 +526,18 @@
             return;
         }
 
-        // Use CharacterClasses.addClassByName
-        if (window.CharacterClasses && typeof window.CharacterClasses.addClassByName === 'function') {
-            window.CharacterClasses.addClassByName(name)
-                .then(function(result) {
-                    if (result && result.success) {
-                        var input = document.getElementById('class-tag-input');
-                        if (input) input.value = '';
-                        refreshUI(char);
-                    }
-                })
-                .catch(function(err) {
-                    notify('Failed to add class.', 'error');
-                    console.error('[CharacterEvents] Add class error:', err);
-                });
-        } else {
-            notify('Class functionality is not available.', 'error');
-        }
+        CharacterClasses.addClassByName(charId, name)
+            .then(function(result) {
+                if (result && result.success) {
+                    var input = document.getElementById('class-tag-input');
+                    if (input) input.value = '';
+                    refreshUI(char);
+                }
+            })
+            .catch(function(err) {
+                notify('Failed to add class.', 'error');
+                console.error('[CharacterEvents] Add class error:', err);
+            });
     }
 
     // ============================================================
@@ -529,20 +561,16 @@
             return;
         }
 
-        if (window.CharacterClasses && typeof window.CharacterClasses.removeClassById === 'function') {
-            window.CharacterClasses.removeClassById(charId, classId)
-                .then(function(result) {
-                    if (result && result.success) {
-                        refreshUI(null);
-                    }
-                })
-                .catch(function(err) {
-                    notify('Failed to remove class.', 'error');
-                    console.error('[CharacterEvents] Remove class error:', err);
-                });
-        } else {
-            notify('Class functionality is not available.', 'error');
-        }
+        CharacterClasses.removeClassById(charId, classId)
+            .then(function(result) {
+                if (result && result.success) {
+                    refreshUI(null);
+                }
+            })
+            .catch(function(err) {
+                notify('Failed to remove class.', 'error');
+                console.error('[CharacterEvents] Remove class error:', err);
+            });
     }
 
     // ============================================================
@@ -604,7 +632,7 @@
             }, 100);
         }
 
-        if (window.innerWidth < (UI_CONSTANTS.MOBILE_BREAKPOINT || 768) && typeof window.toggleCharacterList === 'function') {
+        if (window.innerWidth < UI_CONSTANTS.MOBILE_BREAKPOINT && typeof window.toggleCharacterList === 'function') {
             window.toggleCharacterList(false);
         }
     }

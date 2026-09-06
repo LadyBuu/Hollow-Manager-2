@@ -14,10 +14,10 @@
  *   - metadata-core.js - Metadata helpers (classInstructors, classLabels, etc.)
  * 
  * IMPORTANT:
- *   - All mutations are candidate-based: validate, clone, modify, commit
- *   - No mutation of live state occurs before candidate validation completes
+ *   - This is a THIN PUBLIC FACADE - delegates to canonical owners
+ *   - No implementation logic - only delegation and dependency checking
  *   - This module does NOT call saveData() - callers own persistence
- *   - All ID normalisation uses Schema.normaliseId (or local equivalent)
+ *   - All ID normalisation uses canonical IdUtils when needed
  *   - All deep cloning uses ObjectUtils.deepClone (or structuredClone fallback)
  * 
  * DEPENDENCIES:
@@ -29,7 +29,7 @@
  * 
  * USAGE:
  *   var core = window.CalendarCore;
- *   var result = core.setStudentScheduleClass(studentId, week, day, hour, disciplineId, duration, instructorId);
+ *   var result = core.setStudentScheduleClass(studentId, week, day, hour, disciplineId, duration);
  *   if (result && result.success) { console.log('Class added'); }
  */
 
@@ -49,22 +49,27 @@
     // ============================================================
 
     if (!window.CalendarStudentCore) {
+        console.error('[CalendarCore] CalendarStudentCore is required.');
         return;
     }
 
     if (!window.CalendarInstructorCore) {
+        console.error('[CalendarCore] CalendarInstructorCore is required.');
         return;
     }
 
     if (!window.CalendarLocationCore) {
+        console.error('[CalendarCore] CalendarLocationCore is required.');
         return;
     }
 
     if (!window.CalendarGridCore) {
+        console.error('[CalendarCore] CalendarGridCore is required.');
         return;
     }
 
     if (!window.CalendarMetadataCore) {
+        console.error('[CalendarCore] CalendarMetadataCore is required.');
         return;
     }
 
@@ -79,7 +84,7 @@
     var MetadataCore = window.CalendarMetadataCore;
 
     // ============================================================
-    // COMBINE ALL CORE FUNCTIONS
+    // PUBLIC API - Delegates to canonical owners
     // ============================================================
 
     var CalendarCore = {
@@ -96,7 +101,6 @@
         /**
          * Set a student's schedule class.
          * Candidate-based: validates, clones, modifies, commits.
-         * Cleans stale metadata when setting a new class.
          */
         setStudentScheduleClass: StudentCore.setStudentScheduleClass,
 
@@ -229,48 +233,42 @@
         getOccupiedHours: GridCore.getOccupiedHours,
 
         /**
-         * Get available slots for a day.
+         * Get available hours for a day.
+         * Returns individual empty cells (not duration-aware).
          */
-        getAvailableSlots: GridCore.getAvailableSlots,
+        getAvailableHours: GridCore.getAvailableHours,
 
         /**
-         * Check if a slot has a conflict.
-         * Duration-aware.
+         * Get available start hours for a given duration.
+         * Duration-aware: checks if a class of the given duration can start at each hour.
          */
-        hasConflict: GridCore.hasConflict,
+        getAvailableStartHours: GridCore.getAvailableStartHours,
 
         /**
          * Get continuous occupied hours of the same discipline.
-         * Measures occupied hours, not class duration.
+         * Measures OCCUPIED HOURS, not class duration.
          */
         getContinuousOccupiedHours: GridCore.getContinuousOccupiedHours,
 
         /**
-         * Check if a new duration-based entry overlaps with existing entries.
+         * Check if a day has any occupied hours.
          */
-        hasDurationOverlap: GridCore.hasDurationOverlap,
+        hasOccupiedHours: GridCore.hasOccupiedHours,
 
         /**
-         * Check if a student schedule slot has conflicts.
-         * Duration-aware.
+         * Get all occupied days in a schedule.
          */
-        hasStudentScheduleConflict: GridCore.hasStudentScheduleConflict,
+        getOccupiedDays: GridCore.getOccupiedDays,
 
         /**
-         * Find the class start hour for a given occupied hour.
-         * Uses metadata to find the start, with occupancy fallback.
+         * Get the total number of occupied hours in a schedule.
          */
-        findClassStartHour: GridCore.findClassStartHour,
+        getTotalOccupiedHours: GridCore.getTotalOccupiedHours,
 
         /**
-         * Validate that occupied hours match the expected duration.
+         * Get the total number of available hours in a schedule.
          */
-        validateOccupiedDuration: GridCore.validateOccupiedDuration,
-
-        /**
-         * Validate the integrity of a schedule.
-         */
-        validateScheduleIntegrity: GridCore.validateScheduleIntegrity,
+        getTotalAvailableHours: GridCore.getTotalAvailableHours,
 
         // ============================================================
         // METADATA HELPERS
@@ -283,136 +281,42 @@
         getClassMetadata: MetadataCore.getClassMetadata,
 
         /**
-         * Get valid class duration from metadata.
+         * Get valid class duration from curriculum metadata.
          */
         getValidClassDuration: MetadataCore.getValidClassDuration,
 
         /**
-         * Build candidate copies of all curriculum metadata stores.
+         * Check if a class has valid metadata.
          */
-        buildMetadataCandidates: MetadataCore.buildMetadataCandidates,
+        hasClassMetadata: MetadataCore.hasClassMetadata,
 
         /**
-         * Commit metadata candidates to the curriculum.
+         * Get all metadata keys for a student and week.
          */
-        commitMetadataCandidates: MetadataCore.commitMetadataCandidates,
+        getKeysForStudentWeek: MetadataCore.getKeysForStudentWeek,
 
         /**
-         * Clear metadata for a given prefix.
+         * Get a metadata store by key.
          */
-        clearMetadataForPrefix: MetadataCore.clearMetadataForPrefix,
-
-        /**
-         * Delete all metadata for a specific class key.
-         */
-        deleteClassMetadata: MetadataCore.deleteClassMetadata,
+        getStore: MetadataCore.getStore,
 
         // ============================================================
-        // UTILITIES
+        // CONSTANTS
         // ============================================================
 
         /**
-         * Get a schedule key for a student, week, day, and hour.
+         * Calendar constants (bounds, formatting).
+         * @deprecated Use window.CalendarConstants directly.
          */
-        getScheduleKey: function(studentId, week, day, hour) {
-            return String(studentId) + '_' + String(week) + '_' + String(day) + '_' + String(hour);
-        },
+        constants: window.CalendarConstants,
 
         /**
-         * Validate a week number.
+         * Grid core constants.
          */
-        validateWeek: function(value) {
-            var num = parseInt(value, 10);
-            var minWeek = 1;
-            var maxWeek = 52;
-            return (!isNaN(num) && num >= minWeek && num <= maxWeek) ? num : null;
-        },
-
-        /**
-         * Validate a day number.
-         */
-        validateDay: function(value) {
-            var num = parseInt(value, 10);
-            return (!isNaN(num) && num >= 1 && num <= 7) ? num : null;
-        },
-
-        /**
-         * Validate an hour number.
-         */
-        validateHour: function(value) {
-            var num = parseInt(value, 10);
-            return (!isNaN(num) && num >= 0 && num <= 23) ? num : null;
-        },
-
-        /**
-         * Validate a duration.
-         */
-        validateDuration: function(value) {
-            var num = parseInt(value, 10);
-            return (!isNaN(num) && num >= 1 && num <= 4) ? num : null;
-        },
-
-        /**
-         * Validate a schedule slot.
-         */
-        validateScheduleSlot: function(studentId, week, day, hour) {
-            if (!studentId || typeof studentId !== 'string' || studentId.trim() === '') {
-                return { success: false, message: 'Student ID is required.' };
-            }
-
-            var weekNum = this.validateWeek(week);
-            if (weekNum === null) {
-                return { success: false, message: 'Valid week is required (1-52).' };
-            }
-
-            var dayNum = this.validateDay(day);
-            if (dayNum === null) {
-                return { success: false, message: 'Valid day is required (1-7).' };
-            }
-
-            var hourNum = this.validateHour(hour);
-            if (hourNum === null) {
-                return { success: false, message: 'Valid hour is required (0-23).' };
-            }
-
-            return {
-                success: true,
-                data: {
-                    studentId: String(studentId).trim(),
-                    week: weekNum,
-                    day: dayNum,
-                    hour: hourNum
-                }
-            };
-        },
-
-        /**
-         * Normalise an ID to a string.
-         */
-        normaliseId: function(value) {
-            if (value === undefined || value === null) {
-                return null;
-            }
-            var str = String(value).trim();
-            return str !== '' ? str : null;
-        },
-
-        /**
-         * Normalise an array of IDs to strings.
-         */
-        normaliseIdArray: function(arr) {
-            if (!Array.isArray(arr)) {
-                return [];
-            }
-            var result = [];
-            for (var i = 0; i < arr.length; i++) {
-                var id = this.normaliseId(arr[i]);
-                if (id !== null && result.indexOf(id) === -1) {
-                    result.push(id);
-                }
-            }
-            return result;
-        }
+        CALENDAR_START_HOUR: GridCore.CALENDAR_START_HOUR,
+        CALENDAR_END_HOUR: GridCore.CALENDAR_END_HOUR,
+        MAX_DURATION: GridCore.MAX_DURATION,
+        DAY_NAMES: GridCore.DAY_NAMES
     };
 
     // ============================================================

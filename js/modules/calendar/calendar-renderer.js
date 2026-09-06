@@ -18,8 +18,8 @@
  *   - No direct window.data access
  *   - No hardcoded dependencies on specific entity types
  *   - USES DomUtils.escapeHtml() - SINGLE SOURCE OF TRUTH
- *   - USES NotificationSystem for notifications
- *   - USES CalendarUtils for formatting
+ *   - USES CalendarConstants for bounds and day names
+ *   - USES FormatUtils for day name formatting
  * 
  * USAGE:
  *   var renderer = window.CalendarRenderer;
@@ -39,18 +39,21 @@
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
     // ============================================================
 
-    if (!window.CalendarUtils) {
-        return;
+    var missing = [];
+
+    if (!window.CalendarConstants) {
+        missing.push('CalendarConstants');
     }
 
     if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
-        return;
+        missing.push('DomUtils.escapeHtml');
     }
 
-    if (!window.NotificationSystem || typeof window.NotificationSystem.notify !== 'function') {
+    if (missing.length > 0) {
+        console.error('[CalendarRenderer] Missing dependencies:', missing.join(', '));
         return;
     }
 
@@ -60,17 +63,18 @@
     // DEPENDENCY IMPORTS
     // ============================================================
 
-    var CalendarUtils = window.CalendarUtils;
+    var CalendarConstants = window.CalendarConstants;
     var DomUtils = window.DomUtils;
-    var NotificationSystem = window.NotificationSystem;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var DAY_NAMES = CalendarUtils.DAY_NAMES || ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-    var CALENDAR_START_HOUR = CalendarUtils.CALENDAR_START_HOUR || 5;
-    var CALENDAR_END_HOUR = CalendarUtils.CALENDAR_END_HOUR || 23;
+    var MIN_DAY = CalendarConstants.MIN_DAY;
+    var MAX_DAY = CalendarConstants.MAX_DAY;
+    var CALENDAR_START_HOUR = CalendarConstants.CALENDAR_START_HOUR;
+    var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
+    var DAY_NAMES = CalendarConstants.DAY_NAMES;
 
     // ============================================================
     // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
@@ -91,20 +95,15 @@
     }
 
     // ============================================================
-    // NOTIFICATION - Delegates to NotificationSystem (SINGLE SOURCE OF TRUTH)
-    // ============================================================
-
-    function showNotification(message, type) {
-        type = type || 'info';
-        NotificationSystem.notify(message, type);
-    }
-
-    // ============================================================
-    // FORMAT HOUR - Delegates to CalendarUtils
+    // FORMAT HOUR - Delegates to CalendarConstants
     // ============================================================
 
     function formatHour(hour, includeMinutes) {
-        return CalendarUtils.formatHour(hour, includeMinutes);
+        return CalendarConstants.formatHour(hour, includeMinutes);
+    }
+
+    function getDayName(day) {
+        return CalendarConstants.getDayName(day) || 'Unknown';
     }
 
     // ============================================================
@@ -163,9 +162,9 @@
 
         // Header row
         html += '<div class="schedule-cell schedule-time schedule-header">Time</div>';
-        for (var day = 1; day <= 7; day++) {
+        for (var day = MIN_DAY; day <= MAX_DAY; day++) {
             var isRestDay = restDays.indexOf(day) !== -1;
-            var dayName = DAY_NAMES[day] || 'Day ' + day;
+            var dayName = getDayName(day);
             var restClass = isRestDay ? ' schedule-rest-day' : '';
             html += '<div class="schedule-cell schedule-day schedule-header' + restClass + '">' + escapeHtml(dayName) + (isRestDay ? ' [R]' : '') + '</div>';
         }
@@ -177,7 +176,7 @@
 
             html += '<div class="schedule-cell schedule-time">' + escapeHtml(hourDisplay) + '</div>';
 
-            for (var day = 1; day <= 7; day++) {
+            for (var day = MIN_DAY; day <= MAX_DAY; day++) {
                 var isRestDay = restDays.indexOf(day) !== -1;
                 var disciplineId = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
                 var isOccupied = !!disciplineId;
@@ -267,11 +266,11 @@
             html += '<div class="sidebar-section">';
             html += '<h4 class="sidebar-section-title">Rest Days</h4>';
             html += '<div class="rest-day-controls">';
-            for (var d = 1; d <= 7; d++) {
+            for (var d = MIN_DAY; d <= MAX_DAY; d++) {
                 var checked = data.restDays.indexOf(d) !== -1 ? 'checked' : '';
                 html += '<label class="rest-day-label">';
                 html += '<input type="checkbox" class="rest-day-check" data-day="' + d + '" ' + checked + '>';
-                html += DAY_NAMES[d];
+                html += getDayName(d);
                 html += '</label>';
             }
             html += '</div>';
@@ -571,7 +570,7 @@
                 var label = document.getElementById('add-class-label').value.trim();
 
                 if (!disciplineId) {
-                    showNotification('Please select a discipline.', 'error');
+                    // Notification is caller responsibility
                     return;
                 }
 
@@ -871,6 +870,12 @@
     }
 
     // ============================================================
+    // NOTIFICATION - Delegates to caller (removed)
+    // ============================================================
+
+    // showNotification has been removed - caller handles notifications
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -893,8 +898,8 @@
         getAvailableHours: getAvailableHours,
         escapeHtml: escapeHtml,
         escapeAttribute: escapeAttribute,
-        showNotification: showNotification,
         formatHour: formatHour,
+        getDayName: getDayName,
 
         // Constants
         CALENDAR_START_HOUR: CALENDAR_START_HOUR,

@@ -20,13 +20,16 @@
  *   - This module does NOT implement calendar logic directly
  *   - It uses CalendarModes registry for ALL mode validation
  *   - TabManager is the single source of truth for lifecycle
+ *   - No direct window.data access - uses CalendarUI state
+ *   - Uses CalendarConstants for bounds
  * 
  * DEPENDENCIES:
- *   - window.CalendarUI (from calendar-ui.js)
- *   - window.CalendarModes (from modes/index.js)
- *   - window.CalendarUtils (from calendar-utils.js)
- *   - window.CalendarRenderer (from calendar-renderer.js)
- *   - window.TabManager (from tab-manager.js)
+ *   - window.CalendarUI (from calendar-ui.js) - MANDATORY
+ *   - window.CalendarModes (from modes/index.js) - MANDATORY
+ *   - window.CalendarUtils (from calendar-utils.js) - MANDATORY
+ *   - window.CalendarRenderer (from calendar-renderer.js) - MANDATORY
+ *   - window.TabManager (from tab-manager.js) - MANDATORY
+ *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
  */
 
 (function() {
@@ -41,26 +44,52 @@
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
     // ============================================================
 
+    var missing = [];
+
     if (!window.CalendarUI || typeof window.CalendarUI.init !== 'function') {
-        return;
+        missing.push('CalendarUI.init');
+    }
+    if (!window.CalendarUI || typeof window.CalendarUI.render !== 'function') {
+        missing.push('CalendarUI.render');
+    }
+    if (!window.CalendarUI || typeof window.CalendarUI.destroy !== 'function') {
+        missing.push('CalendarUI.destroy');
+    }
+    if (!window.CalendarUI || typeof window.CalendarUI.getState !== 'function') {
+        missing.push('CalendarUI.getState');
+    }
+    if (!window.CalendarUI || typeof window.CalendarUI.setState !== 'function') {
+        missing.push('CalendarUI.setState');
     }
 
     if (!window.CalendarModes || typeof window.CalendarModes.hasMode !== 'function') {
-        return;
+        missing.push('CalendarModes.hasMode');
+    }
+    if (!window.CalendarModes || typeof window.CalendarModes.getMode !== 'function') {
+        missing.push('CalendarModes.getMode');
     }
 
-    if (!window.CalendarUtils) {
-        return;
+    if (!window.CalendarUtils || typeof window.CalendarUtils.getWeekNumber !== 'function') {
+        missing.push('CalendarUtils.getWeekNumber');
     }
 
     if (!window.CalendarRenderer || typeof window.CalendarRenderer.renderGrid !== 'function') {
-        return;
+        missing.push('CalendarRenderer.renderGrid');
     }
 
     if (!window.TabManager || typeof window.TabManager.register !== 'function') {
+        missing.push('TabManager.register');
+    }
+
+    if (!window.CalendarConstants) {
+        missing.push('CalendarConstants');
+    }
+
+    if (missing.length > 0) {
+        console.error('[CalendarModule] Missing dependencies:', missing.join(', '));
         return;
     }
 
@@ -75,13 +104,14 @@
     var CalendarUtils = window.CalendarUtils;
     var CalendarRenderer = window.CalendarRenderer;
     var TabManager = window.TabManager;
+    var CalendarConstants = window.CalendarConstants;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = CalendarUtils.MIN_WEEK || 1;
-    var MAX_WEEK = CalendarUtils.MAX_WEEK || 52;
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
 
     // ============================================================
     // STATE
@@ -108,13 +138,8 @@
             return;
         }
 
-        if (typeof window.ensureCurriculum === 'function') {
-            try {
-                window.ensureCurriculum();
-            } catch (e) {
-                // Ensure curriculum is non-critical for display
-            }
-        }
+        // Ensure curriculum structure exists
+        ensureCurriculumStructure();
 
         if (!_initialized || _container !== container) {
             _container = container;
@@ -144,6 +169,60 @@
         }
         _initialized = false;
         _container = null;
+    }
+
+    // ============================================================
+    // ENSURE CURRICULUM STRUCTURE
+    // ============================================================
+
+    function ensureCurriculumStructure() {
+        var data = window.data;
+        if (!data) {
+            return;
+        }
+
+        if (!data.curriculum || typeof data.curriculum !== 'object') {
+            data.curriculum = {};
+        }
+
+        // Ensure core curriculum structures exist
+        var curriculum = data.curriculum;
+
+        if (!curriculum.schedules || typeof curriculum.schedules !== 'object') {
+            curriculum.schedules = {};
+        }
+
+        if (!curriculum.restDays || typeof curriculum.restDays !== 'object') {
+            curriculum.restDays = {};
+        }
+
+        if (!curriculum.classDurations || typeof curriculum.classDurations !== 'object') {
+            curriculum.classDurations = {};
+        }
+
+        if (!curriculum.classLabels || typeof curriculum.classLabels !== 'object') {
+            curriculum.classLabels = {};
+        }
+
+        if (!curriculum.classGroupLabels || typeof curriculum.classGroupLabels !== 'object') {
+            curriculum.classGroupLabels = {};
+        }
+
+        if (!curriculum.classInstructors || typeof curriculum.classInstructors !== 'object') {
+            curriculum.classInstructors = {};
+        }
+
+        if (!curriculum.classLocations || typeof curriculum.classLocations !== 'object') {
+            curriculum.classLocations = {};
+        }
+
+        if (!curriculum.instructorTemplates || typeof curriculum.instructorTemplates !== 'object') {
+            curriculum.instructorTemplates = {};
+        }
+
+        if (!curriculum.instructorBlocks || typeof curriculum.instructorBlocks !== 'object') {
+            curriculum.instructorBlocks = {};
+        }
     }
 
     // ============================================================

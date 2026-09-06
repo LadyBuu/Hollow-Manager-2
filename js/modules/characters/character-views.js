@@ -13,9 +13,7 @@
  *   - All user-controlled data is inserted using DOM APIs (textContent)
  *   - No inline event handlers - events bound in character-events.js
  *   - Safe CSS color validation for relationship types
- *   - Grades are sorted chronologically
- *   - Missions show their assigned team
- *   - Orphaned relationships are clearly identified
+ *   - NO DIRECT window.data ACCESS - all data via query modules
  *   - USES CharacterQueries for character data and display names
  *   - USES ClassesQueries for class display names
  *   - USES TeamQueries for team queries
@@ -23,20 +21,19 @@
  *   - USES GradeQueries for grade data
  *   - USES MissionQueries for mission data
  *   - USES SocialQueries for social data
- *   - USES Elimination for elimination status
- *   - NO DIRECT window.data ACCESS - all queries go through domain modules
+ *   - USES EliminationQueries for elimination status
  * 
- * DEPENDENCIES:
+ * DEPENDENCIES (ALL MANDATORY):
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.ClassesQueries (from classes-queries.js)
  *   - window.TeamQueries (from team-queries.js)
  *   - window.DisciplineQueries (from discipline-queries.js)
- *   - window.GradeQueries (from grade-queries.js) - optional
- *   - window.MissionQueries (from mission-queries.js) - optional
- *   - window.SocialQueries (from social-queries.js) - optional
- *   - window.Elimination (from elimination.js) - optional
+ *   - window.GradeQueries (from grade-queries.js)
+ *   - window.MissionQueries (from mission-queries.js)
+ *   - window.SocialQueries (from social-queries.js)
+ *   - window.EliminationQueries (from elimination-queries.js)
  *   - window.DomUtils (from dom-utils.js)
- *   - window.NotificationSystem (from notification.js)
+ *   - window.CharacterConstants (from character-constants.js)
  */
 
 (function() {
@@ -49,36 +46,45 @@
     window.__characterViewsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
     // ============================================================
 
     var CharacterQueries = window.CharacterQueries;
     var ClassesQueries = window.ClassesQueries;
     var TeamQueries = window.TeamQueries;
     var DisciplineQueries = window.DisciplineQueries;
-    var GradeQueries = window.GradeQueries || null;
-    var MissionQueries = window.MissionQueries || null;
-    var SocialQueries = window.SocialQueries || null;
-    var Elimination = window.Elimination || null;
+    var GradeQueries = window.GradeQueries;
+    var MissionQueries = window.MissionQueries;
+    var SocialQueries = window.SocialQueries;
+    var EliminationQueries = window.EliminationQueries;
     var DomUtils = window.DomUtils;
-    var NotificationSystem = window.NotificationSystem;
+    var CharacterConstants = window.CharacterConstants;
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var CAREER_STATUS_OPTIONS = window.CharacterConstants
-        ? window.CharacterConstants.CAREER_STATUS_OPTIONS
-        : [
-            { value: '', label: 'Select status...' },
-            { value: 'civilian', label: 'Civilian' },
-            { value: 'trainee', label: 'Trainee' },
-            { value: 'rookie', label: 'Rookie' },
-            { value: 'junior', label: 'Junior' },
-            { value: 'senior', label: 'Senior' },
-            { value: 'instructor', label: 'Instructor' },
-            { value: 'support', label: 'Support' }
-        ];
+    var CAREER_STATUS_OPTIONS = CharacterConstants ? CharacterConstants.CAREER_STATUS_OPTIONS : [
+        { value: '', label: 'Select status...' },
+        { value: 'civilian', label: 'Civilian' },
+        { value: 'trainee', label: 'Trainee' },
+        { value: 'rookie', label: 'Rookie' },
+        { value: 'junior', label: 'Junior' },
+        { value: 'senior', label: 'Senior' },
+        { value: 'instructor', label: 'Instructor' },
+        { value: 'support', label: 'Support' }
+    ];
+
+    var ALLOWED_COLORS = {
+        '#8cbb3a': true,  // familial
+        '#c9a24b': true,  // professional
+        '#c1453c': true,  // romantic
+        '#4a9bc7': true,  // friendship
+        '#9b59b6': true,  // mentor
+        '#e67e22': true,  // rivalry
+        '#27ae60': true,  // alliance
+        '#7f8c8d': true   // other
+    };
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -107,15 +113,44 @@
         if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
             missing.push('TeamQueries.getTeamName');
         }
+        if (!TeamQueries || typeof TeamQueries.getCharacterTeamMembership !== 'function') {
+            missing.push('TeamQueries.getCharacterTeamMembership');
+        }
+
+        // DisciplineQueries is MANDATORY
+        if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
+            missing.push('DisciplineQueries.getDiscipline');
+        }
+
+        // GradeQueries is MANDATORY
+        if (!GradeQueries || typeof GradeQueries.getCharacterGrades !== 'function') {
+            missing.push('GradeQueries.getCharacterGrades');
+        }
+
+        // MissionQueries is MANDATORY
+        if (!MissionQueries || typeof MissionQueries.getMissionsForCharacter !== 'function') {
+            missing.push('MissionQueries.getMissionsForCharacter');
+        }
+
+        // SocialQueries is MANDATORY
+        if (!SocialQueries || typeof SocialQueries.getCharacterRelationships !== 'function') {
+            missing.push('SocialQueries.getCharacterRelationships');
+        }
+        if (!SocialQueries || typeof SocialQueries.getRelationshipTypeColor !== 'function') {
+            missing.push('SocialQueries.getRelationshipTypeColor');
+        }
+        if (!SocialQueries || typeof SocialQueries.getRelationshipTypeLabel !== 'function') {
+            missing.push('SocialQueries.getRelationshipTypeLabel');
+        }
+
+        // EliminationQueries is MANDATORY
+        if (!EliminationQueries || typeof EliminationQueries.isCharacterEliminated !== 'function') {
+            missing.push('EliminationQueries.isCharacterEliminated');
+        }
 
         // DomUtils is MANDATORY
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
-        }
-
-        // NotificationSystem is MANDATORY
-        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
-            missing.push('NotificationSystem.notify');
         }
 
         if (missing.length > 0) {
@@ -123,43 +158,7 @@
             return false;
         }
 
-        // Optional dependencies (log warning but don't fail)
-        var optional = [
-            'GradeQueries.getCharacterGrades',
-            'MissionQueries.getMissionsForCharacter',
-            'SocialQueries.getRelationshipsForCharacter',
-            'Elimination.isCharacterEliminated'
-        ];
-
-        var missingOptional = [];
-        optional.forEach(function(name) {
-            var parts = name.split('.');
-            var obj = window[parts[0]];
-            if (!obj || typeof obj[parts[1]] !== 'function') {
-                missingOptional.push(name);
-            }
-        });
-
-        if (missingOptional.length > 0) {
-            console.warn('CharacterViews: Missing optional dependencies:', missingOptional.join(', '));
-        }
-
         return true;
-    }
-
-    // ============================================================
-    // NOTIFICATION - Uses NotificationSystem (SINGLE SOURCE OF TRUTH)
-    // ============================================================
-
-    function showNotification(message, type) {
-        type = type || 'info';
-        if (NotificationSystem && typeof NotificationSystem.notify === 'function') {
-            NotificationSystem.notify(message, type);
-        } else if (type === 'error') {
-            alert('Error: ' + message);
-        } else {
-            alert(message);
-        }
     }
 
     // ============================================================
@@ -167,39 +166,15 @@
     // ============================================================
 
     function escapeHtml(value) {
-        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
-            return DomUtils.escapeHtml(value);
-        }
-        // Emergency fallback (should never be reached)
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;')
-            .replace(/`/g, '&#x60;');
+        return DomUtils.escapeHtml(value);
     }
 
     // ============================================================
-    // SAFE CSS COLOR VALIDATION - Whitelist only
+    // RELATIONSHIP COLOR HELPERS - Uses SocialQueries
     // ============================================================
 
-    var ALLOWED_COLORS = {
-        '#8cbb3a': true,  // familial
-        '#c9a24b': true,  // professional
-        '#c1453c': true,  // romantic
-        '#4a9bc7': true,  // friendship
-        '#9b59b6': true,  // mentor
-        '#e67e22': true,  // rivalry
-        '#27ae60': true,  // alliance
-        '#7f8c8d': true   // other
-    };
-
     function getSafeRelationshipColor(typeId) {
-        var color = getRelationshipTypeRawColor(typeId);
+        var color = SocialQueries.getRelationshipTypeColor(typeId);
 
         if (!color || typeof color !== 'string') {
             return '#7f8c8d';
@@ -214,43 +189,8 @@
         return '#7f8c8d';
     }
 
-    // ============================================================
-    // RELATIONSHIP TYPE HELPERS - Uses SocialQueries if available
-    // ============================================================
-
-    function getRelationshipTypeRawColor(typeId) {
-        // Prefer SocialQueries if available
-        if (SocialQueries && typeof SocialQueries.getRelationshipTypeColor === 'function') {
-            return SocialQueries.getRelationshipTypeColor(typeId) || '#7f8c8d';
-        }
-
-        // Fallback: direct data access (legacy)
-        var data = window.data || {};
-        if (!data.social || !data.social.relationshipTypes) return '#7f8c8d';
-        var type = data.social.relationshipTypes.find(function(t) {
-            return t && String(t.id) === String(typeId);
-        });
-        return type ? type.color : '#7f8c8d';
-    }
-
     function getRelationshipTypeLabel(typeId) {
-        // Prefer SocialQueries if available
-        if (SocialQueries && typeof SocialQueries.getRelationshipTypeLabel === 'function') {
-            return SocialQueries.getRelationshipTypeLabel(typeId) || 'Other';
-        }
-
-        // Fallback: direct data access (legacy)
-        var data = window.data || {};
-        if (!data.social || !Array.isArray(data.social.relationshipTypes)) {
-            return typeId != null ? String(typeId) : 'Other';
-        }
-        var type = data.social.relationshipTypes.find(function(t) {
-            return t && String(t.id) === String(typeId);
-        });
-        if (type && type.label != null) {
-            return String(type.label);
-        }
-        return typeId != null ? String(typeId) : 'Other';
+        return SocialQueries.getRelationshipTypeLabel(typeId) || 'Other';
     }
 
     // ============================================================
@@ -269,7 +209,7 @@
     }
 
     // ============================================================
-    // GRADE VALUE VALIDATION
+    // GRADE VALUE FORMATTING
     // ============================================================
 
     function formatGradeValue(score) {
@@ -280,15 +220,13 @@
         return 'Invalid';
     }
 
-    function isValidGradeObject(value) {
-        return value && typeof value === 'object' && !Array.isArray(value);
-    }
-
     // ============================================================
     // ACADEMIC VIEW - Uses TeamQueries, GradeQueries, DisciplineQueries
     // ============================================================
 
     function renderAcademic(char) {
+        if (!checkDependencies()) return;
+
         var container = document.getElementById('academic-view');
         if (!container) return;
 
@@ -356,39 +294,7 @@
         gradeHeading.textContent = 'Grades';
         container.appendChild(gradeHeading);
 
-        var grades = [];
-
-        if (GradeQueries && typeof GradeQueries.getCharacterGrades === 'function') {
-            grades = GradeQueries.getCharacterGrades(char.id) || [];
-        } else {
-            // Legacy fallback - direct data access
-            var data = window.data || {};
-            var curriculum = data.curriculum || {};
-            var gradeData = curriculum.grades && curriculum.grades[char.id]
-                ? curriculum.grades[char.id]
-                : {};
-
-            if (isValidGradeObject(gradeData)) {
-                for (var week in gradeData) {
-                    if (!Object.prototype.hasOwnProperty.call(gradeData, week)) continue;
-                    var weekGrades = gradeData[week];
-                    if (!isValidGradeObject(weekGrades)) continue;
-                    for (var discId in weekGrades) {
-                        if (!Object.prototype.hasOwnProperty.call(weekGrades, discId)) continue;
-                        var score = weekGrades[discId];
-                        var disc = DisciplineQueries && typeof DisciplineQueries.getDiscipline === 'function'
-                            ? DisciplineQueries.getDiscipline(discId)
-                            : null;
-                        grades.push({
-                            week: week,
-                            disciplineId: discId,
-                            disciplineName: disc ? disc.name : 'Unknown',
-                            score: score
-                        });
-                    }
-                }
-            }
-        }
+        var grades = GradeQueries.getCharacterGrades(char.id) || [];
 
         if (grades.length > 0) {
             // Sort chronologically
@@ -401,12 +307,14 @@
 
             grades.forEach(function(g) {
                 var formattedScore = formatGradeValue(g.score);
+                var discipline = DisciplineQueries.getDiscipline(g.disciplineId);
+                var disciplineName = discipline ? discipline.name : 'Unknown';
 
                 var gradeDiv = document.createElement('div');
                 gradeDiv.style.cssText = 'padding:2px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;display:flex;justify-content:space-between;';
 
                 var nameSpan = document.createElement('span');
-                nameSpan.textContent = g.disciplineName + ' (Wk ' + g.week + ')';
+                nameSpan.textContent = disciplineName + ' (Wk ' + g.week + ')';
                 gradeDiv.appendChild(nameSpan);
 
                 var scoreSpan = document.createElement('span');
@@ -432,16 +340,8 @@
         elimHeading.textContent = 'Elimination Status';
         container.appendChild(elimHeading);
 
-        var isEliminated = false;
-        var currentWeek = window.data && window.data.currentWeek ? window.data.currentWeek : 1;
-
-        if (Elimination && typeof Elimination.isCharacterEliminated === 'function') {
-            isEliminated = Elimination.isCharacterEliminated(char.id, currentWeek);
-        } else if (char.eliminatedWeeks && Array.isArray(char.eliminatedWeeks)) {
-            isEliminated = char.eliminatedWeeks.some(function(w) {
-                return parseInt(w, 10) <= currentWeek;
-            });
-        }
+        var currentWeek = getCurrentWeek();
+        var isEliminated = EliminationQueries.isCharacterEliminated(char.id, currentWeek);
 
         var elimDiv = document.createElement('div');
         elimDiv.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + (isEliminated ? 'var(--danger)' : 'var(--accent)') + ';font-size:0.75rem;';
@@ -454,6 +354,8 @@
     // ============================================================
 
     function renderProfessional(char) {
+        if (!checkDependencies()) return;
+
         var container = document.getElementById('professional-view');
         if (!container) return;
 
@@ -597,49 +499,19 @@
         missionHeading.textContent = 'Missions';
         container.appendChild(missionHeading);
 
-        var missions = [];
-
-        if (MissionQueries && typeof MissionQueries.getMissionsForCharacter === 'function') {
-            missions = MissionQueries.getMissionsForCharacter(char.id) || [];
-        } else {
-            // Legacy fallback
-            var data = window.data || {};
-            var allMissions = data.missions || [];
-            var teams = data.teams || [];
-
-            allMissions.forEach(function(m) {
-                if (!m || typeof m !== 'object') return;
-                if (!m.assignedTeamId) return;
-                var team = teams.find(function(t) {
-                    return t && String(t.id) === String(m.assignedTeamId) &&
-                           t.members && t.members.some(function(mem) {
-                               return mem && String(mem.characterId) === String(char.id);
-                           });
-                });
-                if (team) {
-                    missions.push({
-                        id: m.id,
-                        title: m.title || 'Untitled',
-                        status: m.status || 'active',
-                        location: m.location || '',
-                        teamName: team.name || 'Unknown Team',
-                        teamId: m.assignedTeamId
-                    });
-                }
-            });
-        }
+        var missions = MissionQueries.getMissionsForCharacter(char.id) || [];
 
         if (missions.length > 0) {
             missions.forEach(function(m) {
                 var statusColor = m.status === 'completed' ? 'var(--accent)' :
                                  m.status === 'cancelled' ? 'var(--danger)' : 'var(--warning)';
-                var teamName = TeamQueries.getTeamName(m.teamId);
+                var teamName = TeamQueries.getTeamName(m.assignedTeamId) || 'Unknown Team';
 
                 var div = document.createElement('div');
                 div.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + statusColor + ';margin-bottom:3px;font-size:0.75rem;';
 
                 var strong = document.createElement('strong');
-                strong.textContent = m.title;
+                strong.textContent = m.title || 'Untitled';
                 div.appendChild(strong);
 
                 var teamSpan = document.createElement('span');
@@ -675,26 +547,14 @@
     // ============================================================
 
     function renderSocial(char) {
+        if (!checkDependencies()) return;
+
         var container = document.getElementById('social-view');
         if (!container) return;
 
         container.textContent = '';
 
-        var relationships = [];
-
-        if (SocialQueries && typeof SocialQueries.getRelationshipsForCharacter === 'function') {
-            relationships = SocialQueries.getRelationshipsForCharacter(char.id) || [];
-        } else {
-            // Legacy fallback
-            var data = window.data || {};
-            var allRels = data.social && Array.isArray(data.social.relationships)
-                ? data.social.relationships
-                : [];
-            relationships = allRels.filter(function(r) {
-                return r && (String(r.character1) === String(char.id) ||
-                           String(r.character2) === String(char.id));
-            });
-        }
+        var relationships = SocialQueries.getCharacterRelationships(char.id) || [];
 
         if (relationships.length === 0) {
             var empty = document.createElement('p');
@@ -708,12 +568,7 @@
         relationships.forEach(function(rel) {
             var otherId = String(rel.character1) === String(char.id) ? rel.character2 : rel.character1;
             var other = CharacterQueries.getCharacterById(otherId);
-
-            // Clearly identify orphaned relationships
-            var otherName = other ? CharacterQueries.getDisplayName(other) : 'Unknown Character';
-            if (!other) {
-                otherName = '⚠ Unknown Character (ID: ' + otherId + ')';
-            }
+            var otherName = other ? CharacterQueries.getDisplayName(other) : '⚠ Unknown Character';
 
             var typeLabel = getRelationshipTypeLabel(rel.typeId);
             var typeColor = getSafeRelationshipColor(rel.typeId);
@@ -812,8 +667,17 @@
         entry.appendChild(endInput);
         entry.appendChild(removeBtn);
         container.appendChild(entry);
+    }
 
-        // Remove button event - handled by event delegation in character-events.js
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    function getCurrentWeek() {
+        if (window.data && typeof window.data.currentWeek === 'number') {
+            return window.data.currentWeek;
+        }
+        return 1;
     }
 
     // ============================================================
@@ -908,7 +772,7 @@
         // Career status
         addCareerStatusEntry: addCareerStatusEntry,
 
-        // Helpers (for external use)
+        // Helpers
         getRelationshipTypeLabel: getRelationshipTypeLabel,
         getRelationshipTypeColor: getSafeRelationshipColor,
 
