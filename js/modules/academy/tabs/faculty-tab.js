@@ -18,12 +18,14 @@
  *   - All HTML escaping uses DomUtils.escapeHtml()
  *   - All notifications use NotificationSystem.notify()
  *   - All modals use Modal system
+ *   - Calendar bounds use CalendarConstants
  * 
  * DEPENDENCIES:
  *   - window.CalendarCore (from calendar/core/index.js)
  *   - window.AcademyGroups (from academy-groups.js)
  *   - window.AcademyQueries (from academy-queries.js)
  *   - window.CharacterQueries (from character-queries.js)
+ *   - window.CalendarConstants (from calendar-constants.js)
  *   - window.NotificationSystem (from notification.js)
  *   - window.DomUtils (from dom-utils.js)
  *   - window.Modal (from modal.js)
@@ -46,6 +48,7 @@
     var AcademyGroups = window.AcademyGroups;
     var AcademyQueries = window.AcademyQueries;
     var CharacterQueries = window.CharacterQueries;
+    var CalendarConstants = window.CalendarConstants;
     var NotificationSystem = window.NotificationSystem;
     var DomUtils = window.DomUtils;
     var Modal = window.Modal;
@@ -125,12 +128,37 @@
         if (!AcademyQueries || typeof AcademyQueries.getStudents !== 'function') {
             missing.push('AcademyQueries.getStudents');
         }
+        if (!AcademyQueries || typeof AcademyQueries.getClassInstructors !== 'function') {
+            missing.push('AcademyQueries.getClassInstructors');
+        }
 
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
+        }
+
+        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
+            missing.push('CalendarConstants.MIN_WEEK');
+        }
+        if (!CalendarConstants || typeof CalendarConstants.MAX_WEEK !== 'number') {
+            missing.push('CalendarConstants.MAX_WEEK');
+        }
+        if (!CalendarConstants || typeof CalendarConstants.DAY_NAMES_SHORT !== 'object') {
+            missing.push('CalendarConstants.DAY_NAMES_SHORT');
+        }
+        if (!CalendarConstants || typeof CalendarConstants.CALENDAR_START_HOUR !== 'number') {
+            missing.push('CalendarConstants.CALENDAR_START_HOUR');
+        }
+        if (!CalendarConstants || typeof CalendarConstants.CALENDAR_END_HOUR !== 'number') {
+            missing.push('CalendarConstants.CALENDAR_END_HOUR');
+        }
+        if (!CalendarConstants || typeof CalendarConstants.MIN_CLASS_DURATION !== 'number') {
+            missing.push('CalendarConstants.MIN_CLASS_DURATION');
+        }
+        if (!CalendarConstants || typeof CalendarConstants.MAX_CLASS_DURATION !== 'number') {
+            missing.push('CalendarConstants.MAX_CLASS_DURATION');
         }
 
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
@@ -146,18 +174,13 @@
         }
 
         if (missing.length > 0) {
-            console.warn('FacultyTab: Missing dependencies:', missing.join(', '));
-            return false;
+            throw new Error('FacultyTab: Missing dependencies: ' + missing.join(', '));
         }
 
         return true;
     }
 
-    if (!checkDependencies()) {
-        return;
-    }
-
-    window.__facultyTabLoaded = true;
+    checkDependencies();
 
     // ============================================================
     // HTML ESCAPING - Delegates to DomUtils
@@ -200,22 +223,13 @@
     }
 
     // ============================================================
-    // CALENDAR HELPERS
-    // ============================================================
-
-    var DAY_NAMES = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-    var SHORT_DAY_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    var CALENDAR_START_HOUR = 5;
-    var CALENDAR_END_HOUR = 23;
-
-    // ============================================================
     // RENDER FACULTY TAB
     // ============================================================
 
     function renderFacultyTab(state) {
         var selectedClassId = state.selectedClassId;
         var selectedInstructorId = state.selectedInstructorId;
-        var week = state.selectedWeek || 1;
+        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
 
         var selectedClass = selectedClassId ? AcademyQueries.getClass(selectedClassId) : null;
         var selectedInstructor = selectedInstructorId ? CharacterQueries.getCharacterById(selectedInstructorId) : null;
@@ -224,7 +238,6 @@
 
         var html = '';
 
-        // Header with class filter info and week selector
         html += '<div class="faculty-tab-header">';
         html += '<div class="faculty-tab-title">';
         html += '<h3>Faculty</h3>';
@@ -237,13 +250,12 @@
         html += '<div class="faculty-tab-controls">';
         html += '<div class="week-selector">';
         html += '<label>Week:</label>';
-        html += '<input type="number" id="faculty-week-input" value="' + week + '" min="1" max="52" class="small">';
+        html += '<input type="number" id="faculty-week-input" value="' + week + '" min="' + CalendarConstants.MIN_WEEK + '" max="' + CalendarConstants.MAX_WEEK + '" class="small">';
         html += '<button id="faculty-week-apply" class="small secondary">Apply</button>';
         html += '</div>';
         html += '</div>';
         html += '</div>';
 
-        // Faculty tabs
         html += '<div class="faculty-tab-nav">';
         html += '<button class="faculty-nav-btn active" data-view="instructors">Instructors</button>';
         html += '<button class="faculty-nav-btn" data-view="locations">Locations</button>';
@@ -251,32 +263,26 @@
         html += '<button class="faculty-nav-btn" data-view="disciplines">Disciplines</button>';
         html += '</div>';
 
-        // View containers
         html += '<div class="faculty-view-container">';
 
-        // Instructors view
         html += '<div class="faculty-view-panel active" data-view="instructors">';
         html += renderInstructorsView(state, instructors);
         html += '</div>';
 
-        // Locations view
         html += '<div class="faculty-view-panel" data-view="locations" style="display:none;">';
         html += renderLocationsView(state);
         html += '</div>';
 
-        // Auto-groups view
         html += '<div class="faculty-view-panel" data-view="autogroups" style="display:none;">';
         html += renderAutoGroupsView(state);
         html += '</div>';
 
-        // Disciplines view
         html += '<div class="faculty-view-panel" data-view="disciplines" style="display:none;">';
         html += renderDisciplinesView(state);
         html += '</div>';
 
         html += '</div>';
 
-        // Modals
         html += getModalsHTML();
 
         return html;
@@ -288,7 +294,7 @@
 
     function renderInstructorsView(state, instructors) {
         var selectedInstructorId = state.selectedInstructorId;
-        var week = state.selectedWeek || 1;
+        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
 
         var html = '';
 
@@ -316,7 +322,6 @@
         }
         html += '</div>';
 
-        // Instructor detail
         html += '<div class="instructors-detail">';
         if (selectedInstructorId) {
             var instructor = CharacterQueries.getCharacterById(selectedInstructorId);
@@ -340,7 +345,7 @@
 
     function renderInstructorDetail(state, instructor) {
         var instructorId = instructor.id;
-        var week = state.selectedWeek || 1;
+        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
         var name = CharacterQueries.getDisplayName(instructor);
 
         var templates = CalendarCore.getInstructorTemplates(instructorId, week);
@@ -348,24 +353,20 @@
 
         var html = '';
 
-        // Header
         html += '<div class="instructor-detail-header">';
         html += '<h4>' + escapeHtml(name) + '</h4>';
         html += '<span class="instructor-detail-week">Week ' + week + '</span>';
         html += '</div>';
 
-        // Tabs
         html += '<div class="instructor-detail-tabs">';
         html += '<button class="detail-tab-btn active" data-tab="schedule">Schedule</button>';
         html += '<button class="detail-tab-btn" data-tab="blocks">Blocks</button>';
         html += '</div>';
 
-        // Schedule tab
         html += '<div class="detail-tab-panel active" data-tab="schedule">';
         html += renderInstructorSchedule(state, instructor, templates);
         html += '</div>';
 
-        // Blocks tab
         html += '<div class="detail-tab-panel" data-tab="blocks" style="display:none;">';
         html += renderInstructorBlocks(state, instructor, blocks);
         html += '</div>';
@@ -378,51 +379,52 @@
     // ============================================================
 
     function renderInstructorSchedule(state, instructor, templates) {
+        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
+        var startHour = CalendarConstants.CALENDAR_START_HOUR;
+        var endHour = CalendarConstants.CALENDAR_END_HOUR;
+        var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
+
         var html = '';
 
-        // Add template form
         html += '<div class="schedule-add-form">';
         html += '<select id="schedule-discipline-select" class="small">';
         html += '<option value="">Select discipline...</option>';
-        var disciplines = AcademyQueries.getAvailableDisciplines(state.selectedWeek || 1);
+        var disciplines = AcademyQueries.getAvailableDisciplines(week);
         for (var i = 0; i < disciplines.length; i++) {
             var d = disciplines[i];
             html += '<option value="' + escapeHtml(d.id) + '">' + escapeHtml(d.name) + '</option>';
         }
         html += '</select>';
         html += '<select id="schedule-day-select" class="small">';
-        var days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-        for (var d2 = 0; d2 < days.length; d2++) {
-            html += '<option value="' + (d2 + 1) + '">' + days[d2] + '</option>';
+        for (var d2 = 0; d2 < dayNames.length; d2++) {
+            html += '<option value="' + (d2 + 1) + '">' + dayNames[d2] + '</option>';
         }
         html += '</select>';
         html += '<select id="schedule-hour-select" class="small">';
-        for (var h = 8; h <= 18; h++) {
+        for (var h = startHour; h <= endHour; h++) {
             html += '<option value="' + h + '">' + h + ':00</option>';
         }
         html += '</select>';
         html += '<select id="schedule-duration-select" class="small">';
-        html += '<option value="1">1 hour</option>';
-        html += '<option value="2">2 hours</option>';
-        html += '<option value="3">3 hours</option>';
-        html += '<option value="4">4 hours</option>';
+        for (var dur = CalendarConstants.MIN_CLASS_DURATION; dur <= CalendarConstants.MAX_CLASS_DURATION; dur++) {
+            html += '<option value="' + dur + '">' + dur + ' hour' + (dur > 1 ? 's' : '') + '</option>';
+        }
         html += '</select>';
         html += '<button id="schedule-add-btn" class="primary small">Add</button>';
         html += '</div>';
 
-        // Schedule grid
         html += '<div class="schedule-grid-container">';
         html += '<table class="schedule-grid">';
         html += '<thead>';
         html += '<tr><th>Time</th>';
         for (var d3 = 1; d3 <= 7; d3++) {
-            html += '<th>' + SHORT_DAY_NAMES[d3] + '</th>';
+            html += '<th>' + dayNames[d3 - 1] + '</th>';
         }
         html += '</tr>';
         html += '</thead>';
         html += '<tbody>';
 
-        for (var h2 = 8; h2 <= 18; h2++) {
+        for (var h2 = startHour; h2 <= endHour; h2++) {
             html += '<tr>';
             html += '<td class="schedule-time">' + h2 + ':00</td>';
 
@@ -472,32 +474,30 @@
     // ============================================================
 
     function renderInstructorBlocks(state, instructor, blocks) {
+        var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
+
         var html = '';
 
-        // Add block form
         html += '<div class="blocks-add-form">';
         html += '<select id="block-day-select" class="small">';
-        var days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-        for (var d = 0; d < days.length; d++) {
-            html += '<option value="' + (d + 1) + '">' + days[d] + '</option>';
+        for (var d = 0; d < dayNames.length; d++) {
+            html += '<option value="' + (d + 1) + '">' + dayNames[d] + '</option>';
         }
         html += '</select>';
         html += '<select id="block-hour-select" class="small">';
-        for (var h = 8; h <= 18; h++) {
+        for (var h = CalendarConstants.CALENDAR_START_HOUR; h <= CalendarConstants.CALENDAR_END_HOUR; h++) {
             html += '<option value="' + h + '">' + h + ':00</option>';
         }
         html += '</select>';
         html += '<select id="block-duration-select" class="small">';
-        html += '<option value="1">1 hour</option>';
-        html += '<option value="2">2 hours</option>';
-        html += '<option value="3">3 hours</option>';
-        html += '<option value="4">4 hours</option>';
+        for (var dur = CalendarConstants.MIN_CLASS_DURATION; dur <= CalendarConstants.MAX_CLASS_DURATION; dur++) {
+            html += '<option value="' + dur + '">' + dur + ' hour' + (dur > 1 ? 's' : '') + '</option>';
+        }
         html += '</select>';
         html += '<input type="text" id="block-label-input" placeholder="Label (optional)" class="small">';
         html += '<button id="block-add-btn" class="warning small">Add Block</button>';
         html += '</div>';
 
-        // Blocks list
         var blockEntries = [];
         for (var day in blocks) {
             if (!Object.prototype.hasOwnProperty.call(blocks, day)) { continue; }
@@ -525,7 +525,7 @@
             html += '<div class="blocks-list">';
             for (var i = 0; i < blockEntries.length; i++) {
                 var b = blockEntries[i];
-                var dayName = days[b.day - 1];
+                var dayName = dayNames[b.day - 1];
                 html += '<div class="block-item">';
                 html += '<span class="block-day">' + dayName + '</span>';
                 html += '<span class="block-time">' + b.hour + ':00 - ' + (b.hour + b.duration) + ':00</span>';
@@ -544,8 +544,9 @@
     // ============================================================
 
     function renderLocationsView(state) {
-        var week = state.selectedWeek || 1;
+        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
         var locations = AcademyQueries.getLocations();
+        var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
 
         var html = '';
 
@@ -587,7 +588,6 @@
 
                 if (hasClasses) {
                     html += '<div class="location-schedule">';
-                    var days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
                     for (var d = 1; d <= 7; d++) {
                         if (!schedule[d]) { continue; }
                         var daySchedule2 = schedule[d];
@@ -604,7 +604,7 @@
                         }
                         if (dayEntries.length > 0) {
                             html += '<div class="location-day">';
-                            html += '<span class="location-day-name">' + days[d - 1] + '</span>';
+                            html += '<span class="location-day-name">' + dayNames[d - 1] + '</span>';
                             for (var j = 0; j < dayEntries.length; j++) {
                                 html += '<span class="location-class">' + escapeHtml(dayEntries[j].hour) + ':00 - ' + escapeHtml(dayEntries[j].name) + '</span>';
                             }
@@ -632,12 +632,12 @@
     // ============================================================
 
     function renderAutoGroupsView(state) {
-        var week = state.selectedWeek || 1;
+        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
         var groups = AcademyGroups.getAllAutoGroups();
+        var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
 
         var html = '';
 
-        // Create group form
         html += '<div class="autogroups-header">';
         html += '<h4>Auto-Groups</h4>';
         html += '<button id="autogroup-rebuild-btn" class="secondary small">Rebuild from Schedules</button>';
@@ -683,19 +683,16 @@
                 html += '<button class="autogroup-delete-btn small danger" data-key="' + escapeHtml(key) + '">x</button>';
                 html += '</div>';
 
-                // Slots
                 if (group.slots && group.slots.length > 0) {
                     html += '<div class="autogroup-slots">';
-                    var days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
                     for (var k = 0; k < group.slots.length; k++) {
                         var slot = group.slots[k];
-                        var dayName = days[(slot.day || 1) - 1] || '?';
+                        var dayName = dayNames[(slot.day || 1) - 1] || '?';
                         html += '<span class="autogroup-slot">' + dayName + ' ' + (slot.hour || 0) + ':00 - ' + ((slot.hour || 0) + (slot.duration || 1)) + ':00</span>';
                     }
                     html += '</div>';
                 }
 
-                // Students
                 if (group.students && group.students.length > 0) {
                     html += '<div class="autogroup-students">';
                     for (var s = 0; s < group.students.length; s++) {
@@ -706,7 +703,6 @@
                     html += '</div>';
                 }
 
-                // Add student form
                 html += '<div class="autogroup-add-student">';
                 html += '<select class="autogroup-student-select small">';
                 html += '<option value="">Add student...</option>';
@@ -723,23 +719,21 @@
                 html += '<button class="autogroup-add-student-btn small primary" data-key="' + escapeHtml(key) + '">Add</button>';
                 html += '</div>';
 
-                // Add slot form
                 html += '<div class="autogroup-add-slot">';
                 html += '<select class="autogroup-slot-day small">';
-                for (var d2 = 0; d2 < days.length; d2++) {
-                    html += '<option value="' + (d2 + 1) + '">' + days[d2] + '</option>';
+                for (var d2 = 0; d2 < dayNames.length; d2++) {
+                    html += '<option value="' + (d2 + 1) + '">' + dayNames[d2] + '</option>';
                 }
                 html += '</select>';
                 html += '<select class="autogroup-slot-hour small">';
-                for (var h2 = 8; h2 <= 18; h2++) {
+                for (var h2 = CalendarConstants.CALENDAR_START_HOUR; h2 <= CalendarConstants.CALENDAR_END_HOUR; h2++) {
                     html += '<option value="' + h2 + '">' + h2 + ':00</option>';
                 }
                 html += '</select>';
                 html += '<select class="autogroup-slot-duration small">';
-                html += '<option value="1">1h</option>';
-                html += '<option value="2">2h</option>';
-                html += '<option value="3">3h</option>';
-                html += '<option value="4">4h</option>';
+                for (var dur = CalendarConstants.MIN_CLASS_DURATION; dur <= CalendarConstants.MAX_CLASS_DURATION; dur++) {
+                    html += '<option value="' + dur + '">' + dur + 'h</option>';
+                }
                 html += '</select>';
                 html += '<button class="autogroup-add-slot-btn small primary" data-key="' + escapeHtml(key) + '">Add Slot</button>';
                 html += '</div>';
@@ -812,6 +806,11 @@
     // ============================================================
 
     function getModalsHTML() {
+        var startHour = CalendarConstants.CALENDAR_START_HOUR;
+        var endHour = CalendarConstants.CALENDAR_END_HOUR;
+        var minDur = CalendarConstants.MIN_CLASS_DURATION;
+        var maxDur = CalendarConstants.MAX_CLASS_DURATION;
+
         return [
             '<!-- Location Manage Modal -->',
             '<div id="faculty-location-modal" class="modal hidden">',
@@ -854,11 +853,11 @@
                             '</div>',
                             '<div class="form-group">',
                                 '<label>Start Week</label>',
-                                '<input type="number" id="discipline-start-week" min="1" max="52" value="1">',
+                                '<input type="number" id="discipline-start-week" min="' + CalendarConstants.MIN_WEEK + '" max="' + CalendarConstants.MAX_WEEK + '" value="' + CalendarConstants.MIN_WEEK + '">',
                             '</div>',
                             '<div class="form-group">',
                                 '<label>End Week</label>',
-                                '<input type="number" id="discipline-end-week" min="1" max="52">',
+                                '<input type="number" id="discipline-end-week" min="' + CalendarConstants.MIN_WEEK + '" max="' + CalendarConstants.MAX_WEEK + '">',
                             '</div>',
                             '<div class="form-group">',
                                 '<label>Weekly Hours</label>',
@@ -884,6 +883,9 @@
     // ============================================================
 
     function bindFacultyTabEvents(container) {
+        var minWeek = CalendarConstants.MIN_WEEK;
+        var maxWeek = CalendarConstants.MAX_WEEK;
+
         // Week selector
         var weekApply = container.querySelector('#faculty-week-apply');
         if (weekApply) {
@@ -891,15 +893,15 @@
                 var input = container.querySelector('#faculty-week-input');
                 if (input) {
                     var week = parseInt(input.value, 10);
-                    if (!isNaN(week) && week >= 1 && week <= 52) {
-                        if (window.academyState && typeof window.academyState.selectWeek === 'function') {
-                            window.academyState.selectWeek(week);
-                            if (typeof window.refreshAcademy === 'function') {
-                                window.refreshAcademy();
+                    if (!isNaN(week) && week >= minWeek && week <= maxWeek) {
+                        if (window.Academy && typeof window.Academy.selectWeek === 'function') {
+                            window.Academy.selectWeek(week);
+                            if (typeof window.Academy.refresh === 'function') {
+                                window.Academy.refresh();
                             }
                         }
                     } else {
-                        showNotification('Please enter a valid week (1-52).', 'error');
+                        showNotification('Please enter a valid week (' + minWeek + '-' + maxWeek + ').', 'error');
                     }
                 }
             });
@@ -922,14 +924,12 @@
                 var view = this.dataset.view;
                 if (!view) { return; }
 
-                // Update nav buttons
                 var allBtns = container.querySelectorAll('.faculty-nav-btn');
                 for (var b = 0; b < allBtns.length; b++) {
                     allBtns[b].classList.remove('active');
                 }
                 this.classList.add('active');
 
-                // Show corresponding panel
                 var panels = container.querySelectorAll('.faculty-view-panel');
                 for (var p = 0; p < panels.length; p++) {
                     var panel = panels[p];
@@ -947,10 +947,10 @@
                 var item = e.target.closest('.instructor-list-item');
                 if (!item) { return; }
                 var id = item.dataset.id;
-                if (id && window.academyState && typeof window.academyState.selectInstructor === 'function') {
-                    window.academyState.selectInstructor(id);
-                    if (typeof window.refreshAcademy === 'function') {
-                        window.refreshAcademy();
+                if (id && window.Academy && typeof window.Academy.selectInstructor === 'function') {
+                    window.Academy.selectInstructor(id);
+                    if (typeof window.Academy.refresh === 'function') {
+                        window.Academy.refresh();
                     }
                 }
             });
@@ -1116,6 +1116,12 @@
 
         // Discipline form
         bindDisciplineFormEvents(container);
+
+        // Return cleanup function
+        return function() {
+            // Remove event listeners that were added directly
+            // Most are delegated and will be cleaned up when container is removed
+        };
     }
 
     // ============================================================
@@ -1142,13 +1148,13 @@
     // ============================================================
 
     function handleAddSchedule(container) {
-        var instructorId = window.academyState ? window.academyState.getSelectedInstructorId() : null;
+        var instructorId = window.Academy ? window.Academy.getSelectedInstructorId() : null;
         if (!instructorId) {
             showNotification('No instructor selected.', 'error');
             return;
         }
 
-        var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
+        var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
 
         var discSelect = container.querySelector('#schedule-discipline-select');
         var daySelect = container.querySelector('#schedule-day-select');
@@ -1157,7 +1163,7 @@
 
         var disciplineId = discSelect ? discSelect.value : '';
         var day = daySelect ? parseInt(daySelect.value, 10) : 1;
-        var hour = hourSelect ? parseInt(hourSelect.value, 10) : 8;
+        var hour = hourSelect ? parseInt(hourSelect.value, 10) : CalendarConstants.CALENDAR_START_HOUR;
         var duration = durationSelect ? parseInt(durationSelect.value, 10) : 1;
 
         if (!disciplineId) {
@@ -1174,8 +1180,8 @@
 
         if (result && result.success) {
             showNotification('Schedule added successfully.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Schedule added in memory, but persistence failed.');
         } else {
@@ -1184,20 +1190,20 @@
     }
 
     function handleRemoveSchedule(container, day, hour) {
-        var instructorId = window.academyState ? window.academyState.getSelectedInstructorId() : null;
+        var instructorId = window.Academy ? window.Academy.getSelectedInstructorId() : null;
         if (!instructorId) {
             showNotification('No instructor selected.', 'error');
             return;
         }
 
-        var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
+        var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
 
         var result = CalendarCore.removeInstructorTemplate(instructorId, week, day, hour);
 
         if (result && result.success) {
             showNotification('Schedule removed successfully.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Schedule removed in memory, but persistence failed.');
         } else {
@@ -1210,13 +1216,13 @@
     // ============================================================
 
     function handleAddBlock(container) {
-        var instructorId = window.academyState ? window.academyState.getSelectedInstructorId() : null;
+        var instructorId = window.Academy ? window.Academy.getSelectedInstructorId() : null;
         if (!instructorId) {
             showNotification('No instructor selected.', 'error');
             return;
         }
 
-        var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
+        var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
 
         var daySelect = container.querySelector('#block-day-select');
         var hourSelect = container.querySelector('#block-hour-select');
@@ -1224,7 +1230,7 @@
         var labelInput = container.querySelector('#block-label-input');
 
         var day = daySelect ? parseInt(daySelect.value, 10) : 1;
-        var hour = hourSelect ? parseInt(hourSelect.value, 10) : 8;
+        var hour = hourSelect ? parseInt(hourSelect.value, 10) : CalendarConstants.CALENDAR_START_HOUR;
         var duration = durationSelect ? parseInt(durationSelect.value, 10) : 1;
         var label = labelInput ? labelInput.value.trim() : 'Blocked';
 
@@ -1236,8 +1242,8 @@
         if (result && result.success) {
             showNotification('Block added successfully.', 'success');
             if (labelInput) { labelInput.value = ''; }
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Block added in memory, but persistence failed.');
         } else {
@@ -1246,20 +1252,20 @@
     }
 
     function handleRemoveBlock(container, day, hour) {
-        var instructorId = window.academyState ? window.academyState.getSelectedInstructorId() : null;
+        var instructorId = window.Academy ? window.Academy.getSelectedInstructorId() : null;
         if (!instructorId) {
             showNotification('No instructor selected.', 'error');
             return;
         }
 
-        var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
+        var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
 
         var result = CalendarCore.removeInstructorBlock(instructorId, week, day, hour);
 
         if (result && result.success) {
             showNotification('Block removed successfully.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Block removed in memory, but persistence failed.');
         } else {
@@ -1289,7 +1295,6 @@
             });
         }
 
-        // Add class to location (delegated)
         modal.addEventListener('click', function(e) {
             var btn = e.target.closest('.location-add-class-btn');
             if (btn) {
@@ -1299,7 +1304,7 @@
                 var select = document.getElementById('location-class-select');
                 
                 if (locationId && select && select.value) {
-                    var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
+                    var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
                     var result = CalendarCore.setLocationClass(locationId, week, day, hour, select.value);
                     if (result && result.success) {
                         showNotification('Class assigned to location.', 'success');
@@ -1312,7 +1317,6 @@
             }
         });
 
-        // Remove class from location (delegated)
         modal.addEventListener('click', function(e) {
             var btn = e.target.closest('.location-remove-class-btn');
             if (btn) {
@@ -1320,7 +1324,7 @@
                 var day = parseInt(btn.dataset.day, 10);
                 var hour = parseInt(btn.dataset.hour, 10);
                 if (locationId && confirm('Remove this class from location?')) {
-                    var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
+                    var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
                     var result = CalendarCore.removeLocationClass(locationId, week, day, hour);
                     if (result && result.success) {
                         showNotification('Class removed from location.', 'success');
@@ -1363,11 +1367,10 @@
             return;
         }
 
-        var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
+        var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
         var schedule = CalendarCore.getLocationSchedule(locationId, week);
         var disciplines = AcademyQueries.getAvailableDisciplines(week);
-
-        var days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
 
         var html = '';
         html += '<div class="location-modal-info">';
@@ -1378,10 +1381,10 @@
         html += '<div class="location-modal-schedule">';
         for (var d = 1; d <= 7; d++) {
             html += '<div class="location-modal-day">';
-            html += '<span class="location-modal-day-name">' + days[d - 1] + '</span>';
+            html += '<span class="location-modal-day-name">' + dayNames[d - 1] + '</span>';
             var daySchedule = schedule[d] || {};
             
-            for (var h = 8; h <= 18; h++) {
+            for (var h = CalendarConstants.CALENDAR_START_HOUR; h <= CalendarConstants.CALENDAR_END_HOUR; h++) {
                 var classId = daySchedule[h] || null;
                 var display = '';
                 var className = 'location-modal-slot empty';
@@ -1417,7 +1420,6 @@
 
         content.innerHTML = html;
 
-        // Add click handlers for show/hide class select
         var slots = content.querySelectorAll('.location-modal-slot.empty');
         for (var s = 0; s < slots.length; s++) {
             var slot = slots[s];
@@ -1456,8 +1458,8 @@
 
         if (result && result.success) {
             showNotification('Auto-group created successfully.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Auto-group created in memory, but persistence failed.');
         } else {
@@ -1470,8 +1472,8 @@
 
         if (result && result.success) {
             showNotification('Auto-group deleted successfully.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Auto-group deleted in memory, but persistence failed.');
         } else {
@@ -1484,8 +1486,8 @@
 
         if (result && result.success) {
             showNotification('Student added to auto-group.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Student added in memory, but persistence failed.');
         } else {
@@ -1494,14 +1496,14 @@
     }
 
     function handleAddSlotToAutoGroup(key, day, hour, duration) {
-        var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
+        var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
 
         var result = AcademyGroups.addSlotToAutoGroup(key, week, day, hour, duration);
 
         if (result && result.success) {
             showNotification('Slot added to auto-group.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Slot added in memory, but persistence failed.');
         } else {
@@ -1515,8 +1517,8 @@
         if (result && result.success) {
             var count = result.count || 0;
             showNotification('Rebuilt ' + count + ' auto-groups from schedules.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Auto-groups rebuilt in memory, but persistence failed.');
         } else {
@@ -1580,7 +1582,6 @@
             return;
         }
 
-        // Populate instructor select
         if (instSelect) {
             var instructors = AcademyQueries.getInstructors();
             instSelect.innerHTML = '';
@@ -1609,7 +1610,7 @@
                     opt.selected = disc.instructorIds.indexOf(opt.value) !== -1;
                 }
             }
-            if (startWeek) { startWeek.value = disc.startWeek || 1; }
+            if (startWeek) { startWeek.value = disc.startWeek || CalendarConstants.MIN_WEEK; }
             if (endWeek) { endWeek.value = disc.endWeek || ''; }
             if (weeklyHours) { weeklyHours.value = disc.weeklyHours || 1; }
             if (weightInput) { weightInput.value = disc.weight || 1; }
@@ -1623,7 +1624,7 @@
                     instSelect.options[k].selected = false;
                 }
             }
-            if (startWeek) { startWeek.value = 1; }
+            if (startWeek) { startWeek.value = CalendarConstants.MIN_WEEK; }
             if (endWeek) { endWeek.value = ''; }
             if (weeklyHours) { weeklyHours.value = 1; }
             if (weightInput) { weightInput.value = 1; }
@@ -1656,8 +1657,8 @@
             name: name,
             type: typeSelect ? typeSelect.value : 'mandatory',
             instructorIds: instSelect ? Array.from(instSelect.selectedOptions).map(function(o) { return o.value; }) : [],
-            startWeek: startWeek ? startWeek.value : 1,
-            endWeek: endWeek ? endWeek.value : '',
+            startWeek: startWeek ? parseInt(startWeek.value, 10) || CalendarConstants.MIN_WEEK : CalendarConstants.MIN_WEEK,
+            endWeek: endWeek ? parseInt(endWeek.value, 10) || '' : '',
             weeklyHours: weeklyHours ? parseFloat(weeklyHours.value) || 1 : 1,
             weight: weightInput ? parseFloat(weightInput.value) || 1 : 1
         };
@@ -1675,8 +1676,8 @@
             showNotification(editId ? 'Discipline updated successfully.' : 'Discipline created successfully.', 'success');
             var modal = document.getElementById('faculty-discipline-modal');
             if (modal) { modal.classList.add('hidden'); }
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Discipline changes in memory, but persistence failed.');
         } else {
@@ -1689,8 +1690,8 @@
 
         if (result && result.success) {
             showNotification('Discipline deleted successfully.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Discipline deleted in memory, but persistence failed.');
         } else {

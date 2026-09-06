@@ -19,6 +19,9 @@
  *   - No direct window.data access
  *   - No direct DOM manipulation
  *   - No saveData() calls
+ *   - Uses CalendarConstants for bounds
+ *   - Uses CalendarValidation for validation
+ *   - No hard-coded calendar values
  * 
  * DEPENDENCIES:
  *   - window.LocationQueries (from queries/location-queries.js) - MANDATORY
@@ -26,10 +29,10 @@
  *   - window.CalendarRenderer (from calendar-renderer.js) - MANDATORY
  *   - window.CalendarUtils (from calendar-utils.js) - MANDATORY
  *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.CalendarModes (from modes/index.js) - MANDATORY
  *   - window.CalendarLocationCore (from core/location-core.js) - MANDATORY
  *   - window.MutationUtils (from mutation-pipeline.js) - MANDATORY
- *   - window.LocationQueries (from location-queries.js) - MANDATORY
  *   - window.DisciplineQueries (from discipline-queries.js) - MANDATORY
  */
 
@@ -95,6 +98,10 @@
         missing.push('CalendarConstants');
     }
 
+    if (!window.CalendarValidation) {
+        missing.push('CalendarValidation');
+    }
+
     if (!window.CalendarModes || typeof window.CalendarModes.registerMode !== 'function') {
         missing.push('CalendarModes.registerMode');
     }
@@ -125,8 +132,7 @@
     }
 
     if (missing.length > 0) {
-        console.error('[LocationMode] Missing dependencies:', missing.join(', '));
-        return;
+        throw new Error('[LocationMode] Missing dependencies: ' + missing.join(', '));
     }
 
     window.__locationModeLoaded = true;
@@ -140,6 +146,7 @@
     var CalendarRenderer = window.CalendarRenderer;
     var CalendarUtils = window.CalendarUtils;
     var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
     var CalendarModes = window.CalendarModes;
     var LocationCore = window.CalendarLocationCore;
     var MutationUtils = window.MutationUtils;
@@ -154,6 +161,8 @@
     var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
     var MIN_WEEK = CalendarConstants.MIN_WEEK;
     var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var MIN_DAY = CalendarConstants.MIN_DAY;
+    var MAX_DAY = CalendarConstants.MAX_DAY;
 
     // ============================================================
     // HELPERS
@@ -211,10 +220,8 @@
         var location = LocationQueries.getLocation(locationId);
         var locationName = location ? location.name || location.id : 'Unknown';
 
-        // Get available disciplines for sidebar
         var availableDisciplines = LocationQueries.getLocationDisciplineAvailability(locationId, week) || [];
 
-        // Prepare data for shared renderer
         var data = {
             schedule: schedule,
             restDays: [],
@@ -241,7 +248,7 @@
                 return instructor ? window.CharacterQueries.getDisplayName(instructor) : '';
             },
             isBlock: function() {
-                return false; // Locations don't have blocks
+                return false;
             },
             slotMetadata: function(day, hour) {
                 var slot = schedule[day] && schedule[day][hour] ? schedule[day][hour] : null;
@@ -264,10 +271,8 @@
             availableLabel: 'Available Disciplines'
         };
 
-        // Use shared renderer
         CalendarRenderer.renderGrid(container, state, data);
 
-        // Bind events with location-specific callbacks
         CalendarRenderer.bindEvents(container, state, {
             onSlotClick: function(day, hour) {
                 handleAddClass(locationId, week, day, hour, container);
@@ -348,15 +353,13 @@
             return;
         }
 
-        // For "any slot" mode, find an available slot
         if (day === null || hour === null) {
             var schedule = LocationQueries.getLocationSchedule(locationId, week);
             var found = false;
 
-            for (var d = 1; d <= 7; d++) {
+            for (var d = MIN_DAY; d <= MAX_DAY; d++) {
                 for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
                     if (!schedule[d] || !schedule[d][h]) {
-                        // Found available slot
                         var discipline = DisciplineQueries.getDiscipline(preSelectedDisciplineId);
                         var disciplineName = discipline ? discipline.name : 'Unknown';
                         var dayName = CalendarConstants.getDayName(d);
@@ -389,7 +392,6 @@
             return;
         }
 
-        // Specific slot assignment
         var hourDisplay = CalendarUtils.formatHour(hour);
         var dayName = CalendarConstants.getDayName(day);
 
@@ -414,21 +416,19 @@
     // ============================================================
 
     function performAddClass(locationId, week, day, hour, disciplineId, closeModal, container) {
-        // Validate calendar boundary
-        var duration = 1; // Location classes default to 1 hour
+        var duration = 1;
+
         if (hour + duration > CALENDAR_END_HOUR + 1) {
             CalendarRenderer.showNotification('Class extends beyond the calendar boundary.', 'error');
             return;
         }
 
-        // Check if slot is already occupied
         var schedule = LocationQueries.getLocationSchedule(locationId, week);
         if (schedule[day] && schedule[day][hour]) {
             CalendarRenderer.showNotification('This slot is already occupied.', 'error');
             return;
         }
 
-        // Use MutationUtils for transaction
         MutationUtils.performMutation({
             validate: function() {
                 return { valid: true };
@@ -555,7 +555,6 @@
             preSelectedDisciplineId: data.disciplineId
         }, {
             onConfirm: function(disciplineId, duration, label, closeModal) {
-                // First remove existing class, then add new one
                 performRemoveClass(locationId, week, day, hour, container, function() {
                     performAddClass(locationId, week, day, hour, disciplineId, closeModal, container);
                 });
@@ -567,7 +566,6 @@
     // EXPOSE PUBLIC API
     // ============================================================
 
-    // Register with CalendarModes
     CalendarModes.registerMode('location', {
         label: 'Location',
         hint: 'Click an empty slot to assign a class | Right-click to remove | Click a class for details',

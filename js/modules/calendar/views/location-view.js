@@ -17,6 +17,8 @@
  *   - Uses CalendarRenderer for shared modal creation
  *   - All user-controlled content uses textContent
  *   - No event binding here (delegated to LocationMode)
+ *   - Uses CalendarConstants for bounds
+ *   - Uses CalendarValidation for validation
  * 
  * DEPENDENCIES:
  *   - window.LocationQueries (from queries/location-queries.js) - MANDATORY
@@ -26,6 +28,7 @@
  *   - window.CalendarUtils (from calendar-utils.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
  *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  * 
  * USAGE:
  *   var LV = window.LocationView;
@@ -87,9 +90,12 @@
         missing.push('CalendarConstants');
     }
 
+    if (!window.CalendarValidation) {
+        missing.push('CalendarValidation');
+    }
+
     if (missing.length > 0) {
-        console.error('[LocationView] Missing dependencies:', missing.join(', '));
-        return;
+        throw new Error('[LocationView] Missing dependencies: ' + missing.join(', '));
     }
 
     window.__locationViewLoaded = true;
@@ -105,6 +111,7 @@
     var CalendarUtils = window.CalendarUtils;
     var DomUtils = window.DomUtils;
     var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
 
     // ============================================================
     // CONSTANTS
@@ -114,6 +121,8 @@
     var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
     var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
     var DAY_NAMES = CalendarConstants.DAY_NAMES;
+    var MIN_DAY = CalendarConstants.MIN_DAY;
+    var MAX_DAY = CalendarConstants.MAX_DAY;
 
     // ============================================================
     // HTML ESCAPING - Delegates to DomUtils
@@ -203,7 +212,6 @@
             details.push({ label: 'Instructor', value: instructorName });
         }
 
-        // Student list
         var studentCount = data.students ? data.students.length : 0;
         var studentNames = 'None';
         if (data.students && data.students.length > 0) {
@@ -308,7 +316,6 @@
             onCancel: callbacks.onCancel || null
         });
 
-        // Pre-select discipline if provided
         if (data.preSelectedDisciplineId && modal) {
             var select = modal.querySelector('#add-class-select');
             if (select) {
@@ -406,7 +413,6 @@
             return;
         }
 
-        // Stats grid
         var grid = document.createElement('div');
         grid.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;';
 
@@ -437,7 +443,6 @@
 
         container.appendChild(grid);
 
-        // Busy details
         var detailsDiv = document.createElement('div');
         detailsDiv.style.cssText = 'display:flex;flex-wrap:wrap;gap:16px;padding:8px;background:var(--bg);border-radius:4px;border:1px solid var(--border-soft);font-size:0.75rem;';
 

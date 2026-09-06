@@ -22,6 +22,7 @@
  *   - TabManager is the single source of truth for lifecycle
  *   - No direct window.data access - uses CalendarUI state
  *   - Uses CalendarConstants for bounds
+ *   - Uses CalendarValidation for validation
  * 
  * DEPENDENCIES:
  *   - window.CalendarUI (from calendar-ui.js) - MANDATORY
@@ -30,6 +31,7 @@
  *   - window.CalendarRenderer (from calendar-renderer.js) - MANDATORY
  *   - window.TabManager (from tab-manager.js) - MANDATORY
  *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  */
 
 (function() {
@@ -88,9 +90,12 @@
         missing.push('CalendarConstants');
     }
 
+    if (!window.CalendarValidation || typeof window.CalendarValidation.parseWeek !== 'function') {
+        missing.push('CalendarValidation.parseWeek');
+    }
+
     if (missing.length > 0) {
-        console.error('[CalendarModule] Missing dependencies:', missing.join(', '));
-        return;
+        throw new Error('[CalendarModule] Missing dependencies: ' + missing.join(', '));
     }
 
     window.__calendarModuleLoaded = true;
@@ -105,6 +110,7 @@
     var CalendarRenderer = window.CalendarRenderer;
     var TabManager = window.TabManager;
     var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
 
     // ============================================================
     // CONSTANTS
@@ -130,16 +136,13 @@
         }
 
         if (!container) {
-            return;
+            throw new Error('[CalendarModule] Container not found.');
         }
 
         if (!window.data) {
             container.innerHTML = '<p class="empty-state">Loading calendar data...</p>';
             return;
         }
-
-        // Ensure curriculum structure exists
-        ensureCurriculumStructure();
 
         if (!_initialized || _container !== container) {
             _container = container;
@@ -169,60 +172,6 @@
         }
         _initialized = false;
         _container = null;
-    }
-
-    // ============================================================
-    // ENSURE CURRICULUM STRUCTURE
-    // ============================================================
-
-    function ensureCurriculumStructure() {
-        var data = window.data;
-        if (!data) {
-            return;
-        }
-
-        if (!data.curriculum || typeof data.curriculum !== 'object') {
-            data.curriculum = {};
-        }
-
-        // Ensure core curriculum structures exist
-        var curriculum = data.curriculum;
-
-        if (!curriculum.schedules || typeof curriculum.schedules !== 'object') {
-            curriculum.schedules = {};
-        }
-
-        if (!curriculum.restDays || typeof curriculum.restDays !== 'object') {
-            curriculum.restDays = {};
-        }
-
-        if (!curriculum.classDurations || typeof curriculum.classDurations !== 'object') {
-            curriculum.classDurations = {};
-        }
-
-        if (!curriculum.classLabels || typeof curriculum.classLabels !== 'object') {
-            curriculum.classLabels = {};
-        }
-
-        if (!curriculum.classGroupLabels || typeof curriculum.classGroupLabels !== 'object') {
-            curriculum.classGroupLabels = {};
-        }
-
-        if (!curriculum.classInstructors || typeof curriculum.classInstructors !== 'object') {
-            curriculum.classInstructors = {};
-        }
-
-        if (!curriculum.classLocations || typeof curriculum.classLocations !== 'object') {
-            curriculum.classLocations = {};
-        }
-
-        if (!curriculum.instructorTemplates || typeof curriculum.instructorTemplates !== 'object') {
-            curriculum.instructorTemplates = {};
-        }
-
-        if (!curriculum.instructorBlocks || typeof curriculum.instructorBlocks !== 'object') {
-            curriculum.instructorBlocks = {};
-        }
     }
 
     // ============================================================
@@ -316,8 +265,8 @@
                     options.mode = parsed.mode;
                 }
                 if (parsed.week !== undefined && parsed.week !== null) {
-                    var week = parseInt(parsed.week, 10);
-                    if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
+                    var week = CalendarValidation.parseWeek(parsed.week);
+                    if (week !== null) {
                         options.week = week;
                     }
                 }
@@ -342,8 +291,8 @@
                     }
                     var weekParam = params.get('week');
                     if (weekParam !== null) {
-                        var week = parseInt(weekParam, 10);
-                        if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
+                        var week = CalendarValidation.parseWeek(weekParam);
+                        if (week !== null) {
                             options.week = week;
                         }
                     }

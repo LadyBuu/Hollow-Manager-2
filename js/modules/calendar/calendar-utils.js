@@ -6,18 +6,20 @@
  *   - Week block calculation for academic schedules
  *   - Week number calculation
  *   - Academic week calculation
- *   - Week/year validation
+ *   - Date helpers for calendar navigation
  * 
  * IMPORTANT:
  *   - No DOM dependencies
  *   - No persistence
  *   - No application state
  *   - Uses CalendarConstants for all bounds
+ *   - Uses CalendarValidation for validation
  *   - Formatting functions moved to FormatUtils
- *   - Validation functions moved to CalendarConstants
+ *   - Validation functions moved to CalendarValidation
  * 
  * DEPENDENCIES:
  *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  * 
  * USAGE:
  *   var CU = window.CalendarUtils;
@@ -39,12 +41,22 @@
     // DEPENDENCY CHECK - MANDATORY (no fallbacks)
     // ============================================================
 
+    var missing = [];
+
     if (!window.CalendarConstants) {
-        console.error('[CalendarUtils] CalendarConstants is required.');
-        return;
+        missing.push('CalendarConstants');
+    }
+
+    if (!window.CalendarValidation) {
+        missing.push('CalendarValidation');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[CalendarUtils] Missing dependencies: ' + missing.join(', '));
     }
 
     var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
 
     // ============================================================
     // CONSTANTS
@@ -67,7 +79,7 @@
      * @returns {object|null} { start: number, end: number, block: number, label: string } or null if invalid
      */
     function getWeekBlock(weekNum) {
-        var num = CalendarConstants.isValidWeek(weekNum);
+        var num = CalendarValidation.parseWeek(weekNum);
         if (num === null) {
             return null;
         }
@@ -112,7 +124,7 @@
      * @returns {number|null} Block number or null if invalid
      */
     function getWeekBlockNumber(weekNum) {
-        var num = CalendarConstants.isValidWeek(weekNum);
+        var num = CalendarValidation.parseWeek(weekNum);
         if (num === null) {
             return null;
         }
@@ -254,7 +266,7 @@
      * @returns {object|null} { start: Date, end: Date } or null if invalid
      */
     function getWeekDateRange(weekNum, year, firstDayOfWeek) {
-        var week = CalendarConstants.isValidWeek(weekNum);
+        var week = CalendarValidation.parseWeek(weekNum);
         if (week === null) {
             return null;
         }
@@ -291,23 +303,43 @@
     }
 
     // ============================================================
-    // VALIDATION HELPERS (delegated to CalendarConstants)
+    // VALIDATION HELPERS (delegated to CalendarValidation)
     // ============================================================
 
     /**
      * Check if a value is a valid week number (1-52).
-     * @deprecated Use CalendarConstants.isValidWeek() instead.
+     * @deprecated Use CalendarValidation.parseWeek() instead.
      */
     function isValidWeek(value) {
-        return CalendarConstants.isValidWeek(value) !== null;
+        return CalendarValidation.parseWeek(value) !== null;
     }
 
     /**
      * Check if a value is a valid year.
-     * @deprecated Use CalendarConstants.isValidYear() instead.
+     * @deprecated Use CalendarValidation.parseYear() instead.
      */
     function isValidYear(value) {
-        return CalendarConstants.isValidYear(value) !== null;
+        return CalendarValidation.parseYear(value) !== null;
+    }
+
+    // ============================================================
+    // FORMAT HELPERS (delegated to FormatUtils)
+    // ============================================================
+
+    /**
+     * Format an hour to a display string.
+     * @deprecated Use CalendarConstants.formatHour() instead.
+     */
+    function formatHour(hour, includeMinutes) {
+        return CalendarConstants.formatHour(hour, includeMinutes);
+    }
+
+    /**
+     * Get the day name for a day number.
+     * @deprecated Use CalendarConstants.getDayName() instead.
+     */
+    function getDayName(day, format) {
+        return CalendarConstants.getDayName(day, format);
     }
 
     // ============================================================
@@ -331,9 +363,13 @@
         getLastDayOfWeek: getLastDayOfWeek,
         getWeekDateRange: getWeekDateRange,
 
-        // Validation (deprecated - use CalendarConstants)
+        // Validation (deprecated - use CalendarValidation)
         isValidWeek: isValidWeek,
         isValidYear: isValidYear,
+
+        // Formatting (deprecated - use CalendarConstants)
+        formatHour: formatHour,
+        getDayName: getDayName,
 
         // Constants (deprecated - use CalendarConstants)
         MIN_WEEK: MIN_WEEK,
@@ -358,5 +394,7 @@
     window.getAcademicWeek = getAcademicWeek;
     window.isValidWeek = isValidWeek;
     window.isValidYear = isValidYear;
+    window.formatHour = formatHour;
+    window.getDayName = getDayName;
 
 })();

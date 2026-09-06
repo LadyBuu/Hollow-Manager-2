@@ -48,29 +48,30 @@
     // DEPENDENCY CHECK - NO FALLBACKS
     // ============================================================
 
+    var missing = [];
+
     if (!window.CalendarStudentCore) {
-        console.error('[CalendarCore] CalendarStudentCore is required.');
-        return;
+        missing.push('CalendarStudentCore');
     }
 
     if (!window.CalendarInstructorCore) {
-        console.error('[CalendarCore] CalendarInstructorCore is required.');
-        return;
+        missing.push('CalendarInstructorCore');
     }
 
     if (!window.CalendarLocationCore) {
-        console.error('[CalendarCore] CalendarLocationCore is required.');
-        return;
+        missing.push('CalendarLocationCore');
     }
 
     if (!window.CalendarGridCore) {
-        console.error('[CalendarCore] CalendarGridCore is required.');
-        return;
+        missing.push('CalendarGridCore');
     }
 
     if (!window.CalendarMetadataCore) {
-        console.error('[CalendarCore] CalendarMetadataCore is required.');
-        return;
+        missing.push('CalendarMetadataCore');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[CalendarCore] Missing dependencies: ' + missing.join(', '));
     }
 
     // ============================================================
@@ -316,7 +317,12 @@
         CALENDAR_START_HOUR: GridCore.CALENDAR_START_HOUR,
         CALENDAR_END_HOUR: GridCore.CALENDAR_END_HOUR,
         MAX_DURATION: GridCore.MAX_DURATION,
-        DAY_NAMES: GridCore.DAY_NAMES
+        DAY_NAMES: GridCore.DAY_NAMES,
+
+        /**
+         * Metadata keys.
+         */
+        METADATA_KEYS: MetadataCore.METADATA_KEYS
     };
 
     // ============================================================

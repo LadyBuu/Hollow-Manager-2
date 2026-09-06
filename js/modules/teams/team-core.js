@@ -67,11 +67,12 @@
  * 
  * DEPENDENCIES:
  *   - window.CALENDAR_CONSTANTS (from constants.js)
+ *   - window.CalendarValidation (from calendar-validation.js)
  *   - window.CharacterQueries (from character-queries.js)
- *   - window.ActivityLog (from activity-log.js)
+ *   - window.ActivityLog (from activity-log.js) - DEPRECATED: will be removed
  *   - window.ObjectUtils (from object-utils.js)
  *   - window.IdUtils (from id-utils.js)
- *   - window.ValidationUtils (from validation-utils.js)
+ *   - window.ValidationUtils (from validation-utils.js) - DEPRECATED: use CalendarValidation
  */
 
 (function() {
@@ -86,29 +87,32 @@
     // DEPENDENCY CHECK - NO FALLBACKS
     // ============================================================
 
+    var missing = [];
+
     if (!window.CALENDAR_CONSTANTS) {
-        console.warn('TeamCore: CALENDAR_CONSTANTS not available.');
-        return;
+        missing.push('CALENDAR_CONSTANTS');
+    }
+    if (!window.CalendarValidation) {
+        missing.push('CalendarValidation');
     }
     if (!window.CharacterQueries) {
-        console.warn('TeamCore: CharacterQueries not available.');
-        return;
+        missing.push('CharacterQueries');
     }
     if (!window.ActivityLog) {
-        console.warn('TeamCore: ActivityLog not available.');
-        return;
+        missing.push('ActivityLog');
     }
     if (!window.ObjectUtils) {
-        console.warn('TeamCore: ObjectUtils not available.');
-        return;
+        missing.push('ObjectUtils');
     }
     if (!window.IdUtils) {
-        console.warn('TeamCore: IdUtils not available.');
-        return;
+        missing.push('IdUtils');
     }
     if (!window.ValidationUtils) {
-        console.warn('TeamCore: ValidationUtils not available.');
-        return;
+        missing.push('ValidationUtils');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('TeamCore: Missing dependencies: ' + missing.join(', '));
     }
 
     window.__teamCoreLoaded = true;
@@ -118,6 +122,7 @@
     // ============================================================
 
     var CALENDAR = window.CALENDAR_CONSTANTS;
+    var CalendarValidation = window.CalendarValidation;
     var CharacterQueries = window.CharacterQueries;
     var ActivityLog = window.ActivityLog;
     var ObjectUtils = window.ObjectUtils;
@@ -147,7 +152,6 @@
         'classId',
         'teamNumber'
     ];
-    // currentRank is DERIVED, not updateable directly
 
     // ============================================================
     // UTILITY HELPERS - Delegate to shared utilities
@@ -170,7 +174,7 @@
     }
 
     // ============================================================
-    // PERIOD PARSING - Delegate to ValidationUtils
+    // PERIOD PARSING - Delegate to CalendarValidation
     // ============================================================
 
     function parseNumericPeriod(value) {
@@ -178,6 +182,9 @@
             return null;
         }
         var str = String(value).trim();
+        if (str === '') {
+            return null;
+        }
         if (!/^\d+$/.test(str)) {
             return null;
         }
@@ -186,13 +193,11 @@
     }
 
     function isValidAcademicWeek(value) {
-        var num = parseNumericPeriod(value);
-        return num !== null && num >= MIN_WEEK && num <= MAX_WEEK;
+        return CalendarValidation.parseWeek(value) !== null;
     }
 
     function isValidYear(value) {
-        var num = parseNumericPeriod(value);
-        return num !== null && num >= MIN_YEAR && num <= MAX_YEAR;
+        return CalendarValidation.parseYear(value) !== null;
     }
 
     function isValidPeriodForType(value, type) {
@@ -226,7 +231,8 @@
     }
 
     // ============================================================
-    // ACTIVITY LOGGING - Delegate to ActivityLog
+    // ACTIVITY LOGGING - Delegates to ActivityLog
+    // DEPRECATED: Will be removed when MutationPipeline handles logging
     // ============================================================
 
     function recordActivity(message) {
@@ -526,7 +532,6 @@
             return;
         }
 
-        // Get sorted history using internal function
         var sorted = getSortedRankings(team);
         team.currentRank = sorted.length > 0 ? String(sorted[sorted.length - 1].rank) : '';
     }

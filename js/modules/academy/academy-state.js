@@ -14,18 +14,21 @@
  *   - UI state is stored in sessionStorage for session persistence
  *   - All state changes are reflected via setters
  *   - No direct mutation of state - use setter functions
- *   - All validation uses CALENDAR_CONSTANTS from constants.js
+ *   - All validation uses CalendarValidation from calendar-validation.js
+ *   - Sub-tab validation uses AcademyConstants
  * 
  * STATE HIERARCHY:
  *   - selectedClassId: Currently selected class
  *   - selectedWeek: Currently selected week (1-52)
  *   - selectedStudentId: Currently selected student
  *   - selectedInstructorId: Currently selected instructor
- *   - activeSubTab: Active sub-tab ('class' | 'student' | 'faculty')
+ *   - activeSubTab: Active sub-tab (from ACADEMY_SUBTABS)
  * 
  * DEPENDENCIES:
- *   - window.CALENDAR_CONSTANTS (from constants.js)
- *   - window.AcademyQueries (from academy-queries.js)
+ *   - window.CalendarValidation (from calendar-validation.js)
+ *   - window.AcademyConstants (from academy-constants.js)
+ *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.CharacterQueries (from character-queries.js)
  * 
  * USAGE:
  *   var state = window.AcademyState;
@@ -46,8 +49,10 @@
     // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var CalendarConstants = window.CALENDAR_CONSTANTS;
-    var AcademyQueries = window.AcademyQueries;
+    var CalendarValidation = window.CalendarValidation;
+    var AcademyConstants = window.AcademyConstants;
+    var ClassesQueries = window.ClassesQueries;
+    var CharacterQueries = window.CharacterQueries;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -56,62 +61,43 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
-            missing.push('CALENDAR_CONSTANTS');
+        if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
+            missing.push('CalendarValidation.parseWeek');
+        }
+        if (!CalendarValidation || typeof CalendarValidation.getWeekBounds !== 'function') {
+            missing.push('CalendarValidation.getWeekBounds');
         }
 
-        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
-            missing.push('AcademyQueries.getClass');
+        if (!AcademyConstants || !Array.isArray(AcademyConstants.ACADEMY_SUBTABS)) {
+            missing.push('AcademyConstants.ACADEMY_SUBTABS');
         }
-        if (!AcademyQueries || typeof AcademyQueries.getCharacterById !== 'function') {
-            missing.push('AcademyQueries.getCharacterById');
+        if (!AcademyConstants || !Array.isArray(AcademyConstants.VALID_SUB_TAB_IDS)) {
+            missing.push('AcademyConstants.VALID_SUB_TAB_IDS');
+        }
+
+        if (!ClassesQueries || typeof ClassesQueries.getClass !== 'function') {
+            missing.push('ClassesQueries.getClass');
+        }
+
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
         }
 
         if (missing.length > 0) {
-            console.warn('AcademyState: Missing dependencies:', missing.join(', '));
-            return false;
+            throw new Error('AcademyState: Missing dependencies: ' + missing.join(', '));
         }
 
         return true;
     }
 
-    if (!checkDependencies()) {
-        return;
-    }
-
-    window.__academyStateLoaded = true;
+    checkDependencies();
 
     // ============================================================
-    // CONSTANTS - From CALENDAR_CONSTANTS
+    // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = CalendarConstants.MIN_WEEK;
-    var MAX_WEEK = CalendarConstants.MAX_WEEK;
-    var VALID_SUB_TABS = ['class', 'student', 'faculty'];
+    var VALID_SUB_TAB_IDS = AcademyConstants.VALID_SUB_TAB_IDS;
     var STORAGE_KEY = 'academy_state';
-
-    // ============================================================
-    // HELPER ALIASES
-    // ============================================================
-
-    function isNonEmptyString(value) {
-        return typeof value === 'string' && value.trim() !== '';
-    }
-
-    function validateWeek(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        if (!Number.isInteger(num) || num < MIN_WEEK || num > MAX_WEEK) {
-            return null;
-        }
-        return num;
-    }
-
-    function isValidSubTab(value) {
-        return value && VALID_SUB_TABS.indexOf(value) !== -1;
-    }
 
     // ============================================================
     // DEFAULT STATE
@@ -134,7 +120,6 @@
     var _state = null;
 
     function loadState() {
-        // Try to load from sessionStorage
         try {
             var stored = sessionStorage.getItem(STORAGE_KEY);
             if (stored) {
@@ -148,7 +133,6 @@
             // Ignore storage errors
         }
 
-        // Fallback to defaults
         _state = getDefaultState();
     }
 
@@ -168,7 +152,7 @@
         if (!classId) {
             return true;
         }
-        var cls = AcademyQueries.getClass(classId);
+        var cls = ClassesQueries.getClass(classId);
         return cls !== null;
     }
 
@@ -176,7 +160,7 @@
         if (!studentId) {
             return true;
         }
-        var student = AcademyQueries.getCharacterById(studentId);
+        var student = CharacterQueries.getCharacterById(studentId);
         return student !== null;
     }
 
@@ -184,16 +168,16 @@
         if (!instructorId) {
             return true;
         }
-        var instructor = AcademyQueries.getCharacterById(instructorId);
+        var instructor = CharacterQueries.getCharacterById(instructorId);
         return instructor !== null;
     }
 
     function validateWeekValue(week) {
-        return validateWeek(week) !== null;
+        return CalendarValidation.parseWeek(week) !== null;
     }
 
     function validateSubTabValue(subTab) {
-        return isValidSubTab(subTab);
+        return VALID_SUB_TAB_IDS.indexOf(subTab) !== -1;
     }
 
     // ============================================================
@@ -231,7 +215,7 @@
     }
 
     // ============================================================
-    // STATE SETTERS
+    // STATE SETTERS - Returns boolean indicating change
     // ============================================================
 
     function selectClass(classId) {
@@ -239,25 +223,31 @@
             return false;
         }
 
+        var changed = _state.selectedClassId !== classId;
         _state.selectedClassId = classId || null;
 
         // Clear dependent selections when class changes
-        _state.selectedStudentId = null;
-        _state.selectedInstructorId = null;
+        if (changed) {
+            _state.selectedStudentId = null;
+            _state.selectedInstructorId = null;
+            saveState();
+        }
 
-        saveState();
-        return true;
+        return changed;
     }
 
     function selectWeek(week) {
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
             return false;
         }
 
+        var changed = _state.selectedWeek !== weekNum;
         _state.selectedWeek = weekNum;
-        saveState();
-        return true;
+        if (changed) {
+            saveState();
+        }
+        return changed;
     }
 
     function selectStudent(studentId) {
@@ -265,9 +255,12 @@
             return false;
         }
 
+        var changed = _state.selectedStudentId !== studentId;
         _state.selectedStudentId = studentId || null;
-        saveState();
-        return true;
+        if (changed) {
+            saveState();
+        }
+        return changed;
     }
 
     function selectInstructor(instructorId) {
@@ -275,9 +268,12 @@
             return false;
         }
 
+        var changed = _state.selectedInstructorId !== instructorId;
         _state.selectedInstructorId = instructorId || null;
-        saveState();
-        return true;
+        if (changed) {
+            saveState();
+        }
+        return changed;
     }
 
     function switchSubTab(subTab) {
@@ -285,9 +281,12 @@
             return false;
         }
 
+        var changed = _state.activeSubTab !== subTab;
         _state.activeSubTab = subTab;
-        saveState();
-        return true;
+        if (changed) {
+            saveState();
+        }
+        return changed;
     }
 
     // ============================================================
@@ -340,10 +339,25 @@
     }
 
     function clearSelections() {
-        _state.selectedClassId = null;
-        _state.selectedStudentId = null;
-        _state.selectedInstructorId = null;
-        saveState();
+        var changed = false;
+
+        if (_state.selectedClassId !== null) {
+            _state.selectedClassId = null;
+            changed = true;
+        }
+        if (_state.selectedStudentId !== null) {
+            _state.selectedStudentId = null;
+            changed = true;
+        }
+        if (_state.selectedInstructorId !== null) {
+            _state.selectedInstructorId = null;
+            changed = true;
+        }
+
+        if (changed) {
+            saveState();
+        }
+        return changed;
     }
 
     // ============================================================
@@ -351,7 +365,7 @@
     // ============================================================
 
     function isValidWeek(week) {
-        return validateWeek(week) !== null;
+        return CalendarValidation.parseWeek(week) !== null;
     }
 
     function isValidClass(classId) {
@@ -371,11 +385,11 @@
     }
 
     function getValidSubTabs() {
-        return VALID_SUB_TABS.slice();
+        return VALID_SUB_TAB_IDS.slice();
     }
 
     function getWeekRange() {
-        return { min: MIN_WEEK, max: MAX_WEEK };
+        return CalendarValidation.getWeekBounds();
     }
 
     // ============================================================
@@ -402,8 +416,12 @@
     }
 
     function logState() {
-        console.log('[AcademyState] Current state:', getState());
-        console.log('[AcademyState] Diff from defaults:', getStateDiff());
+        var state = getState();
+        var diff = getStateDiff();
+        return {
+            state: state,
+            diff: diff
+        };
     }
 
     // ============================================================
@@ -444,14 +462,14 @@
         getSelectedInstructorId: getSelectedInstructorId,
         getActiveSubTab: getActiveSubTab,
 
-        // State setters
+        // State setters (return boolean)
         selectClass: selectClass,
         selectWeek: selectWeek,
         selectStudent: selectStudent,
         selectInstructor: selectInstructor,
         switchSubTab: switchSubTab,
 
-        // Bulk operations
+        // Bulk operations (return boolean)
         setState: setState,
         resetState: resetState,
         clearSelections: clearSelections,
@@ -469,10 +487,8 @@
         getStateDiff: getStateDiff,
         logState: logState,
 
-        // Constants
-        MIN_WEEK: MIN_WEEK,
-        MAX_WEEK: MAX_WEEK,
-        VALID_SUB_TABS: VALID_SUB_TABS
+        // Constants (derived from AcademyConstants)
+        VALID_SUB_TABS: VALID_SUB_TAB_IDS
     };
 
 })();

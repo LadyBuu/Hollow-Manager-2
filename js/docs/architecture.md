@@ -1,11 +1,12 @@
-Here's a comprehensive `ARCHITECTURE.md` document for the HollowBlades project:
+# ARCHITECTURE.md - Updated Documentation
 
-```markdown
-# HollowBlades Architecture
+Based on the comprehensive refactoring of the Academy and Calendar modules, here is the updated architecture documentation reflecting all changes.
+
+---
 
 ## Overview
 
-HollowBlades is a single-page application for managing a fantasy academy, characters, teams, tournaments, missions, and social relationships. The architecture follows a strict layered design with clear ownership boundaries and single sources of truth.
+HollowBlades is a single-page application for managing a fantasy academy, characters, teams, tournaments, missions, social relationships, and academic scheduling. The architecture follows a strict layered design with clear ownership boundaries and single sources of truth.
 
 ## Architecture Principles
 
@@ -19,68 +20,84 @@ HollowBlades is a single-page application for managing a fantasy academy, charac
 ## Layer Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        DOMAIN MODULES                       │
-│  Academy │ Characters │ Teams │ Tournaments │ Missions │ Social │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     APPLICATION SERVICES                    │
-│                                                             │
-│  ┌─────────────────┐  ┌─────────────────────────────────┐  │
-│  │  MutationPipeline │  │        TabManager              │  │
-│  │  (mutation        │  │  (navigation)                 │  │
-│  │   orchestration)   │  │                               │  │
-│  └─────────────────┘  └─────────────────────────────────┘  │
-│                                                             │
-│  ┌─────────────────┐  ┌─────────────────────────────────┐  │
-│  │     Database      │  │        ActivityLog             │  │
-│  │  (persistence)    │  │  (activity history)            │  │
-│  └─────────────────┘  └─────────────────────────────────┘  │
-│                                                             │
-│  ┌─────────────────┐  ┌─────────────────────────────────┐  │
-│  │    DataLoader    │  │         State                   │  │
-│  │  (readiness)     │  │  (UI state)                    │  │
-│  └─────────────────┘  └─────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                         UI UTILITIES                        │
-│                                                             │
-│  ┌─────────────┐  ┌───────────┐  ┌─────────────────────┐   │
-│  │  DomUtils   │  │ FormUtils │  │      Modal          │   │
-│  │  (DOM ops)  │  │ (forms)   │  │  (modal lifecycle)  │   │
-│  └─────────────┘  └───────────┘  └─────────────────────┘   │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │              NotificationSystem                     │    │
-│  │              (toast notifications)                  │    │
-│  └─────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                       CORE UTILITIES                        │
-│                                                             │
-│  ┌─────────────┐  ┌───────────┐  ┌─────────────────────┐   │
-│  │  CoreUtils  │  │  IdUtils  │  │   ObjectUtils       │   │
-│  │  (generic)  │  │  (IDs)    │  │   (cloning)         │   │
-│  └─────────────┘  └───────────┘  └─────────────────────┘   │
-│                                                             │
-│  ┌─────────────┐  ┌───────────┐  ┌─────────────────────┐   │
-│  │ FormatUtils │  │TimingUtils│  │  ValidationUtils    │   │
-│  │ (formatting)│  │ (timing)  │  │  (compatibility)    │   │
-│  └─────────────┘  └───────────┘  └─────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                       BROWSER APIS                         │
-│                                                             │
-│           DOM │ IndexedDB │ Crypto │ Timer                 │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                             DOMAIN MODULES                                 │
+│                                                                             │
+│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐│
+│  │ Characters│  │  Teams    │  │Tournaments│  │  Missions │  │  Social   ││
+│  └───────────┘  └───────────┘  └───────────┘  └───────────┘  └───────────┘│
+│                                                                             │
+│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐              │
+│  │  Academy  │  │ Calendar  │  │ Curriculum│  │  Classes  │              │
+│  └───────────┘  └───────────┘  └───────────┘  └───────────┘              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           APPLICATION SERVICES                             │
+│                                                                             │
+│  ┌─────────────────────┐  ┌─────────────────────────────────────────────┐  │
+│  │   MutationPipeline   │  │              TabManager                     │  │
+│  │  (mutation           │  │  (navigation)                              │  │
+│  │   orchestration)     │  │                                             │  │
+│  └─────────────────────┘  └─────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌─────────────────────┐  ┌─────────────────────────────────────────────┐  │
+│  │      Database        │  │              ActivityLog                   │  │
+│  │  (persistence)       │  │  (activity history)                        │  │
+│  └─────────────────────┘  └─────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌─────────────────────┐  ┌─────────────────────────────────────────────┐  │
+│  │     DataLoader       │  │              State                         │  │
+│  │  (readiness)         │  │  (UI state)                               │  │
+│  └─────────────────────┘  └─────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              UI UTILITIES                                  │
+│                                                                             │
+│  ┌─────────────┐  ┌───────────┐  ┌─────────────────────────────────────┐  │
+│  │  DomUtils   │  │ FormUtils │  │              Modal                   │  │
+│  │  (DOM ops)  │  │ (forms)   │  │  (modal lifecycle)                  │  │
+│  └─────────────┘  └───────────┘  └─────────────────────────────────────┘  │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                       NotificationSystem                            │    │
+│  │                       (toast notifications)                         │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                             CORE UTILITIES                                 │
+│                                                                             │
+│  ┌─────────────┐  ┌───────────┐  ┌─────────────────────────────────────┐  │
+│  │  CoreUtils  │  │  IdUtils  │  │            ObjectUtils               │  │
+│  │  (generic)  │  │  (IDs)    │  │   (cloning)                         │  │
+│  └─────────────┘  └───────────┘  └─────────────────────────────────────┘  │
+│                                                                             │
+│  ┌─────────────┐  ┌───────────┐  ┌─────────────────────────────────────┐  │
+│  │ FormatUtils │  │TimingUtils│  │          CalendarConstants          │  │
+│  │ (formatting)│  │ (timing)  │  │  (calendar bounds, day names)      │  │
+│  └─────────────┘  └───────────┘  └─────────────────────────────────────┘  │
+│                                                                             │
+│  ┌─────────────┐  ┌───────────┐  ┌─────────────────────────────────────┐  │
+│  │CalendarVali-│  │Academy    │  │          CalendarScheduleCore       │  │
+│  │ dation      │  │Constants  │  │  (schedule semantics)               │  │
+│  └─────────────┘  └───────────┘  └─────────────────────────────────────┘  │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                       Constants (global)                            │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              BROWSER APIS                                  │
+│                                                                             │
+│                     DOM │ IndexedDB │ Crypto │ Timer                       │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Single Sources of Truth
@@ -100,6 +117,10 @@ HollowBlades is a single-page application for managing a fantasy academy, charac
 | Activity Logging | `ActivityLog` | `ActivityLog.record()` |
 | Data Persistence | `Database` | `window.saveData()` / `window.loadData()` |
 | Data Readiness | `DataLoader` | `DataLoader.whenReady()` |
+| Calendar Validation | `CalendarValidation` | `CalendarValidation.parseWeek()` |
+| Calendar Constants | `CalendarConstants` | `CalendarConstants.MIN_WEEK` |
+| Schedule Semantics | `CalendarScheduleCore` | `CalendarScheduleCore.findClassStartHour()` |
+| Academy Constants | `AcademyConstants` | `AcademyConstants.ACADEMY_SUBTABS` |
 
 ## Module Descriptions
 
@@ -119,6 +140,23 @@ Generic primitives with no domain knowledge.
 - String: `capitalize`, `titleCase`, `kebabCase`, `snakeCase`
 
 **Dependencies:** None
+
+---
+
+#### `calendar-validation.js`
+Canonical calendar validation - single source of truth for all calendar value validation.
+
+**Functions:**
+- Week: `parseWeek()`, `isWeekValid()`
+- Day: `parseDay()`, `isDayValid()`
+- Hour: `parseHour()`, `isHourValid()`, `parseCalendarHour()`, `isCalendarHourValid()`
+- Duration: `parseDuration()`, `isDurationValid()`
+- Year: `parseYear()`, `isYearValid()`
+- Slot: `parseSlot()`, `isSlotValid()`
+- Range: `parseInRange()`, `isInRange()`
+- Bounds: `getWeekBounds()`, `getDayBounds()`, `getHourBounds()`, `getDurationBounds()`, `getYearBounds()`, `getCalendarHourBounds()`
+
+**Dependencies:** CalendarConstants
 
 ---
 
@@ -154,8 +192,13 @@ Pure formatting functions.
 - `formatNumber(value, fallback)` - Number with commas
 - `formatCurrency(value, currency, fallback)`
 - `formatPercentage(value, decimals, fallback)`
+- `getDayName(day, format)` - Day name lookup (Monday=1)
+- `getDayName0(day, format)` - Day name lookup (Sunday=0)
+- `getDayNumber(dayName)` - Day number from day name
+- `formatHour(hour, includeMinutes)` - 12-hour with AM/PM
+- `parseHour(timeStr)` - Parse time string to hour
 
-**Dependencies:** None
+**Dependencies:** CalendarConstants (optional, with fallbacks)
 
 ---
 
@@ -175,6 +218,56 @@ Function timing utilities.
 **DEPRECATED** - Delegates to CoreUtils. Kept for backward compatibility.
 
 **Dependencies:** CoreUtils
+
+---
+
+### Shared Constants
+
+#### `constants.js`
+Truly global application constants.
+
+**Constants:**
+- `CALENDAR_CONSTANTS` - Week, day, hour ranges
+- `ID_CONSTANTS` - ID prefixes for all entity types
+- `DATA_CONSTANTS` - Data version and migration constants
+- `UI_CONSTANTS` - Breakpoints (minimal)
+
+**Dependencies:** None
+
+---
+
+#### `shared/calendar-constants.js`
+Single source of truth for calendar constants.
+
+**Constants:**
+- `MIN_WEEK`, `MAX_WEEK` - Week bounds
+- `MIN_DAY`, `MAX_DAY`, `DAYS_IN_WEEK` - Day bounds
+- `MIN_HOUR`, `MAX_HOUR`, `CALENDAR_START_HOUR`, `CALENDAR_END_HOUR` - Hour bounds
+- `MIN_CLASS_DURATION`, `MAX_CLASS_DURATION` - Duration bounds
+- `MIN_YEAR`, `MAX_YEAR` - Year bounds
+- `WEEKS_PER_BLOCK` - Academic block size
+
+**Functions:**
+- `isValidWeek()`, `isValidDay()`, `isValidHour()`, `isValidDuration()`, `isValidYear()`
+- `getDayName()`, `getDayName0()`, `getDayNumber()`
+- `formatHour()`, `parseHour()`, `getHourOptions()`
+- `getWeekBlock()`, `getAllWeekBlocks()`, `getWeekBlockNumber()`, `getBlockRange()`
+
+**Dependencies:** None
+
+---
+
+#### `academy-constants.js`
+Single source of truth for Academy-specific constants.
+
+**Constants:**
+- `ACADEMY_SUBTABS` - Sub-tab definitions: `{ id, label }`
+- `VALID_SUB_TAB_IDS` - Array of valid sub-tab IDs
+- `SUB_TAB_LABELS` - Map of ID to label
+- `MAX_TEAM_SIZE` - Maximum students per team
+- `MIN_SCORE`, `MAX_SCORE`, `PASSING_THRESHOLD` - Grade thresholds
+
+**Dependencies:** None
 
 ---
 
@@ -198,267 +291,468 @@ Low-level DOM operations.
 
 ---
 
-#### `form-utils.js`
-Form serialization and validation.
+### Academy Domain
+
+#### `modules/academy/index.js`
+Academy module entry point and lifecycle controller.
 
 **Functions:**
-- `getField(id)` - Get single field value
-- `setField(id, value)` - Set single field value
-- `getFormData(form)` - Get all form data
-- `setFormData(form, data)` - Set all form data
-- `resetForm(form)`
-- `validateRequired(id)` - Field has value
-- `validateNumber(id)` - Field is finite number
-- `validateInteger(id)` - Field is finite integer
-- `validateRange(id, min, max)` - Field is in range
+- `mountAcademy(container)` - Mount the academy feature
+- `destroyAcademy()` - Clean up and unmount
+- `refresh()` - Refresh current view
+- `getState()` - Get current UI state
+- `selectClass()`, `selectWeek()`, `selectStudent()`, `selectInstructor()`, `switchSubTab()`, `clearSelections()` - State mutators
+- `isMounted()` - Check if mounted
 
-**Semantics:**
-- Single checkbox → boolean
-- Multiple checkboxes → array of values
-- Radio group → selected value
-- Multi-select → array of values
-
-**Dependencies:** None
+**Dependencies:** TabManager, AcademyState, AcademyViews, AcademyEvents, DomUtils, NotificationSystem
 
 ---
 
-#### `modal.js`
-Modal lifecycle management.
+#### `modules/academy/academy-state.js`
+Academy UI state management with persistence.
 
 **Functions:**
-- `createModal(className)` - Create modal element
-- `showModal(modal)` - Show with animation
-- `hideModal(modal)` - Hide with animation (returns Promise)
-- `closeModal(modal)` - Full cleanup and removal (returns Promise)
-- `modalClickOutside(modal, onClose)` - Click outside to close
-- `modalEscapeKey(modal, onClose)` - Escape key to close
-- `modalSetup(modal, onClose)` - Both click-outside and escape
+- `getState()` - Get full state
+- `selectClass(id)`, `selectWeek(week)`, `selectStudent(id)`, `selectInstructor(id)`, `switchSubTab(tab)` - State setters
+- `setState(newState)` - Bulk state update
+- `resetState()`, `clearSelections()` - State resets
+- `isValidWeek()`, `isValidClass()`, `isValidStudent()`, `isValidInstructor()`, `isValidSubTabValue()` - Validation
+- `getValidSubTabs()`, `getWeekRange()` - Bounds access
 
-**Features:**
-- Race-condition safe with generation tracking
-- Focus management (save/restore)
-- ARIA attributes for accessibility
-- Prevents duplicate setup
-
-**Dependencies:** DomUtils
+**Dependencies:** CalendarValidation, AcademyConstants, ClassesQueries, CharacterQueries
 
 ---
 
-#### `notification.js`
-Toast notification system.
+#### `modules/academy/academy-views.js`
+Academy shell and sub-tab rendering.
 
 **Functions:**
-- `notify(message, type, duration, onDismiss)` - Show notification
-- `notifySuccess(message, duration, onDismiss)`
-- `notifyError(message, duration, onDismiss)`
-- `notifyWarning(message, duration, onDismiss)`
-- `notifyInfo(message, duration, onDismiss)`
-- `clearNotifications()` - Clear all
-- `getNotificationCount()`
-- `setMaxNotifications(max)`
-- `getMaxNotifications()`
+- `renderAcademy(state)` - Complete Academy UI
+- `renderAcademyShell(state)` - Header + tabs + placeholder
+- `renderAcademyTabs(activeSubTab)` - Navigation tabs
+- `renderActiveSubTab(state)` - Delegates to tab modules
+- `escapeHtml(value)` - HTML escaping
 
-**Features:**
-- Unique ID-based identity (not message text)
-- Reliable onDismiss callbacks (called exactly once)
-- Queue management
-- Persistent notifications (duration 0)
-- Auto-dismiss with configurable duration
-
-**Dependencies:** IdUtils
+**Dependencies:** AcademyConstants, ClassTab, StudentTab, FacultyTab, DomUtils
 
 ---
 
-### Core Services
-
-#### `activity-log.js`
-Application activity logging infrastructure.
+#### `modules/academy/academy-events.js`
+Academy event binding (events only - no rendering).
 
 **Functions:**
-- `record(message, type)` - Record activity
-- `getHistory()` - Get activity history
-- `clearHistory()` - Clear all activities
-- `getCount()` - Get activity count
+- `init(container)` - Bind all events
+- `destroy()` - Remove all event listeners
+- `addSafeEventListener(element, eventName, handler)` - Tracked event binding
 
-**Behavior:**
-- Non-fatal: logging failures don't propagate
-- Trims to 100 entries (newest first)
-- Does not create `window.data` if missing
-
-**Dependencies:** IdUtils, window.data
+**Dependencies:** AcademyState, ClassTab, StudentTab, FacultyTab
 
 ---
 
-#### `database.js`
-IndexedDB persistence with migration.
+#### `modules/academy/academy-queries.js`
+Academy-specific composite read models.
 
 **Functions:**
-- `loadData()` - Load from IndexedDB (Promise)
-- `saveData()` - Save to IndexedDB (Promise, coalesced)
-- `autoLoadData()` - Load with event dispatch
-- `getDatabaseStatus()` - 'uninitialized' | 'initializing' | 'ready' | 'failed'
-- `isDatabaseReady()` - boolean
-- `getLoadError()` - Error or null
+- Class queries: `getClasses()`, `getClass()`, `getClassStudents()`, `getClassStats()`
+- Character queries: `getCharacterById()`, `getDisplayName()`, `getStudents()`, `getInstructors()`
+- Academic team queries: `getAcademicTeams()`, `getAcademicTeamMembers()`
+- Tournament queries: `getTournaments()`, `getTournament()`
+- Discipline queries: `getDiscipline()`, `getDisciplines()`, `getAvailableDisciplines()`
+- Location queries: `getLocation()`, `getLocations()`
+- Auto-group queries: `getAllAutoGroups()`, `getAutoGroup()`
 
-**Features:**
-- Coalescing save queue with frozen batches
-- Versioned data migration (DATA_VERSION)
-- Single source of truth (`_data` is authoritative, `window.data` is reference)
-- Strict cloning (structuredClone required)
-- DB_VERSION (structural) and DATA_VERSION (schema) are separate
-
-**Dependencies:** None
+**Dependencies:** ClassesQueries, CharacterQueries, TeamQueries, TournamentQueries, DisciplineQueries, LocationQueries, AcademyGroups
 
 ---
 
-#### `loader.js`
-Data readiness adapter.
+#### `modules/academy/academy-core.js`
+Academy domain core operations.
 
 **Functions:**
-- `whenReady(callback)` - Callback when data is ready (or null on failure)
-- `getData()` - Returns window.data or null
-- `getStatus()` - 'ready' | 'failed' | 'waiting' | 'uninitialized'
-- `getError()` - Error or null
-- `reset()` - Reset loader state
+- Class operations: `getClasses()`, `getClass()`, `createClass()`, `updateClass()`, `deleteClass()`, `addCharacterToClass()`, `removeCharacterFromClass()`
+- Discipline operations: `getDisciplines()`, `getDiscipline()`, `getAvailableDisciplines()`, `createDiscipline()`, `updateDiscipline()`, `deleteDiscipline()`
+- Location operations: `getLocations()`, `getLocation()`, `createLocation()`, `updateLocation()`, `deleteLocation()`
+- Academy state: `getCurrentWeek()`, `setCurrentWeek()`
 
-**Behavior:**
-- Does NOT own data (window.data is the source)
-- Can recover from failure (not terminal)
-- Checks current state if event was missed
-
-**Dependencies:** window.data, window.db
+**Dependencies:** ObjectUtils, IdUtils, CharacterQueries, ClassesQueries, ClassesCore, CalendarValidation, CalendarConstants
 
 ---
 
-#### `state.js`
-UI state management (ephemeral).
+#### `modules/academy/academy-grades.js`
+Grade domain operations.
 
 **Functions:**
-- `getState(module, key)` - Get UI state value
-- `setState(module, key, value)` - Set UI state value
-- `updateState(module, updates)` - Batch update
-- `getModuleState(module)` - Get entire module state
-- `resetModuleState(module)` - Reset to defaults
-- `resetAllState()` - Reset all UI state
-- `getStateSnapshot(includeSession)` - For debugging
-- `getStateDiff()` - For debugging
+- Queries: `getGrades()`, `getGrade()`, `hasGrade()`, `getWeekGrades()`
+- Summary: `calculateSummary()`, `getClassSummary()`
+- Mutations (candidate builders): `buildSaveGradesCandidate()`, `buildSaveGradeCandidate()`, `buildDeleteGradeCandidate()`, `buildDeleteWeekGradesCandidate()`, `buildDeleteStudentGradesCandidate()`, `buildSaveClassGradesCandidate()`
+- Validation: `validateScore()`
 
-**State Categories:**
-- `AppState` - UI state that survives view switches
-- `SessionState` - Very ephemeral UI state (menu open, last tab)
-- `window.data` - Persistent domain data
-
-**Features:**
-- Development warnings for unknown keys
-- Input validation for week values
-- Object identity preserved on reset
-
-**Dependencies:** None
+**Dependencies:** ObjectUtils, CharacterQueries, ClassesQueries, DisciplineQueries, CalendarValidation, CalendarConstants
 
 ---
 
-#### `tab-manager.js`
-Tab navigation system.
+#### `modules/academy/academy-ranking.js`
+Ranking domain operations.
 
 **Functions:**
-- `register(tabName, renderFn)` - Register tab
-- `switchTo(tabName, updateHistory)` - Switch tab
-- `forceRefresh(tabName)` - Force refresh
-- `refreshCurrent()` - Refresh current tab
-- `getCurrentTab()` - Get current tab
-- `isTabActive(tabName)` - Check if active
-- `getTabContainer(tabName)` - Get container
-- `onDataReady()` - Called by bootstrap when data is ready
+- Queries: `getRankings()`, `getStudentRank()`, `hasRankings()`, `getRankingCount()`, `getRankingsWithDetails()`, `getStudentRankingHistory()`
+- Class ranking: `getClassRankings()`, `getClassRankingSummary()`
+- Statistics: `getRankingStatistics()`, `getRankingDistribution()`, `getTopRankedStudents()`
+- Mutations (candidate builders): `buildSetRankingsCandidate()`, `buildAutoGenerateCandidate()`, `buildSetStudentPositionCandidate()`, `buildRemoveStudentCandidate()`, `buildClearRankingsCandidate()`
+- Validation: `validateRank()`
+
+**Dependencies:** ObjectUtils, CharacterQueries, ClassesQueries, AcademyGrades, CalendarValidation, CalendarConstants
+
+---
+
+#### `modules/academy/academy-schedule.js`
+Academy schedule policy and operations.
+
+**Functions:**
+- Queries: `getStudentSchedule()`, `getStudentRestDays()`, `getClassDetails()`, `getDayClasses()`
+- Conflict detection: `hasConflict()`, `getConflicts()`
+- Availability: `getAvailableSlots()`, `getFreeTime()`
+- Weekly hour usage: `getWeeklyHourUsage()`, `getDisciplineHourUsage()`, `getRemainingWeeklyHours()`
+- Summary: `getStudentScheduleSummary()`
+- Mutations (candidate builders): `buildSetClassCandidate()`, `buildRemoveClassCandidate()`, `buildClearScheduleCandidate()`, `buildDuplicateScheduleCandidate()`, `buildSetRestDaysCandidate()`
+
+**Dependencies:** CalendarCore, ObjectUtils, CharacterQueries, DisciplineQueries, CalendarValidation, CalendarConstants
+
+---
+
+#### `modules/academy/academy-groups.js`
+Auto-group domain operations.
+
+**Functions:**
+- Queries: `getAllAutoGroups()`, `getAutoGroup()`, `getGroupsByDiscipline()`, `getGroupsByInstructor()`, `getGroupStudents()`, `getGroupSlots()`, `isStudentInGroup()`, `getGroupsForStudent()`, `getGroupsForWeek()`
+- Summaries: `getGroupSummary()`, `getAllGroupSummaries()`, `getGroupDisplayName()`
+- Mutations (candidate builders): `buildCreateGroupCandidate()`, `buildDeleteGroupCandidate()`, `buildAddStudentCandidate()`, `buildRemoveStudentCandidate()`, `buildAddSlotCandidate()`, `buildRemoveSlotCandidate()`, `buildAddStudentsCandidate()`, `buildRemoveStudentsCandidate()`
+
+**Dependencies:** ObjectUtils, IdUtils, CharacterQueries, DisciplineQueries, CalendarValidation, CalendarConstants
+
+---
+
+#### `modules/academy/academy-distribute.js`
+Cross-domain student distribution workflow.
+
+**Functions:**
+- `buildDistributionPlan(classId, week, maxTeamSize, teamIds, options)` - Build plan without mutation
+- `executeDistributionPlan(plan, options)` - Execute plan via MutationPipeline
+- `autoDistributeStudents()` - Legacy wrapper (deprecated)
+- `autoDistributeStudentsWithOptions()` - Legacy wrapper with options (deprecated)
+
+**Dependencies:** ClassesQueries, TeamQueries, TeamCore, CharacterQueries, DisciplineQueries, CalendarScheduleCore, CalendarValidation, CalendarConstants, ObjectUtils
+
+---
+
+#### `modules/academy/tabs/class-tab.js`
+Class sub-tab UI.
+
+**Functions:**
+- `render(state)` - Render class tab
+- `renderClassList(state)` - Class list
+- `renderClassDetail(state, cls)` - Class detail with roster, teams, tournaments
+- `bindEvents(container)` - Bind class tab events
+
+**Dependencies:** ClassesCore, TeamCore, AcademyDistribute, AcademyQueries, CharacterQueries, CalendarConstants, NotificationSystem, DomUtils, Modal
+
+---
+
+#### `modules/academy/tabs/student-tab.js`
+Student sub-tab UI.
+
+**Functions:**
+- `render(state)` - Render student tab
+- `renderStudentDetail(state, student)` - Student detail with grades, ranking, schedule
+- `renderGradesTab(state, student)` - Grade entry and summary
+- `renderRankingTab(state, student)` - Ranking display
+- `renderScheduleTab(state, student)` - Schedule grid with rest days
+- `bindEvents(container)` - Bind student tab events
+
+**Dependencies:** AcademyGrades, AcademyRanking, AcademySchedule, AcademyQueries, CharacterQueries, CharacterList, CalendarConstants, NotificationSystem, DomUtils, Modal
+
+---
+
+#### `modules/academy/tabs/faculty-tab.js`
+Faculty sub-tab UI.
+
+**Functions:**
+- `render(state)` - Render faculty tab
+- `renderInstructorsView(state, instructors)` - Instructor list and detail
+- `renderInstructorDetail(state, instructor)` - Instructor schedule and blocks
+- `renderLocationsView(state)` - Location schedule
+- `renderAutoGroupsView(state)` - Auto-group management
+- `renderDisciplinesView(state)` - Discipline/curriculum management
+- `bindEvents(container)` - Bind faculty tab events
+
+**Dependencies:** CalendarCore, AcademyGroups, AcademyQueries, CharacterQueries, CalendarConstants, NotificationSystem, DomUtils, Modal
+
+---
+
+### Calendar Domain
+
+#### `modules/calendar/index.js`
+Calendar module entry point.
+
+**Functions:**
+- `renderCalendar(container)` - Mount the calendar feature
+- `destroyCalendar()` - Destroy calendar
+
+**Dependencies:** CalendarUI, CalendarModes, CalendarUtils, CalendarRenderer, TabManager, CalendarConstants, CalendarValidation
+
+---
+
+#### `modules/calendar/calendar-ui.js`
+Calendar UI controller.
+
+**Functions:**
+- `init(container, options, callbacks)` - Initialize calendar UI
+- `render()` - Re-render current view
 - `destroy()` - Clean up event listeners
+- `getState()` / `setState()` - State management
 
-**Features:**
-- Event delegation for navigation clicks (no node cloning)
-- URL hash synchronization
-- Tab registration with late rendering
-- Read-only state via getters
-- tabChanged is informational only
-
-**Dependencies:** DataLoader
+**Dependencies:** CalendarModes, CalendarUtils, DomUtils, CalendarConstants, CalendarValidation
 
 ---
 
-#### `mutation-pipeline.js`
-Mutation orchestration with transaction semantics.
+#### `modules/calendar/calendar-renderer.js`
+Shared calendar grid renderer.
 
 **Functions:**
-- `performMutation(config)` - Full mutation pipeline
-- `simpleMutation(logMessage, successMessage, failureMessage, mutateFn, validateFn)` - Convenience wrapper
-- `createSafeBackup(data)` - Creates backup via ObjectUtils
-- `saveWithPromise(options)` - Wraps saveData()
+- `renderGrid(container, state, data)` - Render calendar grid
+- `bindEvents(container, state, callbacks)` - Bind calendar events
+- `createAddClassModal(options)` - Create add class modal
+- `createDetailsModal(options)` - Create details modal
+- `createManageStudentsModal(options)` - Create manage students modal
+- `buildOccupiedMap(schedule, getDuration)` - Build occupied hour map
+- `hasOverlap(occupiedMap, day, startHour, duration)` - Check overlap
 
-**Pipeline:**
-```
-VALIDATE → SNAPSHOT → MUTATE → PERSIST → LOG → UI COMMIT
-```
-
-**Features:**
-- Serialised mutations (prevents rollback conflicts)
-- Rollback on mutation or persistence failure
-- Uses ActivityLog for logging
-- Uses NotificationSystem for notifications
-- Uses ObjectUtils for cloning
-
-**Dependencies:** Database, ActivityLog, NotificationSystem, ObjectUtils
+**Dependencies:** CalendarConstants, CalendarValidation, DomUtils
 
 ---
 
-#### `bootstrap.js`
-Connects infrastructure components.
+#### `modules/calendar/calendar-utils.js`
+Calendar domain utilities.
 
 **Functions:**
-- `bootstrap()` - Called automatically on DOM ready
+- `getWeekBlock(weekNum)`, `getAllWeekBlocks()`, `getWeekBlockNumber(weekNum)`, `getBlockRange(blockNum)`
+- `getWeekNumber(date)`, `getAcademicWeek(date, startWeek)`, `getISOWeekNumber(date)`
+- `getFirstDayOfWeek(date, firstDayOfWeek)`, `getLastDayOfWeek(date, firstDayOfWeek)`, `getWeekDateRange(weekNum, year, firstDayOfWeek)`
 
-**Responsibility:**
-- Bridges DataLoader → TabManager
-- Explicit data readiness notification
-
-**Dependencies:** DataLoader, TabManager
+**Dependencies:** CalendarConstants, CalendarValidation
 
 ---
 
-## Dependency Graph
+#### `modules/calendar/core/index.js`
+Calendar core public API facade.
 
-```
-                        ┌─────────────────────────────────────┐
-                        │            DOMAIN MODULES           │
-                        │  Academy │ Characters │ Teams │ etc. │
-                        └─────────────────────────────────────┘
-                                      │
-                                      ▼
-              ┌─────────────────────────────────────────────────────┐
-              │                   Bootstrap                        │
-              │        (connects DataLoader → TabManager)          │
-              └─────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-    ┌─────────────────┬───────────────┴───────────────┬─────────────────┐
-    │                 │                               │                 │
-    ▼                 ▼                               ▼                 ▼
-┌─────────┐    ┌─────────────┐                ┌─────────────┐    ┌─────────┐
-│ TabManager│    │MutationPipeline│                │  ActivityLog  │    │ Database │
-└─────────┘    └─────────────┘                └─────────────┘    └─────────┘
-    │                 │                               │                 │
-    │                 │                               │                 │
-    ▼                 ▼                               ▼                 ▼
-┌─────────┐    ┌─────────────┐                ┌─────────────┐    ┌─────────┐
-│ DataLoader│    │ Notification │                │   IdUtils   │    │ ObjectUtils│
-└─────────┘    └─────────────┘                └─────────────┘    └─────────┘
-    │                 │                               │                 │
-    ▼                 ▼                               ▼                 │
-┌─────────┐    ┌─────────────┐                                       │
-│ Database │    │   DomUtils  │                                       │
-└─────────┘    └─────────────┘                                       │
-    │                 │                                               │
-    ▼                 ▼                                               │
-┌─────────┐    ┌─────────────┐                                       │
-│ IndexedDB│    │  CoreUtils  │◄─────────────────────────────────────┘
-└─────────┘    └─────────────┘
-```
+**Functions:**
+- Delegates to StudentCore, InstructorCore, LocationCore, GridCore, MetadataCore
+
+**Dependencies:** CalendarStudentCore, CalendarInstructorCore, CalendarLocationCore, CalendarGridCore, CalendarMetadataCore
+
+---
+
+#### `modules/calendar/core/schedule-core.js`
+Shared schedule semantics - CANONICAL.
+
+**Functions:**
+- `getScheduleKey(studentId, week, day, hour)` - Generate schedule key
+- `parseScheduleKey(key)` - Parse schedule key
+- `hasConflict(schedule, day, hour, duration)` - Check conflict
+- `hasDurationOverlap(entries, day, hour, duration)` - Check duration overlap
+- `findClassStartHour(schedule, durations, studentId, week, day, hour)` - Find class start
+- `validateOccupiedDuration(schedule, day, startHour, disciplineId)` - Validate duration
+- `getValidClassDuration(durations, key)` - Get valid duration
+- `getClassRange(schedule, durations, studentId, week, day, hour)` - Get class range
+- `getAvailableStartHours(schedule, day, duration, startHour, endHour)` - Get available start hours
+- `getNextAvailableStartHour(schedule, day, duration, fromHour)` - Get next available start hour
+
+**Dependencies:** CalendarConstants, CalendarValidation
+
+---
+
+#### `modules/calendar/core/metadata-core.js`
+Calendar metadata operations.
+
+**Functions:**
+- `getClassMetadata(curriculum, studentId, week, day, hour)` - Get class metadata
+- `getValidClassDuration(curriculum, key)` - Get valid duration
+- `buildCandidates(curriculum)` - Build metadata candidates
+- `commitCandidates(curriculum, candidates)` - Commit metadata candidates
+- `setClassMetadata(candidates, key, data)` - Set metadata
+- `copyClassMetadata(candidates, sourceKey, targetKey)` - Copy metadata
+- `deleteClassMetadata(candidates, key)` - Delete metadata
+- `clearMetadataForPrefix(candidates, prefix)` - Clear metadata by prefix
+- `hasClassMetadata(curriculum, key)` - Check if class has metadata
+- `getKeysForStudentWeek(curriculum, studentId, week)` - Get metadata keys
+- `getStore(curriculum, storeKey)` - Get metadata store
+
+**Dependencies:** ObjectUtils, CalendarConstants, CalendarValidation, CalendarScheduleCore
+
+---
+
+#### `modules/calendar/core/student-core.js`
+Student schedule operations.
+
+**Functions:**
+- `getStudentSchedule(studentId, week)` - Get student schedule
+- `setStudentScheduleClass(studentId, week, day, hour, disciplineId, duration)` - Set class
+- `removeStudentScheduleClass(studentId, week, day, hour)` - Remove class
+- `duplicateStudentSchedule(studentId, sourceWeek, targetWeek, overwrite)` - Duplicate schedule
+- `clearStudentSchedule(studentId, week)` - Clear schedule
+- `getStudentRestDays(studentId, week)` - Get rest days
+- `setStudentRestDays(studentId, week, days)` - Set rest days
+
+**Dependencies:** ObjectUtils, CalendarConstants, CalendarValidation, CalendarScheduleCore, CalendarMetadataCore, DisciplineQueries, CharacterQueries
+
+---
+
+#### `modules/calendar/core/instructor-core.js`
+Instructor template and block operations.
+
+**Functions:**
+- `getInstructorTemplates(instructorId, week)` - Get templates
+- `setInstructorTemplate(instructorId, week, day, hour, templateData)` - Set template
+- `removeInstructorTemplate(instructorId, week, day, hour)` - Remove template
+- `getInstructorBlocks(instructorId, week)` - Get blocks
+- `setInstructorBlock(instructorId, week, day, hour, blockData)` - Set block
+- `removeInstructorBlock(instructorId, week, day, hour)` - Remove block
+
+**Dependencies:** ObjectUtils, CalendarConstants, CalendarValidation, CalendarScheduleCore, DisciplineQueries, CharacterQueries
+
+---
+
+#### `modules/calendar/core/location-core.js`
+Location schedule operations.
+
+**Functions:**
+- `getLocationSchedule(locationId, week)` - Get location schedule
+- `setLocationClass(locationId, week, day, hour, disciplineId)` - Assign class
+- `removeLocationClass(locationId, week, day, hour)` - Remove class
+- `clearLocationSchedule(locationId, week)` - Clear schedule
+- `getClassLocation(studentId, week, day, hour)` - Get class location
+- `setClassLocation(studentId, week, day, hour, locationId)` - Set class location
+
+**Dependencies:** ObjectUtils, CalendarConstants, CalendarValidation, CalendarScheduleCore, CalendarMetadataCore, DisciplineQueries, LocationQueries
+
+---
+
+#### `modules/calendar/core/grid-core.js`
+Calendar grid construction and occupancy helpers.
+
+**Functions:**
+- `buildGrid(schedule, options)` - Build calendar grid
+- `getOccupiedHours(schedule, day)` - Get occupied hours
+- `getAvailableHours(schedule, day, startHour, endHour)` - Get available hours
+- `getAvailableStartHours(schedule, day, duration, startHour, endHour)` - Get available start hours
+- `getContinuousOccupiedHours(schedule, day, hour)` - Get continuous occupied hours
+- `hasOccupiedHours(schedule, day)` - Check if day has occupied hours
+- `getOccupiedDays(schedule)` - Get occupied days
+- `getTotalOccupiedHours(schedule)` - Get total occupied hours
+- `getTotalAvailableHours(schedule, startHour, endHour)` - Get total available hours
+
+**Dependencies:** CalendarScheduleCore, CalendarConstants, CalendarValidation
+
+---
+
+#### `modules/calendar/core/schedule-integrity.js`
+Schedule integrity validation.
+
+**Functions:**
+- `validateScheduleIntegrity(schedule, metadata, studentId, week)` - Comprehensive validation
+- `checkForOrphanMetadata(schedule, metadata, studentId, week)` - Check orphan metadata
+- `checkForGaps(schedule, durations, studentId, week)` - Check gaps
+- `checkForOverlaps(schedule, durations, studentId, week)` - Check overlaps
+- `findOccupiedRuns(schedule)` - Find occupied runs
+
+**Dependencies:** CalendarScheduleCore, CalendarConstants, CalendarValidation
+
+---
+
+#### `modules/calendar/modes/index.js`
+Calendar modes registry.
+
+**Functions:**
+- `registerMode(name, mode)` - Register a mode
+- `getMode(name)` - Get a mode
+- `getModeNames()` - Get all mode names
+- `getModeOptions()` - Get mode options for UI
+- `hasMode(name)` - Check if mode exists
+- `getModeCount()` - Get number of registered modes
+
+**Dependencies:** None
+
+---
+
+#### `modules/calendar/modes/student.js`
+Student calendar mode.
+
+**Functions:**
+- `render(container, state)` - Render student calendar
+- `getEntities()` - Get students
+- `getEntityDisplayName(entity)` - Get student display name
+- `getData(state)` - Get student schedule data
+
+**Dependencies:** CalendarUtils, CalendarRenderer, CalendarModes, CalendarConstants, CalendarValidation
+
+---
+
+#### `modules/calendar/modes/instructor.js`
+Instructor calendar mode.
+
+**Functions:**
+- `render(container, state)` - Render instructor calendar
+- `getEntities()` - Get instructors
+- `getEntityDisplayName(entity)` - Get instructor display name
+- `getData(state)` - Get instructor schedule data
+
+**Dependencies:** InstructorQueries, InstructorView, CalendarRenderer, CalendarUtils, CalendarConstants, CalendarValidation, CalendarModes, CalendarInstructorCore, MutationUtils, CharacterQueries, DisciplineQueries
+
+---
+
+#### `modules/calendar/modes/location.js`
+Location calendar mode.
+
+**Functions:**
+- `render(container, state)` - Render location calendar
+- `getEntities()` - Get locations
+- `getEntityDisplayName(entity)` - Get location display name
+- `getData(state)` - Get location schedule data
+
+**Dependencies:** LocationQueries, LocationView, CalendarRenderer, CalendarUtils, CalendarConstants, CalendarValidation, CalendarModes, CalendarLocationCore, MutationUtils, DisciplineQueries
+
+---
+
+#### `modules/calendar/views/instructor-view.js`
+Instructor-specific rendering.
+
+**Functions:**
+- `renderInstructorSidebar(instructorId, week)` - Instructor sidebar
+- `renderClassDetailsModal(data, callbacks)` - Class details modal
+- `renderBlockDetailsModal(data, callbacks)` - Block details modal
+- `renderManageStudentsModal(data, callbacks)` - Manage students modal
+- `renderAddClassModal(data, callbacks)` - Add class modal
+- `renderAvailableSlots(data, container)` - Available slots view
+
+**Dependencies:** InstructorQueries, CharacterQueries, DisciplineQueries, CalendarRenderer, CalendarUtils, DomUtils, CalendarConstants, CalendarValidation
+
+---
+
+#### `modules/calendar/views/location-view.js`
+Location-specific rendering.
+
+**Functions:**
+- `renderLocationSidebar(locationId, week)` - Location sidebar
+- `renderLocationDetailsModal(data, callbacks)` - Location details modal
+- `renderAddClassModal(data, callbacks)` - Add class modal
+- `renderLocationStudentsModal(data, callbacks)` - Students at location modal
+- `renderLocationUsageView(usage, container)` - Usage view
+- `renderDisciplineAvailabilityView(disciplines, container)` - Discipline availability view
+
+**Dependencies:** LocationQueries, CharacterQueries, DisciplineQueries, CalendarRenderer, CalendarUtils, DomUtils, CalendarConstants, CalendarValidation
+
+---
 
 ## Script Loading Order
 
@@ -471,34 +765,169 @@ Connects infrastructure components.
 <script src="js/utils/timing-utils.js"></script>
 <script src="js/utils/validation-utils.js"></script>
 
-<!-- 2. UI Utilities (depends on core-utils) -->
+<!-- 2. Shared Constants -->
+<script src="js/constants.js"></script>
+<script src="js/modules/shared/calendar-constants.js"></script>
+<script src="js/modules/shared/character-constants.js"></script>
+<script src="js/modules/shared/magic-constants.js"></script>
+<script src="js/modules/shared/social-constants.js"></script>
+
+<!-- 3. Core Validation (depends on constants) -->
+<script src="js/utils/calendar-validation.js"></script>
+<script src="js/modules/academy/academy-constants.js"></script>
+
+<!-- 4. UI Utilities (depends on core-utils) -->
 <script src="js/utils/dom-utils.js"></script>
 <script src="js/utils/form-utils.js"></script>
 <script src="js/utils/modal.js"></script>
 <script src="js/utils/notification.js"></script>
 
-<!-- 3. Core Services (depends on utils) -->
+<!-- 5. Core Services (depends on utils) -->
 <script src="js/core/activity-log.js"></script>
 <script src="js/core/database.js"></script>
 <script src="js/core/loader.js"></script>
 <script src="js/core/state.js"></script>
 
-<!-- 4. Application Services (depends on core) -->
+<!-- 6. Application Services (depends on core) -->
 <script src="js/core/tab-manager.js"></script>
 <script src="js/core/mutation-pipeline.js"></script>
 
-<!-- 5. Bootstrap (connects everything) -->
+<!-- 7. Bootstrap (connects everything) -->
 <script src="js/core/bootstrap.js"></script>
 
-<!-- 6. Domain Modules -->
+<!-- 8. Character Domain -->
+<script src="js/modules/characters/index.js"></script>
+<script src="js/modules/characters/character-queries.js"></script>
+<script src="js/modules/characters/character-crud.js"></script>
+<script src="js/modules/characters/character-classes.js"></script>
+<script src="js/modules/characters/character-eliminations.js"></script>
+<script src="js/modules/characters/character-stats.js"></script>
+<script src="js/modules/characters/character-stats-view.js"></script>
+<script src="js/modules/characters/character-form.js"></script>
+<script src="js/modules/characters/character-events.js"></script>
+<script src="js/modules/characters/character-list.js"></script>
+<script src="js/modules/characters/character-detail.js"></script>
+<script src="js/modules/characters/character-detail-queries.js"></script>
+<script src="js/modules/characters/character-class-view.js"></script>
+<script src="js/modules/characters/character-elimination-view.js"></script>
+<script src="js/modules/characters/character-generator.js"></script>
+
+<!-- 9. Social Domain -->
+<script src="js/modules/social/index.js"></script>
+<script src="js/modules/social/social-queries.js"></script>
+<script src="js/modules/social/social-core.js"></script>
+<script src="js/modules/social/social-views.js"></script>
+<script src="js/modules/social/social-graph.js"></script>
+<script src="js/modules/social/social-events.js"></script>
+
+<!-- 10. Calendar Core (depends on ObjectUtils, CalendarConstants, CalendarValidation) -->
+<script src="js/modules/calendar/calendar-utils.js"></script>
+<script src="js/modules/calendar/core/schedule-core.js"></script>
+<script src="js/modules/calendar/core/metadata-core.js"></script>
+<script src="js/modules/calendar/core/grid-core.js"></script>
+<script src="js/modules/calendar/core/student-core.js"></script>
+<script src="js/modules/calendar/core/instructor-core.js"></script>
+<script src="js/modules/calendar/core/location-core.js"></script>
+<script src="js/modules/calendar/core/schedule-integrity.js"></script>
+<script src="js/modules/calendar/core/index.js"></script>
+
+<!-- 11. Calendar Views and Modes -->
+<script src="js/modules/calendar/views/instructor-view.js"></script>
+<script src="js/modules/calendar/views/location-view.js"></script>
+<script src="js/modules/calendar/modes/index.js"></script>
+<script src="js/modules/calendar/modes/student.js"></script>
+<script src="js/modules/calendar/modes/instructor.js"></script>
+<script src="js/modules/calendar/modes/location.js"></script>
+<script src="js/modules/calendar/calendar-renderer.js"></script>
+<script src="js/modules/calendar/calendar-ui.js"></script>
+<script src="js/modules/calendar/index.js"></script>
+
+<!-- 12. Academy Domain -->
+<script src="js/modules/academy/academy-state.js"></script>
+<script src="js/modules/academy/academy-queries.js"></script>
+<script src="js/modules/academy/academy-grades.js"></script>
+<script src="js/modules/academy/academy-ranking.js"></script>
+<script src="js/modules/academy/academy-schedule.js"></script>
+<script src="js/modules/academy/academy-groups.js"></script>
+<script src="js/modules/academy/academy-distribute.js"></script>
+<script src="js/modules/academy/academy-core.js"></script>
+
+<!-- 13. Academy Tabs -->
+<script src="js/modules/academy/tabs/class-tab.js"></script>
+<script src="js/modules/academy/tabs/student-tab.js"></script>
+<script src="js/modules/academy/tabs/faculty-tab.js"></script>
+
+<!-- 14. Academy UI -->
+<script src="js/modules/academy/academy-views.js"></script>
+<script src="js/modules/academy/academy-events.js"></script>
+<script src="js/modules/academy/index.js"></script>
+
+<!-- 15. Domain Modules -->
 <script src="js/modules/dashboard.js"></script>
-<script src="js/modules/characters.js"></script>
 <script src="js/modules/teams.js"></script>
 <script src="js/modules/tournaments.js"></script>
-<script src="js/modules/curriculum.js"></script>
 <script src="js/modules/missions.js"></script>
-<script src="js/modules/social.js"></script>
 ```
+
+## Module Summary
+
+### Academy Module Files
+
+| File | Purpose |
+|------|---------|
+| `academy/index.js` | Entry point and lifecycle controller |
+| `academy/academy-state.js` | UI state management |
+| `academy/academy-views.js` | Shell and sub-tab rendering |
+| `academy/academy-events.js` | Event binding (events only) |
+| `academy/academy-queries.js` | Composite read models |
+| `academy/academy-core.js` | Domain core operations |
+| `academy/academy-grades.js` | Grade domain |
+| `academy/academy-ranking.js` | Ranking domain |
+| `academy/academy-schedule.js` | Schedule policy |
+| `academy/academy-groups.js` | Auto-group domain |
+| `academy/academy-distribute.js` | Distribution workflow |
+| `academy/academy-constants.js` | Academy constants |
+| `academy/tabs/class-tab.js` | Class sub-tab UI |
+| `academy/tabs/student-tab.js` | Student sub-tab UI |
+| `academy/tabs/faculty-tab.js` | Faculty sub-tab UI |
+
+### Calendar Module Files
+
+| File | Purpose |
+|------|---------|
+| `calendar/index.js` | Entry point |
+| `calendar/calendar-ui.js` | UI controller |
+| `calendar/calendar-renderer.js` | Shared grid renderer |
+| `calendar/calendar-utils.js` | Calendar utilities |
+| `calendar/core/index.js` | Core facade |
+| `calendar/core/schedule-core.js` | Schedule semantics (CANONICAL) |
+| `calendar/core/metadata-core.js` | Metadata operations |
+| `calendar/core/student-core.js` | Student schedule operations |
+| `calendar/core/instructor-core.js` | Instructor operations |
+| `calendar/core/location-core.js` | Location operations |
+| `calendar/core/grid-core.js` | Grid helpers |
+| `calendar/core/schedule-integrity.js` | Integrity validation |
+| `calendar/modes/index.js` | Modes registry |
+| `calendar/modes/student.js` | Student mode |
+| `calendar/modes/instructor.js` | Instructor mode |
+| `calendar/modes/location.js` | Location mode |
+| `calendar/views/instructor-view.js` | Instructor rendering |
+| `calendar/views/location-view.js` | Location rendering |
+
+### Core Utilities Added
+
+| File | Purpose |
+|------|---------|
+| `utils/calendar-validation.js` | Canonical calendar validation |
+| `modules/academy/academy-constants.js` | Academy constants |
+| `modules/calendar/core/schedule-core.js` | Schedule semantics (CANONICAL) |
+| `modules/calendar/core/metadata-core.js` | Metadata operations |
+
+### Files Removed
+
+| File | Reason |
+|------|--------|
+| `modules/calendar/calendar-dependencies.js` | Obsolete - each mode validates its own dependencies |
 
 ## Migration Notes
 
@@ -538,12 +967,24 @@ Connects infrastructure components.
 | `DomUtils.notifyInfo()` | `NotificationSystem.notifyInfo()` |
 | `SessionState.toast` | `NotificationSystem.notify()` |
 | `MutationUtils` | `MutationPipeline` |
+| `AcademyQueries.validateWeek()` | `CalendarValidation.parseWeek()` |
+| `AcademyGroups.validateWeek()` | `CalendarValidation.parseWeek()` |
+| `AcademyRanking.validateWeek()` | `CalendarValidation.parseWeek()` |
+| `AcademySchedule.validateWeek()` | `CalendarValidation.parseWeek()` |
+| `AcademyGrades.validateWeek()` | `CalendarValidation.parseWeek()` |
+| `AcademyDistribute.validateWeek()` | `CalendarValidation.parseWeek()` |
 
 ### Removed Features
 - `CoreUtils.set()` - Mutated its argument, removed
 - `DomUtils.escapeUrl()` - Use `encodeUrlComponent()`
 - `window.logActivity` - Use `ActivityLog.record()`
 - `window.getDefaultMagicProficiencies` - Use `db.getDefaultMagicProficiencies()`
+- `AcademyQueries.getDisciplineTypeLabel()` - Presentation logic, removed
+- `AcademyQueries.getDisciplineTypeColor()` - Presentation logic, removed
+- `AcademyQueries.getLocationTypeLabel()` - Presentation logic, removed
+- `AcademyQueries.getLocationTypeIcon()` - Presentation logic, removed
+- `AcademyQueries.getCurrentWeek()` - Use AcademyCore.getCurrentWeek()
+- `AcademyQueries.getWeekRange()` - Use CalendarConstants
 
 ## Testing Considerations
 
@@ -552,14 +993,19 @@ Connects infrastructure components.
 3. **Database Mocking**: Mock `window.db` and `window.saveData()` for unit tests.
 4. **DOM Utilities**: Use `jsdom` or similar for DOM testing.
 5. **Event Listeners**: Use `TabManager.destroy()` to clean up between tests.
+6. **Calendar State**: Use `CalendarUI.destroy()` and `CalendarUI.setState()` for testing calendar state.
+7. **Academy State**: Use `AcademyState.resetState()` for testing academy UI state.
 
 ## Performance Considerations
 
 1. **Save Queue**: Database saves are coalesced to reduce IndexedDB writes
-2. **Event Delegation**: Tab navigation uses event delegation (one listener per container)
+2. **Event Delegation**: Tab navigation and academy events use event delegation
 3. **Notification Queue**: Notifications are queued to prevent DOM explosion
 4. **State Setters**: State changes are synchronous; no re-render triggers
 5. **Deep Cloning**: Used only for rollback snapshots; not for frequent operations
+6. **Calendar Grid**: Uses shared renderer with virtual grid for large schedules
+7. **Social Graph**: SVG rendering with zoom controls for performance
+8. **Candidate Mutations**: All domain mutations use candidate-based copy-before-commit
 
 ## Future Considerations
 
@@ -568,4 +1014,7 @@ Connects infrastructure components.
 3. **Data Versioning**: DATA_VERSION will increment with schema changes
 4. **IndexedDB Structural Changes**: DB_VERSION will increment if object stores change
 5. **PWA Support**: Service worker and offline support would be an extension of Database
-```
+6. **Calendar Export**: iCalendar export functionality
+7. **Social Graph Layout**: Force-directed layout for better graph visualization
+8. **Character Generation**: More sophisticated character generation with class balancing
+9. **Bulk Operations**: Batch operations for schedule management

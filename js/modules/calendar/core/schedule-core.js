@@ -20,11 +20,11 @@
  *   - No direct window.data access
  *   - PURE functions - no side effects, no mutations
  *   - Uses CalendarConstants for bounds
- *   - Uses ValidationUtils for strict parsing (when available)
+ *   - Uses CalendarValidation for strict parsing
  * 
  * DEPENDENCIES:
  *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
- *   - window.ValidationUtils (from validation-utils.js) - OPTIONAL (for parsing)
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  * 
  * USAGE:
  *   var SC = window.CalendarScheduleCore;
@@ -46,12 +46,15 @@
     // ============================================================
 
     if (!window.CalendarConstants) {
-        console.error('[CalendarScheduleCore] CalendarConstants is required.');
-        return;
+        throw new Error('[CalendarScheduleCore] CalendarConstants is required.');
+    }
+
+    if (!window.CalendarValidation) {
+        throw new Error('[CalendarScheduleCore] CalendarValidation is required.');
     }
 
     var CalendarConstants = window.CalendarConstants;
-    var ValidationUtils = window.ValidationUtils;
+    var CalendarValidation = window.CalendarValidation;
 
     // ============================================================
     // CONSTANTS
@@ -64,24 +67,6 @@
     var MIN_HOUR = CalendarConstants.MIN_HOUR;
     var MAX_HOUR = CalendarConstants.MAX_HOUR;
     var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
-
-    // ============================================================
-    // STRICT INTEGER PARSING
-    // ============================================================
-
-    function parseInteger(value) {
-        if (ValidationUtils && typeof ValidationUtils.parseInteger === 'function') {
-            return ValidationUtils.parseInteger(value);
-        }
-
-        // Local fallback (should never be reached if ValidationUtils is loaded)
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-
-        var num = Number(value);
-        return Number.isInteger(num) ? num : null;
-    }
 
     // ============================================================
     // SCHEDULE KEY GENERATION - CANONICAL SOURCE OF TRUTH
@@ -121,9 +106,9 @@
         }
 
         var studentId = parts[0] || null;
-        var week = parseInteger(parts[1]);
-        var day = parseInteger(parts[2]);
-        var hour = parseInteger(parts[3]);
+        var week = CalendarValidation.parseWeek(parts[1]);
+        var day = CalendarValidation.parseDay(parts[2]);
+        var hour = CalendarValidation.parseHour(parts[3]);
 
         if (!studentId || week === null || day === null || hour === null) {
             return null;
@@ -152,19 +137,19 @@
      * @returns {boolean} True if there is a conflict
      */
     function hasConflict(schedule, day, hour, duration) {
-        var dayNum = parseInteger(day);
-        var hourNum = parseInteger(hour);
-        var durationNum = parseInteger(duration);
+        var dayNum = CalendarValidation.parseDay(day);
+        var hourNum = CalendarValidation.parseHour(hour);
+        var durationNum = CalendarValidation.parseDuration(duration);
 
         if (dayNum === null || hourNum === null || durationNum === null) {
-            return false;
+            return true;
         }
 
         // Validate bounds
         if (dayNum < MIN_DAY || dayNum > MAX_DAY ||
             hourNum < MIN_HOUR || hourNum > MAX_HOUR ||
             durationNum < 1 || durationNum > MAX_DURATION) {
-            return true; // Invalid input is treated as a conflict
+            return true;
         }
 
         // Check calendar boundary
@@ -196,12 +181,12 @@
      * @returns {boolean} True if there is an overlap
      */
     function hasDurationOverlap(entries, day, hour, duration) {
-        var dayNum = parseInteger(day);
-        var hourNum = parseInteger(hour);
-        var durationNum = parseInteger(duration);
+        var dayNum = CalendarValidation.parseDay(day);
+        var hourNum = CalendarValidation.parseHour(hour);
+        var durationNum = CalendarValidation.parseDuration(duration);
 
         if (dayNum === null || hourNum === null || durationNum === null) {
-            return true; // Invalid input is treated as a conflict
+            return true;
         }
 
         // Validate bounds
@@ -227,13 +212,13 @@
                 continue;
             }
 
-            var existingStart = parseInteger(existingHour);
+            var existingStart = CalendarValidation.parseHour(existingHour);
             if (existingStart === null) {
                 continue;
             }
 
             var entry = dayEntries[existingHour];
-            var existingDuration = entry && entry.duration ? parseInteger(entry.duration) : null;
+            var existingDuration = entry && entry.duration ? CalendarValidation.parseDuration(entry.duration) : null;
 
             // If the existing entry is malformed, treat it as occupied
             if (existingDuration === null || existingDuration < 1 || existingDuration > MAX_DURATION) {
@@ -274,8 +259,8 @@
      * @returns {object|null} { startHour, duration, disciplineId, key } or null
      */
     function findClassStartHour(schedule, durations, studentId, week, day, hour) {
-        var dayNum = parseInteger(day);
-        var hourNum = parseInteger(hour);
+        var dayNum = CalendarValidation.parseDay(day);
+        var hourNum = CalendarValidation.parseHour(hour);
 
         if (dayNum === null || hourNum === null) {
             return null;
@@ -346,8 +331,8 @@
      * @returns {number|null} Actual duration or null if inconsistent
      */
     function validateOccupiedDuration(schedule, day, startHour, disciplineId) {
-        var dayNum = parseInteger(day);
-        var startNum = parseInteger(startHour);
+        var dayNum = CalendarValidation.parseDay(day);
+        var startNum = CalendarValidation.parseHour(startHour);
 
         if (dayNum === null || startNum === null) {
             return null;
@@ -394,12 +379,7 @@
             return null;
         }
 
-        var num = parseInteger(duration);
-        if (num === null || num < 1 || num > MAX_DURATION) {
-            return null;
-        }
-
-        return num;
+        return CalendarValidation.parseDuration(duration);
     }
 
     // ============================================================
@@ -416,8 +396,8 @@
      * @returns {number} Number of continuous occupied hours
      */
     function getContinuousOccupiedHours(schedule, day, hour) {
-        var dayNum = parseInteger(day);
-        var hourNum = parseInteger(hour);
+        var dayNum = CalendarValidation.parseDay(day);
+        var hourNum = CalendarValidation.parseHour(hour);
 
         if (dayNum === null || hourNum === null) {
             return 0;
@@ -486,15 +466,15 @@
      * @returns {Array} Array of available start hours
      */
     function getAvailableStartHours(schedule, day, duration, startHour, endHour) {
-        var dayNum = parseInteger(day);
-        var durationNum = parseInteger(duration);
+        var dayNum = CalendarValidation.parseDay(day);
+        var durationNum = CalendarValidation.parseDuration(duration);
 
         if (dayNum === null || durationNum === null) {
             return [];
         }
 
-        startHour = startHour !== undefined ? parseInteger(startHour) : CalendarConstants.CALENDAR_START_HOUR;
-        endHour = endHour !== undefined ? parseInteger(endHour) : CalendarConstants.CALENDAR_END_HOUR;
+        startHour = startHour !== undefined ? CalendarValidation.parseHour(startHour) : CalendarConstants.CALENDAR_START_HOUR;
+        endHour = endHour !== undefined ? CalendarValidation.parseHour(endHour) : CalendarConstants.CALENDAR_END_HOUR;
 
         if (startHour === null || endHour === null || startHour > endHour) {
             return [];
@@ -521,14 +501,14 @@
      * @returns {number|null} Next available start hour or null
      */
     function getNextAvailableStartHour(schedule, day, duration, fromHour) {
-        var dayNum = parseInteger(day);
-        var durationNum = parseInteger(duration);
+        var dayNum = CalendarValidation.parseDay(day);
+        var durationNum = CalendarValidation.parseDuration(duration);
 
         if (dayNum === null || durationNum === null) {
             return null;
         }
 
-        fromHour = fromHour !== undefined ? parseInteger(fromHour) : CalendarConstants.CALENDAR_START_HOUR;
+        fromHour = fromHour !== undefined ? CalendarValidation.parseHour(fromHour) : CalendarConstants.CALENDAR_START_HOUR;
         if (fromHour === null) {
             return null;
         }
@@ -570,10 +550,7 @@
 
         // Availability
         getAvailableStartHours: getAvailableStartHours,
-        getNextAvailableStartHour: getNextAvailableStartHour,
-
-        // Utility
-        parseInteger: parseInteger
+        getNextAvailableStartHour: getNextAvailableStartHour
     };
 
 })();

@@ -13,43 +13,93 @@
  *   - All mutations are candidate-based: validate, clone, modify, commit
  *   - No mutation of live state occurs before candidate validation completes
  *   - This module does NOT call saveData() - callers own persistence
- *   - All deep cloning uses ObjectUtils.deepClone (or structuredClone fallback)
+ *   - All deep cloning uses ObjectUtils.deepClone (MANDATORY)
  *   - All ID normalisation is consistent
  *   - getClassLocation() resolves continuation hours to the class start
  *   - setClassLocation() resolves continuation hours to the class start
+ *   - All validation uses CalendarValidation from calendar-validation.js
  * 
  * DEPENDENCIES:
- *   - window.ObjectUtils (from object-utils.js)
- *   - window.getDiscipline (from curriculum modules)
- *   - window.getLocation (from curriculum modules)
- *   - window.logActivity (for activity logging)
+ *   - window.ObjectUtils (from object-utils.js) - MANDATORY
+ *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
+ *   - window.CalendarScheduleCore (from schedule-core.js) - MANDATORY
+ *   - window.CalendarMetadataCore (from metadata-core.js) - MANDATORY
+ *   - window.DisciplineQueries (from discipline-queries.js) - MANDATORY
+ *   - window.LocationQueries (from location-queries.js) - MANDATORY
  */
 
 (function() {
     'use strict';
 
-    // ============================================================
-    // GUARD AGAINST DUPLICATE LOADING
-    // ============================================================
-
+    // Guard against duplicate loading
     if (window.__calendarLocationCoreLoaded) {
         return;
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
     // ============================================================
 
+    var missing = [];
+
     if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
-        return;
+        missing.push('ObjectUtils.deepClone');
+    }
+
+    if (!window.CalendarConstants) {
+        missing.push('CalendarConstants');
+    }
+
+    if (!window.CalendarValidation) {
+        missing.push('CalendarValidation');
+    }
+
+    if (!window.CalendarScheduleCore) {
+        missing.push('CalendarScheduleCore');
+    }
+
+    if (!window.CalendarMetadataCore) {
+        missing.push('CalendarMetadataCore');
+    }
+
+    if (!window.DisciplineQueries || typeof window.DisciplineQueries.getDiscipline !== 'function') {
+        missing.push('DisciplineQueries.getDiscipline');
+    }
+
+    if (!window.LocationQueries || typeof window.LocationQueries.getLocation !== 'function') {
+        missing.push('LocationQueries.getLocation');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[CalendarLocationCore] Missing dependencies: ' + missing.join(', '));
     }
 
     window.__calendarLocationCoreLoaded = true;
 
     // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var ObjectUtils = window.ObjectUtils;
+    var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
+    var ScheduleCore = window.CalendarScheduleCore;
+    var MetadataCore = window.CalendarMetadataCore;
+    var DisciplineQueries = window.DisciplineQueries;
+    var LocationQueries = window.LocationQueries;
+
+    // ============================================================
     // CONSTANTS
     // ============================================================
 
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var MIN_DAY = CalendarConstants.MIN_DAY;
+    var MAX_DAY = CalendarConstants.MAX_DAY;
+    var MIN_HOUR = CalendarConstants.MIN_HOUR;
+    var MAX_HOUR = CalendarConstants.MAX_HOUR;
+    var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
     var METADATA_KEYS = ['classInstructors', 'classLabels', 'classGroupLabels', 'classDurations', 'classLocations'];
 
     // ============================================================
@@ -64,58 +114,8 @@
         return typeof value === 'string' && value.trim() !== '';
     }
 
-    function getDataStore() {
-        if (!window.data || typeof window.data !== 'object') {
-            return null;
-        }
-        return window.data;
-    }
-
-    function getDiscipline(id) {
-        if (typeof window.getDiscipline === 'function') {
-            return window.getDiscipline(id);
-        }
-        var data = getDataStore();
-        if (!data || !data.curriculum || !Array.isArray(data.curriculum.disciplines)) {
-            return null;
-        }
-        for (var i = 0; i < data.curriculum.disciplines.length; i++) {
-            if (data.curriculum.disciplines[i] && String(data.curriculum.disciplines[i].id) === String(id)) {
-                return data.curriculum.disciplines[i];
-            }
-        }
-        return null;
-    }
-
-    function getLocationById(id) {
-        if (typeof window.getLocation === 'function') {
-            return window.getLocation(id);
-        }
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.locations)) {
-            return null;
-        }
-        for (var i = 0; i < data.locations.length; i++) {
-            if (data.locations[i] && String(data.locations[i].id) === String(id)) {
-                return data.locations[i];
-            }
-        }
-        return null;
-    }
-
-    function logActivity(message, type) {
-        type = type || 'info';
-        if (typeof window.logActivity === 'function') {
-            try {
-                window.logActivity(message, type);
-            } catch (e) {
-                // Activity logging failure should not abort mutations
-            }
-        }
-    }
-
     function deepClone(value) {
-        return window.ObjectUtils.deepClone(value);
+        return ObjectUtils.deepClone(value);
     }
 
     function normaliseId(value) {
@@ -127,53 +127,19 @@
     }
 
     function getScheduleKey(studentId, week, day, hour) {
-        return String(studentId) + '_' + String(week) + '_' + String(day) + '_' + String(hour);
+        return ScheduleCore.getScheduleKey(studentId, week, day, hour);
     }
 
-    function validateWeek(value) {
-        var num = parseInt(value, 10);
-        return (!isNaN(num) && num >= 1 && num <= 52) ? num : null;
+    function getValidClassDuration(metadata, key) {
+        return MetadataCore.getValidClassDuration(metadata, key);
     }
 
-    function validateDay(value) {
-        var num = parseInt(value, 10);
-        return (!isNaN(num) && num >= 1 && num <= 7) ? num : null;
+    function buildMetadataCandidates(curriculum) {
+        return MetadataCore.buildCandidates(curriculum);
     }
 
-    function validateHour(value) {
-        var num = parseInt(value, 10);
-        return (!isNaN(num) && num >= 0 && num <= 23) ? num : null;
-    }
-
-    function validateScheduleSlot(studentId, week, day, hour) {
-        if (!isNonEmptyString(studentId)) {
-            return { success: false, message: 'Student ID is required.' };
-        }
-
-        var weekNum = validateWeek(week);
-        if (weekNum === null) {
-            return { success: false, message: 'Valid week is required (1-52).' };
-        }
-
-        var dayNum = validateDay(day);
-        if (dayNum === null) {
-            return { success: false, message: 'Valid day is required (1-7).' };
-        }
-
-        var hourNum = validateHour(hour);
-        if (hourNum === null) {
-            return { success: false, message: 'Valid hour is required (0-23).' };
-        }
-
-        return {
-            success: true,
-            data: {
-                studentId: String(studentId).trim(),
-                week: weekNum,
-                day: dayNum,
-                hour: hourNum
-            }
-        };
+    function commitMetadataCandidates(curriculum, metadataCandidates) {
+        MetadataCore.commitCandidates(curriculum, metadataCandidates);
     }
 
     function validateLocationStructure(data) {
@@ -211,125 +177,6 @@
         return { success: true, data: data };
     }
 
-    function buildMetadataCandidates(curriculum) {
-        var metadata = {};
-        for (var i = 0; i < METADATA_KEYS.length; i++) {
-            var key = METADATA_KEYS[i];
-            var source = curriculum && curriculum[key] ? curriculum[key] : {};
-            var cloned = deepClone(source);
-            if (cloned === null) {
-                return null;
-            }
-            metadata[key] = cloned;
-        }
-        return metadata;
-    }
-
-    function commitMetadataCandidates(curriculum, metadataCandidates) {
-        for (var i = 0; i < METADATA_KEYS.length; i++) {
-            var key = METADATA_KEYS[i];
-            curriculum[key] = metadataCandidates[key];
-        }
-    }
-
-    function getValidClassDuration(metadata, key) {
-        if (!metadata || !metadata.classDurations) {
-            return null;
-        }
-        var duration = metadata.classDurations[key];
-        if (duration === undefined || duration === null) {
-            return null;
-        }
-        var num = parseInt(duration, 10);
-        return (!isNaN(num) && num >= 1 && num <= 4) ? num : null;
-    }
-
-    /**
-     * Find the class start hour for a given occupied hour.
-     * Uses metadata to find the start, with occupancy fallback.
-     * Returns null if no class start can be found.
-     */
-    function findClassStartHour(schedule, metadata, studentId, week, day, hour) {
-        if (!schedule || !schedule[day]) {
-            return null;
-        }
-
-        var disciplineId = schedule[day][hour];
-        if (!disciplineId) {
-            return null;
-        }
-
-        // First, check if this hour itself has metadata (is a start)
-        var key = getScheduleKey(studentId, week, day, hour);
-        var duration = getValidClassDuration(metadata, key);
-
-        if (duration !== null) {
-            // Validate that the duration matches the actual occupied cells
-            var actualDuration = validateOccupiedDuration(schedule, day, hour, disciplineId);
-            if (actualDuration !== null && duration === actualDuration) {
-                return {
-                    startHour: hour,
-                    duration: duration,
-                    disciplineId: disciplineId,
-                    key: key
-                };
-            }
-        }
-
-        // Search backwards for a metadata-defined class start
-        for (var candidate = hour - 1; candidate >= 0; candidate--) {
-            if (String(schedule[day][candidate]) !== String(disciplineId)) {
-                break;
-            }
-
-            var candidateKey = getScheduleKey(studentId, week, day, candidate);
-            var candidateDuration = getValidClassDuration(metadata, candidateKey);
-
-            if (candidateDuration !== null) {
-                var actualDuration = validateOccupiedDuration(schedule, day, candidate, disciplineId);
-                if (actualDuration !== null && candidateDuration === actualDuration) {
-                    if (hour < candidate + candidateDuration) {
-                        return {
-                            startHour: candidate,
-                            duration: candidateDuration,
-                            disciplineId: disciplineId,
-                            key: candidateKey
-                        };
-                    }
-                }
-                break;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Validate that occupied hours match the expected duration.
-     * Returns the actual duration if consistent, null otherwise.
-     */
-    function validateOccupiedDuration(schedule, day, startHour, disciplineId) {
-        var duration = 0;
-        var maxHour = 23;
-
-        for (var h = startHour; h <= maxHour; h++) {
-            if (String(schedule[day][h]) === String(disciplineId)) {
-                duration++;
-            } else {
-                break;
-            }
-        }
-
-        // Check that the class is contiguous - no gaps
-        for (var h = startHour + duration; h <= Math.min(startHour + duration + 4, maxHour); h++) {
-            if (String(schedule[day][h]) === String(disciplineId)) {
-                return null;
-            }
-        }
-
-        return duration;
-    }
-
     function failure(message) {
         return { success: false, message: message };
     }
@@ -347,12 +194,12 @@
      * Returns a cloned copy to prevent external mutation.
      */
     function getLocationSchedule(locationId, week) {
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
             return {};
         }
 
-        var data = getDataStore();
+        var data = window.data;
         if (!data || !data.locationSchedules) {
             return {};
         }
@@ -375,19 +222,19 @@
             return failure('Location ID is required.');
         }
 
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
-            return failure('Valid week is required (1-52).');
+            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
         }
 
-        var dayNum = validateDay(day);
+        var dayNum = CalendarValidation.parseDay(day);
         if (dayNum === null) {
-            return failure('Valid day is required (1-7).');
+            return failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').');
         }
 
-        var hourNum = validateHour(hour);
+        var hourNum = CalendarValidation.parseHour(hour);
         if (hourNum === null) {
-            return failure('Valid hour is required (0-23).');
+            return failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').');
         }
 
         if (!isNonEmptyString(disciplineId)) {
@@ -399,18 +246,18 @@
             return failure('Discipline ID is required.');
         }
 
-        var discipline = getDiscipline(normalisedDisciplineId);
+        var discipline = DisciplineQueries.getDiscipline(normalisedDisciplineId);
         if (!discipline) {
             return failure('Discipline not found.');
         }
 
-        var location = getLocationById(normalisedLocationId);
+        var location = LocationQueries.getLocation(normalisedLocationId);
         if (!location) {
             return failure('Location not found.');
         }
 
         // ---- PHASE 2: VALIDATE STRUCTURE ----
-        var data = getDataStore();
+        var data = window.data;
         if (!data) {
             return failure('Data store is not available.');
         }
@@ -440,7 +287,6 @@
         // ---- PHASE 4: COMMIT ----
         data.locationSchedules = candidateSchedules;
 
-        logActivity('Assigned class to location: ' + discipline.name);
         return success({ assigned: true });
     }
 
@@ -455,23 +301,23 @@
             return failure('Location ID is required.');
         }
 
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
-            return failure('Valid week is required (1-52).');
+            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
         }
 
-        var dayNum = validateDay(day);
+        var dayNum = CalendarValidation.parseDay(day);
         if (dayNum === null) {
-            return failure('Valid day is required (1-7).');
+            return failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').');
         }
 
-        var hourNum = validateHour(hour);
+        var hourNum = CalendarValidation.parseHour(hour);
         if (hourNum === null) {
-            return failure('Valid hour is required (0-23).');
+            return failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').');
         }
 
         // ---- PHASE 2: VALIDATE STRUCTURE ----
-        var data = getDataStore();
+        var data = window.data;
         if (!data) {
             return failure('Data store is not available.');
         }
@@ -513,7 +359,6 @@
         // ---- PHASE 4: COMMIT ----
         data.locationSchedules = candidateSchedules;
 
-        logActivity('Removed class from location');
         return success({ removed: true });
     }
 
@@ -528,13 +373,13 @@
             return failure('Location ID is required.');
         }
 
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
-            return failure('Valid week is required (1-52).');
+            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
         }
 
         // ---- PHASE 2: VALIDATE STRUCTURE ----
-        var data = getDataStore();
+        var data = window.data;
         if (!data) {
             return failure('Data store is not available.');
         }
@@ -564,9 +409,12 @@
         // ---- PHASE 4: COMMIT ----
         data.locationSchedules = candidateSchedules;
 
-        logActivity('Cleared location schedule for week ' + weekNum);
         return success({ cleared: true });
     }
+
+    // ============================================================
+    // CLASS LOCATION RESOLUTION
+    // ============================================================
 
     /**
      * Get the location of a class.
@@ -578,23 +426,23 @@
             return null;
         }
 
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
             return null;
         }
 
-        var dayNum = validateDay(day);
+        var dayNum = CalendarValidation.parseDay(day);
         if (dayNum === null) {
             return null;
         }
 
-        var hourNum = validateHour(hour);
+        var hourNum = CalendarValidation.parseHour(hour);
         if (hourNum === null) {
             return null;
         }
 
         // ---- PHASE 2: GET DATA ----
-        var data = getDataStore();
+        var data = window.data;
         if (!data || !data.curriculum || !data.curriculum.classLocations) {
             return null;
         }
@@ -620,7 +468,15 @@
             classLocations: data.curriculum.classLocations || {}
         };
 
-        var classStart = findClassStartHour(weekSchedule, metadata, studentId, weekNum, dayNum, hourNum);
+        var classStart = ScheduleCore.findClassStartHour(
+            weekSchedule,
+            metadata.classDurations,
+            studentId,
+            weekNum,
+            dayNum,
+            hourNum
+        );
+
         if (!classStart) {
             return null;
         }
@@ -640,20 +496,32 @@
      */
     function setClassLocation(studentId, week, day, hour, locationId) {
         // ---- PHASE 1: VALIDATE ----
-        var slotValidation = validateScheduleSlot(studentId, week, day, hour);
-        if (!slotValidation.success) {
-            return failure(slotValidation.message);
+        var weekNum = CalendarValidation.parseWeek(week);
+        if (weekNum === null) {
+            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
         }
 
-        var validated = slotValidation.data;
+        var dayNum = CalendarValidation.parseDay(day);
+        if (dayNum === null) {
+            return failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').');
+        }
+
+        var hourNum = CalendarValidation.parseHour(hour);
+        if (hourNum === null) {
+            return failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').');
+        }
+
+        if (!isNonEmptyString(studentId)) {
+            return failure('Student ID is required.');
+        }
 
         var normalisedLocationId = normaliseId(locationId);
-        if (normalisedLocationId && !getLocationById(normalisedLocationId)) {
+        if (normalisedLocationId && !LocationQueries.getLocation(normalisedLocationId)) {
             return failure('Location not found.');
         }
 
         // ---- PHASE 2: VALIDATE CURRICULUM STRUCTURE ----
-        var data = getDataStore();
+        var data = window.data;
         if (!data) {
             return failure('Data store is not available.');
         }
@@ -665,13 +533,13 @@
 
         // ---- PHASE 3: VERIFY CLASS EXISTS AT THIS HOUR ----
         var schedules = data.curriculum.schedules || {};
-        var studentSchedule = schedules[validated.studentId];
-        if (!studentSchedule || !studentSchedule[validated.week]) {
+        var studentSchedule = schedules[studentId];
+        if (!studentSchedule || !studentSchedule[weekNum]) {
             return failure('No schedule for this student and week.');
         }
 
-        var weekSchedule = studentSchedule[validated.week];
-        if (!weekSchedule[validated.day] || !weekSchedule[validated.day][validated.hour]) {
+        var weekSchedule = studentSchedule[weekNum];
+        if (!weekSchedule[dayNum] || !weekSchedule[dayNum][hourNum]) {
             return failure('No class at this time.');
         }
 
@@ -684,7 +552,15 @@
             classLocations: data.curriculum.classLocations || {}
         };
 
-        var classStart = findClassStartHour(weekSchedule, metadata, validated.studentId, validated.week, validated.day, validated.hour);
+        var classStart = ScheduleCore.findClassStartHour(
+            weekSchedule,
+            metadata.classDurations,
+            studentId,
+            weekNum,
+            dayNum,
+            hourNum
+        );
+
         if (!classStart) {
             return failure('No valid class start found for this hour.');
         }
@@ -695,7 +571,7 @@
             return failure('Failed to prepare metadata data.');
         }
 
-        var key = getScheduleKey(validated.studentId, validated.week, validated.day, classStart.startHour);
+        var key = getScheduleKey(studentId, weekNum, dayNum, classStart.startHour);
 
         if (normalisedLocationId) {
             metadataCandidates.classLocations[key] = normalisedLocationId;

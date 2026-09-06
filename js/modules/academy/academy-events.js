@@ -63,6 +63,9 @@
         if (!AcademyState || typeof AcademyState.getState !== 'function') {
             missing.push('AcademyState.getState');
         }
+        if (!AcademyState || typeof AcademyState.switchSubTab !== 'function') {
+            missing.push('AcademyState.switchSubTab');
+        }
 
         if (!ClassTab || typeof ClassTab.bindEvents !== 'function') {
             missing.push('ClassTab.bindEvents');
@@ -85,18 +88,13 @@
         }
 
         if (missing.length > 0) {
-            console.warn('AcademyEvents: Missing dependencies:', missing.join(', '));
-            return false;
+            throw new Error('AcademyEvents: Missing dependencies: ' + missing.join(', '));
         }
 
         return true;
     }
 
-    if (!checkDependencies()) {
-        return;
-    }
-
-    window.__academyEventsLoaded = true;
+    checkDependencies();
 
     // ============================================================
     // NOTIFICATION - Delegates to NotificationSystem
@@ -173,8 +171,7 @@
             container = document.getElementById('tab-academy');
         }
         if (!container) {
-            console.warn('AcademyEvents: Container not found');
-            return;
+            throw new Error('AcademyEvents: Container not found');
         }
 
         // Remove existing listeners before binding new ones
@@ -220,27 +217,14 @@
                 return;
             }
 
-            // Update buttons
-            var btns = nav.querySelectorAll('.tab-btn');
-            for (var i = 0; i < btns.length; i++) {
-                btns[i].classList.remove('active');
-            }
-            btn.classList.add('active');
-
-            // Update state
+            // Update state - rendering layer will reflect this
             AcademyState.switchSubTab(subTab);
 
-            // Update panel visibility
-            var panels = container.querySelectorAll('.academy-tab-panel');
-            for (var j = 0; j < panels.length; j++) {
-                var panel = panels[j];
-                var isActive = panel.dataset.tab === subTab;
-                panel.style.display = isActive ? 'block' : 'none';
-                panel.classList.toggle('active', isActive);
-            }
-
-            // Refresh content
-            refreshSubTab(subTab);
+            // Dispatch event for controller to handle
+            var event = new CustomEvent('academy:subtabchange', {
+                detail: { subTab: subTab }
+            });
+            document.dispatchEvent(event);
         });
     }
 
@@ -255,8 +239,11 @@
         }
 
         addSafeEventListener(refreshBtn, 'click', function() {
-            refreshAcademy();
-            showNotification('Refreshed', 'info');
+            // Dispatch event for controller to handle
+            var event = new CustomEvent('academy:refresh', {
+                detail: {}
+            });
+            document.dispatchEvent(event);
         });
     }
 
@@ -267,225 +254,42 @@
     function bindSubTabEvents(container) {
         // Class tab events
         var classPanel = container.querySelector('.academy-tab-panel[data-tab="class"]');
-        if (classPanel && ClassTab && typeof ClassTab.bindEvents === 'function') {
+        if (classPanel) {
             try {
                 var cleanup = ClassTab.bindEvents(classPanel);
                 if (typeof cleanup === 'function') {
                     _subTabCleanups.push(cleanup);
                 }
             } catch (e) {
-                console.warn('AcademyEvents: ClassTab.bindEvents failed:', e);
+                throw new Error('AcademyEvents: ClassTab.bindEvents failed: ' + e.message);
             }
         }
 
         // Student tab events
         var studentPanel = container.querySelector('.academy-tab-panel[data-tab="student"]');
-        if (studentPanel && StudentTab && typeof StudentTab.bindEvents === 'function') {
+        if (studentPanel) {
             try {
                 var cleanup2 = StudentTab.bindEvents(studentPanel);
                 if (typeof cleanup2 === 'function') {
                     _subTabCleanups.push(cleanup2);
                 }
             } catch (e) {
-                console.warn('AcademyEvents: StudentTab.bindEvents failed:', e);
+                throw new Error('AcademyEvents: StudentTab.bindEvents failed: ' + e.message);
             }
         }
 
         // Faculty tab events
         var facultyPanel = container.querySelector('.academy-tab-panel[data-tab="faculty"]');
-        if (facultyPanel && FacultyTab && typeof FacultyTab.bindEvents === 'function') {
+        if (facultyPanel) {
             try {
                 var cleanup3 = FacultyTab.bindEvents(facultyPanel);
                 if (typeof cleanup3 === 'function') {
                     _subTabCleanups.push(cleanup3);
                 }
             } catch (e) {
-                console.warn('AcademyEvents: FacultyTab.bindEvents failed:', e);
+                throw new Error('AcademyEvents: FacultyTab.bindEvents failed: ' + e.message);
             }
         }
-    }
-
-    // ============================================================
-    // SUB-TAB EVENT BINDING - Individual exports for direct binding
-    // ============================================================
-
-    function bindClassTabEvents(container) {
-        if (ClassTab && typeof ClassTab.bindEvents === 'function') {
-            return ClassTab.bindEvents(container);
-        }
-        return function() {};
-    }
-
-    function bindStudentTabEvents(container) {
-        if (StudentTab && typeof StudentTab.bindEvents === 'function') {
-            return StudentTab.bindEvents(container);
-        }
-        return function() {};
-    }
-
-    function bindFacultyTabEvents(container) {
-        if (FacultyTab && typeof FacultyTab.bindEvents === 'function') {
-            return FacultyTab.bindEvents(container);
-        }
-        return function() {};
-    }
-
-    // ============================================================
-    // REFRESH HELPERS
-    // ============================================================
-
-    function refreshAcademy() {
-        var container = document.getElementById('tab-academy');
-        if (!container) {
-            return;
-        }
-
-        var state = AcademyState.getState();
-        var activeSubTab = state.activeSubTab;
-
-        // Refresh the content
-        var contentContainer = container.querySelector('#academy-subtab-content');
-        if (!contentContainer) {
-            return;
-        }
-
-        // Use the view renderer directly
-        if (window.AcademyViews) {
-            var html = '';
-            switch (activeSubTab) {
-                case 'class':
-                    html = window.AcademyViews.renderClassTab(state);
-                    break;
-                case 'student':
-                    html = window.AcademyViews.renderStudentTab(state);
-                    break;
-                case 'faculty':
-                    html = window.AcademyViews.renderFacultyTab(state);
-                    break;
-                default:
-                    html = '<p class="empty-state">Unknown sub-tab.</p>';
-            }
-            contentContainer.innerHTML = html;
-
-            // Re-bind events for the active tab
-            var panel = container.querySelector('.academy-tab-panel.active');
-            if (panel) {
-                switch (activeSubTab) {
-                    case 'class':
-                        ClassTab.bindEvents(panel);
-                        break;
-                    case 'student':
-                        StudentTab.bindEvents(panel);
-                        break;
-                    case 'faculty':
-                        FacultyTab.bindEvents(panel);
-                        break;
-                }
-            }
-        }
-    }
-
-    function refreshSubTab(subTab) {
-        var container = document.getElementById('tab-academy');
-        if (!container) {
-            return;
-        }
-
-        var state = AcademyState.getState();
-        var activeSubTab = subTab || state.activeSubTab;
-
-        var contentContainer = container.querySelector('#academy-subtab-content');
-        if (!contentContainer) {
-            return;
-        }
-
-        if (window.AcademyViews) {
-            var html = '';
-            switch (activeSubTab) {
-                case 'class':
-                    html = window.AcademyViews.renderClassTab(state);
-                    break;
-                case 'student':
-                    html = window.AcademyViews.renderStudentTab(state);
-                    break;
-                case 'faculty':
-                    html = window.AcademyViews.renderFacultyTab(state);
-                    break;
-                default:
-                    html = '<p class="empty-state">Unknown sub-tab.</p>';
-            }
-            contentContainer.innerHTML = html;
-
-            // Re-bind events for the active tab
-            var panel = container.querySelector('.academy-tab-panel.active');
-            if (panel) {
-                switch (activeSubTab) {
-                    case 'class':
-                        ClassTab.bindEvents(panel);
-                        break;
-                    case 'student':
-                        StudentTab.bindEvents(panel);
-                        break;
-                    case 'faculty':
-                        FacultyTab.bindEvents(panel);
-                        break;
-                }
-            }
-
-            // If student tab, refresh character list
-            if (activeSubTab === 'student' && window.CharacterList) {
-                window.CharacterList.render();
-            }
-        }
-    }
-
-    // ============================================================
-    // ACADEMY CONTAINER HTML (shared with index.js)
-    // ============================================================
-
-    function getAcademyContainerHTML(activeSubTab) {
-        activeSubTab = activeSubTab || 'class';
-
-        var html = '';
-
-        // Header
-        html += '<div class="academy-header">';
-        html += '<h2>Academic Year</h2>';
-        html += '<div class="academy-header-actions">';
-        html += '<button id="academy-refresh-btn" class="small secondary">↻ Refresh</button>';
-        html += '</div>';
-        html += '</div>';
-
-        // Tabs
-        html += getAcademyTabsHTML(activeSubTab);
-
-        // Content container
-        html += '<div id="academy-subtab-content">';
-        html += '<!-- Sub-tab content will be rendered here -->';
-        html += '</div>';
-
-        return html;
-    }
-
-    function getAcademyTabsHTML(activeSubTab) {
-        activeSubTab = activeSubTab || 'class';
-
-        var tabs = [
-            { id: 'class', label: 'Classes' },
-            { id: 'student', label: 'Students' },
-            { id: 'faculty', label: 'Faculty' }
-        ];
-
-        var html = '';
-        html += '<div class="academy-tab-nav">';
-        for (var i = 0; i < tabs.length; i++) {
-            var tab = tabs[i];
-            var isActive = tab.id === activeSubTab;
-            html += '<button class="tab-btn' + (isActive ? ' active' : '') + '" data-tab="' + escapeHtml(tab.id) + '">' + escapeHtml(tab.label) + '</button>';
-        }
-        html += '</div>';
-
-        return html;
     }
 
     // ============================================================
@@ -497,22 +301,17 @@
         init: init,
         destroy: destroy,
 
-        // Refresh
-        refreshAcademy: refreshAcademy,
-        refreshSubTab: refreshSubTab,
-
-        // Sub-tab event binding
-        bindClassTabEvents: bindClassTabEvents,
-        bindStudentTabEvents: bindStudentTabEvents,
-        bindFacultyTabEvents: bindFacultyTabEvents,
-
-        // HTML generators
-        getAcademyContainerHTML: getAcademyContainerHTML,
-        getAcademyTabsHTML: getAcademyTabsHTML,
-
         // Utilities
         addSafeEventListener: addSafeEventListener,
-        removeAllEventListeners: removeAllEventListeners
+        removeAllEventListeners: removeAllEventListeners,
+
+        // Internal (exposed for testing/debugging)
+        _getListeners: function() {
+            return _eventListeners.slice();
+        },
+        _getSubTabCleanups: function() {
+            return _subTabCleanups.slice();
+        }
     };
 
 })();

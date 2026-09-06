@@ -17,10 +17,12 @@
  *   - Instructor templates define the instructor's scheduled teaching slots
  *   - Blocks are time periods when the instructor is unavailable
  *   - Duration metadata is stored in the template/block itself
+ *   - All validation uses CalendarValidation from calendar-validation.js
  * 
  * DEPENDENCIES:
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
  *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.CalendarScheduleCore (from schedule-core.js) - MANDATORY
  *   - window.DisciplineQueries (from discipline-queries.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
@@ -57,6 +59,10 @@
         missing.push('CalendarConstants');
     }
 
+    if (!window.CalendarValidation) {
+        missing.push('CalendarValidation');
+    }
+
     if (!window.CalendarScheduleCore) {
         missing.push('CalendarScheduleCore');
     }
@@ -68,10 +74,12 @@
     if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
         missing.push('CharacterQueries.getCharacterById');
     }
+    if (!window.CharacterQueries || typeof window.CharacterQueries.isInstructor !== 'function') {
+        missing.push('CharacterQueries.isInstructor');
+    }
 
     if (missing.length > 0) {
-        console.error('[CalendarInstructorCore] Missing dependencies:', missing.join(', '));
-        return;
+        throw new Error('[CalendarInstructorCore] Missing dependencies: ' + missing.join(', '));
     }
 
     window.__calendarInstructorCoreLoaded = true;
@@ -82,6 +90,7 @@
 
     var ObjectUtils = window.ObjectUtils;
     var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
     var ScheduleCore = window.CalendarScheduleCore;
     var DisciplineQueries = window.DisciplineQueries;
     var CharacterQueries = window.CharacterQueries;
@@ -122,46 +131,6 @@
         return str !== '' ? str : null;
     }
 
-    function parseInteger(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        return Number.isInteger(num) ? num : null;
-    }
-
-    function validateWeek(value) {
-        var num = parseInteger(value);
-        if (num === null || num < MIN_WEEK || num > MAX_WEEK) {
-            return null;
-        }
-        return num;
-    }
-
-    function validateDay(value) {
-        var num = parseInteger(value);
-        if (num === null || num < MIN_DAY || num > MAX_DAY) {
-            return null;
-        }
-        return num;
-    }
-
-    function validateHour(value) {
-        var num = parseInteger(value);
-        if (num === null || num < MIN_HOUR || num > MAX_HOUR) {
-            return null;
-        }
-        return num;
-    }
-
-    function validateDuration(value) {
-        var num = parseInteger(value);
-        if (num === null || num < 1 || num > MAX_DURATION) {
-            return null;
-        }
-        return num;
-    }
-
     function validateCurriculumStructure(data) {
         if (!data) {
             return { success: false, message: 'Data store is not available.' };
@@ -199,7 +168,7 @@
      * Returns a cloned copy to prevent external mutation.
      */
     function getInstructorTemplates(instructorId, week) {
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
             return {};
         }
@@ -226,19 +195,19 @@
             return failure('Instructor ID is required.');
         }
 
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
-            return failure('Valid week is required (1-52).');
+            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
         }
 
-        var dayNum = validateDay(day);
+        var dayNum = CalendarValidation.parseDay(day);
         if (dayNum === null) {
-            return failure('Valid day is required (1-7).');
+            return failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').');
         }
 
-        var hourNum = validateHour(hour);
+        var hourNum = CalendarValidation.parseHour(hour);
         if (hourNum === null) {
-            return failure('Valid hour is required (0-23).');
+            return failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').');
         }
 
         if (!templateData || typeof templateData !== 'object') {
@@ -259,9 +228,9 @@
             return failure('Discipline not found.');
         }
 
-        var durationNum = validateDuration(templateData.duration);
+        var durationNum = CalendarValidation.parseDuration(templateData.duration);
         if (durationNum === null) {
-            return failure('Duration must be between 1 and ' + MAX_DURATION + ' hours.');
+            return failure('Duration must be between ' + CalendarConstants.MIN_CLASS_DURATION + ' and ' + CalendarConstants.MAX_CLASS_DURATION + ' hours.');
         }
 
         if (hourNum + durationNum > MAX_HOUR + 1) {
@@ -271,6 +240,9 @@
         var instructor = CharacterQueries.getCharacterById(normalisedInstructorId);
         if (!instructor) {
             return failure('Instructor not found.');
+        }
+        if (!CharacterQueries.isInstructor(instructor)) {
+            return failure('Character is not an instructor.');
         }
 
         // ---- PHASE 2: VALIDATE CURRICULUM STRUCTURE ----
@@ -327,19 +299,19 @@
             return failure('Instructor ID is required.');
         }
 
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
-            return failure('Valid week is required (1-52).');
+            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
         }
 
-        var dayNum = validateDay(day);
+        var dayNum = CalendarValidation.parseDay(day);
         if (dayNum === null) {
-            return failure('Valid day is required (1-7).');
+            return failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').');
         }
 
-        var hourNum = validateHour(hour);
+        var hourNum = CalendarValidation.parseHour(hour);
         if (hourNum === null) {
-            return failure('Valid hour is required (0-23).');
+            return failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').');
         }
 
         // ---- PHASE 2: VALIDATE CURRICULUM STRUCTURE ----
@@ -390,7 +362,7 @@
      * Returns a cloned copy to prevent external mutation.
      */
     function getInstructorBlocks(instructorId, week) {
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
             return {};
         }
@@ -417,28 +389,28 @@
             return failure('Instructor ID is required.');
         }
 
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
-            return failure('Valid week is required (1-52).');
+            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
         }
 
-        var dayNum = validateDay(day);
+        var dayNum = CalendarValidation.parseDay(day);
         if (dayNum === null) {
-            return failure('Valid day is required (1-7).');
+            return failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').');
         }
 
-        var hourNum = validateHour(hour);
+        var hourNum = CalendarValidation.parseHour(hour);
         if (hourNum === null) {
-            return failure('Valid hour is required (0-23).');
+            return failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').');
         }
 
         if (!blockData || typeof blockData !== 'object') {
             return failure('Block data is required.');
         }
 
-        var durationNum = validateDuration(blockData.duration);
+        var durationNum = CalendarValidation.parseDuration(blockData.duration);
         if (durationNum === null) {
-            return failure('Duration must be between 1 and ' + MAX_DURATION + ' hours.');
+            return failure('Duration must be between ' + CalendarConstants.MIN_CLASS_DURATION + ' and ' + CalendarConstants.MAX_CLASS_DURATION + ' hours.');
         }
 
         if (hourNum + durationNum > MAX_HOUR + 1) {
@@ -448,6 +420,9 @@
         var instructor = CharacterQueries.getCharacterById(normalisedInstructorId);
         if (!instructor) {
             return failure('Instructor not found.');
+        }
+        if (!CharacterQueries.isInstructor(instructor)) {
+            return failure('Character is not an instructor.');
         }
 
         // Validate discipline ID if provided
@@ -523,19 +498,19 @@
             return failure('Instructor ID is required.');
         }
 
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
-            return failure('Valid week is required (1-52).');
+            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
         }
 
-        var dayNum = validateDay(day);
+        var dayNum = CalendarValidation.parseDay(day);
         if (dayNum === null) {
-            return failure('Valid day is required (1-7).');
+            return failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').');
         }
 
-        var hourNum = validateHour(hour);
+        var hourNum = CalendarValidation.parseHour(hour);
         if (hourNum === null) {
-            return failure('Valid hour is required (0-23).');
+            return failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').');
         }
 
         // ---- PHASE 2: VALIDATE CURRICULUM STRUCTURE ----

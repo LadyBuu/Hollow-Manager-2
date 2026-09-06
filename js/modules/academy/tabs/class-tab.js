@@ -20,14 +20,15 @@
  *   - All HTML escaping uses DomUtils.escapeHtml()
  *   - All notifications use NotificationSystem.notify()
  *   - All modals use Modal system
+ *   - Calendar bounds use CalendarValidation/CalendarConstants
  * 
  * DEPENDENCIES:
  *   - window.ClassesCore (from classes-core.js)
  *   - window.TeamCore (from team-core.js)
- *   - window.AcademyGroups (from academy-groups.js)
  *   - window.AcademyDistribute (from academy-distribute.js)
  *   - window.AcademyQueries (from academy-queries.js)
  *   - window.CharacterQueries (from character-queries.js)
+ *   - window.CalendarConstants (from calendar-constants.js)
  *   - window.NotificationSystem (from notification.js)
  *   - window.DomUtils (from dom-utils.js)
  *   - window.Modal (from modal.js)
@@ -48,10 +49,10 @@
 
     var ClassesCore = window.ClassesCore;
     var TeamCore = window.TeamCore;
-    var AcademyGroups = window.AcademyGroups;
     var AcademyDistribute = window.AcademyDistribute;
     var AcademyQueries = window.AcademyQueries;
     var CharacterQueries = window.CharacterQueries;
+    var CalendarConstants = window.CalendarConstants;
     var NotificationSystem = window.NotificationSystem;
     var DomUtils = window.DomUtils;
     var Modal = window.Modal;
@@ -104,10 +105,6 @@
             missing.push('TeamCore.removeMember');
         }
 
-        if (!AcademyGroups || typeof AcademyGroups.getGroupStudents !== 'function') {
-            missing.push('AcademyGroups.getGroupStudents');
-        }
-
         if (!AcademyDistribute || typeof AcademyDistribute.autoDistributeStudents !== 'function') {
             missing.push('AcademyDistribute.autoDistributeStudents');
         }
@@ -130,12 +127,28 @@
         if (!AcademyQueries || typeof AcademyQueries.getTournaments !== 'function') {
             missing.push('AcademyQueries.getTournaments');
         }
+        if (!AcademyQueries || typeof AcademyQueries.getAcademicTeamMembers !== 'function') {
+            missing.push('AcademyQueries.getAcademicTeamMembers');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getAcademicTeamMemberCount !== 'function') {
+            missing.push('AcademyQueries.getAcademicTeamMemberCount');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getTournamentTeams !== 'function') {
+            missing.push('AcademyQueries.getTournamentTeams');
+        }
 
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
         if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
             missing.push('CharacterQueries.getCurrentStatus');
+        }
+
+        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
+            missing.push('CalendarConstants.MIN_WEEK');
+        }
+        if (!CalendarConstants || typeof CalendarConstants.MAX_WEEK !== 'number') {
+            missing.push('CalendarConstants.MAX_WEEK');
         }
 
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
@@ -151,18 +164,13 @@
         }
 
         if (missing.length > 0) {
-            console.warn('ClassTab: Missing dependencies:', missing.join(', '));
-            return false;
+            throw new Error('ClassTab: Missing dependencies: ' + missing.join(', '));
         }
 
         return true;
     }
 
-    if (!checkDependencies()) {
-        return;
-    }
-
-    window.__classTabLoaded = true;
+    checkDependencies();
 
     // ============================================================
     // HTML ESCAPING - Delegates to DomUtils
@@ -215,7 +223,6 @@
 
         var html = '';
 
-        // Class list
         html += '<div class="class-tab-layout">';
         html += '<div class="class-tab-sidebar">';
         html += '<div class="class-tab-header">';
@@ -227,7 +234,6 @@
         html += '</div>';
         html += '</div>';
 
-        // Class detail
         html += '<div class="class-tab-detail">';
         if (selectedClass) {
             html += renderClassDetail(state, selectedClass);
@@ -237,7 +243,6 @@
         html += '</div>';
         html += '</div>';
 
-        // Modals
         html += getModalsHTML();
 
         return html;
@@ -289,7 +294,6 @@
 
         var html = '';
 
-        // Header
         html += '<div class="class-detail-header">';
         html += '<h3 class="class-detail-title">' + escapeHtml(cls.name) + '</h3>';
         html += '<div class="class-detail-actions">';
@@ -299,31 +303,26 @@
         html += '</div>';
         html += '</div>';
 
-        // Stats
         html += '<div class="class-detail-stats">';
         html += '<div class="stat-item"><span class="stat-label">Students</span><span class="stat-value">' + students.length + '</span></div>';
         html += '<div class="stat-item"><span class="stat-label">Teams</span><span class="stat-value">' + teams.length + '</span></div>';
         html += '<div class="stat-item"><span class="stat-label">Tournaments</span><span class="stat-value">' + tournaments.length + '</span></div>';
         html += '</div>';
 
-        // Tabs within detail
         html += '<div class="class-detail-tabs">';
         html += '<button class="detail-tab-btn active" data-tab="roster">Roster</button>';
         html += '<button class="detail-tab-btn" data-tab="teams">Teams</button>';
         html += '<button class="detail-tab-btn" data-tab="tournaments">Tournaments</button>';
         html += '</div>';
 
-        // Roster tab
         html += '<div class="detail-tab-panel active" data-tab="roster">';
         html += renderRosterTab(state, cls, students);
         html += '</div>';
 
-        // Teams tab
         html += '<div class="detail-tab-panel" data-tab="teams" style="display:none;">';
         html += renderTeamsTab(state, cls, teams);
         html += '</div>';
 
-        // Tournaments tab
         html += '<div class="detail-tab-panel" data-tab="tournaments" style="display:none;">';
         html += renderTournamentsTab(state, cls, tournaments);
         html += '</div>';
@@ -338,7 +337,6 @@
     function renderRosterTab(state, cls, students) {
         var html = '';
 
-        // Add student form
         html += '<div class="roster-add-form">';
         html += '<select id="roster-add-student" class="small">';
         html += '<option value="">Add student...</option>';
@@ -354,7 +352,6 @@
         html += '<button id="roster-add-btn" class="primary small">Add</button>';
         html += '</div>';
 
-        // Student list
         if (students.length === 0) {
             html += '<p class="empty-state small">No students in this class.</p>';
         } else {
@@ -384,7 +381,6 @@
     function renderTeamsTab(state, cls, teams) {
         var html = '';
 
-        // Add team form
         html += '<div class="teams-add-form">';
         html += '<input type="text" id="team-add-name" placeholder="Team name" class="small">';
         html += '<input type="text" id="team-add-number" placeholder="Number (optional)" class="small">';
@@ -397,7 +393,7 @@
             html += '<div class="teams-list">';
             for (var i = 0; i < teams.length; i++) {
                 var team = teams[i];
-                var memberCount = TeamCore.getActiveMembers(team, state.selectedWeek || 1).length;
+                var memberCount = AcademyQueries.getAcademicTeamMemberCount(team.id, state.selectedWeek || 1);
 
                 html += '<div class="team-item">';
                 html += '<div class="team-item-header">';
@@ -413,9 +409,8 @@
                 html += '</div>';
                 html += '</div>';
 
-                // Members (collapsed by default)
                 html += '<div class="team-members-list" style="display:none;">';
-                var members = TeamCore.getActiveMembers(team, state.selectedWeek || 1);
+                var members = AcademyQueries.getAcademicTeamMembers(team.id, state.selectedWeek || 1);
                 if (members.length === 0) {
                     html += '<p class="empty-state small">No members</p>';
                 } else {
@@ -436,7 +431,6 @@
             html += '</div>';
         }
 
-        // Distribute button
         html += '<div class="teams-distribute">';
         html += '<button id="distribute-class-btn" class="primary" data-class="' + escapeHtml(cls.id) + '">Auto-Distribute Students</button>';
         html += '</div>';
@@ -450,12 +444,13 @@
 
     function renderTournamentsTab(state, cls, tournaments) {
         var html = '';
+        var minWeek = CalendarConstants.MIN_WEEK;
+        var maxWeek = CalendarConstants.MAX_WEEK;
 
-        // Add tournament form
         html += '<div class="tournament-add-form">';
         html += '<input type="text" id="tournament-add-name" placeholder="Tournament name" class="small">';
         html += '<input type="text" id="tournament-add-desc" placeholder="Description (optional)" class="small">';
-        html += '<input type="number" id="tournament-add-week" placeholder="Week" value="' + (state.selectedWeek || 1) + '" class="small" min="1" max="52">';
+        html += '<input type="number" id="tournament-add-week" placeholder="Week" value="' + (state.selectedWeek || 1) + '" class="small" min="' + minWeek + '" max="' + maxWeek + '">';
         html += '<button id="tournament-add-btn" class="primary small">+ Add Tournament</button>';
         html += '</div>';
 
@@ -481,7 +476,6 @@
                 html += '</div>';
                 html += '</div>';
 
-                // Teams list (collapsed by default)
                 html += '<div class="tournament-teams-list" style="display:none;">';
                 var teams = AcademyQueries.getTournamentTeams(t.id);
                 if (teams.length === 0) {
@@ -549,6 +543,9 @@
     // ============================================================
 
     function getModalsHTML() {
+        var minWeek = CalendarConstants.MIN_WEEK;
+        var maxWeek = CalendarConstants.MAX_WEEK;
+
         return [
             '<!-- Class Form Modal -->',
             '<div id="academy-class-modal" class="modal hidden">',
@@ -618,10 +615,10 @@
                     return;
                 }
                 var id = item.dataset.id;
-                if (id && window.academyState && typeof window.academyState.selectClass === 'function') {
-                    window.academyState.selectClass(id);
-                    if (typeof window.refreshAcademy === 'function') {
-                        window.refreshAcademy();
+                if (id && window.Academy && typeof window.Academy.selectClass === 'function') {
+                    window.Academy.selectClass(id);
+                    if (typeof window.Academy.refresh === 'function') {
+                        window.Academy.refresh();
                     }
                 }
             });
@@ -685,7 +682,7 @@
             if (btn) {
                 var studentId = btn.dataset.student;
                 if (studentId && confirm('Remove this student from the class?')) {
-                    var classId = window.academyState ? window.academyState.getSelectedClassId() : null;
+                    var classId = window.Academy ? window.Academy.getSelectedClassId() : null;
                     if (classId) {
                         handleRemoveStudentFromClass(classId, studentId);
                     }
@@ -699,7 +696,7 @@
             teamAddBtn.addEventListener('click', function() {
                 var nameInput = container.querySelector('#team-add-name');
                 var numberInput = container.querySelector('#team-add-number');
-                var classId = window.academyState ? window.academyState.getSelectedClassId() : null;
+                var classId = window.Academy ? window.Academy.getSelectedClassId() : null;
 
                 if (!classId) {
                     showNotification('No class selected.', 'error');
@@ -712,12 +709,15 @@
                     return;
                 }
 
+                var state = window.Academy ? window.Academy.getState() : { selectedWeek: 1 };
+                var week = state.selectedWeek || 1;
+
                 var teamData = {
                     name: name,
                     type: 'academic',
                     classId: classId,
                     teamNumber: numberInput ? numberInput.value.trim() : '',
-                    startPeriod: String(state.selectedWeek || 1),
+                    startPeriod: String(week),
                     endPeriod: '',
                     status: 'active'
                 };
@@ -727,8 +727,8 @@
                     showNotification('Team created successfully.', 'success');
                     if (nameInput) { nameInput.value = ''; }
                     if (numberInput) { numberInput.value = ''; }
-                    if (typeof window.refreshAcademy === 'function') {
-                        window.refreshAcademy();
+                    if (typeof window.Academy.refresh === 'function') {
+                        window.Academy.refresh();
                     }
                     persistMutation(null, 'Team created in memory, but persistence failed.');
                 } else {
@@ -778,7 +778,7 @@
                 var nameInput = container.querySelector('#tournament-add-name');
                 var descInput = container.querySelector('#tournament-add-desc');
                 var weekInput = container.querySelector('#tournament-add-week');
-                var classId = window.academyState ? window.academyState.getSelectedClassId() : null;
+                var classId = window.Academy ? window.Academy.getSelectedClassId() : null;
 
                 if (!classId) {
                     showNotification('No class selected.', 'error');
@@ -792,7 +792,7 @@
                 }
 
                 var week = weekInput ? parseInt(weekInput.value, 10) : 1;
-                if (isNaN(week) || week < 1 || week > 52) {
+                if (isNaN(week) || week < CalendarConstants.MIN_WEEK || week > CalendarConstants.MAX_WEEK) {
                     week = 1;
                 }
 
@@ -801,8 +801,8 @@
                     showNotification('Tournament created successfully.', 'success');
                     if (nameInput) { nameInput.value = ''; }
                     if (descInput) { descInput.value = ''; }
-                    if (typeof window.refreshAcademy === 'function') {
-                        window.refreshAcademy();
+                    if (typeof window.Academy.refresh === 'function') {
+                        window.Academy.refresh();
                     }
                     persistMutation(null, 'Tournament created in memory, but persistence failed.');
                 } else {
@@ -876,6 +876,12 @@
 
         // Team members modal
         bindTeamMembersEvents(container);
+
+        // Return cleanup function
+        return function() {
+            // Remove event listeners that were added directly
+            // Most are delegated and will be cleaned up when container is removed
+        };
     }
 
     // ============================================================
@@ -909,7 +915,6 @@
         var nameInput = document.getElementById('academy-class-name');
         var titleEl = document.getElementById('academy-class-modal-title');
 
-        // Close handlers
         if (closeBtn) {
             closeBtn.addEventListener('click', function() {
                 if (modal) { modal.classList.add('hidden'); }
@@ -930,7 +935,6 @@
             });
         }
 
-        // Form submit
         if (form) {
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
@@ -952,8 +956,8 @@
                 if (result && result.success) {
                     showNotification(editId ? 'Class updated successfully.' : 'Class created successfully.', 'success');
                     if (modal) { modal.classList.add('hidden'); }
-                    if (typeof window.refreshAcademy === 'function') {
-                        window.refreshAcademy();
+                    if (typeof window.Academy.refresh === 'function') {
+                        window.Academy.refresh();
                     }
                     persistMutation(null, 'Class changes in memory, but persistence failed.');
                 } else {
@@ -1044,8 +1048,8 @@
                 var week = weekInput ? parseInt(weekInput.value, 10) : 1;
                 var maxSize = maxSizeInput ? parseInt(maxSizeInput.value, 10) : 4;
 
-                if (isNaN(week) || week < 1 || week > 52) {
-                    showNotification('Valid week is required (1-52).', 'error');
+                if (isNaN(week) || week < CalendarConstants.MIN_WEEK || week > CalendarConstants.MAX_WEEK) {
+                    showNotification('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').', 'error');
                     return;
                 }
 
@@ -1054,7 +1058,6 @@
                     return;
                 }
 
-                // Get selected teams
                 var teamCheckboxes = modal.querySelectorAll('.distribute-team-checkbox:checked');
                 var teamIds = [];
                 for (var i = 0; i < teamCheckboxes.length; i++) {
@@ -1072,8 +1075,8 @@
                     var data = result;
                     showNotification('Distributed ' + data.assigned + ' students successfully.', 'success');
                     if (modal) { modal.classList.add('hidden'); }
-                    if (typeof window.refreshAcademy === 'function') {
-                        window.refreshAcademy();
+                    if (typeof window.Academy.refresh === 'function') {
+                        window.Academy.refresh();
                     }
                     persistMutation(null, 'Distribution applied in memory, but persistence failed.');
                 } else {
@@ -1096,7 +1099,7 @@
 
         var cls = ClassesCore.getClass(classId);
         var teams = AcademyQueries.getAcademicTeams(classId);
-        var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
+        var week = window.Academy ? window.Academy.getSelectedWeek() : 1;
 
         var html = '';
         html += '<p class="distribute-info">';
@@ -1105,12 +1108,12 @@
 
         html += '<div class="form-group">';
         html += '<label>Week</label>';
-        html += '<input type="number" id="distribute-week" value="' + week + '" min="1" max="52">';
+        html += '<input type="number" id="distribute-week" value="' + week + '" min="' + CalendarConstants.MIN_WEEK + '" max="' + CalendarConstants.MAX_WEEK + '">';
         html += '</div>';
 
         html += '<div class="form-group">';
         html += '<label>Max Students Per Team</label>';
-        html += '<input type="number" id="distribute-max-size" value="4" min="1" max="20">';
+        html += '<input type="number" id="distribute-max-size" value="4" min="1" max="' + AcademyDistribute.MAX_TEAM_SIZE + '">';
         html += '</div>';
 
         html += '<div class="distribute-teams-section">';
@@ -1161,7 +1164,6 @@
             });
         }
 
-        // Add member button (delegated)
         modal.addEventListener('click', function(e) {
             var btn = e.target.closest('#team-member-add-btn');
             if (btn) {
@@ -1182,7 +1184,7 @@
                 }
 
                 var role = roleInput ? roleInput.value.trim() : 'Member';
-                var join = joinInput ? joinInput.value.trim() : String(window.academyState ? window.academyState.getSelectedWeek() : 1);
+                var join = joinInput ? joinInput.value.trim() : String(window.Academy ? window.Academy.getSelectedWeek() : 1);
 
                 var result = TeamCore.addMember(teamId, {
                     characterId: studentId,
@@ -1201,7 +1203,6 @@
             }
         });
 
-        // Remove member (delegated)
         modal.addEventListener('click', function(e) {
             var btn = e.target.closest('.team-member-remove-btn');
             if (btn) {
@@ -1249,12 +1250,11 @@
             title.textContent = team.name + ' - Members';
         }
 
-        var members = TeamCore.getActiveMembers(team, window.academyState ? window.academyState.getSelectedWeek() : 1);
-        var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
+        var week = window.Academy ? window.Academy.getSelectedWeek() : 1;
+        var members = AcademyQueries.getAcademicTeamMembers(teamId, week);
 
         var html = '';
 
-        // Add member form
         html += '<div class="team-member-add-form">';
         html += '<select id="team-member-select" class="small">';
         html += '<option value="">Add student...</option>';
@@ -1278,7 +1278,6 @@
         html += '<button id="team-member-add-btn" class="primary small">Add</button>';
         html += '</div>';
 
-        // Member list
         if (members.length === 0) {
             html += '<p class="empty-state small">No members in this team.</p>';
         } else {
@@ -1333,11 +1332,11 @@
         var result = ClassesCore.deleteClass(classId);
         if (result && result.success) {
             showNotification('Class deleted successfully.', 'success');
-            if (window.academyState && typeof window.academyState.clearSelections === 'function') {
-                window.academyState.clearSelections();
+            if (window.Academy && typeof window.Academy.clearSelections === 'function') {
+                window.Academy.clearSelections();
             }
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Class deleted in memory, but persistence failed.');
         } else {
@@ -1346,7 +1345,7 @@
     }
 
     function handleAddStudentToClass(studentId) {
-        var classId = window.academyState ? window.academyState.getSelectedClassId() : null;
+        var classId = window.Academy ? window.Academy.getSelectedClassId() : null;
         if (!classId) {
             showNotification('No class selected.', 'error');
             return;
@@ -1355,8 +1354,8 @@
         var result = ClassesCore.addCharacterToClass(studentId, classId);
         if (result && result.success) {
             showNotification('Student added to class.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Student added in memory, but persistence failed.');
         } else {
@@ -1368,8 +1367,8 @@
         var result = ClassesCore.removeCharacterFromClass(studentId, classId);
         if (result && result.success) {
             showNotification('Student removed from class.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Student removed in memory, but persistence failed.');
         } else {
@@ -1378,12 +1377,11 @@
     }
 
     function handleDeleteAcademicTeam(teamId) {
-        var team = TeamCore.getTeam(teamId);
         var result = TeamCore.deleteTeam(teamId);
         if (result) {
             showNotification('Team deleted successfully.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Team deleted in memory, but persistence failed.');
         } else {
@@ -1395,8 +1393,8 @@
         var result = TeamCore.removeMember(teamId, studentId);
         if (result) {
             showNotification('Student removed from team.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Student removed in memory, but persistence failed.');
         } else {
@@ -1408,8 +1406,8 @@
         var result = AcademyTournaments.deleteTournament(tournamentId);
         if (result && result.success) {
             showNotification('Tournament deleted successfully.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Tournament deleted in memory, but persistence failed.');
         } else {
@@ -1421,8 +1419,8 @@
         var result = AcademyTournaments.addTeamToTournament(tournamentId, teamId);
         if (result && result.success) {
             showNotification('Team added to tournament.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Team added in memory, but persistence failed.');
         } else {
@@ -1434,8 +1432,8 @@
         var result = AcademyTournaments.removeTeamFromTournament(tournamentId, teamId);
         if (result && result.success) {
             showNotification('Team removed from tournament.', 'success');
-            if (typeof window.refreshAcademy === 'function') {
-                window.refreshAcademy();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Team removed in memory, but persistence failed.');
         } else {

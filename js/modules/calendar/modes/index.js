@@ -28,6 +28,9 @@
  *   - getEntityDisplayName(entity): function - Get display name for an entity
  *   - getData(state): function - Get schedule data for rendering
  * 
+ * DEPENDENCIES:
+ *   - None (self-contained)
+ * 
  * USAGE:
  *   // Register a mode
  *   CalendarModes.registerMode('student', {
@@ -121,7 +124,6 @@
     function registerMode(name, mode) {
         // ---- PHASE 1: VALIDATE NAME ----
         if (!isNonEmptyString(name)) {
-            console.warn('[CalendarModes] Mode name must be a non-empty string.');
             return false;
         }
 
@@ -129,49 +131,41 @@
 
         // Check for duplicate registration
         if (Object.prototype.hasOwnProperty.call(_modes, key)) {
-            console.warn('[CalendarModes] Mode "' + key + '" is already registered.');
             return false;
         }
 
         // ---- PHASE 2: VALIDATE MODE CONTRACT ----
         if (!mode || typeof mode !== 'object') {
-            console.warn('[CalendarModes] Mode must be an object.');
             return false;
         }
 
         // Validate label
         if (!isNonEmptyString(mode.label)) {
-            console.warn('[CalendarModes] Mode must have a non-empty label.');
             return false;
         }
 
         // Validate hint
         if (!isNonEmptyString(mode.hint)) {
-            console.warn('[CalendarModes] Mode must have a non-empty hint.');
             return false;
         }
 
         // Validate render
         if (!isFunction(mode.render)) {
-            console.warn('[CalendarModes] Mode must have a render function.');
             return false;
         }
 
         // Validate getEntities
         if (!isFunction(mode.getEntities)) {
-            console.warn('[CalendarModes] Mode must have a getEntities function.');
             return false;
         }
 
         // Validate getEntityDisplayName
         if (!isFunction(mode.getEntityDisplayName)) {
-            console.warn('[CalendarModes] Mode must have a getEntityDisplayName function.');
             return false;
         }
 
         // Validate getData
         if (!isFunction(mode.getData)) {
-            console.warn('[CalendarModes] Mode must have a getData function.');
             return false;
         }
 
@@ -286,7 +280,6 @@
     function unregisterMode(name) {
         // Only allow in test environment or when explicitly enabled
         if (!_isTestEnvironment) {
-            console.warn('[CalendarModes] unregisterMode is only available in test environments.');
             return false;
         }
 
@@ -326,7 +319,6 @@
      */
     function _reset() {
         if (!_isTestEnvironment) {
-            console.warn('[CalendarModes] _reset is only available in test environments.');
             return;
         }
         _modes = Object.create(null);

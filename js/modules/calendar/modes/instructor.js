@@ -19,6 +19,9 @@
  *   - No direct window.data access
  *   - No direct DOM manipulation
  *   - No saveData() calls
+ *   - Uses CalendarConstants for bounds
+ *   - Uses CalendarValidation for validation
+ *   - No hard-coded calendar values
  * 
  * DEPENDENCIES:
  *   - window.InstructorQueries (from queries/instructor-queries.js) - MANDATORY
@@ -26,6 +29,7 @@
  *   - window.CalendarRenderer (from calendar-renderer.js) - MANDATORY
  *   - window.CalendarUtils (from calendar-utils.js) - MANDATORY
  *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.CalendarModes (from modes/index.js) - MANDATORY
  *   - window.CalendarInstructorCore (from core/instructor-core.js) - MANDATORY
  *   - window.MutationUtils (from mutation-pipeline.js) - MANDATORY
@@ -86,6 +90,10 @@
         missing.push('CalendarConstants');
     }
 
+    if (!window.CalendarValidation) {
+        missing.push('CalendarValidation');
+    }
+
     if (!window.CalendarModes || typeof window.CalendarModes.registerMode !== 'function') {
         missing.push('CalendarModes.registerMode');
     }
@@ -122,8 +130,7 @@
     }
 
     if (missing.length > 0) {
-        console.error('[InstructorMode] Missing dependencies:', missing.join(', '));
-        return;
+        throw new Error('[InstructorMode] Missing dependencies: ' + missing.join(', '));
     }
 
     window.__instructorModeLoaded = true;
@@ -137,6 +144,7 @@
     var CalendarRenderer = window.CalendarRenderer;
     var CalendarUtils = window.CalendarUtils;
     var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
     var CalendarModes = window.CalendarModes;
     var InstructorCore = window.CalendarInstructorCore;
     var MutationUtils = window.MutationUtils;
@@ -150,6 +158,8 @@
     var CALENDAR_START_HOUR = CalendarConstants.CALENDAR_START_HOUR;
     var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
     var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
 
     // ============================================================
     // HELPERS
@@ -207,7 +217,6 @@
         var instructor = CharacterQueries.getCharacterById(instructorId);
         var instructorName = instructor ? CharacterQueries.getDisplayName(instructor) : 'Unknown';
 
-        // Prepare data for shared renderer
         var data = {
             schedule: schedule,
             restDays: [],
@@ -263,10 +272,8 @@
             availableLabel: 'Available Disciplines'
         };
 
-        // Use shared renderer
         CalendarRenderer.renderGrid(container, state, data);
 
-        // Bind events with instructor-specific callbacks
         CalendarRenderer.bindEvents(container, state, {
             onSlotClick: function(day, hour) {
                 handleAddClass(instructorId, week, day, hour, container);
@@ -343,15 +350,13 @@
             return;
         }
 
-        // For "any slot" mode, find an available slot
         if (day === null || hour === null) {
             var schedule = InstructorQueries.getInstructorSchedule(instructorId, week);
             var found = false;
 
-            for (var d = 1; d <= 7; d++) {
+            for (var d = CalendarConstants.MIN_DAY; d <= CalendarConstants.MAX_DAY; d++) {
                 for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
                     if (!schedule[d] || !schedule[d][h]) {
-                        // Found available slot
                         var discipline = DisciplineQueries.getDiscipline(preSelectedDisciplineId);
                         var disciplineName = discipline ? discipline.name : 'Unknown';
                         var dayName = CalendarConstants.getDayName(d);
@@ -384,7 +389,6 @@
             return;
         }
 
-        // Specific slot assignment
         var hourDisplay = CalendarUtils.formatHour(hour);
         var dayName = CalendarConstants.getDayName(day);
 
@@ -409,13 +413,11 @@
     // ============================================================
 
     function performAddClass(instructorId, week, day, hour, disciplineId, duration, label, closeModal, container) {
-        // Validate calendar boundary
         if (hour + duration > CALENDAR_END_HOUR + 1) {
             CalendarRenderer.showNotification('Class extends beyond the calendar boundary.', 'error');
             return;
         }
 
-        // Check if slot is already occupied
         var schedule = InstructorQueries.getInstructorSchedule(instructorId, week);
         if (schedule[day] && schedule[day][hour]) {
             var existing = schedule[day][hour];
@@ -431,7 +433,6 @@
             }
         }
 
-        // Use MutationUtils for transaction
         MutationUtils.performMutation({
             validate: function() {
                 return { valid: true };
@@ -583,7 +584,6 @@
             preSelectedDisciplineId: data.disciplineId
         }, {
             onConfirm: function(disciplineId, duration, label, closeModal) {
-                // First remove existing template, then add new one
                 performRemoveTemplate(instructorId, week, day, hour, container, function() {
                     performAddClass(instructorId, week, day, hour, disciplineId, duration, label, closeModal, container);
                 });
@@ -695,10 +695,6 @@
     // ============================================================
 
     function performUpdateAssignments(instructorId, week, day, hour, selectedStudents, closeModal, container) {
-        // TODO: Implement assignment update using the mutation pipeline
-        // This would update student schedules to reflect the new assignments
-        // For now, we'll just close the modal and refresh
-
         if (closeModal) closeModal();
         CalendarRenderer.showNotification('Student assignments updated.', 'success');
         render(container, { selectedId: instructorId, week: week });

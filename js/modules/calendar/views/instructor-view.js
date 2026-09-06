@@ -17,6 +17,8 @@
  *   - Uses CalendarRenderer for shared modal creation
  *   - All user-controlled content uses textContent
  *   - No event binding here (delegated to InstructorMode)
+ *   - Uses CalendarConstants for bounds
+ *   - Uses CalendarValidation for validation
  * 
  * DEPENDENCIES:
  *   - window.InstructorQueries (from queries/instructor-queries.js) - MANDATORY
@@ -26,6 +28,7 @@
  *   - window.CalendarUtils (from calendar-utils.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
  *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  * 
  * USAGE:
  *   var IV = window.InstructorView;
@@ -87,9 +90,12 @@
         missing.push('CalendarConstants');
     }
 
+    if (!window.CalendarValidation) {
+        missing.push('CalendarValidation');
+    }
+
     if (missing.length > 0) {
-        console.error('[InstructorView] Missing dependencies:', missing.join(', '));
-        return;
+        throw new Error('[InstructorView] Missing dependencies: ' + missing.join(', '));
     }
 
     window.__instructorViewLoaded = true;
@@ -105,6 +111,7 @@
     var CalendarUtils = window.CalendarUtils;
     var DomUtils = window.DomUtils;
     var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
 
     // ============================================================
     // CONSTANTS
@@ -113,6 +120,8 @@
     var CALENDAR_START_HOUR = CalendarConstants.CALENDAR_START_HOUR;
     var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
     var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
+    var MIN_DAY = CalendarConstants.MIN_DAY;
+    var MAX_DAY = CalendarConstants.MAX_DAY;
 
     // ============================================================
     // HTML ESCAPING - Delegates to DomUtils
@@ -224,7 +233,6 @@
             details.splice(2, 0, { label: 'Discipline', value: data.disciplineName });
         }
 
-        // Student list
         var studentCount = data.students ? data.students.length : 0;
         var studentNames = 'None';
         if (data.students && data.students.length > 0) {
@@ -427,7 +435,6 @@
             onCancel: callbacks.onCancel || null
         });
 
-        // Pre-select discipline if provided
         if (data.preSelectedDisciplineId && modal) {
             var select = modal.querySelector('#add-class-select');
             if (select) {

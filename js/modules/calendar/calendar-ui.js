@@ -16,6 +16,7 @@
  *   - All entity-specific logic is delegated to the registered modes
  *   - USES DomUtils.escapeHtml() - SINGLE SOURCE OF TRUTH
  *   - Uses CalendarConstants for bounds
+ *   - Uses CalendarValidation for validation
  *   - No direct window.data access
  *   - State mutations are validated before being applied
  *   - Rendering does NOT mutate state (except through setState)
@@ -31,6 +32,7 @@
  *   - window.CalendarUtils (from calendar-utils.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
  *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  * 
  * USAGE:
  *   var ui = window.CalendarUI;
@@ -81,9 +83,12 @@
         missing.push('CalendarConstants');
     }
 
+    if (!window.CalendarValidation || typeof window.CalendarValidation.parseWeek !== 'function') {
+        missing.push('CalendarValidation.parseWeek');
+    }
+
     if (missing.length > 0) {
-        console.error('[CalendarUI] Missing dependencies:', missing.join(', '));
-        return;
+        throw new Error('[CalendarUI] Missing dependencies: ' + missing.join(', '));
     }
 
     window.__calendarUILoaded = true;
@@ -96,6 +101,7 @@
     var CalendarUtils = window.CalendarUtils;
     var DomUtils = window.DomUtils;
     var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
 
     // ============================================================
     // CONSTANTS
@@ -241,11 +247,7 @@
     // ============================================================
 
     function validateWeek(value) {
-        var num = Number(value);
-        if (!Number.isInteger(num) || num < MIN_WEEK || num > MAX_WEEK) {
-            return null;
-        }
-        return num;
+        return CalendarValidation.parseWeek(value);
     }
 
     function validateSelection() {

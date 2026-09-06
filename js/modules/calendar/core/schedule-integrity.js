@@ -16,12 +16,14 @@
  *   - PURE functions - no side effects
  *   - Uses CalendarScheduleCore for schedule semantics
  *   - Uses CalendarConstants for bounds
+ *   - Uses CalendarValidation for strict parsing
  *   - Schedule is the CANONICAL source of truth
  *   - Metadata is validated against the schedule
  * 
  * DEPENDENCIES:
  *   - window.CalendarScheduleCore (from schedule-core.js) - MANDATORY
  *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  * 
  * USAGE:
  *   var SI = window.CalendarScheduleIntegrity;
@@ -43,18 +45,27 @@
     // DEPENDENCY CHECK - MANDATORY (no fallbacks)
     // ============================================================
 
+    var missing = [];
+
     if (!window.CalendarScheduleCore) {
-        console.error('[CalendarScheduleIntegrity] CalendarScheduleCore is required.');
-        return;
+        missing.push('CalendarScheduleCore');
     }
 
     if (!window.CalendarConstants) {
-        console.error('[CalendarScheduleIntegrity] CalendarConstants is required.');
-        return;
+        missing.push('CalendarConstants');
+    }
+
+    if (!window.CalendarValidation) {
+        missing.push('CalendarValidation');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[CalendarScheduleIntegrity] Missing dependencies: ' + missing.join(', '));
     }
 
     var ScheduleCore = window.CalendarScheduleCore;
     var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
 
     // ============================================================
     // CONSTANTS
@@ -82,14 +93,6 @@
 
     function getDayName(day) {
         return CalendarConstants.getDayName(day) || 'Unknown';
-    }
-
-    function parseInteger(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        return Number.isInteger(num) ? num : null;
     }
 
     function getScheduleKey(studentId, week, day, hour) {
@@ -147,7 +150,7 @@
             return results;
         }
 
-        var weekNum = parseInteger(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
             results.valid = false;
             results.issues.push('Invalid week number.');
@@ -178,8 +181,8 @@
                 continue;
             }
 
-            var dayKey = parseInteger(parts[2]);
-            var hourKey = parseInteger(parts[3]);
+            var dayKey = CalendarValidation.parseDay(parts[2]);
+            var hourKey = CalendarValidation.parseHour(parts[3]);
 
             if (dayKey === null || hourKey === null) {
                 results.warnings.push('Invalid metadata key format: ' + key);
@@ -344,8 +347,8 @@
                         continue;
                     }
 
-                    var dayKey = parseInteger(parts[2]);
-                    var hourKey = parseInteger(parts[3]);
+                    var dayKey = CalendarValidation.parseDay(parts[2]);
+                    var hourKey = CalendarValidation.parseHour(parts[3]);
 
                     if (dayKey === null || hourKey === null) {
                         results.warnings.push('Invalid metadata key format in ' + storeKey + ': ' + metaKey);
@@ -400,8 +403,8 @@
                 continue;
             }
 
-            var dayNum = parseInteger(day);
-            if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
+            var dayNum = CalendarValidation.parseDay(day);
+            if (dayNum === null) {
                 continue;
             }
 
@@ -416,8 +419,8 @@
             });
 
             for (var h = 0; h < hours.length; h++) {
-                var hourNum = parseInteger(hours[h]);
-                if (hourNum === null || hourNum < MIN_HOUR || hourNum > MAX_HOUR) {
+                var hourNum = CalendarValidation.parseHour(hours[h]);
+                if (hourNum === null) {
                     continue;
                 }
 
@@ -500,8 +503,8 @@
                     continue;
                 }
 
-                var day = parseInteger(parts[2]);
-                var hour = parseInteger(parts[3]);
+                var day = CalendarValidation.parseDay(parts[2]);
+                var hour = CalendarValidation.parseHour(parts[3]);
 
                 if (day === null || hour === null) {
                     continue;
@@ -558,8 +561,8 @@
                 continue;
             }
 
-            var day = parseInteger(parts[2]);
-            var hour = parseInteger(parts[3]);
+            var day = CalendarValidation.parseDay(parts[2]);
+            var hour = CalendarValidation.parseHour(parts[3]);
 
             if (day === null || hour === null) {
                 continue;
@@ -649,8 +652,8 @@
                 continue;
             }
 
-            var day = parseInteger(parts[2]);
-            var hour = parseInteger(parts[3]);
+            var day = CalendarValidation.parseDay(parts[2]);
+            var hour = CalendarValidation.parseHour(parts[3]);
 
             if (day === null || hour === null) {
                 continue;

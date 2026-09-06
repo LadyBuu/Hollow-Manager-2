@@ -19,7 +19,13 @@
  *   - No hardcoded dependencies on specific entity types
  *   - USES DomUtils.escapeHtml() - SINGLE SOURCE OF TRUTH
  *   - USES CalendarConstants for bounds and day names
+ *   - USES CalendarValidation for validation
  *   - USES FormatUtils for day name formatting
+ * 
+ * DEPENDENCIES:
+ *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
+ *   - window.DomUtils (from dom-utils.js) - MANDATORY
  * 
  * USAGE:
  *   var renderer = window.CalendarRenderer;
@@ -48,13 +54,16 @@
         missing.push('CalendarConstants');
     }
 
+    if (!window.CalendarValidation) {
+        missing.push('CalendarValidation');
+    }
+
     if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
         missing.push('DomUtils.escapeHtml');
     }
 
     if (missing.length > 0) {
-        console.error('[CalendarRenderer] Missing dependencies:', missing.join(', '));
-        return;
+        throw new Error('[CalendarRenderer] Missing dependencies: ' + missing.join(', '));
     }
 
     window.__calendarRendererLoaded = true;
@@ -64,6 +73,7 @@
     // ============================================================
 
     var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
     var DomUtils = window.DomUtils;
 
     // ============================================================
@@ -104,6 +114,14 @@
 
     function getDayName(day) {
         return CalendarConstants.getDayName(day) || 'Unknown';
+    }
+
+    function parseHour(value) {
+        return CalendarValidation.parseHour(value);
+    }
+
+    function parseDay(value) {
+        return CalendarValidation.parseDay(value);
     }
 
     // ============================================================
@@ -424,10 +442,15 @@
                 for (var i = 0; i < checkboxes.length; i++) {
                     var cb = checkboxes[i];
                     if (cb.checked) {
-                        days.push(parseInt(cb.dataset.day, 10));
+                        var day = parseInt(cb.dataset.day, 10);
+                        if (!isNaN(day)) {
+                            days.push(day);
+                        }
                     }
                 }
-                callbacks.onRestDaySave(days);
+                if (callbacks.onRestDaySave) {
+                    callbacks.onRestDaySave(days);
+                }
             });
         }
 
@@ -486,7 +509,7 @@
     function createAddClassModal(options) {
         options = options || {};
         var disciplines = options.disciplines || [];
-        var maxDuration = options.maxDuration || 4;
+        var maxDuration = options.maxDuration || CalendarConstants.MAX_CLASS_DURATION;
 
         var modal = document.createElement('div');
         modal.className = 'modal';
@@ -499,7 +522,7 @@
         }
 
         var durationOptionsHTML = '';
-        for (var h = 1; h <= maxDuration; h++) {
+        for (var h = CalendarConstants.MIN_CLASS_DURATION; h <= maxDuration; h++) {
             durationOptionsHTML += '<option value="' + h + '">' + h + ' hour' + (h > 1 ? 's' : '') + '</option>';
         }
 
@@ -566,16 +589,18 @@
             confirmBtn.onclick = function() {
                 var select = document.getElementById('add-class-select');
                 var disciplineId = select ? select.value : null;
-                var duration = parseInt(document.getElementById('add-class-duration').value, 10) || 1;
-                var label = document.getElementById('add-class-label').value.trim();
+                var durationSelect = document.getElementById('add-class-duration');
+                var duration = durationSelect ? parseInt(durationSelect.value, 10) || 1 : 1;
+                var label = document.getElementById('add-class-label');
+                var labelValue = label ? label.value.trim() : '';
 
                 if (!disciplineId) {
-                    // Notification is caller responsibility
+                    // Caller responsibility to notify
                     return;
                 }
 
                 if (options.onConfirm) {
-                    options.onConfirm(disciplineId, duration, label, closeModal);
+                    options.onConfirm(disciplineId, duration, labelValue, closeModal);
                 }
             };
         }
@@ -604,7 +629,10 @@
         var detailsHTML = '';
         for (var i = 0; i < details.length; i++) {
             var d = details[i];
-            detailsHTML += '<div class="detail-row"><span class="detail-label">' + escapeHtml(d.label) + ':</span> <span class="detail-value"><strong>' + escapeHtml(d.value) + '</strong></span></div>';
+            var valueHtml = typeof d.value === 'string' && d.value.indexOf('<') !== -1 
+                ? d.value 
+                : escapeHtml(d.value);
+            detailsHTML += '<div class="detail-row"><span class="detail-label">' + escapeHtml(d.label) + ':</span> <span class="detail-value"><strong>' + valueHtml + '</strong></span></div>';
         }
 
         var actionsHTML = '';
@@ -784,6 +812,10 @@
             if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
                 continue;
             }
+            var dayNum = parseDay(day);
+            if (dayNum === null) {
+                continue;
+            }
             var daySchedule = schedule[day];
             if (!daySchedule || typeof daySchedule !== 'object') {
                 continue;
@@ -798,13 +830,17 @@
                 }
 
                 var startHour = parseInt(hour, 10);
-                var duration = getDuration ? getDuration(parseInt(day, 10), startHour) : 1;
+                if (isNaN(startHour)) {
+                    continue;
+                }
+                var duration = getDuration ? getDuration(dayNum, startHour) : 1;
 
                 if (!occupied[day]) {
                     occupied[day] = {};
                 }
 
-                for (var h = startHour; h < startHour + duration && h <= CALENDAR_END_HOUR; h++) {
+                var endHour = Math.min(startHour + duration, CALENDAR_END_HOUR + 1);
+                for (var h = startHour; h < endHour; h++) {
                     occupied[day][h] = true;
                 }
             }
@@ -823,14 +859,19 @@
      * @returns {boolean} True if there is an overlap
      */
     function hasOverlap(occupiedMap, day, startHour, duration) {
-        if (!occupiedMap[day]) {
+        var dayNum = parseDay(day);
+        if (dayNum === null) {
+            return true;
+        }
+
+        if (!occupiedMap[dayNum]) {
             return false;
         }
 
-        var requestedEnd = startHour + duration;
+        var requestedEnd = Math.min(startHour + duration, CALENDAR_END_HOUR + 1);
 
-        for (var h = startHour; h < requestedEnd && h <= CALENDAR_END_HOUR; h++) {
-            if (occupiedMap[day][h]) {
+        for (var h = startHour; h < requestedEnd; h++) {
+            if (occupiedMap[dayNum][h]) {
                 return true;
             }
         }
@@ -852,8 +893,12 @@
         endHour = endHour || CALENDAR_END_HOUR;
 
         var available = [];
+        var dayNum = parseDay(day);
+        if (dayNum === null) {
+            return available;
+        }
 
-        if (!occupiedMap[day]) {
+        if (!occupiedMap[dayNum]) {
             for (var h = startHour; h <= endHour; h++) {
                 available.push(h);
             }
@@ -861,7 +906,7 @@
         }
 
         for (var h = startHour; h <= endHour; h++) {
-            if (!occupiedMap[day][h]) {
+            if (!occupiedMap[dayNum][h]) {
                 available.push(h);
             }
         }
@@ -870,7 +915,7 @@
     }
 
     // ============================================================
-    // NOTIFICATION - Delegates to caller (removed)
+    // NOTIFICATION - Delegated to caller (removed)
     // ============================================================
 
     // showNotification has been removed - caller handles notifications
@@ -900,11 +945,14 @@
         escapeAttribute: escapeAttribute,
         formatHour: formatHour,
         getDayName: getDayName,
+        parseHour: parseHour,
+        parseDay: parseDay,
 
         // Constants
         CALENDAR_START_HOUR: CALENDAR_START_HOUR,
         CALENDAR_END_HOUR: CALENDAR_END_HOUR,
-        DAY_NAMES: DAY_NAMES
+        DAY_NAMES: DAY_NAMES,
+        MAX_DURATION: CalendarConstants.MAX_CLASS_DURATION
     };
 
 })();

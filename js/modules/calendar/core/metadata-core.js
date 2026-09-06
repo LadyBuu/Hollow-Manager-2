@@ -27,6 +27,7 @@
  * DEPENDENCIES:
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
  *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.CalendarScheduleCore (from schedule-core.js) - MANDATORY
  * 
  * USAGE:
@@ -50,22 +51,24 @@
     // ============================================================
 
     if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
-        console.error('[CalendarMetadataCore] ObjectUtils.deepClone is required.');
-        return;
+        throw new Error('[CalendarMetadataCore] ObjectUtils.deepClone is required.');
     }
 
     if (!window.CalendarConstants) {
-        console.error('[CalendarMetadataCore] CalendarConstants is required.');
-        return;
+        throw new Error('[CalendarMetadataCore] CalendarConstants is required.');
+    }
+
+    if (!window.CalendarValidation) {
+        throw new Error('[CalendarMetadataCore] CalendarValidation is required.');
     }
 
     if (!window.CalendarScheduleCore) {
-        console.error('[CalendarMetadataCore] CalendarScheduleCore is required.');
-        return;
+        throw new Error('[CalendarMetadataCore] CalendarScheduleCore is required.');
     }
 
     var ObjectUtils = window.ObjectUtils;
     var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
     var ScheduleCore = window.CalendarScheduleCore;
 
     // ============================================================
@@ -90,24 +93,8 @@
         return value !== null && typeof value === 'object' && !Array.isArray(value);
     }
 
-    function parseInteger(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        return Number.isInteger(num) ? num : null;
-    }
-
     function getScheduleKey(studentId, week, day, hour) {
         return ScheduleCore.getScheduleKey(studentId, week, day, hour);
-    }
-
-    function validateDuration(value) {
-        var num = parseInteger(value);
-        if (num === null || num < 1 || num > MAX_DURATION) {
-            return null;
-        }
-        return num;
     }
 
     function deepClone(value) {
@@ -169,7 +156,7 @@
             return null;
         }
 
-        return validateDuration(duration);
+        return CalendarValidation.parseDuration(duration);
     }
 
     // ============================================================
@@ -267,7 +254,7 @@
 
         // Duration validation - reject invalid duration
         if (data.duration !== undefined && data.duration !== null) {
-            var duration = validateDuration(data.duration);
+            var duration = CalendarValidation.parseDuration(data.duration);
             if (duration === null) {
                 return false;
             }

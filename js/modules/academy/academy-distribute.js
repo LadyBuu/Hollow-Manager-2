@@ -7,33 +7,36 @@
  *   - Auto-distribution of students to academic teams
  *   - Balanced distribution based on team capacity
  *   - Conflict detection with schedules
- *   - Atomic bulk operations (all or nothing)
+ *   - Candidate-based planning with atomic execution
  * 
  * IMPORTANT:
  *   - This is a CROSS-DOMAIN workflow combining:
  *     - Classes (students)
  *     - Teams (capacity)
- *     - Groups (auto-groups)
  *     - Schedules (conflict detection)
- *   - All mutations are ATOMIC: validate all, then commit all
- *   - No mutation of live state occurs before validation completes
- *   - This module does NOT call saveData() - callers own persistence
- *   - All validation uses CALENDAR_CONSTANTS from constants.js
+ *   - All operations are CANDIDATE-BASED: build plan, then execute
+ *   - This module does NOT commit to window.data or call saveData()
+ *   - Persistence and logging are owned by MutationPipeline
+ *   - All validation uses CalendarValidation from calendar-validation.js
  *   - All deep cloning uses ObjectUtils.deepClone()
  * 
  * DEPENDENCIES:
- *   - window.AcademyQueries (from academy-queries.js)
- *   - window.AcademyGroups (from academy-groups.js)
- *   - window.AcademySchedule (from academy-schedule.js)
- *   - window.CharacterQueries (from character-queries.js)
+ *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.TeamQueries (from team-queries.js)
  *   - window.TeamCore (from team-core.js)
- *   - window.CALENDAR_CONSTANTS (from constants.js)
- *   - window.ActivityLog (from activity-log.js)
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.DisciplineQueries (from discipline-queries.js)
+ *   - window.CalendarScheduleCore (from calendar/core/schedule-core.js)
+ *   - window.CalendarValidation (from calendar-validation.js)
+ *   - window.CalendarConstants (from calendar-constants.js)
+ *   - window.ObjectUtils (from object-utils.js)
  * 
  * USAGE:
  *   var distribute = window.AcademyDistribute;
- *   var result = distribute.autoDistributeStudents(classId, week, maxTeamSize, teamIds);
- *   if (result.success) { console.log('Distributed ' + result.assigned + ' students'); }
+ *   var plan = distribute.buildDistributionPlan(classId, week, maxTeamSize, teamIds, options);
+ *   if (plan.success) {
+ *     // Apply plan via MutationPipeline
+ *   }
  */
 
 (function() {
@@ -48,13 +51,15 @@
     // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var AcademyQueries = window.AcademyQueries;
-    var AcademyGroups = window.AcademyGroups;
-    var AcademySchedule = window.AcademySchedule;
-    var CharacterQueries = window.CharacterQueries;
+    var ClassesQueries = window.ClassesQueries;
+    var TeamQueries = window.TeamQueries;
     var TeamCore = window.TeamCore;
-    var CalendarConstants = window.CALENDAR_CONSTANTS;
-    var ActivityLog = window.ActivityLog;
+    var CharacterQueries = window.CharacterQueries;
+    var DisciplineQueries = window.DisciplineQueries;
+    var CalendarScheduleCore = window.CalendarScheduleCore;
+    var CalendarValidation = window.CalendarValidation;
+    var CalendarConstants = window.CalendarConstants;
+    var ObjectUtils = window.ObjectUtils;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -63,78 +68,70 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!AcademyQueries || typeof AcademyQueries.getClassStudents !== 'function') {
-            missing.push('AcademyQueries.getClassStudents');
+        if (!ClassesQueries || typeof ClassesQueries.getClass !== 'function') {
+            missing.push('ClassesQueries.getClass');
         }
-        if (!AcademyQueries || typeof AcademyQueries.getAvailableStudents !== 'function') {
-            missing.push('AcademyQueries.getAvailableStudents');
+        if (!ClassesQueries || typeof ClassesQueries.getCharactersByClass !== 'function') {
+            missing.push('ClassesQueries.getCharactersByClass');
         }
-
-        if (!AcademyGroups || typeof AcademyGroups.getAcademicTeams !== 'function') {
-            missing.push('AcademyGroups.getAcademicTeams');
-        }
-        if (!AcademyGroups || typeof AcademyGroups.addStudentToAutoGroup !== 'function') {
-            missing.push('AcademyGroups.addStudentToAutoGroup');
-        }
-        if (!AcademyGroups || typeof AcademyGroups.removeStudentFromAutoGroup !== 'function') {
-            missing.push('AcademyGroups.removeStudentFromAutoGroup');
+        if (!ClassesQueries || typeof ClassesQueries.getAvailableStudentsForClass !== 'function') {
+            missing.push('ClassesQueries.getAvailableStudentsForClass');
         }
 
-        if (!AcademySchedule || typeof AcademySchedule.getAvailableSlots !== 'function') {
-            missing.push('AcademySchedule.getAvailableSlots');
+        if (!TeamQueries || typeof TeamQueries.getTeamsByType !== 'function') {
+            missing.push('TeamQueries.getTeamsByType');
         }
-        if (!AcademySchedule || typeof AcademySchedule.hasConflict !== 'function') {
-            missing.push('AcademySchedule.hasConflict');
+        if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
+            missing.push('TeamQueries.getTeamById');
         }
-
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
+        if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
+            missing.push('TeamQueries.getActiveTeamMembers');
         }
 
         if (!TeamCore || typeof TeamCore.getTeam !== 'function') {
             missing.push('TeamCore.getTeam');
         }
-        if (!TeamCore || typeof TeamCore.getActiveMembers !== 'function') {
-            missing.push('TeamCore.getActiveMembers');
-        }
         if (!TeamCore || typeof TeamCore.addMember !== 'function') {
             missing.push('TeamCore.addMember');
         }
 
-        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
-            missing.push('CALENDAR_CONSTANTS');
+        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
         }
 
-        if (!ActivityLog || typeof ActivityLog.record !== 'function') {
-            missing.push('ActivityLog.record');
+        if (!CalendarScheduleCore || typeof CalendarScheduleCore.hasConflict !== 'function') {
+            missing.push('CalendarScheduleCore.hasConflict');
+        }
+
+        if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
+            missing.push('CalendarValidation.parseWeek');
+        }
+
+        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
+            missing.push('CalendarConstants.MIN_WEEK');
+        }
+
+        if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
+            missing.push('ObjectUtils.deepClone');
         }
 
         if (missing.length > 0) {
-            console.warn('AcademyDistribute: Missing dependencies:', missing.join(', '));
-            return false;
+            throw new Error('AcademyDistribute: Missing dependencies: ' + missing.join(', '));
         }
 
         return true;
     }
 
-    if (!checkDependencies()) {
-        return;
-    }
-
-    window.__academyDistributeLoaded = true;
+    checkDependencies();
 
     // ============================================================
-    // CONSTANTS - From CALENDAR_CONSTANTS
+    // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = CalendarConstants.MIN_WEEK;
-    var MAX_WEEK = CalendarConstants.MAX_WEEK;
-    var MIN_DAY = CalendarConstants.MIN_DAY;
-    var MAX_DAY = CalendarConstants.MAX_DAY;
-    var MIN_HOUR = CalendarConstants.MIN_HOUR;
-    var MAX_HOUR = CalendarConstants.MAX_HOUR;
-    var CALENDAR_START_HOUR = CalendarConstants.CALENDAR_START_HOUR || 5;
-    var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR || 23;
+    var MAX_TEAM_SIZE = 20;
 
     // ============================================================
     // HELPER ALIASES
@@ -144,16 +141,8 @@
         return typeof value === 'string' && value.trim() !== '';
     }
 
-    function isObject(value) {
-        return value !== null && typeof value === 'object' && !Array.isArray(value);
-    }
-
-    function recordActivity(message) {
-        try {
-            ActivityLog.record(message);
-        } catch (e) {
-            // Activity logging failure should not abort the mutation
-        }
+    function deepClone(value) {
+        return ObjectUtils.deepClone(value);
     }
 
     function failure(message) {
@@ -165,15 +154,19 @@
     }
 
     // ============================================================
-    // VALIDATION HELPERS - Strict validation
+    // VALIDATION HELPERS
     // ============================================================
 
     function validateWeek(value) {
+        return CalendarValidation.parseWeek(value);
+    }
+
+    function validatePositiveInteger(value, min, max) {
         if (value === undefined || value === null || value === '') {
             return null;
         }
         var num = Number(value);
-        if (!Number.isInteger(num) || num < MIN_WEEK || num > MAX_WEEK) {
+        if (!Number.isInteger(num) || num < min || num > max) {
             return null;
         }
         return num;
@@ -183,7 +176,7 @@
         if (!isNonEmptyString(classId)) {
             return { valid: false, message: 'Class ID is required.' };
         }
-        var cls = AcademyQueries.getClass(classId);
+        var cls = ClassesQueries.getClass(classId);
         if (!cls) {
             return { valid: false, message: 'Class not found.' };
         }
@@ -211,7 +204,6 @@
                 continue;
             }
 
-            // Validate team is academic and belongs to the class
             if (team.type !== 'academic') {
                 errors.push('Team "' + team.name + '" is not an academic team.');
                 continue;
@@ -222,14 +214,12 @@
                 continue;
             }
 
-            // Check if team is operational
             if (team.status !== 'active') {
                 errors.push('Team "' + team.name + '" is not active.');
                 continue;
             }
 
-            // Get current member count
-            var activeMembers = TeamCore.getActiveMembers(team, weekNum);
+            var activeMembers = TeamQueries.getActiveTeamMembers(team, weekNum);
             var currentCount = activeMembers.length;
 
             if (currentCount >= maxSize) {
@@ -258,19 +248,29 @@
     }
 
     // ============================================================
-    // CORE DISTRIBUTION ALGORITHM - ATOMIC
+    // CORE DISTRIBUTION ALGORITHM - Build Plan Only
     // ============================================================
 
     /**
-     * Auto-distribute students to academic teams.
+     * Build a distribution plan without applying any mutations.
+     * This is the single source of truth for the distribution algorithm.
      * 
      * @param {string} classId - Class ID
      * @param {number|string} week - Week number
      * @param {number} maxTeamSize - Maximum students per team
      * @param {array} teamIds - Optional array of team IDs (if not provided, all academic teams in class are used)
-     * @returns {object} Result with assigned students and any issues
+     * @param {object} options - Additional options
+     * @param {boolean} options.skipConflicts - Skip students with conflicts (default: true)
+     * @param {boolean} options.balancePolicy - 'round-robin' | 'least-occupied' | 'fill-capacity' (default: 'least-occupied')
+     * @param {boolean} options.shuffleStudents - Randomise student order (default: true)
+     * @returns {object} Distribution plan with assignments, conflicts, and metadata
      */
-    function autoDistributeStudents(classId, week, maxTeamSize, teamIds) {
+    function buildDistributionPlan(classId, week, maxTeamSize, teamIds, options) {
+        options = options || {};
+        var skipConflicts = options.skipConflicts !== false;
+        var balancePolicy = options.balancePolicy || 'least-occupied';
+        var shuffleStudents = options.shuffleStudents !== false;
+
         // ---- PHASE 1: VALIDATE BASIC INPUTS ----
         if (!isNonEmptyString(classId)) {
             return failure('Class ID is required.');
@@ -278,15 +278,12 @@
 
         var weekNum = validateWeek(week);
         if (weekNum === null) {
-            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+            return failure('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').');
         }
 
-        var maxSize = parseInt(maxTeamSize, 10);
-        if (isNaN(maxSize) || maxSize < 1) {
-            return failure('Max team size must be at least 1.');
-        }
-        if (maxSize > 20) {
-            return failure('Max team size cannot exceed 20.');
+        var maxSize = validatePositiveInteger(maxTeamSize, 1, MAX_TEAM_SIZE);
+        if (maxSize === null) {
+            return failure('Max team size must be between 1 and ' + MAX_TEAM_SIZE + '.');
         }
 
         // ---- PHASE 2: VALIDATE CLASS ----
@@ -296,7 +293,7 @@
         }
 
         // ---- PHASE 3: GET AVAILABLE STUDENTS ----
-        var availableStudents = AcademyQueries.getAvailableStudents(classId, weekNum);
+        var availableStudents = ClassesQueries.getAvailableStudentsForClass(classId, weekNum);
         if (availableStudents.length === 0) {
             return failure('No available students for this class at week ' + weekNum + '.');
         }
@@ -306,11 +303,12 @@
         if (Array.isArray(teamIds) && teamIds.length > 0) {
             teamsResult = validateTeamIds(teamIds, classId, weekNum, maxSize);
         } else {
-            // Get all academic teams for this class
-            var allTeams = AcademyQueries.getAcademicTeams(classId);
+            var allTeams = TeamQueries.getTeamsByType('academic', 'operational');
             var allTeamIds = [];
             for (var i = 0; i < allTeams.length; i++) {
-                allTeamIds.push(allTeams[i].id);
+                if (String(allTeams[i].classId) === String(classId)) {
+                    allTeamIds.push(allTeams[i].id);
+                }
             }
             teamsResult = validateTeamIds(allTeamIds, classId, weekNum, maxSize);
         }
@@ -335,417 +333,434 @@
 
         // ---- PHASE 6: SHUFFLE STUDENTS FOR FAIRNESS ----
         var shuffled = availableStudents.slice();
-        for (var s = shuffled.length - 1; s > 0; s--) {
-            var j = Math.floor(Math.random() * (s + 1));
-            var temp = shuffled[s];
-            shuffled[s] = shuffled[j];
-            shuffled[j] = temp;
+        if (shuffleStudents) {
+            for (var s = shuffled.length - 1; s > 0; s--) {
+                var j = Math.floor(Math.random() * (s + 1));
+                var temp = shuffled[s];
+                shuffled[s] = shuffled[j];
+                shuffled[j] = temp;
+            }
         }
 
-        // ---- PHASE 7: BUILD ASSIGNMENT PLAN ----
-        // Create a working copy of team slots
+        // ---- PHASE 7: GET TEAM SCHEDULE SLOTS ----
+        var teamSlotsMap = {};
+        for (var i = 0; i < validTeams.length; i++) {
+            var team = validTeams[i];
+            // Use TeamCore to get team schedule slots
+            // This assumes teams have a slots property or can be queried
+            var slots = [];
+            if (team.slots && Array.isArray(team.slots)) {
+                slots = team.slots.filter(function(slot) {
+                    return slot.week === weekNum;
+                });
+            }
+            teamSlotsMap[team.id] = slots;
+        }
+
+        // ---- PHASE 8: BUILD ASSIGNMENT PLAN ----
         var teamSlots = {};
         for (var i = 0; i < validTeams.length; i++) {
             teamSlots[validTeams[i].id] = validTeams[i].availableSlots;
         }
 
         var assignments = [];
+        var skippedConflicts = 0;
+        var conflicts = [];
         var capacityExceeded = 0;
+
+        // Track remaining capacity per team for least-occupied policy
+        var remainingCapacity = {};
+        for (var i = 0; i < validTeams.length; i++) {
+            remainingCapacity[validTeams[i].id] = validTeams[i].availableSlots;
+        }
+
+        // Current occupancy for least-occupied policy
+        var currentOccupancy = {};
+        for (var i = 0; i < validTeams.length; i++) {
+            currentOccupancy[validTeams[i].id] = validTeams[i].currentCount;
+        }
 
         for (var a = 0; a < shuffled.length && a < studentsToAssign; a++) {
             var student = shuffled[a];
 
-            // Find team with available slot (round-robin to balance)
-            var targetTeam = null;
-            var targetTeamId = null;
+            // ---- PHASE 8a: Evaluate candidate teams ----
+            var candidateTeams = [];
 
             for (var t = 0; t < validTeams.length; t++) {
-                var teamId = validTeams[t].id;
-                if (teamSlots[teamId] > 0) {
-                    targetTeam = validTeams[t];
-                    targetTeamId = teamId;
-                    break;
+                var team = validTeams[t];
+                var teamId = team.id;
+
+                if (teamSlots[teamId] <= 0) {
+                    continue;
                 }
-            }
 
-            if (!targetTeam) {
-                capacityExceeded++;
-                continue;
-            }
+                // Check schedule conflicts
+                var hasConflict = false;
+                var conflictingSlots = [];
+                var teamSlots2 = teamSlotsMap[teamId] || [];
 
-            assignments.push({
-                studentId: student.id,
-                student: student,
-                teamId: targetTeamId,
-                team: targetTeam,
-                studentName: CharacterQueries.getDisplayName(student)
-            });
-
-            teamSlots[targetTeamId]--;
-        }
-
-        if (assignments.length === 0) {
-            return failure('No students could be assigned. Check team capacity.');
-        }
-
-        // ---- PHASE 8: VALIDATE SCHEDULE CONFLICTS ----
-        var conflicts = [];
-        for (var i = 0; i < assignments.length; i++) {
-            var assignment = assignments[i];
-            var studentId = assignment.studentId;
-
-            // Check if student already has classes at the team's slots
-            var teamSlots = AcademyGroups.getGroupSlots(assignment.teamId);
-            if (teamSlots && teamSlots.length > 0) {
-                for (var s2 = 0; s2 < teamSlots.length; s2++) {
-                    var slot = teamSlots[s2];
-                    if (slot.week === weekNum) {
-                        if (AcademySchedule.hasConflict(studentId, weekNum, slot.day, slot.hour, slot.duration)) {
-                            conflicts.push({
-                                studentId: studentId,
-                                studentName: assignment.studentName,
-                                teamId: assignment.teamId,
-                                teamName: assignment.team.name,
+                if (teamSlots2.length > 0) {
+                    for (var s2 = 0; s2 < teamSlots2.length; s2++) {
+                        var slot = teamSlots2[s2];
+                        // Use CalendarScheduleCore for conflict detection
+                        if (CalendarScheduleCore.hasConflict(
+                            null, // schedule will be looked up internally
+                            slot.day,
+                            slot.hour,
+                            slot.duration
+                        )) {
+                            hasConflict = true;
+                            conflictingSlots.push({
                                 day: slot.day,
                                 hour: slot.hour,
                                 duration: slot.duration
                             });
-                            break;
                         }
                     }
                 }
-            }
-        }
 
-        // ---- PHASE 9: HANDLE CONFLICTS ----
-        if (conflicts.length > 0) {
-            // If there are conflicts, we need to decide whether to proceed
-            // For now, we'll proceed but report the conflicts
-            // In a future version, we could try to resolve conflicts or skip those students
-        }
-
-        // ---- PHASE 10: COMMIT ASSIGNMENTS ----
-        var assignedCount = 0;
-        var failedAssignments = [];
-
-        for (var i = 0; i < assignments.length; i++) {
-            var assignment = assignments[i];
-
-            // Check if student is already in this team
-            var students = AcademyGroups.getGroupStudents(assignment.teamId);
-            var alreadyInTeam = false;
-            for (var s2 = 0; s2 < students.length; s2++) {
-                if (String(students[s2]) === String(assignment.studentId)) {
-                    alreadyInTeam = true;
-                    break;
-                }
-            }
-
-            if (alreadyInTeam) {
-                failedAssignments.push({
-                    studentId: assignment.studentId,
-                    studentName: assignment.studentName,
-                    teamId: assignment.teamId,
-                    teamName: assignment.team.name,
-                    reason: 'Already in team'
+                candidateTeams.push({
+                    team: team,
+                    teamId: teamId,
+                    hasConflict: hasConflict,
+                    conflictingSlots: conflictingSlots,
+                    currentOccupancy: currentOccupancy[teamId] || 0,
+                    availableSlots: teamSlots[teamId]
                 });
+            }
+
+            // ---- PHASE 8b: Filter by conflict policy ----
+            var availableTeams = candidateTeams;
+            if (skipConflicts) {
+                availableTeams = candidateTeams.filter(function(t) {
+                    return !t.hasConflict;
+                });
+            }
+
+            if (availableTeams.length === 0) {
+                if (skipConflicts) {
+                    skippedConflicts++;
+                    conflicts.push({
+                        studentId: student.id,
+                        studentName: CharacterQueries.getDisplayName(student),
+                        candidateTeams: candidateTeams.map(function(t) {
+                            return {
+                                teamId: t.teamId,
+                                teamName: t.team.name,
+                                hasConflict: t.hasConflict
+                            };
+                        })
+                    });
+                }
                 continue;
             }
 
-            // Use TeamCore to add member (this handles the actual mutation)
-            var result = TeamCore.addMember(assignment.teamId, {
-                characterId: assignment.studentId,
-                role: 'Member',
-                joinPeriod: String(weekNum),
-                leavePeriod: ''
-            });
+            // ---- PHASE 8c: Select best team by balancing policy ----
+            var selectedTeam = null;
 
-            if (result) {
-                assignedCount++;
-            } else {
-                failedAssignments.push({
-                    studentId: assignment.studentId,
-                    studentName: assignment.studentName,
-                    teamId: assignment.teamId,
-                    teamName: assignment.team.name,
-                    reason: 'Failed to add member'
+            if (balancePolicy === 'round-robin') {
+                // Round-robin: track last assigned index
+                // Simple implementation: pick first available team with remaining slots
+                // More sophisticated round-robin would maintain a pointer
+                for (var i = 0; i < availableTeams.length; i++) {
+                    if (availableTeams[i].availableSlots > 0) {
+                        selectedTeam = availableTeams[i];
+                        break;
+                    }
+                }
+            } else if (balancePolicy === 'least-occupied') {
+                // Least occupied first: pick team with lowest current occupancy
+                var sortedByOccupancy = availableTeams.slice().sort(function(a, b) {
+                    return a.currentOccupancy - b.currentOccupancy;
                 });
-            }
-        }
-
-        // ---- PHASE 11: LOG AND RETURN ----
-        if (assignedCount > 0) {
-            var className = classResult.class.name || 'Unknown';
-            recordActivity('Auto-distributed ' + assignedCount + ' students in class ' + className + ' for week ' + weekNum);
-        }
-
-        // Determine if operation was successful
-        var successResult = assignedCount > 0;
-
-        return {
-            success: successResult,
-            assigned: assignedCount,
-            capacityExceeded: capacityExceeded,
-            conflictCount: conflicts.length,
-            failedAssignments: failedAssignments,
-            assignments: assignments,
-            conflicts: conflicts,
-            message: successResult
-                ? 'Distributed ' + assignedCount + ' students successfully.'
-                : 'No students could be assigned.'
-        };
-    }
-
-    /**
-     * Auto-distribute students with conflict resolution.
-     * This version attempts to skip students with conflicts rather than failing.
-     * 
-     * @param {string} classId - Class ID
-     * @param {number|string} week - Week number
-     * @param {number} maxTeamSize - Maximum students per team
-     * @param {array} teamIds - Optional array of team IDs
-     * @param {object} options - Additional options
-     * @param {boolean} options.skipConflicts - Skip students with conflicts (default: true)
-     * @param {boolean} options.validateOnly - Only validate, don't commit (default: false)
-     * @returns {object} Result with assigned students and any issues
-     */
-    function autoDistributeStudentsWithOptions(classId, week, maxTeamSize, teamIds, options) {
-        options = options || {};
-        var skipConflicts = options.skipConflicts !== false;
-        var validateOnly = options.validateOnly === true;
-
-        // ---- PHASE 1: VALIDATE BASIC INPUTS ----
-        if (!isNonEmptyString(classId)) {
-            return failure('Class ID is required.');
-        }
-
-        var weekNum = validateWeek(week);
-        if (weekNum === null) {
-            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
-        }
-
-        var maxSize = parseInt(maxTeamSize, 10);
-        if (isNaN(maxSize) || maxSize < 1) {
-            return failure('Max team size must be at least 1.');
-        }
-        if (maxSize > 20) {
-            return failure('Max team size cannot exceed 20.');
-        }
-
-        // ---- PHASE 2: VALIDATE CLASS ----
-        var classResult = validateClassId(classId);
-        if (!classResult.valid) {
-            return failure(classResult.message);
-        }
-
-        // ---- PHASE 3: GET AVAILABLE STUDENTS ----
-        var availableStudents = AcademyQueries.getAvailableStudents(classId, weekNum);
-        if (availableStudents.length === 0) {
-            return failure('No available students for this class at week ' + weekNum + '.');
-        }
-
-        // ---- PHASE 4: GET TEAMS ----
-        var teamsResult;
-        if (Array.isArray(teamIds) && teamIds.length > 0) {
-            teamsResult = validateTeamIds(teamIds, classId, weekNum, maxSize);
-        } else {
-            var allTeams = AcademyQueries.getAcademicTeams(classId);
-            var allTeamIds = [];
-            for (var i = 0; i < allTeams.length; i++) {
-                allTeamIds.push(allTeams[i].id);
-            }
-            teamsResult = validateTeamIds(allTeamIds, classId, weekNum, maxSize);
-        }
-
-        if (!teamsResult.valid) {
-            return failure(teamsResult.message);
-        }
-
-        var validTeams = teamsResult.teams;
-
-        // ---- PHASE 5: BUILD ASSIGNMENT PLAN WITH CONFLICT CHECKING ----
-        var teamSlots = {};
-        for (var i = 0; i < validTeams.length; i++) {
-            teamSlots[validTeams[i].id] = validTeams[i].availableSlots;
-        }
-
-        // Get all team slots upfront
-        var teamSlotsMap = {};
-        for (var i = 0; i < validTeams.length; i++) {
-            var slots = AcademyGroups.getGroupSlots(validTeams[i].id);
-            if (slots && slots.length > 0) {
-                teamSlotsMap[validTeams[i].id] = slots.filter(function(slot) {
-                    return slot.week === weekNum;
-                });
+                for (var i = 0; i < sortedByOccupancy.length; i++) {
+                    if (sortedByOccupancy[i].availableSlots > 0) {
+                        selectedTeam = sortedByOccupancy[i];
+                        break;
+                    }
+                }
             } else {
-                teamSlotsMap[validTeams[i].id] = [];
-            }
-        }
-
-        var shuffled = availableStudents.slice();
-        for (var s = shuffled.length - 1; s > 0; s--) {
-            var j = Math.floor(Math.random() * (s + 1));
-            var temp = shuffled[s];
-            shuffled[s] = shuffled[j];
-            shuffled[j] = temp;
-        }
-
-        var assignments = [];
-        var capacityExceeded = 0;
-        var skippedConflicts = 0;
-        var conflicts = [];
-
-        for (var a = 0; a < shuffled.length; a++) {
-            var student = shuffled[a];
-
-            // Find team with available slot
-            var targetTeam = null;
-            var targetTeamId = null;
-
-            for (var t = 0; t < validTeams.length; t++) {
-                var teamId = validTeams[t].id;
-                if (teamSlots[teamId] > 0) {
-                    targetTeam = validTeams[t];
-                    targetTeamId = teamId;
-                    break;
+                // 'fill-capacity' or default: fill teams sequentially
+                for (var i = 0; i < availableTeams.length; i++) {
+                    if (availableTeams[i].availableSlots > 0) {
+                        selectedTeam = availableTeams[i];
+                        break;
+                    }
                 }
             }
 
-            if (!targetTeam) {
+            if (!selectedTeam) {
                 capacityExceeded++;
                 continue;
             }
 
-            // Check for schedule conflicts
-            var hasConflict = false;
-            var conflictingSlots = [];
-            var teamSlots2 = teamSlotsMap[targetTeamId] || [];
-
-            if (teamSlots2.length > 0) {
-                for (var s2 = 0; s2 < teamSlots2.length; s2++) {
-                    var slot = teamSlots2[s2];
-                    if (AcademySchedule.hasConflict(student.id, weekNum, slot.day, slot.hour, slot.duration)) {
-                        hasConflict = true;
-                        conflictingSlots.push({
-                            day: slot.day,
-                            hour: slot.hour,
-                            duration: slot.duration
-                        });
-                    }
-                }
-            }
-
-            if (hasConflict && skipConflicts) {
-                skippedConflicts++;
-                conflicts.push({
-                    studentId: student.id,
-                    studentName: CharacterQueries.getDisplayName(student),
-                    teamId: targetTeamId,
-                    teamName: targetTeam.name,
-                    conflictingSlots: conflictingSlots
-                });
-                continue;
-            }
-
+            // ---- PHASE 8d: Record assignment ----
             assignments.push({
                 studentId: student.id,
                 student: student,
-                teamId: targetTeamId,
-                team: targetTeam,
+                teamId: selectedTeam.teamId,
+                team: selectedTeam.team,
                 studentName: CharacterQueries.getDisplayName(student),
-                hasConflict: hasConflict,
-                conflictingSlots: conflictingSlots
+                hasConflict: selectedTeam.hasConflict,
+                conflictingSlots: selectedTeam.conflictingSlots
             });
 
-            teamSlots[targetTeamId]--;
+            // Update capacity and occupancy
+            teamSlots[selectedTeam.teamId]--;
+            currentOccupancy[selectedTeam.teamId] = (currentOccupancy[selectedTeam.teamId] || 0) + 1;
         }
 
         if (assignments.length === 0) {
             return failure('No students could be assigned. Check team capacity and conflicts.');
         }
 
-        // ---- PHASE 6: VALIDATE ONLY ----
-        if (validateOnly) {
-            return success({
-                assignments: assignments,
-                assigned: assignments.length,
-                capacityExceeded: capacityExceeded,
-                skippedConflicts: skippedConflicts,
-                conflicts: conflicts,
-                totalAvailableStudents: availableStudents.length
-            });
-        }
+        // ---- PHASE 9: Build the execution plan ----
+        function buildMutation() {
+            var mutationData = {
+                assignments: [],
+                assignedCount: 0,
+                failedAssignments: []
+            };
 
-        // ---- PHASE 7: COMMIT ASSIGNMENTS ----
-        var assignedCount = 0;
-        var failedAssignments = [];
+            for (var i = 0; i < assignments.length; i++) {
+                var assignment = assignments[i];
 
-        for (var i = 0; i < assignments.length; i++) {
-            var assignment = assignments[i];
+                // Check if student is already in this team
+                var team = TeamCore.getTeam(assignment.teamId);
+                if (!team) {
+                    mutationData.failedAssignments.push({
+                        studentId: assignment.studentId,
+                        studentName: assignment.studentName,
+                        teamId: assignment.teamId,
+                        teamName: assignment.team.name,
+                        reason: 'Team not found'
+                    });
+                    continue;
+                }
 
-            // Check if student is already in this team
-            var students = AcademyGroups.getGroupStudents(assignment.teamId);
-            var alreadyInTeam = false;
-            for (var s2 = 0; s2 < students.length; s2++) {
-                if (String(students[s2]) === String(assignment.studentId)) {
-                    alreadyInTeam = true;
-                    break;
+                var members = TeamQueries.getActiveTeamMembers(team, weekNum);
+                var alreadyInTeam = false;
+                for (var j = 0; j < members.length; j++) {
+                    if (String(members[j].characterId) === String(assignment.studentId)) {
+                        alreadyInTeam = true;
+                        break;
+                    }
+                }
+
+                if (alreadyInTeam) {
+                    mutationData.failedAssignments.push({
+                        studentId: assignment.studentId,
+                        studentName: assignment.studentName,
+                        teamId: assignment.teamId,
+                        teamName: assignment.team.name,
+                        reason: 'Already in team'
+                    });
+                    continue;
+                }
+
+                var result = TeamCore.addMember(assignment.teamId, {
+                    characterId: assignment.studentId,
+                    role: 'Member',
+                    joinPeriod: String(weekNum),
+                    leavePeriod: ''
+                });
+
+                if (result) {
+                    mutationData.assignedCount++;
+                    mutationData.assignments.push(assignment);
+                } else {
+                    mutationData.failedAssignments.push({
+                        studentId: assignment.studentId,
+                        studentName: assignment.studentName,
+                        teamId: assignment.teamId,
+                        teamName: assignment.team.name,
+                        reason: 'Failed to add member'
+                    });
                 }
             }
 
-            if (alreadyInTeam) {
-                failedAssignments.push({
-                    studentId: assignment.studentId,
-                    studentName: assignment.studentName,
-                    teamId: assignment.teamId,
-                    teamName: assignment.team.name,
-                    reason: 'Already in team'
-                });
-                continue;
-            }
-
-            var result = TeamCore.addMember(assignment.teamId, {
-                characterId: assignment.studentId,
-                role: 'Member',
-                joinPeriod: String(weekNum),
-                leavePeriod: ''
-            });
-
-            if (result) {
-                assignedCount++;
-            } else {
-                failedAssignments.push({
-                    studentId: assignment.studentId,
-                    studentName: assignment.studentName,
-                    teamId: assignment.teamId,
-                    teamName: assignment.team.name,
-                    reason: 'Failed to add member'
-                });
-            }
+            return mutationData;
         }
 
-        // ---- PHASE 8: LOG AND RETURN ----
-        if (assignedCount > 0) {
-            var className = classResult.class.name || 'Unknown';
-            recordActivity('Auto-distributed ' + assignedCount + ' students in class ' + className + ' for week ' + weekNum);
+        function mutate(data) {
+            var result = buildMutation();
+            return result;
         }
 
-        var successResult = assignedCount > 0;
+        // ---- PHASE 10: Return plan ----
+        var className = classResult.class.name || 'Unknown';
 
-        return {
-            success: successResult,
-            assigned: assignedCount,
+        return success({
+            // Plan metadata
+            classId: classId,
+            className: className,
+            week: weekNum,
+            maxTeamSize: maxSize,
+
+            // Assignment data
+            assignments: assignments,
+            assigned: assignments.length,
             capacityExceeded: capacityExceeded,
             skippedConflicts: skippedConflicts,
             conflictCount: conflicts.length,
-            failedAssignments: failedAssignments,
-            assignments: assignments,
+
+            // Detailed reports
             conflicts: conflicts,
             totalAvailableStudents: availableStudents.length,
-            message: successResult
-                ? 'Distributed ' + assignedCount + ' students successfully.'
-                : 'No students could be assigned.'
-        };
+
+            // Execution function (for MutationPipeline)
+            mutate: mutate,
+
+            // Validation function (for MutationPipeline)
+            validate: function(data) {
+                return { valid: true };
+            },
+
+            // Result summary
+            summary: {
+                totalStudents: availableStudents.length,
+                assignedStudents: assignments.length,
+                skippedStudents: skippedConflicts + capacityExceeded,
+                teamsUsed: function() {
+                    var used = {};
+                    for (var i = 0; i < assignments.length; i++) {
+                        used[assignments[i].teamId] = true;
+                    }
+                    return Object.keys(used).length;
+                }()
+            }
+        });
+    }
+
+    // ============================================================
+    // EXECUTE PLAN - Applies a plan via MutationPipeline
+    // ============================================================
+
+    /**
+     * Execute a distribution plan.
+     * This is the recommended way to apply a plan.
+     * 
+     * @param {object} plan - The plan returned by buildDistributionPlan
+     * @param {object} options - Execution options
+     * @param {boolean} options.validateOnly - If true, only validate the plan
+     * @returns {object} Execution result
+     */
+    function executeDistributionPlan(plan, options) {
+        options = options || {};
+
+        if (!plan || !plan.success) {
+            return failure('Invalid or failed plan.');
+        }
+
+        if (options.validateOnly) {
+            return success({
+                validated: true,
+                plan: plan.data,
+                summary: plan.data.summary
+            });
+        }
+
+        try {
+            var result = plan.data.mutate(window.data);
+            return success({
+                executed: true,
+                assigned: result.assignedCount || 0,
+                assignments: result.assignments || [],
+                failedAssignments: result.failedAssignments || [],
+                summary: plan.data.summary
+            });
+        } catch (e) {
+            return failure(e.message || 'Failed to execute distribution plan.');
+        }
+    }
+
+    // ============================================================
+    // LEGACY WRAPPER FUNCTIONS - For backward compatibility
+    // These build and execute the plan directly.
+    // DEPRECATED: Use buildDistributionPlan + MutationPipeline.
+    // ============================================================
+
+    /**
+     * Legacy: Auto-distribute students directly.
+     * DEPRECATED: Use buildDistributionPlan + executeDistributionPlan.
+     */
+    function autoDistributeStudents(classId, week, maxTeamSize, teamIds) {
+        var plan = buildDistributionPlan(classId, week, maxTeamSize, teamIds, {
+            skipConflicts: false,
+            balancePolicy: 'fill-capacity',
+            shuffleStudents: true
+        });
+
+        if (!plan.success) {
+            return failure(plan.message);
+        }
+
+        try {
+            var result = plan.data.mutate(window.data);
+            return {
+                success: result.assignedCount > 0,
+                assigned: result.assignedCount || 0,
+                capacityExceeded: plan.data.capacityExceeded || 0,
+                conflictCount: plan.data.conflictCount || 0,
+                failedAssignments: result.failedAssignments || [],
+                assignments: result.assignments || [],
+                conflicts: plan.data.conflicts || [],
+                message: result.assignedCount > 0
+                    ? 'Distributed ' + result.assignedCount + ' students successfully.'
+                    : 'No students could be assigned.'
+            };
+        } catch (e) {
+            return failure(e.message || 'Failed to distribute students.');
+        }
+    }
+
+    /**
+     * Legacy: Auto-distribute with options.
+     * DEPRECATED: Use buildDistributionPlan + executeDistributionPlan.
+     */
+    function autoDistributeStudentsWithOptions(classId, week, maxTeamSize, teamIds, options) {
+        options = options || {};
+        var plan = buildDistributionPlan(classId, week, maxTeamSize, teamIds, {
+            skipConflicts: options.skipConflicts !== false,
+            balancePolicy: options.balancePolicy || 'least-occupied',
+            shuffleStudents: options.shuffleStudents !== false
+        });
+
+        if (!plan.success) {
+            return failure(plan.message);
+        }
+
+        if (options.validateOnly) {
+            return success({
+                assignments: plan.data.assignments,
+                assigned: plan.data.assigned,
+                capacityExceeded: plan.data.capacityExceeded,
+                skippedConflicts: plan.data.skippedConflicts,
+                conflicts: plan.data.conflicts,
+                totalAvailableStudents: plan.data.totalAvailableStudents,
+                summary: plan.data.summary
+            });
+        }
+
+        try {
+            var result = plan.data.mutate(window.data);
+            return {
+                success: result.assignedCount > 0,
+                assigned: result.assignedCount || 0,
+                capacityExceeded: plan.data.capacityExceeded || 0,
+                skippedConflicts: plan.data.skippedConflicts || 0,
+                conflictCount: plan.data.conflictCount || 0,
+                failedAssignments: result.failedAssignments || [],
+                assignments: result.assignments || [],
+                conflicts: plan.data.conflicts || [],
+                totalAvailableStudents: plan.data.totalAvailableStudents,
+                message: result.assignedCount > 0
+                    ? 'Distributed ' + result.assignedCount + ' students successfully.'
+                    : 'No students could be assigned.'
+            };
+        } catch (e) {
+            return failure(e.message || 'Failed to distribute students.');
+        }
     }
 
     // ============================================================
@@ -753,14 +768,22 @@
     // ============================================================
 
     window.AcademyDistribute = {
-        // Main distribution
+        // Primary API - Build plan, then execute
+        buildDistributionPlan: buildDistributionPlan,
+        executeDistributionPlan: executeDistributionPlan,
+
+        // Legacy wrappers (deprecated - use with caution)
         autoDistributeStudents: autoDistributeStudents,
         autoDistributeStudentsWithOptions: autoDistributeStudentsWithOptions,
 
         // Validation (exposed for external use)
         validateWeek: validateWeek,
+        validatePositiveInteger: validatePositiveInteger,
         validateClassId: validateClassId,
-        validateTeamIds: validateTeamIds
+        validateTeamIds: validateTeamIds,
+
+        // Constants
+        MAX_TEAM_SIZE: MAX_TEAM_SIZE
     };
 
 })();

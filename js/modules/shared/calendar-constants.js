@@ -155,7 +155,7 @@
     });
 
     // ============================================================
-    // VALIDATION FUNCTIONS
+    // VALIDATION FUNCTIONS - Return number or null
     // ============================================================
 
     /**
@@ -242,6 +242,10 @@
         }
         return num;
     }
+
+    // ============================================================
+    // BOOLEAN VALIDATION FUNCTIONS
+    // ============================================================
 
     /**
      * Check if a week number is valid (returns boolean).
@@ -655,7 +659,6 @@
         }
         if (typeof MAX_YEAR !== 'number' || MAX_YEAR <= MIN_YEAR) {
             errors.push('MAX_YEAR must be greater than MIN_YEAR.');
-
         }
 
         // Week block
@@ -696,7 +699,6 @@
 
     try {
         validateConstants();
-        console.log('[CalendarConstants] Validation passed successfully.');
     } catch (e) {
         console.error('[CalendarConstants] Validation failed:', e.message);
         throw e;

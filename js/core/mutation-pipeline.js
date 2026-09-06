@@ -5,7 +5,7 @@
  * Path: js/core/mutation-pipeline.js
  * 
  * This module provides:
- *   - performMutation() - Standard VALIDATE → SNAPSHOT → MUTATE → PERSIST → LOG → UI COMMIT
+ *   - performMutation() - Standard VALIDATE -> SNAPSHOT -> MUTATE -> PERSIST -> LOG -> UI COMMIT
  *   - createSafeBackup() - Centralised deep cloning with structuredClone
  *   - saveWithPromise() - Wraps window.saveData() to catch synchronous exceptions
  * 
@@ -75,6 +75,40 @@
     var NotificationSystem = window.NotificationSystem;
 
     // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
+
+    function checkDependencies() {
+        var missing = [];
+
+        if (typeof window.saveData !== 'function') {
+            missing.push('window.saveData');
+        }
+
+        if (!window.data || typeof window.data !== 'object') {
+            missing.push('window.data');
+        }
+
+        if (!CoreUtils || typeof CoreUtils.deepClone !== 'function') {
+            missing.push('CoreUtils.deepClone');
+        }
+
+        if (!ActivityLog || typeof ActivityLog.record !== 'function') {
+            missing.push('ActivityLog.record');
+        }
+
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
+        }
+
+        if (missing.length > 0) {
+            throw new Error('MutationPipeline: Missing dependencies: ' + missing.join(', '));
+        }
+
+        return true;
+    }
+
+    // ============================================================
     // MUTATION QUEUE - Serialises mutations
     // ============================================================
 
@@ -122,26 +156,6 @@
     }
 
     // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    function checkDependencies() {
-        if (typeof window.saveData !== 'function') {
-            throw new Error('MutationPipeline: window.saveData is not available.');
-        }
-
-        if (!window.data || typeof window.data !== 'object') {
-            throw new Error('MutationPipeline: window.data is not available.');
-        }
-
-        if (!CoreUtils || typeof CoreUtils.deepClone !== 'function') {
-            throw new Error('MutationPipeline: CoreUtils.deepClone is not available.');
-        }
-
-        return true;
-    }
-
-    // ============================================================
     // NOTIFICATION HELPER - USES NotificationSystem
     // ============================================================
 
@@ -154,7 +168,7 @@
         }
 
         // If NotificationSystem is missing, this is a dependency failure
-        console.warn('MutationPipeline: NotificationSystem not available');
+        throw new Error('MutationPipeline: NotificationSystem not available');
     }
 
     // ============================================================
@@ -320,7 +334,9 @@
                     try {
                         restoreFromBackup(data, backup);
                     } catch (rollbackErr) {
-                        console.error('MutationPipeline: Rollback failed during mutation error:', rollbackErr);
+                        // Rollback failure is critical - throw to prevent corrupted state
+                        reject(new Error('Mutation failed and rollback failed: ' + rollbackErr.message));
+                        return;
                     }
 
                     if (!skipNotification) {
@@ -375,7 +391,7 @@
                             try {
                                 onSuccess(dataToReturn);
                             } catch (successErr) {
-                                console.error('MutationPipeline: onSuccess callback error:', successErr);
+                                // Ignore onSuccess errors
                             }
                         }
 
@@ -402,7 +418,9 @@
                         try {
                             restoreFromBackup(window.data, backup);
                         } catch (rollbackErr) {
-                            console.error('MutationPipeline: Rollback failed during persistence error:', rollbackErr);
+                            // Rollback failure is critical - throw to prevent corrupted state
+                            reject(new Error('Persistence failed and rollback failed: ' + rollbackErr.message));
+                            return;
                         }
 
                         var errorMsg = err && err.message
@@ -448,7 +466,7 @@
 
     /**
      * Perform a mutation with the standard pipeline:
-     * VALIDATE → SNAPSHOT → MUTATE → PERSIST → LOG → UI COMMIT
+     * VALIDATE -> SNAPSHOT -> MUTATE -> PERSIST -> LOG -> UI COMMIT
      * 
      * Mutations are serialised to prevent rollback conflicts.
      * 

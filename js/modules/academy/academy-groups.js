@@ -8,16 +8,14 @@
  *   - Student management within groups
  *   - Slot management within groups
  *   - Group summaries and queries
- *   - Bulk operations (atomic)
- *   - Rebuilding groups from schedules
+ *   - Bulk operations (atomic candidate construction)
  * 
  * IMPORTANT:
  *   - This module is the CANONICAL source of truth for auto-groups
- *   - All mutations are candidate-based: validate, clone, modify, commit
- *   - No mutation of live state occurs before candidate validation completes
- *   - This module does NOT call saveData() - callers own persistence
- *   - Bulk operations are ATOMIC: all or nothing
- *   - All validation uses CALENDAR_CONSTANTS from constants.js
+ *   - All mutations are candidate-based: validate, clone, modify, return candidate
+ *   - This module does NOT commit to window.data or call saveData()
+ *   - Persistence and logging are owned by MutationPipeline
+ *   - All validation uses CalendarValidation from calendar-validation.js
  *   - All deep cloning uses ObjectUtils.deepClone()
  *   - All ID generation uses IdUtils.generateId()
  * 
@@ -25,15 +23,15 @@
  *   - window.ObjectUtils (from object-utils.js)
  *   - window.IdUtils (from id-utils.js)
  *   - window.CharacterQueries (from character-queries.js)
- *   - window.AcademyQueries (from academy-queries.js)
- *   - window.CALENDAR_CONSTANTS (from constants.js)
- *   - window.ActivityLog (from activity-log.js)
+ *   - window.DisciplineQueries (from discipline-queries.js)
+ *   - window.CalendarValidation (from calendar-validation.js)
+ *   - window.CalendarConstants (from calendar-constants.js)
  * 
  * USAGE:
  *   var groups = window.AcademyGroups;
  *   var result = groups.createAutoGroup(disciplineId, instructorId);
- *   var group = groups.getGroupSummary(key);
- *   var result = groups.addStudentToAutoGroup(key, studentId);
+ *   var candidate = groups.buildAddStudentCandidate(key, studentId);
+ *   // Apply candidate via MutationPipeline
  */
 
 (function() {
@@ -51,9 +49,9 @@
     var ObjectUtils = window.ObjectUtils;
     var IdUtils = window.IdUtils;
     var CharacterQueries = window.CharacterQueries;
-    var AcademyQueries = window.AcademyQueries;
-    var CalendarConstants = window.CALENDAR_CONSTANTS;
-    var ActivityLog = window.ActivityLog;
+    var DisciplineQueries = window.DisciplineQueries;
+    var CalendarValidation = window.CalendarValidation;
+    var CalendarConstants = window.CalendarConstants;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -76,49 +74,44 @@
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
+        if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
+            missing.push('CharacterQueries.getCurrentStatus');
+        }
 
-        if (!AcademyQueries || typeof AcademyQueries.getDiscipline !== 'function') {
-            missing.push('AcademyQueries.getDiscipline');
+        if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
+            missing.push('DisciplineQueries.getDiscipline');
         }
-        if (!AcademyQueries || typeof AcademyQueries.getCharacterById !== 'function') {
-            missing.push('AcademyQueries.getCharacterById');
+
+        if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
+            missing.push('CalendarValidation.parseWeek');
         }
-        if (!AcademyQueries || typeof AcademyQueries.getAvailableDisciplines !== 'function') {
-            missing.push('AcademyQueries.getAvailableDisciplines');
+        if (!CalendarValidation || typeof CalendarValidation.parseDay !== 'function') {
+            missing.push('CalendarValidation.parseDay');
+        }
+        if (!CalendarValidation || typeof CalendarValidation.parseHour !== 'function') {
+            missing.push('CalendarValidation.parseHour');
+        }
+        if (!CalendarValidation || typeof CalendarValidation.parseDuration !== 'function') {
+            missing.push('CalendarValidation.parseDuration');
         }
 
         if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
-            missing.push('CALENDAR_CONSTANTS');
-        }
-
-        if (!ActivityLog || typeof ActivityLog.record !== 'function') {
-            missing.push('ActivityLog.record');
+            missing.push('CalendarConstants.MIN_WEEK');
         }
 
         if (missing.length > 0) {
-            console.warn('AcademyGroups: Missing dependencies:', missing.join(', '));
-            return false;
+            throw new Error('AcademyGroups: Missing dependencies: ' + missing.join(', '));
         }
 
         return true;
     }
 
-    if (!checkDependencies()) {
-        return;
-    }
-
-    window.__academyGroupsLoaded = true;
+    checkDependencies();
 
     // ============================================================
-    // CONSTANTS - From CALENDAR_CONSTANTS
+    // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = CalendarConstants.MIN_WEEK;
-    var MAX_WEEK = CalendarConstants.MAX_WEEK;
-    var MIN_DAY = CalendarConstants.MIN_DAY;
-    var MAX_DAY = CalendarConstants.MAX_DAY;
-    var MIN_HOUR = CalendarConstants.MIN_HOUR;
-    var MAX_HOUR = CalendarConstants.MAX_HOUR;
     var AUTO_GROUP_LABEL = 'auto-group';
 
     // ============================================================
@@ -141,14 +134,6 @@
         return IdUtils.generateId(prefix);
     }
 
-    function recordActivity(message) {
-        try {
-            ActivityLog.record(message);
-        } catch (e) {
-            // Activity logging failure should not abort the mutation
-        }
-    }
-
     function failure(message) {
         return { success: false, message: message };
     }
@@ -158,63 +143,22 @@
     }
 
     // ============================================================
-    // DATA STORE ACCESS
+    // DATA STORE ACCESS - Read-only
     // ============================================================
 
-    function getDataStore() {
+    function getAutoGroupsStore() {
         if (!window.data || typeof window.data !== 'object') {
             return null;
         }
-        return window.data;
+        if (!window.data.curriculum || typeof window.data.curriculum !== 'object') {
+            return null;
+        }
+        return window.data.curriculum.autoGroups;
     }
 
     // ============================================================
-    // VALIDATION HELPERS - Strict validation
+    // VALIDATION HELPERS
     // ============================================================
-
-    function validateWeek(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        if (!Number.isInteger(num) || num < MIN_WEEK || num > MAX_WEEK) {
-            return null;
-        }
-        return num;
-    }
-
-    function validateDay(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        if (!Number.isInteger(num) || num < MIN_DAY || num > MAX_DAY) {
-            return null;
-        }
-        return num;
-    }
-
-    function validateHour(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        if (!Number.isInteger(num) || num < MIN_HOUR || num > MAX_HOUR) {
-            return null;
-        }
-        return num;
-    }
-
-    function validateDuration(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        if (!Number.isInteger(num) || num < 1 || num > 4) {
-            return null;
-        }
-        return num;
-    }
 
     function validateGroupKey(key) {
         if (!isNonEmptyString(key)) {
@@ -227,7 +171,7 @@
         if (!isNonEmptyString(disciplineId)) {
             return { valid: false, message: 'Discipline ID is required.' };
         }
-        var discipline = AcademyQueries.getDiscipline(disciplineId);
+        var discipline = DisciplineQueries.getDiscipline(disciplineId);
         if (!discipline) {
             return { valid: false, message: 'Discipline not found.' };
         }
@@ -242,7 +186,6 @@
         if (!instructor) {
             return { valid: false, message: 'Instructor not found.' };
         }
-        // Check if character is actually an instructor
         var status = CharacterQueries.getCurrentStatus(instructor);
         if (status !== 'instructor' && status !== 'teacher' && status !== 'professor' && status !== 'senior') {
             return { valid: false, message: 'Character is not an instructor.' };
@@ -258,52 +201,11 @@
         if (!student) {
             return { valid: false, message: 'Student not found.' };
         }
-        // Check if character is actually a student
         var status = CharacterQueries.getCurrentStatus(student);
         if (status !== 'trainee' && status !== 'rookie' && status !== 'junior') {
             return { valid: false, message: 'Character is not a student.' };
         }
         return { valid: true, student: student };
-    }
-
-    function validateSlotData(key, week, day, hour, duration) {
-        var keyResult = validateGroupKey(key);
-        if (!keyResult.valid) {
-            return keyResult;
-        }
-
-        var weekNum = validateWeek(week);
-        if (weekNum === null) {
-            return { valid: false, message: 'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').' };
-        }
-
-        var dayNum = validateDay(day);
-        if (dayNum === null) {
-            return { valid: false, message: 'Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').' };
-        }
-
-        var hourNum = validateHour(hour);
-        if (hourNum === null) {
-            return { valid: false, message: 'Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').' };
-        }
-
-        var durationNum = validateDuration(duration);
-        if (durationNum === null) {
-            return { valid: false, message: 'Duration must be between 1 and 4 hours.' };
-        }
-
-        if (hourNum + durationNum > 24) {
-            return { valid: false, message: 'Slot duration extends beyond the end of the day.' };
-        }
-
-        return {
-            valid: true,
-            key: keyResult.key,
-            week: weekNum,
-            day: dayNum,
-            hour: hourNum,
-            duration: durationNum
-        };
     }
 
     function validateStudentIds(studentIds) {
@@ -338,12 +240,11 @@
     // ============================================================
 
     function getAllAutoGroups() {
-        var data = getDataStore();
-        if (!data || !data.curriculum || !data.curriculum.autoGroups) {
+        var store = getAutoGroupsStore();
+        if (!store || typeof store !== 'object') {
             return {};
         }
-        var cloned = deepClone(data.curriculum.autoGroups);
-        return cloned || {};
+        return deepClone(store) || {};
     }
 
     function getAutoGroup(key) {
@@ -416,9 +317,12 @@
 
     function isStudentInGroup(key, studentId) {
         var students = getGroupStudents(key);
-        return students.some(function(id) {
-            return String(id) === String(studentId);
-        });
+        for (var i = 0; i < students.length; i++) {
+            if (String(students[i]) === String(studentId)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     function getGroupsForStudent(studentId) {
@@ -448,7 +352,7 @@
     }
 
     function getGroupsForWeek(week) {
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
             return {};
         }
@@ -483,7 +387,7 @@
 
     function getGroupSlotsByWeek(key, week) {
         var slots = getGroupSlots(key);
-        var weekNum = validateWeek(week);
+        var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
             return [];
         }
@@ -516,7 +420,7 @@
             return null;
         }
 
-        var discipline = AcademyQueries.getDiscipline(group.disciplineId);
+        var discipline = DisciplineQueries.getDiscipline(group.disciplineId);
         var instructor = CharacterQueries.getCharacterById(group.instructorId);
 
         return {
@@ -560,10 +464,41 @@
     }
 
     // ============================================================
-    // GROUP MUTATIONS - Candidate-based
+    // SLOT OVERLAP DETECTION
     // ============================================================
 
-    function createAutoGroup(disciplineId, instructorId) {
+    function slotsOverlap(slot1, slot2) {
+        if (slot1.week !== slot2.week) {
+            return false;
+        }
+        if (slot1.day !== slot2.day) {
+            return false;
+        }
+        var s1Start = slot1.hour;
+        var s1End = slot1.hour + slot1.duration;
+        var s2Start = slot2.hour;
+        var s2End = slot2.hour + slot2.duration;
+        return s1Start < s2End && s2Start < s1End;
+    }
+
+    function hasSlotOverlap(newSlot, existingSlots) {
+        for (var i = 0; i < existingSlots.length; i++) {
+            if (slotsOverlap(newSlot, existingSlots[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // ============================================================
+    // CANDIDATE MUTATION FUNCTIONS - No direct commit
+    // ============================================================
+
+    /**
+     * Build a candidate for creating an auto-group.
+     * Returns a mutation object for MutationPipeline.
+     */
+    function buildCreateGroupCandidate(disciplineId, instructorId) {
         // ---- PHASE 1: VALIDATE ----
         var discResult = validateDisciplineId(disciplineId);
         if (!discResult.valid) {
@@ -583,23 +518,7 @@
             return failure('Group already exists for this discipline and instructor.');
         }
 
-        // ---- PHASE 3: GET STORE ----
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
-        }
-
-        if (!data.curriculum || typeof data.curriculum !== 'object') {
-            return failure('Curriculum data is not available.');
-        }
-
-        // ---- PHASE 4: BUILD CANDIDATE ----
-        var candidateGroups = deepClone(data.curriculum.autoGroups || {});
-        if (candidateGroups === null) {
-            return failure('Failed to prepare group data.');
-        }
-
-        // ---- PHASE 5: CREATE GROUP ----
+        // ---- PHASE 3: BUILD CANDIDATE ----
         var instructorName = CharacterQueries.getDisplayName(instResult.instructor);
         var shortInstructor = instructorName;
         var parts = instructorName.split(' ');
@@ -617,20 +536,29 @@
             createdAt: new Date().toISOString()
         };
 
-        candidateGroups[groupKey] = newGroup;
-
-        // ---- PHASE 6: COMMIT ----
-        data.curriculum.autoGroups = candidateGroups;
-
-        // ---- PHASE 7: LOG ----
-        recordActivity('Created auto-group: ' + newGroup.displayName);
+        // ---- PHASE 4: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum) {
+                data.curriculum = {};
+            }
+            if (!data.curriculum.autoGroups) {
+                data.curriculum.autoGroups = {};
+            }
+            data.curriculum.autoGroups[groupKey] = newGroup;
+            return { group: deepClone(newGroup) };
+        }
 
         return success({
-            group: deepClone(newGroup)
+            mutate: mutate,
+            group: newGroup,
+            groupKey: groupKey
         });
     }
 
-    function deleteAutoGroup(key) {
+    /**
+     * Build a candidate for deleting an auto-group.
+     */
+    function buildDeleteGroupCandidate(key) {
         // ---- PHASE 1: VALIDATE ----
         var keyResult = validateGroupKey(key);
         if (!keyResult.valid) {
@@ -642,36 +570,27 @@
             return failure('Group not found.');
         }
 
-        // ---- PHASE 2: GET STORE ----
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
-        }
-
-        if (!data.curriculum || typeof data.curriculum !== 'object') {
-            return failure('Curriculum data is not available.');
-        }
-
-        // ---- PHASE 3: BUILD CANDIDATES ----
-        var candidateGroups = deepClone(data.curriculum.autoGroups || {});
-        if (candidateGroups === null) {
-            return failure('Failed to prepare group data.');
-        }
-
-        // ---- PHASE 4: DELETE ----
         var displayName = group.displayName || key;
-        delete candidateGroups[key];
 
-        // ---- PHASE 5: COMMIT ----
-        data.curriculum.autoGroups = candidateGroups;
+        // ---- PHASE 2: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum || !data.curriculum.autoGroups) {
+                return { deleted: false };
+            }
+            delete data.curriculum.autoGroups[key];
+            return { deleted: true };
+        }
 
-        // ---- PHASE 6: LOG ----
-        recordActivity('Deleted auto-group: ' + displayName);
-
-        return success({ deleted: true });
+        return success({
+            mutate: mutate,
+            displayName: displayName
+        });
     }
 
-    function addStudentToAutoGroup(key, studentId) {
+    /**
+     * Build a candidate for adding a student to an auto-group.
+     */
+    function buildAddStudentCandidate(key, studentId) {
         // ---- PHASE 1: VALIDATE ----
         var keyResult = validateGroupKey(key);
         if (!keyResult.valid) {
@@ -692,49 +611,37 @@
             return failure('Student is already in this group.');
         }
 
-        // ---- PHASE 2: GET STORE ----
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
-        }
-
-        if (!data.curriculum || typeof data.curriculum !== 'object') {
-            return failure('Curriculum data is not available.');
-        }
-
-        // ---- PHASE 3: BUILD CANDIDATE ----
-        var candidateGroups = deepClone(data.curriculum.autoGroups || {});
-        if (candidateGroups === null) {
-            return failure('Failed to prepare group data.');
-        }
-
-        var candidateGroup = candidateGroups[key];
-        if (!candidateGroup) {
-            return failure('Group disappeared during preparation.');
-        }
-
-        if (!Array.isArray(candidateGroup.students)) {
-            candidateGroup.students = [];
-        }
-
-        candidateGroup.students.push(String(studentId));
-        candidateGroup.students.sort();
-
-        // ---- PHASE 4: COMMIT ----
-        data.curriculum.autoGroups = candidateGroups;
-
-        // ---- PHASE 5: LOG ----
         var studentName = CharacterQueries.getDisplayName(studentResult.student);
-        recordActivity('Added ' + studentName + ' to auto-group: ' + (group.displayName || key));
+
+        // ---- PHASE 2: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum || !data.curriculum.autoGroups) {
+                return { added: false };
+            }
+            var candidateGroup = data.curriculum.autoGroups[key];
+            if (!candidateGroup) {
+                return { added: false };
+            }
+            if (!Array.isArray(candidateGroup.students)) {
+                candidateGroup.students = [];
+            }
+            candidateGroup.students.push(String(studentId));
+            candidateGroup.students.sort();
+            return { added: true };
+        }
 
         return success({
-            added: true,
+            mutate: mutate,
             studentId: studentId,
-            studentName: studentName
+            studentName: studentName,
+            groupName: group.displayName || key
         });
     }
 
-    function removeStudentFromAutoGroup(key, studentId) {
+    /**
+     * Build a candidate for removing a student from an auto-group.
+     */
+    function buildRemoveStudentCandidate(key, studentId) {
         // ---- PHASE 1: VALIDATE ----
         var keyResult = validateGroupKey(key);
         if (!keyResult.valid) {
@@ -754,62 +661,65 @@
             return failure('Student is not in this group.');
         }
 
-        // ---- PHASE 2: GET STORE ----
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
+        // ---- PHASE 2: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum || !data.curriculum.autoGroups) {
+                return { removed: false };
+            }
+            var candidateGroup = data.curriculum.autoGroups[key];
+            if (!candidateGroup || !Array.isArray(candidateGroup.students)) {
+                return { removed: false };
+            }
+
+            candidateGroup.students = candidateGroup.students.filter(function(id) {
+                return String(id) !== String(studentId);
+            });
+
+            // Clean up empty groups
+            var hasStudents = candidateGroup.students && candidateGroup.students.length > 0;
+            var hasSlots = candidateGroup.slots && candidateGroup.slots.length > 0;
+            if (!hasStudents && !hasSlots) {
+                delete data.curriculum.autoGroups[key];
+            }
+
+            return { removed: true };
         }
 
-        if (!data.curriculum || typeof data.curriculum !== 'object') {
-            return failure('Curriculum data is not available.');
-        }
-
-        // ---- PHASE 3: BUILD CANDIDATE ----
-        var candidateGroups = deepClone(data.curriculum.autoGroups || {});
-        if (candidateGroups === null) {
-            return failure('Failed to prepare group data.');
-        }
-
-        var candidateGroup = candidateGroups[key];
-        if (!candidateGroup) {
-            return failure('Group disappeared during preparation.');
-        }
-
-        if (!Array.isArray(candidateGroup.students)) {
-            return failure('Group has no students.');
-        }
-
-        candidateGroup.students = candidateGroup.students.filter(function(id) {
-            return String(id) !== String(studentId);
+        return success({
+            mutate: mutate,
+            studentId: studentId,
+            groupName: group.displayName || key
         });
-
-        // Clean up empty groups
-        var hasStudents = candidateGroup.students && candidateGroup.students.length > 0;
-        var hasSlots = candidateGroup.slots && candidateGroup.slots.length > 0;
-        if (!hasStudents && !hasSlots) {
-            delete candidateGroups[key];
-        }
-
-        // ---- PHASE 4: COMMIT ----
-        data.curriculum.autoGroups = candidateGroups;
-
-        // ---- PHASE 5: LOG ----
-        var student = CharacterQueries.getCharacterById(studentId);
-        var studentName = student ? CharacterQueries.getDisplayName(student) : 'Unknown';
-        recordActivity('Removed ' + studentName + ' from auto-group: ' + (group.displayName || key));
-
-        return success({ removed: true });
     }
 
-    // ============================================================
-    // SLOT MANAGEMENT - Candidate-based
-    // ============================================================
-
-    function addSlotToAutoGroup(key, week, day, hour, duration, label) {
+    /**
+     * Build a candidate for adding a slot to an auto-group.
+     */
+    function buildAddSlotCandidate(key, week, day, hour, duration, label) {
         // ---- PHASE 1: VALIDATE ----
-        var validation = validateSlotData(key, week, day, hour, duration);
-        if (!validation.valid) {
-            return failure(validation.message);
+        var weekNum = CalendarValidation.parseWeek(week);
+        if (weekNum === null) {
+            return failure('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').');
+        }
+
+        var dayNum = CalendarValidation.parseDay(day);
+        if (dayNum === null) {
+            return failure('Valid day is required (' + CalendarConstants.MIN_DAY + '-' + CalendarConstants.MAX_DAY + ').');
+        }
+
+        var hourNum = CalendarValidation.parseHour(hour);
+        if (hourNum === null) {
+            return failure('Valid hour is required (' + CalendarConstants.MIN_HOUR + '-' + CalendarConstants.MAX_HOUR + ').');
+        }
+
+        var durationNum = CalendarValidation.parseDuration(duration);
+        if (durationNum === null) {
+            return failure('Duration must be between ' + CalendarConstants.MIN_CLASS_DURATION + ' and ' + CalendarConstants.MAX_CLASS_DURATION + ' hours.');
+        }
+
+        var keyResult = validateGroupKey(key);
+        if (!keyResult.valid) {
+            return failure(keyResult.message);
         }
 
         var group = getAutoGroup(key);
@@ -817,12 +727,11 @@
             return failure('Group not found.');
         }
 
-        // Check for overlap
         var newSlot = {
-            week: validation.week,
-            day: validation.day,
-            hour: validation.hour,
-            duration: validation.duration,
+            week: weekNum,
+            day: dayNum,
+            hour: hourNum,
+            duration: durationNum,
             label: label || ''
         };
 
@@ -830,70 +739,59 @@
             return failure('Slot overlaps with an existing slot in this group.');
         }
 
-        // ---- PHASE 2: GET STORE ----
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
+        // ---- PHASE 2: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum || !data.curriculum.autoGroups) {
+                return { added: false };
+            }
+            var candidateGroup = data.curriculum.autoGroups[key];
+            if (!candidateGroup) {
+                return { added: false };
+            }
+            if (!Array.isArray(candidateGroup.slots)) {
+                candidateGroup.slots = [];
+            }
+
+            candidateGroup.slots.push(deepClone(newSlot));
+            candidateGroup.slots.sort(function(a, b) {
+                if (a.week !== b.week) return a.week - b.week;
+                if (a.day !== b.day) return a.day - b.day;
+                return a.hour - b.hour;
+            });
+
+            return { added: true };
         }
-
-        if (!data.curriculum || typeof data.curriculum !== 'object') {
-            return failure('Curriculum data is not available.');
-        }
-
-        // ---- PHASE 3: BUILD CANDIDATE ----
-        var candidateGroups = deepClone(data.curriculum.autoGroups || {});
-        if (candidateGroups === null) {
-            return failure('Failed to prepare group data.');
-        }
-
-        var candidateGroup = candidateGroups[key];
-        if (!candidateGroup) {
-            return failure('Group disappeared during preparation.');
-        }
-
-        if (!Array.isArray(candidateGroup.slots)) {
-            candidateGroup.slots = [];
-        }
-
-        candidateGroup.slots.push(newSlot);
-        candidateGroup.slots.sort(function(a, b) {
-            if (a.week !== b.week) return a.week - b.week;
-            if (a.day !== b.day) return a.day - b.day;
-            return a.hour - b.hour;
-        });
-
-        // ---- PHASE 4: COMMIT ----
-        data.curriculum.autoGroups = candidateGroups;
-
-        // ---- PHASE 5: LOG ----
-        recordActivity('Added slot to auto-group: ' + (group.displayName || key));
 
         return success({
-            added: true,
-            slot: newSlot
+            mutate: mutate,
+            slot: newSlot,
+            groupName: group.displayName || key
         });
     }
 
-    function removeSlotFromAutoGroup(key, week, day, hour) {
+    /**
+     * Build a candidate for removing a slot from an auto-group.
+     */
+    function buildRemoveSlotCandidate(key, week, day, hour) {
         // ---- PHASE 1: VALIDATE ----
+        var weekNum = CalendarValidation.parseWeek(week);
+        if (weekNum === null) {
+            return failure('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').');
+        }
+
+        var dayNum = CalendarValidation.parseDay(day);
+        if (dayNum === null) {
+            return failure('Valid day is required (' + CalendarConstants.MIN_DAY + '-' + CalendarConstants.MAX_DAY + ').');
+        }
+
+        var hourNum = CalendarValidation.parseHour(hour);
+        if (hourNum === null) {
+            return failure('Valid hour is required (' + CalendarConstants.MIN_HOUR + '-' + CalendarConstants.MAX_HOUR + ').');
+        }
+
         var keyResult = validateGroupKey(key);
         if (!keyResult.valid) {
             return failure(keyResult.message);
-        }
-
-        var weekNum = validateWeek(week);
-        if (weekNum === null) {
-            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
-        }
-
-        var dayNum = validateDay(day);
-        if (dayNum === null) {
-            return failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').');
-        }
-
-        var hourNum = validateHour(hour);
-        if (hourNum === null) {
-            return failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').');
         }
 
         var group = getAutoGroup(key);
@@ -905,7 +803,6 @@
             return failure('Group has no slots.');
         }
 
-        // Find slot
         var slotIndex = -1;
         var slotData = null;
         for (var i = 0; i < group.slots.length; i++) {
@@ -921,81 +818,39 @@
             return failure('Slot not found in group.');
         }
 
-        // ---- PHASE 2: GET STORE ----
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
-        }
-
-        if (!data.curriculum || typeof data.curriculum !== 'object') {
-            return failure('Curriculum data is not available.');
-        }
-
-        // ---- PHASE 3: BUILD CANDIDATE ----
-        var candidateGroups = deepClone(data.curriculum.autoGroups || {});
-        if (candidateGroups === null) {
-            return failure('Failed to prepare group data.');
-        }
-
-        var candidateGroup = candidateGroups[key];
-        if (!candidateGroup) {
-            return failure('Group disappeared during preparation.');
-        }
-
-        if (!Array.isArray(candidateGroup.slots)) {
-            return failure('Group has no slots.');
-        }
-
-        candidateGroup.slots.splice(slotIndex, 1);
-
-        // Clean up empty groups
-        var hasStudents = candidateGroup.students && candidateGroup.students.length > 0;
-        var hasSlots = candidateGroup.slots && candidateGroup.slots.length > 0;
-        if (!hasStudents && !hasSlots) {
-            delete candidateGroups[key];
-        }
-
-        // ---- PHASE 4: COMMIT ----
-        data.curriculum.autoGroups = candidateGroups;
-
-        // ---- PHASE 5: LOG ----
-        recordActivity('Removed slot from auto-group: ' + (group.displayName || key));
-
-        return success({ removed: true });
-    }
-
-    // ============================================================
-    // SLOT OVERLAP DETECTION
-    // ============================================================
-
-    function hasSlotOverlap(newSlot, existingSlots) {
-        for (var i = 0; i < existingSlots.length; i++) {
-            if (slotsOverlap(newSlot, existingSlots[i])) {
-                return true;
+        // ---- PHASE 2: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum || !data.curriculum.autoGroups) {
+                return { removed: false };
             }
+            var candidateGroup = data.curriculum.autoGroups[key];
+            if (!candidateGroup || !Array.isArray(candidateGroup.slots)) {
+                return { removed: false };
+            }
+
+            candidateGroup.slots.splice(slotIndex, 1);
+
+            // Clean up empty groups
+            var hasStudents = candidateGroup.students && candidateGroup.students.length > 0;
+            var hasSlots = candidateGroup.slots && candidateGroup.slots.length > 0;
+            if (!hasStudents && !hasSlots) {
+                delete data.curriculum.autoGroups[key];
+            }
+
+            return { removed: true };
         }
-        return false;
+
+        return success({
+            mutate: mutate,
+            slot: slotData,
+            groupName: group.displayName || key
+        });
     }
 
-    function slotsOverlap(slot1, slot2) {
-        if (slot1.week !== slot2.week) {
-            return false;
-        }
-        if (slot1.day !== slot2.day) {
-            return false;
-        }
-        var s1Start = slot1.hour;
-        var s1End = slot1.hour + slot1.duration;
-        var s2Start = slot2.hour;
-        var s2End = slot2.hour + slot2.duration;
-        return s1Start < s2End && s2Start < s1End;
-    }
-
-    // ============================================================
-    // BULK OPERATIONS - ATOMIC
-    // ============================================================
-
-    function addStudentsToAutoGroup(key, studentIds) {
+    /**
+     * Build a candidate for adding multiple students to an auto-group.
+     */
+    function buildAddStudentsCandidate(key, studentIds) {
         // ---- PHASE 1: VALIDATE ----
         var keyResult = validateGroupKey(key);
         if (!keyResult.valid) {
@@ -1012,7 +867,6 @@
             return failure('Group not found.');
         }
 
-        // Filter out students already in the group
         var existingStudents = group.students || [];
         var newStudents = [];
         var alreadyInGroup = [];
@@ -1037,56 +891,45 @@
             return failure('All specified students are already in this group.');
         }
 
-        // ---- PHASE 2: GET STORE ----
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
-        }
-
-        if (!data.curriculum || typeof data.curriculum !== 'object') {
-            return failure('Curriculum data is not available.');
-        }
-
-        // ---- PHASE 3: BUILD CANDIDATE ----
-        var candidateGroups = deepClone(data.curriculum.autoGroups || {});
-        if (candidateGroups === null) {
-            return failure('Failed to prepare group data.');
-        }
-
-        var candidateGroup = candidateGroups[key];
-        if (!candidateGroup) {
-            return failure('Group disappeared during preparation.');
-        }
-
-        if (!Array.isArray(candidateGroup.students)) {
-            candidateGroup.students = [];
-        }
-
-        // ---- PHASE 4: APPLY ALL CHANGES ----
-        for (var i = 0; i < newStudents.length; i++) {
-            candidateGroup.students.push(String(newStudents[i].studentId));
-        }
-        candidateGroup.students.sort();
-
-        // ---- PHASE 5: COMMIT ----
-        data.curriculum.autoGroups = candidateGroups;
-
-        // ---- PHASE 6: LOG ----
-        var groupName = group.displayName || key;
         var studentNames = newStudents.map(function(s) {
             return CharacterQueries.getDisplayName(s.student);
         });
-        recordActivity('Added ' + newStudents.length + ' students to auto-group: ' + groupName);
+
+        // ---- PHASE 2: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum || !data.curriculum.autoGroups) {
+                return { added: 0 };
+            }
+            var candidateGroup = data.curriculum.autoGroups[key];
+            if (!candidateGroup) {
+                return { added: 0 };
+            }
+            if (!Array.isArray(candidateGroup.students)) {
+                candidateGroup.students = [];
+            }
+
+            for (var i = 0; i < newStudents.length; i++) {
+                candidateGroup.students.push(String(newStudents[i].studentId));
+            }
+            candidateGroup.students.sort();
+
+            return { added: newStudents.length };
+        }
 
         return success({
+            mutate: mutate,
             added: newStudents.length,
             students: newStudents.map(function(s) { return s.studentId; }),
             studentNames: studentNames,
-            alreadyInGroup: alreadyInGroup
+            alreadyInGroup: alreadyInGroup,
+            groupName: group.displayName || key
         });
     }
 
-    function removeStudentsFromAutoGroup(key, studentIds) {
+    /**
+     * Build a candidate for removing multiple students from an auto-group.
+     */
+    function buildRemoveStudentsCandidate(key, studentIds) {
         // ---- PHASE 1: VALIDATE ----
         var keyResult = validateGroupKey(key);
         if (!keyResult.valid) {
@@ -1106,7 +949,6 @@
             return failure('Group has no students.');
         }
 
-        // Validate all students exist in the group
         var removedStudents = [];
         var notInGroup = [];
 
@@ -1130,337 +972,177 @@
             return failure('No specified students are in this group.');
         }
 
-        // ---- PHASE 2: GET STORE ----
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
-        }
-
-        if (!data.curriculum || typeof data.curriculum !== 'object') {
-            return failure('Curriculum data is not available.');
-        }
-
-        // ---- PHASE 3: BUILD CANDIDATE ----
-        var candidateGroups = deepClone(data.curriculum.autoGroups || {});
-        if (candidateGroups === null) {
-            return failure('Failed to prepare group data.');
-        }
-
-        var candidateGroup = candidateGroups[key];
-        if (!candidateGroup) {
-            return failure('Group disappeared during preparation.');
-        }
-
-        if (!Array.isArray(candidateGroup.students)) {
-            return failure('Group has no students.');
-        }
-
-        // ---- PHASE 4: APPLY ALL CHANGES ----
         var removedSet = {};
         for (var i = 0; i < removedStudents.length; i++) {
             removedSet[String(removedStudents[i])] = true;
         }
 
-        candidateGroup.students = candidateGroup.students.filter(function(id) {
-            return !removedSet[String(id)];
-        });
+        // ---- PHASE 2: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum || !data.curriculum.autoGroups) {
+                return { removed: 0 };
+            }
+            var candidateGroup = data.curriculum.autoGroups[key];
+            if (!candidateGroup || !Array.isArray(candidateGroup.students)) {
+                return { removed: 0 };
+            }
 
-        // Clean up empty groups
-        var hasStudents = candidateGroup.students && candidateGroup.students.length > 0;
-        var hasSlots = candidateGroup.slots && candidateGroup.slots.length > 0;
-        if (!hasStudents && !hasSlots) {
-            delete candidateGroups[key];
+            candidateGroup.students = candidateGroup.students.filter(function(id) {
+                return !removedSet[String(id)];
+            });
+
+            // Clean up empty groups
+            var hasStudents = candidateGroup.students && candidateGroup.students.length > 0;
+            var hasSlots = candidateGroup.slots && candidateGroup.slots.length > 0;
+            if (!hasStudents && !hasSlots) {
+                delete data.curriculum.autoGroups[key];
+            }
+
+            return { removed: removedStudents.length };
         }
-
-        // ---- PHASE 5: COMMIT ----
-        data.curriculum.autoGroups = candidateGroups;
-
-        // ---- PHASE 6: LOG ----
-        var groupName = group.displayName || key;
-        recordActivity('Removed ' + removedStudents.length + ' students from auto-group: ' + groupName);
 
         return success({
+            mutate: mutate,
             removed: removedStudents.length,
             students: removedStudents,
-            notInGroup: notInGroup
+            notInGroup: notInGroup,
+            groupName: group.displayName || key
         });
     }
 
     // ============================================================
-    // REBUILD GROUPS FROM SCHEDULES
+    // LEGACY WRAPPER FUNCTIONS - For backward compatibility
+    // These perform the mutation and commit directly.
+    // DEPRECATED: Use build*Candidate functions with MutationPipeline.
     // ============================================================
 
-    function rebuildGroupsFromSchedules() {
-        // ---- PHASE 1: GET STORE ----
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
+    function createAutoGroup(disciplineId, instructorId) {
+        var candidate = buildCreateGroupCandidate(disciplineId, instructorId);
+        if (!candidate.success) {
+            return candidate;
         }
 
-        if (!data.curriculum || typeof data.curriculum !== 'object') {
-            return failure('Curriculum data is not available.');
+        try {
+            var data = window.data;
+            candidate.data.mutate(data);
+            return success({ group: candidate.data.group });
+        } catch (e) {
+            return failure(e.message || 'Failed to create group.');
         }
-
-        // ---- PHASE 2: BUILD METADATA CANDIDATES ----
-        var metadataCandidates = buildMetadataCandidates(data.curriculum);
-        if (metadataCandidates === null) {
-            return failure('Failed to prepare metadata data.');
-        }
-
-        // ---- PHASE 3: COLLECT CLASS INSTANCES ----
-        var students = CharacterQueries.getStudents();
-        if (!Array.isArray(students)) {
-            students = [];
-        }
-
-        var schedules = data.curriculum.schedules || {};
-        var classInstances = {};
-        var overlapErrors = [];
-
-        for (var s = 0; s < students.length; s++) {
-            var student = students[s];
-            var studentId = student.id;
-            var studentSchedules = schedules[studentId] || {};
-
-            for (var week in studentSchedules) {
-                if (!Object.prototype.hasOwnProperty.call(studentSchedules, week)) {
-                    continue;
-                }
-
-                var weekNum = parseInt(week, 10);
-                if (isNaN(weekNum)) {
-                    continue;
-                }
-
-                var weekSchedule = studentSchedules[week];
-                if (!isObject(weekSchedule)) {
-                    continue;
-                }
-
-                for (var day in weekSchedule) {
-                    if (!Object.prototype.hasOwnProperty.call(weekSchedule, day)) {
-                        continue;
-                    }
-
-                    var dayNum = parseInt(day, 10);
-                    if (isNaN(dayNum)) {
-                        continue;
-                    }
-
-                    var daySchedule = weekSchedule[day];
-                    if (!isObject(daySchedule)) {
-                        continue;
-                    }
-
-                    for (var hour in daySchedule) {
-                        if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
-                            continue;
-                        }
-
-                        var hourNum = parseInt(hour, 10);
-                        if (isNaN(hourNum)) {
-                            continue;
-                        }
-
-                        var disciplineId = daySchedule[hourNum];
-                        if (!disciplineId) {
-                            continue;
-                        }
-
-                        var startKey = studentId + '_' + weekNum + '_' + dayNum + '_' + hourNum;
-                        var duration = validateDuration(metadataCandidates.classDurations && metadataCandidates.classDurations[startKey]);
-
-                        if (duration === null) {
-                            continue;
-                        }
-
-                        if (!isAutoGroupClass(metadataCandidates, studentId, weekNum, dayNum, hourNum)) {
-                            continue;
-                        }
-
-                        var instructorId = null;
-                        if (metadataCandidates.classInstructors) {
-                            instructorId = metadataCandidates.classInstructors[startKey];
-                        }
-
-                        if (!instructorId) {
-                            continue;
-                        }
-
-                        var groupKey = String(disciplineId) + '_' + String(instructorId);
-
-                        if (!classInstances[groupKey]) {
-                            classInstances[groupKey] = {
-                                disciplineId: String(disciplineId),
-                                instructorId: String(instructorId),
-                                slots: [],
-                                studentClasses: {}
-                            };
-                        }
-
-                        var group = classInstances[groupKey];
-
-                        var newSlot = {
-                            week: weekNum,
-                            day: dayNum,
-                            hour: hourNum,
-                            duration: duration
-                        };
-
-                        var slotExists = false;
-                        for (var k = 0; k < group.slots.length; k++) {
-                            var existingSlot = group.slots[k];
-                            if (existingSlot.week === weekNum &&
-                                existingSlot.day === dayNum &&
-                                existingSlot.hour === hourNum &&
-                                existingSlot.duration === duration) {
-                                slotExists = true;
-                                break;
-                            }
-                        }
-
-                        if (!slotExists) {
-                            if (hasSlotOverlap(newSlot, group.slots)) {
-                                overlapErrors.push({
-                                    groupKey: groupKey,
-                                    studentId: studentId,
-                                    week: weekNum,
-                                    day: dayNum,
-                                    hour: hourNum,
-                                    duration: duration
-                                });
-                            } else {
-                                group.slots.push(newSlot);
-                                group.slots.sort(function(a, b) {
-                                    if (a.week !== b.week) return a.week - b.week;
-                                    if (a.day !== b.day) return a.day - b.day;
-                                    return a.hour - b.hour;
-                                });
-                            }
-                        }
-
-                        var slotKey2 = weekNum + '_' + dayNum + '_' + hourNum + '_' + duration;
-                        if (!group.studentClasses[studentId]) {
-                            group.studentClasses[studentId] = {};
-                        }
-                        group.studentClasses[studentId][slotKey2] = true;
-                    }
-                }
-            }
-        }
-
-        if (overlapErrors.length > 0) {
-            return {
-                success: false,
-                message: 'Cannot rebuild groups: schedule data contains overlapping auto-group classes.',
-                overlaps: overlapErrors,
-                overlapCount: overlapErrors.length
-            };
-        }
-
-        // ---- PHASE 4: BUILD GROUPS ----
-        var newGroups = {};
-        var count = 0;
-
-        for (var groupKey in classInstances) {
-            if (!Object.prototype.hasOwnProperty.call(classInstances, groupKey)) {
-                continue;
-            }
-
-            var instance = classInstances[groupKey];
-            var slots = instance.slots;
-
-            var validStudents = [];
-            var studentIds = Object.keys(instance.studentClasses);
-
-            for (var i = 0; i < studentIds.length; i++) {
-                var studentId2 = studentIds[i];
-                var hasAllSlots = true;
-
-                for (var j = 0; j < slots.length; j++) {
-                    var slot = slots[j];
-                    var slotKey3 = slot.week + '_' + slot.day + '_' + slot.hour + '_' + slot.duration;
-
-                    if (!instance.studentClasses[studentId2] || !instance.studentClasses[studentId2][slotKey3]) {
-                        hasAllSlots = false;
-                        break;
-                    }
-                }
-
-                if (hasAllSlots) {
-                    validStudents.push(studentId2);
-                }
-            }
-
-            if (validStudents.length === 0) {
-                continue;
-            }
-
-            var discipline = AcademyQueries.getDiscipline(instance.disciplineId);
-            var instructor = CharacterQueries.getCharacterById(instance.instructorId);
-            var disciplineName = discipline ? discipline.name : 'Unknown';
-            var instructorName = instructor ? CharacterQueries.getDisplayName(instructor) : 'Unknown';
-
-            var shortInstructor = instructorName;
-            var parts = instructorName.split(' ');
-            if (parts.length >= 2) {
-                shortInstructor = parts[0][0] + '. ' + parts[parts.length - 1];
-            }
-
-            var group2 = {
-                id: groupKey,
-                disciplineId: instance.disciplineId,
-                instructorId: instance.instructorId,
-                displayName: disciplineName + ' (' + shortInstructor + ')',
-                students: validStudents,
-                slots: slots.slice(),
-                createdAt: new Date().toISOString()
-            };
-
-            newGroups[groupKey] = group2;
-            count++;
-        }
-
-        var candidate = deepClone(newGroups);
-        if (candidate === null) {
-            return failure('Failed to prepare group data.');
-        }
-
-        // ---- PHASE 5: COMMIT ----
-        data.curriculum.autoGroups = candidate;
-
-        // ---- PHASE 6: LOG ----
-        recordActivity('Rebuilt auto-groups from schedules: ' + count + ' groups created');
-
-        return success({ count: count });
     }
 
-    // ============================================================
-    // METADATA HELPERS
-    // ============================================================
-
-    var METADATA_KEYS = ['classInstructors', 'classLabels', 'classGroupLabels', 'classDurations', 'classLocations'];
-
-    function buildMetadataCandidates(curriculum) {
-        var metadata = {};
-        for (var i = 0; i < METADATA_KEYS.length; i++) {
-            var key = METADATA_KEYS[i];
-            var source = curriculum && curriculum[key] ? curriculum[key] : {};
-            var cloned = deepClone(source);
-            if (cloned === null) {
-                return null;
-            }
-            metadata[key] = cloned;
+    function deleteAutoGroup(key) {
+        var candidate = buildDeleteGroupCandidate(key);
+        if (!candidate.success) {
+            return candidate;
         }
-        return metadata;
+
+        try {
+            var data = window.data;
+            candidate.data.mutate(data);
+            return success({ deleted: true });
+        } catch (e) {
+            return failure(e.message || 'Failed to delete group.');
+        }
     }
 
-    function isAutoGroupClass(metadata, studentId, week, day, hour) {
-        var key = studentId + '_' + week + '_' + day + '_' + hour;
-        if (metadata && metadata.classGroupLabels) {
-            return metadata.classGroupLabels[key] === AUTO_GROUP_LABEL;
+    function addStudentToAutoGroup(key, studentId) {
+        var candidate = buildAddStudentCandidate(key, studentId);
+        if (!candidate.success) {
+            return candidate;
         }
-        return false;
+
+        try {
+            var data = window.data;
+            candidate.data.mutate(data);
+            return success({ added: true });
+        } catch (e) {
+            return failure(e.message || 'Failed to add student.');
+        }
+    }
+
+    function removeStudentFromAutoGroup(key, studentId) {
+        var candidate = buildRemoveStudentCandidate(key, studentId);
+        if (!candidate.success) {
+            return candidate;
+        }
+
+        try {
+            var data = window.data;
+            candidate.data.mutate(data);
+            return success({ removed: true });
+        } catch (e) {
+            return failure(e.message || 'Failed to remove student.');
+        }
+    }
+
+    function addSlotToAutoGroup(key, week, day, hour, duration, label) {
+        var candidate = buildAddSlotCandidate(key, week, day, hour, duration, label);
+        if (!candidate.success) {
+            return candidate;
+        }
+
+        try {
+            var data = window.data;
+            candidate.data.mutate(data);
+            return success({ added: true });
+        } catch (e) {
+            return failure(e.message || 'Failed to add slot.');
+        }
+    }
+
+    function removeSlotFromAutoGroup(key, week, day, hour) {
+        var candidate = buildRemoveSlotCandidate(key, week, day, hour);
+        if (!candidate.success) {
+            return candidate;
+        }
+
+        try {
+            var data = window.data;
+            candidate.data.mutate(data);
+            return success({ removed: true });
+        } catch (e) {
+            return failure(e.message || 'Failed to remove slot.');
+        }
+    }
+
+    function addStudentsToAutoGroup(key, studentIds) {
+        var candidate = buildAddStudentsCandidate(key, studentIds);
+        if (!candidate.success) {
+            return candidate;
+        }
+
+        try {
+            var data = window.data;
+            candidate.data.mutate(data);
+            return success({
+                added: candidate.data.added,
+                students: candidate.data.students,
+                studentNames: candidate.data.studentNames,
+                alreadyInGroup: candidate.data.alreadyInGroup
+            });
+        } catch (e) {
+            return failure(e.message || 'Failed to add students.');
+        }
+    }
+
+    function removeStudentsFromAutoGroup(key, studentIds) {
+        var candidate = buildRemoveStudentsCandidate(key, studentIds);
+        if (!candidate.success) {
+            return candidate;
+        }
+
+        try {
+            var data = window.data;
+            candidate.data.mutate(data);
+            return success({
+                removed: candidate.data.removed,
+                students: candidate.data.students,
+                notInGroup: candidate.data.notInGroup
+            });
+        } catch (e) {
+            return failure(e.message || 'Failed to remove students.');
+        }
     }
 
     // ============================================================
@@ -1487,24 +1169,4 @@
         getAllGroupSummaries: getAllGroupSummaries,
         getGroupDisplayName: getGroupDisplayName,
 
-        // Mutations
-        createAutoGroup: createAutoGroup,
-        deleteAutoGroup: deleteAutoGroup,
-        addStudentToAutoGroup: addStudentToAutoGroup,
-        removeStudentFromAutoGroup: removeStudentFromAutoGroup,
-        addSlotToAutoGroup: addSlotToAutoGroup,
-        removeSlotFromAutoGroup: removeSlotFromAutoGroup,
-        rebuildGroupsFromSchedules: rebuildGroupsFromSchedules,
-
-        // Bulk operations
-        addStudentsToAutoGroup: addStudentsToAutoGroup,
-        removeStudentsFromAutoGroup: removeStudentsFromAutoGroup,
-
-        // Validation (exposed for external use)
-        validateWeek: validateWeek,
-        validateDay: validateDay,
-        validateHour: validateHour,
-        validateDuration: validateDuration
-    };
-
-})();
+        // Candidate builders (preferred - use with MutationPipeline)

@@ -17,12 +17,17 @@
  *   - Student schedules are the canonical source of truth
  *   - UI-level overlap detection is a guardrail; core is authoritative
  *   - All core functions are from the curriculum modules
+ *   - Uses CalendarConstants for bounds
+ *   - Uses CalendarValidation for validation
+ *   - No hard-coded calendar values
  * 
  * DEPENDENCIES:
  *   - window.CalendarUtils (required)
  *   - window.CalendarRenderer (required)
  *   - window.CalendarModes (required)
  *   - window.CalendarDependencies (required)
+ *   - window.CalendarConstants (required)
+ *   - window.CalendarValidation (required)
  *   - window.getStudents (required)
  *   - window.getDisplayName (required)
  *   - window.getCharacterById (required)
@@ -55,20 +60,30 @@
     // DEPENDENCY CHECK - NO FALLBACKS
     // ============================================================
 
+    var missing = [];
+
     if (!window.CalendarUtils) {
-        return;
+        missing.push('CalendarUtils');
     }
 
     if (!window.CalendarRenderer) {
-        return;
+        missing.push('CalendarRenderer');
     }
 
     if (!window.CalendarModes || typeof window.CalendarModes.registerMode !== 'function') {
-        return;
+        missing.push('CalendarModes.registerMode');
     }
 
     if (!window.CalendarDependencies || typeof window.CalendarDependencies.validateMode !== 'function') {
-        return;
+        missing.push('CalendarDependencies.validateMode');
+    }
+
+    if (!window.CalendarConstants) {
+        missing.push('CalendarConstants');
+    }
+
+    if (!window.CalendarValidation) {
+        missing.push('CalendarValidation');
     }
 
     var requiredFunctions = [
@@ -89,8 +104,15 @@
         'saveData'
     ];
 
-    if (!window.CalendarDependencies.validateMode('student', requiredFunctions)) {
-        return;
+    for (var i = 0; i < requiredFunctions.length; i++) {
+        var fnName = requiredFunctions[i];
+        if (typeof window[fnName] !== 'function') {
+            missing.push('window.' + fnName);
+        }
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[StudentMode] Missing dependencies: ' + missing.join(', '));
     }
 
     window.__studentModeLoaded = true;
@@ -101,9 +123,15 @@
 
     var CalendarUtils = window.CalendarUtils;
     var CalendarRenderer = window.CalendarRenderer;
+    var CalendarModes = window.CalendarModes;
+    var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
 
-    var CALENDAR_START_HOUR = CalendarUtils.CALENDAR_START_HOUR || 5;
-    var CALENDAR_END_HOUR = CalendarUtils.CALENDAR_END_HOUR || 23;
+    var CALENDAR_START_HOUR = CalendarConstants.CALENDAR_START_HOUR;
+    var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
 
     // ============================================================
     // PUBLIC API
@@ -203,7 +231,6 @@
             }
         });
 
-        // Store cleanup function on container for potential re-rendering
         container._calendarCleanup = cleanup;
     }
 
@@ -246,12 +273,11 @@
             disciplines: available.map(function(item) {
                 return item.discipline;
             }),
-            maxDuration: 4,
+            maxDuration: MAX_DURATION,
             getDisciplineLabel: function(d) {
                 return d.name;
             },
             onConfirm: function(disciplineId, duration, label, closeModal) {
-                // Validate calendar boundary
                 if (hour + duration > CALENDAR_END_HOUR + 1) {
                     CalendarRenderer.showNotification('Class extends beyond the calendar boundary.', 'error');
                     return;
@@ -432,7 +458,7 @@
         var slotsHTML = '';
         var foundSlots = false;
 
-        for (var day = 1; day <= 7; day++) {
+        for (var day = CalendarConstants.MIN_DAY; day <= CalendarConstants.MAX_DAY; day++) {
             if (restDays.indexOf(day) !== -1) {
                 continue;
             }
@@ -623,7 +649,7 @@
     // REGISTER WITH CALENDAR MODES
     // ============================================================
 
-    window.CalendarModes.registerMode('student', {
+    CalendarModes.registerMode('student', {
         label: 'Student',
         hint: 'Click a slot to add class | Right-click to remove | Rest days are user-configurable',
         render: render,

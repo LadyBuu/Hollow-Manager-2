@@ -15,11 +15,13 @@
  *   - No direct window.data access
  *   - Uses CalendarScheduleCore for schedule semantics
  *   - Uses CalendarConstants for bounds
+ *   - Uses CalendarValidation for strict parsing
  *   - Grid is a VIEW-READY projection, not domain data
  * 
  * DEPENDENCIES:
  *   - window.CalendarScheduleCore (from schedule-core.js) - MANDATORY
  *   - window.CalendarConstants (from shared/calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  * 
  * USAGE:
  *   var GC = window.CalendarGridCore;
@@ -40,18 +42,27 @@
     // DEPENDENCY CHECK - MANDATORY (no fallbacks)
     // ============================================================
 
+    var missing = [];
+
     if (!window.CalendarScheduleCore) {
-        console.error('[CalendarGridCore] CalendarScheduleCore is required.');
-        return;
+        missing.push('CalendarScheduleCore');
     }
 
     if (!window.CalendarConstants) {
-        console.error('[CalendarGridCore] CalendarConstants is required.');
-        return;
+        missing.push('CalendarConstants');
+    }
+
+    if (!window.CalendarValidation) {
+        missing.push('CalendarValidation');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[CalendarGridCore] Missing dependencies: ' + missing.join(', '));
     }
 
     var ScheduleCore = window.CalendarScheduleCore;
     var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
 
     // ============================================================
     // CONSTANTS
@@ -69,14 +80,6 @@
     // ============================================================
     // HELPERS
     // ============================================================
-
-    function parseInteger(value) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        return Number.isInteger(num) ? num : null;
-    }
 
     function getDayName(day) {
         return CalendarConstants.getDayName(day) || 'Unknown';
@@ -212,8 +215,8 @@
      * @returns {object} Occupied hours { hour: true }
      */
     function getOccupiedHours(schedule, day) {
-        var dayNum = parseInteger(day);
-        if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
+        var dayNum = CalendarValidation.parseDay(day);
+        if (dayNum === null) {
             return {};
         }
 
@@ -227,8 +230,8 @@
             if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
                 continue;
             }
-            var hourNum = parseInteger(hour);
-            if (hourNum === null || hourNum < MIN_HOUR || hourNum > MAX_HOUR) {
+            var hourNum = CalendarValidation.parseHour(hour);
+            if (hourNum === null) {
                 continue;
             }
             if (daySchedule[hour]) {
@@ -250,13 +253,13 @@
      * @returns {Array} Array of available hours
      */
     function getAvailableHours(schedule, day, startHour, endHour) {
-        var dayNum = parseInteger(day);
-        if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
+        var dayNum = CalendarValidation.parseDay(day);
+        if (dayNum === null) {
             return [];
         }
 
-        startHour = startHour !== undefined ? parseInteger(startHour) : CALENDAR_START_HOUR;
-        endHour = endHour !== undefined ? parseInteger(endHour) : CALENDAR_END_HOUR;
+        startHour = startHour !== undefined ? CalendarValidation.parseHour(startHour) : CALENDAR_START_HOUR;
+        endHour = endHour !== undefined ? CalendarValidation.parseHour(endHour) : CALENDAR_END_HOUR;
 
         if (startHour === null || endHour === null || startHour > endHour) {
             return [];
@@ -293,19 +296,15 @@
      * @returns {Array} Array of available start hours
      */
     function getAvailableStartHours(schedule, day, duration, startHour, endHour) {
-        var dayNum = parseInteger(day);
-        var durationNum = parseInteger(duration);
+        var dayNum = CalendarValidation.parseDay(day);
+        var durationNum = CalendarValidation.parseDuration(duration);
 
-        if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
+        if (dayNum === null || durationNum === null) {
             return [];
         }
 
-        if (durationNum === null || durationNum < 1 || durationNum > MAX_DURATION) {
-            return [];
-        }
-
-        startHour = startHour !== undefined ? parseInteger(startHour) : CALENDAR_START_HOUR;
-        endHour = endHour !== undefined ? parseInteger(endHour) : CALENDAR_END_HOUR;
+        startHour = startHour !== undefined ? CalendarValidation.parseHour(startHour) : CALENDAR_START_HOUR;
+        endHour = endHour !== undefined ? CalendarValidation.parseHour(endHour) : CALENDAR_END_HOUR;
 
         if (startHour === null || endHour === null || startHour > endHour) {
             return [];
@@ -332,14 +331,10 @@
      * @returns {number} Number of continuous occupied hours
      */
     function getContinuousOccupiedHours(schedule, day, hour) {
-        var dayNum = parseInteger(day);
-        var hourNum = parseInteger(hour);
+        var dayNum = CalendarValidation.parseDay(day);
+        var hourNum = CalendarValidation.parseHour(hour);
 
-        if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
-            return 0;
-        }
-
-        if (hourNum === null || hourNum < MIN_HOUR || hourNum > MAX_HOUR) {
+        if (dayNum === null || hourNum === null) {
             return 0;
         }
 
@@ -392,7 +387,7 @@
             if (!Object.prototype.hasOwnProperty.call(schedule, day)) {
                 continue;
             }
-            var dayNum = parseInteger(day);
+            var dayNum = CalendarValidation.parseDay(day);
             if (dayNum === null) {
                 continue;
             }
@@ -430,7 +425,7 @@
                 if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
                     continue;
                 }
-                var hourNum = parseInteger(hour);
+                var hourNum = CalendarValidation.parseHour(hour);
                 if (hourNum === null) {
                     continue;
                 }
@@ -452,8 +447,8 @@
      * @returns {number} Total available hours
      */
     function getTotalAvailableHours(schedule, startHour, endHour) {
-        startHour = startHour !== undefined ? parseInteger(startHour) : CALENDAR_START_HOUR;
-        endHour = endHour !== undefined ? parseInteger(endHour) : CALENDAR_END_HOUR;
+        startHour = startHour !== undefined ? CalendarValidation.parseHour(startHour) : CALENDAR_START_HOUR;
+        endHour = endHour !== undefined ? CalendarValidation.parseHour(endHour) : CALENDAR_END_HOUR;
 
         if (startHour === null || endHour === null || startHour > endHour) {
             return 0;

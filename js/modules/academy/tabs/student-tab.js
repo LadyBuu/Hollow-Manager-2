@@ -21,6 +21,7 @@
  *   - All HTML escaping uses DomUtils.escapeHtml()
  *   - All notifications use NotificationSystem.notify()
  *   - All modals use Modal system
+ *   - Calendar bounds use CalendarConstants
  * 
  * DEPENDENCIES:
  *   - window.AcademyGrades (from academy-grades.js)
@@ -29,6 +30,7 @@
  *   - window.AcademyQueries (from academy-queries.js)
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.CharacterList (from character-list.js)
+ *   - window.CalendarConstants (from calendar-constants.js)
  *   - window.NotificationSystem (from notification.js)
  *   - window.DomUtils (from dom-utils.js)
  *   - window.Modal (from modal.js)
@@ -53,6 +55,7 @@
     var AcademyQueries = window.AcademyQueries;
     var CharacterQueries = window.CharacterQueries;
     var CharacterList = window.CharacterList;
+    var CalendarConstants = window.CalendarConstants;
     var NotificationSystem = window.NotificationSystem;
     var DomUtils = window.DomUtils;
     var Modal = window.Modal;
@@ -86,17 +89,8 @@
         if (!AcademyRanking || typeof AcademyRanking.autoGenerate !== 'function') {
             missing.push('AcademyRanking.autoGenerate');
         }
-        if (!AcademyRanking || typeof AcademyRanking.updateStudentRank !== 'function') {
-            missing.push('AcademyRanking.updateStudentRank');
-        }
-        if (!AcademyRanking || typeof AcademyRanking.removeStudentFromRankings !== 'function') {
-            missing.push('AcademyRanking.removeStudentFromRankings');
-        }
         if (!AcademyRanking || typeof AcademyRanking.getRankingsWithDetails !== 'function') {
             missing.push('AcademyRanking.getRankingsWithDetails');
-        }
-        if (!AcademyRanking || typeof AcademyRanking.getClassRankings !== 'function') {
-            missing.push('AcademyRanking.getClassRankings');
         }
 
         if (!AcademySchedule || typeof AcademySchedule.getStudentSchedule !== 'function') {
@@ -110,9 +104,6 @@
         }
         if (!AcademySchedule || typeof AcademySchedule.getClassDetails !== 'function') {
             missing.push('AcademySchedule.getClassDetails');
-        }
-        if (!AcademySchedule || typeof AcademySchedule.getConflicts !== 'function') {
-            missing.push('AcademySchedule.getConflicts');
         }
 
         if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
@@ -139,6 +130,16 @@
             missing.push('CharacterList.render');
         }
 
+        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
+            missing.push('CalendarConstants.MIN_WEEK');
+        }
+        if (!CalendarConstants || typeof CalendarConstants.MAX_WEEK !== 'number') {
+            missing.push('CalendarConstants.MAX_WEEK');
+        }
+        if (!CalendarConstants || typeof CalendarConstants.DAY_NAMES_SHORT !== 'object') {
+            missing.push('CalendarConstants.DAY_NAMES_SHORT');
+        }
+
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
             missing.push('NotificationSystem.notify');
         }
@@ -152,18 +153,13 @@
         }
 
         if (missing.length > 0) {
-            console.warn('StudentTab: Missing dependencies:', missing.join(', '));
-            return false;
+            throw new Error('StudentTab: Missing dependencies: ' + missing.join(', '));
         }
 
         return true;
     }
 
-    if (!checkDependencies()) {
-        return;
-    }
-
-    window.__studentTabLoaded = true;
+    checkDependencies();
 
     // ============================================================
     // HTML ESCAPING - Delegates to DomUtils
@@ -212,14 +208,13 @@
     function renderStudentTab(state) {
         var selectedClassId = state.selectedClassId;
         var selectedStudentId = state.selectedStudentId;
-        var week = state.selectedWeek || 1;
+        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
 
         var selectedClass = selectedClassId ? AcademyQueries.getClass(selectedClassId) : null;
         var selectedStudent = selectedStudentId ? CharacterQueries.getCharacterById(selectedStudentId) : null;
 
         var html = '';
 
-        // Header with class filter info and week selector
         html += '<div class="student-tab-header">';
         html += '<div class="student-tab-title">';
         html += '<h3>Students</h3>';
@@ -232,13 +227,12 @@
         html += '<div class="student-tab-controls">';
         html += '<div class="week-selector">';
         html += '<label>Week:</label>';
-        html += '<input type="number" id="student-week-input" value="' + week + '" min="1" max="52" class="small">';
+        html += '<input type="number" id="student-week-input" value="' + week + '" min="' + CalendarConstants.MIN_WEEK + '" max="' + CalendarConstants.MAX_WEEK + '" class="small">';
         html += '<button id="student-week-apply" class="small secondary">Apply</button>';
         html += '</div>';
         html += '</div>';
         html += '</div>';
 
-        // Character list (reuses CharacterList)
         html += '<div class="student-tab-layout">';
         html += '<div class="student-tab-sidebar">';
         html += '<div class="student-tab-filters">';
@@ -250,7 +244,6 @@
         html += '</div>';
         html += '</div>';
 
-        // Student detail
         html += '<div class="student-tab-detail">';
         if (selectedStudent) {
             html += renderStudentDetail(state, selectedStudent);
@@ -273,13 +266,12 @@
         }
 
         var studentId = student.id;
-        var week = state.selectedWeek || 1;
+        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
         var name = CharacterQueries.getDisplayName(student);
         var status = CharacterQueries.getCurrentStatus(student);
 
         var html = '';
 
-        // Header
         html += '<div class="student-detail-header">';
         html += '<h3 class="student-detail-name">' + escapeHtml(name) + '</h3>';
         html += '<span class="student-detail-status">' + escapeHtml(status) + '</span>';
@@ -288,24 +280,20 @@
         }
         html += '</div>';
 
-        // Tabs within detail
         html += '<div class="student-detail-tabs">';
         html += '<button class="detail-tab-btn active" data-tab="grades">Grades</button>';
         html += '<button class="detail-tab-btn" data-tab="ranking">Ranking</button>';
         html += '<button class="detail-tab-btn" data-tab="schedule">Schedule</button>';
         html += '</div>';
 
-        // Grades tab
         html += '<div class="detail-tab-panel active" data-tab="grades">';
         html += renderGradesTab(state, student);
         html += '</div>';
 
-        // Ranking tab
         html += '<div class="detail-tab-panel" data-tab="ranking" style="display:none;">';
         html += renderRankingTab(state, student);
         html += '</div>';
 
-        // Schedule tab
         html += '<div class="detail-tab-panel" data-tab="schedule" style="display:none;">';
         html += renderScheduleTab(state, student);
         html += '</div>';
@@ -319,14 +307,13 @@
 
     function renderGradesTab(state, student) {
         var studentId = student.id;
-        var week = state.selectedWeek || 1;
+        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
 
         var grades = AcademyGrades.getGrades(studentId, week);
         var summary = AcademyGrades.calculateSummary(studentId, week);
 
         var html = '';
 
-        // Summary stats
         html += '<div class="grades-summary">';
         if (summary) {
             html += '<div class="stat-item"><span class="stat-label">Average</span><span class="stat-value">' + 
@@ -340,7 +327,6 @@
         }
         html += '</div>';
 
-        // Grade table
         var disciplines = AcademyQueries.getAvailableDisciplines(week);
         if (disciplines.length === 0) {
             html += '<p class="empty-state small">No disciplines available this week.</p>';
@@ -408,14 +394,13 @@
 
     function renderRankingTab(state, student) {
         var studentId = student.id;
-        var week = state.selectedWeek || 1;
+        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
 
         var rankings = AcademyRanking.getRankingsWithDetails(week);
         var studentRank = AcademyRanking.getStudentRank(week, studentId);
 
         var html = '';
 
-        // Header
         html += '<div class="ranking-header">';
         html += '<div class="ranking-info">';
         html += '<span class="ranking-label">Your Rank:</span>';
@@ -428,7 +413,6 @@
         html += '</div>';
         html += '</div>';
 
-        // Ranking table
         if (rankings.length === 0) {
             html += '<p class="empty-state small">No rankings for this week.</p>';
         } else {
@@ -476,20 +460,22 @@
 
     function renderScheduleTab(state, student) {
         var studentId = student.id;
-        var week = state.selectedWeek || 1;
+        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
 
         var schedule = AcademySchedule.getStudentSchedule(studentId, week);
         var restDays = AcademySchedule.getStudentRestDays(studentId, week);
 
-        var dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
+        var startHour = CalendarConstants.CALENDAR_START_HOUR || 8;
+        var endHour = CalendarConstants.CALENDAR_END_HOUR || 18;
+
         var hours = [];
-        for (var h = 8; h <= 18; h++) {
+        for (var h = startHour; h <= endHour; h++) {
             hours.push(h);
         }
 
         var html = '';
 
-        // Rest days
         html += '<div class="schedule-rest-days">';
         html += '<label>Rest Days:</label>';
         html += '<div class="rest-days-checkboxes">';
@@ -504,7 +490,6 @@
         html += '<button id="schedule-rest-days-save" class="small secondary">Save Rest Days</button>';
         html += '</div>';
 
-        // Schedule grid
         html += '<div class="schedule-grid-container">';
         html += '<table class="schedule-grid">';
         html += '<thead>';
@@ -570,6 +555,26 @@
     }
 
     // ============================================================
+    // CHARACTER LIST INTEGRATION
+    // ============================================================
+
+    function refreshCharacterList() {
+        var container = document.getElementById('student-character-list');
+        if (!container) { return; }
+
+        if (CharacterList && typeof CharacterList.render === 'function') {
+            var classId = window.Academy ? window.Academy.getSelectedClassId() : null;
+            if (classId) {
+                var classFilter = document.getElementById('char-class-filter');
+                if (classFilter) {
+                    classFilter.value = classId;
+                }
+            }
+            CharacterList.render();
+        }
+    }
+
+    // ============================================================
     // EVENT BINDING
     // ============================================================
 
@@ -581,24 +586,20 @@
                 var input = container.querySelector('#student-week-input');
                 if (input) {
                     var week = parseInt(input.value, 10);
-                    if (!isNaN(week) && week >= 1 && week <= 52) {
-                        if (window.academyState && typeof window.academyState.selectWeek === 'function') {
-                            window.academyState.selectWeek(week);
-                            if (typeof window.refreshStudentDetail === 'function') {
-                                window.refreshStudentDetail();
-                            }
-                            if (typeof window.refreshAcademy === 'function') {
-                                window.refreshAcademy();
+                    if (!isNaN(week) && week >= CalendarConstants.MIN_WEEK && week <= CalendarConstants.MAX_WEEK) {
+                        if (window.Academy && typeof window.Academy.selectWeek === 'function') {
+                            window.Academy.selectWeek(week);
+                            if (typeof window.Academy.refresh === 'function') {
+                                window.Academy.refresh();
                             }
                         }
                     } else {
-                        showNotification('Please enter a valid week (1-52).', 'error');
+                        showNotification('Please enter a valid week (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').', 'error');
                     }
                 }
             });
         }
 
-        // Week input enter key
         var weekInput = container.querySelector('#student-week-input');
         if (weekInput) {
             weekInput.addEventListener('keydown', function(e) {
@@ -662,16 +663,8 @@
         var refreshRankBtn = container.querySelector('#ranking-refresh-btn');
         if (refreshRankBtn) {
             refreshRankBtn.addEventListener('click', function() {
-                if (window.academyState && typeof window.academyState.getSelectedWeek === 'function') {
-                    var week = window.academyState.getSelectedWeek();
-                    if (window.academyState && typeof window.academyState.getSelectedStudentId === 'function') {
-                        var studentId = window.academyState.getSelectedStudentId();
-                        if (studentId) {
-                            if (typeof window.refreshStudentDetail === 'function') {
-                                window.refreshStudentDetail();
-                            }
-                        }
-                    }
+                if (window.Academy && typeof window.Academy.refresh === 'function') {
+                    window.Academy.refresh();
                 }
             });
         }
@@ -700,16 +693,17 @@
             }
         }, true);
 
-        // Rest day checkbox change
-        container.addEventListener('change', function(e) {
-            var checkbox = e.target.closest('.rest-day-checkbox');
-            if (checkbox) {
-                // Preview change - actual save happens on button click
-            }
-        });
-
         // Character list selection - delegate to CharacterList events
         // CharacterList handles its own click events
+
+        // Refresh CharacterList after render
+        refreshCharacterList();
+
+        // Return cleanup function
+        return function() {
+            // Remove event listeners that were added directly
+            // Most are delegated and will be cleaned up when container is removed
+        };
     }
 
     // ============================================================
@@ -780,13 +774,13 @@
     }
 
     function handleSaveGrades(container) {
-        var studentId = window.academyState ? window.academyState.getSelectedStudentId() : null;
+        var studentId = window.Academy ? window.Academy.getSelectedStudentId() : null;
         if (!studentId) {
             showNotification('No student selected.', 'error');
             return;
         }
 
-        var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
+        var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
 
         var grades = {};
         var hasChanges = false;
@@ -832,8 +826,8 @@
 
         if (result && result.success) {
             showNotification('Grades saved successfully.', 'success');
-            if (typeof window.refreshStudentDetail === 'function') {
-                window.refreshStudentDetail();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Grades saved in memory, but persistence failed.');
         } else {
@@ -846,7 +840,7 @@
     // ============================================================
 
     function handleAutoGenerateRankings(container) {
-        var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
+        var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
 
         if (!confirm('Auto-generate rankings for week ' + week + ' from grade data?')) {
             return;
@@ -857,8 +851,8 @@
         if (result && result.success) {
             var count = result.count || 0;
             showNotification('Auto-generated rankings for week ' + week + ' (' + count + ' students ranked).', 'success');
-            if (typeof window.refreshStudentDetail === 'function') {
-                window.refreshStudentDetail();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Rankings generated in memory, but persistence failed.');
         } else {
@@ -871,13 +865,13 @@
     // ============================================================
 
     function handleSaveRestDays(container) {
-        var studentId = window.academyState ? window.academyState.getSelectedStudentId() : null;
+        var studentId = window.Academy ? window.Academy.getSelectedStudentId() : null;
         if (!studentId) {
             showNotification('No student selected.', 'error');
             return;
         }
 
-        var week = window.academyState ? window.academyState.getSelectedWeek() : 1;
+        var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
 
         var checkboxes = container.querySelectorAll('.rest-day-checkbox:checked');
         var days = [];
@@ -889,34 +883,12 @@
 
         if (result && result.success) {
             showNotification('Rest days saved successfully.', 'success');
-            if (typeof window.refreshStudentDetail === 'function') {
-                window.refreshStudentDetail();
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
             }
             persistMutation(null, 'Rest days saved in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to save rest days.', 'error');
-        }
-    }
-
-    // ============================================================
-    // CHARACTER LIST INTEGRATION
-    // ============================================================
-
-    function refreshCharacterList() {
-        var container = document.getElementById('student-character-list');
-        if (!container) { return; }
-
-        // Render CharacterList into the container
-        if (CharacterList && typeof CharacterList.render === 'function') {
-            // Set up class filter based on selected class
-            var classId = window.academyState ? window.academyState.getSelectedClassId() : null;
-            if (classId) {
-                var classFilter = document.getElementById('char-class-filter');
-                if (classFilter) {
-                    classFilter.value = classId;
-                }
-            }
-            CharacterList.render();
         }
     }
 
