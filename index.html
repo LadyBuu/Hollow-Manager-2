@@ -74,6 +74,9 @@
          2. SHARED CONSTANTS (No Dependencies)
          ============================================================ -->
     <script src="js/modules/shared/constants.js"></script>
+    <script src="js/modules/shared/character-constants.js"></script>
+    <script src="js/modules/shared/calendar-constants.js"></script>
+    <script src="js/modules/shared/academy-constants.js"></script>
 
     <!-- ============================================================
          3. GENERIC UTILITIES
@@ -87,27 +90,16 @@
     <script src="js/utils/form-utils.js"></script>
     <script src="js/utils/modal.js"></script>
     <script src="js/utils/notification.js"></script>
+    <script src="js/utils/calendar-validation.js"></script>
 
     <!-- ============================================================
-         4. SHARED DOMAIN CONSTANTS
-         ============================================================ -->
-    <script src="js/modules/shared/character-constants.js"></script>
-    <script src="js/modules/shared/calendar-constants.js"></script>
-    <script src="js/modules/shared/academy-constants.js"></script>
-
-    <!-- ============================================================
-         5. DOMAIN QUERY MODULES
+         4. DOMAIN QUERY MODULES
          ============================================================ -->
     <script src="js/modules/shared/discipline-queries.js"></script>
     <script src="js/modules/shared/location-queries.js"></script>
 
     <!-- ============================================================
-         6. CALENDAR VALIDATION (Depends on CalendarConstants)
-         ============================================================ -->
-    <script src="js/utils/calendar-validation.js"></script>
-
-    <!-- ============================================================
-         7. APPLICATION INFRASTRUCTURE
+         5. APPLICATION INFRASTRUCTURE
          ============================================================ -->
     <script src="js/core/state.js"></script>
     <script src="js/core/database.js"></script>
@@ -116,59 +108,47 @@
     <script src="js/core/mutation-pipeline.js"></script>
 
     <!-- ============================================================
-         8. TAB LIFECYCLE
+         6. TAB LIFECYCLE
          ============================================================ -->
     <script src="js/core/tab-manager.js"></script>
 
     <!-- ============================================================
-         9. CANONICAL DOMAIN QUERIES (Read-Only)
+         7. CANONICAL DOMAIN QUERIES (Read-Only)
          ============================================================ -->
     <script src="js/modules/characters/character-queries.js"></script>
     <script src="js/modules/teams/team-queries.js"></script>
+    <script src="js/modules/tournaments/tournaments-queries.js"></script>
+    <script src="js/modules/missions/missions-queries.js"></script>
 
     <!-- ============================================================
-         10. CALENDAR INFRASTRUCTURE (Full)
+         8. CALENDAR
          ============================================================ -->
-    <script src="js/modules/calendar/calendar-utils.js"></script>
-    <script src="js/modules/calendar/calendar-dependencies.js"></script>
-    <script src="js/modules/calendar/core/schedule-core.js"></script>
-    <script src="js/modules/calendar/core/metadata-core.js"></script>
-    <script src="js/modules/calendar/core/grid-core.js"></script>
-    <script src="js/modules/calendar/core/student-core.js"></script>
-    <script src="js/modules/calendar/core/instructor-core.js"></script>
-    <script src="js/modules/calendar/core/location-core.js"></script>
-    <script src="js/modules/calendar/core/schedule-integrity.js"></script>
-    <script src="js/modules/calendar/core/index.js"></script>
-    <script src="js/modules/calendar/queries/instructor-queries.js"></script>
-    <script src="js/modules/calendar/queries/location-queries.js"></script>
-    <script src="js/modules/calendar/views/instructor-view.js"></script>
-    <script src="js/modules/calendar/views/location-view.js"></script>
-    <script src="js/modules/calendar/modes/index.js"></script>
-    <script src="js/modules/calendar/modes/student.js"></script>
-    <script src="js/modules/calendar/modes/instructor.js"></script>
-    <script src="js/modules/calendar/modes/location.js"></script>
+    <script src="js/modules/calendar/schedule-core.js"></script>
+    <script src="js/modules/calendar/calendar-queries.js"></script>
     <script src="js/modules/calendar/calendar-renderer.js"></script>
-    <script src="js/modules/calendar/calendar-ui.js"></script>
+    <script src="js/modules/calendar/student-calendar-ui.js"></script>
+    <script src="js/modules/calendar/instructor-calendar-ui.js"></script>
+    <script src="js/modules/calendar/location-calendar-ui.js"></script>
     <script src="js/modules/calendar/index.js"></script>
 
     <!-- ============================================================
-         11. CHARACTER DOMAIN (Full Implementation)
+         9. CHARACTER DOMAIN
          ============================================================ -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
     <script src="js/modules/characters/character-stats-view.js"></script>
     <script src="js/modules/characters/character-crud.js"></script>
-    <script src="js/modules/characters/character-classes.js"></script>
     <script src="js/modules/characters/character-eliminations.js"></script>
     <script src="js/modules/characters/character-views.js"></script>
     <script src="js/modules/characters/character-list.js"></script>
     <script src="js/modules/characters/character-form.js"></script>
     <script src="js/modules/characters/character-detail.js"></script>
     <script src="js/modules/characters/character-events.js"></script>
+    <script src="js/modules/characters/character-classes.js"></script>
     <script src="js/modules/characters/index.js"></script>
 
     <!-- ============================================================
-         12. TEAMS DOMAIN
+         10. TEAMS DOMAIN
          ============================================================ -->
     <script src="js/modules/teams/team-core.js"></script>
     <script src="js/modules/teams/team-filters.js"></script>
@@ -179,52 +159,52 @@
     <script src="js/modules/teams/team-manager.js"></script>
 
     <!-- ============================================================
-         13. TOURNAMENT DOMAIN
+         11. TOURNAMENT DOMAIN
          ============================================================ -->
     <script src="js/modules/tournaments/tournaments-schema.js"></script>
     <script src="js/modules/tournaments/tournament-lifecycle.js"></script>
     <script src="js/modules/tournaments/tournaments-core.js"></script>
     <script src="js/modules/tournaments/tournaments-matches.js"></script>
     <script src="js/modules/tournaments/tournament-elimination-workflow.js"></script>
-    <script src="js/modules/tournaments/tournaments-queries.js"></script>
     <script src="js/modules/tournaments/tournaments-render.js"></script>
     <script src="js/modules/tournaments/tournaments-repair.js"></script>
     <script src="js/modules/tournaments/tournaments-ui.js"></script>
 
     <!-- ============================================================
-         14. MISSION DOMAIN
+         12. MISSION DOMAIN
          ============================================================ -->
     <script src="js/modules/missions/missions-schema.js"></script>
     <script src="js/modules/missions/mission-views.js"></script>
     <script src="js/modules/missions/mission-rules.js"></script>
     <script src="js/modules/missions/mission-id.js"></script>
     <script src="js/modules/missions/missions-core.js"></script>
-    <script src="js/modules/missions/missions-queries.js"></script>
     <script src="js/modules/missions/missions-render.js"></script>
     <script src="js/modules/missions/missions-ui.js"></script>
+    <script src="js/modules/missions/index.js"></script>
 
     <!-- ============================================================
-         15. ACADEMY DOMAIN
+         13. ACADEMY DOMAIN
          ============================================================ -->
-    <script src="js/modules/academy/academy-state.js"></script>
-    <script src="js/modules/academy/academy-classes.js"></script>
     <script src="js/modules/academy/academy-queries.js"></script>
+    <script src="js/modules/academy/academy-classes.js"></script>
     <script src="js/modules/academy/academy-grades.js"></script>
     <script src="js/modules/academy/academy-ranking.js"></script>
     <script src="js/modules/academy/academy-schedule.js"></script>
     <script src="js/modules/academy/academy-groups.js"></script>
     <script src="js/modules/academy/academy-distribute.js"></script>
     <script src="js/modules/academy/academy-core.js"></script>
+    <script src="js/modules/academy/academy-state.js"></script>
+    <script src="js/modules/academy/academy-views.js"></script>
+    <script src="js/modules/academy/academy-events.js"></script>
     <script src="js/modules/academy/tabs/class-tab.js"></script>
     <script src="js/modules/academy/tabs/student-tab.js"></script>
     <script src="js/modules/academy/tabs/faculty-tab.js"></script>
-    <script src="js/modules/academy/academy-views.js"></script>
-    <script src="js/modules/academy/academy-events.js"></script>
     <script src="js/modules/academy/index.js"></script>
 
     <!-- ============================================================
-         16. SOCIAL DOMAIN
+         14. SOCIAL DOMAIN
          ============================================================ -->
+    <script src="js/modules/social/social-constants.js"></script>
     <script src="js/modules/social/social-queries.js"></script>
     <script src="js/modules/social/social-core.js"></script>
     <script src="js/modules/social/social-views.js"></script>
@@ -233,7 +213,7 @@
     <script src="js/modules/social/index.js"></script>
 
     <!-- ============================================================
-         17. DASHBOARD
+         15. DASHBOARD
          ============================================================ -->
     <script src="js/modules/dashboard/dashboard-queries.js"></script>
     <script src="js/modules/dashboard/dashboard-render.js"></script>
@@ -241,7 +221,7 @@
     <script src="js/modules/dashboard/index.js"></script>
 
     <!-- ============================================================
-         18. IMPORT/EXPORT (Depends on Domain Schemas/Queries)
+         16. IMPORT/EXPORT
          ============================================================ -->
     <script src="js/export/export-utils.js"></script>
     <script src="js/export/csv-parser.js"></script>
@@ -258,7 +238,7 @@
     <script src="js/export/index.js"></script>
 
     <!-- ============================================================
-         19. APPLICATION BOOTSTRAP (Last)
+         17. APPLICATION BOOTSTRAP (Last)
          ============================================================ -->
     <script src="js/app.js"></script>
 
