@@ -9,7 +9,10 @@
  *   - PURE: no side effects, no mutation
  *   - CRASH-SAFE: never throws on malformed input; returns errors
  *   - Validates STRUCTURE and CONTENTS, not just container types
- *   - Complete dates are validated; incomplete dates are preserved
+ *   - canonicaliseMissionShape() transforms structurally valid input
+ *   - Does NOT derive business state (progress, pay, completedAt) - that belongs in MissionRules
+ *   - Does NOT handle calendar validation - use CalendarValidation
+ *   - Does NOT handle ID normalisation - use IdUtils
  * 
  * MISSION TYPE TAXONOMY:
  *   1. Combat - Elimination, Defence, Protection
@@ -26,15 +29,17 @@
  * DIFFICULTY CODES:
  *   E = Easy, M = Medium, H = Hard, X = Expert
  * 
- * DATE VALIDATION:
- *   - Validates actual calendar dates (no Feb 31)
- *   - Preserves incomplete dates (year only, year+month, etc.)
- *   - Does NOT invent missing date components
+ * DERIVED FIELDS (validated but not calculated by schema):
+ *   - progress: MUST match calculateProgress(objectives) (validation only)
+ *   - pay: MUST match calculatePay(basePay, surchargePay) (validation only)
+ *   - completedAt: MUST be consistent with status (validation only)
  * 
- * DERIVED FIELDS:
- *   - progress: ALWAYS calculated from objectives. Input progress is ignored.
- *   - pay: ALWAYS calculated from basePay + surchargePay.
- *   - completedAt: ALWAYS derived from status transitions.
+ * CANONICALISATION:
+ *   - canonicaliseMissionShape() only transforms structurally valid input
+ *   - Invalid nested records are rejected (not silently discarded)
+ *   - Unknown fields are stripped (schema is authoritative)
+ *   - Returns { valid, errors, value } with detailed error reporting
+ *   - Does NOT derive progress, pay, or completedAt
  */
 
 (function() {
@@ -44,134 +49,117 @@
     window.__missionsSchemaLoaded = true;
 
     // ============================================================
-    // CONSTANTS
+    // DEPENDENCY CHECK - NO FALLBACKS
+    // ============================================================
+
+    var missing = [];
+
+    if (!window.CalendarValidation) {
+        missing.push('CalendarValidation');
+    }
+
+    if (!window.IdUtils || typeof window.IdUtils.normaliseId !== 'function') {
+        missing.push('IdUtils.normaliseId');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[MissionsSchema] Missing dependencies: ' + missing.join(', '));
+    }
+
+    var CalendarValidation = window.CalendarValidation;
+    var IdUtils = window.IdUtils;
+
+    // ============================================================
+    // CONSTANTS - DEEP FROZEN
     // ============================================================
 
     var SCHEMA_VERSION = 1;
 
-    var VALID_STATUSES = ['active', 'completed', 'cancelled'];
-    var VALID_PRIORITIES = ['low', 'medium', 'high', 'critical'];
-    var VALID_DIFFICULTIES = ['easy', 'medium', 'hard', 'expert'];
-    var VALID_BILLING_TYPES = ['original', 'escalated', 'emergency', 'internal'];
-    var VALID_ESCALATION_TIERS = ['tier_i', 'tier_ii', 'tier_iii', 'tier_iv', 'tier_v'];
+    var VALID_STATUSES = Object.freeze(['active', 'completed', 'cancelled']);
+    var VALID_PRIORITIES = Object.freeze(['low', 'medium', 'high', 'critical']);
+    var VALID_DIFFICULTIES = Object.freeze(['easy', 'medium', 'hard', 'expert']);
+    var VALID_BILLING_TYPES = Object.freeze(['original', 'escalated', 'emergency', 'internal']);
+    var VALID_ESCALATION_TIERS = Object.freeze(['tier_i', 'tier_ii', 'tier_iii', 'tier_iv', 'tier_v']);
 
-    var DIFFICULTY_CODES = {
+    var DIFFICULTY_CODES = Object.freeze({
         'easy': 'E',
         'medium': 'M',
         'hard': 'H',
         'expert': 'X'
-    };
-
-    var MONTH_NAMES = [
-        'January', 'February', 'March', 'April', 'May', 'June',
-        'July', 'August', 'September', 'October', 'November', 'December'
-    ];
-
-    var DAYS_IN_MONTH = {
-        1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
-        7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31
-    };
+    });
 
     // ============================================================
-    // MISSION TYPE TAXONOMY
+    // MISSION TYPE TAXONOMY - DEEP FROZEN
     // ============================================================
 
-    var MISSION_TYPES = {
-        'combat': {
+    var MISSION_TYPES = Object.freeze({
+        'combat': Object.freeze({
             id: 'combat',
             label: 'Combat',
-            icon: '⚔',
-            color: 'var(--danger)',
             description: 'Direct combat operations, elimination, defence, protection',
-            subtypes: ['elimination', 'defence', 'protection']
-        },
-        'recovery': {
+            subtypes: Object.freeze(['elimination', 'defence', 'protection'])
+        }),
+        'recovery': Object.freeze({
             id: 'recovery',
             label: 'Recovery',
-            icon: '🔍',
-            color: 'var(--warning)',
             description: 'Retrieval of people, materials, or artifacts',
-            subtypes: ['retrieval', 'rescue', 'material_recovery', 'artifact_recovery']
-        },
-        'investigation': {
+            subtypes: Object.freeze(['retrieval', 'rescue', 'material_recovery', 'artifact_recovery'])
+        }),
+        'investigation': Object.freeze({
             id: 'investigation',
             label: 'Investigation',
-            icon: '🔍',
-            color: 'var(--accent)',
             description: 'Investigations, reconnaissance, surveillance',
-            subtypes: ['investigation', 'reconnaissance', 'surveillance']
-        },
-        'exploration': {
+            subtypes: Object.freeze(['investigation', 'reconnaissance', 'surveillance'])
+        }),
+        'exploration': Object.freeze({
             id: 'exploration',
             label: 'Exploration',
-            icon: '🧭',
-            color: 'var(--info)',
             description: 'Exploration, surveys, expeditions',
-            subtypes: ['exploration', 'survey', 'expedition']
-        },
-        'infiltration': {
+            subtypes: Object.freeze(['exploration', 'survey', 'expedition'])
+        }),
+        'infiltration': Object.freeze({
             id: 'infiltration',
             label: 'Infiltration',
-            icon: '🥷',
-            color: 'var(--warning)',
             description: 'Stealth entry, social infiltration, espionage',
-            subtypes: ['stealth_entry', 'social_infiltration', 'theft_recovery', 'espionage']
-        },
-        'containment': {
+            subtypes: Object.freeze(['stealth_entry', 'social_infiltration', 'theft_recovery', 'espionage'])
+        }),
+        'containment': Object.freeze({
             id: 'containment',
             label: 'Containment',
-            icon: '🔒',
-            color: 'var(--warning)',
             description: 'Capture, magical containment, quarantine',
-            subtypes: ['capture', 'magical_containment', 'quarantine']
-        },
-        'acquisition': {
+            subtypes: Object.freeze(['capture', 'magical_containment', 'quarantine'])
+        }),
+        'acquisition': Object.freeze({
             id: 'acquisition',
             label: 'Acquisition',
-            icon: '📦',
-            color: 'var(--accent)',
             description: 'Gathering ingredients, resources, or specimens',
-            subtypes: ['ingredients', 'resources', 'specimens']
-        },
-        'research': {
+            subtypes: Object.freeze(['ingredients', 'resources', 'specimens'])
+        }),
+        'research': Object.freeze({
             id: 'research',
             label: 'Research',
-            icon: '🔬',
-            color: 'var(--info)',
             description: 'Observation, field research, field testing',
-            subtypes: ['observation', 'field_research', 'field_testing']
-        },
-        'diplomatic': {
+            subtypes: Object.freeze(['observation', 'field_research', 'field_testing'])
+        }),
+        'diplomatic': Object.freeze({
             id: 'diplomatic',
             label: 'Diplomatic',
-            icon: '🤝',
-            color: 'var(--accent)',
             description: 'Negotiation, mediation, representation',
-            subtypes: ['negotiation', 'mediation', 'representation']
-        },
-        'assassination': {
+            subtypes: Object.freeze(['negotiation', 'mediation', 'representation'])
+        }),
+        'assassination': Object.freeze({
             id: 'assassination',
             label: 'Assassination',
-            icon: '🎯',
-            color: 'var(--danger)',
             description: 'Targeted elimination',
-            subtypes: ['targeted_elimination']
-        }
-    };
+            subtypes: Object.freeze(['targeted_elimination'])
+        })
+    });
 
-    // Freeze the schema constants to prevent mutation
-    Object.freeze(MISSION_TYPES);
-    Object.freeze(VALID_STATUSES);
-    Object.freeze(VALID_PRIORITIES);
-    Object.freeze(VALID_DIFFICULTIES);
-    Object.freeze(VALID_BILLING_TYPES);
-    Object.freeze(VALID_ESCALATION_TIERS);
-    Object.freeze(DIFFICULTY_CODES);
-    Object.freeze(MONTH_NAMES);
-    Object.freeze(DAYS_IN_MONTH);
+    // ============================================================
+    // SUBTYPE LABELS - DEEP FROZEN
+    // ============================================================
 
-    // Subtype labels for display
-    var SUBTYPE_LABELS = {
+    var SUBTYPE_LABELS = Object.freeze({
         'elimination': 'Elimination',
         'defence': 'Defence',
         'protection': 'Protection',
@@ -202,51 +190,33 @@
         'mediation': 'Mediation',
         'representation': 'Representation',
         'targeted_elimination': 'Targeted Elimination'
-    };
-    Object.freeze(SUBTYPE_LABELS);
+    });
 
-    var ESCALATION_LABELS = {
+    // ============================================================
+    // ESCALATION LABELS - DEEP FROZEN
+    // ============================================================
+
+    var ESCALATION_LABELS = Object.freeze({
         'tier_i': 'Tier I - Routine',
         'tier_ii': 'Tier II - Complicated',
         'tier_iii': 'Tier III - Dangerous',
         'tier_iv': 'Tier IV - Critical',
         'tier_v': 'Tier V - Catastrophic'
-    };
-    Object.freeze(ESCALATION_LABELS);
+    });
 
-    var BILLING_LABELS = {
+    // ============================================================
+    // BILLING LABELS - DEEP FROZEN
+    // ============================================================
+
+    var BILLING_LABELS = Object.freeze({
         'original': 'Original Contract',
         'escalated': 'Escalated / Surcharge',
         'emergency': 'Emergency Intervention',
         'internal': 'Internal / Research'
-    };
-    Object.freeze(BILLING_LABELS);
-
-    var PRIORITY_INFO = {
-        'critical': { label: 'Critical', color: 'var(--danger)' },
-        'high': { label: 'High', color: 'var(--warning)' },
-        'medium': { label: 'Medium', color: 'var(--warning)' },
-        'low': { label: 'Low', color: 'var(--accent)' }
-    };
-    Object.freeze(PRIORITY_INFO);
-
-    var STATUS_INFO = {
-        'active': { label: 'Active', color: 'var(--accent)' },
-        'completed': { label: 'Completed', color: 'var(--info)' },
-        'cancelled': { label: 'Cancelled', color: 'var(--danger)' }
-    };
-    Object.freeze(STATUS_INFO);
-
-    var DIFFICULTY_LABELS = {
-        'easy': 'Easy',
-        'medium': 'Medium',
-        'hard': 'Hard',
-        'expert': 'Expert'
-    };
-    Object.freeze(DIFFICULTY_LABELS);
+    });
 
     // ============================================================
-    // TYPE HELPERS
+    // HELPER FUNCTIONS
     // ============================================================
 
     function isObject(value) {
@@ -269,113 +239,43 @@
         return typeof value === 'number' && Number.isFinite(value);
     }
 
+    // ============================================================
+    // VALID PREDICATES - Return proper booleans
+    // ============================================================
+
     function isValidStatus(status) {
-        return status && VALID_STATUSES.indexOf(status) !== -1;
+        return typeof status === 'string' && VALID_STATUSES.indexOf(status) !== -1;
     }
 
     function isValidPriority(priority) {
-        return priority && VALID_PRIORITIES.indexOf(priority) !== -1;
+        return typeof priority === 'string' && VALID_PRIORITIES.indexOf(priority) !== -1;
     }
 
     function isValidDifficulty(difficulty) {
-        return difficulty && VALID_DIFFICULTIES.indexOf(difficulty) !== -1;
+        return typeof difficulty === 'string' && VALID_DIFFICULTIES.indexOf(difficulty) !== -1;
     }
 
     function isValidBilling(billing) {
-        return billing && VALID_BILLING_TYPES.indexOf(billing) !== -1;
+        return typeof billing === 'string' && VALID_BILLING_TYPES.indexOf(billing) !== -1;
     }
 
     function isValidEscalation(escalation) {
-        return escalation && VALID_ESCALATION_TIERS.indexOf(escalation) !== -1;
+        return typeof escalation === 'string' && VALID_ESCALATION_TIERS.indexOf(escalation) !== -1;
     }
 
     function isValidMissionType(type) {
-        return type && MISSION_TYPES[type] !== undefined;
+        return typeof type === 'string' && MISSION_TYPES[type] !== undefined;
     }
 
     function isValidSubtype(typeId, subtype) {
-        if (!typeId || !subtype) return false;
-        var type = MISSION_TYPES[typeId];
-        if (!type) return false;
-        return type.subtypes.indexOf(subtype) !== -1;
-    }
-
-    function normaliseId(id) {
-        if (id === undefined || id === null) return null;
-        if (typeof id === 'object') return null;
-        var normalised = String(id).trim();
-        return normalised !== '' ? normalised : null;
-    }
-
-    // ============================================================
-    // DATE VALIDATION
-    // ============================================================
-
-    function isLeapYear(year) {
-        if (typeof year !== 'number' || !Number.isInteger(year)) return false;
-        return (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
-    }
-
-    function getDaysInMonth(year, month) {
-        if (typeof year !== 'number' || typeof month !== 'number') return 0;
-        if (!Number.isInteger(year) || !Number.isInteger(month)) return 0;
-        if (month < 1 || month > 12) return 0;
-
-        if (month === 2 && isLeapYear(year)) {
-            return 29;
-        }
-
-        return DAYS_IN_MONTH[month] || 0;
-    }
-
-    function isValidCalendarDate(year, month, day) {
-        // If any component is null/undefined, that's an incomplete date
-        // Only validate if all three are provided and not null
-        var hasYear = year !== undefined && year !== null;
-        var hasMonth = month !== undefined && month !== null;
-        var hasDay = day !== undefined && day !== null;
-
-        if (!hasYear && !hasMonth && !hasDay) return true;
-        if (!hasYear && hasMonth) return true;
-        if (!hasYear && !hasMonth && hasDay) return true;
-
-        // All three must be present for full validation
-        if (!hasYear || !hasMonth || !hasDay) return true;
-
-        var y = Number(year);
-        var m = Number(month);
-        var d = Number(day);
-
-        if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d)) {
+        if (typeof typeId !== 'string' || typeof subtype !== 'string') {
             return false;
         }
-
-        if (y < 1000 || y > 9999) return false;
-        if (m < 1 || m > 12) return false;
-        if (d < 1) return false;
-
-        var maxDays = getDaysInMonth(y, m);
-        if (maxDays === 0) return false;
-
-        return d <= maxDays;
-    }
-
-    function isValidYearComponent(year) {
-        if (year === undefined || year === null) return true;
-        var y = Number(year);
-        return Number.isInteger(y) && y >= 1000 && y <= 9999;
-    }
-
-    function isValidMonthComponent(month) {
-        if (month === undefined || month === null) return true;
-        var m = Number(month);
-        return Number.isInteger(m) && m >= 1 && m <= 12;
-    }
-
-    function isValidDayComponent(day) {
-        if (day === undefined || day === null) return true;
-        var d = Number(day);
-        return Number.isInteger(d) && d >= 1 && d <= 31;
+        var type = MISSION_TYPES[typeId];
+        if (!type) {
+            return false;
+        }
+        return type.subtypes.indexOf(subtype) !== -1;
     }
 
     // ============================================================
@@ -391,67 +291,24 @@
         return type ? type.label : typeId || 'Unclassified';
     }
 
-    function getMissionTypeIcon(typeId) {
-        var type = getMissionType(typeId);
-        return type ? type.icon : '📋';
-    }
-
-    function getMissionTypeColor(typeId) {
-        var type = getMissionType(typeId);
-        return type ? type.color : 'var(--text-dim)';
-    }
-
     function getSubtypeLabel(subtypeId) {
         return SUBTYPE_LABELS[subtypeId] || subtypeId || '';
     }
 
     function getEscalationLabel(escalation) {
-        if (escalation && ESCALATION_LABELS[escalation]) {
-            return ESCALATION_LABELS[escalation];
-        }
-        return 'Tier II - Complicated';
+        return ESCALATION_LABELS[escalation] || escalation || 'Tier II - Complicated';
     }
 
     function getBillingLabel(billing) {
-        if (billing && BILLING_LABELS[billing]) {
-            return BILLING_LABELS[billing];
-        }
-        return 'Original Contract';
-    }
-
-    function getPriorityInfo(priority) {
-        if (priority && PRIORITY_INFO[priority]) {
-            return PRIORITY_INFO[priority];
-        }
-        return { label: 'Medium', color: 'var(--text-dim)' };
-    }
-
-    function getStatusInfo(status) {
-        if (status && STATUS_INFO[status]) {
-            return STATUS_INFO[status];
-        }
-        return { label: 'Active', color: 'var(--text-dim)' };
-    }
-
-    function getDifficultyLabel(difficulty) {
-        if (difficulty && DIFFICULTY_LABELS[difficulty]) {
-            return DIFFICULTY_LABELS[difficulty];
-        }
-        return 'Medium';
+        return BILLING_LABELS[billing] || billing || 'Original Contract';
     }
 
     function getDifficultyCode(difficulty) {
         return DIFFICULTY_CODES[difficulty] || 'M';
     }
 
-    function getMonthName(month) {
-        var num = parseInt(month, 10);
-        if (isNaN(num) || num < 1 || num > 12) return '';
-        return MONTH_NAMES[num - 1];
-    }
-
     // ============================================================
-    // DEEP VALIDATION
+    // DEEP VALIDATION - Returns errors, does not mutate
     // ============================================================
 
     function validateObjective(objective, index, errors) {
@@ -495,7 +352,7 @@
     }
 
     function validateSupportPersonnel(id, index, errors) {
-        var normalised = normaliseId(id);
+        var normalised = IdUtils.normaliseId(id);
         if (normalised === null) {
             errors.push('Support personnel ' + (index + 1) + ' has invalid ID.');
         }
@@ -589,7 +446,7 @@
         var hasDay = mission.day !== undefined && mission.day !== null;
 
         if (hasYear && hasMonth && hasDay) {
-            if (!isValidCalendarDate(mission.year, mission.month, mission.day)) {
+            if (!CalendarValidation.isValidCalendarDate(mission.year, mission.month, mission.day)) {
                 errors.push('Invalid calendar date.');
             }
         }
@@ -599,9 +456,9 @@
             if (!Array.isArray(mission.objectives)) {
                 errors.push('Objectives must be an array.');
             } else {
-                mission.objectives.forEach(function(obj, index) {
-                    validateObjective(obj, index, errors);
-                });
+                for (var i = 0; i < mission.objectives.length; i++) {
+                    validateObjective(mission.objectives[i], i, errors);
+                }
             }
         }
 
@@ -610,9 +467,9 @@
             if (!Array.isArray(mission.tags)) {
                 errors.push('Tags must be an array.');
             } else {
-                mission.tags.forEach(function(tag, index) {
-                    validateTag(tag, index, errors);
-                });
+                for (var i = 0; i < mission.tags.length; i++) {
+                    validateTag(mission.tags[i], i, errors);
+                }
             }
         }
 
@@ -621,9 +478,9 @@
             if (!Array.isArray(mission.supportPersonnel)) {
                 errors.push('Support personnel must be an array.');
             } else {
-                mission.supportPersonnel.forEach(function(id, index) {
-                    validateSupportPersonnel(id, index, errors);
-                });
+                for (var i = 0; i < mission.supportPersonnel.length; i++) {
+                    validateSupportPersonnel(mission.supportPersonnel[i], i, errors);
+                }
             }
         }
 
@@ -632,18 +489,26 @@
             if (!Array.isArray(mission.log)) {
                 errors.push('Log must be an array.');
             } else {
-                mission.log.forEach(function(entry, index) {
-                    validateLogEntry(entry, index, errors);
-                });
+                for (var i = 0; i < mission.log.length; i++) {
+                    validateLogEntry(mission.log[i], i, errors);
+                }
             }
         }
 
         // ---- PROGRESS ----
-        // Progress is DERIVED from objectives. Input progress is validated but ignored.
+        // Progress is DERIVED. Validate that if present, it's within range.
         if (mission.progress !== undefined) {
             var prog = Number(mission.progress);
             if (!Number.isFinite(prog) || prog < 0 || prog > 100) {
                 errors.push('Progress must be a number between 0 and 100.');
+            }
+        }
+
+        // ---- PAY ----
+        // Pay is DERIVED. Validate that if present, it's a string.
+        if (mission.pay !== undefined && mission.pay !== null) {
+            if (typeof mission.pay !== 'string') {
+                errors.push('Pay must be a string.');
             }
         }
 
@@ -675,30 +540,50 @@
             }
         }
 
+        // ---- GRADUATING CLASS ----
+        if (mission.graduatingClassId !== undefined && mission.graduatingClassId !== null) {
+            var gradId = IdUtils.normaliseId(mission.graduatingClassId);
+            if (gradId === null) {
+                errors.push('Invalid graduatingClassId.');
+            }
+        }
+
+        // ---- CLASS FILTER ----
+        if (mission.classFilterEnabled !== undefined && typeof mission.classFilterEnabled !== 'boolean') {
+            errors.push('classFilterEnabled must be a boolean.');
+        }
+
         return { valid: errors.length === 0, errors: errors };
     }
 
     // ============================================================
-    // MISSION NORMALISATION
+    // CANONICALISE MISSION SHAPE - Structural only
     // ============================================================
 
     /**
-     * Normalise a mission object to canonical form.
+     * Canonicalise a mission object to canonical form.
      * 
      * IMPORTANT SEMANTICS:
      *   - Preserves id and missionId if present (does not invent them)
-     *   - Does NOT invent missing date components (preserves incomplete dates)
-     *   - Cleans up nested structures (objectives, supportPersonnel, tags, log)
-     *   - progress is DERIVED from objectives (input progress is ignored)
-     *   - pay is DERIVED from basePay + surchargePay
-     *   - completedAt is DERIVED from status
+     *   - Does NOT invent missing date components
+     *   - Rejects invalid nested records (does not silently discard)
+     *   - Strips unknown fields (schema is authoritative)
+     *   - Does NOT derive progress, pay, or completedAt
+     *   - Returns { valid, errors, value }
      * 
-     * This is a DESTRUCTIVE normaliser: fields not in the canonical set are dropped.
-     * If you need to preserve additional fields, add them to the canonical set.
+     * This is a STRUCTURAL normaliser only.
+     * Business derivation belongs in MissionRules.
+     * 
+     * @param {object} input - Input mission data
+     * @returns {object} { valid: boolean, errors: array, value: object|null }
      */
-    function normaliseMission(input) {
+    function canonicaliseMissionShape(input) {
+        var errors = [];
+        var result = null;
+
         if (!input || typeof input !== 'object') {
-            return null;
+            errors.push('Mission data must be an object.');
+            return { valid: false, errors: errors, value: null };
         }
 
         // ---- PRESERVE ID AND MISSION ID ----
@@ -725,123 +610,279 @@
 
         // Validate number conversions
         if (year !== null && (!Number.isInteger(year) || year < 1000 || year > 9999)) {
+            errors.push('Invalid year value.');
             year = null;
         }
         if (month !== null && (!Number.isInteger(month) || month < 1 || month > 12)) {
+            errors.push('Invalid month value.');
             month = null;
         }
         if (day !== null && (!Number.isInteger(day) || day < 1 || day > 31)) {
+            errors.push('Invalid day value.');
             day = null;
         }
 
-        // ---- CLEAN OBJECTIVES ----
-        var objectives = Array.isArray(input.objectives)
-            ? input.objectives.map(function(o) {
-                if (!o || typeof o !== 'object') {
-                    return { text: '', done: false };
+        // ---- CLEAN OBJECTIVES (reject invalid) ----
+        var objectives = [];
+        if (input.objectives !== undefined) {
+            if (!Array.isArray(input.objectives)) {
+                errors.push('Objectives must be an array.');
+            } else {
+                for (var i = 0; i < input.objectives.length; i++) {
+                    var o = input.objectives[i];
+                    if (!o || typeof o !== 'object') {
+                        errors.push('Objective ' + (i + 1) + ' must be an object.');
+                        continue;
+                    }
+                    var text = String(o.text || '').trim();
+                    if (!text) {
+                        errors.push('Objective ' + (i + 1) + ' requires non-empty text.');
+                        continue;
+                    }
+                    objectives.push({
+                        text: text,
+                        done: !!o.done
+                    });
                 }
-                return {
-                    text: String(o.text || '').trim(),
-                    done: !!o.done
-                };
-            }).filter(function(o) { return o.text; })
-            : [];
-
-        // ---- CLEAN SUPPORT PERSONNEL ----
-        var supportPersonnel = Array.isArray(input.supportPersonnel)
-            ? input.supportPersonnel
-                .map(function(id) { return normaliseId(id); })
-                .filter(function(id) { return id !== null; })
-            : [];
-
-        // ---- CLEAN TAGS ----
-        var tags = Array.isArray(input.tags)
-            ? input.tags
-                .map(function(t) { return typeof t === 'string' ? t.trim() : ''; })
-                .filter(function(t) { return t; })
-            : [];
-
-        // ---- CLEAN LOG ----
-        var log = Array.isArray(input.log)
-            ? input.log.map(function(entry) {
-                if (!entry || typeof entry !== 'object') {
-                    return { timestamp: new Date().toISOString(), message: '' };
-                }
-                return {
-                    timestamp: entry.timestamp || new Date().toISOString(),
-                    message: String(entry.message || '').trim()
-                };
-            }).filter(function(entry) { return entry.message; })
-            : [];
-
-        // ---- DERIVE PROGRESS ----
-        var total = objectives.length;
-        var completed = objectives.filter(function(o) { return o.done; }).length;
-        var progress = total > 0 ? Math.round((completed / total) * 100) : 0;
-
-        // ---- DERIVE PAY ----
-        var baseNum = parseFloat(String(input.basePay || '').replace(/[^0-9.]/g, ''));
-        var surchargeNum = parseFloat(String(input.surchargePay || '').replace(/[^0-9.]/g, ''));
-        var pay = '';
-
-        if (!isNaN(baseNum) && !isNaN(surchargeNum)) {
-            pay = (baseNum + surchargeNum).toFixed(2) + ' credits';
-        } else if (!isNaN(baseNum)) {
-            pay = baseNum.toFixed(2) + ' credits';
-        } else if (!isNaN(surchargeNum)) {
-            pay = surchargeNum.toFixed(2) + ' credits';
+            }
+        } else {
+            objectives = [];
         }
 
-        // ---- DERIVE COMPLETED AT ----
+        // ---- CLEAN SUPPORT PERSONNEL (reject invalid) ----
+        var supportPersonnel = [];
+        if (input.supportPersonnel !== undefined) {
+            if (!Array.isArray(input.supportPersonnel)) {
+                errors.push('Support personnel must be an array.');
+            } else {
+                for (var i = 0; i < input.supportPersonnel.length; i++) {
+                    var idVal = IdUtils.normaliseId(input.supportPersonnel[i]);
+                    if (idVal === null) {
+                        errors.push('Support personnel ' + (i + 1) + ' has invalid ID.');
+                        continue;
+                    }
+                    supportPersonnel.push(idVal);
+                }
+            }
+        }
+
+        // ---- CLEAN TAGS (reject invalid) ----
+        var tags = [];
+        if (input.tags !== undefined) {
+            if (!Array.isArray(input.tags)) {
+                errors.push('Tags must be an array.');
+            } else {
+                for (var i = 0; i < input.tags.length; i++) {
+                    var tag = input.tags[i];
+                    if (typeof tag !== 'string') {
+                        errors.push('Tag ' + (i + 1) + ' must be a string.');
+                        continue;
+                    }
+                    var trimmed = tag.trim();
+                    if (trimmed) {
+                        tags.push(trimmed);
+                    }
+                }
+            }
+        }
+
+        // ---- CLEAN LOG (reject invalid) ----
+        var log = [];
+        if (input.log !== undefined) {
+            if (!Array.isArray(input.log)) {
+                errors.push('Log must be an array.');
+            } else {
+                for (var i = 0; i < input.log.length; i++) {
+                    var entry = input.log[i];
+                    if (!entry || typeof entry !== 'object') {
+                        errors.push('Log entry ' + (i + 1) + ' must be an object.');
+                        continue;
+                    }
+                    var message = String(entry.message || '').trim();
+                    if (!message) {
+                        errors.push('Log entry ' + (i + 1) + ' requires non-empty message.');
+                        continue;
+                    }
+                    log.push({
+                        timestamp: entry.timestamp || new Date().toISOString(),
+                        message: message
+                    });
+                }
+            }
+        }
+
+        // ---- DERIVED FIELDS (validated but not calculated) ----
+        // progress: validated if present, but not calculated
+        var progress = null;
+        if (input.progress !== undefined && input.progress !== null) {
+            var prog = Number(input.progress);
+            if (Number.isFinite(prog) && prog >= 0 && prog <= 100) {
+                progress = prog;
+            } else {
+                errors.push('Progress must be a number between 0 and 100.');
+                progress = 0;
+            }
+        } else {
+            progress = 0;
+        }
+
+        // pay: validated if present, but not calculated
+        var pay = '';
+        if (input.pay !== undefined && input.pay !== null) {
+            if (typeof input.pay === 'string') {
+                pay = input.pay;
+            } else {
+                errors.push('Pay must be a string.');
+            }
+        }
+
+        // status: validated
         var status = input.status || 'active';
+        if (!isValidStatus(status)) {
+            errors.push('Invalid status: "' + status + '"');
+            status = 'active';
+        }
+
+        // ---- OTHER FIELDS (validated) ----
+        var title = input.title && typeof input.title === 'string' ? input.title.trim() : '';
+        if (!title) {
+            errors.push('Mission title is required.');
+        }
+
+        var description = input.description && typeof input.description === 'string' ? input.description.trim() : '';
+
+        var primaryType = input.primaryType || '';
+        if (primaryType && !isValidMissionType(primaryType)) {
+            errors.push('Invalid primary type: "' + primaryType + '"');
+            primaryType = '';
+        }
+
+        var subtype = input.subtype || '';
+        if (subtype && primaryType && !isValidSubtype(primaryType, subtype)) {
+            errors.push('Invalid subtype "' + subtype + '" for primary type "' + primaryType + '".');
+            subtype = '';
+        }
+
+        var secondaryType = input.secondaryType || '';
+        if (secondaryType && !isValidMissionType(secondaryType)) {
+            errors.push('Invalid secondary type: "' + secondaryType + '"');
+            secondaryType = '';
+        }
+
+        var escalation = input.escalation || 'tier_ii';
+        if (!isValidEscalation(escalation)) {
+            errors.push('Invalid escalation tier: "' + escalation + '"');
+            escalation = 'tier_ii';
+        }
+
+        var threatType = input.threatType || '';
+        var environment = input.environment || '';
+        var location = input.location || '';
+        var duration = input.duration || '';
+
+        var difficulty = input.difficulty || 'medium';
+        if (!isValidDifficulty(difficulty)) {
+            errors.push('Invalid difficulty: "' + difficulty + '"');
+            difficulty = 'medium';
+        }
+
+        var priority = input.priority || 'medium';
+        if (!isValidPriority(priority)) {
+            errors.push('Invalid priority: "' + priority + '"');
+            priority = 'medium';
+        }
+
+        var basePay = input.basePay !== undefined && input.basePay !== null ? String(input.basePay) : '';
+        var surchargePay = input.surchargePay !== undefined && input.surchargePay !== null ? String(input.surchargePay) : '';
+
+        var billing = input.billing || 'original';
+        if (!isValidBilling(billing)) {
+            errors.push('Invalid billing type: "' + billing + '"');
+            billing = 'original';
+        }
+
+        var assignedTeamId = input.assignedTeamId || null;
+        if (assignedTeamId !== null) {
+            var teamId = IdUtils.normaliseId(assignedTeamId);
+            if (teamId === null) {
+                errors.push('Invalid assignedTeamId.');
+                assignedTeamId = null;
+            } else {
+                assignedTeamId = teamId;
+            }
+        }
+
+        var notes = input.notes || '';
+
+        var createdAt = input.createdAt || new Date().toISOString();
+        if (typeof createdAt !== 'string' || isNaN(new Date(createdAt).getTime())) {
+            errors.push('CreatedAt must be a valid ISO date string.');
+            createdAt = new Date().toISOString();
+        }
+
         var completedAt = input.completedAt !== undefined && input.completedAt !== null
             ? input.completedAt
             : null;
-
-        if (status === 'completed' && !completedAt) {
-            completedAt = new Date().toISOString();
-        } else if (status !== 'completed') {
+        if (completedAt !== null && (typeof completedAt !== 'string' || isNaN(new Date(completedAt).getTime()))) {
+            errors.push('CompletedAt must be a valid ISO date string or null.');
             completedAt = null;
         }
 
+        // ---- GRADUATING CLASS ----
+        var graduatingClassId = input.graduatingClassId !== undefined && input.graduatingClassId !== null
+            ? IdUtils.normaliseId(input.graduatingClassId)
+            : null;
+        if (input.graduatingClassId !== undefined && input.graduatingClassId !== null && graduatingClassId === null) {
+            errors.push('Invalid graduatingClassId.');
+        }
+
+        // ---- CLASS FILTER ----
+        var classFilterEnabled = typeof input.classFilterEnabled === 'boolean'
+            ? input.classFilterEnabled
+            : false;
+
         // ---- BUILD CANONICAL OBJECT ----
-        return {
+        result = {
             id: id,
             missionId: missionId,
-            title: input.title && typeof input.title === 'string' ? input.title.trim() : '',
-            description: input.description && typeof input.description === 'string' ? input.description.trim() : '',
+            title: title,
+            description: description,
             year: year,
             month: month,
             day: day,
-            primaryType: input.primaryType || '',
-            subtype: input.subtype || '',
-            secondaryType: input.secondaryType || '',
-            escalation: input.escalation || 'tier_ii',
-            threatType: input.threatType || '',
-            environment: input.environment || '',
-            location: input.location || '',
-            duration: input.duration || '',
-            difficulty: input.difficulty || 'medium',
-            priority: input.priority || 'medium',
-            basePay: input.basePay !== undefined && input.basePay !== null ? String(input.basePay) : '',
-            surchargePay: input.surchargePay !== undefined && input.surchargePay !== null ? String(input.surchargePay) : '',
+            primaryType: primaryType,
+            subtype: subtype,
+            secondaryType: secondaryType,
+            escalation: escalation,
+            threatType: threatType,
+            environment: environment,
+            location: location,
+            duration: duration,
+            difficulty: difficulty,
+            priority: priority,
+            basePay: basePay,
+            surchargePay: surchargePay,
             pay: pay,
-            billing: input.billing || 'original',
-            assignedTeamId: input.assignedTeamId || null,
+            billing: billing,
+            assignedTeamId: assignedTeamId,
             supportPersonnel: supportPersonnel,
             status: status,
             objectives: objectives,
             progress: progress,
-            notes: input.notes || '',
+            notes: notes,
             tags: tags,
-            createdAt: input.createdAt || new Date().toISOString(),
+            createdAt: createdAt,
             completedAt: completedAt,
-            log: log
+            log: log,
+            graduatingClassId: graduatingClassId,
+            classFilterEnabled: classFilterEnabled
         };
+
+        return { valid: errors.length === 0, errors: errors, value: result };
     }
 
     // ============================================================
-    // GETTER HELPERS FOR QUERIES (Defensive copies)
+    // DEFENSIVE GETTERS (copies, not live references)
     // ============================================================
 
     function getMissionTypes() {
@@ -851,8 +892,6 @@
             result[key] = {
                 id: type.id,
                 label: type.label,
-                icon: type.icon,
-                color: type.color,
                 description: type.description,
                 subtypes: type.subtypes.slice()
             };
@@ -902,15 +941,10 @@
         VALID_BILLING_TYPES: VALID_BILLING_TYPES,
         VALID_ESCALATION_TIERS: VALID_ESCALATION_TIERS,
         DIFFICULTY_CODES: DIFFICULTY_CODES,
-        MONTH_NAMES: MONTH_NAMES,
-        DAYS_IN_MONTH: DAYS_IN_MONTH,
         MISSION_TYPES: MISSION_TYPES,
         SUBTYPE_LABELS: SUBTYPE_LABELS,
         ESCALATION_LABELS: ESCALATION_LABELS,
         BILLING_LABELS: BILLING_LABELS,
-        PRIORITY_INFO: PRIORITY_INFO,
-        STATUS_INFO: STATUS_INFO,
-        DIFFICULTY_LABELS: DIFFICULTY_LABELS,
 
         // Defensive getters (copies, not live references)
         getMissionTypes: getMissionTypes,
@@ -935,29 +969,14 @@
         isValidEscalation: isValidEscalation,
         isValidMissionType: isValidMissionType,
         isValidSubtype: isValidSubtype,
-        normaliseId: normaliseId,
 
-        // Date helpers
-        isLeapYear: isLeapYear,
-        getDaysInMonth: getDaysInMonth,
-        isValidCalendarDate: isValidCalendarDate,
-        isValidYearComponent: isValidYearComponent,
-        isValidMonthComponent: isValidMonthComponent,
-        isValidDayComponent: isValidDayComponent,
-
-        // Type display helpers
+        // Type display helpers (labels only - no colors/icons)
         getMissionType: getMissionType,
         getMissionTypeLabel: getMissionTypeLabel,
-        getMissionTypeIcon: getMissionTypeIcon,
-        getMissionTypeColor: getMissionTypeColor,
         getSubtypeLabel: getSubtypeLabel,
         getEscalationLabel: getEscalationLabel,
         getBillingLabel: getBillingLabel,
-        getPriorityInfo: getPriorityInfo,
-        getStatusInfo: getStatusInfo,
-        getDifficultyLabel: getDifficultyLabel,
         getDifficultyCode: getDifficultyCode,
-        getMonthName: getMonthName,
 
         // Deep validation
         validateObjective: validateObjective,
@@ -968,8 +987,8 @@
         // Main validation
         validateMission: validateMission,
 
-        // Normalisation
-        normaliseMission: normaliseMission
+        // Canonicalisation (structural only)
+        canonicaliseMissionShape: canonicaliseMissionShape
     };
 
 })();
