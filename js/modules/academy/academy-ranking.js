@@ -23,7 +23,7 @@
  * DEPENDENCIES:
  *   - window.ObjectUtils (from object-utils.js)
  *   - window.CharacterQueries (from character-queries.js)
- *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.AcademyClassQueries (from academy-class-queries.js)
  *   - window.AcademyGrades (from academy-grades.js)
  *   - window.CalendarValidation (from calendar-validation.js)
  *   - window.CalendarConstants (from calendar-constants.js)
@@ -49,7 +49,7 @@
 
     var ObjectUtils = window.ObjectUtils;
     var CharacterQueries = window.CharacterQueries;
-    var ClassesQueries = window.ClassesQueries;
+    var AcademyClassQueries = window.AcademyClassQueries;
     var AcademyGrades = window.AcademyGrades;
     var CalendarValidation = window.CalendarValidation;
     var CalendarConstants = window.CalendarConstants;
@@ -78,11 +78,11 @@
             missing.push('CharacterQueries.getStudents');
         }
 
-        if (!ClassesQueries || typeof ClassesQueries.getClass !== 'function') {
-            missing.push('ClassesQueries.getClass');
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClass !== 'function') {
+            missing.push('AcademyClassQueries.getClass');
         }
-        if (!ClassesQueries || typeof ClassesQueries.getCharactersByClass !== 'function') {
-            missing.push('ClassesQueries.getCharactersByClass');
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getCharactersByClass !== 'function') {
+            missing.push('AcademyClassQueries.getCharactersByClass');
         }
 
         if (!AcademyGrades || typeof AcademyGrades.calculateSummary !== 'function') {
@@ -350,7 +350,7 @@
             return [];
         }
 
-        var students = ClassesQueries.getCharactersByClass(classId);
+        var students = AcademyClassQueries.getCharactersByClass(classId);
         var rankings = getRankingsWithDetails(weekNum);
         var result = [];
 
@@ -388,7 +388,7 @@
         }
 
         var rankings = getClassRankings(classId, weekNum);
-        var students = ClassesQueries.getCharactersByClass(classId);
+        var students = AcademyClassQueries.getCharactersByClass(classId);
 
         var rankedStudents = rankings.length;
         var unrankedStudents = students.length - rankedStudents;
