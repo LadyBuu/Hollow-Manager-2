@@ -23,7 +23,7 @@
  *   - window.ObjectUtils (from object-utils.js)
  *   - window.IdUtils (from id-utils.js)
  *   - window.CharacterQueries (from character-queries.js)
- *   - window.DisciplineQueries (from discipline-queries.js)
+ *   - window.DisciplineQueries (from discipline-queries.js) - RECOMMENDED (with fallback)
  *   - window.CalendarValidation (from calendar-validation.js)
  *   - window.CalendarConstants (from calendar-constants.js)
  * 
@@ -43,15 +43,17 @@
     }
 
     // ============================================================
-    // DEPENDENCY IMPORTS - NO FALLBACKS
+    // DEPENDENCY IMPORTS - MANDATORY
     // ============================================================
 
     var ObjectUtils = window.ObjectUtils;
     var IdUtils = window.IdUtils;
     var CharacterQueries = window.CharacterQueries;
-    var DisciplineQueries = window.DisciplineQueries;
     var CalendarValidation = window.CalendarValidation;
     var CalendarConstants = window.CalendarConstants;
+
+    // Optional - with fallback
+    var DisciplineQueries = window.DisciplineQueries;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -76,10 +78,6 @@
         }
         if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
             missing.push('CharacterQueries.getCurrentStatus');
-        }
-
-        if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
-            missing.push('DisciplineQueries.getDiscipline');
         }
 
         if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
@@ -109,14 +107,35 @@
     checkDependencies();
 
     // ============================================================
-    // CONSTANTS
+    // HELPER FUNCTIONS (with fallbacks)
     // ============================================================
 
-    var AUTO_GROUP_LABEL = 'auto-group';
+    function getDiscipline(id) {
+        if (!isNonEmptyString(id)) {
+            return null;
+        }
 
-    // ============================================================
-    // HELPER ALIASES
-    // ============================================================
+        // Try DisciplineQueries first
+        if (DisciplineQueries && typeof DisciplineQueries.getDiscipline === 'function') {
+            try {
+                return DisciplineQueries.getDiscipline(id);
+            } catch (e) {
+                // Fall through
+            }
+        }
+
+        // Fallback: read from window.data
+        if (window.data && window.data.curriculum && Array.isArray(window.data.curriculum.disciplines)) {
+            var disciplines = window.data.curriculum.disciplines;
+            for (var i = 0; i < disciplines.length; i++) {
+                if (disciplines[i] && String(disciplines[i].id) === String(id)) {
+                    return disciplines[i];
+                }
+            }
+        }
+
+        return null;
+    }
 
     function isObject(value) {
         return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -171,7 +190,7 @@
         if (!isNonEmptyString(disciplineId)) {
             return { valid: false, message: 'Discipline ID is required.' };
         }
-        var discipline = DisciplineQueries.getDiscipline(disciplineId);
+        var discipline = getDiscipline(disciplineId);
         if (!discipline) {
             return { valid: false, message: 'Discipline not found.' };
         }
@@ -420,7 +439,7 @@
             return null;
         }
 
-        var discipline = DisciplineQueries.getDiscipline(group.disciplineId);
+        var discipline = getDiscipline(group.disciplineId);
         var instructor = CharacterQueries.getCharacterById(group.instructorId);
 
         return {
