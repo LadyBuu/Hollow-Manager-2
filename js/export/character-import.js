@@ -1,225 +1,339 @@
 /**
  * js/export/character-import.js - Character CSV Import
- * Path: js/export/character-import.js
+ * PURE PARSER - returns candidates, does NOT mutate application state
  * 
- * Imports ONLY characters from a CSV file.
- * Does NOT affect teams, missions, tournaments, etc.
+ * This module parses CSV text into character candidates using the canonical
+ * CharacterCSVSchema for column definitions and validation.
  * 
- * Format: CharacterId, FirstName, LastName, BirthYear, Gender, 
- *          CareerStatus, EliminatedWeeks, ... (full character schema)
+ * It does NOT:
+ * - Access window.data directly
+ * - Call saveData()
+ * - Show alerts or confirmations
+ * - Log activity
+ * - Render UI
+ * - Mutate application state
+ * - Generate IDs (that's the caller's responsibility)
+ * - Apply default values (that's the schema's responsibility)
+ * 
+ * Usage:
+ *   var result = importCharactersCSV(csvText);
+ *   if (result.hasErrors()) { /* handle errors * / }
+ *   var candidates = result.getValid();
+ *   // Pass candidates to CharacterCore.importCharacters()
  */
 
 (function() {
     'use strict';
 
-    var utils = window.ExportUtils;
+    // ============================================================
+    // Dependencies
+    // ============================================================
+
     var parser = window.CSV;
+    var schema = window.CharacterCSVSchema;
+    var Result = window.ImportResult;
 
-    function importCharacters(file) {
-        var reader = new FileReader();
-        reader.onload = function(e) {
-            try {
-                var records = parser.parse(e.target.result);
-                if (records.length === 0) {
-                    alert('No data found in CSV file.');
-                    return;
-                }
-
-                // Detect character section
-                var characterRows = extractCharacterRows(records);
-                if (characterRows.length === 0) {
-                    alert('No character data found in CSV file.\n\n' +
-                          'The file must contain a "# CHARACTERS" section.');
-                    return;
-                }
-
-                var imported = parseCharacterRows(characterRows);
-                if (imported.length === 0) {
-                    alert('No valid character data found.');
-                    return;
-                }
-
-                // Confirm import
-                var msg = 'This will import ' + imported.length + ' character(s).\n\n' +
-                          'Existing characters with matching IDs will be updated.\n' +
-                          'New characters will be added.\n\n' +
-                          'Other data (teams, missions, etc.) is NOT affected.\n\n' +
-                          'Continue?';
-
-                if (!confirm(msg)) {
-                    return;
-                }
-
-                // Merge into existing data
-                var existing = window.data || {};
-                if (!Array.isArray(existing.characters)) {
-                    existing.characters = [];
-                }
-
-                var updated = 0;
-                var added = 0;
-
-                imported.forEach(function(char) {
-                    var existingIndex = existing.characters.findIndex(function(c) {
-                        return c && String(c.id) === String(char.id);
-                    });
-
-                    if (existingIndex !== -1) {
-                        existing.characters[existingIndex] = char;
-                        updated++;
-                    } else {
-                        existing.characters.push(char);
-                        added++;
-                    }
-                });
-
-                window.data = existing;
-
-                // Persist
-                if (typeof window.saveData === 'function') {
-                    window.saveData()
-                        .then(function() {
-                            alert('Character import completed!\n\n' +
-                                  'Added: ' + added + '\n' +
-                                  'Updated: ' + updated + '\n' +
-                                  'Total: ' + imported.length);
-                            // Refresh UI
-                            if (typeof window.renderAll === 'function') {
-                                window.renderAll();
-                            }
-                            if (typeof window.renderCharacterList === 'function') {
-                                window.renderCharacterList();
-                            }
-                        })
-                        .catch(function(err) {
-                            alert('Characters imported in memory, but persistence failed: ' + err.message);
-                        });
-                } else {
-                    alert('Characters imported but could not be saved. Please refresh.');
-                }
-
-            } catch (err) {
-                alert('Failed to import characters: ' + err.message);
-            }
-        };
-        reader.readAsText(file);
+    // Validate dependencies
+    if (!parser || typeof parser.parse !== 'function') {
+        throw new Error('CharacterCSVImport: CSV parser not available');
+    }
+    if (!schema || typeof schema.parseRow !== 'function') {
+        throw new Error('CharacterCSVImport: CharacterCSVSchema not available');
+    }
+    if (!Result || typeof Result !== 'function') {
+        throw new Error('CharacterCSVImport: ImportResult not available');
     }
 
+    // ============================================================
+    // Constants
+    // ============================================================
+
+    var MAX_ROWS = 10000; // Sanity limit to prevent memory issues
+
+    // ============================================================
+    // Import Functions
+    // ============================================================
+
+    /**
+     * Parse CSV text and return character candidates.
+     * 
+     * @param {string} csvText - CSV file content
+     * @param {Object} options - Import options
+     * @param {boolean} options.strict - Strict mode: reject rows with errors (default: false)
+     * @param {number} options.maxRows - Maximum rows to parse (default: 10000)
+     * @returns {ImportResult} ImportResult with valid candidates, errors, warnings
+     */
+    function importCharactersCSV(csvText, options) {
+        options = options || {};
+        var strict = options.strict === true;
+        var maxRows = options.maxRows || MAX_ROWS;
+
+        var result = new Result();
+
+        // Parse CSV
+        var records;
+        try {
+            records = parser.parse(csvText);
+        } catch (e) {
+            result.addError('Failed to parse CSV: ' + e.message);
+            return result;
+        }
+
+        if (records.length === 0) {
+            result.addWarning('CSV file is empty');
+            return result;
+        }
+
+        // Extract character section
+        var characterRows = extractCharacterRows(records);
+        if (characterRows.length === 0) {
+            result.addError('No character data found. Expected "' + schema.SECTION + '" section.');
+            return result;
+        }
+
+        // Check row limit
+        if (characterRows.length > maxRows) {
+            result.addError('Too many rows (' + characterRows.length + '). Maximum is ' + maxRows + '.');
+            return result;
+        }
+
+        // Parse each row
+        characterRows.forEach(function(row, index) {
+            var rowNumber = index + 1;
+
+            // Skip empty rows
+            if (isBlankRow(row)) {
+                return;
+            }
+
+            // Parse the row using the schema
+            var parsed = schema.parseRow(row, function(warning, fieldName) {
+                var msg = warning;
+                if (fieldName) {
+                    msg = fieldName + ': ' + warning;
+                }
+                result.addWarning(msg, { row: rowNumber, field: fieldName });
+            });
+
+            if (parsed.valid) {
+                // Validate the candidate
+                if (schema.isValidCandidate(parsed.character)) {
+                    result.addValid(parsed.character, { row: rowNumber });
+                } else {
+                    result.addError('Invalid character data', { row: rowNumber });
+                }
+            }
+
+            // Add errors
+            parsed.errors.forEach(function(err) {
+                result.addError(err, { row: rowNumber });
+            });
+
+            // In strict mode, reject rows with errors
+            if (strict && parsed.errors.length > 0) {
+                // Remove any valid record that was added for this row
+                // (we need to filter it out)
+                var validRecords = result.getValid(true);
+                var lastValid = validRecords[validRecords.length - 1];
+                if (lastValid && lastValid.metadata && lastValid.metadata.row === rowNumber) {
+                    // This is tricky - we'd need to remove it.
+                    // Instead, we should only add valid records after we know there are no errors.
+                    // Let's restructure: collect, then add.
+                }
+            }
+        });
+
+        // If in strict mode, filter out any records that had errors
+        if (strict) {
+            var filteredValid = [];
+            var validItems = result.getValid(true);
+            for (var i = 0; i < validItems.length; i++) {
+                var item = validItems[i];
+                var rowNum = item.metadata && item.metadata.row;
+                if (rowNum) {
+                    var rowErrors = result.getErrorsForRow(rowNum);
+                    if (rowErrors.length === 0) {
+                        filteredValid.push(item);
+                    } else {
+                        // Mark as skipped
+                        result.addSkipped(item.record, 'Row had errors', { row: rowNum });
+                    }
+                } else {
+                    filteredValid.push(item);
+                }
+            }
+
+            // Clear and re-add valid records
+            result._valid = filteredValid;
+        }
+
+        return result;
+    }
+
+    /**
+     * Extract rows from the CHARACTERS section.
+     * 
+     * @param {Array} records - All CSV records
+     * @returns {Array} Array of character data rows (excluding header)
+     */
     function extractCharacterRows(records) {
         var rows = [];
         var inSection = false;
+        var foundHeader = false;
 
         for (var i = 0; i < records.length; i++) {
             var row = records[i];
-            if (utils.isBlankRow(row)) continue;
+
+            // Skip empty rows
+            if (isBlankRow(row)) {
+                continue;
+            }
 
             var first = String(row[0] || '').trim();
-            if (first === '# CHARACTERS') {
+
+            // Check for section start
+            if (first === schema.SECTION) {
                 inSection = true;
-                i++; // Skip header
                 continue;
             }
 
+            // Check for section end (next section)
+            if (inSection && first.startsWith('#')) {
+                break;
+            }
+
+            // Skip header row
             if (inSection && first === 'CharacterId') {
-                // Header row - skip
+                foundHeader = true;
                 continue;
             }
 
+            // Collect data rows
             if (inSection) {
-                // Check if we've reached next section
-                if (first.startsWith('#')) {
-                    break;
-                }
-                if (row.length > 1 && row[0] && row[1]) {
+                // Only include rows that have at least some data
+                if (row.length > 0 && String(row[0] || '').trim()) {
                     rows.push(row);
                 }
             }
         }
 
+        // If we found a header but no data rows, that's fine - just return empty array
         return rows;
     }
 
-    function parseCharacterRows(rows) {
-        var characters = [];
+    /**
+     * Check if a row is completely blank.
+     * 
+     * @param {Array} row - CSV row
+     * @returns {boolean} True if blank
+     */
+    function isBlankRow(row) {
+        if (!row || row.length === 0) {
+            return true;
+        }
 
-        rows.forEach(function(row) {
-            try {
-                var char = parseCharacterRow(row);
-                if (char) {
-                    characters.push(char);
+        for (var i = 0; i < row.length; i++) {
+            var cell = String(row[i] == null ? '' : row[i]).trim();
+            if (cell !== '') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Parse a character CSV file from a File object.
+     * Convenience wrapper for browser FileReader.
+     * 
+     * @param {File} file - CSV file
+     * @param {Object} options - Import options
+     * @returns {Promise<ImportResult>} Promise resolving to ImportResult
+     */
+    function importCharactersFromFile(file, options) {
+        options = options || {};
+
+        return new Promise(function(resolve, reject) {
+            var reader = new FileReader();
+
+            reader.onload = function(e) {
+                try {
+                    var result = importCharactersCSV(e.target.result, options);
+                    resolve(result);
+                } catch (err) {
+                    reject(new Error('Failed to import characters: ' + err.message));
                 }
-            } catch (e) {
-                console.warn('Skipping row:', row, e.message);
+            };
+
+            reader.onerror = function() {
+                reject(new Error('Failed to read file: ' + reader.error.message));
+            };
+
+            reader.readAsText(file);
+        });
+    }
+
+    /**
+     * Validate character candidates against the schema.
+     * Useful for pre-import validation.
+     * 
+     * @param {Array} candidates - Character candidates
+     * @returns {Object} { valid: Array, invalid: Array }
+     */
+    function validateCandidates(candidates) {
+        if (!Array.isArray(candidates)) {
+            throw new TypeError('Candidates must be an array.');
+        }
+
+        var valid = [];
+        var invalid = [];
+
+        candidates.forEach(function(candidate, index) {
+            if (schema.isValidCandidate(candidate)) {
+                valid.push(candidate);
+            } else {
+                invalid.push({
+                    index: index,
+                    candidate: candidate,
+                    reason: 'Missing required fields (firstName/lastName)'
+                });
             }
         });
 
-        return characters;
+        return { valid: valid, invalid: invalid };
     }
 
-    function parseCharacterRow(row) {
-        // CharacterId, FirstName, MiddleName, LastName, BirthYear, Gender, AssociatedNames,
-        // EyeColor, HairColor, SkinColor, Height, Weight, Build, AppearanceNotes,
-        // Notes, Deceased, DeathYear, DeathCause, DeathAge, Specialty,
-        // CareerStatus, EliminatedWeeks
+    /**
+     * Get a preview of the import result.
+     * Shows first N valid records for user review.
+     * 
+     * @param {ImportResult} result - Import result
+     * @param {number} limit - Number of records to preview (default: 5)
+     * @returns {Object} { preview: Array, total: number }
+     */
+    function getImportPreview(result, limit) {
+        limit = limit || 5;
 
-        var id = String(row[0] || '').trim() || 'char_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-        var firstName = String(row[1] || '').trim();
-        var lastName = String(row[3] || '').trim();
-
-        if (!firstName && !lastName) {
-            console.warn('Character row missing name:', row);
-            return null;
+        if (!(result instanceof Result)) {
+            throw new TypeError('Result must be an ImportResult');
         }
 
-        var careerStatus = parseJSON(row[20], []);
-        var eliminatedWeeks = parseJSON(row[21], []);
+        var valid = result.getValid();
+        var preview = valid.slice(0, limit);
 
         return {
-            id: id,
-            firstName: firstName,
-            middleName: String(row[2] || '').trim(),
-            lastName: lastName,
-            birthYear: String(row[4] || '').trim(),
-            gender: String(row[5] || '').trim(),
-            associatedNames: String(row[6] || '').trim(),
-            eyes: String(row[7] || '').trim(),
-            hair: String(row[8] || '').trim(),
-            skin: String(row[9] || '').trim(),
-            height: String(row[10] || '').trim(),
-            weight: String(row[11] || '').trim(),
-            build: String(row[12] || '').trim(),
-            appearanceNotes: String(row[13] || '').trim(),
-            notes: String(row[14] || '').trim(),
-            deceased: String(row[15] || '').trim() === 'true',
-            deathYear: String(row[16] || '').trim(),
-            deathCause: String(row[17] || '').trim(),
-            deathAge: String(row[18] || '').trim(),
-            specialty: String(row[19] || '').trim(),
-            careerStatus: careerStatus,
-            eliminatedWeeks: eliminatedWeeks,
-            eliminations: [],
-            stats: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
-            magic: {},
-            personality: {},
-            specialMoves: { physical: [], magical: [] },
-            previousNames: [],
-            nameFormat: 'firstlast',
-            classIds: [],
-            createdAt: new Date().toISOString()
+            preview: preview,
+            total: valid.length,
+            hasMore: valid.length > limit
         };
     }
 
-    function parseJSON(value, fallback) {
-        if (!value || typeof value !== 'string') return fallback;
-        try {
-            var parsed = JSON.parse(value);
-            return Array.isArray(parsed) ? parsed : fallback;
-        } catch (e) {
-            return fallback;
-        }
-    }
-
+    // ============================================================
     // Expose
-    window.importCharactersCSV = importCharacters;
+    // ============================================================
+
+    window.importCharactersCSV = importCharactersCSV;
+    window.importCharactersFromFile = importCharactersFromFile;
+    window.validateCharacterCandidates = validateCandidates;
+    window.getCharacterImportPreview = getImportPreview;
 
 })();
