@@ -21,7 +21,7 @@
  *   - All deep cloning uses ObjectUtils.deepClone()
  * 
  * DEPENDENCIES:
- *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.AcademyClassQueries (from academy-class-queries.js)
  *   - window.TeamQueries (from team-queries.js)
  *   - window.TeamCore (from team-core.js)
  *   - window.CharacterQueries (from character-queries.js)
@@ -51,7 +51,7 @@
     // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var ClassesQueries = window.ClassesQueries;
+    var AcademyClassQueries = window.AcademyClassQueries;
     var TeamQueries = window.TeamQueries;
     var TeamCore = window.TeamCore;
     var CharacterQueries = window.CharacterQueries;
@@ -68,14 +68,14 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!ClassesQueries || typeof ClassesQueries.getClass !== 'function') {
-            missing.push('ClassesQueries.getClass');
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClass !== 'function') {
+            missing.push('AcademyClassQueries.getClass');
         }
-        if (!ClassesQueries || typeof ClassesQueries.getCharactersByClass !== 'function') {
-            missing.push('ClassesQueries.getCharactersByClass');
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getCharactersByClass !== 'function') {
+            missing.push('AcademyClassQueries.getCharactersByClass');
         }
-        if (!ClassesQueries || typeof ClassesQueries.getAvailableStudentsForClass !== 'function') {
-            missing.push('ClassesQueries.getAvailableStudentsForClass');
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getAvailableStudentsForClass !== 'function') {
+            missing.push('AcademyClassQueries.getAvailableStudentsForClass');
         }
 
         if (!TeamQueries || typeof TeamQueries.getTeamsByType !== 'function') {
@@ -176,7 +176,7 @@
         if (!isNonEmptyString(classId)) {
             return { valid: false, message: 'Class ID is required.' };
         }
-        var cls = ClassesQueries.getClass(classId);
+        var cls = AcademyClassQueries.getClass(classId);
         if (!cls) {
             return { valid: false, message: 'Class not found.' };
         }
@@ -293,7 +293,7 @@
         }
 
         // ---- PHASE 3: GET AVAILABLE STUDENTS ----
-        var availableStudents = ClassesQueries.getAvailableStudentsForClass(classId, weekNum);
+        var availableStudents = AcademyClassQueries.getAvailableStudentsForClass(classId, weekNum);
         if (availableStudents.length === 0) {
             return failure('No available students for this class at week ' + weekNum + '.');
         }
