@@ -1,128 +1,185 @@
 /**
- * js/modules/tournaments/tournaments-ui.js - Tournament UI Controller
- * Event wiring, modal management, user interactions.
+ * js/modules/tournaments/tournaments-ui.js - Tournaments UI Controller
+ * Path: js/modules/tournaments/tournaments-ui.js
  * 
- * UI PHILOSOPHY:
- *   - UI is the boundary between user and domain
- *   - All mutations go through TournamentsCore or TournamentsMatches
- *   - All reads go through TournamentsQueries
- *   - All rendering goes through TournamentsRender
- *   - Persistence is owned by MutationUtils (not the UI)
- *   - Event handlers use delegation with CURRENT tournament resolution
- *   - Single lifecycle owner (TabManager)
- *   - UI state is private, not exposed globally
+ * This module handles:
+ *   - Tournament UI rendering
+ *   - Tournament form display
+ *   - Tournament detail view
+ *   - Tournament CRUD operations (delegated to core)
  * 
- * PERSISTENCE CONTRACT:
- *   - This module does NOT call saveData()
- *   - This module does NOT own persistence
- *   - MutationUtils owns persistence and activity logging
- *   - The UI assumes optimistic updates (memory first, then persist)
+ * IMPORTANT:
+ *   - UI-ONLY - all mutations delegate to TournamentsCore
+ *   - Uses TournamentsQueries for read-only access
+ *   - Uses TournamentsRender for all HTML generation
+ *   - Uses TournamentsMatches for match operations
+ *   - No direct window.data access
+ *   - Uses NotificationSystem for user feedback
+ *   - Uses Modal for modal lifecycle
+ *   - All HTML escaping uses DomUtils.escapeHtml()
  * 
  * DEPENDENCIES:
- *   - window.TournamentsCore - REQUIRED
- *   - window.TournamentsRender - REQUIRED
- *   - window.TournamentsQueries - REQUIRED
- *   - window.TournamentsMatches - REQUIRED
- *   - window.NotificationSystem - REQUIRED
- *   - window.Modal - REQUIRED
- *   - window.TabManager - REQUIRED
- *   - window.ClassesQueries - REQUIRED
+ *   - window.TournamentsCore (from tournaments-core.js)
+ *   - window.TournamentsRender (from tournaments-render.js)
+ *   - window.TournamentsQueries (from tournaments-queries.js)
+ *   - window.TournamentsMatches (from tournaments-matches.js)
+ *   - window.NotificationSystem (from notification.js)
+ *   - window.Modal (from modal.js)
+ *   - window.TabManager (from tab-manager.js)
+ *   - window.DomUtils (from dom-utils.js)
+ *   - window.CharacterQueries (from character-queries.js)
+ *   - window.TeamQueries (from team-queries.js)
  * 
- * LOAD ORDER:
- *   - tournaments-schema.js (FIRST)
- *   - tournament-lifecycle.js
- *   - tournaments-core.js
- *   - tournaments-queries.js
- *   - tournaments-matches.js
- *   - tournaments-render.js
- *   - tournaments-ui.js (LAST)
+ * USAGE:
+ *   var ui = window.TournamentsUI;
+ *   ui.render(container);
  */
 
 (function() {
     'use strict';
 
-    // Guard: Check dependencies BEFORE marking as loaded
+    // Guard against duplicate loading
     if (window.__tournamentsUILoaded) {
         return;
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var missing = [];
-
-    if (!window.TournamentsCore) {
-        missing.push('TournamentsCore');
-    }
-
-    if (!window.TournamentsRender) {
-        missing.push('TournamentsRender');
-    }
-
-    if (!window.TournamentsQueries) {
-        missing.push('TournamentsQueries');
-    }
-
-    if (!window.TournamentsMatches) {
-        missing.push('TournamentsMatches');
-    }
-
-    if (!window.NotificationSystem || typeof window.NotificationSystem.notify !== 'function') {
-        missing.push('NotificationSystem.notify');
-    }
-
-    if (!window.Modal || typeof window.Modal.showModal !== 'function') {
-        missing.push('Modal.showModal');
-    }
-
-    if (!window.TabManager || typeof window.TabManager.register !== 'function') {
-        missing.push('TabManager.register');
-    }
-
-    if (!window.ClassesQueries || typeof window.ClassesQueries.getGraduatingClasses !== 'function') {
-        missing.push('ClassesQueries.getGraduatingClasses');
-    }
-
-    if (missing.length > 0) {
-        throw new Error('[TournamentsUI] Missing dependencies: ' + missing.join(', '));
-    }
-
-    window.__tournamentsUILoaded = true;
-
-    // ============================================================
-    // DEPENDENCY IMPORTS
-    // ============================================================
-
-    var Core = window.TournamentsCore;
-    var Render = window.TournamentsRender;
-    var Queries = window.TournamentsQueries;
-    var Matches = window.TournamentsMatches;
+    var TournamentsCore = window.TournamentsCore;
+    var TournamentsRender = window.TournamentsRender;
+    var TournamentsQueries = window.TournamentsQueries;
+    var TournamentsMatches = window.TournamentsMatches;
     var NotificationSystem = window.NotificationSystem;
     var Modal = window.Modal;
     var TabManager = window.TabManager;
-    var ClassesQueries = window.ClassesQueries;
+    var DomUtils = window.DomUtils;
+    var CharacterQueries = window.CharacterQueries;
+    var TeamQueries = window.TeamQueries;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
+
+    function checkDependencies() {
+        var missing = [];
+
+        if (!TournamentsCore || typeof TournamentsCore.getTournaments !== 'function') {
+            missing.push('TournamentsCore.getTournaments');
+        }
+        if (!TournamentsCore || typeof TournamentsCore.createTournament !== 'function') {
+            missing.push('TournamentsCore.createTournament');
+        }
+        if (!TournamentsCore || typeof TournamentsCore.updateTournament !== 'function') {
+            missing.push('TournamentsCore.updateTournament');
+        }
+        if (!TournamentsCore || typeof TournamentsCore.deleteTournament !== 'function') {
+            missing.push('TournamentsCore.deleteTournament');
+        }
+        if (!TournamentsCore || typeof TournamentsCore.addParticipant !== 'function') {
+            missing.push('TournamentsCore.addParticipant');
+        }
+        if (!TournamentsCore || typeof TournamentsCore.removeParticipant !== 'function') {
+            missing.push('TournamentsCore.removeParticipant');
+        }
+        if (!TournamentsCore || typeof TournamentsCore.addRound !== 'function') {
+            missing.push('TournamentsCore.addRound');
+        }
+        if (!TournamentsCore || typeof TournamentsCore.removeRound !== 'function') {
+            missing.push('TournamentsCore.removeRound');
+        }
+        if (!TournamentsCore || typeof TournamentsCore.completeTournament !== 'function') {
+            missing.push('TournamentsCore.completeTournament');
+        }
+
+        if (!TournamentsRender || typeof TournamentsRender.renderList !== 'function') {
+            missing.push('TournamentsRender.renderList');
+        }
+        if (!TournamentsRender || typeof TournamentsRender.renderDetail !== 'function') {
+            missing.push('TournamentsRender.renderDetail');
+        }
+        if (!TournamentsRender || typeof TournamentsRender.renderForm !== 'function') {
+            missing.push('TournamentsRender.renderForm');
+        }
+        if (!TournamentsRender || typeof TournamentsRender.renderParticipants !== 'function') {
+            missing.push('TournamentsRender.renderParticipants');
+        }
+        if (!TournamentsRender || typeof TournamentsRender.renderRounds !== 'function') {
+            missing.push('TournamentsRender.renderRounds');
+        }
+        if (!TournamentsRender || typeof TournamentsRender.renderEliminations !== 'function') {
+            missing.push('TournamentsRender.renderEliminations');
+        }
+        if (!TournamentsRender || typeof TournamentsRender.renderWinner !== 'function') {
+            missing.push('TournamentsRender.renderWinner');
+        }
+
+        if (!TournamentsQueries || typeof TournamentsQueries.getTournament !== 'function') {
+            missing.push('TournamentsQueries.getTournament');
+        }
+        if (!TournamentsQueries || typeof TournamentsQueries.getTournaments !== 'function') {
+            missing.push('TournamentsQueries.getTournaments');
+        }
+
+        if (!TournamentsMatches || typeof TournamentsMatches.addMatch !== 'function') {
+            missing.push('TournamentsMatches.addMatch');
+        }
+        if (!TournamentsMatches || typeof TournamentsMatches.removeMatch !== 'function') {
+            missing.push('TournamentsMatches.removeMatch');
+        }
+        if (!TournamentsMatches || typeof TournamentsMatches.updateMatch !== 'function') {
+            missing.push('TournamentsMatches.updateMatch');
+        }
+        if (!TournamentsMatches || typeof TournamentsMatches.completeMatch !== 'function') {
+            missing.push('TournamentsMatches.completeMatch');
+        }
+
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            missing.push('NotificationSystem.notify');
+        }
+
+        if (!Modal || typeof Modal.createModal !== 'function') {
+            missing.push('Modal.createModal');
+        }
+
+        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
+            missing.push('DomUtils.escapeHtml');
+        }
+
+        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+
+        if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
+            missing.push('TeamQueries.getTeamById');
+        }
+
+        if (missing.length > 0) {
+            throw new Error('[TournamentsUI] Missing dependencies: ' + missing.join(', '));
+        }
+
+        return true;
+    }
+
+    checkDependencies();
 
     // ============================================================
     // CONSTANTS
     // ============================================================
 
-    var MIN_WEEK = Core.Schema.MIN_WEEK;
-    var MAX_WEEK = Core.Schema.MAX_WEEK;
-    var VALID_MODES = Core.VALID_MODES;
-    var VALID_STATUSES = Core.VALID_STATUSES;
+    var VALID_PARTICIPANT_TYPES = ['character', 'team'];
 
     // ============================================================
-    // PRIVATE STATE
+    // HTML ESCAPING - Delegates to DomUtils
     // ============================================================
 
-    var state = {
-        currentTournamentId: null,
-        modalListeners: []
-    };
+    function escapeHtml(value) {
+        return DomUtils.escapeHtml(value);
+    }
 
     // ============================================================
-    // NOTIFICATION SYSTEM
+    // NOTIFICATION - Delegates to NotificationSystem
     // ============================================================
 
     function showNotification(message, type) {
@@ -131,1058 +188,992 @@
     }
 
     // ============================================================
-    // CONFIRMATION
+    // PERSISTENCE HELPER
     // ============================================================
 
-    function showConfirmation(message) {
-        return Modal.confirm(message);
-    }
-
-    // ============================================================
-    // POPULATE SELECTORS
-    // ============================================================
-
-    function populateClassSelect(select) {
-        if (!select) {
+    function persistMutation(successMessage, errorMessage) {
+        if (typeof window.saveData !== 'function') {
+            showNotification('Changes applied in memory, but persistence failed.', 'error');
             return;
         }
 
-        var classes = ClassesQueries.getGraduatingClasses() || [];
-        var currentValue = select.value;
-
-        select.innerHTML = '<option value="">None</option>';
-
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            if (!cls || typeof cls !== 'object') {
-                continue;
-            }
-            if (!cls.id) {
-                continue;
-            }
-            var option = document.createElement('option');
-            option.value = cls.id;
-            option.textContent = cls.name || 'Unnamed Class';
-            if (String(cls.id) === String(currentValue)) {
-                option.selected = true;
-            }
-            select.appendChild(option);
-        }
-    }
-
-    function populateParticipantSelect(select, tournament) {
-        if (!select || !tournament) {
-            return;
-        }
-
-        var options = Queries.getAvailableParticipantOptions(tournament);
-        var currentValue = select.value;
-
-        select.innerHTML = '<option value="">Add participant...</option>';
-
-        for (var i = 0; i < options.length; i++) {
-            var opt = options[i];
-            var option = document.createElement('option');
-            option.value = opt.id;
-            option.textContent = opt.name + ' (' + opt.type + ')';
-            option.dataset.type = opt.type;
-            select.appendChild(option);
-        }
-
-        if (currentValue) {
-            var exists = Array.from(select.options).some(function(o) {
-                return o.value === currentValue;
+        window.saveData()
+            .then(function() {
+                if (successMessage) {
+                    showNotification(successMessage, 'success');
+                }
+            })
+            .catch(function() {
+                if (errorMessage) {
+                    showNotification(errorMessage, 'error');
+                }
             });
-            if (exists) {
-                select.value = currentValue;
-            }
-        }
-    }
-
-    function getAvailableParticipants(tournament) {
-        return Queries.getAvailableParticipantOptions(tournament);
     }
 
     // ============================================================
-    // MODAL SETUP
+    // STATE
     // ============================================================
 
-    function setupModal(modalId, onClose) {
-        var modal = document.getElementById(modalId);
-        if (!modal) {
-            return;
-        }
-
-        // Use Modal utility
-        Modal.setupModal(modal, onClose);
-    }
-
-    function closeModal(modalId) {
-        var modal = document.getElementById(modalId);
-        if (modal) {
-            Modal.closeModal(modal);
-        }
-    }
+    var _container = null;
+    var _selectedTournamentId = null;
+    var _eventListeners = [];
 
     // ============================================================
-    // DETAIL EVENTS
+    // RENDER - Main entry point
     // ============================================================
 
-    function attachDetailEvents(modal) {
-        var content = modal.querySelector('#tournament-detail-content');
-        if (!content) {
-            return;
-        }
-
-        if (content._detailEventsAttached) {
-            return;
-        }
-        content._detailEventsAttached = true;
-
-        content.addEventListener('click', function(e) {
-            var tournamentId = modal.dataset.tournamentId;
-            if (!tournamentId) {
-                return;
-            }
-
-            var tournament = Core.getTournament(tournamentId);
-            if (!tournament) {
-                return;
-            }
-
-            var target = e.target;
-
-            // Edit match button - check FIRST (most specific)
-            var editMatchBtn = target.closest('.edit-match-btn');
-            if (editMatchBtn) {
-                var roundIndex = parseInt(editMatchBtn.dataset.round, 10);
-                var matchIndex = parseInt(editMatchBtn.dataset.match, 10);
-                if (!isNaN(roundIndex) && !isNaN(matchIndex) && matchIndex >= 0 && roundIndex >= 0) {
-                    showEditMatchModal(tournament.id, roundIndex, matchIndex);
-                }
-                return;
-            }
-
-            // Match item - click to view/edit
-            var matchItem = target.closest('.match-item');
-            if (matchItem) {
-                var roundIndex = parseInt(matchItem.dataset.round, 10);
-                var matchIndex = parseInt(matchItem.dataset.match, 10);
-                if (!isNaN(roundIndex) && !isNaN(matchIndex) && matchIndex >= 0 && roundIndex >= 0) {
-                    showEditMatchModal(tournament.id, roundIndex, matchIndex);
-                }
-                return;
-            }
-
-            // Add participant
-            var addBtn = target.closest('.add-participant-btn');
-            if (addBtn) {
-                var select = content.querySelector('.participant-select');
-                if (!select) {
-                    return;
-                }
-                var id = select.value;
-                if (!id) {
-                    showNotification('Select a participant.', 'warning');
-                    return;
-                }
-                var selectedOption = select.options[select.selectedIndex];
-                var type = selectedOption ? selectedOption.dataset.type || 'character' : 'character';
-
-                var success = Core.addParticipant(tournament.id, { id: id, type: type });
-                if (success) {
-                    viewTournament(tournament.id);
-                    if (typeof window.updateDashboardStats === 'function') {
-                        window.updateDashboardStats();
-                    }
-                } else {
-                    showNotification('Failed to add participant.', 'error');
-                }
-                return;
-            }
-
-            // Remove participant
-            var removeBtn = target.closest('.remove-participant-btn');
-            if (removeBtn) {
-                var participantId = removeBtn.dataset.id;
-                if (!participantId) {
-                    return;
-                }
-                showConfirmation('Remove this participant from the tournament?')
-                    .then(function(confirmed) {
-                        if (confirmed) {
-                            var success = Core.removeParticipant(tournament.id, participantId);
-                            if (success) {
-                                viewTournament(tournament.id);
-                                if (typeof window.updateDashboardStats === 'function') {
-                                    window.updateDashboardStats();
-                                }
-                            } else {
-                                showNotification('Failed to remove participant.', 'error');
-                            }
-                        }
-                    })
-                    .catch(function() {
-                        // Ignore errors from confirmation
-                    });
-                return;
-            }
-
-            // Create round
-            var createBtn = target.closest('.create-round-btn');
-            if (createBtn) {
-                var success = Core.addRound(tournament.id, {});
-                if (success) {
-                    viewTournament(tournament.id);
-                } else {
-                    showNotification('Failed to create round.', 'error');
-                }
-                return;
-            }
-
-            // Add match
-            var addMatchBtn = target.closest('.add-match-btn');
-            if (addMatchBtn) {
-                var roundIndex = parseInt(addMatchBtn.dataset.round, 10);
-                if (!isNaN(roundIndex) && roundIndex >= 0) {
-                    showAddMatchModal(tournament.id, roundIndex);
-                }
-                return;
-            }
-
-            // Delete round
-            var deleteRoundBtn = target.closest('.delete-round-btn');
-            if (deleteRoundBtn) {
-                var roundIndex = parseInt(deleteRoundBtn.dataset.round, 10);
-                if (isNaN(roundIndex) || roundIndex < 0) {
-                    return;
-                }
-                showConfirmation('Delete this round? This will permanently remove the round and its matches from the tournament.')
-                    .then(function(confirmed) {
-                        if (confirmed) {
-                            var success = Core.removeRound(tournament.id, roundIndex);
-                            if (success) {
-                                viewTournament(tournament.id);
-                            } else {
-                                showNotification('Failed to delete round.', 'error');
-                            }
-                        }
-                    })
-                    .catch(function() {
-                        // Ignore errors from confirmation
-                    });
-                return;
-            }
-
-            // Uneliminate
-            var unelimBtn = target.closest('.uneliminate-btn');
-            if (unelimBtn) {
-                var participantId = unelimBtn.dataset.id;
-                if (!participantId) {
-                    return;
-                }
-                showConfirmation('Restore this participant?')
-                    .then(function(confirmed) {
-                        if (confirmed) {
-                            var workflow = window.TournamentEliminationWorkflow;
-                            if (!workflow) {
-                                showNotification('Elimination management is not available.', 'error');
-                                return;
-                            }
-                            var result = workflow.unmarkCharacterEliminated(tournament.id, participantId);
-                            if (result.success) {
-                                viewTournament(tournament.id);
-                            } else {
-                                showNotification(result.message || 'Failed to restore participant.', 'error');
-                            }
-                        }
-                    })
-                    .catch(function() {
-                        // Ignore errors from confirmation
-                    });
-                return;
-            }
-
-            // View round status
-            var statusBtn = target.closest('.view-round-status-btn');
-            if (statusBtn) {
-                var roundIndex = parseInt(statusBtn.dataset.round, 10);
-                if (!isNaN(roundIndex) && roundIndex >= 0) {
-                    showRoundStatus(tournament.id, roundIndex);
-                }
-                return;
-            }
-
-            // Edit round
-            var editRoundBtn = target.closest('.edit-round-btn');
-            if (editRoundBtn) {
-                var roundIndex = parseInt(editRoundBtn.dataset.round, 10);
-                if (!isNaN(roundIndex) && roundIndex >= 0) {
-                    showEditRoundModal(tournament.id, roundIndex);
-                }
-                return;
-            }
-        });
-    }
-
-    // ============================================================
-    // LIST EVENTS
-    // ============================================================
-
-    function attachListEvents(container) {
-        if (container._listEventsAttached) {
-            return;
-        }
-        container._listEventsAttached = true;
-
-        container.addEventListener('click', function(e) {
-            var target = e.target;
-
-            var viewBtn = target.closest('.view-tournament');
-            if (viewBtn) {
-                e.preventDefault();
-                viewTournament(viewBtn.dataset.id);
-                return;
-            }
-
-            var editBtn = target.closest('.edit-tournament');
-            if (editBtn) {
-                e.preventDefault();
-                showTournamentForm(editBtn.dataset.id);
-                return;
-            }
-
-            var deleteBtn = target.closest('.delete-tournament');
-            if (deleteBtn) {
-                e.preventDefault();
-                var id = deleteBtn.dataset.id;
-                var tournament = Core.getTournament(id);
-                if (!tournament) {
-                    return;
-                }
-                showConfirmation('Delete tournament "' + tournament.name + '" permanently?')
-                    .then(function(confirmed) {
-                        if (confirmed) {
-                            var success = Core.deleteTournament(id);
-                            if (success) {
-                                renderTournamentList(document.getElementById('tab-tournaments'));
-                                closeTournamentDetail();
-                                if (typeof window.updateDashboardStats === 'function') {
-                                    window.updateDashboardStats();
-                                }
-                            } else {
-                                showNotification('Failed to delete tournament.', 'error');
-                            }
-                        }
-                    })
-                    .catch(function() {
-                        // Ignore errors from confirmation
-                    });
-                return;
-            }
-        });
-
-        var addBtn = document.getElementById('add-tournament-btn');
-        if (addBtn && !addBtn._listener) {
-            addBtn._listener = true;
-            addBtn.addEventListener('click', function() {
-                showTournamentForm();
-            });
-        }
-    }
-
-    // ============================================================
-    // RENDER FUNCTIONS
-    // ============================================================
-
-    function renderTournaments(container) {
+    function render(container) {
         if (!container) {
             container = document.getElementById('tab-tournaments');
         }
+
         if (!container) {
+            console.warn('[TournamentsUI] Container not found');
             return;
         }
 
-        if (!window.data) {
-            container.innerHTML = '<p class="empty-state">Loading tournament data...</p>';
-            return;
+        _container = container;
+
+        // Remove existing listeners
+        removeAllEventListeners();
+
+        // Get tournaments
+        var tournaments = TournamentsQueries.getTournaments();
+
+        // Render the list
+        var html = TournamentsRender.renderList(tournaments, _selectedTournamentId);
+        container.innerHTML = html;
+
+        // Bind events
+        bindEvents(container);
+
+        // If a tournament is selected, show its detail
+        if (_selectedTournamentId) {
+            var tournament = TournamentsQueries.getTournament(_selectedTournamentId);
+            if (tournament) {
+                viewTournament(_selectedTournamentId);
+            } else {
+                _selectedTournamentId = null;
+            }
         }
-
-        container.innerHTML = getTournamentsHTML();
-        renderTournamentList(container);
-    }
-
-    function getTournamentsHTML() {
-        return '' +
-            '<div class="page-header">' +
-            '<h2>Tournaments</h2>' +
-            '<button id="add-tournament-btn" class="primary">+ New Tournament</button>' +
-            '</div>' +
-            '<div id="tournament-list">' +
-            '<div id="tournaments-container">' +
-            '<p class="empty-state">No tournaments created yet.</p>' +
-            '</div>' +
-            '</div>' +
-            getModalsHTML();
-    }
-
-    function getModalsHTML() {
-        return '' +
-            '<div id="tournament-form-modal" class="modal hidden">' +
-            '<div class="modal-content modal-form-content">' +
-            '<div class="modal-header">' +
-            '<h3 id="tournament-form-title">Create Tournament</h3>' +
-            '<button class="close-modal" id="close-tournament-form">&times;</button>' +
-            '</div>' +
-            '<div class="modal-body">' +
-            '<div id="tournament-form-content"></div>' +
-            '</div>' +
-            '</div>' +
-            '</div>' +
-
-            '<div id="tournament-detail-modal" class="modal hidden">' +
-            '<div class="modal-content modal-detail-content">' +
-            '<div class="modal-header">' +
-            '<h3 id="detail-tournament-name">Tournament</h3>' +
-            '<button class="close-modal" id="close-tournament-detail">&times;</button>' +
-            '</div>' +
-            '<div class="modal-body">' +
-            '<div id="tournament-detail-content"></div>' +
-            '</div>' +
-            '</div>' +
-            '</div>' +
-
-            '<div id="match-edit-modal" class="modal hidden">' +
-            '<div class="modal-content modal-match-content">' +
-            '<div class="modal-header">' +
-            '<h3 id="match-edit-title">Edit Match</h3>' +
-            '<button class="close-modal" id="close-match-edit">&times;</button>' +
-            '</div>' +
-            '<div class="modal-body">' +
-            '<div id="match-edit-content"></div>' +
-            '</div>' +
-            '</div>' +
-            '</div>';
-    }
-
-    function renderTournamentList(container) {
-        var listContainer = container ?
-            container.querySelector('#tournaments-container') :
-            document.getElementById('tournaments-container');
-        if (!listContainer) {
-            return;
-        }
-
-        var tournaments = Queries.getTournaments();
-        var html = Render.renderList(tournaments);
-        listContainer.innerHTML = html;
-
-        attachListEvents(listContainer);
     }
 
     // ============================================================
-    // VIEW FUNCTIONS
+    // VIEW TOURNAMENT
     // ============================================================
 
-    function viewTournament(id) {
-        var tournament = Core.getTournament(id);
+    function viewTournament(tournamentId) {
+        if (!tournamentId) {
+            return;
+        }
+
+        var tournament = TournamentsQueries.getTournament(tournamentId);
         if (!tournament) {
             showNotification('Tournament not found.', 'error');
             return;
         }
 
-        state.currentTournamentId = id;
+        _selectedTournamentId = tournamentId;
 
-        var modal = document.getElementById('tournament-detail-modal');
-        if (!modal) {
-            return;
+        // Render the detail view
+        var detailHtml = TournamentsRender.renderDetail(tournament);
+        var detailContainer = _container.querySelector('#tournament-detail');
+        if (detailContainer) {
+            detailContainer.innerHTML = detailHtml;
+        } else {
+            // If no detail container, append it
+            var detailWrapper = document.createElement('div');
+            detailWrapper.id = 'tournament-detail-container';
+            detailWrapper.innerHTML = detailHtml;
+            _container.appendChild(detailWrapper);
         }
 
-        var title = document.getElementById('detail-tournament-name');
-        if (title) {
-            title.textContent = tournament.name;
-        }
+        // Bind detail events
+        bindDetailEvents(_container);
 
-        var content = document.getElementById('tournament-detail-content');
-        if (!content) {
-            return;
-        }
-
-        var html = Render.renderDetail(tournament);
-        content.innerHTML = html;
-
-        modal.dataset.tournamentId = id;
-        Modal.showModal(modal);
-
-        setupModal('tournament-detail-modal', closeTournamentDetail);
-
-        attachDetailEvents(modal);
-
-        // Populate participant select
-        var select = content.querySelector('.participant-select');
-        if (select) {
-            populateParticipantSelect(select, tournament);
-        }
-
-        // Update class filter on any class selects
-        var classSelects = content.querySelectorAll('#tourn-class');
-        for (var i = 0; i < classSelects.length; i++) {
-            populateClassSelect(classSelects[i]);
-        }
-    }
-
-    function closeTournamentDetail() {
-        var modal = document.getElementById('tournament-detail-modal');
-        if (modal) {
-            Modal.closeModal(modal);
-            var content = document.getElementById('tournament-detail-content');
-            if (content) {
-                content.innerHTML = '';
-            }
-        }
-        state.currentTournamentId = null;
-    }
-
-    // ============================================================
-    // FORM FUNCTIONS
-    // ============================================================
-
-    function showTournamentForm(editId) {
-        var modal = document.getElementById('tournament-form-modal');
-        var title = document.getElementById('tournament-form-title');
-        var content = document.getElementById('tournament-form-content');
-
-        if (!modal || !title || !content) {
-            return;
-        }
-
-        var tournament = editId ? Core.getTournament(editId) : null;
-
-        if (editId && !tournament) {
-            showNotification('Tournament not found.', 'error');
-            return;
-        }
-
-        title.textContent = tournament ? 'Edit Tournament' : 'Create Tournament';
-
-        var html = Render.renderForm(
-            tournament,
-            VALID_MODES,
-            VALID_STATUSES
-        );
-        content.innerHTML = html;
-
-        // Populate class select
-        var classSelect = content.querySelector('#tourn-class');
-        if (classSelect) {
-            populateClassSelect(classSelect);
-            if (tournament && tournament.graduatingClassId) {
-                classSelect.value = tournament.graduatingClassId;
-            } else if (tournament && tournament.graduatingClassId === null) {
-                classSelect.value = '';
+        // Update list to show selected
+        var listItems = _container.querySelectorAll('.tournament-item');
+        for (var i = 0; i < listItems.length; i++) {
+            var item = listItems[i];
+            var id = item.dataset.id;
+            if (id === tournamentId) {
+                item.classList.add('selected');
+            } else {
+                item.classList.remove('selected');
             }
         }
 
-        // Set class filter checkbox
-        var filterCheckbox = content.querySelector('#tourn-class-filter-enabled');
-        if (filterCheckbox && tournament) {
-            filterCheckbox.checked = tournament.classFilterEnabled !== false;
+        // Scroll to detail
+        var detailEl = _container.querySelector('#tournament-detail, #tournament-detail-container');
+        if (detailEl) {
+            detailEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
-
-        modal.dataset.editId = editId || '';
-        Modal.showModal(modal);
-
-        setupModal('tournament-form-modal', closeTournamentForm);
-
-        attachFormEvents(modal, tournament);
     }
 
-    function attachFormEvents(modal, tournament) {
+    // ============================================================
+    // CLOSE DETAIL
+    // ============================================================
+
+    function closeDetail() {
+        _selectedTournamentId = null;
+
+        var detailContainer = _container.querySelector('#tournament-detail, #tournament-detail-container');
+        if (detailContainer) {
+            detailContainer.remove();
+        }
+
+        var listItems = _container.querySelectorAll('.tournament-item');
+        for (var i = 0; i < listItems.length; i++) {
+            listItems[i].classList.remove('selected');
+        }
+    }
+
+    // ============================================================
+    // SHOW FORM
+    // ============================================================
+
+    function showForm(editId) {
+        var modal = Modal.createModal('tournament-form-modal');
+
+        var tournament = null;
+        if (editId) {
+            tournament = TournamentsQueries.getTournament(editId);
+            if (!tournament) {
+                showNotification('Tournament not found.', 'error');
+                return;
+            }
+        }
+
+        // Get available participants (characters and teams)
+        var characters = [];
+        var teams = [];
+
+        // Get eligible characters
+        var allCharacters = window.data && window.data.characters ? window.data.characters : [];
+        for (var i = 0; i < allCharacters.length; i++) {
+            var char = allCharacters[i];
+            if (char && !char.deceased) {
+                characters.push({
+                    id: char.id,
+                    name: CharacterQueries.getDisplayName(char),
+                    type: 'character'
+                });
+            }
+        }
+
+        // Get eligible teams
+        var allTeams = window.data && window.data.teams ? window.data.teams : [];
+        for (var j = 0; j < allTeams.length; j++) {
+            var team = allTeams[j];
+            if (team && team.status === 'active') {
+                teams.push({
+                    id: team.id,
+                    name: team.name || 'Team ' + team.id,
+                    type: 'team'
+                });
+            }
+        }
+
+        var participants = characters.concat(teams);
+
+        var html = TournamentsRender.renderForm(tournament, participants);
+        var content = document.createElement('div');
+        content.className = 'modal-content';
+        content.innerHTML = html;
+
+        modal.appendChild(content);
+
+        Modal.modalSetup(modal);
+        Modal.showModal(modal);
+
+        // Bind form events
+        bindFormEvents(modal, editId);
+    }
+
+    // ============================================================
+    // EVENT BINDING - Main
+    // ============================================================
+
+    function bindEvents(container) {
+        // Add tournament button
+        var addBtn = container.querySelector('#add-tournament-btn');
+        if (addBtn) {
+            addEventListener(addBtn, 'click', function() {
+                showForm(null);
+            });
+        }
+
+        // Tournament list items - click to view
+        var listItems = container.querySelectorAll('.tournament-item');
+        for (var i = 0; i < listItems.length; i++) {
+            var item = listItems[i];
+            addEventListener(item, 'click', function(e) {
+                // Don't trigger if clicking a button
+                if (e.target.closest('button')) {
+                    return;
+                }
+                var id = this.dataset.id;
+                if (id) {
+                    viewTournament(id);
+                }
+            });
+        }
+
+        // Delete buttons (delegated)
+        addEventListener(container, 'click', function(e) {
+            var btn = e.target.closest('.delete-tournament-btn');
+            if (btn) {
+                e.stopPropagation();
+                var id = btn.dataset.id;
+                if (id && confirm('Delete this tournament?')) {
+                    handleDeleteTournament(id);
+                }
+            }
+        });
+
+        // Edit buttons (delegated)
+        addEventListener(container, 'click', function(e) {
+            var btn = e.target.closest('.edit-tournament-btn');
+            if (btn) {
+                e.stopPropagation();
+                var id = btn.dataset.id;
+                if (id) {
+                    showForm(id);
+                }
+            }
+        });
+    }
+
+    // ============================================================
+    // EVENT BINDING - Detail
+    // ============================================================
+
+    function bindDetailEvents(container) {
+        // Close detail button
+        var closeBtn = container.querySelector('#close-tournament-detail');
+        if (closeBtn) {
+            addEventListener(closeBtn, 'click', function() {
+                closeDetail();
+            });
+        }
+
+        // Add participant
+        var addParticipantBtn = container.querySelector('#add-participant-btn');
+        if (addParticipantBtn) {
+            addEventListener(addParticipantBtn, 'click', function() {
+                var tournamentId = this.dataset.tournamentId;
+                if (tournamentId) {
+                    showAddParticipantForm(tournamentId);
+                }
+            });
+        }
+
+        // Remove participant (delegated)
+        addEventListener(container, 'click', function(e) {
+            var btn = e.target.closest('.remove-participant-btn');
+            if (btn) {
+                var tournamentId = btn.dataset.tournamentId;
+                var participantId = btn.dataset.participantId;
+                if (tournamentId && participantId && confirm('Remove this participant?')) {
+                    handleRemoveParticipant(tournamentId, participantId);
+                }
+            }
+        });
+
+        // Add round
+        var addRoundBtn = container.querySelector('#add-round-btn');
+        if (addRoundBtn) {
+            addEventListener(addRoundBtn, 'click', function() {
+                var tournamentId = this.dataset.tournamentId;
+                if (tournamentId) {
+                    handleAddRound(tournamentId);
+                }
+            });
+        }
+
+        // Remove round (delegated)
+        addEventListener(container, 'click', function(e) {
+            var btn = e.target.closest('.remove-round-btn');
+            if (btn) {
+                var tournamentId = btn.dataset.tournamentId;
+                var roundIndex = parseInt(btn.dataset.roundIndex, 10);
+                if (tournamentId && !isNaN(roundIndex) && confirm('Remove this round?')) {
+                    handleRemoveRound(tournamentId, roundIndex);
+                }
+            }
+        });
+
+        // Add match (delegated)
+        addEventListener(container, 'click', function(e) {
+            var btn = e.target.closest('.add-match-btn');
+            if (btn) {
+                var tournamentId = btn.dataset.tournamentId;
+                var roundIndex = parseInt(btn.dataset.roundIndex, 10);
+                if (tournamentId && !isNaN(roundIndex)) {
+                    showAddMatchForm(tournamentId, roundIndex);
+                }
+            }
+        });
+
+        // Edit match (delegated)
+        addEventListener(container, 'click', function(e) {
+            var btn = e.target.closest('.edit-match-btn');
+            if (btn) {
+                var tournamentId = btn.dataset.tournamentId;
+                var matchId = btn.dataset.matchId;
+                if (tournamentId && matchId) {
+                    showEditMatchForm(tournamentId, matchId);
+                }
+            }
+        });
+
+        // Delete match (delegated)
+        addEventListener(container, 'click', function(e) {
+            var btn = e.target.closest('.delete-match-btn');
+            if (btn) {
+                var tournamentId = btn.dataset.tournamentId;
+                var matchId = btn.dataset.matchId;
+                if (tournamentId && matchId && confirm('Delete this match?')) {
+                    handleDeleteMatch(tournamentId, matchId);
+                }
+            }
+        });
+
+        // Complete match (delegated)
+        addEventListener(container, 'click', function(e) {
+            var btn = e.target.closest('.complete-match-btn');
+            if (btn) {
+                var tournamentId = btn.dataset.tournamentId;
+                var matchId = btn.dataset.matchId;
+                if (tournamentId && matchId) {
+                    handleCompleteMatch(tournamentId, matchId);
+                }
+            }
+        });
+
+        // Complete tournament
+        var completeBtn = container.querySelector('#complete-tournament-btn');
+        if (completeBtn) {
+            addEventListener(completeBtn, 'click', function() {
+                var tournamentId = this.dataset.tournamentId;
+                if (tournamentId && confirm('Complete this tournament?')) {
+                    handleCompleteTournament(tournamentId);
+                }
+            });
+        }
+    }
+
+    // ============================================================
+    // EVENT BINDING - Form
+    // ============================================================
+
+    function bindFormEvents(modal, editId) {
         var form = modal.querySelector('#tournament-form');
         if (!form) {
             return;
         }
 
-        var newForm = form.cloneNode(true);
-        form.parentNode.replaceChild(newForm, form);
+        var closeBtn = modal.querySelector('.close-modal');
+        if (closeBtn) {
+            addEventListener(closeBtn, 'click', function() {
+                Modal.closeModal(modal);
+            });
+        }
 
-        newForm.addEventListener('submit', function(e) {
+        var cancelBtn = modal.querySelector('#cancel-tournament-form');
+        if (cancelBtn) {
+            addEventListener(cancelBtn, 'click', function() {
+                Modal.closeModal(modal);
+            });
+        }
+
+        addEventListener(form, 'submit', function(e) {
             e.preventDefault();
 
-            var editId = modal.dataset.editId;
+            var nameInput = form.querySelector('#tournament-name');
+            var typeInput = form.querySelector('#tournament-type');
+            var weekInput = form.querySelector('#tournament-week');
+            var maxParticipantsInput = form.querySelector('#tournament-max-participants');
+            var descriptionInput = form.querySelector('#tournament-description');
 
-            var data = {
-                name: this.querySelector('#tourn-name').value.trim(),
-                mode: this.querySelector('#tourn-mode').value,
-                startWeek: parseInt(this.querySelector('#tourn-start-week').value, 10) || MIN_WEEK,
-                endWeek: parseInt(this.querySelector('#tourn-end-week').value, 10) || MAX_WEEK,
-                totalRounds: parseInt(this.querySelector('#tourn-total-rounds').value, 10) || 1,
-                status: this.querySelector('#tourn-status').value
-            };
+            var name = nameInput ? nameInput.value.trim() : '';
+            var type = typeInput ? typeInput.value : 'single_elimination';
+            var week = weekInput ? parseInt(weekInput.value, 10) : 1;
+            var maxParticipants = maxParticipantsInput ? parseInt(maxParticipantsInput.value, 10) : 8;
+            var description = descriptionInput ? descriptionInput.value.trim() : '';
 
-            // Read class selector
-            var classSelect = this.querySelector('#tourn-class');
-            if (classSelect) {
-                data.graduatingClassId = classSelect.value || null;
-            }
-
-            var filterCheckbox = this.querySelector('#tourn-class-filter-enabled');
-            if (filterCheckbox) {
-                data.classFilterEnabled = filterCheckbox.checked;
-            }
-
-            if (!data.name) {
-                showNotification('Tournament name is required.', 'warning');
+            if (!name) {
+                showNotification('Tournament name is required.', 'error');
                 return;
             }
 
-            if (data.classFilterEnabled === undefined) {
-                data.classFilterEnabled = false;
-            }
-
-            if (data.graduatingClassId === '') {
-                data.graduatingClassId = null;
-            }
-
-            var success;
+            var result;
             if (editId) {
-                var result = Core.updateTournament(editId, data);
-                if (result) {
-                    success = true;
-                    closeTournamentForm();
-                    renderTournamentList(document.getElementById('tab-tournaments'));
-                    if (state.currentTournamentId === editId) {
-                        viewTournament(editId);
-                    }
-                    if (typeof window.updateDashboardStats === 'function') {
-                        window.updateDashboardStats();
-                    }
-                } else {
-                    success = false;
-                }
+                result = TournamentsCore.updateTournament(editId, {
+                    name: name,
+                    type: type,
+                    week: week,
+                    maxParticipants: maxParticipants,
+                    description: description
+                });
             } else {
-                var result = Core.createTournament(data);
-                if (result) {
-                    success = true;
-                    closeTournamentForm();
-                    renderTournamentList(document.getElementById('tab-tournaments'));
-                    if (typeof window.updateDashboardStats === 'function') {
-                        window.updateDashboardStats();
-                    }
-                } else {
-                    success = false;
-                }
+                result = TournamentsCore.createTournament({
+                    name: name,
+                    type: type,
+                    week: week,
+                    maxParticipants: maxParticipants,
+                    description: description
+                });
             }
 
-            if (!success) {
-                showNotification('Failed to save tournament.', 'error');
+            if (result && result.success) {
+                var msg = editId ? 'Tournament updated successfully.' : 'Tournament created successfully.';
+                showNotification(msg, 'success');
+                Modal.closeModal(modal);
+                render(_container);
+                persistMutation(null, 'Tournament saved in memory, but persistence failed.');
+            } else {
+                showNotification(result ? result.message : 'Failed to save tournament.', 'error');
             }
         });
-
-        var cancelBtn = newForm.querySelector('.cancel-form-btn');
-        if (cancelBtn) {
-            var newCancel = cancelBtn.cloneNode(true);
-            cancelBtn.parentNode.replaceChild(newCancel, cancelBtn);
-            newCancel.addEventListener('click', closeTournamentForm);
-        }
-
-        var closeBtn = document.getElementById('close-tournament-form');
-        if (closeBtn) {
-            var newClose = closeBtn.cloneNode(true);
-            closeBtn.parentNode.replaceChild(newClose, closeBtn);
-            newClose.addEventListener('click', closeTournamentForm);
-        }
-    }
-
-    function closeTournamentForm() {
-        closeModal('tournament-form-modal');
     }
 
     // ============================================================
-    // MATCH FUNCTIONS
+    // ADD PARTICIPANT FORM
     // ============================================================
 
-    function showAddMatchModal(tournamentId, roundIndex) {
-        var tournament = Core.getTournament(tournamentId);
+    function showAddParticipantForm(tournamentId) {
+        var tournament = TournamentsQueries.getTournament(tournamentId);
         if (!tournament) {
             showNotification('Tournament not found.', 'error');
             return;
         }
 
-        var round = tournament.rounds && tournament.rounds[roundIndex];
-        if (!round) {
-            showNotification('Round not found.', 'error');
-            return;
-        }
+        var modal = Modal.createModal('add-participant-modal');
 
-        var modal = document.getElementById('match-edit-modal');
-        var title = document.getElementById('match-edit-title');
-        var content = document.getElementById('match-edit-content');
-
-        if (!modal || !title || !content) {
-            return;
-        }
-
-        title.textContent = 'Add Match - Round ' + (round.roundNumber || roundIndex + 1);
-
-        var available = getAvailableParticipants(tournament);
-
-        var html = Render.renderMatchForm(tournament, roundIndex, -1, available);
+        var html = TournamentsRender.renderAddParticipantForm(tournament);
+        var content = document.createElement('div');
+        content.className = 'modal-content';
         content.innerHTML = html;
 
-        modal.dataset.tournamentId = tournamentId;
-        modal.dataset.roundIndex = roundIndex;
-        modal.dataset.matchIndex = -1;
+        modal.appendChild(content);
+
+        Modal.modalSetup(modal);
         Modal.showModal(modal);
 
-        setupModal('match-edit-modal', closeMatchEditModal);
+        // Bind form events
+        var form = modal.querySelector('#add-participant-form');
+        if (form) {
+            addEventListener(form, 'submit', function(e) {
+                e.preventDefault();
 
-        attachMatchFormEvents(modal, tournament, roundIndex, -1);
+                var select = form.querySelector('#participant-select');
+                var typeSelect = form.querySelector('#participant-type-select');
+                var participantId = select ? select.value : '';
+                var participantType = typeSelect ? typeSelect.value : 'character';
+
+                if (!participantId) {
+                    showNotification('Please select a participant.', 'error');
+                    return;
+                }
+
+                var result = TournamentsCore.addParticipant(tournamentId, {
+                    id: participantId,
+                    type: participantType
+                });
+
+                if (result && result.success) {
+                    showNotification('Participant added successfully.', 'success');
+                    Modal.closeModal(modal);
+                    viewTournament(tournamentId);
+                    persistMutation(null, 'Participant added in memory, but persistence failed.');
+                } else {
+                    showNotification(result ? result.message : 'Failed to add participant.', 'error');
+                }
+            });
+        }
+
+        var closeBtn = modal.querySelector('.close-modal');
+        if (closeBtn) {
+            addEventListener(closeBtn, 'click', function() {
+                Modal.closeModal(modal);
+            });
+        }
+
+        var cancelBtn = modal.querySelector('#cancel-add-participant');
+        if (cancelBtn) {
+            addEventListener(cancelBtn, 'click', function() {
+                Modal.closeModal(modal);
+            });
+        }
     }
 
-    function showEditMatchModal(tournamentId, roundIndex, matchIndex) {
-        var tournament = Core.getTournament(tournamentId);
+    // ============================================================
+    // ADD MATCH FORM
+    // ============================================================
+
+    function showAddMatchForm(tournamentId, roundIndex) {
+        var tournament = TournamentsQueries.getTournament(tournamentId);
         if (!tournament) {
             showNotification('Tournament not found.', 'error');
             return;
         }
 
-        var match = Queries.getMatch(tournament, roundIndex, matchIndex);
+        var modal = Modal.createModal('add-match-modal');
+
+        var html = TournamentsRender.renderAddMatchForm(tournament, roundIndex);
+        var content = document.createElement('div');
+        content.className = 'modal-content';
+        content.innerHTML = html;
+
+        modal.appendChild(content);
+
+        Modal.modalSetup(modal);
+        Modal.showModal(modal);
+
+        // Bind form events
+        var form = modal.querySelector('#add-match-form');
+        if (form) {
+            addEventListener(form, 'submit', function(e) {
+                e.preventDefault();
+
+                var participant1Select = form.querySelector('#match-participant-1');
+                var participant2Select = form.querySelector('#match-participant-2');
+                var matchTypeSelect = form.querySelector('#match-type');
+
+                var participant1 = participant1Select ? participant1Select.value : '';
+                var participant2 = participant2Select ? participant2Select.value : '';
+                var matchType = matchTypeSelect ? matchTypeSelect.value : 'standard';
+
+                if (!participant1 || !participant2) {
+                    showNotification('Please select both participants.', 'error');
+                    return;
+                }
+
+                if (participant1 === participant2) {
+                    showNotification('Participants must be different.', 'error');
+                    return;
+                }
+
+                var result = TournamentsMatches.addMatch(tournamentId, roundIndex, {
+                    participant1Id: participant1,
+                    participant2Id: participant2,
+                    type: matchType
+                });
+
+                if (result && result.success) {
+                    showNotification('Match added successfully.', 'success');
+                    Modal.closeModal(modal);
+                    viewTournament(tournamentId);
+                    persistMutation(null, 'Match added in memory, but persistence failed.');
+                } else {
+                    showNotification(result ? result.message : 'Failed to add match.', 'error');
+                }
+            });
+        }
+
+        var closeBtn = modal.querySelector('.close-modal');
+        if (closeBtn) {
+            addEventListener(closeBtn, 'click', function() {
+                Modal.closeModal(modal);
+            });
+        }
+
+        var cancelBtn = modal.querySelector('#cancel-add-match');
+        if (cancelBtn) {
+            addEventListener(cancelBtn, 'click', function() {
+                Modal.closeModal(modal);
+            });
+        }
+    }
+
+    // ============================================================
+    // EDIT MATCH FORM
+    // ============================================================
+
+    function showEditMatchForm(tournamentId, matchId) {
+        var tournament = TournamentsQueries.getTournament(tournamentId);
+        if (!tournament) {
+            showNotification('Tournament not found.', 'error');
+            return;
+        }
+
+        // Find the match
+        var match = null;
+        if (tournament.rounds) {
+            for (var r = 0; r < tournament.rounds.length; r++) {
+                var round = tournament.rounds[r];
+                if (round.matches) {
+                    for (var m = 0; m < round.matches.length; m++) {
+                        if (String(round.matches[m].id) === String(matchId)) {
+                            match = round.matches[m];
+                            break;
+                        }
+                    }
+                }
+                if (match) break;
+            }
+        }
+
         if (!match) {
             showNotification('Match not found.', 'error');
             return;
         }
 
-        var modal = document.getElementById('match-edit-modal');
-        var title = document.getElementById('match-edit-title');
-        var content = document.getElementById('match-edit-content');
+        var modal = Modal.createModal('edit-match-modal');
 
-        if (!modal || !title || !content) {
-            return;
-        }
-
-        var round = tournament.rounds && tournament.rounds[roundIndex];
-        title.textContent = 'Edit Match - Round ' + (round ? round.roundNumber || roundIndex + 1 : roundIndex + 1);
-
-        var available = getAvailableParticipants(tournament);
-
-        var html = Render.renderMatchForm(tournament, roundIndex, matchIndex, available);
+        var html = TournamentsRender.renderEditMatchForm(tournament, match);
+        var content = document.createElement('div');
+        content.className = 'modal-content';
         content.innerHTML = html;
 
-        modal.dataset.tournamentId = tournamentId;
-        modal.dataset.roundIndex = roundIndex;
-        modal.dataset.matchIndex = matchIndex;
+        modal.appendChild(content);
+
+        Modal.modalSetup(modal);
         Modal.showModal(modal);
 
-        setupModal('match-edit-modal', closeMatchEditModal);
+        // Bind form events
+        var form = modal.querySelector('#edit-match-form');
+        if (form) {
+            addEventListener(form, 'submit', function(e) {
+                e.preventDefault();
 
-        attachMatchFormEvents(modal, tournament, roundIndex, matchIndex);
-    }
+                var participant1Select = form.querySelector('#match-participant-1');
+                var participant2Select = form.querySelector('#match-participant-2');
+                var matchTypeSelect = form.querySelector('#match-type');
+                var winnerSelect = form.querySelector('#match-winner');
 
-    function getUniqueParticipantIds(ids) {
-        var seen = Object.create(null);
-        var result = [];
-        for (var i = 0; i < ids.length; i++) {
-            var id = String(ids[i]).trim();
-            if (id && !seen[id]) {
-                seen[id] = true;
-                result.push(id);
-            }
-        }
-        return result;
-    }
+                var participant1 = participant1Select ? participant1Select.value : '';
+                var participant2 = participant2Select ? participant2Select.value : '';
+                var matchType = matchTypeSelect ? matchTypeSelect.value : 'standard';
+                var winner = winnerSelect ? winnerSelect.value : '';
 
-    function attachMatchFormEvents(modal, tournament, roundIndex, matchIndex) {
-        var form = modal.querySelector('#match-form');
-        if (!form) {
-            return;
-        }
-
-        var isEdit = matchIndex >= 0;
-
-        var newForm = form.cloneNode(true);
-        form.parentNode.replaceChild(newForm, form);
-
-        // Initialise winner selector
-        updateWinnerSelect(newForm, tournament, roundIndex);
-
-        newForm.addEventListener('submit', function(e) {
-            e.preventDefault();
-
-            var currentTournament = Core.getTournament(modal.dataset.tournamentId);
-            if (!currentTournament) {
-                showNotification('Tournament no longer exists.', 'error');
-                return;
-            }
-
-            // Gather form data
-            var typeSelect = this.querySelector('#match-type');
-            var type = typeSelect ? typeSelect.value : 'standard';
-
-            // Gather participants
-            var participantSelects = this.querySelectorAll('.match-participant-select');
-            var participantIds = [];
-            for (var i = 0; i < participantSelects.length; i++) {
-                if (participantSelects[i].value) {
-                    participantIds.push(participantSelects[i].value);
+                if (!participant1 || !participant2) {
+                    showNotification('Please select both participants.', 'error');
+                    return;
                 }
-            }
 
-            var hiddenInputs = this.querySelectorAll('input[name^="participant_"]');
-            for (var i = 0; i < hiddenInputs.length; i++) {
-                if (hiddenInputs[i].value && participantIds.indexOf(hiddenInputs[i].value) === -1) {
-                    participantIds.push(hiddenInputs[i].value);
-                }
-            }
+                var updates = {
+                    participant1Id: participant1,
+                    participant2Id: participant2,
+                    type: matchType,
+                    winner: winner || null
+                };
 
-            // Check for duplicate participants
-            var uniqueIds = getUniqueParticipantIds(participantIds);
-            if (uniqueIds.length !== participantIds.length) {
-                showNotification('A participant cannot appear more than once in a match.', 'warning');
-                return;
-            }
+                var result = TournamentsMatches.updateMatch(tournamentId, matchId, updates);
 
-            var round = currentTournament.rounds && currentTournament.rounds[roundIndex];
-            var requiredSize = round && round.matchSize ? round.matchSize : 2;
-
-            if (participantIds.length !== requiredSize) {
-                showNotification(
-                    'This match requires exactly ' + requiredSize + ' participants.',
-                    'warning'
-                );
-                return;
-            }
-
-            // Gather results for group exam
-            var results = {};
-            var resultSelects = this.querySelectorAll('.exam-result-select');
-            for (var i = 0; i < resultSelects.length; i++) {
-                if (resultSelects[i].value) {
-                    results[resultSelects[i].dataset.id] = resultSelects[i].value;
-                }
-            }
-
-            // Gather winner for standard matches
-            var winnerSelect = this.querySelector('#match-winner');
-            var winner = winnerSelect && winnerSelect.value ? winnerSelect.value : null;
-
-            var matchData = {
-                participants: participantIds,
-                type: type,
-                status: 'pending'
-            };
-
-            if (winner && type === 'standard') {
-                matchData.winner = winner;
-            }
-
-            if (type === 'group_exam' && Object.keys(results).length > 0) {
-                matchData.results = results;
-            }
-
-            // Preserve existing status for editing
-            if (isEdit) {
-                var currentMatch = Queries.getMatch(currentTournament, roundIndex, matchIndex);
-                if (currentMatch && currentMatch.status !== 'pending') {
-                    matchData.status = currentMatch.status;
-                }
-            }
-
-            var success;
-            if (isEdit) {
-                var result = Matches.updateMatch(
-                    currentTournament.id,
-                    roundIndex,
-                    matchIndex,
-                    matchData
-                );
-                if (result) {
-                    success = true;
-                    closeMatchEditModal();
-                    viewTournament(currentTournament.id);
+                if (result && result.success) {
+                    showNotification('Match updated successfully.', 'success');
+                    Modal.closeModal(modal);
+                    viewTournament(tournamentId);
+                    persistMutation(null, 'Match updated in memory, but persistence failed.');
                 } else {
-                    success = false;
+                    showNotification(result ? result.message : 'Failed to update match.', 'error');
                 }
-            } else {
-                var result = Matches.addMatch(
-                    currentTournament.id,
-                    roundIndex,
-                    matchData
-                );
-                if (result) {
-                    success = true;
-                    closeMatchEditModal();
-                    viewTournament(currentTournament.id);
-                } else {
-                    success = false;
-                }
-            }
-
-            if (!success) {
-                showNotification('Failed to save match.', 'error');
-            }
-        });
-
-        var cancelBtn = newForm.querySelector('.cancel-match-form-btn');
-        if (cancelBtn) {
-            var newCancel = cancelBtn.cloneNode(true);
-            cancelBtn.parentNode.replaceChild(newCancel, cancelBtn);
-            newCancel.addEventListener('click', closeMatchEditModal);
+            });
         }
 
-        var closeBtn = document.getElementById('close-match-edit');
+        var closeBtn = modal.querySelector('.close-modal');
         if (closeBtn) {
-            var newClose = closeBtn.cloneNode(true);
-            closeBtn.parentNode.replaceChild(newClose, closeBtn);
-            newClose.addEventListener('click', closeMatchEditModal);
+            addEventListener(closeBtn, 'click', function() {
+                Modal.closeModal(modal);
+            });
         }
 
-        // Update winner selector when participants change
-        var participantSelects2 = newForm.querySelectorAll('.match-participant-select');
-        for (var i = 0; i < participantSelects2.length; i++) {
-            participantSelects2[i].addEventListener('change', function() {
-                updateWinnerSelect(newForm, tournament, roundIndex);
+        var cancelBtn = modal.querySelector('#cancel-edit-match');
+        if (cancelBtn) {
+            addEventListener(cancelBtn, 'click', function() {
+                Modal.closeModal(modal);
             });
         }
     }
 
-    function updateWinnerSelect(form, tournament, roundIndex) {
-        var winnerSelect = form.querySelector('#match-winner');
-        if (!winnerSelect) {
+    // ============================================================
+    // HANDLERS
+    // ============================================================
+
+    function handleDeleteTournament(tournamentId) {
+        var result = TournamentsCore.deleteTournament(tournamentId);
+
+        if (result && result.success) {
+            showNotification('Tournament deleted successfully.', 'success');
+            if (_selectedTournamentId === tournamentId) {
+                _selectedTournamentId = null;
+            }
+            render(_container);
+            persistMutation(null, 'Tournament deleted in memory, but persistence failed.');
+        } else {
+            showNotification(result ? result.message : 'Failed to delete tournament.', 'error');
+        }
+    }
+
+    function handleRemoveParticipant(tournamentId, participantId) {
+        var result = TournamentsCore.removeParticipant(tournamentId, participantId);
+
+        if (result && result.success) {
+            showNotification('Participant removed successfully.', 'success');
+            viewTournament(tournamentId);
+            persistMutation(null, 'Participant removed in memory, but persistence failed.');
+        } else {
+            showNotification(result ? result.message : 'Failed to remove participant.', 'error');
+        }
+    }
+
+    function handleAddRound(tournamentId) {
+        var result = TournamentsCore.addRound(tournamentId);
+
+        if (result && result.success) {
+            showNotification('Round added successfully.', 'success');
+            viewTournament(tournamentId);
+            persistMutation(null, 'Round added in memory, but persistence failed.');
+        } else {
+            showNotification(result ? result.message : 'Failed to add round.', 'error');
+        }
+    }
+
+    function handleRemoveRound(tournamentId, roundIndex) {
+        var result = TournamentsCore.removeRound(tournamentId, roundIndex);
+
+        if (result && result.success) {
+            showNotification('Round removed successfully.', 'success');
+            viewTournament(tournamentId);
+            persistMutation(null, 'Round removed in memory, but persistence failed.');
+        } else {
+            showNotification(result ? result.message : 'Failed to remove round.', 'error');
+        }
+    }
+
+    function handleDeleteMatch(tournamentId, matchId) {
+        var result = TournamentsMatches.removeMatch(tournamentId, matchId);
+
+        if (result && result.success) {
+            showNotification('Match deleted successfully.', 'success');
+            viewTournament(tournamentId);
+            persistMutation(null, 'Match deleted in memory, but persistence failed.');
+        } else {
+            showNotification(result ? result.message : 'Failed to delete match.', 'error');
+        }
+    }
+
+    function handleCompleteMatch(tournamentId, matchId) {
+        // Find the match to get participants
+        var tournament = TournamentsQueries.getTournament(tournamentId);
+        var match = null;
+        if (tournament && tournament.rounds) {
+            for (var r = 0; r < tournament.rounds.length; r++) {
+                var round = tournament.rounds[r];
+                if (round.matches) {
+                    for (var m = 0; m < round.matches.length; m++) {
+                        if (String(round.matches[m].id) === String(matchId)) {
+                            match = round.matches[m];
+                            break;
+                        }
+                    }
+                }
+                if (match) break;
+            }
+        }
+
+        if (!match) {
+            showNotification('Match not found.', 'error');
             return;
         }
 
-        var participantSelects = form.querySelectorAll('.match-participant-select');
-        var participants = [];
-        for (var i = 0; i < participantSelects.length; i++) {
-            if (participantSelects[i].value) {
-                participants.push(participantSelects[i].value);
-            }
+        // Show winner selection modal
+        var modal = Modal.createModal('complete-match-modal');
+
+        var html = TournamentsRender.renderCompleteMatchForm(tournament, match);
+        var content = document.createElement('div');
+        content.className = 'modal-content';
+        content.innerHTML = html;
+
+        modal.appendChild(content);
+
+        Modal.modalSetup(modal);
+        Modal.showModal(modal);
+
+        // Bind form events
+        var form = modal.querySelector('#complete-match-form');
+        if (form) {
+            addEventListener(form, 'submit', function(e) {
+                e.preventDefault();
+
+                var winnerSelect = form.querySelector('#match-winner-select');
+                var winner = winnerSelect ? winnerSelect.value : '';
+
+                if (!winner) {
+                    showNotification('Please select a winner.', 'error');
+                    return;
+                }
+
+                var result = TournamentsMatches.completeMatch(tournamentId, matchId, {
+                    winner: winner
+                });
+
+                if (result && result.success) {
+                    showNotification('Match completed successfully.', 'success');
+                    Modal.closeModal(modal);
+                    viewTournament(tournamentId);
+                    persistMutation(null, 'Match completed in memory, but persistence failed.');
+                } else {
+                    showNotification(result ? result.message : 'Failed to complete match.', 'error');
+                }
+            });
         }
 
-        var hiddenInputs = form.querySelectorAll('input[name^="participant_"]');
-        for (var i = 0; i < hiddenInputs.length; i++) {
-            if (hiddenInputs[i].value && participants.indexOf(hiddenInputs[i].value) === -1) {
-                participants.push(hiddenInputs[i].value);
-            }
+        var closeBtn = modal.querySelector('.close-modal');
+        if (closeBtn) {
+            addEventListener(closeBtn, 'click', function() {
+                Modal.closeModal(modal);
+            });
         }
 
-        var currentValue = winnerSelect.value;
-        winnerSelect.innerHTML = '<option value="">Select winner...</option>';
+        var cancelBtn = modal.querySelector('#cancel-complete-match');
+        if (cancelBtn) {
+            addEventListener(cancelBtn, 'click', function() {
+                Modal.closeModal(modal);
+            });
+        }
+    }
 
+    function handleCompleteTournament(tournamentId) {
+        var result = TournamentsCore.completeTournament(tournamentId);
+
+        if (result && result.success) {
+            showNotification('Tournament completed successfully.', 'success');
+            viewTournament(tournamentId);
+            persistMutation(null, 'Tournament completed in memory, but persistence failed.');
+        } else {
+            showNotification(result ? result.message : 'Failed to complete tournament.', 'error');
+        }
+    }
+
+    // ============================================================
+    // EVENT LISTENER MANAGEMENT
+    // ============================================================
+
+    function addEventListener(element, eventName, handler, options) {
+        if (!element) {
+            return;
+        }
+        element.addEventListener(eventName, handler, options || false);
+        _eventListeners.push({
+            element: element,
+            eventName: eventName,
+            handler: handler,
+            options: options || false
+        });
+    }
+
+    function removeAllEventListeners() {
+        for (var i = 0; i < _eventListeners.length; i++) {
+            var item = _eventListeners[i];
+            try {
+                item.element.removeEventListener(item.eventName, item.handler, item.options);
+            } catch (e) {
+                // Ignore errors during cleanup
+            }
+        }
+        _eventListeners = [];
+    }
+
+    // ============================================================
+    // GET GRADUATING CLASSES - Replacement for ClassesQueries
+    // ============================================================
+
+    /**
+     * Get graduating classes for a tournament.
+     * This replaces ClassesQueries.getGraduatingClasses.
+     * 
+     * @param {string} tournamentId - Tournament ID
+     * @returns {Array} Array of graduating class objects
+     */
+    function getGraduatingClasses(tournamentId) {
+        // Get the tournament
+        var tournament = TournamentsQueries.getTournament(tournamentId);
+        if (!tournament) {
+            return [];
+        }
+
+        // Get participants
+        var participants = tournament.participants || [];
+        var graduatingClasses = [];
+
+        // Check each participant's class
         for (var i = 0; i < participants.length; i++) {
-            var id = participants[i];
-            var name = Queries.getTournamentParticipantName(tournament, id);
-            var option = document.createElement('option');
-            option.value = id;
-            option.textContent = name;
-            winnerSelect.appendChild(option);
-        }
+            var participant = participants[i];
+            var participantId = participant.id;
 
-        if (currentValue) {
-            var exists = false;
-            for (var i = 0; i < winnerSelect.options.length; i++) {
-                if (winnerSelect.options[i].value === currentValue) {
-                    exists = true;
-                    break;
+            // Try to find character
+            var character = CharacterQueries.getCharacterById(participantId);
+            if (character) {
+                // Check if character has classIds
+                if (Array.isArray(character.classIds) && character.classIds.length > 0) {
+                    // Add all classes associated with this character
+                    var classIds = character.classIds;
+                    for (var j = 0; j < classIds.length; j++) {
+                        // Find class by ID
+                        var classData = window.data && window.data.classes ? 
+                            window.data.classes.filter(function(c) { return String(c.id) === String(classIds[j]); }) : [];
+                        if (classData.length > 0) {
+                            var cls = classData[0];
+                            // Check if already added
+                            var exists = false;
+                            for (var k = 0; k < graduatingClasses.length; k++) {
+                                if (String(graduatingClasses[k].id) === String(cls.id)) {
+                                    exists = true;
+                                    break;
+                                }
+                            }
+                            if (!exists) {
+                                graduatingClasses.push(cls);
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Try to find team
+            var team = TeamQueries.getTeamById(participantId);
+            if (team && team.classId) {
+                // Find class by ID
+                var classData = window.data && window.data.classes ?
+                    window.data.classes.filter(function(c) { return String(c.id) === String(team.classId); }) : [];
+                if (classData.length > 0) {
+                    var cls = classData[0];
+                    var exists = false;
+                    for (var k = 0; k < graduatingClasses.length; k++) {
+                        if (String(graduatingClasses[k].id) === String(cls.id)) {
+                            exists = true;
+                            break;
+                        }
+                    }
+                    if (!exists) {
+                        graduatingClasses.push(cls);
+                    }
                 }
             }
-            if (exists) {
-                winnerSelect.value = currentValue;
-            }
         }
 
-        // Show/hide winner selection
-        var winnerContainer = form.querySelector('#winner-selection');
-        if (winnerContainer) {
-            winnerContainer.style.display = participants.length >= 2 ? 'block' : 'none';
-        }
+        return graduatingClasses;
     }
-
-    function closeMatchEditModal() {
-        closeModal('match-edit-modal');
-    }
-
-    // ============================================================
-    // ROUND STATUS
-    // ============================================================
-
-    function showRoundStatus(tournamentId, roundIndex) {
-        var tournament = Core.getTournament(tournamentId);
-        if (!tournament) {
-            showNotification('Tournament not found.', 'error');
-            return;
-        }
-
-        var round = tournament.rounds && tournament.rounds[roundIndex];
-        if (!round) {
-            showNotification('Round not found.', 'error');
-            return;
-        }
-
-        var statuses = Queries.getRoundStatusSummary(tournament, roundIndex);
-        var participants = Queries.getRoundParticipants(tournament, roundIndex);
-
-        // Build structured message
-        var message = 'Round ' + (round.roundNumber || roundIndex + 1) + ' Status:\n\n';
-        message += 'Status: ' + Queries.getRoundStatus(tournament, roundIndex) + '\n';
-        message += 'Matches: ' + (Array.isArray(round.matches) ? round.matches.length : 0) + '\n';
-        message += 'Participants: ' + participants.length + '\n\n';
-
-        for (var i = 0; i < participants.length; i++) {
-            var id = participants[i];
-            var status = statuses[id] || 'unknown';
-            var name = Queries.getTournamentParticipantName(tournament, id);
-            message += '  ' + name + ': ' + status + '\n';
-        }
-
-        // Show as a modal with formatted content
-        showNotification(message, 'info');
-    }
-
-    function showEditRoundModal(tournamentId, roundIndex) {
-        showNotification('Round editing is under development.', 'info');
-    }
-
-    // ============================================================
-    // LIFECYCLE MANAGEMENT
-    // ============================================================
-
-    if (TabManager && typeof TabManager.register === 'function') {
-        TabManager.register('tournaments', renderTournaments);
-    }
-
-    document.addEventListener('dataReady', function() {
-        var container = document.getElementById('tab-tournaments');
-        if (container && container.style.display !== 'none') {
-            renderTournaments(container);
-        }
-    });
-
-    document.addEventListener('tabChanged', function(e) {
-        if (e.detail && e.detail.tab === 'tournaments') {
-            var container = document.getElementById('tab-tournaments');
-            if (container) {
-                renderTournaments(container);
-            }
-        }
-    });
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
     window.TournamentsUI = {
-        render: renderTournaments,
-        view: viewTournament,
-        closeDetail: closeTournamentDetail,
-        showForm: showTournamentForm,
-        renderList: renderTournamentList
+        // Core
+        render: render,
+        viewTournament: viewTournament,
+        closeDetail: closeDetail,
+        showForm: showForm,
+
+        // Replacement for ClassesQueries.getGraduatingClasses
+        getGraduatingClasses: getGraduatingClasses
     };
 
-    // Legacy compatibility aliases
-    window.renderTournaments = renderTournaments;
-    window.viewTournament = viewTournament;
-    window.closeTournamentDetail = closeTournamentDetail;
+    window.__tournamentsUILoaded = true;
 
 })();
