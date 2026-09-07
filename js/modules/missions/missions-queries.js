@@ -4,61 +4,108 @@
  * 
  * QUERY PHILOSOPHY:
  *   - All queries are PURE: no side effects, no mutation
- *   - Use MissionsCore for data access
- *   - Use MissionsSchema for display helpers
+ *   - Use MissionRules for domain calculations
+ *   - Use CharacterQueries for character data
+ *   - Use TeamQueries for team data
  *   - Return DEFENSIVE COPIES (clones) where appropriate
- *   - Use normaliseId() consistently for all ID comparisons
+ *   - Do NOT access window.data directly
  *   - Do NOT expose live references that can be mutated
- *   - Do NOT access window.data directly; use Core/helpers
+ *   - Do NOT forward Schema APIs - use Schema directly in views if needed
  * 
  * QUERY LAYER CONTRACT:
  *   - getMission() returns a CLONE - safe for reading
  *   - getMissions() returns CLONES - safe for reading
- *   - All display helpers are pure functions
- *   - ID comparisons use normaliseId() for consistency
- *   - Team/character lookups use normaliseId() consistently
- *   - Exposes defensive getters for constants (not live references)
- *   - getTeams() and getCharacters() are the canonical team/character data sources
+ *   - All ID comparisons use IdUtils.normaliseId()
+ *   - Team/character lookups use canonical domain queries
+ *   - No presentation metadata - use MissionViews for that
+ *   - No validation predicates - use MissionsSchema for that
  * 
  * DEPENDENCIES:
- *   - MissionsCore (required)
- *   - MissionsSchema (required)
- *   - window.getDisplayName (optional, for character names)
+ *   - window.MissionsSchema (required - for structural access)
+ *   - window.MissionRules (required - for calculations)
+ *   - window.CharacterQueries (required)
+ *   - window.TeamQueries (required)
+ *   - window.IdUtils (required - for ID normalisation)
+ *   - window.ObjectUtils (required - for deep cloning)
  */
 
 (function() {
     'use strict';
 
-    if (window.__missionsQueriesLoaded) return;
+    if (window.__missionsQueriesLoaded) {
+        return;
+    }
 
     // ============================================================
     // DEPENDENCY CHECK - NO FALLBACKS
     // ============================================================
 
-    if (!window.MissionsCore) {
-        return;
-    }
+    var missing = [];
 
     if (!window.MissionsSchema) {
-        return;
+        missing.push('MissionsSchema');
+    }
+
+    if (!window.MissionRules) {
+        missing.push('MissionRules');
+    }
+
+    if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
+        missing.push('CharacterQueries.getCharacterById');
+    }
+    if (!window.CharacterQueries || typeof window.CharacterQueries.getDisplayName !== 'function') {
+        missing.push('CharacterQueries.getDisplayName');
+    }
+
+    if (!window.TeamQueries || typeof window.TeamQueries.getTeamById !== 'function') {
+        missing.push('TeamQueries.getTeamById');
+    }
+    if (!window.TeamQueries || typeof window.TeamQueries.getTeamName !== 'function') {
+        missing.push('TeamQueries.getTeamName');
+    }
+
+    if (!window.IdUtils || typeof window.IdUtils.normaliseId !== 'function') {
+        missing.push('IdUtils.normaliseId');
+    }
+
+    if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
+        missing.push('ObjectUtils.deepClone');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[MissionsQueries] Missing dependencies: ' + missing.join(', '));
     }
 
     window.__missionsQueriesLoaded = true;
 
-    var Core = window.MissionsCore;
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
     var Schema = window.MissionsSchema;
+    var Rules = window.MissionRules;
+    var CharacterQueries = window.CharacterQueries;
+    var TeamQueries = window.TeamQueries;
+    var IdUtils = window.IdUtils;
+    var ObjectUtils = window.ObjectUtils;
 
     // ============================================================
-    // ID NORMALISATION (Delegated to Schema)
+    // CONSTANTS
     // ============================================================
 
-    function normaliseId(id) {
-        return Schema.normaliseId(id);
+    var VALID_STATUSES = Schema.VALID_STATUSES;
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    function normaliseId(value) {
+        return IdUtils.normaliseId(value);
     }
 
-    // ============================================================
-    // DATA ACCESS HELPERS
-    // ============================================================
+    function deepClone(value) {
+        return ObjectUtils.deepClone(value);
+    }
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -67,703 +114,503 @@
         return window.data;
     }
 
-    function getCharacterById(id) {
+    function getMissionInternal(id) {
         var target = normaliseId(id);
         if (target === null) {
             return null;
         }
         var data = getDataStore();
-        if (!data || !Array.isArray(data.characters)) {
+        if (!data || !Array.isArray(data.missions)) {
             return null;
         }
-        for (var i = 0; i < data.characters.length; i++) {
-            var character = data.characters[i];
-            if (character && normaliseId(character.id) === target) {
-                return character;
+        for (var i = 0; i < data.missions.length; i++) {
+            var mission = data.missions[i];
+            if (mission && normaliseId(mission.id) === target) {
+                return mission;
             }
         }
         return null;
     }
 
-    function getTeamById(id) {
-        var target = normaliseId(id);
+    function cloneMission(mission) {
+        if (!mission || typeof mission !== 'object') {
+            return null;
+        }
+        return deepClone(mission);
+    }
+
+    function cloneMissionsArray(missions) {
+        if (!Array.isArray(missions)) {
+            return [];
+        }
+        var result = [];
+        for (var i = 0; i < missions.length; i++) {
+            if (missions[i]) {
+                result.push(cloneMission(missions[i]));
+            }
+        }
+        return result;
+    }
+
+    function getMissionsInternal(filter) {
+        var data = getDataStore();
+        if (!data || !Array.isArray(data.missions)) {
+            return [];
+        }
+
+        var missions = [];
+        for (var i = 0; i < data.missions.length; i++) {
+            if (data.missions[i]) {
+                missions.push(data.missions[i]);
+            }
+        }
+
+        if (filter === 'active') {
+            var active = [];
+            for (var j = 0; j < missions.length; j++) {
+                if (missions[j].status === 'active') {
+                    active.push(missions[j]);
+                }
+            }
+            missions = active;
+        } else if (filter === 'completed') {
+            var completed = [];
+            for (var k = 0; k < missions.length; k++) {
+                if (missions[k].status === 'completed') {
+                    completed.push(missions[k]);
+                }
+            }
+            missions = completed;
+        } else if (filter === 'cancelled') {
+            var cancelled = [];
+            for (var l = 0; l < missions.length; l++) {
+                if (missions[l].status === 'cancelled') {
+                    cancelled.push(missions[l]);
+                }
+            }
+            missions = cancelled;
+        }
+
+        return missions;
+    }
+
+    // ============================================================
+    // TEAM ELIGIBILITY - Mission-specific
+    // ============================================================
+
+    /**
+     * Get teams eligible for mission assignment.
+     * Uses MissionRules.isTeamEligibleForMission().
+     * 
+     * @returns {array} Array of eligible team objects (defensive copies)
+     */
+    function getEligibleTeams() {
+        var teams = TeamQueries.getActiveTeams();
+        return Rules.filterEligibleTeams(teams);
+    }
+
+    // ============================================================
+    // MISSION QUERIES
+    // ============================================================
+
+    /**
+     * Get a mission by ID (defensive copy).
+     * 
+     * @param {string} id - Mission ID
+     * @returns {object|null} Mission object or null
+     */
+    function getMission(id) {
+        var mission = getMissionInternal(id);
+        if (!mission) {
+            return null;
+        }
+        return cloneMission(mission);
+    }
+
+    /**
+     * Get missions with optional filter (defensive copies).
+     * 
+     * @param {string} filter - 'all', 'active', 'completed', 'cancelled'
+     * @returns {array} Array of mission clones
+     */
+    function getMissions(filter) {
+        var missions = getMissionsInternal(filter);
+        return cloneMissionsArray(missions);
+    }
+
+    /**
+     * Get missions by primary or secondary type (defensive copies).
+     * 
+     * @param {string} typeId - Mission type ID
+     * @returns {array} Array of mission clones
+     */
+    function getMissionsByType(typeId) {
+        if (!typeId || typeof typeId !== 'string') {
+            return [];
+        }
+
+        var missions = getMissionsInternal('all');
+        var result = [];
+
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            if (m.primaryType === typeId || m.secondaryType === typeId) {
+                result.push(cloneMission(m));
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Get missions assigned to a specific team (defensive copies).
+     * 
+     * @param {string} teamId - Team ID
+     * @param {string} filter - Optional status filter
+     * @returns {array} Array of mission clones
+     */
+    function getMissionsByTeam(teamId, filter) {
+        var target = normaliseId(teamId);
         if (target === null) {
-            return null;
-        }
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.teams)) {
-            return null;
-        }
-        for (var i = 0; i < data.teams.length; i++) {
-            var team = data.teams[i];
-            if (team && normaliseId(team.id) === target) {
-                return team;
-            }
-        }
-        return null;
-    }
-
-    function getDisplayName(character) {
-        if (!character) {
-            return 'Unknown';
-        }
-        if (typeof window.getDisplayName === 'function') {
-            return window.getDisplayName(character);
-        }
-        return character.name || character.firstName || 'Unknown';
-    }
-
-    function cloneCharacter(character) {
-        if (!character) {
-            return null;
-        }
-        return {
-            id: character.id,
-            firstName: character.firstName || '',
-            lastName: character.lastName || '',
-            middleName: character.middleName || '',
-            nickname: character.nickname || '',
-            name: character.name || character.firstName || 'Unknown',
-            deceased: !!character.deceased,
-            status: character.status || 'active',
-            classIds: Array.isArray(character.classIds) ? character.classIds.slice() : []
-        };
-    }
-
-    function cloneTeam(team) {
-        if (!team) {
-            return null;
-        }
-        return {
-            id: team.id,
-            name: team.name || '',
-            type: team.type || '',
-            status: team.status || 'active',
-            members: Array.isArray(team.members) ? team.members.slice() : []
-        };
-    }
-
-    // ============================================================
-    // CANONICAL TEAM/CHARACTER SOURCES
-    // ============================================================
-
-    /**
-     * Get all active teams (excluding deleted/inactive).
-     * Returns defensive copies.
-     */
-    function getTeams() {
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.teams)) {
             return [];
         }
+
+        var missions = getMissionsInternal(filter);
         var result = [];
-        for (var i = 0; i < data.teams.length; i++) {
-            var team = data.teams[i];
-            if (team && team.status !== 'deleted' && team.status !== 'inactive') {
-                result.push(cloneTeam(team));
+
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            if (m.assignedTeamId && normaliseId(m.assignedTeamId) === target) {
+                result.push(cloneMission(m));
             }
         }
+
         return result;
     }
 
     /**
-     * Get all active characters (excluding deceased).
-     * Returns defensive copies.
+     * Get missions with a specific tag (defensive copies).
+     * 
+     * @param {string} tag - Tag to search for
+     * @param {string} filter - Optional status filter
+     * @returns {array} Array of mission clones
      */
-    function getCharacters() {
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.characters)) {
+    function getMissionsByTag(tag, filter) {
+        if (!tag || typeof tag !== 'string') {
             return [];
         }
+
+        var searchTag = tag.toLowerCase().trim();
+        if (!searchTag) {
+            return [];
+        }
+
+        var missions = getMissionsInternal(filter);
         var result = [];
-        for (var i = 0; i < data.characters.length; i++) {
-            var character = data.characters[i];
-            if (character && !character.deceased) {
-                result.push(cloneCharacter(character));
+
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            if (!Array.isArray(m.tags)) {
+                continue;
+            }
+
+            var found = false;
+            for (var j = 0; j < m.tags.length; j++) {
+                if (typeof m.tags[j] === 'string' && m.tags[j].toLowerCase().trim() === searchTag) {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (found) {
+                result.push(cloneMission(m));
             }
         }
+
         return result;
     }
 
-    // ============================================================
-    // QUERIES API
-    // ============================================================
+    /**
+     * Get unique tags across all missions (normalised).
+     * 
+     * @param {string} filter - Optional status filter
+     * @returns {array} Array of unique tag strings (normalised)
+     */
+    function getUniqueTags(filter) {
+        var missions = getMissionsInternal(filter);
+        var tagSet = Object.create(null);
 
-    var MissionsQueries = {
-        // ============================================================
-        // CORE DATA ACCESS (Returns clones from Core)
-        // ============================================================
-
-        /**
-         * Get a mission by ID.
-         * Returns a CLONE - safe for reading.
-         */
-        getMission: function(id) {
-            return Core.getMission(id);
-        },
-
-        /**
-         * Get missions with optional filter.
-         * Returns an array of CLONES - safe for reading.
-         * 
-         * @param {string} filter - 'all', 'active', 'completed', 'cancelled'
-         * @returns {array} Array of mission clones
-         */
-        getMissions: function(filter) {
-            return Core.getMissions(filter);
-        },
-
-        /**
-         * Get missions by primary or secondary type.
-         * 
-         * @param {string} typeId - Mission type ID
-         * @returns {array} Array of mission clones
-         */
-        getMissionsByType: function(typeId) {
-            return Core.getMissionsByType(typeId);
-        },
-
-        /**
-         * Get mission type counts.
-         * 
-         * @returns {object} Counts by mission type
-         */
-        getMissionTypeCounts: function() {
-            return Core.getMissionTypeCounts();
-        },
-
-        /**
-         * Generate a human-readable mission ID.
-         * Delegates to Core.
-         */
-        generateMissionId: function(teamId, year, difficulty) {
-            return Core.generateMissionId(teamId, year, difficulty);
-        },
-
-        // ============================================================
-        // CANONICAL TEAM/CHARACTER SOURCES
-        // ============================================================
-
-        /**
-         * Get all active teams.
-         * Returns defensive copies.
-         */
-        getTeams: getTeams,
-
-        /**
-         * Get all active characters.
-         * Returns defensive copies.
-         */
-        getCharacters: getCharacters,
-
-        // ============================================================
-        // TEAM INFO HELPERS
-        // ============================================================
-
-        /**
-         * Get team name by ID.
-         * Uses normaliseId() for consistent comparison.
-         */
-        getTeamName: function(teamId) {
-            if (!teamId) {
-                return 'Unassigned';
-            }
-            var team = getTeamById(teamId);
-            return team ? team.name : 'Unknown Team';
-        },
-
-        /**
-         * Get team type label by ID.
-         * Uses normaliseId() for consistent comparison.
-         */
-        getTeamTypeLabel: function(teamId) {
-            if (!teamId) {
-                return '';
-            }
-            var team = getTeamById(teamId);
-            if (!team) {
-                return '';
-            }
-            var typeMap = {
-                'academic': 'Academic',
-                'professional': 'Professional',
-                'temporary': 'Temporary',
-                'internship': 'Temporary'
-            };
-            return typeMap[team.type] || '';
-        },
-
-        /**
-         * Get the canonical team type for display.
-         */
-        getTeamTypeDisplay: function(team) {
-            if (!team) {
-                return '';
-            }
-            var typeMap = {
-                'academic': 'Academic',
-                'professional': 'Professional',
-                'temporary': 'Temporary',
-                'internship': 'Temporary'
-            };
-            return typeMap[team.type] || '';
-        },
-
-        // ============================================================
-        // SUPPORT PERSONNEL HELPERS
-        // ============================================================
-
-        /**
-         * Get support personnel as character objects.
-         * Delegates to Core.
-         */
-        getSupportPersonnel: function(mission) {
-            return Core.getSupportPersonnel(mission);
-        },
-
-        /**
-         * Get support personnel names as an array of strings.
-         * Uses canonical route: mission -> support IDs -> character objects -> names.
-         * 
-         * @param {object|string} mission - Mission object or mission ID
-         * @returns {array} Array of character names
-         */
-        getSupportPersonnelNames: function(mission) {
-            var characters = this.getSupportPersonnel(mission);
-            var names = [];
-            for (var i = 0; i < characters.length; i++) {
-                names.push(getDisplayName(characters[i]));
-            }
-            return names;
-        },
-
-        /**
-         * Get a single support personnel name.
-         * 
-         * @param {object} character - Character object
-         * @returns {string} Character display name
-         */
-        getSupportPersonnelName: function(character) {
-            if (!character) {
-                return 'Unknown';
-            }
-            return getDisplayName(character);
-        },
-
-        // ============================================================
-        // CHARACTER INFO HELPERS
-        // ============================================================
-
-        /**
-         * Get a character's display name.
-         */
-        getDisplayName: function(character) {
-            return getDisplayName(character);
-        },
-
-        /**
-         * Get a character by ID.
-         * Uses normaliseId() for consistent comparison.
-         * Returns a defensive clone.
-         */
-        getCharacter: function(id) {
-            var character = getCharacterById(id);
-            return character ? cloneCharacter(character) : null;
-        },
-
-        /**
-         * Get a team by ID.
-         * Uses normaliseId() for consistent comparison.
-         * Returns a defensive clone.
-         */
-        getTeam: function(id) {
-            var team = getTeamById(id);
-            return team ? cloneTeam(team) : null;
-        },
-
-        // ============================================================
-        // MISSION STATISTICS
-        // ============================================================
-
-        /**
-         * Get mission statistics.
-         * 
-         * @returns {object} { total, active, completed, cancelled, byPriority, byDifficulty, byType }
-         */
-        getStatistics: function() {
-            var missions = this.getMissions('all');
-            var stats = {
-                total: missions.length,
-                active: 0,
-                completed: 0,
-                cancelled: 0,
-                byPriority: {
-                    critical: 0,
-                    high: 0,
-                    medium: 0,
-                    low: 0
-                },
-                byDifficulty: {
-                    easy: 0,
-                    medium: 0,
-                    hard: 0,
-                    expert: 0
-                },
-                byType: {}
-            };
-
-            var typeKeys = Object.keys(Schema.MISSION_TYPES);
-            for (var tk = 0; tk < typeKeys.length; tk++) {
-                stats.byType[typeKeys[tk]] = 0;
-            }
-
-            for (var i = 0; i < missions.length; i++) {
-                var m = missions[i];
-
-                if (m.status === 'active') {
-                    stats.active++;
-                } else if (m.status === 'completed') {
-                    stats.completed++;
-                } else if (m.status === 'cancelled') {
-                    stats.cancelled++;
-                }
-
-                if (m.priority && stats.byPriority[m.priority] !== undefined) {
-                    stats.byPriority[m.priority]++;
-                }
-
-                if (m.difficulty && stats.byDifficulty[m.difficulty] !== undefined) {
-                    stats.byDifficulty[m.difficulty]++;
-                }
-
-                if (m.primaryType && stats.byType[m.primaryType] !== undefined) {
-                    stats.byType[m.primaryType]++;
-                }
-            }
-
-            return stats;
-        },
-
-        /**
-         * Get active mission count.
-         */
-        getActiveCount: function() {
-            return this.getMissions('active').length;
-        },
-
-        /**
-         * Get completed mission count.
-         */
-        getCompletedCount: function() {
-            return this.getMissions('completed').length;
-        },
-
-        /**
-         * Get cancelled mission count.
-         */
-        getCancelledCount: function() {
-            return this.getMissions('cancelled').length;
-        },
-
-        // ============================================================
-        // MISSION SEARCH
-        // ============================================================
-
-        /**
-         * Search missions by text in title, description, or notes.
-         * 
-         * @param {string} query - Search query
-         * @param {string} filter - Optional status filter
-         * @returns {array} Array of matching mission clones
-         */
-        searchMissions: function(query, filter) {
-            if (!query || typeof query !== 'string') {
-                return [];
-            }
-            var searchTerm = query.toLowerCase().trim();
-            if (!searchTerm) {
-                return this.getMissions(filter);
-            }
-
-            var missions = this.getMissions(filter);
-            var result = [];
-
-            for (var i = 0; i < missions.length; i++) {
-                var m = missions[i];
-                var title = (m.title || '').toLowerCase();
-                var description = (m.description || '').toLowerCase();
-                var notes = (m.notes || '').toLowerCase();
-                var missionId = (m.missionId || '').toLowerCase();
-
-                if (title.indexOf(searchTerm) !== -1 ||
-                    description.indexOf(searchTerm) !== -1 ||
-                    notes.indexOf(searchTerm) !== -1 ||
-                    missionId.indexOf(searchTerm) !== -1) {
-                    result.push(m);
-                }
-            }
-
-            return result;
-        },
-
-        /**
-         * Get missions assigned to a specific team.
-         * Uses normaliseId() for consistent comparison.
-         * 
-         * @param {string} teamId - Team ID
-         * @param {string} filter - Optional status filter
-         * @returns {array} Array of mission clones
-         */
-        getMissionsByTeam: function(teamId, filter) {
-            var target = normaliseId(teamId);
-            if (target === null) {
-                return [];
-            }
-
-            var missions = this.getMissions(filter);
-            var result = [];
-
-            for (var i = 0; i < missions.length; i++) {
-                var m = missions[i];
-                if (m.assignedTeamId && normaliseId(m.assignedTeamId) === target) {
-                    result.push(m);
-                }
-            }
-
-            return result;
-        },
-
-        /**
-         * Get missions with a specific tag.
-         * Handles malformed tags defensively.
-         * 
-         * @param {string} tag - Tag to search for
-         * @param {string} filter - Optional status filter
-         * @returns {array} Array of mission clones
-         */
-        getMissionsByTag: function(tag, filter) {
-            if (!tag || typeof tag !== 'string') {
-                return [];
-            }
-            var searchTag = tag.toLowerCase().trim();
-            if (!searchTag) {
-                return this.getMissions(filter);
-            }
-
-            var missions = this.getMissions(filter);
-            var result = [];
-
-            for (var i = 0; i < missions.length; i++) {
-                var m = missions[i];
-                if (!Array.isArray(m.tags)) {
-                    continue;
-                }
-                var found = false;
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            if (Array.isArray(m.tags)) {
                 for (var j = 0; j < m.tags.length; j++) {
-                    if (typeof m.tags[j] === 'string' && m.tags[j].toLowerCase().trim() === searchTag) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (found) {
-                    result.push(m);
-                }
-            }
-
-            return result;
-        },
-
-        /**
-         * Get unique tags across all missions.
-         * 
-         * @param {string} filter - Optional status filter
-         * @returns {array} Array of unique tag strings
-         */
-        getUniqueTags: function(filter) {
-            var missions = this.getMissions(filter);
-            var tagSet = {};
-
-            for (var i = 0; i < missions.length; i++) {
-                var m = missions[i];
-                if (Array.isArray(m.tags)) {
-                    for (var j = 0; j < m.tags.length; j++) {
-                        var tag = m.tags[j];
-                        if (tag && typeof tag === 'string') {
-                            tagSet[tag.trim()] = true;
+                    var tag = m.tags[j];
+                    if (tag && typeof tag === 'string') {
+                        var normalized = tag.trim().toLowerCase();
+                        if (normalized) {
+                            tagSet[normalized] = true;
                         }
                     }
                 }
             }
+        }
 
-            var result = [];
-            var keys = Object.keys(tagSet);
-            for (var k = 0; k < keys.length; k++) {
-                result.push(keys[k]);
+        var result = Object.keys(tagSet);
+        result.sort();
+        return result;
+    }
+
+    /**
+     * Search missions by text in title, description, or notes.
+     * 
+     * @param {string} query - Search query
+     * @param {string} filter - Optional status filter
+     * @returns {array} Array of matching mission clones
+     */
+    function searchMissions(query, filter) {
+        if (!query || typeof query !== 'string') {
+            return getMissions(filter);
+        }
+
+        var searchTerm = query.toLowerCase().trim();
+        if (!searchTerm) {
+            return getMissions(filter);
+        }
+
+        var missions = getMissionsInternal(filter);
+        var result = [];
+
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            var title = (m.title || '').toLowerCase();
+            var description = (m.description || '').toLowerCase();
+            var notes = (m.notes || '').toLowerCase();
+            var missionId = (m.missionId || '').toLowerCase();
+
+            if (title.indexOf(searchTerm) !== -1 ||
+                description.indexOf(searchTerm) !== -1 ||
+                notes.indexOf(searchTerm) !== -1 ||
+                missionId.indexOf(searchTerm) !== -1) {
+                result.push(cloneMission(m));
             }
-            result.sort();
+        }
 
-            return result;
-        },
+        return result;
+    }
 
-        // ============================================================
-        // DEFENSIVE GETTERS (Copies, not live references)
-        // ============================================================
+    // ============================================================
+    // SUPPORT PERSONNEL QUERIES
+    // ============================================================
 
-        /**
-         * Get all mission types as a defensive copy.
-         */
-        getMissionTypes: function() {
-            return Schema.getMissionTypes();
-        },
+    /**
+     * Get support personnel as character objects for a mission.
+     * 
+     * @param {object|string} mission - Mission object or mission ID
+     * @returns {array} Array of character objects (defensive copies)
+     */
+    function getSupportPersonnel(mission) {
+        var missionObj;
 
-        /**
-         * Get subtypes for a mission type.
-         */
-        getSubtypesForType: function(typeId) {
-            return Schema.getSubtypesForType(typeId);
-        },
+        if (mission && typeof mission === 'object') {
+            missionObj = mission;
+        } else {
+            missionObj = getMission(mission);
+        }
 
-        /**
-         * Get all subtype labels as a defensive copy.
-         */
-        getSubtypeLabels: function() {
-            return Schema.getSubtypeLabels();
-        },
+        if (!missionObj || !Array.isArray(missionObj.supportPersonnel)) {
+            return [];
+        }
 
-        /**
-         * Get valid difficulty values.
-         */
-        getValidDifficulties: function() {
-            return Schema.getValidDifficulties();
-        },
-
-        /**
-         * Get valid priority values.
-         */
-        getValidPriorities: function() {
-            return Schema.getValidPriorities();
-        },
-
-        /**
-         * Get valid status values.
-         */
-        getValidStatuses: function() {
-            return Schema.getValidStatuses();
-        },
-
-        /**
-         * Get valid billing types.
-         */
-        getValidBillingTypes: function() {
-            return Schema.getValidBillingTypes();
-        },
-
-        /**
-         * Get valid escalation tiers.
-         */
-        getValidEscalationTiers: function() {
-            return Schema.getValidEscalationTiers();
-        },
-
-        // ============================================================
-        // DISPLAY HELPERS (Delegated to Schema)
-        // ============================================================
-
-        // Type display
-        getMissionType: Schema.getMissionType,
-        getMissionTypeLabel: Schema.getMissionTypeLabel,
-        getMissionTypeIcon: Schema.getMissionTypeIcon,
-        getMissionTypeColor: Schema.getMissionTypeColor,
-        getSubtypeLabel: Schema.getSubtypeLabel,
-
-        // Status/Priority/Difficulty display
-        getEscalationLabel: Schema.getEscalationLabel,
-        getBillingLabel: Schema.getBillingLabel,
-        getPriorityInfo: Schema.getPriorityInfo,
-        getStatusInfo: Schema.getStatusInfo,
-        getDifficultyLabel: Schema.getDifficultyLabel,
-        getDifficultyCode: Schema.getDifficultyCode,
-
-        // Date helpers
-        getMonthName: Schema.getMonthName,
-        getDaysInMonth: Schema.getDaysInMonth,
-        isLeapYear: Schema.isLeapYear,
-        isValidCalendarDate: Schema.isValidCalendarDate,
-
-        // ============================================================
-        // VALIDATION HELPERS (Delegated to Schema)
-        // ============================================================
-
-        // Type validation
-        isValidStatus: Schema.isValidStatus,
-        isValidPriority: Schema.isValidPriority,
-        isValidDifficulty: Schema.isValidDifficulty,
-        isValidBilling: Schema.isValidBilling,
-        isValidEscalation: Schema.isValidEscalation,
-        isValidMissionType: Schema.isValidMissionType,
-        isValidSubtype: Schema.isValidSubtype,
-
-        // ID normalisation
-        normaliseId: Schema.normaliseId,
-
-        // ============================================================
-        // MISSION ID FORMATTING
-        // ============================================================
-
-        /**
-         * Format a mission ID for display.
-         */
-        formatMissionId: function(missionId) {
-            if (!missionId) {
-                return '—';
+        var result = [];
+        for (var i = 0; i < missionObj.supportPersonnel.length; i++) {
+            var id = missionObj.supportPersonnel[i];
+            var character = CharacterQueries.getCharacterById(id);
+            if (character) {
+                result.push(character);
             }
-            return String(missionId);
-        },
+        }
 
-        /**
-         * Parse a mission ID into components.
-         * Validates the format using regex.
-         * Returns { team, year, difficulty, difficultyCode, sequence } or null.
-         */
-        parseMissionId: function(missionId) {
-            if (!missionId || typeof missionId !== 'string') {
-                return null;
+        return result;
+    }
+
+    /**
+     * Get support personnel names as an array of strings.
+     * 
+     * @param {object|string} mission - Mission object or mission ID
+     * @returns {array} Array of character names
+     */
+    function getSupportPersonnelNames(mission) {
+        var characters = getSupportPersonnel(mission);
+        var names = [];
+        for (var i = 0; i < characters.length; i++) {
+            names.push(CharacterQueries.getDisplayName(characters[i]));
+        }
+        return names;
+    }
+
+    // ============================================================
+    // MISSION TYPE COUNTS
+    // ============================================================
+
+    /**
+     * Get mission type counts.
+     * 
+     * @returns {object} Counts by mission type
+     */
+    function getMissionTypeCounts() {
+        var missions = getMissionsInternal('all');
+        var typeKeys = Object.keys(Schema.MISSION_TYPES);
+        var counts = {};
+
+        for (var i = 0; i < typeKeys.length; i++) {
+            counts[typeKeys[i]] = 0;
+        }
+
+        for (var j = 0; j < missions.length; j++) {
+            var m = missions[j];
+            if (m.primaryType && counts[m.primaryType] !== undefined) {
+                counts[m.primaryType]++;
             }
+        }
 
-            var match = /^([^-]+)-(\d{2})-([EMHX])(\d+)$/.exec(missionId);
-            if (!match) {
-                return null;
+        return counts;
+    }
+
+    // ============================================================
+    // MISSION STATISTICS
+    // ============================================================
+
+    /**
+     * Get mission statistics.
+     * 
+     * @returns {object} { total, active, completed, cancelled, byPriority, byDifficulty, byType }
+     */
+    function getStatistics() {
+        var missions = getMissionsInternal('all');
+        var stats = {
+            total: missions.length,
+            active: 0,
+            completed: 0,
+            cancelled: 0,
+            byPriority: {
+                critical: 0,
+                high: 0,
+                medium: 0,
+                low: 0
+            },
+            byDifficulty: {
+                easy: 0,
+                medium: 0,
+                hard: 0,
+                expert: 0
+            },
+            byType: {}
+        };
+
+        var typeKeys = Object.keys(Schema.MISSION_TYPES);
+        for (var tk = 0; tk < typeKeys.length; tk++) {
+            stats.byType[typeKeys[tk]] = 0;
+        }
+
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+
+            if (m.status === 'active') {
+                stats.active++;
+            } else if (m.status === 'completed') {
+                stats.completed++;
+            } else if (m.status === 'cancelled') {
+                stats.cancelled++;
             }
 
-            var difficultyMap = {
-                'E': 'easy',
-                'M': 'medium',
-                'H': 'hard',
-                'X': 'expert'
-            };
+            if (m.priority && stats.byPriority[m.priority] !== undefined) {
+                stats.byPriority[m.priority]++;
+            }
 
-            return {
-                team: match[1],
-                year: match[2],
-                difficultyCode: match[3],
-                difficulty: difficultyMap[match[3]] || null,
-                sequence: match[4],
-                full: missionId
-            };
-        },
+            if (m.difficulty && stats.byDifficulty[m.difficulty] !== undefined) {
+                stats.byDifficulty[m.difficulty]++;
+            }
 
-        // ============================================================
-        // CONSTANTS ACCESS (Defensive)
-        // ============================================================
+            if (m.primaryType && stats.byType[m.primaryType] !== undefined) {
+                stats.byType[m.primaryType]++;
+            }
+        }
 
-        MONTH_NAMES: Schema.MONTH_NAMES,
-        DIFFICULTY_CODES: Schema.DIFFICULTY_CODES
-    };
+        return stats;
+    }
+
+    /**
+     * Get active mission count.
+     * 
+     * @returns {number} Number of active missions
+     */
+    function getActiveCount() {
+        return getStatistics().active;
+    }
+
+    /**
+     * Get completed mission count.
+     * 
+     * @returns {number} Number of completed missions
+     */
+    function getCompletedCount() {
+        return getStatistics().completed;
+    }
+
+    /**
+     * Get cancelled mission count.
+     * 
+     * @returns {number} Number of cancelled missions
+     */
+    function getCancelledCount() {
+        return getStatistics().cancelled;
+    }
+
+    // ============================================================
+    // GETTERS FOR QUERY (Defensive copies)
+    // ============================================================
+
+    /**
+     * Get all valid statuses as a defensive copy.
+     * 
+     * @returns {array} Array of valid status strings
+     */
+    function getValidStatuses() {
+        return VALID_STATUSES.slice();
+    }
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
-    window.MissionsQueries = MissionsQueries;
+    window.MissionsQueries = {
+        // Mission queries (defensive copies)
+        getMission: getMission,
+        getMissions: getMissions,
+        getMissionsByType: getMissionsByType,
+        getMissionsByTeam: getMissionsByTeam,
+        getMissionsByTag: getMissionsByTag,
+        getUniqueTags: getUniqueTags,
+        searchMissions: searchMissions,
+
+        // Support personnel
+        getSupportPersonnel: getSupportPersonnel,
+        getSupportPersonnelNames: getSupportPersonnelNames,
+
+        // Type counts
+        getMissionTypeCounts: getMissionTypeCounts,
+
+        // Statistics
+        getStatistics: getStatistics,
+        getActiveCount: getActiveCount,
+        getCompletedCount: getCompletedCount,
+        getCancelledCount: getCancelledCount,
+
+        // Team eligibility
+        getEligibleTeams: getEligibleTeams,
+
+        // Valid values (defensive)
+        getValidStatuses: getValidStatuses
+    };
 
 })();
