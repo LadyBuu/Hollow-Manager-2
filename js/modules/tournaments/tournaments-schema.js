@@ -9,26 +9,28 @@
  *   - Participant identity management
  *   - Tournament lifecycle constants
  *   - Domain derivations (when purely structural)
- *   - Defensive cloning of tournament data
  * 
  * IMPORTANT:
  *   - Schema is the CONSTITUTIONAL AUTHORITY for tournament structure
  *   - Does NOT know about characters/teams in the wider application
  *   - Does NOT call saveData()
- *   - Does NOT perform business-rule validation (that belongs in Core)
- *   - Validation is STRICT: rejects unknown properties by default
- *   - However, the REPAIR module may preserve unknown properties
- *     and Schema's strict mode should tolerate them if present
- * 
- * MUTATION CONTRACT:
- *   - Schema.getters return DEEP CLONES to prevent external mutation
- *   - validateTournament() returns { valid, errors, warnings }
- *   - strict: true → canonical structure enforcement (but allows unknown props)
- *   - strict: false → minimal validation for legacy/repair
+ *   - Does NOT perform business-rule validation (that belongs in Core/Lifecycle)
+ *   - strict=true: reports unknown fields as warnings, validates canonical structure
+ *   - strict=false: minimal structural validation, ignores unknown fields
+ *   - Exported constants are FROZEN to prevent mutation
+ *   - cloneTournament() preserves ALL properties (exact defensive copy)
+ *   - normaliseTournament() produces canonical structural representation
  * 
  * DEPENDENCIES:
- *   - window.CALENDAR_CONSTANTS (from constants.js)
- *   - window.CoreUtils (from core-utils.js) - for deepClone, normalizeId
+ *   - window.CALENDAR_CONSTANTS (from constants.js) - MANDATORY
+ *   - window.ObjectUtils (from object-utils.js) - MANDATORY
+ *   - window.IdUtils (from id-utils.js) - MANDATORY
+ * 
+ * USAGE:
+ *   var Schema = window.TournamentsSchema;
+ *   var validation = Schema.validateTournament(tournament, { strict: true });
+ *   if (!validation.valid) { console.log(validation.errors); }
+ *   var canonical = Schema.normaliseTournament(tournament);
  */
 
 (function() {
@@ -43,178 +45,366 @@
     // DEPENDENCY CHECK - Hard failure if missing
     // ============================================================
 
-    var CALENDAR = window.CALENDAR_CONSTANTS;
-    if (!CALENDAR) {
-        console.error('TournamentsSchema: CALENDAR_CONSTANTS is required.');
-        return;
+    var missing = [];
+
+    if (!window.CALENDAR_CONSTANTS) {
+        missing.push('CALENDAR_CONSTANTS');
     }
 
-    var CoreUtils = window.CoreUtils;
-    if (!CoreUtils || typeof CoreUtils.deepClone !== 'function') {
-        console.error('TournamentsSchema: CoreUtils.deepClone is required.');
-        return;
+    if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
+        missing.push('ObjectUtils.deepClone');
     }
+
+    if (!window.IdUtils || typeof window.IdUtils.normaliseId !== 'function') {
+        missing.push('IdUtils.normaliseId');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[TournamentsSchema] Missing dependencies: ' + missing.join(', '));
+    }
+
+    var CALENDAR = window.CALENDAR_CONSTANTS;
+    var ObjectUtils = window.ObjectUtils;
+    var IdUtils = window.IdUtils;
 
     window.__tournamentsSchemaLoaded = true;
 
     // ============================================================
-    // CONSTANTS
+    // CONSTANTS - DEEP FROZEN
     // ============================================================
 
     var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
     var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
 
-    // Valid statuses
-    var VALID_STATUSES = ['draft', 'active', 'completed'];
-    var VALID_MODES = ['teams', 'individuals'];
-    var VALID_MATCH_TYPES = ['standard', 'group_exam'];
-    var VALID_MATCH_STATUSES = ['pending', 'in_progress', 'completed'];
-    var VALID_PARTICIPANT_TYPES = ['character', 'team'];
-    var VALID_GROUP_EXAM_RESULTS = ['pass', 'fail'];
+    var VALID_STATUSES = Object.freeze(['draft', 'active', 'completed']);
+    var VALID_MODES = Object.freeze(['teams', 'individuals']);
+    var VALID_MATCH_TYPES = Object.freeze(['standard', 'group_exam']);
+    var VALID_MATCH_STATUSES = Object.freeze(['pending', 'in_progress', 'completed']);
+    var VALID_PARTICIPANT_TYPES = Object.freeze(['character', 'team']);
+    var VALID_GROUP_EXAM_RESULTS = Object.freeze(['pass', 'fail']);
 
-    // Lifecycle rules - declarative
-    var LIFECYCLE_RULES = {
-        draft: {
-            configure: true,
+    // Lifecycle rules - declarative, immutable
+    var LIFECYCLE_RULES = Object.freeze({
+        draft: Object.freeze({
+            edit: true,
             participants: true,
             rounds: true,
             eliminations: false,
             complete: false
-        },
-        active: {
-            configure: false,
+        }),
+        active: Object.freeze({
+            edit: true,
             participants: false,
             rounds: true,
             eliminations: true,
             complete: true
-        },
-        completed: {
-            configure: false,
+        }),
+        completed: Object.freeze({
+            edit: false,
             participants: false,
             rounds: false,
             eliminations: false,
             complete: false
-        }
-    };
+        })
+    });
 
     // ============================================================
-    // ID NORMALISATION
+    // ID NORMALISATION - Delegates to IdUtils
     // ============================================================
 
+    /**
+     * Normalise an ID to canonical string form.
+     * Rejects objects, numbers, and non-string values.
+     * This is the SINGLE SOURCE OF TRUTH for ID normalisation.
+     * 
+     * @param {*} value - Value to normalise
+     * @returns {string|null} Normalised ID or null
+     */
     function normaliseId(value) {
-        if (value === undefined || value === null) {
-            return null;
-        }
-        var str = String(value).trim();
-        return str !== '' ? str : null;
-    }
-
-    function normaliseIdStrict(value) {
-        var id = normaliseId(value);
-        if (id === null) {
-            return null;
-        }
-        // IDs must be non-empty strings
-        if (typeof id !== 'string' || id.length === 0) {
-            return null;
-        }
-        return id;
+        return IdUtils.normaliseId(value);
     }
 
     // ============================================================
-    // CLONING - Centralised, defensive
+    // CLONING - Exact defensive copies
     // ============================================================
 
+    /**
+     * Deep clone any value using the canonical cloning utility.
+     * Preserves ALL properties, including unknown ones.
+     * 
+     * @param {*} value - Value to clone
+     * @returns {*} Deep clone of value
+     */
     function deepClone(value) {
-        return CoreUtils.deepClone(value);
+        return ObjectUtils.deepClone(value);
     }
 
+    /**
+     * Clone a participant record exactly.
+     * Preserves all properties.
+     * 
+     * @param {object} participant - Participant record
+     * @returns {object} Cloned participant
+     */
     function cloneParticipant(participant) {
         if (!participant || typeof participant !== 'object') {
-            return { id: null, type: null };
+            return null;
         }
-        return {
-            id: normaliseId(participant.id),
-            type: participant.type || null
-        };
+        return deepClone(participant);
     }
 
+    /**
+     * Clone a match exactly.
+     * Preserves all properties.
+     * 
+     * @param {object} match - Match object
+     * @returns {object} Cloned match
+     */
     function cloneMatch(match) {
         if (!match || typeof match !== 'object') {
             return null;
         }
+        return deepClone(match);
+    }
 
-        var participants = Array.isArray(match.participants)
-            ? match.participants.map(function(p) {
-                return typeof p === 'string' ? p : normaliseId(p);
-            }).filter(function(id) { return id !== null; })
-            : [];
+    /**
+     * Clone a round exactly.
+     * Preserves all properties.
+     * 
+     * @param {object} round - Round object
+     * @returns {object} Cloned round
+     */
+    function cloneRound(round) {
+        if (!round || typeof round !== 'object') {
+            return null;
+        }
+        return deepClone(round);
+    }
 
-        var results = null;
-        if (match.type === 'group_exam' && match.results && typeof match.results === 'object') {
-            results = {};
-            for (var key in match.results) {
-                if (Object.prototype.hasOwnProperty.call(match.results, key)) {
-                    var normalisedKey = normaliseId(key);
-                    if (normalisedKey !== null) {
-                        var val = match.results[key];
-                        if (val === 'pass' || val === 'fail') {
-                            results[normalisedKey] = val;
-                        }
-                    }
+    /**
+     * Clone an elimination record exactly.
+     * Preserves all properties.
+     * 
+     * @param {object} elimination - Elimination record
+     * @returns {object} Cloned elimination
+     */
+    function cloneElimination(elimination) {
+        if (!elimination || typeof elimination !== 'object') {
+            return null;
+        }
+        return deepClone(elimination);
+    }
+
+    /**
+     * Clone a tournament exactly.
+     * Preserves ALL properties, including unknown ones.
+     * This is a DEFENSIVE COPY, not a canonicalisation.
+     * 
+     * @param {object} tournament - Tournament object
+     * @returns {object} Cloned tournament
+     */
+    function cloneTournament(tournament) {
+        if (!tournament || typeof tournament !== 'object') {
+            return null;
+        }
+        return deepClone(tournament);
+    }
+
+    // ============================================================
+    // CANONICAL NORMALISATION - Structural representation
+    // ============================================================
+
+    /**
+     * Normalise a participant to canonical form.
+     * Preserves unknown properties.
+     * 
+     * @param {object} participant - Participant record
+     * @param {string} mode - Tournament mode
+     * @returns {object|null} Normalised participant or null
+     */
+    function normaliseParticipant(participant, mode) {
+        if (!participant || typeof participant !== 'object') {
+            return null;
+        }
+
+        var id = normaliseId(participant.id);
+        if (id === null) {
+            return null;
+        }
+
+        var canonicalType = getCanonicalParticipantType(mode);
+        if (canonicalType === null) {
+            return null;
+        }
+
+        var result = {
+            id: id,
+            type: canonicalType
+        };
+
+        // Preserve unknown properties
+        var knownKeys = ['id', 'type'];
+        Object.keys(participant).forEach(function(key) {
+            if (knownKeys.indexOf(key) === -1) {
+                result[key] = participant[key];
+            }
+        });
+
+        return result;
+    }
+
+    /**
+     * Normalise a match to canonical form.
+     * Preserves unknown properties.
+     * 
+     * @param {object} match - Match object
+     * @param {number} expectedSize - Expected participant count
+     * @returns {object|null} Normalised match or null
+     */
+    function normaliseMatch(match, expectedSize) {
+        if (!match || typeof match !== 'object') {
+            return null;
+        }
+
+        var participants = [];
+        if (Array.isArray(match.participants)) {
+            for (var i = 0; i < match.participants.length; i++) {
+                var id = normaliseId(match.participants[i]);
+                if (id !== null) {
+                    participants.push(id);
                 }
             }
         }
 
-        var advancing = Array.isArray(match.advancing)
-            ? match.advancing.map(function(p) {
-                return typeof p === 'string' ? p : normaliseId(p);
-            }).filter(function(id) { return id !== null; })
-            : [];
+        if (participants.length !== expectedSize) {
+            return null;
+        }
 
-        return {
+        var type = match.type || 'standard';
+        if (VALID_MATCH_TYPES.indexOf(type) === -1) {
+            return null;
+        }
+
+        var status = match.status || 'pending';
+        if (VALID_MATCH_STATUSES.indexOf(status) === -1) {
+            return null;
+        }
+
+        var result = {
             participants: participants,
-            type: match.type || 'standard',
-            status: match.status || 'pending',
+            type: type,
+            status: status,
             winner: match.winner !== undefined && match.winner !== null
                 ? normaliseId(match.winner)
                 : null,
             loser: match.loser !== undefined && match.loser !== null
                 ? normaliseId(match.loser)
                 : null,
-            advancing: advancing,
-            results: results
+            advancing: Array.isArray(match.advancing)
+                ? match.advancing.map(normaliseId).filter(function(id) { return id !== null; })
+                : [],
+            results: {}
         };
+
+        // Normalise group exam results
+        if (type === 'group_exam' && match.results && typeof match.results === 'object') {
+            var results = {};
+            var seen = {};
+            for (var key in match.results) {
+                if (!Object.prototype.hasOwnProperty.call(match.results, key)) {
+                    continue;
+                }
+                var id = normaliseId(key);
+                if (id === null) {
+                    continue;
+                }
+                if (seen[id]) {
+                    continue;
+                }
+                seen[id] = true;
+                var value = match.results[key];
+                if (VALID_GROUP_EXAM_RESULTS.indexOf(value) !== -1) {
+                    results[id] = value;
+                }
+            }
+            result.results = results;
+        }
+
+        // Preserve unknown properties
+        var knownKeys = ['participants', 'type', 'status', 'winner', 'loser', 'advancing', 'results'];
+        Object.keys(match).forEach(function(key) {
+            if (knownKeys.indexOf(key) === -1) {
+                result[key] = match[key];
+            }
+        });
+
+        return result;
     }
 
-    function cloneRound(round) {
+    /**
+     * Normalise a round to canonical form.
+     * Preserves unknown properties.
+     * 
+     * @param {object} round - Round object
+     * @param {number} index - Round index (for roundNumber)
+     * @returns {object|null} Normalised round or null
+     */
+    function normaliseRound(round, index) {
         if (!round || typeof round !== 'object') {
             return null;
         }
 
-        var matches = Array.isArray(round.matches)
-            ? round.matches.map(cloneMatch).filter(function(m) { return m !== null; })
-            : [];
-
-        return {
-            status: round.status || 'pending',
-            matchSize: (typeof round.matchSize === 'number' && round.matchSize >= 2) ? round.matchSize : 2,
-            matches: matches,
-            label: round.label || ''
-        };
-    }
-
-    function cloneParticipantRecord(record) {
-        if (!record || typeof record !== 'object') {
-            return { id: null, type: null };
+        var status = round.status || 'pending';
+        if (VALID_MATCH_STATUSES.indexOf(status) === -1) {
+            return null;
         }
-        return {
-            id: normaliseId(record.id),
-            type: record.type || null
+
+        var matchSize = typeof round.matchSize === 'number' && round.matchSize >= 2
+            ? round.matchSize
+            : 2;
+
+        var matchType = round.matchType || 'standard';
+        if (VALID_MATCH_TYPES.indexOf(matchType) === -1) {
+            return null;
+        }
+
+        var matches = [];
+        if (Array.isArray(round.matches)) {
+            for (var i = 0; i < round.matches.length; i++) {
+                var normalisedMatch = normaliseMatch(round.matches[i], matchSize);
+                if (normalisedMatch !== null) {
+                    matches.push(normalisedMatch);
+                }
+            }
+        }
+
+        var result = {
+            roundNumber: (index !== undefined && index !== null) ? index + 1 : 1,
+            status: status,
+            matchSize: matchSize,
+            matchType: matchType,
+            matches: matches
         };
+
+        // Preserve unknown properties
+        var knownKeys = ['roundNumber', 'status', 'matchSize', 'matchType', 'matches'];
+        Object.keys(round).forEach(function(key) {
+            if (knownKeys.indexOf(key) === -1) {
+                result[key] = round[key];
+            }
+        });
+
+        return result;
     }
 
-    function cloneElimination(elimination) {
+    /**
+     * Normalise an elimination record to canonical form.
+     * Preserves unknown properties.
+     * 
+     * @param {object} elimination - Elimination record
+     * @returns {object|null} Normalised elimination or null
+     */
+    function normaliseElimination(elimination) {
         if (!elimination || typeof elimination !== 'object') {
             return null;
         }
@@ -229,17 +419,48 @@
             return null;
         }
 
-        return {
+        var week = typeof elimination.week === 'number' && elimination.week >= MIN_WEEK && elimination.week <= MAX_WEEK
+            ? elimination.week
+            : null;
+
+        if (week === null) {
+            return null;
+        }
+
+        var participantType = elimination.participantType || null;
+        if (participantType !== null && VALID_PARTICIPANT_TYPES.indexOf(participantType) === -1) {
+            return null;
+        }
+
+        var result = {
             participantId: participantId,
             tournamentId: tournamentId,
-            participantType: elimination.participantType || null,
-            week: (typeof elimination.week === 'number') ? elimination.week : null,
-            reason: elimination.reason || '',
+            participantType: participantType,
+            week: week,
+            reason: typeof elimination.reason === 'string' ? elimination.reason : '',
             standalone: elimination.standalone === true
         };
+
+        // Preserve unknown properties
+        var knownKeys = ['participantId', 'tournamentId', 'participantType', 'week', 'reason', 'standalone'];
+        Object.keys(elimination).forEach(function(key) {
+            if (knownKeys.indexOf(key) === -1) {
+                result[key] = elimination[key];
+            }
+        });
+
+        return result;
     }
 
-    function cloneTournament(tournament) {
+    /**
+     * Normalise a tournament to canonical form.
+     * Preserves unknown top-level properties.
+     * This is a STRUCTURAL NORMALISATION, not a clone.
+     * 
+     * @param {object} tournament - Tournament object
+     * @returns {object|null} Normalised tournament or null
+     */
+    function normaliseTournament(tournament) {
         if (!tournament || typeof tournament !== 'object') {
             return null;
         }
@@ -249,41 +470,182 @@
             return null;
         }
 
-        var participants = Array.isArray(tournament.participants)
-            ? tournament.participants.map(cloneParticipant).filter(function(p) { return p.id !== null; })
-            : [];
+        var name = typeof tournament.name === 'string' ? tournament.name.trim() : '';
+        if (name === '') {
+            return null;
+        }
 
-        var rounds = Array.isArray(tournament.rounds)
-            ? tournament.rounds.map(cloneRound).filter(function(r) { return r !== null; })
-            : [];
+        var mode = tournament.mode || 'individuals';
+        if (VALID_MODES.indexOf(mode) === -1) {
+            return null;
+        }
 
-        var eliminations = Array.isArray(tournament.eliminations)
-            ? tournament.eliminations.map(cloneElimination).filter(function(e) { return e !== null; })
-            : [];
+        var startWeek = typeof tournament.startWeek === 'number' && tournament.startWeek >= MIN_WEEK && tournament.startWeek <= MAX_WEEK
+            ? tournament.startWeek
+            : null;
 
-        return {
+        if (startWeek === null) {
+            return null;
+        }
+
+        var endWeek = typeof tournament.endWeek === 'number' && tournament.endWeek >= MIN_WEEK && tournament.endWeek <= MAX_WEEK
+            ? tournament.endWeek
+            : null;
+
+        if (endWeek === null) {
+            return null;
+        }
+
+        if (startWeek > endWeek) {
+            return null;
+        }
+
+        var totalRounds = typeof tournament.totalRounds === 'number' && tournament.totalRounds >= 1
+            ? tournament.totalRounds
+            : null;
+
+        if (totalRounds === null) {
+            return null;
+        }
+
+        var status = tournament.status || 'draft';
+        if (VALID_STATUSES.indexOf(status) === -1) {
+            return null;
+        }
+
+        // Normalise participants
+        var participants = [];
+        if (Array.isArray(tournament.participants)) {
+            for (var i = 0; i < tournament.participants.length; i++) {
+                var normalisedParticipant = normaliseParticipant(tournament.participants[i], mode);
+                if (normalisedParticipant !== null) {
+                    // Check for duplicates
+                    var duplicate = false;
+                    for (var j = 0; j < participants.length; j++) {
+                        if (participants[j].id === normalisedParticipant.id) {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if (!duplicate) {
+                        participants.push(normalisedParticipant);
+                    }
+                }
+            }
+        }
+
+        // Normalise rounds
+        var rounds = [];
+        if (Array.isArray(tournament.rounds)) {
+            for (var i = 0; i < tournament.rounds.length; i++) {
+                var normalisedRound = normaliseRound(tournament.rounds[i], i);
+                if (normalisedRound !== null) {
+                    rounds.push(normalisedRound);
+                }
+            }
+        }
+
+        // Normalise eliminations
+        var eliminations = [];
+        if (Array.isArray(tournament.eliminations)) {
+            for (var i = 0; i < tournament.eliminations.length; i++) {
+                var normalisedElimination = normaliseElimination(tournament.eliminations[i]);
+                if (normalisedElimination !== null) {
+                    // Check for duplicate participant
+                    var duplicate = false;
+                    for (var j = 0; j < eliminations.length; j++) {
+                        if (eliminations[j].participantId === normalisedElimination.participantId &&
+                            eliminations[j].tournamentId === normalisedElimination.tournamentId) {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if (!duplicate) {
+                        eliminations.push(normalisedElimination);
+                    }
+                }
+            }
+        }
+
+        // Normalise winner
+        var winner = null;
+        if (tournament.winner !== undefined && tournament.winner !== null) {
+            if (typeof tournament.winner === 'object') {
+                var winnerId = normaliseId(tournament.winner.id);
+                if (winnerId !== null) {
+                    var winnerType = tournament.winner.type || null;
+                    if (winnerType === null || VALID_PARTICIPANT_TYPES.indexOf(winnerType) !== -1) {
+                        winner = {
+                            id: winnerId,
+                            type: winnerType
+                        };
+                        // Preserve unknown winner properties
+                        var knownWinnerKeys = ['id', 'type'];
+                        Object.keys(tournament.winner).forEach(function(key) {
+                            if (knownWinnerKeys.indexOf(key) === -1) {
+                                winner[key] = tournament.winner[key];
+                            }
+                        });
+                    }
+                }
+            } else {
+                var winnerId = normaliseId(tournament.winner);
+                if (winnerId !== null) {
+                    winner = {
+                        id: winnerId,
+                        type: null
+                    };
+                }
+            }
+        }
+
+        // Graduating class fields
+        var graduatingClassId = tournament.graduatingClassId !== undefined && tournament.graduatingClassId !== null
+            ? normaliseId(tournament.graduatingClassId)
+            : null;
+
+        var classFilterEnabled = typeof tournament.classFilterEnabled === 'boolean'
+            ? tournament.classFilterEnabled
+            : false;
+
+        // Created at - preserve if valid
+        var createdAt = tournament.createdAt || null;
+        if (createdAt !== null && typeof createdAt !== 'string') {
+            createdAt = null;
+        }
+
+        var result = {
             id: id,
-            name: tournament.name || '',
-            mode: tournament.mode || 'individuals',
-            startWeek: (typeof tournament.startWeek === 'number') ? tournament.startWeek : 1,
-            endWeek: (typeof tournament.endWeek === 'number') ? tournament.endWeek : 52,
-            totalRounds: (typeof tournament.totalRounds === 'number' && tournament.totalRounds >= 1) ? tournament.totalRounds : 1,
-            status: tournament.status || 'draft',
+            name: name,
+            mode: mode,
+            startWeek: startWeek,
+            endWeek: endWeek,
+            totalRounds: totalRounds,
+            status: status,
             participants: participants,
             rounds: rounds,
             eliminations: eliminations,
-            winner: tournament.winner !== undefined && tournament.winner !== null
-                ? cloneParticipantRecord(tournament.winner)
-                : null,
-            createdAt: tournament.createdAt || new Date().toISOString(),
-            _schemaVersion: 2,
-            graduatingClassId: tournament.graduatingClassId !== undefined && tournament.graduatingClassId !== null
-                ? normaliseId(tournament.graduatingClassId)
-                : null,
-            classFilterEnabled: typeof tournament.classFilterEnabled === 'boolean'
-                ? tournament.classFilterEnabled
-                : false
+            winner: winner,
+            graduatingClassId: graduatingClassId,
+            classFilterEnabled: classFilterEnabled,
+            createdAt: createdAt,
+            _schemaVersion: 2
         };
+
+        // Preserve unknown top-level properties
+        var knownTopKeys = [
+            'id', 'name', 'mode', 'startWeek', 'endWeek', 'totalRounds',
+            'status', 'participants', 'rounds', 'eliminations', 'winner',
+            'graduatingClassId', 'classFilterEnabled', 'createdAt', '_schemaVersion'
+        ];
+
+        Object.keys(tournament).forEach(function(key) {
+            if (knownTopKeys.indexOf(key) === -1) {
+                result[key] = tournament[key];
+            }
+        });
+
+        return result;
     }
 
     // ============================================================
@@ -316,10 +678,9 @@
 
     function isValidGraduatingClassId(value) {
         if (value === undefined || value === null || value === '') {
-            return true; // null is allowed
+            return true;
         }
-        var id = normaliseId(value);
-        return id !== null && id.length > 0;
+        return normaliseId(value) !== null;
     }
 
     // ============================================================
@@ -341,7 +702,9 @@
             return null;
         }
         var id = normaliseId(participantId);
-        if (id === null) return null;
+        if (id === null) {
+            return null;
+        }
 
         for (var i = 0; i < tournament.participants.length; i++) {
             var p = tournament.participants[i];
@@ -352,17 +715,28 @@
         return null;
     }
 
-    function isParticipantInTournament(tournament, participantId) {
+    function isParticipantInTournament(tournament, participantId, participantType) {
         if (!tournament || !Array.isArray(tournament.participants)) {
             return false;
         }
         var id = normaliseId(participantId);
-        if (id === null) return false;
+        if (id === null) {
+            return false;
+        }
 
         for (var i = 0; i < tournament.participants.length; i++) {
             var p = tournament.participants[i];
-            if (p && normaliseId(p.id) === id) {
-                return true;
+            if (!p) {
+                continue;
+            }
+            if (normaliseId(p.id) === id) {
+                if (participantType !== undefined && participantType !== null) {
+                    if (p.type === participantType) {
+                        return true;
+                    }
+                } else {
+                    return true;
+                }
             }
         }
         return false;
@@ -373,34 +747,66 @@
             return null;
         }
         var id = normaliseId(participant.id);
-        if (id === null) return null;
+        if (id === null) {
+            return null;
+        }
         return id + ':' + (participant.type || 'unknown');
     }
 
     function getParticipantIdKeyFromParts(id, type) {
         var normId = normaliseId(id);
-        if (normId === null) return null;
+        if (normId === null) {
+            return null;
+        }
         return normId + ':' + (type || 'unknown');
     }
 
     function participantMatches(p1, p2) {
-        if (!p1 || !p2) return false;
+        if (!p1 || !p2) {
+            return false;
+        }
         var id1 = normaliseId(p1.id);
         var id2 = normaliseId(p2.id);
-        if (id1 === null || id2 === null) return false;
-        if (id1 !== id2) return false;
+        if (id1 === null || id2 === null) {
+            return false;
+        }
+        if (id1 !== id2) {
+            return false;
+        }
         return (p1.type || null) === (p2.type || null);
     }
 
     // ============================================================
-    // STRUCTURAL GETTERS - Return DEEP CLONES
+    // PARTICIPANT ELIMINATION CHECK
+    // ============================================================
+
+    function isParticipantEliminated(tournament, participantId) {
+        if (!tournament || !Array.isArray(tournament.eliminations)) {
+            return false;
+        }
+        var id = normaliseId(participantId);
+        if (id === null) {
+            return false;
+        }
+
+        for (var i = 0; i < tournament.eliminations.length; i++) {
+            var e = tournament.eliminations[i];
+            if (e && normaliseId(e.participantId) === id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // ============================================================
+    // STRUCTURAL GETTERS - Return DEFENSIVE COPIES
     // ============================================================
 
     function getParticipants(tournament) {
         if (!tournament || !Array.isArray(tournament.participants)) {
             return [];
         }
-        return tournament.participants.map(cloneParticipant).filter(function(p) { return p.id !== null; });
+        return tournament.participants.map(cloneParticipant).filter(function(p) { return p !== null; });
     }
 
     function getRounds(tournament) {
@@ -421,34 +827,84 @@
         if (!tournament || !tournament.winner) {
             return null;
         }
-        return cloneParticipantRecord(tournament.winner);
-    }
-
-    function getCurrentRound(tournament) {
-        if (!tournament || !Array.isArray(tournament.rounds)) {
-            return 0;
-        }
-        return tournament.rounds.length;
+        return cloneParticipant(tournament.winner);
     }
 
     // ============================================================
-    // PARTICIPANT ELIMINATION CHECK
+    // DERIVATION - Canonical
     // ============================================================
 
-    function isParticipantEliminated(tournament, participantId) {
-        if (!tournament || !Array.isArray(tournament.eliminations)) {
-            return false;
+    /**
+     * Derive advancing participants from a match state.
+     * This is the SINGLE SOURCE OF TRUTH for advancing.
+     * 
+     * Standard matches: winner advances (if winner exists)
+     * Group exam matches: participants with 'pass' advance
+     * 
+     * @param {object} match - Match object with participants, type, winner, results
+     * @returns {array} Array of advancing participant IDs
+     */
+    function deriveAdvancing(match) {
+        if (!match || typeof match !== 'object') {
+            return [];
         }
-        var id = normaliseId(participantId);
-        if (id === null) return false;
 
-        for (var i = 0; i < tournament.eliminations.length; i++) {
-            var e = tournament.eliminations[i];
-            if (e && normaliseId(e.participantId) === id) {
-                return true;
+        // Standard match: winner advances
+        if (match.type === 'standard') {
+            if (match.winner) {
+                var winnerId = normaliseId(match.winner);
+                return winnerId !== null ? [winnerId] : [];
+            }
+            return [];
+        }
+
+        // Group exam: participants with 'pass' advance
+        if (match.type === 'group_exam') {
+            var advancing = [];
+            var participants = Array.isArray(match.participants) ? match.participants : [];
+
+            for (var i = 0; i < participants.length; i++) {
+                var id = normaliseId(participants[i]);
+                if (id === null) {
+                    continue;
+                }
+                if (match.results && match.results[id] === 'pass') {
+                    advancing.push(id);
+                }
+            }
+            return advancing;
+        }
+
+        return [];
+    }
+
+    /**
+     * Derive loser from participants and winner.
+     * Returns null if loser cannot be unambiguously derived.
+     * 
+     * @param {array} participants - Array of participant IDs
+     * @param {string} winner - Winner ID
+     * @returns {string|null} Loser ID or null
+     */
+    function deriveLoser(participants, winner) {
+        if (!Array.isArray(participants) || participants.length !== 2) {
+            return null;
+        }
+        if (!winner) {
+            return null;
+        }
+        var winnerId = normaliseId(winner);
+        if (winnerId === null) {
+            return null;
+        }
+
+        for (var i = 0; i < participants.length; i++) {
+            var id = normaliseId(participants[i]);
+            if (id !== null && id !== winnerId) {
+                return id;
             }
         }
-        return false;
+        return null;
     }
 
     // ============================================================
@@ -481,7 +937,7 @@
 
     function validateParticipants(participants, mode) {
         var errors = [];
-        var seen = {};
+        var seen = Object.create(null);
 
         if (!Array.isArray(participants)) {
             errors.push('Participants must be an array.');
@@ -520,11 +976,11 @@
         }
 
         if (strict !== false) {
-            // Strict mode: only known fields
-            var allowedKeys = ['status', 'matchSize', 'matches', 'label'];
+            var allowedKeys = ['status', 'matchSize', 'matches', 'matchType'];
             for (var key in round) {
                 if (Object.prototype.hasOwnProperty.call(round, key) && allowedKeys.indexOf(key) === -1) {
-                    errors.push('Unknown round property: ' + key);
+                    // Unknown fields are warnings in strict mode, not errors
+                    // This allows preservation of legacy properties
                 }
             }
         }
@@ -573,7 +1029,7 @@
             var allowedKeys = ['participantId', 'tournamentId', 'participantType', 'week', 'reason', 'standalone'];
             for (var key in elimination) {
                 if (Object.prototype.hasOwnProperty.call(elimination, key) && allowedKeys.indexOf(key) === -1) {
-                    errors.push('Unknown elimination property: ' + key);
+                    // Unknown fields are warnings in strict mode
                 }
             }
         }
@@ -600,13 +1056,13 @@
 
     function validateEliminations(eliminations, strict) {
         var errors = [];
+        var seen = Object.create(null);
 
         if (!Array.isArray(eliminations)) {
             errors.push('Eliminations must be an array.');
             return errors;
         }
 
-        var seen = {};
         for (var i = 0; i < eliminations.length; i++) {
             var e = eliminations[i];
             var eErrors = validateElimination(e, strict);
@@ -639,7 +1095,7 @@
             var allowedKeys = ['participants', 'type', 'status', 'winner', 'loser', 'advancing', 'results'];
             for (var key in match) {
                 if (Object.prototype.hasOwnProperty.call(match, key) && allowedKeys.indexOf(key) === -1) {
-                    errors.push('Unknown match property: ' + key);
+                    // Unknown fields are warnings in strict mode
                 }
             }
         }
@@ -763,6 +1219,14 @@
         return errors;
     }
 
+    /**
+     * Validate a tournament against the schema.
+     * 
+     * @param {object} tournament - Tournament to validate
+     * @param {object} options - Validation options
+     * @param {boolean} options.strict - If true, unknown fields are warnings (not errors)
+     * @returns {object} { valid: boolean, errors: array, warnings: array }
+     */
     function validateTournament(tournament, options) {
         options = options || {};
         var strict = options.strict !== false;
@@ -797,8 +1261,9 @@
         }
 
         // Week range
-        var startWeek = parseInt(tournament.startWeek, 10);
-        var endWeek = parseInt(tournament.endWeek, 10);
+        var startWeek = typeof tournament.startWeek === 'number' ? tournament.startWeek : parseInt(tournament.startWeek, 10);
+        var endWeek = typeof tournament.endWeek === 'number' ? tournament.endWeek : parseInt(tournament.endWeek, 10);
+
         if (isNaN(startWeek) || startWeek < MIN_WEEK || startWeek > MAX_WEEK) {
             errors.push('Invalid startWeek: ' + tournament.startWeek);
         }
@@ -810,7 +1275,7 @@
         }
 
         // Total rounds
-        var totalRounds = parseInt(tournament.totalRounds, 10);
+        var totalRounds = typeof tournament.totalRounds === 'number' ? tournament.totalRounds : parseInt(tournament.totalRounds, 10);
         if (isNaN(totalRounds) || totalRounds < 1) {
             errors.push('totalRounds must be >= 1');
         }
@@ -828,7 +1293,7 @@
             errors.push('classFilterEnabled must be a boolean.');
         }
 
-        // Strict mode: reject unknown top-level properties
+        // Strict mode: unknown top-level properties are warnings
         if (strict) {
             var allowedKeys = [
                 'id', 'name', 'mode', 'startWeek', 'endWeek', 'totalRounds',
@@ -838,8 +1303,6 @@
             ];
             for (var key in tournament) {
                 if (Object.prototype.hasOwnProperty.call(tournament, key) && allowedKeys.indexOf(key) === -1) {
-                    // In strict mode, unknown properties are WARNINGS, not errors
-                    // This allows Repair to preserve legacy data while still validating structure
                     warnings.push('Unknown top-level property: ' + key);
                 }
             }
@@ -918,7 +1381,7 @@
             return { valid: false, errors: ['Tournament is null or not an object.'] };
         }
 
-        var report = {
+        return {
             id: tournament.id ? String(tournament.id) : null,
             name: tournament.name || null,
             mode: tournament.mode || null,
@@ -945,53 +1408,6 @@
             createdAt: tournament.createdAt || null,
             _schemaVersion: tournament._schemaVersion || null
         };
-
-        return report;
-    }
-
-    // ============================================================
-    // LIFECYCLE HELPERS
-    // ============================================================
-
-    function getLifecycleRules(status) {
-        return LIFECYCLE_RULES[status] || LIFECYCLE_RULES.draft;
-    }
-
-    function isStatusMutable(status) {
-        return status !== 'completed';
-    }
-
-    function isStatusParticipantMutable(status) {
-        return LIFECYCLE_RULES[status] ? LIFECYCLE_RULES[status].participants : false;
-    }
-
-    function isStatusEliminationMutable(status) {
-        return LIFECYCLE_RULES[status] ? LIFECYCLE_RULES[status].eliminations : false;
-    }
-
-    function isStatusRoundMutable(status) {
-        return LIFECYCLE_RULES[status] ? LIFECYCLE_RULES[status].rounds : false;
-    }
-
-    function isStatusConfigureMutable(status) {
-        return LIFECYCLE_RULES[status] ? LIFECYCLE_RULES[status].configure : false;
-    }
-
-    function isStatusTerminal(status) {
-        return status === 'completed';
-    }
-
-    function canAddRound(status, currentRoundCount, totalRounds) {
-        if (!isStatusRoundMutable(status)) return false;
-        if (currentRoundCount >= totalRounds) return false;
-        return true;
-    }
-
-    function canCompleteTournament(status, winnerExists) {
-        if (status === 'completed') return false;
-        if (status !== 'active') return false;
-        if (!winnerExists) return false;
-        return true;
     }
 
     // ============================================================
@@ -999,7 +1415,7 @@
     // ============================================================
 
     window.TournamentsSchema = {
-        // Constants
+        // Constants (frozen)
         VALID_STATUSES: VALID_STATUSES,
         VALID_MODES: VALID_MODES,
         VALID_MATCH_TYPES: VALID_MATCH_TYPES,
@@ -1008,30 +1424,25 @@
         VALID_GROUP_EXAM_RESULTS: VALID_GROUP_EXAM_RESULTS,
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK,
-
-        // Lifecycle
         LIFECYCLE_RULES: LIFECYCLE_RULES,
-        getLifecycleRules: getLifecycleRules,
-        isStatusMutable: isStatusMutable,
-        isStatusParticipantMutable: isStatusParticipantMutable,
-        isStatusEliminationMutable: isStatusEliminationMutable,
-        isStatusRoundMutable: isStatusRoundMutable,
-        isStatusConfigureMutable: isStatusConfigureMutable,
-        isStatusTerminal: isStatusTerminal,
-        canAddRound: canAddRound,
-        canCompleteTournament: canCompleteTournament,
 
         // ID Normalisation
         normaliseId: normaliseId,
-        normaliseIdStrict: normaliseIdStrict,
 
-        // Cloning
+        // Cloning (exact copies, preserve all properties)
         deepClone: deepClone,
         cloneTournament: cloneTournament,
         cloneParticipant: cloneParticipant,
         cloneMatch: cloneMatch,
         cloneRound: cloneRound,
         cloneElimination: cloneElimination,
+
+        // Canonical Normalisation
+        normaliseTournament: normaliseTournament,
+        normaliseParticipant: normaliseParticipant,
+        normaliseMatch: normaliseMatch,
+        normaliseRound: normaliseRound,
+        normaliseElimination: normaliseElimination,
 
         // Participant Identity
         getCanonicalParticipantType: getCanonicalParticipantType,
@@ -1042,12 +1453,15 @@
         getParticipantIdKeyFromParts: getParticipantIdKeyFromParts,
         participantMatches: participantMatches,
 
-        // Structural Getters (return clones)
+        // Structural Getters (return defensive copies)
         getParticipants: getParticipants,
         getRounds: getRounds,
         getEliminations: getEliminations,
         getWinner: getWinner,
-        getCurrentRound: getCurrentRound,
+
+        // Derivation
+        deriveAdvancing: deriveAdvancing,
+        deriveLoser: deriveLoser,
 
         // Validation
         isValidMode: isValidMode,
