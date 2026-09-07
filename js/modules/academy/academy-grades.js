@@ -22,7 +22,7 @@
  * DEPENDENCIES:
  *   - window.ObjectUtils (from object-utils.js)
  *   - window.CharacterQueries (from character-queries.js)
- *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.AcademyClassQueries (from academy-class-queries.js)
  *   - window.DisciplineQueries (from discipline-queries.js)
  *   - window.CalendarValidation (from calendar-validation.js)
  *   - window.CalendarConstants (from calendar-constants.js)
@@ -48,7 +48,7 @@
 
     var ObjectUtils = window.ObjectUtils;
     var CharacterQueries = window.CharacterQueries;
-    var ClassesQueries = window.ClassesQueries;
+    var AcademyClassQueries = window.AcademyClassQueries;
     var DisciplineQueries = window.DisciplineQueries;
     var CalendarValidation = window.CalendarValidation;
     var CalendarConstants = window.CalendarConstants;
@@ -74,11 +74,11 @@
             missing.push('CharacterQueries.isStudent');
         }
 
-        if (!ClassesQueries || typeof ClassesQueries.getClass !== 'function') {
-            missing.push('ClassesQueries.getClass');
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClass !== 'function') {
+            missing.push('AcademyClassQueries.getClass');
         }
-        if (!ClassesQueries || typeof ClassesQueries.getCharactersByClass !== 'function') {
-            missing.push('ClassesQueries.getCharactersByClass');
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getCharactersByClass !== 'function') {
+            missing.push('AcademyClassQueries.getCharactersByClass');
         }
 
         if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
@@ -272,7 +272,7 @@
             return { valid: false, message: 'Grade data must be an object.' };
         }
 
-        var classStudents = ClassesQueries.getCharactersByClass(classId);
+        var classStudents = AcademyClassQueries.getCharactersByClass(classId);
         if (classStudents.length === 0) {
             return { valid: false, message: 'No students in this class.' };
         }
@@ -543,7 +543,7 @@
             return null;
         }
 
-        var students = ClassesQueries.getCharactersByClass(classId);
+        var students = AcademyClassQueries.getCharactersByClass(classId);
         var summaries = [];
 
         for (var i = 0; i < students.length; i++) {
@@ -907,7 +907,7 @@
         }
 
         var className = 'Unknown';
-        var cls = ClassesQueries.getClass(classId);
+        var cls = AcademyClassQueries.getClass(classId);
         if (cls) {
             className = cls.name;
         }
