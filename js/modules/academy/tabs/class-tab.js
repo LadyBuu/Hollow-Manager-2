@@ -12,7 +12,7 @@
  * 
  * IMPORTANT:
  *   - This module is UI-ONLY - all mutations delegate to domain cores
- *   - Uses ClassesCore for class operations
+ *   - Uses AcademyCore for class operations
  *   - Uses TeamCore for academic team operations
  *   - Uses AcademyGroups for auto-group operations
  *   - Uses AcademyDistribute for student distribution
@@ -23,10 +23,11 @@
  *   - Calendar bounds use CalendarValidation/CalendarConstants
  * 
  * DEPENDENCIES:
- *   - window.ClassesCore (from classes-core.js)
+ *   - window.AcademyCore (from academy-core.js)
  *   - window.TeamCore (from team-core.js)
  *   - window.AcademyDistribute (from academy-distribute.js)
  *   - window.AcademyQueries (from academy-queries.js)
+ *   - window.AcademyClassQueries (from academy-class-queries.js)
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.CalendarConstants (from calendar-constants.js)
  *   - window.NotificationSystem (from notification.js)
@@ -47,10 +48,11 @@
     // DEPENDENCY IMPORTS - NO FALLBACKS
     // ============================================================
 
-    var ClassesCore = window.ClassesCore;
+    var AcademyCore = window.AcademyCore;
     var TeamCore = window.TeamCore;
     var AcademyDistribute = window.AcademyDistribute;
     var AcademyQueries = window.AcademyQueries;
+    var AcademyClassQueries = window.AcademyClassQueries;
     var CharacterQueries = window.CharacterQueries;
     var CalendarConstants = window.CalendarConstants;
     var NotificationSystem = window.NotificationSystem;
@@ -64,28 +66,47 @@
     function checkDependencies() {
         var missing = [];
 
-        if (!ClassesCore || typeof ClassesCore.getClass !== 'function') {
-            missing.push('ClassesCore.getClass');
+        // AcademyCore (self-contained class operations)
+        if (!AcademyCore || typeof AcademyCore.getClass !== 'function') {
+            missing.push('AcademyCore.getClass');
         }
-        if (!ClassesCore || typeof ClassesCore.getClasses !== 'function') {
-            missing.push('ClassesCore.getClasses');
+        if (!AcademyCore || typeof AcademyCore.getClasses !== 'function') {
+            missing.push('AcademyCore.getClasses');
         }
-        if (!ClassesCore || typeof ClassesCore.createClass !== 'function') {
-            missing.push('ClassesCore.createClass');
+        if (!AcademyCore || typeof AcademyCore.createClass !== 'function') {
+            missing.push('AcademyCore.createClass');
         }
-        if (!ClassesCore || typeof ClassesCore.updateClass !== 'function') {
-            missing.push('ClassesCore.updateClass');
+        if (!AcademyCore || typeof AcademyCore.updateClass !== 'function') {
+            missing.push('AcademyCore.updateClass');
         }
-        if (!ClassesCore || typeof ClassesCore.deleteClass !== 'function') {
-            missing.push('ClassesCore.deleteClass');
+        if (!AcademyCore || typeof AcademyCore.deleteClass !== 'function') {
+            missing.push('AcademyCore.deleteClass');
         }
-        if (!ClassesCore || typeof ClassesCore.addCharacterToClass !== 'function') {
-            missing.push('ClassesCore.addCharacterToClass');
+        if (!AcademyCore || typeof AcademyCore.addCharacterToClass !== 'function') {
+            missing.push('AcademyCore.addCharacterToClass');
         }
-        if (!ClassesCore || typeof ClassesCore.removeCharacterFromClass !== 'function') {
-            missing.push('ClassesCore.removeCharacterFromClass');
+        if (!AcademyCore || typeof AcademyCore.removeCharacterFromClass !== 'function') {
+            missing.push('AcademyCore.removeCharacterFromClass');
         }
 
+        // AcademyClassQueries (class queries)
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClasses !== 'function') {
+            missing.push('AcademyClassQueries.getClasses');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClass !== 'function') {
+            missing.push('AcademyClassQueries.getClass');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getCharactersByClass !== 'function') {
+            missing.push('AcademyClassQueries.getCharactersByClass');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getTeamsByClass !== 'function') {
+            missing.push('AcademyClassQueries.getTeamsByClass');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getAvailableStudentsForClass !== 'function') {
+            missing.push('AcademyClassQueries.getAvailableStudentsForClass');
+        }
+
+        // TeamCore
         if (!TeamCore || typeof TeamCore.getTeam !== 'function') {
             missing.push('TeamCore.getTeam');
         }
@@ -105,10 +126,12 @@
             missing.push('TeamCore.removeMember');
         }
 
+        // AcademyDistribute
         if (!AcademyDistribute || typeof AcademyDistribute.autoDistributeStudents !== 'function') {
             missing.push('AcademyDistribute.autoDistributeStudents');
         }
 
+        // AcademyQueries
         if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
             missing.push('AcademyQueries.getClasses');
         }
@@ -137,6 +160,7 @@
             missing.push('AcademyQueries.getTournamentTeams');
         }
 
+        // CharacterQueries
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
@@ -144,6 +168,7 @@
             missing.push('CharacterQueries.getCurrentStatus');
         }
 
+        // CalendarConstants
         if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
             missing.push('CalendarConstants.MIN_WEEK');
         }
@@ -151,14 +176,17 @@
             missing.push('CalendarConstants.MAX_WEEK');
         }
 
+        // NotificationSystem
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
             missing.push('NotificationSystem.notify');
         }
 
+        // DomUtils
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
 
+        // Modal
         if (!Modal || typeof Modal.createModal !== 'function') {
             missing.push('Modal.createModal');
         }
@@ -253,7 +281,7 @@
     // ============================================================
 
     function renderClassList(state) {
-        var classes = ClassesCore.getClasses();
+        var classes = AcademyCore.getClasses();
         var selectedId = state.selectedClassId;
 
         if (classes.length === 0) {
@@ -263,8 +291,8 @@
         var html = '';
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
-            var count = AcademyQueries.getClassStudentCount(cls.id);
-            var teamCount = AcademyQueries.getClassTeamCount(cls.id);
+            var count = AcademyClassQueries.getCharactersByClass(cls.id).length;
+            var teamCount = AcademyClassQueries.getTeamsByClass(cls.id).length;
             var isSelected = selectedId === cls.id;
 
             html += '<div class="class-list-item' + (isSelected ? ' selected' : '') + '" data-id="' + escapeHtml(cls.id) + '">';
@@ -287,8 +315,8 @@
             return '<p class="empty-state">Class not found.</p>';
         }
 
-        var students = AcademyQueries.getClassStudents(cls.id);
-        var teams = AcademyQueries.getAcademicTeams(cls.id);
+        var students = AcademyClassQueries.getCharactersByClass(cls.id);
+        var teams = AcademyClassQueries.getTeamsByClass(cls.id);
         var tournaments = AcademyQueries.getTournaments(cls.id);
         var week = state.selectedWeek || 1;
 
@@ -341,7 +369,7 @@
         html += '<select id="roster-add-student" class="small">';
         html += '<option value="">Add student...</option>';
 
-        var available = AcademyQueries.getAvailableStudents(cls.id, state.selectedWeek || 1);
+        var available = AcademyClassQueries.getAvailableStudentsForClass(cls.id, state.selectedWeek || 1);
         for (var i = 0; i < available.length; i++) {
             var student = available[i];
             var name = CharacterQueries.getDisplayName(student);
@@ -483,7 +511,7 @@
                     html += '<div class="tournament-add-team-form">';
                     html += '<select class="tournament-team-select small">';
                     html += '<option value="">Add team...</option>';
-                    var availableTeams = AcademyQueries.getAcademicTeams(cls.id);
+                    var availableTeams = AcademyClassQueries.getTeamsByClass(cls.id);
                     for (var j = 0; j < availableTeams.length; j++) {
                         var at = availableTeams[j];
                         var inTournament = false;
@@ -511,7 +539,7 @@
                     html += '<div class="tournament-add-team-form">';
                     html += '<select class="tournament-team-select small">';
                     html += '<option value="">Add team...</option>';
-                    var availableTeams2 = AcademyQueries.getAcademicTeams(cls.id);
+                    var availableTeams2 = AcademyClassQueries.getTeamsByClass(cls.id);
                     for (var j2 = 0; j2 < availableTeams2.length; j2++) {
                         var at2 = availableTeams2[j2];
                         var inTournament2 = false;
@@ -948,9 +976,9 @@
                 var result;
 
                 if (editId) {
-                    result = ClassesCore.updateClass(editId, { name: name });
+                    result = AcademyCore.updateClass(editId, { name: name });
                 } else {
-                    result = ClassesCore.createClass(name);
+                    result = AcademyCore.createClass(name);
                 }
 
                 if (result && result.success) {
@@ -985,7 +1013,7 @@
         }
 
         if (editId) {
-            var cls = ClassesCore.getClass(editId);
+            var cls = AcademyCore.getClass(editId);
             if (!cls) {
                 showNotification('Class not found.', 'error');
                 return;
@@ -1097,8 +1125,8 @@
 
         modal.dataset.classId = classId;
 
-        var cls = ClassesCore.getClass(classId);
-        var teams = AcademyQueries.getAcademicTeams(classId);
+        var cls = AcademyCore.getClass(classId);
+        var teams = AcademyClassQueries.getTeamsByClass(classId);
         var week = window.Academy ? window.Academy.getSelectedWeek() : 1;
 
         var html = '';
@@ -1261,7 +1289,7 @@
 
         var classId = team.classId;
         if (classId) {
-            var available = AcademyQueries.getAvailableStudents(classId, week);
+            var available = AcademyClassQueries.getAvailableStudentsForClass(classId, week);
             var currentMembers = members.map(function(m) { return m.characterId; });
             for (var i = 0; i < available.length; i++) {
                 var s = available[i];
@@ -1329,7 +1357,7 @@
     // ============================================================
 
     function handleDeleteClass(classId) {
-        var result = ClassesCore.deleteClass(classId);
+        var result = AcademyCore.deleteClass(classId);
         if (result && result.success) {
             showNotification('Class deleted successfully.', 'success');
             if (window.Academy && typeof window.Academy.clearSelections === 'function') {
@@ -1351,7 +1379,7 @@
             return;
         }
 
-        var result = ClassesCore.addCharacterToClass(studentId, classId);
+        var result = AcademyCore.addCharacterToClass(studentId, classId);
         if (result && result.success) {
             showNotification('Student added to class.', 'success');
             if (typeof window.Academy.refresh === 'function') {
@@ -1364,7 +1392,7 @@
     }
 
     function handleRemoveStudentFromClass(classId, studentId) {
-        var result = ClassesCore.removeCharacterFromClass(studentId, classId);
+        var result = AcademyCore.removeCharacterFromClass(studentId, classId);
         if (result && result.success) {
             showNotification('Student removed from class.', 'success');
             if (typeof window.Academy.refresh === 'function') {
