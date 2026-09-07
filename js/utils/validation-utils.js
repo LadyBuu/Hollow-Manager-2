@@ -11,19 +11,14 @@
  * IMPORTANT:
  *   - These functions are PURE - no side effects
  *   - No knowledge of HollowBlades domain concepts
- *   - Delegates to CoreUtils - the SINGLE SOURCE OF TRUTH
- *   - This module exists for backward compatibility during migration
- *   - New code should use CoreUtils directly
+ *   - SELF-CONTAINED - no external dependencies
  * 
  * DEPENDENCIES:
- *   - window.CoreUtils (for all validation logic)
+ *   - None (self-contained)
  * 
  * USAGE:
- *   // Legacy (still works)
  *   var isValid = ValidationUtils.isSafeInteger(42);
- * 
- *   // Preferred (new code)
- *   var isValid = CoreUtils.isSafeInteger(42);
+ *   var parsed = ValidationUtils.parseOptionalInteger('42');
  */
 
 (function() {
@@ -33,81 +28,182 @@
     window.__validationUtilsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    if (!window.CoreUtils) {
-        throw new Error('ValidationUtils: CoreUtils is required.');
-    }
-
-    var CoreUtils = window.CoreUtils;
-
-    // ============================================================
-    // DELEGATE TO COREUTILS
+    // TYPE HELPERS
     // ============================================================
 
     /**
-     * Check if a value is a plain object.
-     * @deprecated Use CoreUtils.isPlainObject() instead.
+     * Check if a value is a plain object (not null, not array).
+     * Plain objects have Object.prototype as their prototype.
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value is a plain object
      */
     function isPlainObject(value) {
-        return CoreUtils.isPlainObject(value);
+        if (value === null || typeof value !== 'object') {
+            return false;
+        }
+
+        var prototype = Object.getPrototypeOf(value);
+        return prototype === Object.prototype || prototype === null;
     }
 
     /**
      * Check if a value is a safe integer.
-     * @deprecated Use CoreUtils.isSafeInteger() instead.
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value is a safe integer
      */
     function isSafeInteger(value) {
-        return CoreUtils.isSafeInteger(value);
+        return Number.isSafeInteger(value);
     }
 
     /**
      * Check if a value is a positive integer (>= 1).
-     * @deprecated Use CoreUtils.isPositiveInteger() instead.
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value is a positive integer
      */
     function isPositiveInteger(value) {
-        return CoreUtils.isPositiveInteger(value);
+        return isSafeInteger(value) && value >= 1;
     }
 
     /**
+     * Check if a value is a finite number.
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value is a finite number
+     */
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && Number.isFinite(value);
+    }
+
+    /**
+     * Check if a value is a non-negative number (>= 0).
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value is a non-negative number
+     */
+    function isNonNegativeNumber(value) {
+        return isFiniteNumber(value) && value >= 0;
+    }
+
+    // ============================================================
+    // INTEGER PARSING
+    // ============================================================
+
+    /**
      * Parse an optional integer value.
-     * @deprecated Use CoreUtils.parseOptionalInteger() instead.
+     * Returns null for invalid, empty, or non-numeric values.
+     * 
+     * @param {*} value - Value to parse
+     * @returns {number|null} Parsed integer or null
      */
     function parseOptionalInteger(value) {
-        return CoreUtils.parseOptionalInteger(value);
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+
+        var str = String(value).trim();
+
+        if (!/^\d+$/.test(str)) {
+            return null;
+        }
+
+        var parsed = Number(str);
+
+        if (!Number.isSafeInteger(parsed)) {
+            return null;
+        }
+
+        return parsed;
     }
 
     /**
      * Parse a positive integer with a fallback value.
-     * @deprecated Use CoreUtils.parsePositiveInteger() instead.
+     * @param {*} value - Value to parse
+     * @param {number} fallback - Fallback value if parsing fails
+     * @returns {number} Parsed integer or fallback
      */
     function parsePositiveInteger(value, fallback) {
-        return CoreUtils.parsePositiveInteger(value, fallback);
+        var parsed = parseOptionalInteger(value);
+        return (parsed !== null && parsed >= 1) ? parsed : fallback;
     }
 
     /**
      * Parse a strict positive integer.
-     * @deprecated Use CoreUtils.parseStrictPositiveInteger() instead.
+     * Returns null for invalid, empty, or non-positive values.
+     * @param {*} value - Value to parse
+     * @returns {number|null} Parsed integer or null
      */
     function parseStrictPositiveInteger(value) {
-        return CoreUtils.parseStrictPositiveInteger(value);
+        var parsed = parseOptionalInteger(value);
+        return (parsed !== null && parsed >= 1) ? parsed : null;
+    }
+
+    /**
+     * Parse a non-negative integer (>= 0).
+     * Returns null for invalid values.
+     * @param {*} value - Value to parse
+     * @returns {number|null} Parsed integer or null
+     */
+    function parseNonNegativeInteger(value) {
+        var parsed = parseOptionalInteger(value);
+        return (parsed !== null && parsed >= 0) ? parsed : null;
     }
 
     /**
      * Check if a value has content (non-empty after trimming).
-     * @deprecated Use CoreUtils.hasValue() instead.
+     * @param {*} value - Value to check
+     * @returns {boolean} True if value has content
      */
     function hasValue(value) {
-        return CoreUtils.hasValue(value);
+        return value !== undefined && value !== null && String(value).trim() !== '';
     }
 
     /**
      * Get detailed integer information.
-     * @deprecated Use CoreUtils.getIntegerInfo() instead.
+     * @param {*} value - Value to check
+     * @returns {object} { present: boolean, valid: boolean, value: number|null }
      */
     function getIntegerInfo(value) {
-        return CoreUtils.getIntegerInfo(value);
+        if (!hasValue(value)) {
+            return { present: false, valid: true, value: null };
+        }
+
+        var parsed = parseOptionalInteger(value);
+        return {
+            present: true,
+            valid: parsed !== null,
+            value: parsed
+        };
+    }
+
+    // ============================================================
+    // ARRAY HELPERS
+    // ============================================================
+
+    /**
+     * Check if an array is defined and has elements.
+     * @param {*} arr - Value to check
+     * @returns {boolean} True if array has elements
+     */
+    function isNonEmptyArray(arr) {
+        return Array.isArray(arr) && arr.length > 0;
+    }
+
+    // ============================================================
+    // STRING HELPERS
+    // ============================================================
+
+    /**
+     * Capitalize the first letter of a string.
+     * @param {*} value - Value to capitalize
+     * @returns {string} Capitalized string
+     */
+    function capitalize(value) {
+        if (!value || typeof value !== 'string') {
+            return '';
+        }
+        var str = String(value);
+        if (str.length === 0) {
+            return str;
+        }
+        return str.charAt(0).toUpperCase() + str.slice(1);
     }
 
     // ============================================================
@@ -166,13 +262,22 @@
         isObject: isObject, // Deprecated alias
         isSafeInteger: isSafeInteger,
         isPositiveInteger: isPositiveInteger,
+        isFiniteNumber: isFiniteNumber,
+        isNonNegativeNumber: isNonNegativeNumber,
 
         // Integer parsing
         parseOptionalInteger: parseOptionalInteger,
         parsePositiveInteger: parsePositiveInteger,
         parseStrictPositiveInteger: parseStrictPositiveInteger,
+        parseNonNegativeInteger: parseNonNegativeInteger,
         hasValue: hasValue,
         getIntegerInfo: getIntegerInfo,
+
+        // Array helpers
+        isNonEmptyArray: isNonEmptyArray,
+
+        // String helpers
+        capitalize: capitalize,
 
         // Deprecated period aliases
         parseOptionalPeriod: parseOptionalPeriod,
