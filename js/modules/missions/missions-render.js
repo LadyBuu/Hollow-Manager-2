@@ -5,85 +5,71 @@
  * 
  * RENDER PHILOSOPHY:
  *   - All rendering is PURE: data in, HTML out
- *   - Uses Queries for data interpretation (NOT Schema directly)
+ *   - Uses Queries for data interpretation
+ *   - Uses Views for presentation metadata
  *   - Escapes all user-controlled content
  *   - Does NOT attach event handlers (UI layer handles that)
  *   - Generates semantic HTML with CSS classes for styling
  *   - Uses defensive helpers for numeric values (progress, dates)
+ *   - Form receives complete model (no domain filtering)
  * 
  * RENDER CONTRACT:
  *   - All functions return HTML strings
  *   - All user-controlled values are escaped
  *   - No DOM manipulation, no event listeners
  *   - Data interpretation is delegated to Queries
+ *   - Presentation is delegated to Views
  *   - Inline styles are minimised; use CSS classes where possible
  *   - Progress values are clamped to 0-100 before rendering
  *   - Dates are validated before display
  * 
- * TEAM FILTERING:
- *   - Missions can ONLY be assigned to Professional or Temporary teams
- *   - Academic and Civilian teams are excluded from the dropdown
- * 
  * DEPENDENCIES:
- *   - MissionsQueries (required)
- *   - DomUtils (for HTML escaping - required)
+ *   - window.MissionsQueries (required)
+ *   - window.MissionViews (required)
+ *   - window.DomUtils (required - for HTML escaping)
  */
 
 (function() {
     'use strict';
 
-    if (window.__missionsRenderLoaded) return;
+    if (window.__missionsRenderLoaded) {
+        return;
+    }
 
     // ============================================================
     // DEPENDENCY CHECK - NO FALLBACKS
     // ============================================================
 
+    var missing = [];
+
     if (!window.MissionsQueries) {
-        return;
+        missing.push('MissionsQueries');
+    }
+
+    if (!window.MissionViews) {
+        missing.push('MissionViews');
     }
 
     if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
-        return;
+        missing.push('DomUtils.escapeHtml');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[MissionsRender] Missing dependencies: ' + missing.join(', '));
     }
 
     window.__missionsRenderLoaded = true;
 
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
     var Queries = window.MissionsQueries;
+    var Views = window.MissionViews;
     var DomUtils = window.DomUtils;
 
     // ============================================================
-    // TEAM FILTERING - Only Professional and Temporary teams
-    // ============================================================
-
-    var ALLOWED_TEAM_TYPES = ['professional', 'temporary'];
-
-    function isTeamAllowedForMission(team) {
-        if (!team || typeof team !== 'object') {
-            return false;
-        }
-        for (var i = 0; i < ALLOWED_TEAM_TYPES.length; i++) {
-            if (team.type === ALLOWED_TEAM_TYPES[i]) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    function filterTeamsForMission(teams) {
-        if (!Array.isArray(teams)) {
-            return [];
-        }
-        var result = [];
-        for (var i = 0; i < teams.length; i++) {
-            if (isTeamAllowedForMission(teams[i])) {
-                result.push(teams[i]);
-            }
-        }
-        return result;
-    }
-
-    // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
+    // HELPERS
     // ============================================================
 
     function escapeHtml(value) {
@@ -100,13 +86,6 @@
             .replace(/'/g, '&#039;');
     }
 
-    // ============================================================
-    // DEFENSIVE HELPERS
-    // ============================================================
-
-    /**
-     * Clamp progress to 0-100 for safe CSS and display.
-     */
     function getSafeProgress(value) {
         var progress = Number(value);
         if (!Number.isFinite(progress)) {
@@ -121,9 +100,6 @@
         return Math.round(progress);
     }
 
-    /**
-     * Get a safe display date from mission date components.
-     */
     function getSafeDateDisplay(mission) {
         if (!mission) {
             return 'Not specified';
@@ -134,8 +110,17 @@
         var hasDay = mission.day !== undefined && mission.day !== null;
 
         if (hasYear && hasMonth && hasDay) {
-            if (Queries.isValidCalendarDate(mission.year, mission.month, mission.day)) {
-                var monthName = Queries.getMonthName(mission.month);
+            // Use CalendarValidation for date validation if available
+            var valid = true;
+            if (window.CalendarValidation && typeof window.CalendarValidation.isValidCalendarDate === 'function') {
+                valid = window.CalendarValidation.isValidCalendarDate(mission.year, mission.month, mission.day);
+            }
+            if (valid) {
+                var monthNames = [
+                    'January', 'February', 'March', 'April', 'May', 'June',
+                    'July', 'August', 'September', 'October', 'November', 'December'
+                ];
+                var monthName = monthNames[(mission.month || 1) - 1] || '';
                 return monthName + ' ' + mission.day + ', ' + mission.year;
             }
         }
@@ -147,51 +132,12 @@
         return 'Not specified';
     }
 
-    /**
-     * Format a date string safely.
-     */
-    function formatDateSafe(dateString) {
-        if (!dateString) {
-            return '';
-        }
-        try {
-            var date = new Date(dateString);
-            if (isNaN(date.getTime())) {
-                return '';
-            }
-            return date.toLocaleDateString();
-        } catch (e) {
-            return '';
-        }
-    }
-
-    /**
-     * Format a date and time string safely.
-     */
     function formatDateTimeSafe(dateString) {
         if (!dateString) {
             return '';
         }
         try {
             var date = new Date(dateString);
-            if (isNaN(date.getTime())) {
-                return '';
-            }
-            return date.toLocaleString();
-        } catch (e) {
-            return '';
-        }
-    }
-
-    /**
-     * Format a log entry timestamp safely.
-     */
-    function formatLogTimestamp(timestamp) {
-        if (!timestamp) {
-            return '';
-        }
-        try {
-            var date = new Date(timestamp);
             if (isNaN(date.getTime())) {
                 return '';
             }
@@ -225,17 +171,15 @@
                     continue;
                 }
 
-                var priorityInfo = Queries.getPriorityInfo(mission.priority);
-                var statusInfo = Queries.getStatusInfo(mission.status);
-                var teamName = Queries.getTeamName(mission.assignedTeamId);
-                var teamType = Queries.getTeamTypeLabel(mission.assignedTeamId);
-                var teamDisplay = teamName + (teamType ? ' (' + teamType + ')' : '');
-                var difficultyLabel = Queries.getDifficultyLabel(mission.difficulty);
+                var priorityInfo = Views.getPriorityInfo(mission.priority);
+                var statusInfo = Views.getStatusInfo(mission.status);
+                var teamName = Queries.getTeamName ? Queries.getTeamName(mission.assignedTeamId) : 'Unassigned';
+                var difficultyLabel = Views.getDifficultyLabel(mission.difficulty);
                 var supportCount = mission.supportPersonnel ? mission.supportPersonnel.length : 0;
 
-                var primaryType = mission.primaryType ? Queries.getMissionTypeLabel(mission.primaryType) : 'Unclassified';
-                var subtypeLabel = Queries.getSubtypeLabel(mission.subtype);
-                var secondaryType = mission.secondaryType ? Queries.getMissionTypeLabel(mission.secondaryType) : '';
+                var primaryType = mission.primaryType ? Views.getMissionTypeLabel(mission.primaryType) : 'Unclassified';
+                var subtypeLabel = Views.getSubtypeLabel(mission.subtype);
+                var secondaryType = mission.secondaryType ? Views.getMissionTypeLabel(mission.secondaryType) : '';
 
                 var typeDisplay = primaryType;
                 if (subtypeLabel) {
@@ -245,7 +189,7 @@
                     typeDisplay += ' | ' + secondaryType;
                 }
 
-                var escalationLabel = Queries.getEscalationLabel(mission.escalation);
+                var escalationLabel = Views.getEscalationLabel(mission.escalation);
                 var progressBar = getSafeProgress(mission.progress);
 
                 var dateDisplay = getSafeDateDisplay(mission);
@@ -263,13 +207,13 @@
                 html += '</span>';
                 html += '<span class="mission-type">' + escapeHtml(typeDisplay) + '</span>';
                 html += '<span class="mission-escalation">' + escapeHtml(escalationLabel) + '</span>';
-                html += '<span class="mission-priority" style="color:' + escapeHtml(priorityInfo.color) + ';">' + escapeHtml(priorityInfo.label) + '</span>';
+                html += '<span class="mission-priority ' + priorityInfo.class + '">' + escapeHtml(priorityInfo.label) + '</span>';
                 html += '<span class="mission-difficulty">' + escapeHtml(difficultyLabel) + '</span>';
-                html += '<span class="mission-status" style="color:' + escapeHtml(statusInfo.color) + ';">' + escapeHtml(statusInfo.label) + '</span>';
-                html += '<span class="mission-team">' + escapeHtml(teamDisplay) + '</span>';
+                html += '<span class="mission-status ' + statusInfo.class + '">' + escapeHtml(statusInfo.label) + '</span>';
+                html += '<span class="mission-team">' + escapeHtml(teamName) + '</span>';
                 html += '<span class="mission-progress">';
-                html += '<div class="progress-bar"><div class="progress-fill" style="width:' + escapeHtml(progressBar) + '%;"></div></div>';
-                html += '<span class="progress-label">' + escapeHtml(progressBar) + '%</span>';
+                html += '<div class="progress-bar"><div class="progress-fill" style="width:' + progressBar + '%;"></div></div>';
+                html += '<span class="progress-label">' + progressBar + '%</span>';
                 html += '</span>';
                 html += '</div>';
             }
@@ -280,33 +224,47 @@
         /**
          * Render the mission form.
          * 
-         * @param {object} mission - Mission object (null for new)
-         * @param {array} teams - Array of team objects (will be filtered)
-         * @param {array} characters - Array of character objects
-         * @param {array} supportIds - Array of support personnel IDs (for edit)
+         * @param {object} formModel - Form model with all data
+         * @param {object} formModel.mission - Mission object (null for new)
+         * @param {array} formModel.teams - Array of eligible team objects
+         * @param {array} formModel.characters - Array of character objects
+         * @param {array} formModel.supportIds - Array of support personnel IDs
+         * @param {array} formModel.difficulties - Array of valid difficulty values
+         * @param {array} formModel.priorities - Array of valid priority values
+         * @param {array} formModel.statuses - Array of valid status values
+         * @param {array} formModel.billingTypes - Array of valid billing types
+         * @param {array} formModel.escalationTiers - Array of valid escalation tiers
+         * @param {object} formModel.missionTypes - Mission type taxonomy
+         * @param {array} formModel.monthNames - Array of month names
+         * @param {number} formModel.defaultYear - Default year
+         * @param {number} formModel.defaultMonth - Default month
+         * @param {number} formModel.defaultDay - Default day
          * @returns {string} HTML string
          */
-        renderForm: function(mission, teams, characters, supportIds) {
+        renderForm: function(formModel) {
+            formModel = formModel || {};
+
+            var mission = formModel.mission || null;
+            var teams = Array.isArray(formModel.teams) ? formModel.teams : [];
+            var characters = Array.isArray(formModel.characters) ? formModel.characters : [];
+            var supportIds = Array.isArray(formModel.supportIds) ? formModel.supportIds : [];
+            var difficulties = Array.isArray(formModel.difficulties) ? formModel.difficulties : ['easy', 'medium', 'hard', 'expert'];
+            var priorities = Array.isArray(formModel.priorities) ? formModel.priorities : ['low', 'medium', 'high', 'critical'];
+            var statuses = Array.isArray(formModel.statuses) ? formModel.statuses : ['active', 'completed', 'cancelled'];
+            var billingTypes = Array.isArray(formModel.billingTypes) ? formModel.billingTypes : ['original', 'escalated', 'emergency', 'internal'];
+            var escalationTiers = Array.isArray(formModel.escalationTiers) ? formModel.escalationTiers : ['tier_i', 'tier_ii', 'tier_iii', 'tier_iv', 'tier_v'];
+            var missionTypes = formModel.missionTypes || {};
+            var monthNames = Array.isArray(formModel.monthNames) ? formModel.monthNames : [
+                'January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November', 'December'
+            ];
+
             var isEdit = !!mission;
             var m = mission || {};
-            var now = new Date();
 
-            var year = m.year !== undefined && m.year !== null ? m.year : now.getFullYear();
-            var month = m.month !== undefined && m.month !== null ? m.month : now.getMonth() + 1;
-            var day = m.day !== undefined && m.day !== null ? m.day : now.getDate();
-
-            supportIds = Array.isArray(supportIds) ? supportIds : [];
-
-            // Get valid values from Queries
-            var validDifficulties = Queries.getValidDifficulties ? Queries.getValidDifficulties() : ['easy', 'medium', 'hard', 'expert'];
-            var validPriorities = Queries.getValidPriorities ? Queries.getValidPriorities() : ['low', 'medium', 'high', 'critical'];
-            var validStatuses = Queries.getValidStatuses ? Queries.getValidStatuses() : ['active', 'completed', 'cancelled'];
-            var validBillingTypes = Queries.getValidBillingTypes ? Queries.getValidBillingTypes() : ['original', 'escalated', 'emergency', 'internal'];
-            var validEscalationTiers = Queries.getValidEscalationTiers ? Queries.getValidEscalationTiers() : ['tier_i', 'tier_ii', 'tier_iii', 'tier_iv', 'tier_v'];
-            var missionTypes = Queries.getMissionTypes ? Queries.getMissionTypes() : {};
-
-            // Filter teams: ONLY Professional and Temporary teams
-            var filteredTeams = filterTeamsForMission(teams);
+            var year = m.year !== undefined && m.year !== null ? m.year : (formModel.defaultYear || new Date().getFullYear());
+            var month = m.month !== undefined && m.month !== null ? m.month : (formModel.defaultMonth || new Date().getMonth() + 1);
+            var day = m.day !== undefined && m.day !== null ? m.day : (formModel.defaultDay || new Date().getDate());
 
             var html = '<form class="mission-form" id="mission-form-inner">';
             html += '<div class="form-grid">';
@@ -337,7 +295,6 @@
             html += '<div class="date-field"><label class="date-label">Year</label><input type="number" id="mission-year" value="' + escapeHtml(year) + '" min="1000" max="9999" class="date-year"></div>';
             html += '<div class="date-field"><label class="date-label">Month</label><select id="mission-month" class="date-month">';
 
-            var monthNames = Queries.MONTH_NAMES || [];
             for (var mi = 0; mi < monthNames.length; mi++) {
                 var monthNum = mi + 1;
                 var selected = monthNum === month ? 'selected' : '';
@@ -359,7 +316,7 @@
                 var key = typeKeys[tk];
                 var type = missionTypes[key];
                 var selected2 = m.primaryType === key ? 'selected' : '';
-                html += '<option value="' + escapeHtml(key) + '" ' + selected2 + '>' + escapeHtml(type.icon + ' ' + type.label) + '</option>';
+                html += '<option value="' + escapeHtml(key) + '" ' + selected2 + '>' + escapeHtml(type.label) + '</option>';
             }
 
             html += '</select></div>';
@@ -370,11 +327,11 @@
             html += '<select id="mission-subtype">';
             html += '<option value="">Select...</option>';
 
-            if (m.primaryType) {
-                var subtypes = Queries.getSubtypesForType(m.primaryType);
+            if (m.primaryType && missionTypes[m.primaryType]) {
+                var subtypes = missionTypes[m.primaryType].subtypes || [];
                 for (var si = 0; si < subtypes.length; si++) {
                     var subtype = subtypes[si];
-                    var label = Queries.getSubtypeLabel(subtype);
+                    var label = Views.getSubtypeLabel(subtype);
                     var selected3 = m.subtype === subtype ? 'selected' : '';
                     html += '<option value="' + escapeHtml(subtype) + '" ' + selected3 + '>' + escapeHtml(label) + '</option>';
                 }
@@ -392,7 +349,7 @@
                 var key2 = typeKeys[tk2];
                 var type2 = missionTypes[key2];
                 var selected4 = m.secondaryType === key2 ? 'selected' : '';
-                html += '<option value="' + escapeHtml(key2) + '" ' + selected4 + '>' + escapeHtml(type2.icon + ' ' + type2.label) + '</option>';
+                html += '<option value="' + escapeHtml(key2) + '" ' + selected4 + '>' + escapeHtml(type2.label) + '</option>';
             }
 
             html += '</select></div>';
@@ -402,11 +359,11 @@
             html += '<label>Escalation Level</label>';
             html += '<select id="mission-escalation">';
 
-            for (var ei = 0; ei < validEscalationTiers.length; ei++) {
-                var tier = validEscalationTiers[ei];
-                var label2 = Queries.getEscalationLabel(tier);
+            for (var ei = 0; ei < escalationTiers.length; ei++) {
+                var tier = escalationTiers[ei];
+                var label = Views.getEscalationLabel(tier);
                 var selected5 = m.escalation === tier ? 'selected' : '';
-                html += '<option value="' + escapeHtml(tier) + '" ' + selected5 + '>' + escapeHtml(label2) + '</option>';
+                html += '<option value="' + escapeHtml(tier) + '" ' + selected5 + '>' + escapeHtml(label) + '</option>';
             }
 
             html += '</select></div>';
@@ -440,11 +397,11 @@
             html += '<label>Difficulty</label>';
             html += '<select id="mission-difficulty">';
 
-            for (var di = 0; di < validDifficulties.length; di++) {
-                var diff = validDifficulties[di];
-                var label3 = Queries.getDifficultyLabel(diff);
+            for (var di = 0; di < difficulties.length; di++) {
+                var diff = difficulties[di];
+                var label = Views.getDifficultyLabel(diff);
                 var selected6 = m.difficulty === diff ? 'selected' : '';
-                html += '<option value="' + escapeHtml(diff) + '" ' + selected6 + '>' + escapeHtml(label3) + '</option>';
+                html += '<option value="' + escapeHtml(diff) + '" ' + selected6 + '>' + escapeHtml(label) + '</option>';
             }
 
             html += '</select></div>';
@@ -454,9 +411,9 @@
             html += '<label>Priority</label>';
             html += '<select id="mission-priority">';
 
-            for (var pi = 0; pi < validPriorities.length; pi++) {
-                var pri = validPriorities[pi];
-                var info = Queries.getPriorityInfo(pri);
+            for (var pi = 0; pi < priorities.length; pi++) {
+                var pri = priorities[pi];
+                var info = Views.getPriorityInfo(pri);
                 var selected7 = m.priority === pri ? 'selected' : '';
                 html += '<option value="' + escapeHtml(pri) + '" ' + selected7 + '>' + escapeHtml(info.label) + '</option>';
             }
@@ -486,11 +443,11 @@
             html += '<label>Billing Status</label>';
             html += '<select id="mission-billing">';
 
-            for (var bi = 0; bi < validBillingTypes.length; bi++) {
-                var bill = validBillingTypes[bi];
-                var label4 = Queries.getBillingLabel(bill);
+            for (var bi = 0; bi < billingTypes.length; bi++) {
+                var bill = billingTypes[bi];
+                var label = Views.getBillingLabel(bill);
                 var selected8 = m.billing === bill ? 'selected' : '';
-                html += '<option value="' + escapeHtml(bill) + '" ' + selected8 + '>' + escapeHtml(label4) + '</option>';
+                html += '<option value="' + escapeHtml(bill) + '" ' + selected8 + '>' + escapeHtml(label) + '</option>';
             }
 
             html += '</select></div>';
@@ -500,68 +457,36 @@
             html += '<label>Status</label>';
             html += '<select id="mission-status">';
 
-            for (var si2 = 0; si2 < validStatuses.length; si2++) {
-                var status = validStatuses[si2];
-                var info2 = Queries.getStatusInfo(status);
+            for (var si2 = 0; si2 < statuses.length; si2++) {
+                var status = statuses[si2];
+                var info = Views.getStatusInfo(status);
                 var selected9 = m.status === status ? 'selected' : '';
-                html += '<option value="' + escapeHtml(status) + '" ' + selected9 + '>' + escapeHtml(info2.label) + '</option>';
+                html += '<option value="' + escapeHtml(status) + '" ' + selected9 + '>' + escapeHtml(info.label) + '</option>';
             }
 
             html += '</select></div>';
 
-            // Assign Team - FILTERED to Professional and Temporary only
+            // Assign Team - Uses pre-filtered eligible teams
             html += '<div class="form-group">';
             html += '<label>Assign Team</label>';
             html += '<p class="field-hint">Missions can only be assigned to Professional or Temporary teams</p>';
             html += '<select id="mission-team">';
             html += '<option value="">Unassigned</option>';
 
-            if (filteredTeams.length > 0) {
-                // Sort teams: Professional first, then Temporary
-                var sortedTeams = filteredTeams.slice();
+            if (teams.length > 0) {
+                // Sort teams
+                var sortedTeams = teams.slice();
                 sortedTeams.sort(function(a, b) {
-                    var typeOrder = { 'professional': 0, 'temporary': 1 };
-                    var orderA = typeOrder[a.type] !== undefined ? typeOrder[a.type] : 2;
-                    var orderB = typeOrder[b.type] !== undefined ? typeOrder[b.type] : 2;
-                    if (orderA !== orderB) {
-                        return orderA - orderB;
-                    }
                     var nameA = a.name || '';
                     var nameB = b.name || '';
                     return nameA.localeCompare(nameB);
                 });
 
-                // Group by type for optgroups
-                var professionalTeams = [];
-                var temporaryTeams = [];
-
                 for (var ti = 0; ti < sortedTeams.length; ti++) {
-                    var t = sortedTeams[ti];
-                    if (t.type === 'professional') {
-                        professionalTeams.push(t);
-                    } else if (t.type === 'temporary') {
-                        temporaryTeams.push(t);
-                    }
-                }
-
-                if (professionalTeams.length > 0) {
-                    html += '<optgroup label="Professional Teams">';
-                    for (var pt = 0; pt < professionalTeams.length; pt++) {
-                        var team = professionalTeams[pt];
-                        var selected10 = Queries.normaliseId(m.assignedTeamId) === Queries.normaliseId(team.id) ? 'selected' : '';
-                        html += '<option value="' + escapeHtml(team.id) + '" ' + selected10 + '>' + escapeHtml(team.name) + '</option>';
-                    }
-                    html += '</optgroup>';
-                }
-
-                if (temporaryTeams.length > 0) {
-                    html += '<optgroup label="Temporary Teams">';
-                    for (var tt = 0; tt < temporaryTeams.length; tt++) {
-                        var team2 = temporaryTeams[tt];
-                        var selected11 = Queries.normaliseId(m.assignedTeamId) === Queries.normaliseId(team2.id) ? 'selected' : '';
-                        html += '<option value="' + escapeHtml(team2.id) + '" ' + selected11 + '>' + escapeHtml(team2.name) + '</option>';
-                    }
-                    html += '</optgroup>';
+                    var team = sortedTeams[ti];
+                    var selected10 = Queries.normaliseId ? Queries.normaliseId(m.assignedTeamId) === Queries.normaliseId(team.id) : String(m.assignedTeamId) === String(team.id);
+                    var isSelected = selected10 ? 'selected' : '';
+                    html += '<option value="' + escapeHtml(team.id) + '" ' + isSelected + '>' + escapeHtml(team.name) + '</option>';
                 }
             } else {
                 html += '<option value="" disabled>No Professional or Temporary teams available</option>';
@@ -644,23 +569,21 @@
                 return '<p class="empty-state">Mission not found.</p>';
             }
 
-            var priorityInfo = Queries.getPriorityInfo(mission.priority);
-            var statusInfo = Queries.getStatusInfo(mission.status);
-            var teamName = Queries.getTeamName(mission.assignedTeamId);
-            var teamType = Queries.getTeamTypeLabel(mission.assignedTeamId);
-            var teamDisplay = teamName + (teamType ? ' (' + teamType + ')' : '');
-            var difficultyLabel = Queries.getDifficultyLabel(mission.difficulty);
-            var supportNames = Queries.getSupportPersonnelNames(mission);
+            var priorityInfo = Views.getPriorityInfo(mission.priority);
+            var statusInfo = Views.getStatusInfo(mission.status);
+            var teamName = Queries.getTeamName ? Queries.getTeamName(mission.assignedTeamId) : 'Unassigned';
+            var difficultyLabel = Views.getDifficultyLabel(mission.difficulty);
+            var supportNames = Queries.getSupportPersonnelNames ? Queries.getSupportPersonnelNames(mission) : [];
 
-            var primaryType = mission.primaryType ? Queries.getMissionTypeLabel(mission.primaryType) : 'Unclassified';
-            var secondaryType = mission.secondaryType ? Queries.getMissionTypeLabel(mission.secondaryType) : 'None';
-            var subtypeLabel = Queries.getSubtypeLabel(mission.subtype) || 'None';
-            var escalationLabel = Queries.getEscalationLabel(mission.escalation);
-            var billingLabel = Queries.getBillingLabel(mission.billing);
+            var primaryType = mission.primaryType ? Views.getMissionTypeLabel(mission.primaryType) : 'Unclassified';
+            var secondaryType = mission.secondaryType ? Views.getMissionTypeLabel(mission.secondaryType) : 'None';
+            var subtypeLabel = Views.getSubtypeLabel(mission.subtype) || 'None';
+            var escalationLabel = Views.getEscalationLabel(mission.escalation);
+            var billingLabel = Views.getBillingLabel(mission.billing);
 
             var progressBar = getSafeProgress(mission.progress);
-            var createdAt = formatDateSafe(mission.createdAt);
-            var completedAt = mission.completedAt ? formatDateSafe(mission.completedAt) : 'Not completed';
+            var createdAt = formatDateTimeSafe(mission.createdAt);
+            var completedAt = mission.completedAt ? formatDateTimeSafe(mission.completedAt) : 'Not completed';
 
             var dateDisplay = getSafeDateDisplay(mission);
 
@@ -680,8 +603,8 @@
             // Basic info
             html += '<div class="detail-row"><span class="label">Mission ID:</span> <span class="mission-id-display">' + escapeHtml(mission.missionId || 'N/A') + '</span></div>';
             html += '<div class="detail-row"><span class="label">Date:</span> <span>' + escapeHtml(dateDisplay) + '</span></div>';
-            html += '<div class="detail-row"><span class="label">Status:</span> <span class="status-display" style="color:' + escapeHtml(statusInfo.color) + ';">' + escapeHtml(statusInfo.label) + '</span></div>';
-            html += '<div class="detail-row"><span class="label">Priority:</span> <span class="priority-display" style="color:' + escapeHtml(priorityInfo.color) + ';">' + escapeHtml(priorityInfo.label) + '</span></div>';
+            html += '<div class="detail-row"><span class="label">Status:</span> <span class="status-display ' + statusInfo.class + '">' + escapeHtml(statusInfo.label) + '</span></div>';
+            html += '<div class="detail-row"><span class="label">Priority:</span> <span class="priority-display ' + priorityInfo.class + '">' + escapeHtml(priorityInfo.label) + '</span></div>';
             html += '<div class="detail-row"><span class="label">Difficulty:</span> <span>' + escapeHtml(difficultyLabel) + '</span></div>';
             html += '<div class="detail-row"><span class="label">Primary Category:</span> <span>' + escapeHtml(primaryType) + '</span></div>';
 
@@ -703,7 +626,7 @@
                 html += '<div class="detail-row"><span class="label">Environment:</span> <span>' + escapeHtml(mission.environment) + '</span></div>';
             }
 
-            html += '<div class="detail-row"><span class="label">Team:</span> <span>' + escapeHtml(teamDisplay) + '</span></div>';
+            html += '<div class="detail-row"><span class="label">Team:</span> <span>' + escapeHtml(teamName) + '</span></div>';
 
             // Support personnel
             if (supportNames.length > 0) {
@@ -740,8 +663,8 @@
             // Progress
             html += '<div class="progress-section"><strong>Progress:</strong>';
             html += '<div class="progress-bar-container">';
-            html += '<div class="progress-bar"><div class="progress-fill" style="width:' + escapeHtml(progressBar) + '%;"></div></div>';
-            html += '<span class="progress-label">' + escapeHtml(progressBar) + '%</span>';
+            html += '<div class="progress-bar"><div class="progress-fill" style="width:' + progressBar + '%;"></div></div>';
+            html += '<span class="progress-label">' + progressBar + '%</span>';
             html += '</div></div>';
 
             // Objectives
@@ -773,7 +696,7 @@
                     if (!entry || typeof entry !== 'object') {
                         continue;
                     }
-                    var timestamp = formatLogTimestamp(entry.timestamp);
+                    var timestamp = formatDateTimeSafe(entry.timestamp);
                     html += '<div class="log-entry">' + escapeHtml(timestamp) + ' - ' + escapeHtml(entry.message) + '</div>';
                 }
 
