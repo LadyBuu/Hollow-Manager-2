@@ -27,7 +27,7 @@
  * DEPENDENCIES:
  *   - window.CalendarValidation (from calendar-validation.js)
  *   - window.AcademyConstants (from academy-constants.js)
- *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.AcademyClassQueries (from academy-class-queries.js)
  *   - window.CharacterQueries (from character-queries.js)
  * 
  * USAGE:
@@ -51,7 +51,7 @@
 
     var CalendarValidation = window.CalendarValidation;
     var AcademyConstants = window.AcademyConstants;
-    var ClassesQueries = window.ClassesQueries;
+    var AcademyClassQueries = window.AcademyClassQueries;
     var CharacterQueries = window.CharacterQueries;
 
     // ============================================================
@@ -75,8 +75,8 @@
             missing.push('AcademyConstants.VALID_SUB_TAB_IDS');
         }
 
-        if (!ClassesQueries || typeof ClassesQueries.getClass !== 'function') {
-            missing.push('ClassesQueries.getClass');
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClass !== 'function') {
+            missing.push('AcademyClassQueries.getClass');
         }
 
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
@@ -152,7 +152,7 @@
         if (!classId) {
             return true;
         }
-        var cls = ClassesQueries.getClass(classId);
+        var cls = AcademyClassQueries.getClass(classId);
         return cls !== null;
     }
 
