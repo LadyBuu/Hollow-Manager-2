@@ -14,6 +14,7 @@ HollowBlades is a single-page application for managing a fantasy academy, charac
 6. **Explicit Bridges** - Infrastructure components communicate via explicit APIs, not magic events
 7. **Mutation Pipeline** - All mutations flow through MutationPipeline for transaction/persistence/logging
 8. **Candidate-Based Mutations** - All domain mutations build candidates before committing
+9. **Defensive Copies** - All query getters return defensive copies to prevent accidental mutation
 
 ## Layer Overview
 
@@ -80,6 +81,11 @@ HollowBlades is a single-page application for managing a fantasy academy, charac
 │  │ (formatting)│  │ (timing)  │  │  (calendar bounds, day names)      │  │
 │  └─────────────┘  └───────────┘  └─────────────────────────────────────┘  │
 │                                                                             │
+│  ┌─────────────┐  ┌───────────┐  ┌─────────────────────────────────────┐  │
+│  │CalendarVali-│  │Academy    │  │          CalendarScheduleCore       │  │
+│  │ dation      │  │Constants  │  │  (schedule semantics)               │  │
+│  └─────────────┘  └───────────┘  └─────────────────────────────────────┘  │
+│                                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │                       Constants (global)                            │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
@@ -117,6 +123,9 @@ HollowBlades is a single-page application for managing a fantasy academy, charac
 | Tournament Structure | `TournamentsSchema` | `TournamentsSchema.validateTournament()` |
 | Tournament Lifecycle | `TournamentLifecycle` | `TournamentLifecycle.canEditTournament()` |
 | Tournament Queries | `TournamentsQueries` | `TournamentsQueries.getTournaments()` |
+| Mission Structure | `MissionsSchema` | `MissionsSchema.validateMission()` |
+| Mission Rules | `MissionRules` | `MissionRules.calculateProgress()` |
+| Mission Views | `MissionViews` | `MissionViews.getPriorityInfo()` |
 
 ## Module Descriptions
 
@@ -312,6 +321,7 @@ Modal lifecycle management.
 - `modalClickOutside(modal, onClose)` - Click outside to close
 - `modalEscapeKey(modal, onClose)` - Escape key to close
 - `modalSetup(modal, onClose)` - Both click-outside and escape
+- `confirm(message)` - Show confirmation dialog
 
 **Dependencies:** DomUtils
 
@@ -476,8 +486,6 @@ Single source of truth for tournament lifecycle rules.
 - `isStatusTerminal()` - Check if status is terminal
 - `isStatusMutable()` - Check if any mutation is allowed
 - `getLifecycleStatus(tournament)` - Complete lifecycle status
-- `isValidStatusTransition(from, to)` - Check if transition is allowed
-- `getAllowedTransitions(status)` - Get allowed transitions
 
 **Dependencies:** TournamentsSchema
 
@@ -497,12 +505,6 @@ Canonical mutation API for tournaments.
 - `addRound(tournamentId, roundData)` - Add round
 - `removeRound(tournamentId, roundIndex)` - Remove round
 - `completeTournament(tournamentId, force)` - Complete tournament
-- `getLifecycleStatus(tournamentId)` - Get lifecycle status
-- `getCurrentRound(tournament)` - Get current round number
-- `isComplete(tournamentId)` - Check if complete (query projection)
-- `getParticipants(tournamentId)` - Get participants (defensive copy)
-- `getActiveParticipants(tournamentId)` - Get active participants
-- `getWinner(tournamentId)` - Get winner (defensive copy)
 
 **Dependencies:** TournamentsSchema, TournamentLifecycle, CharacterQueries, TeamQueries, CalendarValidation, IdUtils, ObjectUtils
 
@@ -512,20 +514,14 @@ Canonical mutation API for tournaments.
 Canonical match mutation API for tournaments.
 
 **Functions:**
-- `addMatch(tournamentId, roundIndex, matchData)` - Add a match
-- `removeMatch(tournamentId, roundIndex, matchIndex)` - Remove a match
-- `updateMatch(tournamentId, roundIndex, matchIndex, updates)` - Update a match
-- `completeMatch(tournamentId, roundIndex, matchIndex, winnerId, results)` - Complete a match
-- `setGroupExamResult(tournamentId, roundIndex, matchIndex, participantId, result)` - Set group exam result
-- `setMatchWinner(tournamentId, roundIndex, matchIndex, winnerId)` - Set match winner
-- `getRoundMatches(tournamentId, roundIndex)` - Get matches for a round (defensive copies)
-- `getMatch(tournamentId, roundIndex, matchIndex)` - Get a match (defensive copy)
-- `isMatchComplete(tournamentId, roundIndex, matchIndex)` - Check if match is complete
-- `getMatchWinner(tournamentId, roundIndex, matchIndex)` - Get match winner
-- `getMatchLosers(tournamentId, roundIndex, matchIndex)` - Get match losers
-- `getMatchAdvancing(tournamentId, roundIndex, matchIndex)` - Get advancing participants (derived)
-- `deriveAdvancing(match)` - Canonical derivation
-- `validateResultParticipants(participants, results)` - Validate result participants
+- `addMatch()` - Add a match
+- `removeMatch()` - Remove a match
+- `updateMatch()` - Update a match
+- `completeMatch()` - Complete a match
+- `setGroupExamResult()` - Set group exam result
+- `setMatchWinner()` - Set match winner
+- `getRoundMatches()` - Get matches for a round (defensive copies)
+- `getMatch()` - Get a match (defensive copy)
 
 **Dependencies:** TournamentsSchema, TournamentLifecycle, TournamentsCore, ObjectUtils, IdUtils
 
@@ -535,13 +531,10 @@ Canonical match mutation API for tournaments.
 Cross-domain elimination operations.
 
 **Functions:**
-- `markCharacterEliminated(tournamentId, characterId, week, reason)` - Mark character eliminated
-- `unmarkCharacterEliminated(tournamentId, characterId)` - Restore character
-- `isCharacterEliminated(tournamentId, characterId)` - Check if eliminated
-- `getCharacterEliminations(tournamentId)` - Get character eliminations
-- `rebuildEliminatedWeeks(char)` - Rebuild eliminated weeks (pure)
-- `buildProposedCharacterState(char, tournamentId, charElimination)` - Build proposed character state
-- `validateProposedCharacter(proposedChar, tournamentId)` - Validate proposed character state
+- `markCharacterEliminated()` - Mark character eliminated
+- `unmarkCharacterEliminated()` - Restore character
+- `isCharacterEliminated()` - Check if eliminated
+- `getCharacterEliminations()` - Get character eliminations
 
 **Dependencies:** TournamentsCore, TournamentsSchema, TournamentLifecycle, CharacterQueries, CalendarValidation, IdUtils
 
@@ -553,80 +546,220 @@ PURE read-only tournament queries.
 **Functions:**
 - `getTournaments()` - Get all tournaments (defensive copies)
 - `getTournament(id)` - Get tournament (defensive copy)
-- `getParticipantRecord(tournament, id)` - Get participant record
-- `getParticipantType(participant, tournament)` - Get participant type
-- `getParticipantName(participant, tournament)` - Get participant name
-- `getTournamentParticipantName(tournament, participantId)` - Convenience wrapper
-- `getTournamentParticipantType(tournament, participantId)` - Convenience wrapper
-- `getCanonicalParticipantType(mode)` - Get canonical participant type
-- `isParticipantInTournament(tournament, participantId)` - Check if participant is in tournament
-- `isParticipantEliminated(tournament, participantId)` - Check if eliminated
-- `getRoundParticipants(tournament, roundIndex)` - Get participants in a round
-- `getParticipantRoundStatus(tournament, roundIndex, participantId)` - Get participant status
-- `getRoundStatusSummary(tournament, roundIndex)` - Get round status summary
-- `getRoundStatus(tournament, roundIndex)` - Get round status
-- `getRoundCount(tournament)` - Get round count
-- `getMatch(tournament, roundIndex, matchIndex)` - Get match (defensive copy)
-- `getMatchCount(tournament, roundIndex)` - Get match count
-- `isMatchComplete(tournament, roundIndex, matchIndex)` - Check if match is complete
-- `getMatchWinner(tournament, roundIndex, matchIndex)` - Get match winner
-- `getMatchLosers(tournament, roundIndex, matchIndex)` - Get match losers
-- `getMatchAdvancing(tournament, roundIndex, matchIndex)` - Get advancing participants (derived)
-- `getParticipantCount(tournament)` - Get participant count
-- `getEliminationCount(tournament)` - Get elimination count
-- `getWinner(tournament)` - Get winner (defensive copy)
-- `getWinnerName(tournament)` - Get winner name
-- `isTournamentComplete(tournament)` - Check if complete (query projection)
-- `getCurrentRound(tournament)` - Get current round number
+- `getParticipantRecord()` - Get participant record
+- `getParticipantType()` - Get participant type
+- `getParticipantName()` - Get participant name
+- `getRoundParticipants()` - Get participants in a round
+- `getParticipantRoundStatus()` - Get participant status
+- `getRoundStatus()` - Get round status
+- `getMatch()` - Get match (defensive copy)
+- `getMatchAdvancing()` - Get advancing participants (derived)
+- `getWinner()` - Get winner (defensive copy)
+- `isTournamentComplete()` - Check if complete (query projection)
 
 **Dependencies:** TournamentsSchema, CharacterQueries, TeamQueries, IdUtils
 
 ---
 
 #### `modules/tournaments/tournaments-render.js`
-PURE rendering functions. Takes data, returns HTML.
+PURE rendering functions for tournaments.
 
 **Functions:**
-- `getWeekRange()` - Get week range for forms
-- `renderList(tournaments)` - Render tournament list
-- `renderDetail(tournament)` - Render tournament detail
-- `renderInfo(tournament)` - Render tournament info section
-- `renderParticipants(tournament)` - Render participants section
-- `renderRounds(tournament)` - Render rounds section
-- `renderEliminations(tournament)` - Render eliminations section
-- `renderWinner(tournament)` - Render winner section
-- `renderForm(tournament, modeOptions, statusOptions)` - Render tournament form
-- `renderMatchForm(tournament, roundIndex, matchIndex, availableParticipants)` - Render match form
+- `renderList()` - Render tournament list
+- `renderDetail()` - Render tournament detail
+- `renderInfo()` - Render tournament info section
+- `renderParticipants()` - Render participants section
+- `renderRounds()` - Render rounds section
+- `renderEliminations()` - Render eliminations section
+- `renderWinner()` - Render winner section
+- `renderForm()` - Render tournament form
+- `renderMatchForm()` - Render match form
 
 **Dependencies:** TournamentsQueries, CalendarConstants, CalendarValidation
 
 ---
 
 #### `modules/tournaments/tournaments-ui.js`
-Tournament UI controller - event wiring, modal management, user interactions.
+Tournament UI controller.
 
 **Functions:**
-- `render(container)` - Render tournaments
-- `viewTournament(id)` - View tournament
+- `render()` - Render tournaments
+- `viewTournament()` - View tournament
 - `closeDetail()` - Close tournament detail
-- `showForm(editId)` - Show tournament form
-- `renderList(container)` - Render tournament list
+- `showForm()` - Show tournament form
 
 **Dependencies:** TournamentsCore, TournamentsRender, TournamentsQueries, TournamentsMatches, NotificationSystem, Modal, TabManager, ClassesQueries
 
 ---
 
 #### `modules/tournaments/tournaments-repair.js`
-Explicit repair functions for legacy/malformed data.
+Explicit repair functions for legacy/malformed tournament data.
 
 **Functions:**
-- `repairTournament(tourn, options)` - Repair a single tournament
+- `repairTournament()` - Repair a single tournament
 - `repairAllTournaments()` - Repair all tournaments (atomic in-memory)
-- `validateTournament(tourn)` - Validate against schema
-- `needsRepair(tourn)` - Check if repair is needed
-- `getRepairSummary(report)` - Get repair summary
+- `validateTournament()` - Validate against schema
+- `needsRepair()` - Check if repair is needed
 
 **Dependencies:** TournamentsSchema, IdUtils, CalendarValidation, ObjectUtils
+
+---
+
+### Mission Domain
+
+#### `modules/missions/missions-schema.js`
+Single source of truth for mission structure and validation.
+
+**Constants:**
+- `VALID_STATUSES`, `VALID_PRIORITIES`, `VALID_DIFFICULTIES`, `VALID_BILLING_TYPES`, `VALID_ESCALATION_TIERS`
+- `DIFFICULTY_CODES` - E, M, H, X
+- `MISSION_TYPES` - Mission taxonomy (combat, recovery, investigation, etc.)
+
+**Functions:**
+- `validateMission(mission)` - Structural validation
+- `canonicaliseMissionShape(input)` - Structural canonicalisation only (no business derivation)
+- `getMissionType()`, `getMissionTypeLabel()` - Type helpers
+- `getSubtypeLabel()`, `getEscalationLabel()`, `getBillingLabel()` - Label helpers
+- `isValidStatus()`, `isValidPriority()`, `isValidDifficulty()` - Predicates (return booleans)
+
+**Dependencies:** CalendarValidation, IdUtils
+
+---
+
+#### `modules/missions/mission-views.js`
+Presentation metadata for missions.
+
+**Functions:**
+- `getPriorityLabel()`, `getPriorityColor()`, `getPriorityClass()`, `getPriorityInfo()`
+- `getStatusLabel()`, `getStatusColor()`, `getStatusClass()`, `getStatusInfo()`
+- `getDifficultyLabel()`, `getDifficultyCode()`
+- `getEscalationLabel()`, `getBillingLabel()`
+- `getMissionTypeLabel()`, `getMissionTypeIcon()`, `getMissionTypeColor()`, `getMissionTypeInfo()`
+- `getSubtypeLabel()`
+- `formatMissionId()`, `parseMissionId()`
+
+**Dependencies:** MissionsSchema
+
+---
+
+#### `modules/missions/mission-rules.js`
+Single source of truth for mission derivation and lifecycle rules.
+
+**Functions:**
+- `calculateProgress(objectives)` - Pure function
+- `calculatePay(basePay, surchargePay)` - Pure function
+- `deriveStatus(originalStatus, progress, objectives)` - Status derivation
+- `deriveCompletedAt(originalStatus, proposedStatus, originalCompletedAt, progress, policy)` - Timestamp rules
+- `canModifyObjectives(mission)` - Objective mutability check
+- `shouldAutoComplete(mission)` - Auto-completion predicate
+- `isTeamEligibleForMission(team)` - Team eligibility
+- `filterEligibleTeams(teams)` - Filter eligible teams
+- `recalculateMission(mission, completedAtPolicy)` - Complete recalculation
+
+**Dependencies:** MissionsSchema
+
+---
+
+#### `modules/missions/mission-id.js`
+Mission ID generation and parsing.
+
+**Functions:**
+- `generateMissionId(teamId, year, difficulty, existingIds)` - Generate next ID
+- `generateMissionIdPreview(teamId, year, difficulty, sequence)` - Preview ID
+- `parseMissionId(missionId)` - Parse into components
+- `validateMissionIdFormat(missionId)` - Validate format
+- `formatMissionId(missionId)` - Format for display
+- `getMissionIdTeam()`, `getMissionIdYear()`, `getMissionIdDifficulty()` - Component extraction
+
+**Dependencies:** TeamQueries, MissionsQueries, CalendarConstants, MissionsSchema
+
+---
+
+#### `modules/missions/missions-core.js`
+Canonical mutation API for missions.
+
+**Functions:**
+- `createMission(data)` - Create new mission
+- `updateMission(id, updates)` - Update existing mission
+- `deleteMission(id)` - Delete mission
+- `toggleObjective(missionId, objectiveIndex)` - Toggle objective
+- `addObjective(missionId, text)` - Add objective
+- `removeObjective(missionId, objectiveIndex)` - Remove objective
+- `addLog(missionId, message)` - Add log entry
+- `addSupportPersonnel(missionId, characterId)` - Add support personnel
+- `removeSupportPersonnel(missionId, characterId)` - Remove support personnel
+- `completeMission(missionId)` - Complete mission
+- `cancelMission(missionId)` - Cancel mission
+- `reactivateMission(missionId)` - Reactivate mission
+
+**Dependencies:** MissionsSchema, MissionRules, MissionsQueries, CharacterQueries, TeamQueries, IdUtils, ObjectUtils
+
+---
+
+#### `modules/missions/missions-queries.js`
+PURE read-only mission queries.
+
+**Functions:**
+- `getMission(id)` - Get mission (defensive copy)
+- `getMissions(filter)` - Get missions (defensive copies)
+- `getMissionsByType(typeId)` - Get missions by type
+- `getMissionsByTeam(teamId, filter)` - Get missions by team
+- `getMissionsByTag(tag, filter)` - Get missions by tag
+- `getUniqueTags(filter)` - Get unique tags (normalised)
+- `searchMissions(query, filter)` - Search missions
+- `getSupportPersonnel(mission)` - Get support personnel (defensive copies)
+- `getSupportPersonnelNames(mission)` - Get support personnel names
+- `getMissionTypeCounts()` - Get type counts
+- `getStatistics()` - Get mission statistics
+- `getActiveCount()`, `getCompletedCount()`, `getCancelledCount()` - Count helpers
+- `getEligibleTeams()` - Get eligible teams for mission assignment
+
+**Dependencies:** MissionsSchema, MissionRules, CharacterQueries, TeamQueries, IdUtils, ObjectUtils
+
+---
+
+#### `modules/missions/missions-render.js`
+PURE rendering functions for missions.
+
+**Functions:**
+- `renderList(missions)` - Render mission list
+- `renderForm(formModel)` - Render mission form (receives complete model)
+- `renderDetail(mission)` - Render mission detail
+- `renderContainer()` - Render main container
+- `renderModals()` - Render modal HTML
+- `renderEmpty(message)` - Render empty state
+- `renderLoading()` - Render loading state
+
+**Dependencies:** MissionsQueries, MissionViews, DomUtils
+
+---
+
+#### `modules/missions/missions-ui.js`
+Mission UI controller.
+
+**Functions:**
+- `render(container)` - Render missions
+- `view(id)` - View mission
+- `closeDetail()` - Close mission detail
+- `showForm(editId)` - Show mission form
+- `renderList(container)` - Render mission list
+- `destroy()` - Destroy controller
+
+**Dependencies:** MissionsCore, MissionsQueries, MissionsRender, MissionViews, NotificationSystem, Modal, TabManager, IdUtils
+
+---
+
+#### `modules/missions/index.js`
+Mission module entry point.
+
+**Functions:**
+- `renderMissions(container)` - Mount the missions feature
+- `destroyMissions()` - Destroy the missions feature
+- `viewMission(id)` - View a mission
+- `closeMissionDetail()` - Close mission detail
+- `showMissionForm(editId)` - Show mission form
+
+**Dependencies:** MissionsUI
 
 ---
 
@@ -641,7 +774,6 @@ Academy module entry point and lifecycle controller.
 - `refresh()` - Refresh current view
 - `getState()` - Get current UI state
 - `selectClass()`, `selectWeek()`, `selectStudent()`, `selectInstructor()`, `switchSubTab()`, `clearSelections()` - State mutators
-- `isMounted()` - Check if mounted
 
 **Dependencies:** TabManager, AcademyState, AcademyViews, AcademyEvents, DomUtils, NotificationSystem
 
@@ -656,7 +788,6 @@ Academy UI state management with persistence.
 - `setState(newState)` - Bulk state update
 - `resetState()`, `clearSelections()` - State resets
 - `isValidWeek()`, `isValidClass()`, `isValidStudent()`, `isValidInstructor()`, `isValidSubTabValue()` - Validation
-- `getValidSubTabs()`, `getWeekRange()` - Bounds access
 
 **Dependencies:** CalendarValidation, AcademyConstants, ClassesQueries, CharacterQueries
 
@@ -681,7 +812,7 @@ Academy event binding (events only - no rendering).
 **Functions:**
 - `init(container)` - Bind all events
 - `destroy()` - Remove all event listeners
-- `addSafeEventListener(element, eventName, handler)` - Tracked event binding
+- `addSafeEventListener()` - Tracked event binding
 
 **Dependencies:** AcademyState, ClassTab, StudentTab, FacultyTab
 
@@ -1189,7 +1320,18 @@ Location-specific rendering.
 <script src="js/modules/tournaments/tournaments-ui.js"></script>
 <script src="js/modules/tournaments/tournaments-repair.js"></script>
 
-<!-- 13. Academy Domain -->
+<!-- 13. Mission Domain -->
+<script src="js/modules/missions/missions-schema.js"></script>
+<script src="js/modules/missions/mission-views.js"></script>
+<script src="js/modules/missions/mission-rules.js"></script>
+<script src="js/modules/missions/mission-id.js"></script>
+<script src="js/modules/missions/missions-core.js"></script>
+<script src="js/modules/missions/missions-queries.js"></script>
+<script src="js/modules/missions/missions-render.js"></script>
+<script src="js/modules/missions/missions-ui.js"></script>
+<script src="js/modules/missions/index.js"></script>
+
+<!-- 14. Academy Domain -->
 <script src="js/modules/academy/academy-state.js"></script>
 <script src="js/modules/academy/academy-queries.js"></script>
 <script src="js/modules/academy/academy-grades.js"></script>
@@ -1199,20 +1341,19 @@ Location-specific rendering.
 <script src="js/modules/academy/academy-distribute.js"></script>
 <script src="js/modules/academy/academy-core.js"></script>
 
-<!-- 14. Academy Tabs -->
+<!-- 15. Academy Tabs -->
 <script src="js/modules/academy/tabs/class-tab.js"></script>
 <script src="js/modules/academy/tabs/student-tab.js"></script>
 <script src="js/modules/academy/tabs/faculty-tab.js"></script>
 
-<!-- 15. Academy UI -->
+<!-- 16. Academy UI -->
 <script src="js/modules/academy/academy-views.js"></script>
 <script src="js/modules/academy/academy-events.js"></script>
 <script src="js/modules/academy/index.js"></script>
 
-<!-- 16. Domain Modules -->
+<!-- 17. Domain Modules -->
 <script src="js/modules/dashboard.js"></script>
 <script src="js/modules/teams.js"></script>
-<script src="js/modules/missions.js"></script>
 ```
 
 ## Module Summary
@@ -1230,6 +1371,20 @@ Location-specific rendering.
 | `tournaments-render.js` | Pure rendering |
 | `tournaments-ui.js` | UI controller |
 | `tournaments-repair.js` | Data repair functions |
+
+### Mission Module Files
+
+| File | Purpose |
+|------|---------|
+| `missions-schema.js` | Structural validation and canonical representation |
+| `mission-views.js` | Presentation metadata |
+| `mission-rules.js` | Derivation and lifecycle rules |
+| `mission-id.js` | Mission ID generation and parsing |
+| `missions-core.js` | Core mutation API |
+| `missions-queries.js` | Read-only queries |
+| `missions-render.js` | Pure rendering |
+| `missions-ui.js` | UI controller |
+| `index.js` | Entry point |
 
 ### Academy Module Files
 
@@ -1281,6 +1436,10 @@ Location-specific rendering.
 | `modules/academy/academy-constants.js` | Academy constants |
 | `modules/tournaments/tournaments-schema.js` | Tournament schema |
 | `modules/tournaments/tournament-lifecycle.js` | Tournament lifecycle |
+| `modules/missions/missions-schema.js` | Mission schema |
+| `modules/missions/mission-views.js` | Mission views |
+| `modules/missions/mission-rules.js` | Mission rules |
+| `modules/missions/mission-id.js` | Mission ID |
 
 ### Files Removed
 
@@ -1333,6 +1492,18 @@ Location-specific rendering.
 | `AcademyGrades.validateWeek()` | `CalendarValidation.parseWeek()` |
 | `AcademyDistribute.validateWeek()` | `CalendarValidation.parseWeek()` |
 | `TournamentsCore.normaliseId()` | `IdUtils.normaliseId()` |
+| `MissionsCore.normaliseId()` | `IdUtils.normaliseId()` |
+| `MissionsCore.getMissions()` | `MissionsQueries.getMissions()` |
+| `MissionsCore.getSupportPersonnel()` | `MissionsQueries.getSupportPersonnel()` |
+| `MissionsQueries.getMissionTypeLabel()` | `MissionViews.getMissionTypeLabel()` |
+| `MissionsQueries.getPriorityInfo()` | `MissionViews.getPriorityInfo()` |
+| `MissionsQueries.getStatusInfo()` | `MissionViews.getStatusInfo()` |
+| `MissionsQueries.formatMissionId()` | `MissionId.formatMissionId()` |
+| `MissionsQueries.parseMissionId()` | `MissionId.parseMissionId()` |
+| `MissionsQueries.normaliseId()` | `IdUtils.normaliseId()` |
+| `MissionsQueries.getTeams()` | `TeamQueries.getActiveTeams()` |
+| `MissionsQueries.getCharacters()` | `CharacterQueries.getActiveCharacters()` |
+| `MissionsUI.persistOperation()` | `MutationUtils.performMutation()` |
 
 ### Removed Features
 - `CoreUtils.set()` - Mutated its argument, removed
@@ -1345,6 +1516,8 @@ Location-specific rendering.
 - `AcademyQueries.getLocationTypeIcon()` - Presentation logic, removed
 - `AcademyQueries.getCurrentWeek()` - Use AcademyCore.getCurrentWeek()
 - `AcademyQueries.getWeekRange()` - Use CalendarConstants
+- `MissionsCore.recordActivity()` - Use MutationPipeline
+- `MissionsUI._persistenceQueue` - Use MutationPipeline
 
 ## Testing Considerations
 
@@ -1356,11 +1529,12 @@ Location-specific rendering.
 6. **Calendar State**: Use `CalendarUI.destroy()` and `CalendarUI.setState()` for testing calendar state.
 7. **Academy State**: Use `AcademyState.resetState()` for testing academy UI state.
 8. **Tournament State**: Use `TournamentsCore` getters with defensive copies for testing.
+9. **Mission State**: Use `MissionsQueries` getters with defensive copies for testing.
 
 ## Performance Considerations
 
 1. **Save Queue**: Database saves are coalesced to reduce IndexedDB writes
-2. **Event Delegation**: Tab navigation and academy events use event delegation
+2. **Event Delegation**: Tab navigation and feature events use event delegation
 3. **Notification Queue**: Notifications are queued to prevent DOM explosion
 4. **State Setters**: State changes are synchronous; no re-render triggers
 5. **Deep Cloning**: Used only for rollback snapshots and defensive copies; not for frequent operations
@@ -1368,6 +1542,7 @@ Location-specific rendering.
 7. **Social Graph**: SVG rendering with zoom controls for performance
 8. **Candidate Mutations**: All domain mutations use candidate-based copy-before-commit
 9. **Tournament Queries**: Defensive copies prevent accidental mutation
+10. **Mission Queries**: Defensive copies prevent accidental mutation
 
 ## Future Considerations
 
@@ -1382,3 +1557,4 @@ Location-specific rendering.
 9. **Bulk Operations**: Batch operations for schedule management
 10. **Tournament Match Generation**: Automated match generation algorithms
 11. **Elimination Workflow Enhancement**: More sophisticated elimination workflows
+12. **Mission Generation**: Automated mission generation from templates
