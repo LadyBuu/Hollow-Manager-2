@@ -16,6 +16,7 @@
  *   - USES CharacterCRUD for save operations
  *   - USES CharacterGenerator for random generation
  *   - USES CharacterConstants for canonical constants
+ *   - USES AcademyQueries for class queries
  *   - USES FormUtils for form field operations
  *   - USES DomUtils for safe DOM operations
  *   - No direct data mutation
@@ -27,9 +28,9 @@
  *   - window.CharacterCRUD (from character-crud.js) - MANDATORY
  *   - window.CharacterGenerator (from character-generator.js) - MANDATORY
  *   - window.CharacterConstants (from character-constants.js) - MANDATORY
+ *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.FormUtils (from form-utils.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
- *   - window.ClassesQueries (from classes-queries.js) - MANDATORY
  *   - window.CalendarCore (from calendar-core.js) - MANDATORY
  *   - window.getCurrentEditId (from index.js) - MANDATORY
  *   - window.setCurrentEditId (from index.js) - MANDATORY
@@ -38,56 +39,19 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate script loading
     if (window.__characterFormLoaded) {
         return;
     }
     window.__characterFormLoaded = true;
 
-    // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
-    // ============================================================
-
     var CharacterQueries = window.CharacterQueries;
     var CharacterCRUD = window.CharacterCRUD;
     var CharacterGenerator = window.CharacterGenerator;
     var CharacterConstants = window.CharacterConstants;
-    var ClassesQueries = window.ClassesQueries;
+    var AcademyQueries = window.AcademyQueries;
     var CalendarCore = window.CalendarCore;
     var FormUtils = window.FormUtils;
     var DomUtils = window.DomUtils;
-
-    // ============================================================
-    // CONSTANTS - From CharacterConstants (MANDATORY)
-    // ============================================================
-
-    var STAT_KEYS = CharacterConstants.STAT_KEYS;
-    var STAT_MIN = CharacterConstants.STAT_MIN;
-    var STAT_MAX = CharacterConstants.STAT_MAX;
-    var STAT_DEFAULT = CharacterConstants.STAT_DEFAULT;
-    var STAT_DEFINITIONS = CharacterConstants.STAT_DEFINITIONS;
-    var MAX_SPECIAL_MOVES = CharacterConstants.MAX_SPECIAL_MOVES;
-    var MAX_MOVE_NAME_LENGTH = CharacterConstants.MAX_MOVE_NAME_LENGTH;
-    var MAX_MOVE_DESCRIPTION_LENGTH = CharacterConstants.MAX_MOVE_DESCRIPTION_LENGTH;
-
-    // Calendar constants
-    var MIN_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MIN_WEEK : 1;
-    var MAX_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MAX_WEEK : 52;
-
-    // ============================================================
-    // STATE
-    // ============================================================
-
-    var state = {
-        currentTab: 'name'
-    };
-
-    var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'stats', 'social', 'notes'];
-    var _initialized = false;
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -117,8 +81,8 @@
             missing.push('CharacterConstants.STAT_KEYS');
         }
 
-        if (!ClassesQueries || typeof ClassesQueries.getClasses !== 'function') {
-            missing.push('ClassesQueries.getClasses');
+        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
+            missing.push('AcademyQueries.getClasses');
         }
 
         if (!CalendarCore || typeof CalendarCore.getCurrentYear !== 'function') {
@@ -153,23 +117,33 @@
         }
 
         if (missing.length > 0) {
-            console.warn('CharacterForm: Missing dependencies:', missing.join(', '));
-            return false;
+            throw new Error('CharacterForm: Missing dependencies: ' + missing.join(', '));
         }
+
         return true;
     }
 
-    // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
-    // ============================================================
+    checkDependencies();
+
+    var STAT_KEYS = CharacterConstants.STAT_KEYS;
+    var STAT_MIN = CharacterConstants.STAT_MIN;
+    var STAT_MAX = CharacterConstants.STAT_MAX;
+    var STAT_DEFAULT = CharacterConstants.STAT_DEFAULT;
+    var STAT_DEFINITIONS = CharacterConstants.STAT_DEFINITIONS;
+
+    var MIN_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MIN_WEEK : 1;
+    var MAX_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MAX_WEEK : 52;
+
+    var state = {
+        currentTab: 'name'
+    };
+
+    var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'stats', 'social', 'notes'];
+    var _initialized = false;
 
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
     }
-
-    // ============================================================
-    // STATE ACCESS - Delegated to index.js
-    // ============================================================
 
     function getCurrentEditId() {
         return window.getCurrentEditId();
@@ -179,23 +153,11 @@
         window.setCurrentEditId(id);
     }
 
-    // ============================================================
-    // GET CURRENT YEAR - From CalendarCore (MANDATORY)
-    // ============================================================
-
     function getCurrentYear() {
         return CalendarCore.getCurrentYear();
     }
 
-    // ============================================================
-    // FORM RENDER
-    // ============================================================
-
     function render(editId) {
-        if (!checkDependencies()) {
-            return;
-        }
-
         var char = null;
         if (editId) {
             char = CharacterQueries.getCharacterById(editId);
@@ -204,13 +166,11 @@
             }
         }
 
-        // Update the form title
         var title = document.getElementById('form-title');
         if (title) {
             title.textContent = editId ? 'Edit Character' : 'New Character';
         }
 
-        // Update character name display
         var nameDisplay = document.getElementById('current-char-name');
         if (nameDisplay) {
             if (char) {
@@ -222,22 +182,18 @@
             }
         }
 
-        // Get current year for age calculation
         var currentYear = getCurrentYear();
 
-        // Build the form HTML
         var content = document.getElementById('character-form-content');
         if (!content) return;
 
         var html = getCharacterFormHTML(char, editId, currentYear);
         content.innerHTML = html;
 
-        // Populate form fields if editing
         if (char) {
             populateFormFields(char);
         }
 
-        // Show the form
         var form = document.getElementById('character-form');
         if (form) {
             form.style.display = 'block';
@@ -266,10 +222,6 @@
         }
     }
 
-    // ============================================================
-    // CHARACTER FORM HTML
-    // ============================================================
-
     function getCharacterFormHTML(char, editId, currentYear) {
         var tabs = getTabsHTML();
 
@@ -296,10 +248,6 @@
         `;
     }
 
-    // ============================================================
-    // TABS
-    // ============================================================
-
     function getTabsHTML() {
         var tabNames = {
             'name': 'Name',
@@ -316,20 +264,15 @@
         for (var i = 0; i < VALID_TABS.length; i++) {
             var tab = VALID_TABS[i];
             var isActive = tab === state.currentTab;
-            html += `<button class="form-tab-btn ${isActive ? 'active' : ''}" data-tab="${tab}" style="background:transparent;border:none;border-bottom:2px solid ${isActive ? 'var(--accent)' : 'transparent'};color:${isActive ? 'var(--accent)' : 'var(--text-dim)'};padding:4px 10px;cursor:pointer;font-size:0.7rem;transition:0.2s;">${tabNames[tab]}</button>`;
+            html += '<button class="form-tab-btn ' + (isActive ? 'active' : '') + '" data-tab="' + tab + '" style="background:transparent;border:none;border-bottom:2px solid ' + (isActive ? 'var(--accent)' : 'transparent') + ';color:' + (isActive ? 'var(--accent)' : 'var(--text-dim)') + ';padding:4px 10px;cursor:pointer;font-size:0.7rem;transition:0.2s;">' + tabNames[tab] + '</button>';
         }
         return html;
     }
-
-    // ============================================================
-    // NAME TAB - With Class Dropdown
-    // ============================================================
 
     function getNameTabHTML(char, editId) {
         var active = state.currentTab === 'name' ? 'block' : 'none';
         var c = char || {};
 
-        // Get graduating class options for dropdown
         var classOptions = getClassOptionsHTML(c.graduatingClassId);
 
         return `
@@ -373,7 +316,6 @@
                     </div>
                 </div>
 
-                <!-- Graduating Class Dropdown -->
                 <div class="form-group" style="margin-top:8px;">
                     <label style="font-size:0.7rem;color:var(--text-dim);">Graduating Class</label>
                     <select id="char-graduatingClass" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
@@ -391,22 +333,18 @@
     }
 
     function getClassOptionsHTML(selectedId) {
-        var classes = ClassesQueries.getClasses();
+        var classes = AcademyQueries.getClasses();
         var html = '<option value="">None</option>';
 
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
             if (!cls || typeof cls !== 'object') continue;
             var isSelected = String(cls.id) === String(selectedId);
-            html += `<option value="${escapeHtml(cls.id)}" ${isSelected ? 'selected' : ''}>${escapeHtml(cls.name)}</option>`;
+            html += '<option value="' + escapeHtml(cls.id) + '" ' + (isSelected ? 'selected' : '') + '>' + escapeHtml(cls.name) + '</option>';
         }
 
         return html;
     }
-
-    // ============================================================
-    // OTHER TABS - Using CharacterQueries for display names
-    // ============================================================
 
     function getPhysicalTabHTML(char) {
         var active = state.currentTab === 'physical' ? 'block' : 'none';
@@ -614,14 +552,10 @@
         `;
     }
 
-    // ============================================================
-    // POPULATE FORM FIELDS
-    // ============================================================
-
     function populateFormFields(char) {
         if (!char) return;
 
-        // Use FormUtils.setField for all fields        FormUtils.setField('char-firstName', char.firstName);
+        FormUtils.setField('char-firstName', char.firstName);
         FormUtils.setField('char-lastName', char.lastName);
         FormUtils.setField('char-middleName', char.middleName);
         FormUtils.setField('char-nickname', char.nickname);
@@ -629,7 +563,6 @@
         FormUtils.setField('char-gender', char.gender);
         FormUtils.setField('char-birthYear', char.birthYear);
 
-        // Physical
         FormUtils.setField('char-eyes', char.eyes);
         FormUtils.setField('char-hair', char.hair);
         FormUtils.setField('char-skin', char.skin);
@@ -638,7 +571,6 @@
         FormUtils.setField('char-build', char.build);
         FormUtils.setField('char-appearanceNotes', char.appearanceNotes);
 
-        // Personality
         if (char.personality) {
             FormUtils.setField('char-personality-traits', char.personality.traits);
             FormUtils.setField('char-personality-ideals', char.personality.ideals);
@@ -652,23 +584,18 @@
             FormUtils.setField('char-personality-goals', char.personality.goals);
         }
 
-        // Professional
         FormUtils.setField('char-specialty', char.specialty);
 
-        // Social
         FormUtils.setField('char-attraction', char.attraction);
         FormUtils.setField('char-sexuality', char.sexuality);
 
-        // Notes
         FormUtils.setField('char-notes', char.notes);
 
-        // Class checkbox
         var checkbox = document.getElementById('char-isInstructor');
         if (checkbox) {
             checkbox.checked = char.graduatingClassInstructor || false;
         }
 
-        // Stats
         if (char.stats) {
             STAT_KEYS.forEach(function(key) {
                 var value = char.stats[key] !== undefined ? char.stats[key] : STAT_DEFAULT;
@@ -677,26 +604,14 @@
         }
     }
 
-    // ============================================================
-    // COLLECT FORM DATA - Public API for CharacterEvents
-    // ============================================================
-
-    /**
-     * Collect all form data as a DTO for save operations.
-     * Uses FormUtils.getFormData for consistent field extraction.
-     * 
-     * @returns {object} Form data DTO
-     */
     function collect() {
         var form = document.getElementById('character-form');
         if (!form) {
             return null;
         }
 
-        // Use FormUtils.getFormData to extract all fields
         var data = FormUtils.getFormData(form);
 
-        // Build the character DTO
         var dto = {
             firstName: data['char-firstName'] || '',
             lastName: data['char-lastName'] || '',
@@ -736,13 +651,11 @@
             stats: {}
         };
 
-        // Collect stats
         STAT_KEYS.forEach(function(key) {
             var value = parseInt(data['char-stat-' + key], 10);
             dto.stats[key] = !isNaN(value) ? Math.max(STAT_MIN, Math.min(STAT_MAX, value)) : STAT_DEFAULT;
         });
 
-        // Collect career status (JSON from textarea)
         var careerStatusRaw = data['char-careerStatus'] || '';
         if (careerStatusRaw) {
             try {
@@ -751,11 +664,9 @@
                     dto.careerStatus = parsed;
                 }
             } catch (e) {
-                // Invalid JSON - ignore
             }
         }
 
-        // Collect class IDs (comma-separated)
         var classIdsRaw = data['char-classIds'] || '';
         if (classIdsRaw) {
             var classIds = classIdsRaw.split(',').map(function(s) {
@@ -770,10 +681,6 @@
 
         return dto;
     }
-
-    // ============================================================
-    // SWITCH FORM TAB
-    // ============================================================
 
     function switchTab(tab) {
         if (!tab || VALID_TABS.indexOf(tab) === -1) return;
@@ -795,10 +702,6 @@
         });
     }
 
-    // ============================================================
-    // EXPOSE
-    // ============================================================
-
     window.CharacterForm = {
         render: render,
         hide: hide,
@@ -808,7 +711,6 @@
         isInitialized: function() { return _initialized; }
     };
 
-    // Legacy compatibility
     window.showCharacterForm = function(editId) {
         render(editId);
     };

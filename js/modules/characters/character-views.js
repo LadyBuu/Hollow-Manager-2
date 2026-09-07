@@ -15,7 +15,7 @@
  *   - Safe CSS color validation for relationship types
  *   - NO DIRECT window.data ACCESS - all data via query modules
  *   - USES CharacterQueries for character data and display names
- *   - USES ClassesQueries for class display names
+ *   - USES AcademyQueries for class display names
  *   - USES TeamQueries for team queries
  *   - USES DisciplineQueries for discipline names
  *   - USES GradeQueries for grade data
@@ -25,7 +25,7 @@
  * 
  * DEPENDENCIES (ALL MANDATORY):
  *   - window.CharacterQueries (from character-queries.js)
- *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.AcademyQueries (from academy-queries.js)
  *   - window.TeamQueries (from team-queries.js)
  *   - window.DisciplineQueries (from discipline-queries.js)
  *   - window.GradeQueries (from grade-queries.js)
@@ -39,18 +39,13 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate script loading
     if (window.__characterViewsLoaded) {
         return;
     }
     window.__characterViewsLoaded = true;
 
-    // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
-    // ============================================================
-
     var CharacterQueries = window.CharacterQueries;
-    var ClassesQueries = window.ClassesQueries;
+    var AcademyQueries = window.AcademyQueries;
     var TeamQueries = window.TeamQueries;
     var DisciplineQueries = window.DisciplineQueries;
     var GradeQueries = window.GradeQueries;
@@ -60,9 +55,68 @@
     var DomUtils = window.DomUtils;
     var CharacterConstants = window.CharacterConstants;
 
-    // ============================================================
-    // CONSTANTS
-    // ============================================================
+    function checkDependencies() {
+        var missing = [];
+
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
+            missing.push('CharacterQueries.getCharacterById');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
+            missing.push('CharacterQueries.getDisplayName');
+        }
+
+        if (!AcademyQueries || typeof AcademyQueries.getClassDisplayName !== 'function') {
+            missing.push('AcademyQueries.getClassDisplayName');
+        }
+
+        if (!TeamQueries || typeof TeamQueries.getTeamsForCharacter !== 'function') {
+            missing.push('TeamQueries.getTeamsForCharacter');
+        }
+        if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
+            missing.push('TeamQueries.getTeamName');
+        }
+        if (!TeamQueries || typeof TeamQueries.getCharacterTeamMembership !== 'function') {
+            missing.push('TeamQueries.getCharacterTeamMembership');
+        }
+
+        if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
+            missing.push('DisciplineQueries.getDiscipline');
+        }
+
+        if (!GradeQueries || typeof GradeQueries.getCharacterGrades !== 'function') {
+            missing.push('GradeQueries.getCharacterGrades');
+        }
+
+        if (!MissionQueries || typeof MissionQueries.getMissionsForCharacter !== 'function') {
+            missing.push('MissionQueries.getMissionsForCharacter');
+        }
+
+        if (!SocialQueries || typeof SocialQueries.getCharacterRelationships !== 'function') {
+            missing.push('SocialQueries.getCharacterRelationships');
+        }
+        if (!SocialQueries || typeof SocialQueries.getRelationshipTypeColor !== 'function') {
+            missing.push('SocialQueries.getRelationshipTypeColor');
+        }
+        if (!SocialQueries || typeof SocialQueries.getRelationshipTypeLabel !== 'function') {
+            missing.push('SocialQueries.getRelationshipTypeLabel');
+        }
+
+        if (!EliminationQueries || typeof EliminationQueries.isCharacterEliminated !== 'function') {
+            missing.push('EliminationQueries.isCharacterEliminated');
+        }
+
+        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
+            missing.push('DomUtils.escapeHtml');
+        }
+
+        if (missing.length > 0) {
+            throw new Error('CharacterViews: Missing required dependencies: ' + missing.join(', '));
+        }
+
+        return true;
+    }
+
+    checkDependencies();
 
     var CAREER_STATUS_OPTIONS = CharacterConstants ? CharacterConstants.CAREER_STATUS_OPTIONS : [
         { value: '', label: 'Select status...' },
@@ -76,102 +130,19 @@
     ];
 
     var ALLOWED_COLORS = {
-        '#8cbb3a': true,  // familial
-        '#c9a24b': true,  // professional
-        '#c1453c': true,  // romantic
-        '#4a9bc7': true,  // friendship
-        '#9b59b6': true,  // mentor
-        '#e67e22': true,  // rivalry
-        '#27ae60': true,  // alliance
-        '#7f8c8d': true   // other
+        '#8cbb3a': true,
+        '#c9a24b': true,
+        '#c1453c': true,
+        '#4a9bc7': true,
+        '#9b59b6': true,
+        '#e67e22': true,
+        '#27ae60': true,
+        '#7f8c8d': true
     };
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
-    function checkDependencies() {
-        var missing = [];
-
-        // CharacterQueries is MANDATORY
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-
-        // ClassesQueries is MANDATORY
-        if (!ClassesQueries || typeof ClassesQueries.getClassDisplayName !== 'function') {
-            missing.push('ClassesQueries.getClassDisplayName');
-        }
-
-        // TeamQueries is MANDATORY
-        if (!TeamQueries || typeof TeamQueries.getTeamsForCharacter !== 'function') {
-            missing.push('TeamQueries.getTeamsForCharacter');
-        }
-        if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
-            missing.push('TeamQueries.getTeamName');
-        }
-        if (!TeamQueries || typeof TeamQueries.getCharacterTeamMembership !== 'function') {
-            missing.push('TeamQueries.getCharacterTeamMembership');
-        }
-
-        // DisciplineQueries is MANDATORY
-        if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
-            missing.push('DisciplineQueries.getDiscipline');
-        }
-
-        // GradeQueries is MANDATORY
-        if (!GradeQueries || typeof GradeQueries.getCharacterGrades !== 'function') {
-            missing.push('GradeQueries.getCharacterGrades');
-        }
-
-        // MissionQueries is MANDATORY
-        if (!MissionQueries || typeof MissionQueries.getMissionsForCharacter !== 'function') {
-            missing.push('MissionQueries.getMissionsForCharacter');
-        }
-
-        // SocialQueries is MANDATORY
-        if (!SocialQueries || typeof SocialQueries.getCharacterRelationships !== 'function') {
-            missing.push('SocialQueries.getCharacterRelationships');
-        }
-        if (!SocialQueries || typeof SocialQueries.getRelationshipTypeColor !== 'function') {
-            missing.push('SocialQueries.getRelationshipTypeColor');
-        }
-        if (!SocialQueries || typeof SocialQueries.getRelationshipTypeLabel !== 'function') {
-            missing.push('SocialQueries.getRelationshipTypeLabel');
-        }
-
-        // EliminationQueries is MANDATORY
-        if (!EliminationQueries || typeof EliminationQueries.isCharacterEliminated !== 'function') {
-            missing.push('EliminationQueries.isCharacterEliminated');
-        }
-
-        // DomUtils is MANDATORY
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
-        }
-
-        if (missing.length > 0) {
-            console.warn('CharacterViews: Missing required dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
-    }
-
-    // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
-    // ============================================================
 
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
     }
-
-    // ============================================================
-    // RELATIONSHIP COLOR HELPERS - Uses SocialQueries
-    // ============================================================
 
     function getSafeRelationshipColor(typeId) {
         var color = SocialQueries.getRelationshipTypeColor(typeId);
@@ -180,7 +151,6 @@
             return '#7f8c8d';
         }
 
-        // Normalise and whitelist
         var normalized = color.toLowerCase();
         if (ALLOWED_COLORS[normalized]) {
             return normalized;
@@ -193,24 +163,16 @@
         return SocialQueries.getRelationshipTypeLabel(typeId) || 'Other';
     }
 
-    // ============================================================
-    // MEMBERSHIP PERIOD FORMATTER
-    // ============================================================
-
     function formatMembershipPeriod(join, leave, prefix) {
         prefix = prefix || '';
         var joinStr = (join !== undefined && join !== null && join !== '') ? String(join) : '';
         var leaveStr = (leave !== undefined && leave !== null && leave !== '') ? String(leave) : '';
 
-        if (joinStr && leaveStr) return prefix + joinStr + ' → ' + prefix + leaveStr;
-        if (joinStr) return prefix + joinStr + ' → Present';
+        if (joinStr && leaveStr) return prefix + joinStr + ' -> ' + prefix + leaveStr;
+        if (joinStr) return prefix + joinStr + ' -> Present';
         if (leaveStr) return 'Until ' + prefix + leaveStr;
         return prefix + '?';
     }
-
-    // ============================================================
-    // GRADE VALUE FORMATTING
-    // ============================================================
 
     function formatGradeValue(score) {
         var num = Number(score);
@@ -220,20 +182,12 @@
         return 'Invalid';
     }
 
-    // ============================================================
-    // ACADEMIC VIEW - Uses TeamQueries, GradeQueries, DisciplineQueries
-    // ============================================================
-
     function renderAcademic(char) {
-        if (!checkDependencies()) return;
-
         var container = document.getElementById('academic-view');
         if (!container) return;
 
-        // Clear container
         container.textContent = '';
 
-        // ---- ACADEMIC TEAMS ----
         var heading = document.createElement('h4');
         heading.style.cssText = 'color:var(--accent);font-size:0.8rem;margin:8px 0 4px 0;';
         heading.textContent = 'Academic Teams';
@@ -249,7 +203,7 @@
                 var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod, 'Wk ');
                 var classDisplay = '';
                 if (team.classId) {
-                    var className = ClassesQueries.getClassDisplayName(team.classId);
+                    var className = AcademyQueries.getClassDisplayName(team.classId);
                     classDisplay = ' [' + className + ']';
                 }
 
@@ -288,7 +242,6 @@
             container.appendChild(empty);
         }
 
-        // ---- GRADES ----
         var gradeHeading = document.createElement('h4');
         gradeHeading.style.cssText = 'color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;';
         gradeHeading.textContent = 'Grades';
@@ -297,7 +250,6 @@
         var grades = GradeQueries.getCharacterGrades(char.id) || [];
 
         if (grades.length > 0) {
-            // Sort chronologically
             grades.sort(function(a, b) {
                 return parseInt(a.week, 10) - parseInt(b.week, 10);
             });
@@ -334,7 +286,6 @@
             container.appendChild(empty);
         }
 
-        // ---- ELIMINATION STATUS ----
         var elimHeading = document.createElement('h4');
         elimHeading.style.cssText = 'color:var(--danger);font-size:0.8rem;margin:8px 0 4px 0;';
         elimHeading.textContent = 'Elimination Status';
@@ -345,23 +296,16 @@
 
         var elimDiv = document.createElement('div');
         elimDiv.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + (isEliminated ? 'var(--danger)' : 'var(--accent)') + ';font-size:0.75rem;';
-        elimDiv.textContent = isEliminated ? '⚠ This character is eliminated' : '✓ Not eliminated';
+        elimDiv.textContent = isEliminated ? '\u26a0 This character is eliminated' : '\u2713 Not eliminated';
         container.appendChild(elimDiv);
     }
 
-    // ============================================================
-    // PROFESSIONAL VIEW - Uses TeamQueries, MissionQueries
-    // ============================================================
-
     function renderProfessional(char) {
-        if (!checkDependencies()) return;
-
         var container = document.getElementById('professional-view');
         if (!container) return;
 
         container.textContent = '';
 
-        // ---- PROFESSIONAL TEAMS ----
         var heading = document.createElement('h4');
         heading.style.cssText = 'color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;';
         heading.textContent = 'Professional Teams';
@@ -405,7 +349,6 @@
             container.appendChild(empty);
         }
 
-        // ---- TEMPORARY TEAMS ----
         var tempHeading = document.createElement('h4');
         tempHeading.style.cssText = 'color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;';
         tempHeading.textContent = 'Temporary Teams';
@@ -449,7 +392,6 @@
             container.appendChild(empty);
         }
 
-        // ---- CIVILIAN TEAMS ----
         var civHeading = document.createElement('h4');
         civHeading.style.cssText = 'color:var(--text-dim);font-size:0.8rem;margin:8px 0 4px 0;';
         civHeading.textContent = 'Civilian Teams';
@@ -493,7 +435,6 @@
             container.appendChild(empty);
         }
 
-        // ---- MISSIONS ----
         var missionHeading = document.createElement('h4');
         missionHeading.style.cssText = 'color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;';
         missionHeading.textContent = 'Missions';
@@ -542,13 +483,7 @@
         }
     }
 
-    // ============================================================
-    // SOCIAL VIEW - Uses SocialQueries
-    // ============================================================
-
     function renderSocial(char) {
-        if (!checkDependencies()) return;
-
         var container = document.getElementById('social-view');
         if (!container) return;
 
@@ -568,20 +503,20 @@
         relationships.forEach(function(rel) {
             var otherId = String(rel.character1) === String(char.id) ? rel.character2 : rel.character1;
             var other = CharacterQueries.getCharacterById(otherId);
-            var otherName = other ? CharacterQueries.getDisplayName(other) : '⚠ Unknown Character';
+            var otherName = other ? CharacterQueries.getDisplayName(other) : '\u26a0 Unknown Character';
 
             var typeLabel = getRelationshipTypeLabel(rel.typeId);
             var typeColor = getSafeRelationshipColor(rel.typeId);
 
             var period = '';
             if (rel.startYear && rel.endYear) {
-                period = rel.startYear + ' → ' + rel.endYear;
+                period = rel.startYear + ' -> ' + rel.endYear;
             } else if (rel.startYear) {
                 period = 'From ' + rel.startYear;
             }
 
             var clarification = rel.clarification ? ' (' + rel.clarification + ')' : '';
-            var notes = rel.notes ? ' 📝' : '';
+            var notes = rel.notes ? ' \uD83D\uDCDD' : '';
 
             var div = document.createElement('div');
             div.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + typeColor + ';margin-bottom:3px;font-size:0.75rem;';
@@ -612,10 +547,6 @@
             container.appendChild(div);
         });
     }
-
-    // ============================================================
-    // CAREER STATUS HELPERS - DOM-BASED FOR SAFETY
-    // ============================================================
 
     function addCareerStatusEntry(container, status, startYear, endYear) {
         if (!container) return;
@@ -659,7 +590,7 @@
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'small danger remove-status';
-        removeBtn.textContent = '✕';
+        removeBtn.textContent = '\u2715';
         removeBtn.style.cssText = 'padding:2px 6px;font-size:0.6rem;';
 
         entry.appendChild(select);
@@ -669,20 +600,12 @@
         container.appendChild(entry);
     }
 
-    // ============================================================
-    // HELPERS
-    // ============================================================
-
     function getCurrentWeek() {
         if (window.data && typeof window.data.currentWeek === 'number') {
             return window.data.currentWeek;
         }
         return 1;
     }
-
-    // ============================================================
-    // VIEW PANEL HTML GENERATORS
-    // ============================================================
 
     function getAcademicTabHTML() {
         return `
@@ -733,7 +656,7 @@
                         </select>
                         <input type="number" class="career-start-year" placeholder="Start Year" />
                         <input type="number" class="career-end-year" placeholder="End Year" />
-                        <button type="button" class="small danger remove-status">✕</button>
+                        <button type="button" class="small danger remove-status">\u2715</button>
                     </div>
                 </div>
                 <button type="button" id="add-status-btn" class="small">+ Add Status</button>
@@ -759,24 +682,16 @@
         `;
     }
 
-    // ============================================================
-    // EXPOSE
-    // ============================================================
-
     window.CharacterViews = {
-        // Rendering
         renderAcademic: renderAcademic,
         renderProfessional: renderProfessional,
         renderSocial: renderSocial,
 
-        // Career status
         addCareerStatusEntry: addCareerStatusEntry,
 
-        // Helpers
         getRelationshipTypeLabel: getRelationshipTypeLabel,
         getRelationshipTypeColor: getSafeRelationshipColor,
 
-        // HTML generators
         getAcademicTabHTML: getAcademicTabHTML,
         getProfessionalTabHTML: getProfessionalTabHTML,
         getSocialTabHTML: getSocialTabHTML

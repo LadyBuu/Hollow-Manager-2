@@ -15,14 +15,14 @@
  *   - No data mutations
  *   - No persistence calls
  *   - USES CharacterQueries for character data queries
- *   - USES ClassesQueries for class-related queries
+ *   - USES AcademyQueries for class-related queries
  *   - USES Elimination for elimination status
  *   - USES DomUtils for safe DOM operations
  *   - USES State for current week (delegates to CalendarConstants)
  * 
  * DEPENDENCIES:
  *   - window.CharacterQueries (from character-queries.js)
- *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.AcademyQueries (from academy-queries.js)
  *   - window.Elimination (from elimination.js)
  *   - window.DomUtils (from dom-utils.js)
  *   - window.getCurrentEditId (from index.js)
@@ -32,38 +32,20 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__characterListLoaded) {
         return;
     }
     window.__characterListLoaded = true;
 
-    // ============================================================
-    // DEPENDENCY IMPORTS - NO FALLBACKS
-    // ============================================================
-
     var CharacterQueries = window.CharacterQueries;
-    var ClassesQueries = window.ClassesQueries;
+    var AcademyQueries = window.AcademyQueries;
     var Elimination = window.Elimination;
     var DomUtils = window.DomUtils;
     var CalendarConstants = window.CALENDAR_CONSTANTS;
 
-    // ============================================================
-    // CONSTANTS
-    // ============================================================
-
-    var MIN_WEEK = CalendarConstants ? CalendarConstants.MIN_WEEK : 1;
-    var MAX_WEEK = CalendarConstants ? CalendarConstants.MAX_WEEK : 52;
-    var DEFAULT_WEEK = 1;
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
     function checkDependencies() {
         var missing = [];
 
-        // CharacterQueries is MANDATORY
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
         }
@@ -74,47 +56,41 @@
             missing.push('CharacterQueries.getCurrentStatus');
         }
 
-        // ClassesQueries is MANDATORY
-        if (!ClassesQueries || typeof ClassesQueries.getCharacterClassNames !== 'function') {
-            missing.push('ClassesQueries.getCharacterClassNames');
+        if (!AcademyQueries || typeof AcademyQueries.getCharacterClassNames !== 'function') {
+            missing.push('AcademyQueries.getCharacterClassNames');
         }
-        if (!ClassesQueries || typeof ClassesQueries.getClasses !== 'function') {
-            missing.push('ClassesQueries.getClasses');
+        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
+            missing.push('AcademyQueries.getClasses');
         }
 
-        // Elimination is MANDATORY
         if (!Elimination || typeof Elimination.isCharacterEliminated !== 'function') {
             missing.push('Elimination.isCharacterEliminated');
         }
 
-        // DomUtils is MANDATORY
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
 
-        // getCurrentEditId is MANDATORY
         if (typeof window.getCurrentEditId !== 'function') {
             missing.push('getCurrentEditId');
         }
 
         if (missing.length > 0) {
-            console.warn('CharacterList: Missing dependencies:', missing.join(', '));
-            return false;
+            throw new Error('CharacterList: Missing dependencies: ' + missing.join(', '));
         }
+
         return true;
     }
 
-    // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
-    // ============================================================
+    checkDependencies();
 
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
     }
 
-    // ============================================================
-    // GET FILTER VALUES
-    // ============================================================
+    var MIN_WEEK = CalendarConstants ? CalendarConstants.MIN_WEEK : 1;
+    var MAX_WEEK = CalendarConstants ? CalendarConstants.MAX_WEEK : 52;
+    var DEFAULT_WEEK = 1;
 
     function getFilterValues() {
         var nameFilter = document.getElementById('char-name-filter');
@@ -130,28 +106,20 @@
         };
     }
 
-    // ============================================================
-    // CHARACTER MATCHES FILTERS
-    // ============================================================
-
     function characterMatchesFilters(char, filters) {
         if (!char) return false;
 
-        // Name filter - uses CharacterQueries
         var name = CharacterQueries.getDisplayName(char).toLowerCase();
         if (filters.name && name.indexOf(filters.name) === -1) {
             return false;
         }
 
-        // Class filter - uses ClassesQueries to check membership
         if (filters.classId !== 'all' && filters.classId !== '') {
-            // Use ClassesQueries to check if character belongs to class
-            if (ClassesQueries && typeof ClassesQueries.isCharacterInClass === 'function') {
-                if (!ClassesQueries.isCharacterInClass(char, filters.classId)) {
+            if (AcademyQueries && typeof AcademyQueries.isCharacterInClass === 'function') {
+                if (!AcademyQueries.isCharacterInClass(char, filters.classId)) {
                     return false;
                 }
             } else {
-                // Fallback: direct classIds check (should not be reached)
                 var classIds = Array.isArray(char.classIds) ? char.classIds : [];
                 if (!classIds.some(function(cid) { return String(cid) === String(filters.classId); })) {
                     return false;
@@ -159,12 +127,10 @@
             }
         }
 
-        // Hide deceased
         if (filters.hideDeceased && char.deceased) {
             return false;
         }
 
-        // Hide eliminated - use Elimination module
         if (filters.hideEliminated) {
             var currentWeek = getCurrentWeek();
             if (Elimination && typeof Elimination.isCharacterEliminated === 'function') {
@@ -177,10 +143,6 @@
         return true;
     }
 
-    // ============================================================
-    // GET CURRENT WEEK - From application state
-    // ============================================================
-
     function getCurrentWeek() {
         var data = window.data || {};
         var week = data.currentWeek;
@@ -190,22 +152,9 @@
         return DEFAULT_WEEK;
     }
 
-    // ============================================================
-    // RENDER CHARACTER LIST
-    // ============================================================
-
     function render() {
-        if (!checkDependencies()) {
-            var container = document.getElementById('characters-container');
-            if (container) {
-                container.innerHTML = '<p class="empty-state">Character list dependencies not loaded.</p>';
-            }
-            return;
-        }
-
         var container = document.getElementById('characters-container');
         if (!container) {
-            console.warn('CharacterList: Container not found');
             return;
         }
 
@@ -213,7 +162,6 @@
         var characters = Array.isArray(data.characters) ? data.characters : [];
         var filters = getFilterValues();
 
-        // Filter characters
         var filtered = [];
         for (var i = 0; i < characters.length; i++) {
             var char = characters[i];
@@ -222,7 +170,6 @@
             }
         }
 
-        // Sort by display name (using CharacterQueries)
         filtered.sort(function(a, b) {
             var nameA = CharacterQueries.getDisplayName(a);
             var nameB = CharacterQueries.getDisplayName(b);
@@ -242,21 +189,18 @@
             var char = filtered[i];
             var isSelected = String(char.id) === String(currentEditId);
 
-            // Use CharacterQueries for display name and status
             var displayName = CharacterQueries.getDisplayName(char);
             var status = CharacterQueries.getCurrentStatus(char);
             var isDeceased = char.deceased || false;
 
-            // Check if eliminated - use Elimination module
             var isEliminated = false;
             if (Elimination && typeof Elimination.isCharacterEliminated === 'function') {
                 isEliminated = Elimination.isCharacterEliminated(char.id, currentWeek);
             }
 
-            // Get class names - use ClassesQueries
             var classNames = [];
-            if (ClassesQueries && typeof ClassesQueries.getCharacterClassNames === 'function') {
-                classNames = ClassesQueries.getCharacterClassNames(char);
+            if (AcademyQueries && typeof AcademyQueries.getCharacterClassNames === 'function') {
+                classNames = AcademyQueries.getCharacterClassNames(char);
             }
 
             var safeId = escapeHtml(char.id);
@@ -272,7 +216,6 @@
             html += '<span style="font-size:0.55rem;color:var(--text-dim);">' + safeStatus + '</span>';
             html += '</div>';
 
-            // Badges
             var badges = [];
             if (isDeceased) {
                 badges.push('<span style="font-size:0.5rem;color:var(--danger);">Deceased</span>');
@@ -297,10 +240,6 @@
         container.innerHTML = html;
     }
 
-    // ============================================================
-    // POPULATE CLASS FILTER - Uses ClassesQueries
-    // ============================================================
-
     function populateClassFilter() {
         var select = document.getElementById('char-class-filter');
         if (!select) return;
@@ -308,11 +247,10 @@
         var previousValue = select.value;
 
         var classes = [];
-        if (ClassesQueries && typeof ClassesQueries.getClasses === 'function') {
-            classes = ClassesQueries.getClasses();
+        if (AcademyQueries && typeof AcademyQueries.getClasses === 'function') {
+            classes = AcademyQueries.getClasses();
         }
 
-        // Preserve selection if possible
         select.innerHTML = '<option value="all">All Classes</option>';
 
         for (var i = 0; i < classes.length; i++) {
@@ -324,7 +262,6 @@
             select.appendChild(option);
         }
 
-        // Restore previous selection if it still exists
         if (previousValue && previousValue !== 'all') {
             var exists = false;
             for (var j = 0; j < select.options.length; j++) {
@@ -342,10 +279,6 @@
             select.value = 'all';
         }
     }
-
-    // ============================================================
-    // EXPOSE - Public API
-    // ============================================================
 
     window.CharacterList = {
         render: render,

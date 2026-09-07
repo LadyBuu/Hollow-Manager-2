@@ -11,14 +11,14 @@
  * 
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no persistence
- *   - No direct window.data access - uses ClassesQueries
+ *   - No direct window.data access - uses AcademyQueries
  *   - Uses CharacterQueries for character data
  *   - Uses DomUtils for safe DOM operations
  *   - All user-controlled content uses textContent
  *   - No event binding here (delegated to CharacterEvents)
  * 
  * DEPENDENCIES:
- *   - window.ClassesQueries (from classes-queries.js) - MANDATORY
+ *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
  *   - window.CharacterConstants (from character-constants.js) - MANDATORY
@@ -33,36 +33,27 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__characterClassViewLoaded) {
         return;
     }
     window.__characterClassViewLoaded = true;
 
-    // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
-    // ============================================================
-
-    var ClassesQueries = window.ClassesQueries;
+    var AcademyQueries = window.AcademyQueries;
     var CharacterQueries = window.CharacterQueries;
     var DomUtils = window.DomUtils;
     var CharacterConstants = window.CharacterConstants;
 
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
-
     function checkDependencies() {
         var missing = [];
 
-        if (!ClassesQueries || typeof ClassesQueries.getClasses !== 'function') {
-            missing.push('ClassesQueries.getClasses');
+        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
+            missing.push('AcademyQueries.getClasses');
         }
-        if (!ClassesQueries || typeof ClassesQueries.getClassDisplayName !== 'function') {
-            missing.push('ClassesQueries.getClassDisplayName');
+        if (!AcademyQueries || typeof AcademyQueries.getClassDisplayName !== 'function') {
+            missing.push('AcademyQueries.getClassDisplayName');
         }
-        if (!ClassesQueries || typeof ClassesQueries.isCharacterInClass !== 'function') {
-            missing.push('ClassesQueries.isCharacterInClass');
+        if (!AcademyQueries || typeof AcademyQueries.isCharacterInClass !== 'function') {
+            missing.push('AcademyQueries.isCharacterInClass');
         }
 
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
@@ -77,16 +68,13 @@
         }
 
         if (missing.length > 0) {
-            console.warn('[CharacterClassView] Missing dependencies:', missing.join(', '));
-            return false;
+            throw new Error('CharacterClassView: Missing dependencies: ' + missing.join(', '));
         }
 
         return true;
     }
 
-    // ============================================================
-    // SAFE ELEMENT CREATION
-    // ============================================================
+    checkDependencies();
 
     function createEmptyState(message) {
         var el = document.createElement('span');
@@ -95,16 +83,6 @@
         return el;
     }
 
-    // ============================================================
-    // CLASS TAG RENDERING
-    // ============================================================
-
-    /**
-     * Render class tags for a character.
-     * 
-     * @param {object} char - Character object
-     * @param {HTMLElement} container - Container element (optional)
-     */
     function renderClassTags(char, container) {
         if (!container) {
             container = document.getElementById('class-tag-container');
@@ -125,7 +103,7 @@
             return;
         }
 
-        var classes = ClassesQueries.getClasses();
+        var classes = AcademyQueries.getClasses();
 
         classIds.forEach(function(classId) {
             var cls = classes.find(function(c) {
@@ -138,19 +116,11 @@
             }
         });
 
-        // If no valid classes found
         if (container.children.length === 0) {
             container.appendChild(createEmptyState('No valid classes assigned'));
         }
     }
 
-    /**
-     * Create a single class tag element.
-     * 
-     * @param {string} classId - Class ID
-     * @param {string} className - Class name
-     * @returns {HTMLElement} Class tag element
-     */
     function createClassTag(classId, className) {
         var tag = document.createElement('span');
         tag.className = 'class-tag';
@@ -164,7 +134,7 @@
         var button = document.createElement('button');
         button.className = 'remove-class-tag';
         button.dataset.id = classId;
-        button.textContent = '✕';
+        button.textContent = '\u2715';
         button.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;';
         button.setAttribute('aria-label', 'Remove class ' + className);
         tag.appendChild(button);
@@ -172,11 +142,6 @@
         return tag;
     }
 
-    /**
-     * Clear all class tags from a container.
-     * 
-     * @param {HTMLElement} container - Container element
-     */
     function clearClassTags(container) {
         if (!container) {
             container = document.getElementById('class-tag-container');
@@ -186,12 +151,6 @@
         container.textContent = '';
     }
 
-    /**
-     * Get all class tag IDs from a container.
-     * 
-     * @param {HTMLElement} container - Container element
-     * @returns {string[]} Array of class IDs
-     */
     function getClassTagIds(container) {
         if (!container) {
             container = document.getElementById('class-tag-container');
@@ -205,12 +164,6 @@
         return ids;
     }
 
-    /**
-     * Get normalised class IDs from a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {string[]} Array of class IDs
-     */
     function getNormalisedClassIds(char) {
         if (!char) return [];
         if (!Array.isArray(char.classIds)) return [];
@@ -225,31 +178,19 @@
         });
     }
 
-    // ============================================================
-    // CLASS SELECTOR POPULATION
-    // ============================================================
-
-    /**
-     * Populate the academic class selector.
-     * 
-     * @param {object} char - Character object
-     * @param {HTMLElement} select - Select element (optional)
-     */
     function populateClassSelector(char, select) {
         if (!select) {
             select = document.getElementById('academic-class-select');
         }
         if (!select) return;
 
-        var classes = ClassesQueries.getClasses();
+        var classes = AcademyQueries.getClasses();
         var existingClassIds = (char && Array.isArray(char.classIds)) ? char.classIds : [];
 
-        // Preserve current value if possible
         var currentValue = select.value;
 
         select.innerHTML = '<option value="">Select a class...</option>';
 
-        // Sort classes by name
         var sorted = classes.slice().sort(function(a, b) {
             return (a.name || '').localeCompare(b.name || '');
         });
@@ -269,7 +210,6 @@
             }
         });
 
-        // Restore selection if it still exists
         if (currentValue) {
             var exists = false;
             for (var i = 0; i < select.options.length; i++) {
@@ -288,18 +228,13 @@
         }
     }
 
-    /**
-     * Populate the class filter dropdown.
-     * 
-     * @param {HTMLElement} select - Select element (optional)
-     */
     function populateClassFilter(select) {
         if (!select) {
             select = document.getElementById('char-class-filter');
         }
         if (!select) return;
 
-        var classes = ClassesQueries.getClasses();
+        var classes = AcademyQueries.getClasses();
         var currentValue = select.value;
 
         select.innerHTML = '<option value="all">All Classes</option>';
@@ -317,7 +252,6 @@
             select.appendChild(option);
         });
 
-        // Restore selection if it still exists
         if (currentValue) {
             var exists = false;
             for (var i = 0; i < select.options.length; i++) {
@@ -336,16 +270,6 @@
         }
     }
 
-    // ============================================================
-    // CURRENT CLASSES DISPLAY
-    // ============================================================
-
-    /**
-     * Update the current classes display.
-     * 
-     * @param {object} char - Character object
-     * @param {HTMLElement} display - Display element (optional)
-     */
     function updateCurrentClassesDisplay(char, display) {
         if (!display) {
             display = document.getElementById('current-classes-list');
@@ -364,7 +288,7 @@
             return;
         }
 
-        var classes = ClassesQueries.getClasses();
+        var classes = AcademyQueries.getClasses();
         var names = [];
 
         classIds.forEach(function(cid) {
@@ -379,12 +303,6 @@
         display.textContent = names.length > 0 ? names.join(', ') : 'None';
     }
 
-    /**
-     * Get the current classes display text.
-     * 
-     * @param {object} char - Character object
-     * @returns {string} Display text
-     */
     function getCurrentClassesDisplayText(char) {
         if (!char) return 'None';
 
@@ -392,7 +310,7 @@
 
         if (classIds.length === 0) return 'None';
 
-        var classes = ClassesQueries.getClasses();
+        var classes = AcademyQueries.getClasses();
         var names = [];
 
         classIds.forEach(function(cid) {
@@ -407,21 +325,9 @@
         return names.length > 0 ? names.join(', ') : 'None';
     }
 
-    // ============================================================
-    // CLASS OPTIONS HTML (for static HTML generation)
-    // ============================================================
-
-    /**
-     * Get HTML for class options.
-     * Used for static HTML generation.
-     * 
-     * @param {string} selectedId - Selected class ID
-     * @param {Array} excludeIds - Class IDs to exclude (already assigned)
-     * @returns {string} HTML string of options
-     */
     function getClassOptionsHTML(selectedId, excludeIds) {
         excludeIds = excludeIds || [];
-        var classes = ClassesQueries.getClasses();
+        var classes = AcademyQueries.getClasses();
         var html = '<option value="">None</option>';
 
         var sorted = classes.slice().sort(function(a, b) {
@@ -449,35 +355,18 @@
         return html;
     }
 
-    /**
-     * Get HTML for class options excluding a character's current classes.
-     * 
-     * @param {object} char - Character object
-     * @param {string} selectedId - Selected class ID
-     * @returns {string} HTML string of options
-     */
     function getAvailableClassOptionsHTML(char, selectedId) {
         var excludeIds = (char && Array.isArray(char.classIds)) ? char.classIds : [];
         return getClassOptionsHTML(selectedId, excludeIds);
     }
 
-    // ============================================================
-    // CHARACTER CLASS INFO
-    // ============================================================
-
-    /**
-     * Get the class names for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {string[]} Array of class names
-     */
     function getCharacterClassNames(char) {
         if (!char) return [];
 
         var classIds = getNormalisedClassIds(char);
         if (classIds.length === 0) return [];
 
-        var classes = ClassesQueries.getClasses();
+        var classes = AcademyQueries.getClasses();
         var names = [];
 
         classIds.forEach(function(cid) {
@@ -492,13 +381,6 @@
         return names;
     }
 
-    /**
-     * Check if a character is in a class.
-     * 
-     * @param {object} char - Character object
-     * @param {string} classId - Class ID
-     * @returns {boolean} True if character is in class
-     */
     function isCharacterInClass(char, classId) {
         if (!char || !classId) return false;
 
@@ -508,34 +390,17 @@
         });
     }
 
-    /**
-     * Get the number of classes a character is in.
-     * 
-     * @param {object} char - Character object
-     * @returns {number} Number of classes
-     */
     function getClassCount(char) {
         if (!char) return 0;
         return getNormalisedClassIds(char).length;
     }
 
-    // ============================================================
-    // ACADEMIC CLASS VIEW
-    // ============================================================
-
-    /**
-     * Render the academic class view for a character.
-     * 
-     * @param {object} char - Character object
-     * @param {HTMLElement} container - Container element (optional)
-     */
     function renderAcademicClassView(char, container) {
         if (!container) {
             container = document.getElementById('academic-class-view');
         }
         if (!container) return;
 
-        // Clear container
         container.textContent = '';
 
         if (!char) {
@@ -548,7 +413,7 @@
         }
 
         var classIds = getNormalisedClassIds(char);
-        var classes = ClassesQueries.getClasses();
+        var classes = AcademyQueries.getClasses();
 
         if (classIds.length === 0) {
             var empty = document.createElement('p');
@@ -559,7 +424,6 @@
             return;
         }
 
-        // Create class list
         var list = document.createElement('div');
         list.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
 
@@ -584,39 +448,28 @@
         container.appendChild(list);
     }
 
-    // ============================================================
-    // EXPOSE
-    // ============================================================
-
     window.CharacterClassView = {
-        // Class tags
         renderClassTags: renderClassTags,
         createClassTag: createClassTag,
         clearClassTags: clearClassTags,
         getClassTagIds: getClassTagIds,
 
-        // Selectors
         populateClassSelector: populateClassSelector,
         populateClassFilter: populateClassFilter,
 
-        // Display
         updateCurrentClassesDisplay: updateCurrentClassesDisplay,
         getCurrentClassesDisplayText: getCurrentClassesDisplayText,
 
-        // Options HTML
         getClassOptionsHTML: getClassOptionsHTML,
         getAvailableClassOptionsHTML: getAvailableClassOptionsHTML,
 
-        // Character class info
         getCharacterClassNames: getCharacterClassNames,
         isCharacterInClass: isCharacterInClass,
         getClassCount: getClassCount,
         getNormalisedClassIds: getNormalisedClassIds,
 
-        // Views
         renderAcademicClassView: renderAcademicClassView,
 
-        // Helpers
         createEmptyState: createEmptyState
     };
 

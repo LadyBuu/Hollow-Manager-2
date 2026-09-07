@@ -19,7 +19,7 @@
             <a href="#" data-tab="dashboard" class="active">Dashboard</a>
             <a href="#" data-tab="characters">Characters</a>
             <a href="#" data-tab="teams">Teams</a>
-            <a href="#" data-tab="classes">Classes</a>
+            <a href="#" data-tab="academy">Academy</a>
             <a href="#" data-tab="missions">Missions</a>
             <a href="#" data-tab="social">Social</a>
         </nav>
@@ -43,9 +43,9 @@
         <div id="tab-dashboard" class="tab-content active"></div>
         <div id="tab-characters" class="tab-content"></div>
         <div id="tab-teams" class="tab-content"></div>
-        <div id="tab-classes" class="tab-content"></div>
+        <div id="tab-academy" class="tab-content"></div>
         <div id="tab-missions" class="tab-content"></div>
-        <div id="tab-social" class="tab-content"><p class="empty-state">Social module coming soon...</p></div>
+        <div id="tab-social" class="tab-content"></div>
     </main>
 
     <!-- MODALS -->
@@ -127,12 +127,7 @@
     <script src="js/modules/teams/team-queries.js"></script>
 
     <!-- ============================================================
-         10. ACADEMY CLASS QUERIES - Internal to Academy
-         ============================================================ -->
-    <script src="js/modules/academy/academy-class-queries.js"></script>
-
-    <!-- ============================================================
-         11. CALENDAR INFRASTRUCTURE (Full)
+         10. CALENDAR INFRASTRUCTURE (Full)
          ============================================================ -->
     <script src="js/modules/calendar/calendar-utils.js"></script>
     <script src="js/modules/calendar/calendar-dependencies.js"></script>
@@ -157,7 +152,7 @@
     <script src="js/modules/calendar/index.js"></script>
 
     <!-- ============================================================
-         12. CHARACTER DOMAIN (Full Implementation)
+         11. CHARACTER DOMAIN (Full Implementation)
          ============================================================ -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
@@ -173,7 +168,7 @@
     <script src="js/modules/characters/index.js"></script>
 
     <!-- ============================================================
-         13. TEAMS DOMAIN
+         12. TEAMS DOMAIN
          ============================================================ -->
     <script src="js/modules/teams/team-core.js"></script>
     <script src="js/modules/teams/team-filters.js"></script>
@@ -184,7 +179,7 @@
     <script src="js/modules/teams/team-manager.js"></script>
 
     <!-- ============================================================
-         14. TOURNAMENT DOMAIN
+         13. TOURNAMENT DOMAIN
          ============================================================ -->
     <script src="js/modules/tournaments/tournaments-schema.js"></script>
     <script src="js/modules/tournaments/tournament-lifecycle.js"></script>
@@ -197,7 +192,7 @@
     <script src="js/modules/tournaments/tournaments-ui.js"></script>
 
     <!-- ============================================================
-         15. MISSION DOMAIN
+         14. MISSION DOMAIN
          ============================================================ -->
     <script src="js/modules/missions/missions-schema.js"></script>
     <script src="js/modules/missions/mission-views.js"></script>
@@ -209,10 +204,10 @@
     <script src="js/modules/missions/missions-ui.js"></script>
 
     <!-- ============================================================
-         16. ACADEMY DOMAIN
+         15. ACADEMY DOMAIN
          ============================================================ -->
-    <script src="js/modules/academy/academy-class-queries.js"></script>
     <script src="js/modules/academy/academy-state.js"></script>
+    <script src="js/modules/academy/academy-classes.js"></script>
     <script src="js/modules/academy/academy-queries.js"></script>
     <script src="js/modules/academy/academy-grades.js"></script>
     <script src="js/modules/academy/academy-ranking.js"></script>
@@ -225,23 +220,28 @@
     <script src="js/modules/academy/tabs/faculty-tab.js"></script>
     <script src="js/modules/academy/academy-views.js"></script>
     <script src="js/modules/academy/academy-events.js"></script>
+    <script src="js/modules/academy/index.js"></script>
 
     <!-- ============================================================
-         17. SOCIAL DOMAIN
+         16. SOCIAL DOMAIN
          ============================================================ -->
     <script src="js/modules/social/social-queries.js"></script>
     <script src="js/modules/social/social-core.js"></script>
     <script src="js/modules/social/social-views.js"></script>
     <script src="js/modules/social/social-graph.js"></script>
     <script src="js/modules/social/social-events.js"></script>
+    <script src="js/modules/social/index.js"></script>
 
     <!-- ============================================================
-         18. CROSS-DOMAIN READ MODELS (Dashboard)
+         17. DASHBOARD
          ============================================================ -->
-    <!-- dashboard.js removed - 404 -->
+    <script src="js/modules/dashboard/dashboard-queries.js"></script>
+    <script src="js/modules/dashboard/dashboard-render.js"></script>
+    <script src="js/modules/dashboard/dashboard-ui.js"></script>
+    <script src="js/modules/dashboard/index.js"></script>
 
     <!-- ============================================================
-         19. IMPORT/EXPORT (Depends on Domain Schemas/Queries)
+         18. IMPORT/EXPORT (Depends on Domain Schemas/Queries)
          ============================================================ -->
     <script src="js/export/export-utils.js"></script>
     <script src="js/export/csv-parser.js"></script>
@@ -258,7 +258,7 @@
     <script src="js/export/index.js"></script>
 
     <!-- ============================================================
-         20. APPLICATION BOOTSTRAP (Last)
+         19. APPLICATION BOOTSTRAP (Last)
          ============================================================ -->
     <script src="js/app.js"></script>
 

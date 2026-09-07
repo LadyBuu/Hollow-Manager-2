@@ -19,7 +19,7 @@
  *   - window.TeamQueries (from team-queries.js)
  *   - window.TournamentQueries (from tournament-queries.js)
  *   - window.MissionsQueries (from missions-queries.js)
- *   - window.ClassesQueries (from classes-queries.js)
+ *   - window.AcademyQueries (from academy-queries.js)
  * 
  * USAGE:
  *   var queries = window.DashboardQueries;
@@ -33,10 +33,6 @@
     if (window.__dashboardQueriesLoaded) {
         return;
     }
-
-    // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
-    // ============================================================
 
     var missing = [];
 
@@ -65,8 +61,8 @@
         missing.push('MissionsQueries.getMissions');
     }
 
-    if (!window.ClassesQueries || typeof window.ClassesQueries.getGraduatingClasses !== 'function') {
-        missing.push('ClassesQueries.getGraduatingClasses');
+    if (!window.AcademyQueries || typeof window.AcademyQueries.getClasses !== 'function') {
+        missing.push('AcademyQueries.getClasses');
     }
 
     if (missing.length > 0) {
@@ -75,19 +71,11 @@
 
     window.__dashboardQueriesLoaded = true;
 
-    // ============================================================
-    // DEPENDENCY IMPORTS
-    // ============================================================
-
     var CharacterQueries = window.CharacterQueries;
     var TeamQueries = window.TeamQueries;
     var TournamentQueries = window.TournamentQueries;
     var MissionsQueries = window.MissionsQueries;
-    var ClassesQueries = window.ClassesQueries;
-
-    // ============================================================
-    // HELPERS
-    // ============================================================
+    var AcademyQueries = window.AcademyQueries;
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -96,16 +84,6 @@
         return window.data;
     }
 
-    // ============================================================
-    // CURRENT YEAR
-    // ============================================================
-
-    /**
-     * Get the current application year.
-     * Returns a default if not set.
-     * 
-     * @returns {number} Current year
-     */
     function getCurrentYear() {
         var data = getDataStore();
         if (data && typeof data.currentYear === 'number') {
@@ -114,18 +92,7 @@
         return new Date().getFullYear();
     }
 
-    // ============================================================
-    // STATISTICS
-    // ============================================================
-
-    /**
-     * Get complete dashboard statistics.
-     * Composes data from all canonical domain queries.
-     * 
-     * @returns {object} Statistics object
-     */
     function getStatistics() {
-        // Get characters
         var characters = CharacterQueries.getCharacters() || [];
         var totalCharacters = characters.length;
         var activeCharacters = 0;
@@ -140,23 +107,18 @@
             }
         }
 
-        // Get students and instructors using canonical queries
         var students = CharacterQueries.getStudents() || [];
         var instructors = CharacterQueries.getInstructors() || [];
 
-        // Get teams
         var allTeams = TeamQueries.getTeams ? TeamQueries.getTeams() : [];
         var activeTeams = TeamQueries.getActiveTeams ? TeamQueries.getActiveTeams() : [];
 
-        // Get tournaments
         var tournaments = TournamentQueries.getTournaments ? TournamentQueries.getTournaments() : [];
 
-        // Get missions
         var allMissions = MissionsQueries.getMissions ? MissionsQueries.getMissions('all') : [];
         var activeMissions = MissionsQueries.getMissions ? MissionsQueries.getMissions('active') : [];
 
-        // Get graduating classes
-        var graduatingClasses = ClassesQueries.getGraduatingClasses ? ClassesQueries.getGraduatingClasses() : [];
+        var graduatingClasses = AcademyQueries.getClasses ? AcademyQueries.getClasses() : [];
 
         return {
             totalCharacters: totalCharacters,
@@ -172,10 +134,6 @@
             totalGraduatingClasses: graduatingClasses.length
         };
     }
-
-    // ============================================================
-    // EXPOSE
-    // ============================================================
 
     window.DashboardQueries = {
         getCurrentYear: getCurrentYear,

@@ -37,9 +37,14 @@
 (function() {
     'use strict';
 
+    // Guard against duplicate loading
     if (window.__academyScheduleLoaded) {
         return;
     }
+
+    // ============================================================
+    // DEPENDENCY IMPORTS - NO FALLBACKS
+    // ============================================================
 
     var CalendarCore = window.CalendarCore;
     var ObjectUtils = window.ObjectUtils;
@@ -47,6 +52,10 @@
     var DisciplineQueries = window.DisciplineQueries;
     var CalendarValidation = window.CalendarValidation;
     var CalendarConstants = window.CalendarConstants;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -138,6 +147,10 @@
 
     checkDependencies();
 
+    // ============================================================
+    // HELPER ALIASES
+    // ============================================================
+
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
     }
@@ -153,6 +166,10 @@
     function success(data) {
         return { success: true, data: data };
     }
+
+    // ============================================================
+    // VALIDATION HELPERS
+    // ============================================================
 
     function validateStudentId(studentId) {
         if (!isNonEmptyString(studentId)) {
@@ -203,6 +220,10 @@
 
         return { valid: true, days: validDays };
     }
+
+    // ============================================================
+    // SCHEDULE QUERIES - Delegated to CalendarCore
+    // ============================================================
 
     function getStudentSchedule(studentId, week) {
         if (!isNonEmptyString(studentId)) {
@@ -326,6 +347,10 @@
         return CalendarCore.findClassStartHour(schedule, dayNum, hourNum);
     }
 
+    // ============================================================
+    // CLASS DETAILS - Enriched read model
+    // ============================================================
+
     function getClassDetails(studentId, week, day, hour) {
         if (!isNonEmptyString(studentId)) {
             return null;
@@ -356,6 +381,7 @@
         var label = CalendarCore.getClassLabel(studentId, weekNum, dayNum, hourNum) || '';
         var startInfo = CalendarCore.findClassStartHour(schedule, dayNum, hourNum);
 
+        // If duration is missing, this is a malformed schedule entry
         if (duration === null || duration === undefined) {
             return null;
         }
@@ -414,6 +440,10 @@
 
         return classes;
     }
+
+    // ============================================================
+    // CONFLICT DETECTION - Delegated to CalendarCore
+    // ============================================================
 
     function hasConflict(studentId, week, day, hour, duration) {
         if (!isNonEmptyString(studentId)) {
@@ -483,6 +513,10 @@
 
         return conflicts;
     }
+
+    // ============================================================
+    // AVAILABILITY CALCULATION - Academy-specific
+    // ============================================================
 
     function getAvailableSlots(studentId, week, disciplineId) {
         if (!isNonEmptyString(studentId)) {
@@ -600,6 +634,10 @@
         return freeBlocks;
     }
 
+    // ============================================================
+    // WEEKLY HOUR USAGE - Academy-specific
+    // ============================================================
+
     function getWeeklyHourUsage(studentId, week, disciplineId) {
         if (!isNonEmptyString(studentId) || !isNonEmptyString(disciplineId)) {
             return 0;
@@ -712,6 +750,10 @@
         return remaining;
     }
 
+    // ============================================================
+    // SCHEDULE SUMMARY - Academy-specific
+    // ============================================================
+
     function getStudentScheduleSummary(studentId, week) {
         if (!isNonEmptyString(studentId)) {
             return null;
@@ -803,7 +845,16 @@
         };
     }
 
+    // ============================================================
+    // SCHEDULE MUTATIONS - With Academy policy enforcement
+    // ============================================================
+
+    /**
+     * Build a candidate for setting a class with Academy policy checks.
+     * Validates: conflicts, rest days, weekly hour limits.
+     */
     function buildSetClassCandidate(studentId, week, day, hour, disciplineId, duration, instructorId) {
+        // ---- PHASE 1: VALIDATE INPUTS ----
         var slotValidation = CalendarValidation.parseSlot(week, day, hour, duration);
         if (slotValidation === null) {
             return failure('Invalid slot: week, day, hour, or duration is invalid.');
@@ -824,17 +875,20 @@
         var hourNum = slotValidation.hour;
         var durationNum = slotValidation.duration;
 
+        // ---- PHASE 2: CHECK CONFLICTS ----
         var conflicts = getConflicts(studentId, weekNum, dayNum, hourNum, durationNum);
         if (conflicts.length > 0) {
             var conflictNames = conflicts.map(function(c) { return c.disciplineName; });
             return failure('Schedule conflict: ' + conflictNames.join(', '));
         }
 
+        // ---- PHASE 3: CHECK REST DAYS ----
         var restDays = getStudentRestDays(studentId, weekNum);
         if (restDays.indexOf(dayNum) !== -1) {
             return failure('This is a rest day for this student.');
         }
 
+        // ---- PHASE 4: CHECK WEEKLY HOUR LIMIT ----
         var usedHours = getWeeklyHourUsage(studentId, weekNum, discResult.discipline.id);
         var maxHours = parseFloat(discResult.discipline.weeklyHours) || 1;
         if (usedHours + durationNum > maxHours) {
@@ -843,7 +897,9 @@
 
         var studentName = CharacterQueries.getDisplayName(studentResult.student);
 
-        function mutate() {
+        // ---- PHASE 5: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            // Delegate to CalendarCore for actual schedule mutation
             var result = CalendarCore.setStudentScheduleClass(
                 studentId,
                 weekNum,
@@ -881,7 +937,12 @@
         });
     }
 
+    /**
+     * Build a candidate for removing a class.
+     * Removes the entire class at the specified start hour.
+     */
     function buildRemoveClassCandidate(studentId, week, day, hour) {
+        // ---- PHASE 1: VALIDATE ----
         if (!isNonEmptyString(studentId)) {
             return failure('Student ID is required.');
         }
@@ -898,6 +959,7 @@
             return failure('Valid hour is required (' + CalendarConstants.MIN_HOUR + '-' + CalendarConstants.MAX_HOUR + ').');
         }
 
+        // ---- PHASE 2: CHECK CLASS EXISTS ----
         var schedule = getStudentSchedule(studentId, weekNum);
         if (!schedule[dayNum] || !schedule[dayNum][hourNum]) {
             return failure('No class at this time.');
@@ -906,7 +968,8 @@
         var student = CharacterQueries.getCharacterById(studentId);
         var studentName = student ? CharacterQueries.getDisplayName(student) : 'Unknown';
 
-        function mutate() {
+        // ---- PHASE 3: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
             var result = CalendarCore.removeStudentScheduleClass(studentId, weekNum, dayNum, hourNum);
             if (!result || !result.success) {
                 throw new Error(result ? result.message : 'Failed to remove class.');
@@ -930,6 +993,9 @@
         });
     }
 
+    /**
+     * Build a candidate for clearing a student's entire schedule for a week.
+     */
     function buildClearScheduleCandidate(studentId, week) {
         if (!isNonEmptyString(studentId)) {
             return failure('Student ID is required.');
@@ -942,7 +1008,7 @@
         var student = CharacterQueries.getCharacterById(studentId);
         var studentName = student ? CharacterQueries.getDisplayName(student) : 'Unknown';
 
-        function mutate() {
+        function mutate(data) {
             var result = CalendarCore.clearStudentSchedule(studentId, weekNum);
             if (!result || !result.success) {
                 throw new Error(result ? result.message : 'Failed to clear schedule.');
@@ -962,6 +1028,9 @@
         });
     }
 
+    /**
+     * Build a candidate for duplicating a schedule from one week to another.
+     */
     function buildDuplicateScheduleCandidate(studentId, sourceWeek, targetWeek, overwrite) {
         if (!isNonEmptyString(studentId)) {
             return failure('Student ID is required.');
@@ -980,6 +1049,7 @@
 
         overwrite = overwrite === true;
 
+        // Check for conflicts in target week if not overwriting
         if (!overwrite) {
             var targetSchedule = getStudentSchedule(studentId, targetWeekNum);
             if (targetSchedule && Object.keys(targetSchedule).length > 0) {
@@ -990,7 +1060,7 @@
         var student = CharacterQueries.getCharacterById(studentId);
         var studentName = student ? CharacterQueries.getDisplayName(student) : 'Unknown';
 
-        function mutate() {
+        function mutate(data) {
             var result = CalendarCore.duplicateStudentSchedule(studentId, sourceWeekNum, targetWeekNum, overwrite);
             if (!result || !result.success) {
                 throw new Error(result ? result.message : 'Failed to duplicate schedule.');
@@ -1012,6 +1082,9 @@
         });
     }
 
+    /**
+     * Build a candidate for setting rest days.
+     */
     function buildSetRestDaysCandidate(studentId, week, days) {
         if (!isNonEmptyString(studentId)) {
             return failure('Student ID is required.');
@@ -1029,7 +1102,7 @@
         var student = CharacterQueries.getCharacterById(studentId);
         var studentName = student ? CharacterQueries.getDisplayName(student) : 'Unknown';
 
-        function mutate() {
+        function mutate(data) {
             var result = CalendarCore.setStudentRestDays(studentId, weekNum, restValidation.days);
             if (!result || !result.success) {
                 throw new Error(result ? result.message : 'Failed to set rest days.');
@@ -1051,6 +1124,12 @@
         });
     }
 
+    // ============================================================
+    // LEGACY WRAPPER FUNCTIONS - For backward compatibility
+    // These perform the mutation and commit directly.
+    // DEPRECATED: Use build*Candidate functions with MutationPipeline.
+    // ============================================================
+
     function setClass(studentId, week, day, hour, disciplineId, duration, instructorId) {
         var candidate = buildSetClassCandidate(studentId, week, day, hour, disciplineId, duration, instructorId);
         if (!candidate.success) {
@@ -1058,7 +1137,7 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var result = candidate.data.mutate(window.data);
             return success(result);
         } catch (e) {
             return failure(e.message || 'Failed to set class.');
@@ -1072,7 +1151,7 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var result = candidate.data.mutate(window.data);
             return success(result);
         } catch (e) {
             return failure(e.message || 'Failed to remove class.');
@@ -1086,7 +1165,7 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var result = candidate.data.mutate(window.data);
             return success(result);
         } catch (e) {
             return failure(e.message || 'Failed to clear schedule.');
@@ -1100,7 +1179,7 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var result = candidate.data.mutate(window.data);
             return success(result);
         } catch (e) {
             return failure(e.message || 'Failed to duplicate schedule.');
@@ -1114,14 +1193,19 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var result = candidate.data.mutate(window.data);
             return success(result);
         } catch (e) {
             return failure(e.message || 'Failed to set rest days.');
         }
     }
 
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
     window.AcademySchedule = {
+        // Queries
         getStudentSchedule: getStudentSchedule,
         getStudentScheduleClass: getStudentScheduleClass,
         getStudentRestDays: getStudentRestDays,
@@ -1130,34 +1214,39 @@
         getClassLabel: getClassLabel,
         findClassStart: findClassStart,
 
+        // Class details
         getClassDetails: getClassDetails,
         getDayClasses: getDayClasses,
 
+        // Conflict detection
         hasConflict: hasConflict,
         getConflicts: getConflicts,
 
+        // Availability
         getAvailableSlots: getAvailableSlots,
         getFreeTime: getFreeTime,
 
+        // Weekly hour usage
         getWeeklyHourUsage: getWeeklyHourUsage,
         getDisciplineHourUsage: getDisciplineHourUsage,
         getRemainingWeeklyHours: getRemainingWeeklyHours,
 
+        // Schedule summary
         getStudentScheduleSummary: getStudentScheduleSummary,
 
+        // Candidate builders (preferred - use with MutationPipeline)
         buildSetClassCandidate: buildSetClassCandidate,
         buildRemoveClassCandidate: buildRemoveClassCandidate,
         buildClearScheduleCandidate: buildClearScheduleCandidate,
         buildDuplicateScheduleCandidate: buildDuplicateScheduleCandidate,
         buildSetRestDaysCandidate: buildSetRestDaysCandidate,
 
+        // Legacy wrappers (deprecated - use with caution)
         setClass: setClass,
         removeClass: removeClass,
         clearSchedule: clearSchedule,
         duplicateSchedule: duplicateSchedule,
         setRestDays: setRestDays
     };
-
-    window.__academyScheduleLoaded = true;
 
 })();

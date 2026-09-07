@@ -24,7 +24,7 @@
  * 
  * DEPENDENCIES:
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.ClassesQueries (from classes-queries.js) - MANDATORY
+ *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.TeamQueries (from team-queries.js) - MANDATORY
  *   - window.GradeQueries (from grade-queries.js) - MANDATORY
  *   - window.MissionQueries (from mission-queries.js) - MANDATORY
@@ -44,18 +44,13 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__characterDetailQueriesLoaded) {
         return;
     }
     window.__characterDetailQueriesLoaded = true;
 
-    // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
-    // ============================================================
-
     var CharacterQueries = window.CharacterQueries;
-    var ClassesQueries = window.ClassesQueries;
+    var AcademyQueries = window.AcademyQueries;
     var TeamQueries = window.TeamQueries;
     var GradeQueries = window.GradeQueries;
     var MissionQueries = window.MissionQueries;
@@ -65,18 +60,6 @@
     var ScheduleQueries = window.ScheduleQueries;
     var MagicConstants = window.MagicConstants;
     var CharacterConstants = window.CharacterConstants;
-
-    // ============================================================
-    // CONSTANTS
-    // ============================================================
-
-    var STAT_KEYS = CharacterConstants ? CharacterConstants.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-    var STAT_DEFAULT = CharacterConstants ? CharacterConstants.STAT_DEFAULT : 10;
-    var MAGIC_TYPE_KEYS = MagicConstants ? MagicConstants.getTypeKeys() : [];
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -88,8 +71,8 @@
             missing.push('CharacterQueries.getDisplayName');
         }
 
-        if (!ClassesQueries || typeof ClassesQueries.getCharacterClasses !== 'function') {
-            missing.push('ClassesQueries.getCharacterClasses');
+        if (!AcademyQueries || typeof AcademyQueries.getCharacterClasses !== 'function') {
+            missing.push('AcademyQueries.getCharacterClasses');
         }
 
         if (!TeamQueries || typeof TeamQueries.getTeamsForCharacter !== 'function') {
@@ -121,54 +104,35 @@
         }
 
         if (missing.length > 0) {
-            console.warn('[CharacterDetailQueries] Missing dependencies:', missing.join(', '));
-            return false;
+            throw new Error('CharacterDetailQueries: Missing dependencies: ' + missing.join(', '));
         }
 
         return true;
     }
 
-    // ============================================================
-    // HELPERS
-    // ============================================================
+    checkDependencies();
 
-    /**
-     * Format a period string from join/leave dates.
-     * 
-     * @param {string} join - Join date
-     * @param {string} leave - Leave date
-     * @param {string} prefix - Prefix for dates (e.g., 'Wk ')
-     * @returns {string} Formatted period string
-     */
+    var STAT_KEYS = CharacterConstants ? CharacterConstants.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    var STAT_DEFAULT = CharacterConstants ? CharacterConstants.STAT_DEFAULT : 10;
+    var MAGIC_TYPE_KEYS = MagicConstants ? MagicConstants.getTypeKeys() : [];
+
     function formatPeriod(join, leave, prefix) {
         prefix = prefix || '';
         var joinStr = (join !== undefined && join !== null && join !== '') ? String(join) : '';
         var leaveStr = (leave !== undefined && leave !== null && leave !== '') ? String(leave) : '';
 
-        if (joinStr && leaveStr) return prefix + joinStr + ' → ' + prefix + leaveStr;
-        if (joinStr) return prefix + joinStr + ' → Present';
+        if (joinStr && leaveStr) return prefix + joinStr + ' -> ' + prefix + leaveStr;
+        if (joinStr) return prefix + joinStr + ' -> Present';
         if (leaveStr) return 'Until ' + prefix + leaveStr;
         return prefix + '?';
     }
 
-    /**
-     * Get the modifier for a stat value.
-     * 
-     * @param {number} value - Stat value
-     * @returns {number} Modifier
-     */
     function getModifier(value) {
         var num = Number(value);
         if (isNaN(num) || !isFinite(num)) return 0;
         return Math.floor((num - 10) / 2);
     }
 
-    /**
-     * Get the magic level label for a score.
-     * 
-     * @param {number} score - Magic proficiency score
-     * @returns {string} Magic level label
-     */
     function getMagicLevelLabel(score) {
         var num = Number(score);
         if (isNaN(num) || !isFinite(num)) return 'Untrained';
@@ -181,12 +145,6 @@
         return 'Untrained';
     }
 
-    /**
-     * Get the magic level color for a score.
-     * 
-     * @param {number} score - Magic proficiency score
-     * @returns {string} CSS color variable
-     */
     function getMagicLevelColor(score) {
         var num = Number(score);
         if (isNaN(num) || !isFinite(num)) return 'var(--border)';
@@ -199,12 +157,6 @@
         return 'var(--border)';
     }
 
-    /**
-     * Get magic type label from key.
-     * 
-     * @param {string} key - Magic type key
-     * @returns {string} Magic type label
-     */
     function getMagicTypeLabel(key) {
         if (MagicConstants && typeof MagicConstants.getTypeLabel === 'function') {
             return MagicConstants.getTypeLabel(key);
@@ -212,23 +164,7 @@
         return key.charAt(0).toUpperCase() + key.slice(1);
     }
 
-    // ============================================================
-    // CHARACTER DETAIL QUERIES
-    // ============================================================
-
-    /**
-     * Get the complete character detail view model.
-     * 
-     * @param {string} charId - Character ID
-     * @param {object} options - Query options
-     * @param {number} options.week - Current week (default: 1)
-     * @returns {object} Detail view model
-     */
     function getCharacterDetail(charId, options) {
-        if (!checkDependencies()) {
-            return null;
-        }
-
         options = options || {};
         var week = options.week || 1;
 
@@ -272,16 +208,6 @@
         };
     }
 
-    // ============================================================
-    // CAREER
-    // ============================================================
-
-    /**
-     * Get career information for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {object} Career information
-     */
     function getCareer(char) {
         if (!char) return null;
 
@@ -302,16 +228,6 @@
         };
     }
 
-    // ============================================================
-    // TEAMS
-    // ============================================================
-
-    /**
-     * Get academic teams for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {Array} Academic teams
-     */
     function getAcademicTeams(char) {
         if (!char) return [];
 
@@ -319,12 +235,6 @@
         return formatTeams(teams, char.id, 'Wk ');
     }
 
-    /**
-     * Get professional teams for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {Array} Professional teams
-     */
     function getProfessionalTeams(char) {
         if (!char) return [];
 
@@ -332,12 +242,6 @@
         return formatTeams(teams, char.id);
     }
 
-    /**
-     * Get temporary teams for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {Array} Temporary teams
-     */
     function getTemporaryTeams(char) {
         if (!char) return [];
 
@@ -345,12 +249,6 @@
         return formatTeams(teams, char.id);
     }
 
-    /**
-     * Get civilian teams for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {Array} Civilian teams
-     */
     function getCivilianTeams(char) {
         if (!char) return [];
 
@@ -358,14 +256,6 @@
         return formatTeams(teams, char.id);
     }
 
-    /**
-     * Format team data for display.
-     * 
-     * @param {Array} teams - Team objects
-     * @param {string} charId - Character ID
-     * @param {string} prefix - Period prefix
-     * @returns {Array} Formatted teams
-     */
     function formatTeams(teams, charId, prefix) {
         prefix = prefix || '';
 
@@ -373,7 +263,7 @@
             var member = TeamQueries.getCharacterTeamMembership(team.id, charId);
             var classDisplay = '';
             if (team.classId) {
-                var className = ClassesQueries.getClassDisplayName(team.classId);
+                var className = AcademyQueries.getClassDisplayName(team.classId);
                 if (className) {
                     classDisplay = ' [' + className + ']';
                 }
@@ -398,16 +288,6 @@
         });
     }
 
-    // ============================================================
-    // MISSIONS
-    // ============================================================
-
-    /**
-     * Get missions for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {Array} Missions
-     */
     function getMissions(char) {
         if (!char) return [];
 
@@ -429,22 +309,11 @@
         });
     }
 
-    // ============================================================
-    // GRADES
-    // ============================================================
-
-    /**
-     * Get grades for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {Array} Grades (sorted by week)
-     */
     function getGrades(char) {
         if (!char) return [];
 
         var grades = GradeQueries.getCharacterGrades(char.id) || [];
 
-        // Sort by week
         grades.sort(function(a, b) {
             return parseInt(a.week, 10) - parseInt(b.week, 10);
         });
@@ -464,16 +333,6 @@
         });
     }
 
-    // ============================================================
-    // ELIMINATIONS
-    // ============================================================
-
-    /**
-     * Get tournament eliminations for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {Array} Tournament eliminations
-     */
     function getTournamentEliminations(char) {
         if (!char) return [];
 
@@ -504,12 +363,6 @@
         return tournaments;
     }
 
-    /**
-     * Get standalone eliminations for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {Array} Standalone eliminations
-     */
     function getStandaloneEliminations(char) {
         if (!char) return [];
 
@@ -526,69 +379,30 @@
         });
     }
 
-    /**
-     * Check if a character is eliminated by a given week.
-     * 
-     * @param {object} char - Character object
-     * @param {number} week - Week number
-     * @returns {boolean} True if eliminated
-     */
     function isEliminated(char, week) {
         if (!char) return false;
 
         return EliminationQueries.isCharacterEliminated(char.id, week);
     }
 
-    /**
-     * Get the week when a character was eliminated.
-     * 
-     * @param {object} char - Character object
-     * @returns {number|null} Elimination week or null
-     */
     function getEliminationWeek(char) {
         if (!char) return null;
 
         return EliminationQueries.getEliminationWeek(char.id);
     }
 
-    /**
-     * Get the reason for elimination.
-     * 
-     * @param {object} char - Character object
-     * @returns {string} Elimination reason
-     */
     function getEliminationReason(char) {
         if (!char) return 'Unknown';
 
         return EliminationQueries.getEliminationReason(char.id) || 'Unknown';
     }
 
-    // ============================================================
-    // SCHEDULE
-    // ============================================================
-
-    /**
-     * Get schedule count for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {number} Number of scheduled classes
-     */
     function getScheduleCount(char) {
         if (!char) return 0;
 
         return ScheduleQueries.getCharacterScheduleCount(char.id) || 0;
     }
 
-    // ============================================================
-    // RELATIONSHIPS
-    // ============================================================
-
-    /**
-     * Get relationships for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {Array} Relationships with other character info
-     */
     function getRelationships(char) {
         if (!char) return [];
 
@@ -603,7 +417,7 @@
             var typeColor = SocialQueries.getRelationshipTypeColor(rel.typeId);
             var isDirectional = SocialQueries.isRelationshipDirectional(rel.typeId);
             var isSource = String(rel.character1) === String(char.id);
-            var directionText = isDirectional ? (isSource ? ' → ' : ' ← ') : ' ↔ ';
+            var directionText = isDirectional ? (isSource ? ' -> ' : ' <- ') : ' <-> ';
 
             var period = '';
             if (rel.startYear && rel.endYear) {
@@ -631,16 +445,6 @@
         });
     }
 
-    // ============================================================
-    // STATS
-    // ============================================================
-
-    /**
-     * Get stats for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {object} Stats with modifiers
-     */
     function getStats(char) {
         if (!char) {
             return getDefaultStats();
@@ -661,11 +465,6 @@
         return result;
     }
 
-    /**
-     * Get default stats.
-     * 
-     * @returns {object} Default stats
-     */
     function getDefaultStats() {
         var result = {};
         STAT_KEYS.forEach(function(key) {
@@ -678,16 +477,6 @@
         return result;
     }
 
-    // ============================================================
-    // MAGIC
-    // ============================================================
-
-    /**
-     * Get magic proficiencies for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {object} Magic proficiencies with labels and colors
-     */
     function getMagic(char) {
         if (!char) {
             return getDefaultMagic();
@@ -709,11 +498,6 @@
         return result;
     }
 
-    /**
-     * Get default magic proficiencies.
-     * 
-     * @returns {object} Default magic
-     */
     function getDefaultMagic() {
         var result = {};
         MAGIC_TYPE_KEYS.forEach(function(key) {
@@ -727,16 +511,6 @@
         return result;
     }
 
-    // ============================================================
-    // SPECIAL MOVES
-    // ============================================================
-
-    /**
-     * Get special moves for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {object} Special moves by type
-     */
     function getSpecialMoves(char) {
         if (!char) {
             return { physical: [], magical: [] };
@@ -760,75 +534,48 @@
         };
     }
 
-    // ============================================================
-    // CLASS NAMES
-    // ============================================================
-
-    /**
-     * Get class names for a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {Array} Class names
-     */
     function getClassNames(char) {
         if (!char) return [];
 
-        var classes = ClassesQueries.getCharacterClasses(char);
+        var classes = AcademyQueries.getCharacterClasses(char);
         return classes.map(function(cls) {
             return cls.name || 'Unknown Class';
         });
     }
 
-    // ============================================================
-    // EXPOSE
-    // ============================================================
-
     window.CharacterDetailQueries = {
-        // Main query
         getCharacterDetail: getCharacterDetail,
 
-        // Career
         getCareer: getCareer,
 
-        // Teams
         getAcademicTeams: getAcademicTeams,
         getProfessionalTeams: getProfessionalTeams,
         getTemporaryTeams: getTemporaryTeams,
         getCivilianTeams: getCivilianTeams,
         formatTeams: formatTeams,
 
-        // Missions
         getMissions: getMissions,
 
-        // Grades
         getGrades: getGrades,
 
-        // Eliminations
         getTournamentEliminations: getTournamentEliminations,
         getStandaloneEliminations: getStandaloneEliminations,
         isEliminated: isEliminated,
         getEliminationWeek: getEliminationWeek,
         getEliminationReason: getEliminationReason,
 
-        // Schedule
         getScheduleCount: getScheduleCount,
 
-        // Relationships
         getRelationships: getRelationships,
 
-        // Stats
         getStats: getStats,
 
-        // Magic
         getMagic: getMagic,
 
-        // Special moves
         getSpecialMoves: getSpecialMoves,
 
-        // Class names
         getClassNames: getClassNames,
 
-        // Helpers
         formatPeriod: formatPeriod,
         getModifier: getModifier,
         getMagicLevelLabel: getMagicLevelLabel,

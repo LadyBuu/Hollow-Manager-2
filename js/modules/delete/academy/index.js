@@ -27,14 +27,6 @@
  *   - window.AcademyState (from academy-state.js)
  *   - window.AcademyViews (from academy-views.js)
  *   - window.AcademyEvents (from academy-events.js)
- *   - window.AcademyClasses (from academy-classes.js)
- *   - window.AcademyQueries (from academy-queries.js)
- *   - window.AcademyCore (from academy-core.js)
- *   - window.AcademyGrades (from academy-grades.js)
- *   - window.AcademyGroups (from academy-groups.js)
- *   - window.AcademyRanking (from academy-ranking.js)
- *   - window.AcademyDistribute (from academy-distribute.js)
- *   - window.AcademySchedule (from academy-schedule.js)
  *   - window.DomUtils (from dom-utils.js)
  *   - window.NotificationSystem (from notification.js)
  */
@@ -42,24 +34,25 @@
 (function() {
     'use strict';
 
+    // Guard against duplicate loading
     if (window.__academyModuleLoaded) {
         return;
     }
+
+    // ============================================================
+    // DEPENDENCY IMPORTS - NO FALLBACKS
+    // ============================================================
 
     var TabManager = window.TabManager;
     var AcademyState = window.AcademyState;
     var AcademyViews = window.AcademyViews;
     var AcademyEvents = window.AcademyEvents;
-    var AcademyClasses = window.AcademyClasses;
-    var AcademyQueries = window.AcademyQueries;
-    var AcademyCore = window.AcademyCore;
-    var AcademyGrades = window.AcademyGrades;
-    var AcademyGroups = window.AcademyGroups;
-    var AcademyRanking = window.AcademyRanking;
-    var AcademyDistribute = window.AcademyDistribute;
-    var AcademySchedule = window.AcademySchedule;
     var DomUtils = window.DomUtils;
     var NotificationSystem = window.NotificationSystem;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -89,21 +82,6 @@
             missing.push('AcademyEvents.destroy');
         }
 
-        if (!AcademyClasses || typeof AcademyClasses.create !== 'function') {
-            missing.push('AcademyClasses.create');
-        }
-
-        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
-            missing.push('AcademyQueries.getClasses');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
-            missing.push('AcademyQueries.getClass');
-        }
-
-        if (!AcademyCore || typeof AcademyCore.getDisciplines !== 'function') {
-            missing.push('AcademyCore.getDisciplines');
-        }
-
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
@@ -119,16 +97,29 @@
         return true;
     }
 
-    checkDependencies();
+    // ============================================================
+    // STATE - Single source of truth for academy UI state
+    // ============================================================
 
     var _mounted = false;
     var _container = null;
+
+    // ============================================================
+    // NOTIFICATION - Delegates to NotificationSystem
+    // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
         NotificationSystem.notify(message, type);
     }
 
+    // ============================================================
+    // RENDER FUNCTIONS
+    // ============================================================
+
+    /**
+     * Render the complete Academy UI into the container.
+     */
     function renderAcademy(container) {
         if (!container) {
             return;
@@ -138,9 +129,14 @@
         var html = AcademyViews.renderAcademy(state);
         container.innerHTML = html;
 
+        // Events are bound after rendering
         AcademyEvents.init(container);
     }
 
+    /**
+     * Render only the active sub-tab content.
+     * Used for refresh operations.
+     */
     function renderActiveSubTab(container) {
         if (!container) {
             return;
@@ -157,16 +153,27 @@
         contentContainer.innerHTML = html;
     }
 
+    /**
+     * Refresh the active sub-tab and re-bind events.
+     */
     function refreshActiveSubTab(container) {
         if (!container) {
             return;
         }
 
+        // Re-render the active sub-tab
         renderActiveSubTab(container);
 
+        // Re-bind events for the active tab only
+        // AcademyEvents handles the full init, but we only need to bind the active tab
+        // For now, we re-init everything (safe because destroy cleans up first)
         AcademyEvents.destroy();
         AcademyEvents.init(container);
     }
+
+    // ============================================================
+    // MOUNT FUNCTION - Single source of truth for rendering
+    // ============================================================
 
     function mountAcademy(container) {
         if (!container) {
@@ -177,37 +184,54 @@
             throw new Error('AcademyModule: Container not found');
         }
 
+        // Destroy any existing instance
         if (_mounted) {
             destroyAcademy();
         }
 
+        // Store reference
         _container = container;
         _mounted = true;
 
+        // Render the complete academy
         renderAcademy(container);
 
+        // Set up event listeners for state changes
         setupStateChangeListeners();
     }
 
+    // ============================================================
+    // STATE CHANGE LISTENERS
+    // ============================================================
+
     function setupStateChangeListeners() {
+        // Listen for sub-tab changes from AcademyEvents
         document.addEventListener('academy:subtabchange', function(e) {
             var subTab = e.detail && e.detail.subTab;
             if (subTab) {
+                // State is already updated by AcademyEvents
+                // Just re-render the active sub-tab
                 refreshActiveSubTab(_container);
             }
         });
 
+        // Listen for refresh requests from AcademyEvents
         document.addEventListener('academy:refresh', function() {
             refreshActiveSubTab(_container);
             showNotification('Refreshed', 'info');
         });
     }
 
+    // ============================================================
+    // DESTROY - Clean up
+    // ============================================================
+
     function destroyAcademy() {
         if (AcademyEvents && typeof AcademyEvents.destroy === 'function') {
             AcademyEvents.destroy();
         }
 
+        // Clear container
         if (_container) {
             _container.innerHTML = '';
         }
@@ -215,9 +239,14 @@
         _mounted = false;
         _container = null;
 
+        // Remove event listeners
         document.removeEventListener('academy:subtabchange', null);
         document.removeEventListener('academy:refresh', null);
     }
+
+    // ============================================================
+    // REGISTER WITH TABMANAGER - Single lifecycle path
+    // ============================================================
 
     function registerWithTabManager() {
         if (TabManager && typeof TabManager.register === 'function') {
@@ -227,26 +256,35 @@
         return false;
     }
 
+    // Register immediately if TabManager is available
     if (!registerWithTabManager()) {
         document.addEventListener('tabManagerReady', function() {
             registerWithTabManager();
         });
     }
 
+    // ============================================================
+    // EXPOSE - Controlled public API only
+    // ============================================================
+
     window.Academy = {
+        // Lifecycle
         mount: mountAcademy,
         destroy: destroyAcademy,
 
+        // Refresh
         refresh: function() {
             if (_container) {
                 refreshActiveSubTab(_container);
             }
         },
 
+        // State access (read-only)
         getState: function() {
             return AcademyState.getState();
         },
 
+        // State mutators (delegated)
         selectClass: function(classId) {
             return AcademyState.selectClass(classId);
         },
@@ -266,20 +304,89 @@
             return AcademyState.clearSelections();
         },
 
+        // Status
         isMounted: function() {
             return _mounted;
-        },
-
-        AcademyClasses: AcademyClasses,
-        AcademyQueries: AcademyQueries,
-        AcademyCore: AcademyCore,
-        AcademyGrades: AcademyGrades,
-        AcademyGroups: AcademyGroups,
-        AcademyRanking: AcademyRanking,
-        AcademyDistribute: AcademyDistribute,
-        AcademySchedule: AcademySchedule
+        }
     };
 
-    window.__academyModuleLoaded = true;
+    // ============================================================
+    // LEGACY COMPATIBILITY (DEPRECATED - Will be removed)
+    // ============================================================
+
+    // These aliases are provided for backward compatibility
+    // during the migration from old Academy structure.
+    // They will be removed in a future version.
+
+    window.mountAcademy = mountAcademy;
+    window.renderAcademy = renderAcademy;
+    window.destroyAcademy = destroyAcademy;
+
+    // Legacy state aliases
+    window.academyState = {
+        getState: AcademyState.getState,
+        setState: AcademyState.setState,
+        selectClass: AcademyState.selectClass,
+        getSelectedClassId: AcademyState.getSelectedClassId,
+        selectWeek: AcademyState.selectWeek,
+        getSelectedWeek: AcademyState.getSelectedWeek,
+        selectStudent: AcademyState.selectStudent,
+        getSelectedStudentId: AcademyState.getSelectedStudentId,
+        selectInstructor: AcademyState.selectInstructor,
+        getSelectedInstructorId: AcademyState.getSelectedInstructorId,
+        switchSubTab: AcademyState.switchSubTab,
+        getActiveSubTab: AcademyState.getActiveSubTab,
+        clearSelections: AcademyState.clearSelections
+    };
+
+    // Legacy refresh aliases
+    window.refreshAcademy = function() {
+        if (_container) {
+            refreshActiveSubTab(_container);
+        }
+    };
+    window.refreshSubTab = function(subTab) {
+        if (subTab) {
+            AcademyState.switchSubTab(subTab);
+        }
+        if (_container) {
+            refreshActiveSubTab(_container);
+        }
+    };
+    window.refreshClassList = function() {
+        // Class list is part of ClassTab render - full refresh needed
+        if (_container) {
+            refreshActiveSubTab(_container);
+        }
+    };
+    window.refreshStudentList = function() {
+        // Student list is part of StudentTab render - full refresh needed
+        if (_container) {
+            refreshActiveSubTab(_container);
+        }
+    };
+    window.refreshStudentDetail = function() {
+        // Student detail is part of StudentTab render - full refresh needed
+        if (_container) {
+            refreshActiveSubTab(_container);
+        }
+    };
+    window.refreshFacultyDetail = function() {
+        // Faculty detail is part of FacultyTab render - full refresh needed
+        if (_container) {
+            refreshActiveSubTab(_container);
+        }
+    };
+
+    // Legacy selection aliases
+    window.getSelectedClass = AcademyState.getSelectedClassId;
+    window.selectClass = AcademyState.selectClass;
+    window.getSelectedWeek = AcademyState.getSelectedWeek;
+    window.selectWeek = AcademyState.selectWeek;
+    window.refreshAcademyView = function() {
+        if (_container) {
+            refreshActiveSubTab(_container);
+        }
+    };
 
 })();

@@ -23,7 +23,7 @@
  * DEPENDENCIES:
  *   - window.ObjectUtils (from object-utils.js)
  *   - window.CharacterQueries (from character-queries.js)
- *   - window.AcademyQueries (from academy-queries.js)
+ *   - window.AcademyClassQueries (from academy-class-queries.js)
  *   - window.AcademyGrades (from academy-grades.js)
  *   - window.CalendarValidation (from calendar-validation.js)
  *   - window.CalendarConstants (from calendar-constants.js)
@@ -38,16 +38,25 @@
 (function() {
     'use strict';
 
+    // Guard against duplicate loading
     if (window.__academyRankingLoaded) {
         return;
     }
 
+    // ============================================================
+    // DEPENDENCY IMPORTS - NO FALLBACKS
+    // ============================================================
+
     var ObjectUtils = window.ObjectUtils;
     var CharacterQueries = window.CharacterQueries;
-    var AcademyQueries = window.AcademyQueries;
+    var AcademyClassQueries = window.AcademyClassQueries;
     var AcademyGrades = window.AcademyGrades;
     var CalendarValidation = window.CalendarValidation;
     var CalendarConstants = window.CalendarConstants;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -69,11 +78,11 @@
             missing.push('CharacterQueries.getStudents');
         }
 
-        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
-            missing.push('AcademyQueries.getClass');
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClass !== 'function') {
+            missing.push('AcademyClassQueries.getClass');
         }
-        if (!AcademyQueries || typeof AcademyQueries.getClassStudents !== 'function') {
-            missing.push('AcademyQueries.getClassStudents');
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getCharactersByClass !== 'function') {
+            missing.push('AcademyClassQueries.getCharactersByClass');
         }
 
         if (!AcademyGrades || typeof AcademyGrades.calculateSummary !== 'function') {
@@ -97,6 +106,10 @@
 
     checkDependencies();
 
+    // ============================================================
+    // HELPER ALIASES
+    // ============================================================
+
     function deepClone(value) {
         return ObjectUtils.deepClone(value);
     }
@@ -109,9 +122,9 @@
         return { success: true, data: data };
     }
 
-    function isNonEmptyString(value) {
-        return typeof value === 'string' && value.trim() !== '';
-    }
+    // ============================================================
+    // DATA STORE ACCESS - Read-only
+    // ============================================================
 
     function getRankingsStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -122,6 +135,10 @@
         }
         return window.data.curriculum.rankings;
     }
+
+    // ============================================================
+    // VALIDATION HELPERS
+    // ============================================================
 
     function validateRank(value) {
         if (value === undefined || value === null || value === '') {
@@ -210,6 +227,14 @@
             rankings: validated
         };
     }
+
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
+    }
+
+    // ============================================================
+    // RANKING QUERIES
+    // ============================================================
 
     function getRankings(week) {
         var weekNum = CalendarValidation.parseWeek(week);
@@ -311,6 +336,10 @@
         return history;
     }
 
+    // ============================================================
+    // CLASS RANKING QUERIES - Derived projections
+    // ============================================================
+
     function getClassRankings(classId, week) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -321,7 +350,7 @@
             return [];
         }
 
-        var students = AcademyQueries.getClassStudents(classId);
+        var students = AcademyClassQueries.getCharactersByClass(classId);
         var rankings = getRankingsWithDetails(weekNum);
         var result = [];
 
@@ -359,7 +388,7 @@
         }
 
         var rankings = getClassRankings(classId, weekNum);
-        var students = AcademyQueries.getClassStudents(classId);
+        var students = AcademyClassQueries.getCharactersByClass(classId);
 
         var rankedStudents = rankings.length;
         var unrankedStudents = students.length - rankedStudents;
@@ -385,6 +414,10 @@
             lowestRank: rankings.length > 0 ? rankings[rankings.length - 1] : null
         };
     }
+
+    // ============================================================
+    // RANKING STATISTICS
+    // ============================================================
 
     function getRankingStatistics(week) {
         var weekNum = CalendarValidation.parseWeek(week);
@@ -484,7 +517,16 @@
         return rankings.slice(0, Math.min(parsedCount, rankings.length));
     }
 
+    // ============================================================
+    // CANDIDATE MUTATION FUNCTIONS - No direct commit
+    // ============================================================
+
+    /**
+     * Build a candidate for setting rankings for a week.
+     * Replaces the entire ranking for the specified week.
+     */
     function buildSetRankingsCandidate(week, rankings) {
+        // ---- PHASE 1: VALIDATE ----
         var validation = validateRankingsData(week, rankings);
         if (!validation.valid) {
             return failure(validation.message);
@@ -493,6 +535,7 @@
         var weekNum = validation.week;
         var validatedRankings = validation.rankings;
 
+        // ---- PHASE 2: PREPARE RANKINGS ----
         var sorted = validatedRankings.slice().sort(function(a, b) {
             return a.rank - b.rank;
         });
@@ -505,15 +548,15 @@
             });
         }
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
+        // ---- PHASE 3: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum) {
+                data.curriculum = {};
             }
-            if (!dataStore.curriculum.rankings) {
-                dataStore.curriculum.rankings = {};
+            if (!data.curriculum.rankings) {
+                data.curriculum.rankings = {};
             }
-            dataStore.curriculum.rankings[weekNum] = finalRankings;
+            data.curriculum.rankings[weekNum] = finalRankings;
             return { rankings: finalRankings, count: finalRankings.length };
         }
 
@@ -525,12 +568,17 @@
         });
     }
 
+    /**
+     * Build a candidate for auto-generating rankings from grades.
+     */
     function buildAutoGenerateCandidate(week) {
+        // ---- PHASE 1: VALIDATE ----
         var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
             return failure('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').');
         }
 
+        // ---- PHASE 2: GET STUDENTS WITH GRADES ----
         var students = CharacterQueries.getStudents();
         var studentAverages = [];
 
@@ -551,6 +599,7 @@
             return failure('No students with valid grades found for week ' + weekNum + '.');
         }
 
+        // ---- PHASE 3: SORT ----
         studentAverages.sort(function(a, b) {
             if (b.average !== a.average) {
                 return b.average - a.average;
@@ -575,15 +624,15 @@
         var gradedCount = studentAverages.length;
         var totalStudents = students.length;
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
+        // ---- PHASE 4: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum) {
+                data.curriculum = {};
             }
-            if (!dataStore.curriculum.rankings) {
-                dataStore.curriculum.rankings = {};
+            if (!data.curriculum.rankings) {
+                data.curriculum.rankings = {};
             }
-            dataStore.curriculum.rankings[weekNum] = newRankings;
+            data.curriculum.rankings[weekNum] = newRankings;
             return {
                 rankings: newRankings,
                 count: gradedCount,
@@ -600,7 +649,12 @@
         });
     }
 
+    /**
+     * Build a candidate for setting a student's position in the rankings.
+     * Adds student if not present, updates position if present.
+     */
     function buildSetStudentPositionCandidate(week, studentId, desiredRank) {
+        // ---- PHASE 1: VALIDATE ----
         var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
             return failure('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').');
@@ -616,11 +670,13 @@
             return failure('Valid rank is required.');
         }
 
+        // ---- PHASE 2: GET CURRENT RANKINGS ----
         var store = getRankingsStore();
         var currentRankings = (store && store[weekNum] && Array.isArray(store[weekNum]))
             ? store[weekNum]
             : [];
 
+        // ---- PHASE 3: FIND OR PREPARE ----
         var existingIndex = -1;
         var existingRank = null;
 
@@ -632,9 +688,10 @@
             }
         }
 
+        // If student already exists and rank hasn't changed, return no-op
         if (existingIndex !== -1 && existingRank === rankNum) {
             return success({
-                mutate: function() {
+                mutate: function(data) {
                     return { rankings: currentRankings, count: currentRankings.length, operation: 'unchanged' };
                 },
                 operation: 'unchanged',
@@ -642,12 +699,16 @@
             });
         }
 
+        // ---- PHASE 4: BUILD CANDIDATE ----
+        // Create a working copy
         var workingRankings = currentRankings.slice();
 
+        // Remove existing entry if present
         if (existingIndex !== -1) {
             workingRankings.splice(existingIndex, 1);
         }
 
+        // Normalise ranks after removal
         workingRankings.sort(function(a, b) {
             return a.rank - b.rank;
         });
@@ -655,8 +716,10 @@
             workingRankings[i].rank = i + 1;
         }
 
+        // Determine insertion position
         var targetIndex = Math.min(rankNum - 1, workingRankings.length);
 
+        // Insert at target position
         var newEntry = {
             studentId: String(studentId),
             rank: targetIndex + 1
@@ -664,6 +727,7 @@
 
         workingRankings.splice(targetIndex, 0, newEntry);
 
+        // Re-normalise all ranks
         for (var i = 0; i < workingRankings.length; i++) {
             workingRankings[i].rank = i + 1;
         }
@@ -671,15 +735,15 @@
         var operation = existingIndex !== -1 ? 'updated' : 'added';
         var studentName = CharacterQueries.getDisplayName(studentResult.student);
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
+        // ---- PHASE 5: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum) {
+                data.curriculum = {};
             }
-            if (!dataStore.curriculum.rankings) {
-                dataStore.curriculum.rankings = {};
+            if (!data.curriculum.rankings) {
+                data.curriculum.rankings = {};
             }
-            dataStore.curriculum.rankings[weekNum] = workingRankings;
+            data.curriculum.rankings[weekNum] = workingRankings;
             return {
                 rankings: workingRankings,
                 count: workingRankings.length,
@@ -698,7 +762,11 @@
         });
     }
 
+    /**
+     * Build a candidate for removing a student from rankings.
+     */
     function buildRemoveStudentCandidate(week, studentId) {
+        // ---- PHASE 1: VALIDATE ----
         var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
             return failure('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').');
@@ -708,6 +776,7 @@
             return failure('Student ID is required.');
         }
 
+        // ---- PHASE 2: GET CURRENT RANKINGS ----
         var store = getRankingsStore();
         var currentRankings = (store && store[weekNum] && Array.isArray(store[weekNum]))
             ? store[weekNum]
@@ -715,7 +784,7 @@
 
         if (currentRankings.length === 0) {
             return success({
-                mutate: function() {
+                mutate: function(data) {
                     return { rankings: [], count: 0, operation: 'unchanged' };
                 },
                 operation: 'unchanged',
@@ -723,6 +792,7 @@
             });
         }
 
+        // Check if student exists
         var exists = false;
         for (var i = 0; i < currentRankings.length; i++) {
             if (String(currentRankings[i].studentId) === String(studentId)) {
@@ -733,7 +803,7 @@
 
         if (!exists) {
             return success({
-                mutate: function() {
+                mutate: function(data) {
                     return { rankings: currentRankings, count: currentRankings.length, operation: 'unchanged' };
                 },
                 operation: 'unchanged',
@@ -741,6 +811,7 @@
             });
         }
 
+        // ---- PHASE 3: BUILD CANDIDATE ----
         var newRankings = [];
         for (var i = 0; i < currentRankings.length; i++) {
             if (String(currentRankings[i].studentId) !== String(studentId)) {
@@ -762,19 +833,19 @@
         var student = CharacterQueries.getCharacterById(studentId);
         var studentName = student ? CharacterQueries.getDisplayName(student) : 'Unknown';
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
+        // ---- PHASE 4: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum) {
+                data.curriculum = {};
             }
-            if (!dataStore.curriculum.rankings) {
-                dataStore.curriculum.rankings = {};
+            if (!data.curriculum.rankings) {
+                data.curriculum.rankings = {};
             }
 
             if (newRankings.length === 0) {
-                delete dataStore.curriculum.rankings[weekNum];
+                delete data.curriculum.rankings[weekNum];
             } else {
-                dataStore.curriculum.rankings[weekNum] = newRankings;
+                data.curriculum.rankings[weekNum] = newRankings;
             }
 
             return {
@@ -795,21 +866,23 @@
         });
     }
 
+    /**
+     * Build a candidate for clearing all rankings for a week.
+     */
     function buildClearRankingsCandidate(week) {
         var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
             return failure('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').');
         }
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
+        function mutate(data) {
+            if (!data.curriculum) {
+                data.curriculum = {};
             }
-            if (!dataStore.curriculum.rankings) {
-                dataStore.curriculum.rankings = {};
+            if (!data.curriculum.rankings) {
+                data.curriculum.rankings = {};
             }
-            delete dataStore.curriculum.rankings[weekNum];
+            delete data.curriculum.rankings[weekNum];
             return { week: weekNum };
         }
 
@@ -819,6 +892,12 @@
         });
     }
 
+    // ============================================================
+    // LEGACY WRAPPER FUNCTIONS - For backward compatibility
+    // These perform the mutation and commit directly.
+    // DEPRECATED: Use build*Candidate functions with MutationPipeline.
+    // ============================================================
+
     function setRankings(week, rankings) {
         var candidate = buildSetRankingsCandidate(week, rankings);
         if (!candidate.success) {
@@ -826,7 +905,8 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var data = window.data;
+            var result = candidate.data.mutate(data);
             return success({
                 rankings: result.rankings,
                 count: result.count
@@ -843,7 +923,8 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var data = window.data;
+            var result = candidate.data.mutate(data);
             return success({
                 rankings: result.rankings,
                 count: result.count,
@@ -861,7 +942,8 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var data = window.data;
+            var result = candidate.data.mutate(data);
             return success({
                 rankings: result.rankings,
                 count: result.count,
@@ -879,7 +961,8 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var data = window.data;
+            var result = candidate.data.mutate(data);
             return success({
                 rankings: result.rankings,
                 count: result.count,
@@ -897,14 +980,20 @@
         }
 
         try {
-            var result = candidate.data.mutate();
-            return success({ week: result.week });
+            var data = window.data;
+            candidate.data.mutate(data);
+            return success({ week: candidate.data.week });
         } catch (e) {
             return failure(e.message || 'Failed to clear rankings.');
         }
     }
 
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
     window.AcademyRanking = {
+        // Queries
         getRankings: getRankings,
         getStudentRank: getStudentRank,
         hasRankings: hasRankings,
@@ -912,28 +1001,31 @@
         getRankingsWithDetails: getRankingsWithDetails,
         getStudentRankingHistory: getStudentRankingHistory,
 
+        // Class ranking queries (derived projections)
         getClassRankings: getClassRankings,
         getClassRankingSummary: getClassRankingSummary,
 
+        // Statistics
         getRankingStatistics: getRankingStatistics,
         getRankingDistribution: getRankingDistribution,
         getTopRankedStudents: getTopRankedStudents,
 
+        // Candidate builders (preferred - use with MutationPipeline)
         buildSetRankingsCandidate: buildSetRankingsCandidate,
         buildAutoGenerateCandidate: buildAutoGenerateCandidate,
         buildSetStudentPositionCandidate: buildSetStudentPositionCandidate,
         buildRemoveStudentCandidate: buildRemoveStudentCandidate,
         buildClearRankingsCandidate: buildClearRankingsCandidate,
 
+        // Legacy wrappers (deprecated - use with caution)
         setRankings: setRankings,
         autoGenerate: autoGenerate,
         updateStudentRank: updateStudentRank,
         removeStudentFromRankings: removeStudentFromRankings,
         clearRankings: clearRankings,
 
+        // Validation (exposed for external use)
         validateRank: validateRank
     };
-
-    window.__academyRankingLoaded = true;
 
 })();

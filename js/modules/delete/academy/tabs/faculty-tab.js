@@ -29,14 +29,20 @@
  *   - window.NotificationSystem (from notification.js)
  *   - window.DomUtils (from dom-utils.js)
  *   - window.Modal (from modal.js)
+ *   - window.saveData (from database.js)
  */
 
 (function() {
     'use strict';
 
+    // Guard against duplicate loading
     if (window.__facultyTabLoaded) {
         return;
     }
+
+    // ============================================================
+    // DEPENDENCY IMPORTS - NO FALLBACKS
+    // ============================================================
 
     var CalendarCore = window.CalendarCore;
     var AcademyGroups = window.AcademyGroups;
@@ -46,6 +52,10 @@
     var NotificationSystem = window.NotificationSystem;
     var DomUtils = window.DomUtils;
     var Modal = window.Modal;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -81,23 +91,26 @@
         if (!AcademyGroups || typeof AcademyGroups.getAllAutoGroups !== 'function') {
             missing.push('AcademyGroups.getAllAutoGroups');
         }
-        if (!AcademyGroups || typeof AcademyGroups.createGroup !== 'function') {
-            missing.push('AcademyGroups.createGroup');
+        if (!AcademyGroups || typeof AcademyGroups.createAutoGroup !== 'function') {
+            missing.push('AcademyGroups.createAutoGroup');
         }
-        if (!AcademyGroups || typeof AcademyGroups.deleteGroup !== 'function') {
-            missing.push('AcademyGroups.deleteGroup');
+        if (!AcademyGroups || typeof AcademyGroups.deleteAutoGroup !== 'function') {
+            missing.push('AcademyGroups.deleteAutoGroup');
         }
-        if (!AcademyGroups || typeof AcademyGroups.addStudentToGroup !== 'function') {
-            missing.push('AcademyGroups.addStudentToGroup');
+        if (!AcademyGroups || typeof AcademyGroups.addStudentToAutoGroup !== 'function') {
+            missing.push('AcademyGroups.addStudentToAutoGroup');
         }
-        if (!AcademyGroups || typeof AcademyGroups.removeStudentFromGroup !== 'function') {
-            missing.push('AcademyGroups.removeStudentFromGroup');
+        if (!AcademyGroups || typeof AcademyGroups.removeStudentFromAutoGroup !== 'function') {
+            missing.push('AcademyGroups.removeStudentFromAutoGroup');
         }
-        if (!AcademyGroups || typeof AcademyGroups.addSlotToGroup !== 'function') {
-            missing.push('AcademyGroups.addSlotToGroup');
+        if (!AcademyGroups || typeof AcademyGroups.addSlotToAutoGroup !== 'function') {
+            missing.push('AcademyGroups.addSlotToAutoGroup');
         }
-        if (!AcademyGroups || typeof AcademyGroups.removeSlotFromGroup !== 'function') {
-            missing.push('AcademyGroups.removeSlotFromGroup');
+        if (!AcademyGroups || typeof AcademyGroups.removeSlotFromAutoGroup !== 'function') {
+            missing.push('AcademyGroups.removeSlotFromAutoGroup');
+        }
+        if (!AcademyGroups || typeof AcademyGroups.rebuildGroupsFromSchedules !== 'function') {
+            missing.push('AcademyGroups.rebuildGroupsFromSchedules');
         }
 
         if (!AcademyQueries || typeof AcademyQueries.getDisciplines !== 'function') {
@@ -169,14 +182,49 @@
 
     checkDependencies();
 
+    // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils
+    // ============================================================
+
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
     }
+
+    // ============================================================
+    // NOTIFICATION - Delegates to NotificationSystem
+    // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
         NotificationSystem.notify(message, type);
     }
+
+    // ============================================================
+    // PERSISTENCE HELPER
+    // ============================================================
+
+    function persistMutation(successMessage, errorMessage) {
+        if (typeof window.saveData !== 'function') {
+            showNotification('Changes were applied in memory, but persistent storage is unavailable.', 'error');
+            return;
+        }
+
+        window.saveData()
+            .then(function() {
+                if (successMessage) {
+                    showNotification(successMessage, 'success');
+                }
+            })
+            .catch(function() {
+                if (errorMessage) {
+                    showNotification(errorMessage, 'error');
+                }
+            });
+    }
+
+    // ============================================================
+    // RENDER FACULTY TAB
+    // ============================================================
 
     function renderFacultyTab(state) {
         var selectedClassId = state.selectedClassId;
@@ -240,6 +288,10 @@
         return html;
     }
 
+    // ============================================================
+    // RENDER INSTRUCTORS VIEW
+    // ============================================================
+
     function renderInstructorsView(state, instructors) {
         var selectedInstructorId = state.selectedInstructorId;
         var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
@@ -287,6 +339,10 @@
         return html;
     }
 
+    // ============================================================
+    // RENDER INSTRUCTOR DETAIL
+    // ============================================================
+
     function renderInstructorDetail(state, instructor) {
         var instructorId = instructor.id;
         var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
@@ -317,6 +373,10 @@
 
         return html;
     }
+
+    // ============================================================
+    // RENDER INSTRUCTOR SCHEDULE
+    // ============================================================
 
     function renderInstructorSchedule(state, instructor, templates) {
         var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
@@ -382,7 +442,7 @@
                         display += ' (' + template.assignedStudents.length + ')';
                     }
                 } else {
-                    display = '\u00b7';
+                    display = '·';
                     className = 'schedule-empty';
                 }
 
@@ -408,6 +468,10 @@
 
         return html;
     }
+
+    // ============================================================
+    // RENDER INSTRUCTOR BLOCKS
+    // ============================================================
 
     function renderInstructorBlocks(state, instructor, blocks) {
         var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
@@ -474,6 +538,10 @@
 
         return html;
     }
+
+    // ============================================================
+    // RENDER LOCATIONS VIEW
+    // ============================================================
 
     function renderLocationsView(state) {
         var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
@@ -558,6 +626,10 @@
 
         return html;
     }
+
+    // ============================================================
+    // RENDER AUTO-GROUPS VIEW
+    // ============================================================
 
     function renderAutoGroupsView(state) {
         var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
@@ -674,6 +746,10 @@
         return html;
     }
 
+    // ============================================================
+    // RENDER DISCIPLINES VIEW
+    // ============================================================
+
     function renderDisciplinesView(state) {
         var disciplines = AcademyQueries.getDisciplines();
 
@@ -724,6 +800,10 @@
 
         return html;
     }
+
+    // ============================================================
+    // MODALS HTML
+    // ============================================================
 
     function getModalsHTML() {
         var startHour = CalendarConstants.CALENDAR_START_HOUR;
@@ -798,10 +878,15 @@
         ].join('');
     }
 
+    // ============================================================
+    // EVENT BINDING
+    // ============================================================
+
     function bindFacultyTabEvents(container) {
         var minWeek = CalendarConstants.MIN_WEEK;
         var maxWeek = CalendarConstants.MAX_WEEK;
 
+        // Week selector
         var weekApply = container.querySelector('#faculty-week-apply');
         if (weekApply) {
             weekApply.addEventListener('click', function() {
@@ -832,6 +917,7 @@
             });
         }
 
+        // Navigation tabs
         var navBtns = container.querySelectorAll('.faculty-nav-btn');
         for (var i = 0; i < navBtns.length; i++) {
             navBtns[i].addEventListener('click', function() {
@@ -854,6 +940,7 @@
             });
         }
 
+        // Instructor list click
         var listContainer = container.querySelector('.instructors-list');
         if (listContainer) {
             listContainer.addEventListener('click', function(e) {
@@ -869,6 +956,7 @@
             });
         }
 
+        // Instructor detail tabs
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.detail-tab-btn');
             if (btn) {
@@ -883,6 +971,7 @@
             }
         });
 
+        // Schedule add
         var scheduleAddBtn = container.querySelector('#schedule-add-btn');
         if (scheduleAddBtn) {
             scheduleAddBtn.addEventListener('click', function() {
@@ -890,6 +979,7 @@
             });
         }
 
+        // Schedule remove (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.schedule-remove-btn');
             if (btn) {
@@ -901,6 +991,7 @@
             }
         });
 
+        // Block add
         var blockAddBtn = container.querySelector('#block-add-btn');
         if (blockAddBtn) {
             blockAddBtn.addEventListener('click', function() {
@@ -908,6 +999,7 @@
             });
         }
 
+        // Block remove (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.block-remove-btn');
             if (btn) {
@@ -919,6 +1011,7 @@
             }
         });
 
+        // Location manage (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.location-manage-btn');
             if (btn) {
@@ -929,6 +1022,7 @@
             }
         });
 
+        // Auto-group create
         var agCreateBtn = container.querySelector('#autogroup-create-btn');
         if (agCreateBtn) {
             agCreateBtn.addEventListener('click', function() {
@@ -936,6 +1030,7 @@
             });
         }
 
+        // Auto-group delete (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.autogroup-delete-btn');
             if (btn) {
@@ -946,6 +1041,7 @@
             }
         });
 
+        // Auto-group add student (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.autogroup-add-student-btn');
             if (btn) {
@@ -957,6 +1053,7 @@
             }
         });
 
+        // Auto-group add slot (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.autogroup-add-slot-btn');
             if (btn) {
@@ -974,6 +1071,7 @@
             }
         });
 
+        // Auto-group rebuild
         var rebuildBtn = container.querySelector('#autogroup-rebuild-btn');
         if (rebuildBtn) {
             rebuildBtn.addEventListener('click', function() {
@@ -983,6 +1081,7 @@
             });
         }
 
+        // Discipline add
         var discAddBtn = container.querySelector('#discipline-add-btn');
         if (discAddBtn) {
             discAddBtn.addEventListener('click', function() {
@@ -990,6 +1089,7 @@
             });
         }
 
+        // Discipline edit (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.discipline-edit-btn');
             if (btn) {
@@ -1000,6 +1100,7 @@
             }
         });
 
+        // Discipline delete (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.discipline-delete-btn');
             if (btn) {
@@ -1010,12 +1111,22 @@
             }
         });
 
+        // Location modal
         bindLocationModalEvents(container);
+
+        // Discipline form
         bindDisciplineFormEvents(container);
 
+        // Return cleanup function
         return function() {
+            // Remove event listeners that were added directly
+            // Most are delegated and will be cleaned up when container is removed
         };
     }
+
+    // ============================================================
+    // INSTRUCTOR DETAIL TAB SWITCHING
+    // ============================================================
 
     function switchInstructorDetailTab(container, tab) {
         var btns = container.querySelectorAll('.detail-tab-btn');
@@ -1031,6 +1142,10 @@
             panel.classList.toggle('active', isActive);
         }
     }
+
+    // ============================================================
+    // SCHEDULE HANDLERS
+    // ============================================================
 
     function handleAddSchedule(container) {
         var instructorId = window.Academy ? window.Academy.getSelectedInstructorId() : null;
@@ -1068,6 +1183,7 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Schedule added in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to add schedule.', 'error');
         }
@@ -1089,10 +1205,15 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Schedule removed in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to remove schedule.', 'error');
         }
     }
+
+    // ============================================================
+    // BLOCK HANDLERS
+    // ============================================================
 
     function handleAddBlock(container) {
         var instructorId = window.Academy ? window.Academy.getSelectedInstructorId() : null;
@@ -1124,6 +1245,7 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Block added in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to add block.', 'error');
         }
@@ -1145,10 +1267,15 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Block removed in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to remove block.', 'error');
         }
     }
+
+    // ============================================================
+    // LOCATION MODAL
+    // ============================================================
 
     function bindLocationModalEvents(container) {
         var modal = document.getElementById('faculty-location-modal');
@@ -1182,6 +1309,7 @@
                     if (result && result.success) {
                         showNotification('Class assigned to location.', 'success');
                         refreshLocationModal(locationId);
+                        persistMutation(null, 'Class assigned in memory, but persistence failed.');
                     } else {
                         showNotification(result ? result.message : 'Failed to assign class.', 'error');
                     }
@@ -1201,6 +1329,7 @@
                     if (result && result.success) {
                         showNotification('Class removed from location.', 'success');
                         refreshLocationModal(locationId);
+                        persistMutation(null, 'Class removed in memory, but persistence failed.');
                     } else {
                         showNotification(result ? result.message : 'Failed to remove class.', 'error');
                     }
@@ -1265,7 +1394,7 @@
                     display = disc ? disc.name : 'Unknown';
                     className = 'location-modal-slot occupied';
                 } else {
-                    display = '\u00b7';
+                    display = '·';
                 }
 
                 html += '<div class="' + className + '" data-day="' + d + '" data-hour="' + h + '">';
@@ -1309,6 +1438,10 @@
         }
     }
 
+    // ============================================================
+    // AUTO-GROUP HANDLERS
+    // ============================================================
+
     function handleCreateAutoGroup(container) {
         var discSelect = container.querySelector('#autogroup-discipline-select');
         var instSelect = container.querySelector('#autogroup-instructor-select');
@@ -1321,39 +1454,42 @@
             return;
         }
 
-        var result = AcademyGroups.createGroup(disciplineId, instructorId);
+        var result = AcademyGroups.createAutoGroup(disciplineId, instructorId);
 
         if (result && result.success) {
             showNotification('Auto-group created successfully.', 'success');
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Auto-group created in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to create auto-group.', 'error');
         }
     }
 
     function handleDeleteAutoGroup(key) {
-        var result = AcademyGroups.deleteGroup(key);
+        var result = AcademyGroups.deleteAutoGroup(key);
 
         if (result && result.success) {
             showNotification('Auto-group deleted successfully.', 'success');
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Auto-group deleted in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to delete auto-group.', 'error');
         }
     }
 
     function handleAddStudentToAutoGroup(key, studentId) {
-        var result = AcademyGroups.addStudentToGroup(key, studentId);
+        var result = AcademyGroups.addStudentToAutoGroup(key, studentId);
 
         if (result && result.success) {
             showNotification('Student added to auto-group.', 'success');
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Student added in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to add student.', 'error');
         }
@@ -1362,21 +1498,37 @@
     function handleAddSlotToAutoGroup(key, day, hour, duration) {
         var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
 
-        var result = AcademyGroups.addSlotToGroup(key, week, day, hour, duration);
+        var result = AcademyGroups.addSlotToAutoGroup(key, week, day, hour, duration);
 
         if (result && result.success) {
             showNotification('Slot added to auto-group.', 'success');
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Slot added in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to add slot.', 'error');
         }
     }
 
     function handleRebuildAutoGroups() {
-        showNotification('Rebuild from schedules not yet implemented.', 'info');
+        var result = AcademyGroups.rebuildGroupsFromSchedules();
+
+        if (result && result.success) {
+            var count = result.count || 0;
+            showNotification('Rebuilt ' + count + ' auto-groups from schedules.', 'success');
+            if (typeof window.Academy.refresh === 'function') {
+                window.Academy.refresh();
+            }
+            persistMutation(null, 'Auto-groups rebuilt in memory, but persistence failed.');
+        } else {
+            showNotification(result ? result.message : 'Failed to rebuild auto-groups.', 'error');
+        }
     }
+
+    // ============================================================
+    // DISCIPLINE HANDLERS
+    // ============================================================
 
     function bindDisciplineFormEvents(container) {
         var modal = document.getElementById('faculty-discipline-modal');
@@ -1515,9 +1667,9 @@
         var result;
 
         if (editId) {
-            result = AcademyCore.updateDiscipline(editId, data);
+            result = DisciplineCore.updateDiscipline(editId, data);
         } else {
-            result = AcademyCore.createDiscipline(data);
+            result = DisciplineCore.createDiscipline(data);
         }
 
         if (result && result.success) {
@@ -1527,23 +1679,29 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Discipline changes in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to save discipline.', 'error');
         }
     }
 
     function handleDeleteDiscipline(id) {
-        var result = AcademyCore.deleteDiscipline(id);
+        var result = DisciplineCore.deleteDiscipline(id);
 
         if (result && result.success) {
             showNotification('Discipline deleted successfully.', 'success');
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Discipline deleted in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to delete discipline.', 'error');
         }
     }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
 
     window.FacultyTab = {
         render: renderFacultyTab,
@@ -1557,7 +1715,5 @@
         refreshLocationModal: refreshLocationModal,
         showDisciplineForm: showDisciplineForm
     };
-
-    window.__facultyTabLoaded = true;
 
 })();

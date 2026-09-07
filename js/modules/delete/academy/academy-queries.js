@@ -17,14 +17,13 @@
  *   - Returns clones of data where appropriate
  * 
  * DEPENDENCIES:
+ *   - window.AcademyClassQueries (from academy-class-queries.js)
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.TeamQueries (from team-queries.js)
  *   - window.TournamentQueries (from tournament-queries.js)
  *   - window.DisciplineQueries (from discipline-queries.js)
  *   - window.LocationQueries (from location-queries.js)
  *   - window.AcademyGroups (from academy-groups.js)
- *   - window.CalendarConstants (from calendar-constants.js)
- *   - window.CalendarValidation (from calendar-validation.js)
  * 
  * USAGE:
  *   var queries = window.AcademyQueries;
@@ -36,24 +35,80 @@
 (function() {
     'use strict';
 
+    // Guard against duplicate loading
     if (window.__academyQueriesLoaded) {
         return;
     }
 
+    // ============================================================
+    // DEPENDENCY IMPORTS - NO FALLBACKS
+    // ============================================================
+
+    var AcademyClassQueries = window.AcademyClassQueries;
     var CharacterQueries = window.CharacterQueries;
     var TeamQueries = window.TeamQueries;
     var TournamentQueries = window.TournamentQueries;
     var DisciplineQueries = window.DisciplineQueries;
     var LocationQueries = window.LocationQueries;
     var AcademyGroups = window.AcademyGroups;
-    var CalendarConstants = window.CalendarConstants;
-    var CalendarValidation = window.CalendarValidation;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
+        // AcademyClassQueries
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClasses !== 'function') {
+            missing.push('AcademyClassQueries.getClasses');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClass !== 'function') {
+            missing.push('AcademyClassQueries.getClass');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClassByName !== 'function') {
+            missing.push('AcademyClassQueries.getClassByName');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClassDisplayName !== 'function') {
+            missing.push('AcademyClassQueries.getClassDisplayName');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.classExists !== 'function') {
+            missing.push('AcademyClassQueries.classExists');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClassOptions !== 'function') {
+            missing.push('AcademyClassQueries.getClassOptions');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getCharactersByClass !== 'function') {
+            missing.push('AcademyClassQueries.getCharactersByClass');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getCharacterCountByClass !== 'function') {
+            missing.push('AcademyClassQueries.getCharacterCountByClass');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getTeamsByClass !== 'function') {
+            missing.push('AcademyClassQueries.getTeamsByClass');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getTeamCountByClass !== 'function') {
+            missing.push('AcademyClassQueries.getTeamCountByClass');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getAvailableStudentsForClass !== 'function') {
+            missing.push('AcademyClassQueries.getAvailableStudentsForClass');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getAvailableStudentCount !== 'function') {
+            missing.push('AcademyClassQueries.getAvailableStudentCount');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClassStats !== 'function') {
+            missing.push('AcademyClassQueries.getClassStats');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClassesWithStats !== 'function') {
+            missing.push('AcademyClassQueries.getClassesWithStats');
+        }
+
+        // CharacterQueries
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
+        }
+        if (!CharacterQueries || typeof CharacterQueries.getCharacterNameById !== 'function') {
+            missing.push('CharacterQueries.getCharacterNameById');
         }
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
@@ -92,6 +147,7 @@
             missing.push('CharacterQueries.getCharacterMagic');
         }
 
+        // TeamQueries
         if (!TeamQueries || typeof TeamQueries.getTeamsByType !== 'function') {
             missing.push('TeamQueries.getTeamsByType');
         }
@@ -108,6 +164,7 @@
             missing.push('TeamQueries.getActiveTeamMemberCount');
         }
 
+        // TournamentQueries
         if (!TournamentQueries || typeof TournamentQueries.getTournamentsByClass !== 'function') {
             missing.push('TournamentQueries.getTournamentsByClass');
         }
@@ -117,10 +174,8 @@
         if (!TournamentQueries || typeof TournamentQueries.getTournamentTeams !== 'function') {
             missing.push('TournamentQueries.getTournamentTeams');
         }
-        if (!TournamentQueries || typeof TournamentQueries.getTournamentsForTeam !== 'function') {
-            missing.push('TournamentQueries.getTournamentsForTeam');
-        }
 
+        // DisciplineQueries
         if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
             missing.push('DisciplineQueries.getDiscipline');
         }
@@ -131,6 +186,7 @@
             missing.push('DisciplineQueries.getAvailableDisciplines');
         }
 
+        // LocationQueries
         if (!LocationQueries || typeof LocationQueries.getLocation !== 'function') {
             missing.push('LocationQueries.getLocation');
         }
@@ -141,6 +197,7 @@
             missing.push('LocationQueries.getLocationSchedule');
         }
 
+        // AcademyGroups
         if (!AcademyGroups || typeof AcademyGroups.getAllAutoGroups !== 'function') {
             missing.push('AcademyGroups.getAllAutoGroups');
         }
@@ -154,17 +211,6 @@
             missing.push('AcademyGroups.getGroupsByInstructor');
         }
 
-        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
-            missing.push('CalendarConstants.MIN_WEEK');
-        }
-        if (!CalendarConstants || typeof CalendarConstants.MAX_WEEK !== 'number') {
-            missing.push('CalendarConstants.MAX_WEEK');
-        }
-
-        if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
-            missing.push('CalendarValidation.parseWeek');
-        }
-
         if (missing.length > 0) {
             throw new Error('AcademyQueries: Missing dependencies: ' + missing.join(', '));
         }
@@ -174,293 +220,77 @@
 
     checkDependencies();
 
+    // ============================================================
+    // HELPER ALIASES
+    // ============================================================
+
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
     }
 
-    function getClassData() {
-        var data = window.data;
-        return data && Array.isArray(data.classes) ? data.classes : [];
-    }
-
-    function getCharacterData() {
-        var data = window.data;
-        return data && Array.isArray(data.characters) ? data.characters : [];
-    }
-
-    function getTeamData() {
-        var data = window.data;
-        return data && Array.isArray(data.teams) ? data.teams : [];
-    }
-
-    function normalizeClassName(name) {
-        return String(name).trim();
-    }
+    // ============================================================
+    // CLASS QUERIES - Delegates to AcademyClassQueries
+    // ============================================================
 
     function getClasses() {
-        var classes = getClassData();
-        return classes.slice().filter(function(cls) {
-            return cls && typeof cls === 'object';
-        }).sort(function(a, b) {
-            return String(a.name || '').localeCompare(String(b.name || ''));
-        });
+        return AcademyClassQueries.getClasses();
     }
 
     function getClass(id) {
-        if (!id) return null;
-        var target = String(id);
-        var classes = getClassData();
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            if (cls && typeof cls === 'object' && String(cls.id) === target) {
-                return cls;
-            }
-        }
-        return null;
+        return AcademyClassQueries.getClass(id);
     }
 
     function getClassByName(name) {
-        if (!name) return null;
-        var target = String(name).toLowerCase().trim();
-        var classes = getClassData();
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            if (cls && typeof cls === 'object') {
-                if (String(cls.name || '').toLowerCase().trim() === target) {
-                    return cls;
-                }
-            }
-        }
-        return null;
+        return AcademyClassQueries.getClassByName(name);
     }
 
     function getClassDisplayName(classId) {
-        var cls = getClass(classId);
-        return cls ? cls.name : 'Unassigned';
-    }
-
-    function getClassOptions() {
-        var classes = getClasses();
-        var options = [];
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            var count = getClassStudents(cls.id).length;
-            options.push({
-                id: cls.id,
-                name: cls.name,
-                count: count
-            });
-        }
-        return options;
+        return AcademyClassQueries.getClassDisplayName(classId);
     }
 
     function classExists(id) {
-        return getClass(id) !== null;
+        return AcademyClassQueries.classExists(id);
+    }
+
+    function getClassOptions() {
+        return AcademyClassQueries.getClassOptions();
     }
 
     function getClassStudents(classId) {
-        if (!classId) return [];
-        var target = String(classId);
-        var chars = getCharacterData();
-        var result = [];
-        for (var i = 0; i < chars.length; i++) {
-            var character = chars[i];
-            if (character && typeof character === 'object' && Array.isArray(character.classIds)) {
-                for (var j = 0; j < character.classIds.length; j++) {
-                    if (String(character.classIds[j]) === target) {
-                        result.push(character);
-                        break;
-                    }
-                }
-            }
-        }
-        return result;
+        return AcademyClassQueries.getCharactersByClass(classId);
     }
 
     function getClassStudentCount(classId) {
-        return getClassStudents(classId).length;
-    }
-
-    function getCharacterClasses(character) {
-        if (!character) return [];
-        var classIds = Array.isArray(character.classIds) ? character.classIds : [];
-        if (classIds.length === 0) return [];
-
-        var classes = getClasses();
-        var result = [];
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            if (!cls) continue;
-            for (var j = 0; j < classIds.length; j++) {
-                if (String(classIds[j]) === String(cls.id)) {
-                    result.push(cls);
-                    break;
-                }
-            }
-        }
-        return result;
-    }
-
-    function getCharacterClassNames(character) {
-        var classes = getCharacterClasses(character);
-        var names = [];
-        for (var i = 0; i < classes.length; i++) {
-            names.push(classes[i].name);
-        }
-        return names;
-    }
-
-    function isCharacterInClass(character, classId) {
-        if (!character || !classId) return false;
-        var classIds = Array.isArray(character.classIds) ? character.classIds : [];
-        var target = String(classId);
-        for (var i = 0; i < classIds.length; i++) {
-            if (String(classIds[i]) === target) {
-                return true;
-            }
-        }
-        return false;
+        return AcademyClassQueries.getCharacterCountByClass(classId);
     }
 
     function getClassTeams(classId) {
-        if (!classId) return [];
-        var target = String(classId);
-        var teams = getTeamData();
-        var result = [];
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (team && typeof team === 'object' && team.type === 'academic' && String(team.classId) === target) {
-                if (team.status === 'active' || team.status === 'operational') {
-                    result.push(team);
-                }
-            }
-        }
-        return result;
+        return AcademyClassQueries.getTeamsByClass(classId);
     }
 
     function getClassTeamCount(classId) {
-        return getClassTeams(classId).length;
-    }
-
-    function getClassForTeam(team) {
-        if (!team || team.type !== 'academic' || !team.classId) return null;
-        return getClass(team.classId);
+        return AcademyClassQueries.getTeamCountByClass(classId);
     }
 
     function getAvailableStudents(classId, week) {
-        if (!classId) return [];
-
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null || weekNum < CalendarConstants.MIN_WEEK || weekNum > CalendarConstants.MAX_WEEK) {
-            return [];
-        }
-
-        var classChars = getClassStudents(classId);
-        var teams = getClassTeams(classId);
-
-        var occupiedIds = {};
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team) continue;
-            var members = TeamQueries.getActiveTeamMembers(team, weekNum);
-            for (var j = 0; j < members.length; j++) {
-                var member = members[j];
-                if (member && member.characterId) {
-                    occupiedIds[String(member.characterId)] = true;
-                }
-            }
-        }
-
-        var result = [];
-        for (var k = 0; k < classChars.length; k++) {
-            var character = classChars[k];
-            if (!character) continue;
-            if (character.deceased) continue;
-            if (occupiedIds[String(character.id)]) continue;
-            result.push(character);
-        }
-
-        return result;
+        return AcademyClassQueries.getAvailableStudentsForClass(classId, week);
     }
 
     function getAvailableStudentCount(classId, week) {
-        return getAvailableStudents(classId, week).length;
-    }
-
-    function isStudentAvailable(classId, studentId, week) {
-        if (!classId || !studentId) return false;
-
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null || weekNum < CalendarConstants.MIN_WEEK || weekNum > CalendarConstants.MAX_WEEK) {
-            return false;
-        }
-
-        var character = CharacterQueries.getCharacterById(studentId);
-        if (!character) return false;
-        if (!isCharacterInClass(character, classId)) return false;
-        if (character.deceased) return false;
-
-        var teams = getClassTeams(classId);
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team) continue;
-            var members = TeamQueries.getActiveTeamMembers(team, weekNum);
-            for (var j = 0; j < members.length; j++) {
-                var member = members[j];
-                if (member && String(member.characterId) === String(studentId)) {
-                    return false;
-                }
-            }
-        }
-
-        return true;
+        return AcademyClassQueries.getAvailableStudentCount(classId, week);
     }
 
     function getClassStats(classId, week) {
-        if (!classId) {
-            return { totalStudents: 0, totalTeams: 0, availableStudents: null, classExists: false, className: null };
-        }
-
-        var cls = getClass(classId);
-        if (!cls) {
-            return { totalStudents: 0, totalTeams: 0, availableStudents: null, classExists: false, className: null };
-        }
-
-        var totalStudents = getClassStudentCount(classId);
-        var totalTeams = getClassTeamCount(classId);
-        var availableStudents = null;
-
-        if (week !== undefined && week !== null) {
-            availableStudents = getAvailableStudentCount(classId, week);
-        }
-
-        return {
-            totalStudents: totalStudents,
-            totalTeams: totalTeams,
-            availableStudents: availableStudents,
-            classExists: true,
-            className: cls.name
-        };
+        return AcademyClassQueries.getClassStats(classId, week);
     }
 
     function getClassesWithStats(week) {
-        var classes = getClasses();
-        var result = [];
-
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            var stats = getClassStats(cls.id, week);
-            result.push({
-                id: cls.id,
-                name: cls.name,
-                totalStudents: stats.totalStudents,
-                totalTeams: stats.totalTeams,
-                availableStudents: stats.availableStudents
-            });
-        }
-
-        return result;
+        return AcademyClassQueries.getClassesWithStats(week);
     }
+
+    // ============================================================
+    // CHARACTER QUERIES - Direct delegation
+    // ============================================================
 
     function getCharacterById(id) {
         return CharacterQueries.getCharacterById(id);
@@ -518,11 +348,15 @@
         return CharacterQueries.getCharacterMagic(char);
     }
 
+    // ============================================================
+    // ACADEMIC TEAM QUERIES - Academy-specific composite
+    // ============================================================
+
     function getAcademicTeams(classId) {
         if (!classId) {
             return [];
         }
-        return getClassTeams(classId);
+        return AcademyClassQueries.getTeamsByClass(classId);
     }
 
     function getAcademicTeamMembers(teamId, week) {
@@ -540,6 +374,10 @@
         }
         return TeamQueries.getActiveTeamMemberCount(team, week);
     }
+
+    // ============================================================
+    // TOURNAMENT QUERIES - Delegates to TournamentQueries
+    // ============================================================
 
     function getTournaments(classId) {
         if (!classId) {
@@ -566,6 +404,10 @@
         return TournamentQueries.getTournamentsForTeam(teamId);
     }
 
+    // ============================================================
+    // DISCIPLINE QUERIES - Delegates to DisciplineQueries
+    // ============================================================
+
     function getDiscipline(id) {
         return DisciplineQueries.getDiscipline(id);
     }
@@ -577,6 +419,10 @@
     function getAvailableDisciplines(week) {
         return DisciplineQueries.getAvailableDisciplines(week);
     }
+
+    // ============================================================
+    // LOCATION QUERIES - Delegates to LocationQueries
+    // ============================================================
 
     function getLocation(id) {
         return LocationQueries.getLocation(id);
@@ -590,11 +436,15 @@
         return LocationQueries.getLocationSchedule(locationId, week);
     }
 
+    // ============================================================
+    // INSTRUCTOR QUERIES - Academy-specific composite
+    // ============================================================
+
     function getClassInstructors(classId) {
         if (!classId) {
             return [];
         }
-        var students = getClassStudents(classId);
+        var students = AcademyClassQueries.getCharactersByClass(classId);
         var instructors = [];
 
         for (var i = 0; i < students.length; i++) {
@@ -607,6 +457,10 @@
 
         return instructors;
     }
+
+    // ============================================================
+    // AUTO-GROUP QUERIES - Delegates to AcademyGroups
+    // ============================================================
 
     function getAllAutoGroups() {
         return AcademyGroups.getAllAutoGroups();
@@ -624,31 +478,28 @@
         return AcademyGroups.getGroupsByInstructor(instructorId);
     }
 
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
     window.AcademyQueries = {
+        // Class queries
         getClasses: getClasses,
         getClass: getClass,
         getClassByName: getClassByName,
         getClassDisplayName: getClassDisplayName,
         classExists: classExists,
         getClassOptions: getClassOptions,
-
         getClassStudents: getClassStudents,
         getClassStudentCount: getClassStudentCount,
-        getCharacterClasses: getCharacterClasses,
-        getCharacterClassNames: getCharacterClassNames,
-        isCharacterInClass: isCharacterInClass,
-
         getClassTeams: getClassTeams,
         getClassTeamCount: getClassTeamCount,
-        getClassForTeam: getClassForTeam,
-
         getAvailableStudents: getAvailableStudents,
         getAvailableStudentCount: getAvailableStudentCount,
-        isStudentAvailable: isStudentAvailable,
-
         getClassStats: getClassStats,
         getClassesWithStats: getClassesWithStats,
 
+        // Character queries
         getCharacterById: getCharacterById,
         getCharacterNameById: getCharacterNameById,
         getDisplayName: getDisplayName,
@@ -664,34 +515,35 @@
         getCharacterStats: getCharacterStats,
         getCharacterMagic: getCharacterMagic,
 
+        // Academic team queries (Academy-specific composite)
         getAcademicTeams: getAcademicTeams,
         getAcademicTeamMembers: getAcademicTeamMembers,
         getAcademicTeamMemberCount: getAcademicTeamMemberCount,
 
+        // Tournament queries
         getTournaments: getTournaments,
         getTournament: getTournament,
         getTournamentTeams: getTournamentTeams,
         getTournamentsForTeam: getTournamentsForTeam,
 
+        // Discipline queries
         getDiscipline: getDiscipline,
         getDisciplines: getDisciplines,
         getAvailableDisciplines: getAvailableDisciplines,
 
+        // Location queries
         getLocation: getLocation,
         getLocations: getLocations,
         getLocationSchedule: getLocationSchedule,
 
+        // Instructor queries (Academy-specific composite)
         getClassInstructors: getClassInstructors,
 
+        // Auto-group queries
         getAllAutoGroups: getAllAutoGroups,
         getAutoGroup: getAutoGroup,
         getGroupsByDiscipline: getGroupsByDiscipline,
-        getGroupsByInstructor: getGroupsByInstructor,
-
-        MIN_WEEK: CalendarConstants.MIN_WEEK,
-        MAX_WEEK: CalendarConstants.MAX_WEEK
+        getGroupsByInstructor: getGroupsByInstructor
     };
-
-    window.__academyQueriesLoaded = true;
 
 })();

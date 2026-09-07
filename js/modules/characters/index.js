@@ -11,8 +11,8 @@
  *   - Coordinating character state
  * 
  * LIFECYCLE:
- *   TabManager.register('characters') → mountCharacters() → 
- *   CharacterList.render() → CharacterForm.render() → CharacterEvents.init()
+ *   TabManager.register('characters') -> mountCharacters() -> 
+ *   CharacterList.render() -> CharacterForm.render() -> CharacterEvents.init()
  * 
  * IMPORTANT:
  *   - This module is the only external entry point for characters
@@ -21,7 +21,6 @@
  *   - It delegates to sub-modules for all operations
  *   - mountCharacters() is the ONLY function that constructs the full HTML
  *   - TabManager is the single source of truth for lifecycle
- *   - No dataReady/tabChanged listeners - TabManager handles lifecycle
  * 
  * STATE SOURCE OF TRUTH:
  *   - _currentEditId is the canonical edit state (PRIVATE)
@@ -46,15 +45,10 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__charactersModuleLoaded) {
         return;
     }
     window.__charactersModuleLoaded = true;
-
-    // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
-    // ============================================================
 
     var TabManager = window.TabManager;
     var CharacterList = window.CharacterList;
@@ -63,33 +57,17 @@
     var DataLoader = window.DataLoader;
     var CharacterClassView = window.CharacterClassView;
 
-    // ============================================================
-    // STATE - Single source of truth for character edit state
-    // ============================================================
-    
-    // Private module-scoped variable - NOT exposed directly
-    var _currentEditId = null;
-    var _initialized = false;
-    var _mounted = false;
-
-    // ============================================================
-    // DEPENDENCY CHECK - Only immediate collaborators
-    // ============================================================
-
     function checkDependencies() {
         var missing = [];
 
-        // TabManager is MANDATORY
         if (!TabManager || typeof TabManager.register !== 'function') {
             missing.push('TabManager.register');
         }
 
-        // CharacterList is MANDATORY
         if (!CharacterList || typeof CharacterList.render !== 'function') {
             missing.push('CharacterList.render');
         }
 
-        // CharacterForm is MANDATORY
         if (!CharacterForm || typeof CharacterForm.render !== 'function') {
             missing.push('CharacterForm.render');
         }
@@ -97,7 +75,6 @@
             missing.push('CharacterForm.collect');
         }
 
-        // CharacterEvents is MANDATORY
         if (!CharacterEvents || typeof CharacterEvents.init !== 'function') {
             missing.push('CharacterEvents.init');
         }
@@ -106,16 +83,17 @@
         }
 
         if (missing.length > 0) {
-            console.warn('[CharactersModule] Missing dependencies:', missing.join(', '));
-            return false;
+            throw new Error('CharactersModule: Missing dependencies: ' + missing.join(', '));
         }
 
         return true;
     }
 
-    // ============================================================
-    // MOUNT FUNCTION - Single source of truth for rendering
-    // ============================================================
+    checkDependencies();
+
+    var _currentEditId = null;
+    var _initialized = false;
+    var _mounted = false;
 
     function mountCharacters(container) {
         if (!container) {
@@ -123,7 +101,6 @@
         }
 
         if (!container) {
-            console.warn('[CharactersModule] Container not found');
             return;
         }
 
@@ -132,53 +109,38 @@
             return;
         }
 
-        if (!checkDependencies()) {
-            container.innerHTML = '<p class="empty-state">Character dependencies not loaded. Please refresh the page.</p>';
-            return;
-        }
-
-        // If already mounted, clean up first
         if (_mounted) {
             unmountCharacters();
         }
 
-        // Render the character container
         container.innerHTML = getCharactersHTML();
 
-        // Initialize character list
         if (CharacterList && typeof CharacterList.render === 'function') {
             try {
                 CharacterList.render();
             } catch (e) {
-                console.warn('[CharactersModule] CharacterList.render failed:', e);
             }
         }
 
-        // Populate class filter
         if (CharacterClassView && typeof CharacterClassView.populateClassFilter === 'function') {
             try {
                 CharacterClassView.populateClassFilter();
             } catch (e) {
-                console.warn('[CharactersModule] CharacterClassView.populateClassFilter failed:', e);
             }
         }
 
-        // Initialize character events (binds all listeners)
         if (CharacterEvents && typeof CharacterEvents.init === 'function') {
             try {
                 CharacterEvents.init(container);
             } catch (e) {
-                console.warn('[CharactersModule] CharacterEvents.init failed:', e);
             }
         }
 
-        // Show the current character if any
         var editId = getCurrentEditId();
         if (editId && CharacterForm && typeof CharacterForm.render === 'function') {
             try {
                 CharacterForm.render(editId);
             } catch (e) {
-                console.warn('[CharactersModule] CharacterForm.render failed:', e);
             }
         }
 
@@ -191,22 +153,16 @@
     function unmountCharacters() {
         if (!_mounted) return;
 
-        // Destroy events (removes all listeners)
         if (CharacterEvents && typeof CharacterEvents.destroy === 'function') {
             try {
                 CharacterEvents.destroy();
             } catch (e) {
-                // Ignore destroy errors
             }
         }
 
         _mounted = false;
         _initialized = false;
     }
-
-    // ============================================================
-    // CHARACTERS HTML
-    // ============================================================
 
     function getCharactersHTML() {
         return `
@@ -215,7 +171,7 @@
                     <div class="characters-header">
                         <h2>Characters</h2>
                         <div class="characters-header-actions">
-                            <button id="toggle-char-list" class="secondary small" aria-label="Toggle character list">☰</button>
+                            <button id="toggle-char-list" class="secondary small" aria-label="Toggle character list">\u2630</button>
                             <button id="add-character-btn" class="primary small">+ Add</button>
                         </div>
                     </div>
@@ -261,24 +217,11 @@
         `;
     }
 
-    // ============================================================
-    // STATE MANAGEMENT - Private, exposed via controlled API
-    // ============================================================
-
-    /**
-     * Get the current edit ID from the module state.
-     * INTERNAL USE ONLY - exposed for sub-modules.
-     */
     function getCurrentEditId() {
         return _currentEditId;
     }
 
-    /**
-     * Set the current edit ID in the module state.
-     * INTERNAL USE ONLY - exposed for sub-modules.
-     */
     function setCurrentEditId(id) {
-        // Normalise: null, undefined, empty string all become null
         if (id === undefined || id === null || id === '') {
             _currentEditId = null;
             return;
@@ -286,12 +229,7 @@
         _currentEditId = String(id);
     }
 
-    /**
-     * Show the character form for a specific character.
-     * Public API - the primary way to open a character.
-     */
     function showCharacterForm(id) {
-        // Normalise the ID
         var normalisedId = (id !== undefined && id !== null && id !== '') ? String(id) : null;
         setCurrentEditId(normalisedId);
 
@@ -300,9 +238,6 @@
         }
     }
 
-    /**
-     * Toggle the character list panel.
-     */
     function toggleCharacterList(forceState) {
         var panel = document.getElementById('char-list-panel');
         if (!panel) return;
@@ -314,20 +249,12 @@
         }
     }
 
-    /**
-     * Clear the current edit state (e.g., after deletion).
-     * Internal use only.
-     */
     function clearEditState() {
         setCurrentEditId(null);
         if (CharacterForm && typeof CharacterForm.hide === 'function') {
             CharacterForm.hide();
         }
     }
-
-    // ============================================================
-    // EVENTS
-    // ============================================================
 
     function dispatchReady() {
         try {
@@ -342,13 +269,8 @@
             });
             document.dispatchEvent(event);
         } catch (e) {
-            // Ignore event dispatch errors
         }
     }
-
-    // ============================================================
-    // TAB MANAGER REGISTRATION
-    // ============================================================
 
     function registerWithTabManager() {
         if (TabManager && typeof TabManager.register === 'function') {
@@ -358,23 +280,15 @@
         return false;
     }
 
-    // Register immediately if TabManager is available
     if (!registerWithTabManager()) {
-        // TabManager not ready - wait for it via event
         document.addEventListener('tabManagerReady', function() {
             registerWithTabManager();
         });
     }
 
-    // ============================================================
-    // DATA READY HANDLING (minimal - TabManager owns lifecycle)
-    // ============================================================
-
-    // Listen for data ready to handle initial mount if needed
     if (DataLoader && typeof DataLoader.whenReady === 'function') {
         DataLoader.whenReady(function(data) {
             if (data && !_mounted) {
-                // If the characters tab is currently active, mount it
                 if (TabManager && TabManager.getCurrentTab() === 'characters') {
                     var container = document.getElementById('tab-characters');
                     if (container) {
@@ -385,29 +299,14 @@
         });
     }
 
-    // ============================================================
-    // EXPOSE - Controlled public API
-    // ============================================================
-
-    // Main mount function
     window.mountCharacters = mountCharacters;
 
-    // State management (internal use only, exposed for sub-modules)
     window.getCurrentEditId = getCurrentEditId;
     window.setCurrentEditId = setCurrentEditId;
 
-    // Public API
     window.showCharacterForm = showCharacterForm;
     window.toggleCharacterList = toggleCharacterList;
 
-    // Internal API (for sub-modules)
     window._clearEditState = clearEditState;
-
-    // ============================================================
-    // LIFECYCLE EVENTS - REMOVED redundant triggers
-    // ============================================================
-    // NOTE: TabManager is now the single source of truth for lifecycle.
-    // The dataReady and tabChanged listeners have been removed.
-    // Data readiness is handled by TabManager before calling mountCharacters.
 
 })();

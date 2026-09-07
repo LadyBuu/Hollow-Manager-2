@@ -9,20 +9,20 @@
  *   - Adding classes by name (via MutationPipeline)
  * 
  * IMPORTANT: All mutations use MutationPipeline:
- *   VALIDATE → SNAPSHOT → MUTATE → PERSIST → LOG → UI COMMIT
+ *   VALIDATE -> SNAPSHOT -> MUTATE -> PERSIST -> LOG -> UI COMMIT
  *   Returns structured results for caller handling
  *   No UI dependencies (no notifications, no confirm, no rendering)
  *   No DOM access
  *   USES CharacterQueries for character data and display names
- *   USES ClassesQueries for class data
- *   USES ClassesCore for class creation (NON-PERSISTING when used in transactions)
+ *   USES AcademyQueries for class data
+ *   USES AcademyClasses for class creation (NON-PERSISTING when used in transactions)
  *   USES MutationPipeline for transaction management
  *   USES IdUtils for ID generation
  * 
  * DEPENDENCIES:
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.ClassesQueries (from classes-queries.js) - MANDATORY
- *   - window.ClassesCore (from classes-core.js) - MANDATORY
+ *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
+ *   - window.AcademyClasses (from academy-classes.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  * 
@@ -39,30 +39,20 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate script loading
     if (window.__characterClassesLoaded) {
         return;
     }
     window.__characterClassesLoaded = true;
 
-    // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
-    // ============================================================
-
     var CharacterQueries = window.CharacterQueries;
-    var ClassesQueries = window.ClassesQueries;
-    var ClassesCore = window.ClassesCore;
+    var AcademyQueries = window.AcademyQueries;
+    var AcademyClasses = window.AcademyClasses;
     var MutationPipeline = window.MutationPipeline;
     var IdUtils = window.IdUtils;
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
-        // CharacterQueries is MANDATORY
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
@@ -70,42 +60,36 @@
             missing.push('CharacterQueries.getDisplayName');
         }
 
-        // ClassesQueries is MANDATORY
-        if (!ClassesQueries || typeof ClassesQueries.getClass !== 'function') {
-            missing.push('ClassesQueries.getClass');
+        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
+            missing.push('AcademyQueries.getClass');
         }
-        if (!ClassesQueries || typeof ClassesQueries.getClasses !== 'function') {
-            missing.push('ClassesQueries.getClasses');
+        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
+            missing.push('AcademyQueries.getClasses');
         }
-        if (!ClassesQueries || typeof ClassesQueries.getClassByName !== 'function') {
-            missing.push('ClassesQueries.getClassByName');
-        }
-
-        // ClassesCore is MANDATORY
-        if (!ClassesCore || typeof ClassesCore.createClassInState !== 'function') {
-            missing.push('ClassesCore.createClassInState');
+        if (!AcademyQueries || typeof AcademyQueries.getClassByName !== 'function') {
+            missing.push('AcademyQueries.getClassByName');
         }
 
-        // MutationPipeline is MANDATORY
+        if (!AcademyClasses || typeof AcademyClasses.create !== 'function') {
+            missing.push('AcademyClasses.create');
+        }
+
         if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
             missing.push('MutationPipeline.performMutation');
         }
 
-        // IdUtils is MANDATORY
         if (!IdUtils || typeof IdUtils.generateId !== 'function') {
             missing.push('IdUtils.generateId');
         }
 
         if (missing.length > 0) {
-            console.warn('CharacterClasses: Missing dependencies:', missing.join(', '));
-            return false;
+            throw new Error('CharacterClasses: Missing dependencies: ' + missing.join(', '));
         }
+
         return true;
     }
 
-    // ============================================================
-    // NORMALISATION HELPERS
-    // ============================================================
+    checkDependencies();
 
     function normaliseClassIds(char) {
         if (!char) return;
@@ -138,25 +122,7 @@
         });
     }
 
-    // ============================================================
-    // ADD TO CLASS - Uses MutationPipeline
-    // ============================================================
-
-    /**
-     * Add a character to a class.
-     * 
-     * @param {string} charId - Character ID
-     * @param {string} classId - Class ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function addToClass(charId, classId) {
-        if (!checkDependencies()) {
-            return Promise.resolve({
-                success: false,
-                message: 'Dependencies not loaded. Please refresh the page.'
-            });
-        }
-
         if (!charId) {
             return Promise.resolve({
                 success: false,
@@ -179,7 +145,7 @@
             });
         }
 
-        var cls = ClassesQueries.getClass(classId);
+        var cls = AcademyQueries.getClass(classId);
         if (!cls) {
             return Promise.resolve({
                 success: false,
@@ -199,7 +165,6 @@
 
         return MutationPipeline.performMutation({
             validate: function(data) {
-                // Re-validate within transaction
                 var currentChar = CharacterQueries.getCharacterById(charId);
                 if (!currentChar) {
                     return {
@@ -208,7 +173,7 @@
                     };
                 }
 
-                var currentClass = ClassesQueries.getClass(classId);
+                var currentClass = AcademyQueries.getClass(classId);
                 if (!currentClass) {
                     return {
                         valid: false,
@@ -238,7 +203,6 @@
 
                 normaliseClassIds(currentChar);
 
-                // Prevent duplicate in case of race
                 if (currentChar.classIds.some(function(cid) { return String(cid) === String(classId); })) {
                     throw new Error('Character is already in this class.');
                 }
@@ -252,36 +216,18 @@
                 };
             },
 
-            logMessage: function(result) {
+            logMessage: function() {
                 return 'Added ' + name + ' to class: ' + cls.name;
             },
 
-            successMessage: function(result) {
+            successMessage: function() {
                 return 'Character added to class successfully!';
             },
             failureMessage: 'Failed to add character to class.'
         });
     }
 
-    // ============================================================
-    // REMOVE FROM CLASS BY ID - Uses MutationPipeline
-    // ============================================================
-
-    /**
-     * Remove a character from a class by class ID.
-     * 
-     * @param {string} charId - Character ID
-     * @param {string} classId - Class ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function removeClassById(charId, classId) {
-        if (!checkDependencies()) {
-            return Promise.resolve({
-                success: false,
-                message: 'Dependencies not loaded. Please refresh the page.'
-            });
-        }
-
         if (!charId) {
             return Promise.resolve({
                 success: false,
@@ -304,7 +250,7 @@
             });
         }
 
-        var cls = ClassesQueries.getClass(classId);
+        var cls = AcademyQueries.getClass(classId);
         if (!cls) {
             return Promise.resolve({
                 success: false,
@@ -332,7 +278,7 @@
                     };
                 }
 
-                var currentClass = ClassesQueries.getClass(classId);
+                var currentClass = AcademyQueries.getClass(classId);
                 if (!currentClass) {
                     return {
                         valid: false,
@@ -382,37 +328,18 @@
                 };
             },
 
-            logMessage: function(result) {
+            logMessage: function() {
                 return 'Removed ' + name + ' from class: ' + cls.name;
             },
 
-            successMessage: function(result) {
+            successMessage: function() {
                 return 'Character removed from class successfully!';
             },
             failureMessage: 'Failed to remove character from class.'
         });
     }
 
-    // ============================================================
-    // ADD CLASS BY NAME - Uses MutationPipeline
-    // ============================================================
-
-    /**
-     * Add a character to a class by class name.
-     * Creates the class if it doesn't exist.
-     * 
-     * @param {string} charId - Character ID
-     * @param {string} className - Class name
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function addClassByName(charId, className) {
-        if (!checkDependencies()) {
-            return Promise.resolve({
-                success: false,
-                message: 'Dependencies not loaded. Please refresh the page.'
-            });
-        }
-
         if (!charId) {
             return Promise.resolve({
                 success: false,
@@ -437,10 +364,9 @@
             });
         }
 
-        var existingClass = ClassesQueries.getClassByName(trimmedName);
+        var existingClass = AcademyQueries.getClassByName(trimmedName);
         var name = CharacterQueries.getDisplayName(char);
 
-        // Check if character already in this class
         if (existingClass) {
             var classIds = getNormalisedClassIds(char);
             if (classIds.some(function(cid) { return String(cid) === String(existingClass.id); })) {
@@ -461,8 +387,7 @@
                     };
                 }
 
-                // Check if class exists and character is already in it
-                var currentClass = ClassesQueries.getClassByName(trimmedName);
+                var currentClass = AcademyQueries.getClassByName(trimmedName);
                 if (currentClass) {
                     var currentClassIds = getNormalisedClassIds(currentChar);
                     if (currentClassIds.some(function(cid) { return String(cid) === String(currentClass.id); })) {
@@ -477,18 +402,16 @@
             },
 
             mutate: function(data) {
-                // Find or create class (in-state, non-persisting)
-                var cls = ClassesQueries.getClassByName(trimmedName);
+                var cls = AcademyQueries.getClassByName(trimmedName);
 
                 if (!cls) {
-                    var result = ClassesCore.createClassInState(data, trimmedName);
+                    var result = AcademyClasses.create(trimmedName);
                     if (!result || !result.success) {
                         throw new Error(result ? result.message : 'Failed to create class.');
                     }
-                    cls = result.class;
+                    cls = result.data.class;
                 }
 
-                // Add character to class
                 var currentChar = data.characters.find(function(c) {
                     return c && String(c.id) === String(charId);
                 });
@@ -499,7 +422,6 @@
 
                 normaliseClassIds(currentChar);
 
-                // Prevent duplicate
                 if (currentChar.classIds.some(function(cid) { return String(cid) === String(cls.id); })) {
                     throw new Error('Character is already in this class.');
                 }
@@ -527,24 +449,7 @@
         });
     }
 
-    // ============================================================
-    // BULK OPERATIONS
-    // ============================================================
-
-    /**
-     * Remove a character from all classes.
-     * 
-     * @param {string} charId - Character ID
-     * @returns {Promise<{ success: boolean, count?: number, message?: string }>}
-     */
     function removeFromAllClasses(charId) {
-        if (!checkDependencies()) {
-            return Promise.resolve({
-                success: false,
-                message: 'Dependencies not loaded. Please refresh the page.'
-            });
-        }
-
         if (!charId) {
             return Promise.resolve({
                 success: false,
@@ -609,60 +514,33 @@
         });
     }
 
-    // ============================================================
-    // QUERY HELPERS (delegated to ClassesQueries)
-    // ============================================================
-
-    /**
-     * Get classes for a character.
-     * Delegated to ClassesQueries.
-     */
     function getCharacterClasses(char) {
-        return ClassesQueries.getCharacterClasses(char);
+        return AcademyQueries.getCharacterClasses(char);
     }
 
-    /**
-     * Get class names for a character.
-     * Delegated to ClassesQueries.
-     */
     function getCharacterClassNames(char) {
-        return ClassesQueries.getCharacterClassNames(char);
+        return AcademyQueries.getCharacterClassNames(char);
     }
 
-    /**
-     * Get characters by class.
-     * Delegated to ClassesQueries.
-     */
     function getCharactersByClass(classId) {
-        return ClassesQueries.getCharactersByClass(classId);
+        return AcademyQueries.getClassStudents(classId);
     }
 
-    /**
-     * Get available students for a class.
-     * Delegated to ClassesQueries.
-     */
     function getAvailableStudentsForClass(classId, week) {
-        return ClassesQueries.getAvailableStudentsForClass(classId, week);
+        return AcademyQueries.getAvailableStudents(classId, week);
     }
-
-    // ============================================================
-    // EXPOSE
-    // ============================================================
 
     window.CharacterClasses = {
-        // Mutations
         addToClass: addToClass,
         removeClassById: removeClassById,
         addClassByName: addClassByName,
         removeFromAllClasses: removeFromAllClasses,
 
-        // Queries (delegated to ClassesQueries)
         getCharacterClasses: getCharacterClasses,
         getCharacterClassNames: getCharacterClassNames,
         getCharactersByClass: getCharactersByClass,
         getAvailableStudentsForClass: getAvailableStudentsForClass,
 
-        // Helpers
         normaliseClassIds: normaliseClassIds,
         getNormalisedClassIds: getNormalisedClassIds
     };

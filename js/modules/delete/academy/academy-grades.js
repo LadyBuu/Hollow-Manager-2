@@ -22,7 +22,7 @@
  * DEPENDENCIES:
  *   - window.ObjectUtils (from object-utils.js)
  *   - window.CharacterQueries (from character-queries.js)
- *   - window.AcademyQueries (from academy-queries.js)
+ *   - window.AcademyClassQueries (from academy-class-queries.js)
  *   - window.DisciplineQueries (from discipline-queries.js)
  *   - window.CalendarValidation (from calendar-validation.js)
  *   - window.CalendarConstants (from calendar-constants.js)
@@ -37,16 +37,25 @@
 (function() {
     'use strict';
 
+    // Guard against duplicate loading
     if (window.__academyGradesLoaded) {
         return;
     }
 
+    // ============================================================
+    // DEPENDENCY IMPORTS - NO FALLBACKS
+    // ============================================================
+
     var ObjectUtils = window.ObjectUtils;
     var CharacterQueries = window.CharacterQueries;
-    var AcademyQueries = window.AcademyQueries;
+    var AcademyClassQueries = window.AcademyClassQueries;
     var DisciplineQueries = window.DisciplineQueries;
     var CalendarValidation = window.CalendarValidation;
     var CalendarConstants = window.CalendarConstants;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -65,11 +74,11 @@
             missing.push('CharacterQueries.isStudent');
         }
 
-        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
-            missing.push('AcademyQueries.getClass');
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClass !== 'function') {
+            missing.push('AcademyClassQueries.getClass');
         }
-        if (!AcademyQueries || typeof AcademyQueries.getClassStudents !== 'function') {
-            missing.push('AcademyQueries.getClassStudents');
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getCharactersByClass !== 'function') {
+            missing.push('AcademyClassQueries.getCharactersByClass');
         }
 
         if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
@@ -96,9 +105,17 @@
 
     checkDependencies();
 
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
     var MIN_SCORE = 0;
     var MAX_SCORE = 100;
     var PASSING_THRESHOLD = 70;
+
+    // ============================================================
+    // HELPER ALIASES
+    // ============================================================
 
     function isObject(value) {
         return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -120,6 +137,10 @@
         return { success: true, data: data };
     }
 
+    // ============================================================
+    // DATA STORE ACCESS - Read-only
+    // ============================================================
+
     function getGradesStore() {
         if (!window.data || typeof window.data !== 'object') {
             return null;
@@ -130,11 +151,16 @@
         return window.data.curriculum.grades;
     }
 
+    // ============================================================
+    // VALIDATION HELPERS
+    // ============================================================
+
     function validateScore(value) {
         if (value === undefined || value === null || value === '') {
             return null;
         }
 
+        // Trim whitespace from strings
         if (typeof value === 'string') {
             var trimmed = value.trim();
             if (trimmed === '') {
@@ -246,7 +272,7 @@
             return { valid: false, message: 'Grade data must be an object.' };
         }
 
-        var classStudents = AcademyQueries.getClassStudents(classId);
+        var classStudents = AcademyClassQueries.getCharactersByClass(classId);
         if (classStudents.length === 0) {
             return { valid: false, message: 'No students in this class.' };
         }
@@ -300,6 +326,10 @@
             studentMap: studentMap
         };
     }
+
+    // ============================================================
+    // GRADE QUERIES
+    // ============================================================
 
     function getGrades(studentId, week) {
         if (!isNonEmptyString(studentId)) {
@@ -363,6 +393,10 @@
         return result;
     }
 
+    // ============================================================
+    // GRADE SUMMARY
+    // ============================================================
+
     function getStudentScheduledDisciplineIds(schedule) {
         var ids = [];
         if (!schedule || typeof schedule !== 'object') {
@@ -410,7 +444,10 @@
             disciplines = [];
         }
 
+        // This should use a schedule query to get the student's schedule
+        // For now, we assume all available disciplines are scheduled
         var studentDisciplineIds = [];
+        // Ideally: CalendarScheduleQueries.getScheduledDisciplineIds(studentId, weekNum)
 
         var totalWeighted = 0;
         var totalWeight = 0;
@@ -425,7 +462,6 @@
 
         for (var i = 0; i < disciplines.length; i++) {
             var d = disciplines[i];
-
             var isInSchedule = false;
             for (var j = 0; j < studentDisciplineIds.length; j++) {
                 if (String(studentDisciplineIds[j]) === String(d.id)) {
@@ -493,6 +529,10 @@
         };
     }
 
+    // ============================================================
+    // CLASS GRADE SUMMARY
+    // ============================================================
+
     function getClassSummary(classId, week) {
         if (!isNonEmptyString(classId)) {
             return null;
@@ -503,7 +543,7 @@
             return null;
         }
 
-        var students = AcademyQueries.getClassStudents(classId);
+        var students = AcademyClassQueries.getCharactersByClass(classId);
         var summaries = [];
 
         for (var i = 0; i < students.length; i++) {
@@ -560,6 +600,14 @@
         return count > 0 ? total / count : null;
     }
 
+    // ============================================================
+    // CANDIDATE MUTATION FUNCTIONS - No direct commit
+    // ============================================================
+
+    /**
+     * Apply grade changes to a candidate object.
+     * This is the shared engine for both single and bulk operations.
+     */
     function applyGradeChangesToCandidate(candidate, studentId, weekNum, grades) {
         if (!candidate) {
             candidate = {};
@@ -597,6 +645,7 @@
             }
         }
 
+        // Clean up empty entries
         if (Object.keys(candidateGrades).length === 0) {
             delete candidate[studentId][weekNum];
         }
@@ -608,7 +657,11 @@
         return changes;
     }
 
+    /**
+     * Build a candidate for saving grades for a single student.
+     */
     function buildSaveGradesCandidate(studentId, week, grades) {
+        // ---- PHASE 1: VALIDATE ----
         var validation = validateGradeData(studentId, week, grades);
         if (!validation.valid) {
             return failure(validation.message);
@@ -618,9 +671,11 @@
         var validatedGrades = validation.grades;
         var student = validation.student;
 
+        // ---- PHASE 2: GET STORE ----
         var store = getGradesStore();
         var existingGrades = (store && isObject(store)) ? store : {};
 
+        // ---- PHASE 3: BUILD CANDIDATE ----
         var candidate = deepClone(existingGrades);
         if (candidate === null) {
             return failure('Failed to prepare grade data.');
@@ -633,21 +688,12 @@
             ? candidate[studentId][weekNum]
             : {};
 
-        function mutate() {
-            var store = getGradesStore();
-            if (!store || typeof store !== 'object') {
-                var dataStore = window.data;
-                if (!dataStore.curriculum) {
-                    dataStore.curriculum = {};
-                }
-                dataStore.curriculum.grades = candidate;
-            } else {
-                var dataStore = window.data;
-                if (!dataStore.curriculum) {
-                    dataStore.curriculum = {};
-                }
-                dataStore.curriculum.grades = candidate;
+        // ---- PHASE 4: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum) {
+                data.curriculum = {};
             }
+            data.curriculum.grades = candidate;
             return {
                 result: deepClone(resultGrades),
                 changed: changes > 0,
@@ -668,16 +714,25 @@
         });
     }
 
+    /**
+     * Build a candidate for saving a single grade.
+     */
     function buildSaveGradeCandidate(studentId, week, disciplineId, score) {
         var grades = {};
         grades[disciplineId] = score;
         return buildSaveGradesCandidate(studentId, week, grades);
     }
 
+    /**
+     * Build a candidate for deleting a single grade.
+     */
     function buildDeleteGradeCandidate(studentId, week, disciplineId) {
         return buildSaveGradeCandidate(studentId, week, disciplineId, null);
     }
 
+    /**
+     * Build a candidate for deleting all grades for a student in a week.
+     */
     function buildDeleteWeekGradesCandidate(studentId, week) {
         if (!isNonEmptyString(studentId)) {
             return failure('Student ID is required.');
@@ -693,7 +748,7 @@
 
         if (!existingGrades[studentId] || !existingGrades[studentId][weekNum]) {
             return success({
-                mutate: function() {
+                mutate: function(data) {
                     return { result: {}, changed: false, count: 0 };
                 },
                 changed: false,
@@ -718,12 +773,11 @@
         var student = CharacterQueries.getCharacterById(studentId);
         var studentName = student ? CharacterQueries.getDisplayName(student) : 'Unknown';
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
+        function mutate(data) {
+            if (!data.curriculum) {
+                data.curriculum = {};
             }
-            dataStore.curriculum.grades = candidate;
+            data.curriculum.grades = candidate;
             return {
                 result: {},
                 changed: true,
@@ -744,6 +798,9 @@
         });
     }
 
+    /**
+     * Build a candidate for deleting all grades for a student.
+     */
     function buildDeleteStudentGradesCandidate(studentId) {
         if (!isNonEmptyString(studentId)) {
             return failure('Student ID is required.');
@@ -754,7 +811,7 @@
 
         if (!existingGrades[studentId]) {
             return success({
-                mutate: function() {
+                mutate: function(data) {
                     return { result: {}, changed: false, count: 0 };
                 },
                 changed: false,
@@ -783,12 +840,11 @@
         var student = CharacterQueries.getCharacterById(studentId);
         var studentName = student ? CharacterQueries.getDisplayName(student) : 'Unknown';
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
+        function mutate(data) {
+            if (!data.curriculum) {
+                data.curriculum = {};
             }
-            dataStore.curriculum.grades = candidate;
+            data.curriculum.grades = candidate;
             return {
                 result: {},
                 changed: true,
@@ -807,7 +863,12 @@
         });
     }
 
+    /**
+     * Build a candidate for saving grades for an entire class.
+     * This is a true atomic bulk operation: all changes are applied to one candidate.
+     */
     function buildSaveClassGradesCandidate(classId, week, gradeData) {
+        // ---- PHASE 1: VALIDATE ----
         var validation = validateBulkGradeData(classId, week, gradeData);
         if (!validation.valid) {
             return failure(validation.message);
@@ -821,9 +882,11 @@
             return failure('No valid grade data to save.');
         }
 
+        // ---- PHASE 2: GET STORE ----
         var store = getGradesStore();
         var existingGrades = (store && isObject(store)) ? store : {};
 
+        // ---- PHASE 3: BUILD CANDIDATE ----
         var candidate = deepClone(existingGrades);
         if (candidate === null) {
             return failure('Failed to prepare grade data.');
@@ -844,17 +907,17 @@
         }
 
         var className = 'Unknown';
-        var cls = AcademyQueries.getClass(classId);
+        var cls = AcademyClassQueries.getClass(classId);
         if (cls) {
             className = cls.name;
         }
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
+        // ---- PHASE 4: BUILD MUTATION FUNCTION ----
+        function mutate(data) {
+            if (!data.curriculum) {
+                data.curriculum = {};
             }
-            dataStore.curriculum.grades = candidate;
+            data.curriculum.grades = candidate;
             return {
                 studentsProcessed: processedStudents.length,
                 totalChanges: totalChanges,
@@ -876,6 +939,12 @@
         });
     }
 
+    // ============================================================
+    // LEGACY WRAPPER FUNCTIONS - For backward compatibility
+    // These perform the mutation and commit directly.
+    // DEPRECATED: Use build*Candidate functions with MutationPipeline.
+    // ============================================================
+
     function saveGrades(studentId, week, grades) {
         var candidate = buildSaveGradesCandidate(studentId, week, grades);
         if (!candidate.success) {
@@ -883,7 +952,7 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var result = candidate.data.mutate(window.data);
             return success({
                 result: result.result,
                 changed: result.changed,
@@ -901,7 +970,7 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var result = candidate.data.mutate(window.data);
             return success({
                 result: result.result,
                 changed: result.changed,
@@ -919,7 +988,7 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var result = candidate.data.mutate(window.data);
             return success({
                 result: result.result,
                 changed: result.changed,
@@ -937,7 +1006,7 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var result = candidate.data.mutate(window.data);
             return success({
                 result: result.result,
                 changed: result.changed,
@@ -955,7 +1024,7 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var result = candidate.data.mutate(window.data);
             return success({
                 result: result.result,
                 changed: result.changed,
@@ -973,7 +1042,7 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            var result = candidate.data.mutate(window.data);
             return success({
                 studentsProcessed: result.studentsProcessed,
                 totalChanges: result.totalChanges,
@@ -984,15 +1053,22 @@
         }
     }
 
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
     window.AcademyGrades = {
+        // Queries
         getGrades: getGrades,
         getGrade: getGrade,
         hasGrade: hasGrade,
         getWeekGrades: getWeekGrades,
 
+        // Summary
         calculateSummary: calculateSummary,
         getClassSummary: getClassSummary,
 
+        // Candidate builders (preferred - use with MutationPipeline)
         buildSaveGradesCandidate: buildSaveGradesCandidate,
         buildSaveGradeCandidate: buildSaveGradeCandidate,
         buildDeleteGradeCandidate: buildDeleteGradeCandidate,
@@ -1000,6 +1076,7 @@
         buildDeleteStudentGradesCandidate: buildDeleteStudentGradesCandidate,
         buildSaveClassGradesCandidate: buildSaveClassGradesCandidate,
 
+        // Legacy wrappers (deprecated - use with caution)
         saveGrades: saveGrades,
         saveGrade: saveGrade,
         deleteGrade: deleteGrade,
@@ -1007,13 +1084,13 @@
         deleteStudentGrades: deleteStudentGrades,
         saveClassGrades: saveClassGrades,
 
+        // Validation (exposed for external use)
         validateScore: validateScore,
 
+        // Constants
         MIN_SCORE: MIN_SCORE,
         MAX_SCORE: MAX_SCORE,
         PASSING_THRESHOLD: PASSING_THRESHOLD
     };
-
-    window.__academyGradesLoaded = true;
 
 })();

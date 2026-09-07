@@ -34,14 +34,20 @@
  *   - window.NotificationSystem (from notification.js)
  *   - window.DomUtils (from dom-utils.js)
  *   - window.Modal (from modal.js)
+ *   - window.saveData (from database.js)
  */
 
 (function() {
     'use strict';
 
+    // Guard against duplicate loading
     if (window.__studentTabLoaded) {
         return;
     }
+
+    // ============================================================
+    // DEPENDENCY IMPORTS - NO FALLBACKS
+    // ============================================================
 
     var AcademyGrades = window.AcademyGrades;
     var AcademyRanking = window.AcademyRanking;
@@ -53,6 +59,10 @@
     var NotificationSystem = window.NotificationSystem;
     var DomUtils = window.DomUtils;
     var Modal = window.Modal;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -151,14 +161,49 @@
 
     checkDependencies();
 
+    // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils
+    // ============================================================
+
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
     }
+
+    // ============================================================
+    // NOTIFICATION - Delegates to NotificationSystem
+    // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
         NotificationSystem.notify(message, type);
     }
+
+    // ============================================================
+    // PERSISTENCE HELPER
+    // ============================================================
+
+    function persistMutation(successMessage, errorMessage) {
+        if (typeof window.saveData !== 'function') {
+            showNotification('Changes were applied in memory, but persistent storage is unavailable.', 'error');
+            return;
+        }
+
+        window.saveData()
+            .then(function() {
+                if (successMessage) {
+                    showNotification(successMessage, 'success');
+                }
+            })
+            .catch(function() {
+                if (errorMessage) {
+                    showNotification(errorMessage, 'error');
+                }
+            });
+    }
+
+    // ============================================================
+    // RENDER STUDENT TAB
+    // ============================================================
 
     function renderStudentTab(state) {
         var selectedClassId = state.selectedClassId;
@@ -211,6 +256,10 @@
         return html;
     }
 
+    // ============================================================
+    // RENDER STUDENT DETAIL
+    // ============================================================
+
     function renderStudentDetail(state, student) {
         if (!student) {
             return '<p class="empty-state">Student not found.</p>';
@@ -251,6 +300,10 @@
 
         return html;
     }
+
+    // ============================================================
+    // RENDER GRADES TAB
+    // ============================================================
 
     function renderGradesTab(state, student) {
         var studentId = student.id;
@@ -301,6 +354,7 @@
                 if (score !== '' && score !== null) {
                     var numScore = parseFloat(score);
                     if (!isNaN(numScore) && numScore >= 0 && numScore <= 100) {
+                        letter = AcademyGrades.getGradeLetter ? AcademyGrades.getGradeLetter(disc, numScore) : '';
                         var weight = parseFloat(disc.weight) || 1;
                         weighted = (numScore * weight).toFixed(1);
                     }
@@ -333,6 +387,10 @@
 
         return html;
     }
+
+    // ============================================================
+    // RENDER RANKING TAB
+    // ============================================================
 
     function renderRankingTab(state, student) {
         var studentId = student.id;
@@ -395,6 +453,10 @@
 
         return html;
     }
+
+    // ============================================================
+    // RENDER SCHEDULE TAB
+    // ============================================================
 
     function renderScheduleTab(state, student) {
         var studentId = student.id;
@@ -462,7 +524,7 @@
                     duration = details ? details.duration : 1;
                     instructorName = details ? details.instructorName : '';
                 } else {
-                    display = '\u00b7';
+                    display = '·';
                     className = 'schedule-empty';
                 }
 
@@ -492,6 +554,10 @@
         return html;
     }
 
+    // ============================================================
+    // CHARACTER LIST INTEGRATION
+    // ============================================================
+
     function refreshCharacterList() {
         var container = document.getElementById('student-character-list');
         if (!container) { return; }
@@ -508,7 +574,12 @@
         }
     }
 
+    // ============================================================
+    // EVENT BINDING
+    // ============================================================
+
     function bindStudentTabEvents(container) {
+        // Apply week
         var weekApply = container.querySelector('#student-week-apply');
         if (weekApply) {
             weekApply.addEventListener('click', function() {
@@ -539,6 +610,7 @@
             });
         }
 
+        // Student name filter
         var nameFilter = container.querySelector('#student-name-filter');
         if (nameFilter) {
             nameFilter.addEventListener('input', function() {
@@ -548,6 +620,7 @@
             });
         }
 
+        // Clear filter
         var clearBtn = container.querySelector('#student-filter-clear');
         if (clearBtn) {
             clearBtn.addEventListener('click', function() {
@@ -559,6 +632,7 @@
             });
         }
 
+        // Detail tab switching
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.detail-tab-btn');
             if (btn) {
@@ -569,6 +643,7 @@
             }
         });
 
+        // Save grades
         var saveGradesBtn = container.querySelector('#grades-save-btn');
         if (saveGradesBtn) {
             saveGradesBtn.addEventListener('click', function() {
@@ -576,6 +651,7 @@
             });
         }
 
+        // Auto-generate rankings
         var autoRankBtn = container.querySelector('#ranking-auto-btn');
         if (autoRankBtn) {
             autoRankBtn.addEventListener('click', function() {
@@ -583,6 +659,7 @@
             });
         }
 
+        // Refresh rankings
         var refreshRankBtn = container.querySelector('#ranking-refresh-btn');
         if (refreshRankBtn) {
             refreshRankBtn.addEventListener('click', function() {
@@ -592,6 +669,7 @@
             });
         }
 
+        // Save rest days
         var restDaysBtn = container.querySelector('#schedule-rest-days-save');
         if (restDaysBtn) {
             restDaysBtn.addEventListener('click', function() {
@@ -599,6 +677,7 @@
             });
         }
 
+        // Grade input live preview
         container.addEventListener('input', function(e) {
             var input = e.target.closest('.grade-input');
             if (input) {
@@ -606,6 +685,7 @@
             }
         });
 
+        // Grade input blur validation
         container.addEventListener('blur', function(e) {
             var input = e.target.closest('.grade-input');
             if (input) {
@@ -613,11 +693,22 @@
             }
         }, true);
 
+        // Character list selection - delegate to CharacterList events
+        // CharacterList handles its own click events
+
+        // Refresh CharacterList after render
         refreshCharacterList();
 
+        // Return cleanup function
         return function() {
+            // Remove event listeners that were added directly
+            // Most are delegated and will be cleaned up when container is removed
         };
     }
+
+    // ============================================================
+    // DETAIL TAB SWITCHING
+    // ============================================================
 
     function switchDetailTab(container, tab) {
         var btns = container.querySelectorAll('.detail-tab-btn');
@@ -633,6 +724,10 @@
             panel.classList.toggle('active', isActive);
         }
     }
+
+    // ============================================================
+    // GRADE HELPERS
+    // ============================================================
 
     function updateGradePreview(input) {
         var row = input.closest('tr');
@@ -651,8 +746,9 @@
         if (value !== '' && !isNaN(Number(value))) {
             var numericScore = Number(value);
             if (numericScore >= 0 && numericScore <= 100) {
+                var letter = AcademyGrades.getGradeLetter ? AcademyGrades.getGradeLetter(disc, numericScore) : '';
                 if (letterEl) {
-                    letterEl.textContent = '--';
+                    letterEl.textContent = letter || '--';
                 }
                 if (weightedEl && disc.weight) {
                     var weighted = numericScore * Number(disc.weight);
@@ -733,10 +829,15 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Grades saved in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to save grades.', 'error');
         }
     }
+
+    // ============================================================
+    // RANKING HELPERS
+    // ============================================================
 
     function handleAutoGenerateRankings(container) {
         var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
@@ -753,10 +854,15 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Rankings generated in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to auto-generate rankings.', 'error');
         }
     }
+
+    // ============================================================
+    // SCHEDULE HELPERS
+    // ============================================================
 
     function handleSaveRestDays(container) {
         var studentId = window.Academy ? window.Academy.getSelectedStudentId() : null;
@@ -780,10 +886,15 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Rest days saved in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to save rest days.', 'error');
         }
     }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
 
     window.StudentTab = {
         render: renderStudentTab,
@@ -798,7 +909,5 @@
         handleAutoGenerateRankings: handleAutoGenerateRankings,
         handleSaveRestDays: handleSaveRestDays
     };
-
-    window.__studentTabLoaded = true;
 
 })();

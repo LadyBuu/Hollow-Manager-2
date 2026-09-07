@@ -12,7 +12,7 @@
  * 
  * IMPORTANT:
  *   - This module is UI-ONLY - all mutations delegate to domain cores
- *   - Uses AcademyClasses for class operations
+ *   - Uses AcademyCore for class operations
  *   - Uses TeamCore for academic team operations
  *   - Uses AcademyGroups for auto-group operations
  *   - Uses AcademyDistribute for student distribution
@@ -23,85 +23,90 @@
  *   - Calendar bounds use CalendarValidation/CalendarConstants
  * 
  * DEPENDENCIES:
- *   - window.AcademyClasses (from academy-classes.js)
- *   - window.AcademyQueries (from academy-queries.js)
- *   - window.AcademyDistribute (from academy-distribute.js)
+ *   - window.AcademyCore (from academy-core.js)
  *   - window.TeamCore (from team-core.js)
+ *   - window.AcademyDistribute (from academy-distribute.js)
+ *   - window.AcademyQueries (from academy-queries.js)
+ *   - window.AcademyClassQueries (from academy-class-queries.js)
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.CalendarConstants (from calendar-constants.js)
  *   - window.NotificationSystem (from notification.js)
  *   - window.DomUtils (from dom-utils.js)
  *   - window.Modal (from modal.js)
+ *   - window.saveData (from database.js)
  */
 
 (function() {
     'use strict';
 
+    // Guard against duplicate loading
     if (window.__classTabLoaded) {
         return;
     }
 
-    var AcademyClasses = window.AcademyClasses;
-    var AcademyQueries = window.AcademyQueries;
-    var AcademyDistribute = window.AcademyDistribute;
+    // ============================================================
+    // DEPENDENCY IMPORTS - NO FALLBACKS
+    // ============================================================
+
+    var AcademyCore = window.AcademyCore;
     var TeamCore = window.TeamCore;
+    var AcademyDistribute = window.AcademyDistribute;
+    var AcademyQueries = window.AcademyQueries;
+    var AcademyClassQueries = window.AcademyClassQueries;
     var CharacterQueries = window.CharacterQueries;
     var CalendarConstants = window.CalendarConstants;
     var NotificationSystem = window.NotificationSystem;
     var DomUtils = window.DomUtils;
     var Modal = window.Modal;
 
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
+
     function checkDependencies() {
         var missing = [];
 
-        if (!AcademyClasses || typeof AcademyClasses.create !== 'function') {
-            missing.push('AcademyClasses.create');
+        // AcademyCore (self-contained class operations)
+        if (!AcademyCore || typeof AcademyCore.getClass !== 'function') {
+            missing.push('AcademyCore.getClass');
         }
-        if (!AcademyClasses || typeof AcademyClasses.update !== 'function') {
-            missing.push('AcademyClasses.update');
+        if (!AcademyCore || typeof AcademyCore.getClasses !== 'function') {
+            missing.push('AcademyCore.getClasses');
         }
-        if (!AcademyClasses || typeof AcademyClasses.delete !== 'function') {
-            missing.push('AcademyClasses.delete');
+        if (!AcademyCore || typeof AcademyCore.createClass !== 'function') {
+            missing.push('AcademyCore.createClass');
         }
-        if (!AcademyClasses || typeof AcademyClasses.addStudent !== 'function') {
-            missing.push('AcademyClasses.addStudent');
+        if (!AcademyCore || typeof AcademyCore.updateClass !== 'function') {
+            missing.push('AcademyCore.updateClass');
         }
-        if (!AcademyClasses || typeof AcademyClasses.removeStudent !== 'function') {
-            missing.push('AcademyClasses.removeStudent');
+        if (!AcademyCore || typeof AcademyCore.deleteClass !== 'function') {
+            missing.push('AcademyCore.deleteClass');
         }
-
-        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
-            missing.push('AcademyQueries.getClasses');
+        if (!AcademyCore || typeof AcademyCore.addCharacterToClass !== 'function') {
+            missing.push('AcademyCore.addCharacterToClass');
         }
-        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
-            missing.push('AcademyQueries.getClass');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getClassStudents !== 'function') {
-            missing.push('AcademyQueries.getClassStudents');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getClassTeams !== 'function') {
-            missing.push('AcademyQueries.getClassTeams');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getAvailableStudents !== 'function') {
-            missing.push('AcademyQueries.getAvailableStudents');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getTournaments !== 'function') {
-            missing.push('AcademyQueries.getTournaments');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getAcademicTeamMembers !== 'function') {
-            missing.push('AcademyQueries.getAcademicTeamMembers');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getAcademicTeamMemberCount !== 'function') {
-            missing.push('AcademyQueries.getAcademicTeamMemberCount');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getTournamentTeams !== 'function') {
-            missing.push('AcademyQueries.getTournamentTeams');
+        if (!AcademyCore || typeof AcademyCore.removeCharacterFromClass !== 'function') {
+            missing.push('AcademyCore.removeCharacterFromClass');
         }
 
-        if (!AcademyDistribute || typeof AcademyDistribute.autoDistribute !== 'function') {
-            missing.push('AcademyDistribute.autoDistribute');
+        // AcademyClassQueries (class queries)
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClasses !== 'function') {
+            missing.push('AcademyClassQueries.getClasses');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getClass !== 'function') {
+            missing.push('AcademyClassQueries.getClass');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getCharactersByClass !== 'function') {
+            missing.push('AcademyClassQueries.getCharactersByClass');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getTeamsByClass !== 'function') {
+            missing.push('AcademyClassQueries.getTeamsByClass');
+        }
+        if (!AcademyClassQueries || typeof AcademyClassQueries.getAvailableStudentsForClass !== 'function') {
+            missing.push('AcademyClassQueries.getAvailableStudentsForClass');
         }
 
+        // TeamCore
         if (!TeamCore || typeof TeamCore.getTeam !== 'function') {
             missing.push('TeamCore.getTeam');
         }
@@ -121,16 +126,49 @@
             missing.push('TeamCore.removeMember');
         }
 
+        // AcademyDistribute
+        if (!AcademyDistribute || typeof AcademyDistribute.autoDistributeStudents !== 'function') {
+            missing.push('AcademyDistribute.autoDistributeStudents');
+        }
+
+        // AcademyQueries
+        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
+            missing.push('AcademyQueries.getClasses');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
+            missing.push('AcademyQueries.getClass');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getClassStudents !== 'function') {
+            missing.push('AcademyQueries.getClassStudents');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getAcademicTeams !== 'function') {
+            missing.push('AcademyQueries.getAcademicTeams');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getAvailableStudents !== 'function') {
+            missing.push('AcademyQueries.getAvailableStudents');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getTournaments !== 'function') {
+            missing.push('AcademyQueries.getTournaments');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getAcademicTeamMembers !== 'function') {
+            missing.push('AcademyQueries.getAcademicTeamMembers');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getAcademicTeamMemberCount !== 'function') {
+            missing.push('AcademyQueries.getAcademicTeamMemberCount');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getTournamentTeams !== 'function') {
+            missing.push('AcademyQueries.getTournamentTeams');
+        }
+
+        // CharacterQueries
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
         }
         if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
             missing.push('CharacterQueries.getCurrentStatus');
         }
 
+        // CalendarConstants
         if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
             missing.push('CalendarConstants.MIN_WEEK');
         }
@@ -138,14 +176,17 @@
             missing.push('CalendarConstants.MAX_WEEK');
         }
 
+        // NotificationSystem
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
             missing.push('NotificationSystem.notify');
         }
 
+        // DomUtils
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
 
+        // Modal
         if (!Modal || typeof Modal.createModal !== 'function') {
             missing.push('Modal.createModal');
         }
@@ -159,14 +200,49 @@
 
     checkDependencies();
 
+    // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils
+    // ============================================================
+
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
     }
+
+    // ============================================================
+    // NOTIFICATION - Delegates to NotificationSystem
+    // ============================================================
 
     function showNotification(message, type) {
         type = type || 'info';
         NotificationSystem.notify(message, type);
     }
+
+    // ============================================================
+    // PERSISTENCE HELPER
+    // ============================================================
+
+    function persistMutation(successMessage, errorMessage) {
+        if (typeof window.saveData !== 'function') {
+            showNotification('Changes were applied in memory, but persistent storage is unavailable.', 'error');
+            return;
+        }
+
+        window.saveData()
+            .then(function() {
+                if (successMessage) {
+                    showNotification(successMessage, 'success');
+                }
+            })
+            .catch(function() {
+                if (errorMessage) {
+                    showNotification(errorMessage, 'error');
+                }
+            });
+    }
+
+    // ============================================================
+    // RENDER CLASS TAB
+    // ============================================================
 
     function renderClassTab(state) {
         var classes = AcademyQueries.getClasses();
@@ -200,8 +276,12 @@
         return html;
     }
 
+    // ============================================================
+    // RENDER CLASS LIST
+    // ============================================================
+
     function renderClassList(state) {
-        var classes = AcademyQueries.getClasses();
+        var classes = AcademyCore.getClasses();
         var selectedId = state.selectedClassId;
 
         if (classes.length === 0) {
@@ -211,8 +291,8 @@
         var html = '';
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
-            var count = AcademyQueries.getClassStudents(cls.id).length;
-            var teamCount = AcademyQueries.getClassTeams(cls.id).length;
+            var count = AcademyClassQueries.getCharactersByClass(cls.id).length;
+            var teamCount = AcademyClassQueries.getTeamsByClass(cls.id).length;
             var isSelected = selectedId === cls.id;
 
             html += '<div class="class-list-item' + (isSelected ? ' selected' : '') + '" data-id="' + escapeHtml(cls.id) + '">';
@@ -226,13 +306,17 @@
         return html;
     }
 
+    // ============================================================
+    // RENDER CLASS DETAIL
+    // ============================================================
+
     function renderClassDetail(state, cls) {
         if (!cls) {
             return '<p class="empty-state">Class not found.</p>';
         }
 
-        var students = AcademyQueries.getClassStudents(cls.id);
-        var teams = AcademyQueries.getClassTeams(cls.id);
+        var students = AcademyClassQueries.getCharactersByClass(cls.id);
+        var teams = AcademyClassQueries.getTeamsByClass(cls.id);
         var tournaments = AcademyQueries.getTournaments(cls.id);
         var week = state.selectedWeek || 1;
 
@@ -274,6 +358,10 @@
         return html;
     }
 
+    // ============================================================
+    // RENDER ROSTER TAB
+    // ============================================================
+
     function renderRosterTab(state, cls, students) {
         var html = '';
 
@@ -281,7 +369,7 @@
         html += '<select id="roster-add-student" class="small">';
         html += '<option value="">Add student...</option>';
 
-        var available = AcademyQueries.getAvailableStudents(cls.id, state.selectedWeek || 1);
+        var available = AcademyClassQueries.getAvailableStudentsForClass(cls.id, state.selectedWeek || 1);
         for (var i = 0; i < available.length; i++) {
             var student = available[i];
             var name = CharacterQueries.getDisplayName(student);
@@ -313,6 +401,10 @@
 
         return html;
     }
+
+    // ============================================================
+    // RENDER TEAMS TAB
+    // ============================================================
 
     function renderTeamsTab(state, cls, teams) {
         var html = '';
@@ -374,6 +466,10 @@
         return html;
     }
 
+    // ============================================================
+    // RENDER TOURNAMENTS TAB
+    // ============================================================
+
     function renderTournamentsTab(state, cls, tournaments) {
         var html = '';
         var minWeek = CalendarConstants.MIN_WEEK;
@@ -415,7 +511,7 @@
                     html += '<div class="tournament-add-team-form">';
                     html += '<select class="tournament-team-select small">';
                     html += '<option value="">Add team...</option>';
-                    var availableTeams = AcademyQueries.getClassTeams(cls.id);
+                    var availableTeams = AcademyClassQueries.getTeamsByClass(cls.id);
                     for (var j = 0; j < availableTeams.length; j++) {
                         var at = availableTeams[j];
                         var inTournament = false;
@@ -443,7 +539,7 @@
                     html += '<div class="tournament-add-team-form">';
                     html += '<select class="tournament-team-select small">';
                     html += '<option value="">Add team...</option>';
-                    var availableTeams2 = AcademyQueries.getClassTeams(cls.id);
+                    var availableTeams2 = AcademyClassQueries.getTeamsByClass(cls.id);
                     for (var j2 = 0; j2 < availableTeams2.length; j2++) {
                         var at2 = availableTeams2[j2];
                         var inTournament2 = false;
@@ -469,6 +565,10 @@
 
         return html;
     }
+
+    // ============================================================
+    // MODALS HTML
+    // ============================================================
 
     function getModalsHTML() {
         var minWeek = CalendarConstants.MIN_WEEK;
@@ -529,7 +629,12 @@
         ].join('');
     }
 
+    // ============================================================
+    // EVENT BINDING
+    // ============================================================
+
     function bindClassTabEvents(container) {
+        // Class list click - select class
         var listContainer = container.querySelector('#academy-class-list');
         if (listContainer) {
             listContainer.addEventListener('click', function(e) {
@@ -547,6 +652,7 @@
             });
         }
 
+        // Add class button
         var addBtn = container.querySelector('#academy-add-class-btn');
         if (addBtn) {
             addBtn.addEventListener('click', function() {
@@ -554,6 +660,7 @@
             });
         }
 
+        // Edit class buttons (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.edit-class-btn');
             if (btn) {
@@ -564,6 +671,7 @@
             }
         });
 
+        // Delete class buttons (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.delete-class-btn');
             if (btn) {
@@ -574,6 +682,7 @@
             }
         });
 
+        // Distribute buttons (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.distribute-class-btn, #distribute-class-btn');
             if (btn) {
@@ -584,6 +693,7 @@
             }
         });
 
+        // Roster add
         var rosterAddBtn = container.querySelector('#roster-add-btn');
         if (rosterAddBtn) {
             rosterAddBtn.addEventListener('click', function() {
@@ -594,6 +704,7 @@
             });
         }
 
+        // Roster remove (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.roster-remove-btn');
             if (btn) {
@@ -607,6 +718,7 @@
             }
         });
 
+        // Team add
         var teamAddBtn = container.querySelector('#team-add-btn');
         if (teamAddBtn) {
             teamAddBtn.addEventListener('click', function() {
@@ -646,12 +758,14 @@
                     if (typeof window.Academy.refresh === 'function') {
                         window.Academy.refresh();
                     }
+                    persistMutation(null, 'Team created in memory, but persistence failed.');
                 } else {
                     showNotification('Failed to create team.', 'error');
                 }
             });
         }
 
+        // Team manage members (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.team-manage-members');
             if (btn) {
@@ -662,6 +776,7 @@
             }
         });
 
+        // Team delete (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.team-delete-btn');
             if (btn) {
@@ -672,6 +787,7 @@
             }
         });
 
+        // Team member remove (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.team-member-remove');
             if (btn) {
@@ -683,6 +799,7 @@
             }
         });
 
+        // Tournament add
         var tournAddBtn = container.querySelector('#tournament-add-btn');
         if (tournAddBtn) {
             tournAddBtn.addEventListener('click', function() {
@@ -715,12 +832,14 @@
                     if (typeof window.Academy.refresh === 'function') {
                         window.Academy.refresh();
                     }
+                    persistMutation(null, 'Tournament created in memory, but persistence failed.');
                 } else {
                     showNotification(result ? result.message : 'Failed to create tournament.', 'error');
                 }
             });
         }
 
+        // Tournament delete (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.tournament-delete-btn');
             if (btn) {
@@ -731,6 +850,7 @@
             }
         });
 
+        // Tournament manage teams (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.tournament-manage-teams');
             if (btn) {
@@ -741,6 +861,7 @@
             }
         });
 
+        // Tournament add team (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.tournament-add-team-btn');
             if (btn) {
@@ -752,6 +873,7 @@
             }
         });
 
+        // Tournament remove team (delegated)
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.tournament-remove-team');
             if (btn) {
@@ -763,6 +885,7 @@
             }
         });
 
+        // Detail tab switching
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.detail-tab-btn');
             if (btn) {
@@ -773,13 +896,25 @@
             }
         });
 
+        // Class form modal
         bindClassFormEvents(container);
+
+        // Distribute modal
         bindDistributeEvents(container);
+
+        // Team members modal
         bindTeamMembersEvents(container);
 
+        // Return cleanup function
         return function() {
+            // Remove event listeners that were added directly
+            // Most are delegated and will be cleaned up when container is removed
         };
     }
+
+    // ============================================================
+    // DETAIL TAB SWITCHING
+    // ============================================================
 
     function switchDetailTab(container, tab) {
         var btns = container.querySelectorAll('.detail-tab-btn');
@@ -795,6 +930,10 @@
             panel.classList.toggle('active', isActive);
         }
     }
+
+    // ============================================================
+    // CLASS FORM EVENTS
+    // ============================================================
 
     function bindClassFormEvents(container) {
         var modal = document.getElementById('academy-class-modal');
@@ -837,9 +976,9 @@
                 var result;
 
                 if (editId) {
-                    result = AcademyClasses.update(editId, { name: name });
+                    result = AcademyCore.updateClass(editId, { name: name });
                 } else {
-                    result = AcademyClasses.create(name);
+                    result = AcademyCore.createClass(name);
                 }
 
                 if (result && result.success) {
@@ -848,12 +987,14 @@
                     if (typeof window.Academy.refresh === 'function') {
                         window.Academy.refresh();
                     }
+                    persistMutation(null, 'Class changes in memory, but persistence failed.');
                 } else {
                     showNotification(result ? result.message : 'Failed to save class.', 'error');
                 }
             });
         }
 
+        // Store references for showClassForm
         window._academyClassModal = modal;
         window._academyClassForm = form;
         window._academyClassNameInput = nameInput;
@@ -872,7 +1013,7 @@
         }
 
         if (editId) {
-            var cls = AcademyQueries.getClass(editId);
+            var cls = AcademyCore.getClass(editId);
             if (!cls) {
                 showNotification('Class not found.', 'error');
                 return;
@@ -890,6 +1031,10 @@
         nameInput.focus();
         nameInput.select();
     }
+
+    // ============================================================
+    // DISTRIBUTE EVENTS
+    // ============================================================
 
     function bindDistributeEvents(container) {
         var modal = document.getElementById('academy-distribute-modal');
@@ -952,7 +1097,7 @@
                     return;
                 }
 
-                var result = AcademyDistribute.autoDistribute(classId, week, maxSize, teamIds);
+                var result = AcademyDistribute.autoDistributeStudents(classId, week, maxSize, teamIds);
 
                 if (result && result.success) {
                     var data = result;
@@ -961,6 +1106,7 @@
                     if (typeof window.Academy.refresh === 'function') {
                         window.Academy.refresh();
                     }
+                    persistMutation(null, 'Distribution applied in memory, but persistence failed.');
                 } else {
                     showNotification(result ? result.message : 'Failed to distribute students.', 'error');
                 }
@@ -979,8 +1125,8 @@
 
         modal.dataset.classId = classId;
 
-        var cls = AcademyQueries.getClass(classId);
-        var teams = AcademyQueries.getClassTeams(classId);
+        var cls = AcademyCore.getClass(classId);
+        var teams = AcademyClassQueries.getTeamsByClass(classId);
         var week = window.Academy ? window.Academy.getSelectedWeek() : 1;
 
         var html = '';
@@ -1023,6 +1169,10 @@
         content.innerHTML = html;
         modal.classList.remove('hidden');
     }
+
+    // ============================================================
+    // TEAM MEMBERS MODAL
+    // ============================================================
 
     function bindTeamMembersEvents(container) {
         var modal = document.getElementById('academy-team-members-modal');
@@ -1074,6 +1224,7 @@
                 if (result) {
                     showNotification('Student added to team.', 'success');
                     refreshTeamMembersModal(teamId);
+                    persistMutation(null, 'Student added in memory, but persistence failed.');
                 } else {
                     showNotification('Failed to add student.', 'error');
                 }
@@ -1090,6 +1241,7 @@
                     if (result) {
                         showNotification('Member removed.', 'success');
                         refreshTeamMembersModal(teamId);
+                        persistMutation(null, 'Member removed in memory, but persistence failed.');
                     } else {
                         showNotification('Failed to remove member.', 'error');
                     }
@@ -1137,7 +1289,7 @@
 
         var classId = team.classId;
         if (classId) {
-            var available = AcademyQueries.getAvailableStudents(classId, week);
+            var available = AcademyClassQueries.getAvailableStudentsForClass(classId, week);
             var currentMembers = members.map(function(m) { return m.characterId; });
             for (var i = 0; i < available.length; i++) {
                 var s = available[i];
@@ -1175,6 +1327,10 @@
         content.innerHTML = html;
     }
 
+    // ============================================================
+    // TOURNAMENT HELPERS
+    // ============================================================
+
     function toggleTournamentTeams(tournamentId, container) {
         var item = container.querySelector('.tournament-item[data-tournament="' + tournamentId + '"]');
         if (!item) {
@@ -1196,8 +1352,12 @@
         }
     }
 
+    // ============================================================
+    // HANDLERS
+    // ============================================================
+
     function handleDeleteClass(classId) {
-        var result = AcademyClasses.delete(classId);
+        var result = AcademyCore.deleteClass(classId);
         if (result && result.success) {
             showNotification('Class deleted successfully.', 'success');
             if (window.Academy && typeof window.Academy.clearSelections === 'function') {
@@ -1206,6 +1366,7 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Class deleted in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to delete class.', 'error');
         }
@@ -1218,24 +1379,26 @@
             return;
         }
 
-        var result = AcademyClasses.addStudent(classId, studentId);
+        var result = AcademyCore.addCharacterToClass(studentId, classId);
         if (result && result.success) {
             showNotification('Student added to class.', 'success');
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Student added in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to add student.', 'error');
         }
     }
 
     function handleRemoveStudentFromClass(classId, studentId) {
-        var result = AcademyClasses.removeStudent(classId, studentId);
+        var result = AcademyCore.removeCharacterFromClass(studentId, classId);
         if (result && result.success) {
             showNotification('Student removed from class.', 'success');
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Student removed in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to remove student.', 'error');
         }
@@ -1248,6 +1411,7 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Team deleted in memory, but persistence failed.');
         } else {
             showNotification('Failed to delete team.', 'error');
         }
@@ -1260,6 +1424,7 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Student removed in memory, but persistence failed.');
         } else {
             showNotification('Failed to remove student from team.', 'error');
         }
@@ -1272,6 +1437,7 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Tournament deleted in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to delete tournament.', 'error');
         }
@@ -1284,6 +1450,7 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Team added in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to add team to tournament.', 'error');
         }
@@ -1296,10 +1463,15 @@
             if (typeof window.Academy.refresh === 'function') {
                 window.Academy.refresh();
             }
+            persistMutation(null, 'Team removed in memory, but persistence failed.');
         } else {
             showNotification(result ? result.message : 'Failed to remove team from tournament.', 'error');
         }
     }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
 
     window.ClassTab = {
         render: renderClassTab,
@@ -1311,7 +1483,5 @@
         showTeamMembersModal: showTeamMembersModal,
         refreshTeamMembersModal: refreshTeamMembersModal
     };
-
-    window.__classTabLoaded = true;
 
 })();

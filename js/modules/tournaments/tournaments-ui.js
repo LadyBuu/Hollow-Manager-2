@@ -29,6 +29,7 @@
  *   - window.DomUtils (from dom-utils.js)
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.TeamQueries (from team-queries.js)
+ *   - window.AcademyQueries (from academy-queries.js)
  * 
  * USAGE:
  *   var ui = window.TournamentsUI;
@@ -38,14 +39,9 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__tournamentsUILoaded) {
         return;
     }
-
-    // ============================================================
-    // DEPENDENCY IMPORTS - NO FALLBACKS
-    // ============================================================
 
     var TournamentsCore = window.TournamentsCore;
     var TournamentsRender = window.TournamentsRender;
@@ -57,10 +53,7 @@
     var DomUtils = window.DomUtils;
     var CharacterQueries = window.CharacterQueries;
     var TeamQueries = window.TeamQueries;
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
+    var AcademyQueries = window.AcademyQueries;
 
     function checkDependencies() {
         var missing = [];
@@ -155,6 +148,10 @@
             missing.push('TeamQueries.getTeamById');
         }
 
+        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
+            missing.push('AcademyQueries.getClass');
+        }
+
         if (missing.length > 0) {
             throw new Error('[TournamentsUI] Missing dependencies: ' + missing.join(', '));
         }
@@ -164,32 +161,16 @@
 
     checkDependencies();
 
-    // ============================================================
-    // CONSTANTS
-    // ============================================================
-
     var VALID_PARTICIPANT_TYPES = ['character', 'team'];
-
-    // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils
-    // ============================================================
 
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
     }
 
-    // ============================================================
-    // NOTIFICATION - Delegates to NotificationSystem
-    // ============================================================
-
     function showNotification(message, type) {
         type = type || 'info';
         NotificationSystem.notify(message, type);
     }
-
-    // ============================================================
-    // PERSISTENCE HELPER
-    // ============================================================
 
     function persistMutation(successMessage, errorMessage) {
         if (typeof window.saveData !== 'function') {
@@ -210,17 +191,9 @@
             });
     }
 
-    // ============================================================
-    // STATE
-    // ============================================================
-
     var _container = null;
     var _selectedTournamentId = null;
     var _eventListeners = [];
-
-    // ============================================================
-    // RENDER - Main entry point
-    // ============================================================
 
     function render(container) {
         if (!container) {
@@ -234,20 +207,15 @@
 
         _container = container;
 
-        // Remove existing listeners
         removeAllEventListeners();
 
-        // Get tournaments
         var tournaments = TournamentsQueries.getTournaments();
 
-        // Render the list
         var html = TournamentsRender.renderList(tournaments, _selectedTournamentId);
         container.innerHTML = html;
 
-        // Bind events
         bindEvents(container);
 
-        // If a tournament is selected, show its detail
         if (_selectedTournamentId) {
             var tournament = TournamentsQueries.getTournament(_selectedTournamentId);
             if (tournament) {
@@ -257,10 +225,6 @@
             }
         }
     }
-
-    // ============================================================
-    // VIEW TOURNAMENT
-    // ============================================================
 
     function viewTournament(tournamentId) {
         if (!tournamentId) {
@@ -275,23 +239,19 @@
 
         _selectedTournamentId = tournamentId;
 
-        // Render the detail view
         var detailHtml = TournamentsRender.renderDetail(tournament);
         var detailContainer = _container.querySelector('#tournament-detail');
         if (detailContainer) {
             detailContainer.innerHTML = detailHtml;
         } else {
-            // If no detail container, append it
             var detailWrapper = document.createElement('div');
             detailWrapper.id = 'tournament-detail-container';
             detailWrapper.innerHTML = detailHtml;
             _container.appendChild(detailWrapper);
         }
 
-        // Bind detail events
         bindDetailEvents(_container);
 
-        // Update list to show selected
         var listItems = _container.querySelectorAll('.tournament-item');
         for (var i = 0; i < listItems.length; i++) {
             var item = listItems[i];
@@ -303,16 +263,11 @@
             }
         }
 
-        // Scroll to detail
         var detailEl = _container.querySelector('#tournament-detail, #tournament-detail-container');
         if (detailEl) {
             detailEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
     }
-
-    // ============================================================
-    // CLOSE DETAIL
-    // ============================================================
 
     function closeDetail() {
         _selectedTournamentId = null;
@@ -328,10 +283,6 @@
         }
     }
 
-    // ============================================================
-    // SHOW FORM
-    // ============================================================
-
     function showForm(editId) {
         var modal = Modal.createModal('tournament-form-modal');
 
@@ -344,11 +295,9 @@
             }
         }
 
-        // Get available participants (characters and teams)
         var characters = [];
         var teams = [];
 
-        // Get eligible characters
         var allCharacters = window.data && window.data.characters ? window.data.characters : [];
         for (var i = 0; i < allCharacters.length; i++) {
             var char = allCharacters[i];
@@ -361,7 +310,6 @@
             }
         }
 
-        // Get eligible teams
         var allTeams = window.data && window.data.teams ? window.data.teams : [];
         for (var j = 0; j < allTeams.length; j++) {
             var team = allTeams[j];
@@ -386,16 +334,10 @@
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
-        // Bind form events
         bindFormEvents(modal, editId);
     }
 
-    // ============================================================
-    // EVENT BINDING - Main
-    // ============================================================
-
     function bindEvents(container) {
-        // Add tournament button
         var addBtn = container.querySelector('#add-tournament-btn');
         if (addBtn) {
             addEventListener(addBtn, 'click', function() {
@@ -403,12 +345,10 @@
             });
         }
 
-        // Tournament list items - click to view
         var listItems = container.querySelectorAll('.tournament-item');
         for (var i = 0; i < listItems.length; i++) {
             var item = listItems[i];
             addEventListener(item, 'click', function(e) {
-                // Don't trigger if clicking a button
                 if (e.target.closest('button')) {
                     return;
                 }
@@ -419,7 +359,6 @@
             });
         }
 
-        // Delete buttons (delegated)
         addEventListener(container, 'click', function(e) {
             var btn = e.target.closest('.delete-tournament-btn');
             if (btn) {
@@ -431,7 +370,6 @@
             }
         });
 
-        // Edit buttons (delegated)
         addEventListener(container, 'click', function(e) {
             var btn = e.target.closest('.edit-tournament-btn');
             if (btn) {
@@ -444,12 +382,7 @@
         });
     }
 
-    // ============================================================
-    // EVENT BINDING - Detail
-    // ============================================================
-
     function bindDetailEvents(container) {
-        // Close detail button
         var closeBtn = container.querySelector('#close-tournament-detail');
         if (closeBtn) {
             addEventListener(closeBtn, 'click', function() {
@@ -457,7 +390,6 @@
             });
         }
 
-        // Add participant
         var addParticipantBtn = container.querySelector('#add-participant-btn');
         if (addParticipantBtn) {
             addEventListener(addParticipantBtn, 'click', function() {
@@ -468,7 +400,6 @@
             });
         }
 
-        // Remove participant (delegated)
         addEventListener(container, 'click', function(e) {
             var btn = e.target.closest('.remove-participant-btn');
             if (btn) {
@@ -480,7 +411,6 @@
             }
         });
 
-        // Add round
         var addRoundBtn = container.querySelector('#add-round-btn');
         if (addRoundBtn) {
             addEventListener(addRoundBtn, 'click', function() {
@@ -491,7 +421,6 @@
             });
         }
 
-        // Remove round (delegated)
         addEventListener(container, 'click', function(e) {
             var btn = e.target.closest('.remove-round-btn');
             if (btn) {
@@ -503,7 +432,6 @@
             }
         });
 
-        // Add match (delegated)
         addEventListener(container, 'click', function(e) {
             var btn = e.target.closest('.add-match-btn');
             if (btn) {
@@ -515,7 +443,6 @@
             }
         });
 
-        // Edit match (delegated)
         addEventListener(container, 'click', function(e) {
             var btn = e.target.closest('.edit-match-btn');
             if (btn) {
@@ -527,7 +454,6 @@
             }
         });
 
-        // Delete match (delegated)
         addEventListener(container, 'click', function(e) {
             var btn = e.target.closest('.delete-match-btn');
             if (btn) {
@@ -539,7 +465,6 @@
             }
         });
 
-        // Complete match (delegated)
         addEventListener(container, 'click', function(e) {
             var btn = e.target.closest('.complete-match-btn');
             if (btn) {
@@ -551,7 +476,6 @@
             }
         });
 
-        // Complete tournament
         var completeBtn = container.querySelector('#complete-tournament-btn');
         if (completeBtn) {
             addEventListener(completeBtn, 'click', function() {
@@ -562,10 +486,6 @@
             });
         }
     }
-
-    // ============================================================
-    // EVENT BINDING - Form
-    // ============================================================
 
     function bindFormEvents(modal, editId) {
         var form = modal.querySelector('#tournament-form');
@@ -638,10 +558,6 @@
         });
     }
 
-    // ============================================================
-    // ADD PARTICIPANT FORM
-    // ============================================================
-
     function showAddParticipantForm(tournamentId) {
         var tournament = TournamentsQueries.getTournament(tournamentId);
         if (!tournament) {
@@ -661,7 +577,6 @@
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
-        // Bind form events
         var form = modal.querySelector('#add-participant-form');
         if (form) {
             addEventListener(form, 'submit', function(e) {
@@ -708,10 +623,6 @@
         }
     }
 
-    // ============================================================
-    // ADD MATCH FORM
-    // ============================================================
-
     function showAddMatchForm(tournamentId, roundIndex) {
         var tournament = TournamentsQueries.getTournament(tournamentId);
         if (!tournament) {
@@ -731,7 +642,6 @@
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
-        // Bind form events
         var form = modal.querySelector('#add-match-form');
         if (form) {
             addEventListener(form, 'submit', function(e) {
@@ -787,10 +697,6 @@
         }
     }
 
-    // ============================================================
-    // EDIT MATCH FORM
-    // ============================================================
-
     function showEditMatchForm(tournamentId, matchId) {
         var tournament = TournamentsQueries.getTournament(tournamentId);
         if (!tournament) {
@@ -798,7 +704,6 @@
             return;
         }
 
-        // Find the match
         var match = null;
         if (tournament.rounds) {
             for (var r = 0; r < tournament.rounds.length; r++) {
@@ -832,7 +737,6 @@
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
-        // Bind form events
         var form = modal.querySelector('#edit-match-form');
         if (form) {
             addEventListener(form, 'submit', function(e) {
@@ -887,10 +791,6 @@
             });
         }
     }
-
-    // ============================================================
-    // HANDLERS
-    // ============================================================
 
     function handleDeleteTournament(tournamentId) {
         var result = TournamentsCore.deleteTournament(tournamentId);
@@ -956,7 +856,6 @@
     }
 
     function handleCompleteMatch(tournamentId, matchId) {
-        // Find the match to get participants
         var tournament = TournamentsQueries.getTournament(tournamentId);
         var match = null;
         if (tournament && tournament.rounds) {
@@ -979,7 +878,6 @@
             return;
         }
 
-        // Show winner selection modal
         var modal = Modal.createModal('complete-match-modal');
 
         var html = TournamentsRender.renderCompleteMatchForm(tournament, match);
@@ -992,7 +890,6 @@
         Modal.modalSetup(modal);
         Modal.showModal(modal);
 
-        // Bind form events
         var form = modal.querySelector('#complete-match-form');
         if (form) {
             addEventListener(form, 'submit', function(e) {
@@ -1048,10 +945,6 @@
         }
     }
 
-    // ============================================================
-    // EVENT LISTENER MANAGEMENT
-    // ============================================================
-
     function addEventListener(element, eventName, handler, options) {
         if (!element) {
             return;
@@ -1071,85 +964,49 @@
             try {
                 item.element.removeEventListener(item.eventName, item.handler, item.options);
             } catch (e) {
-                // Ignore errors during cleanup
             }
         }
         _eventListeners = [];
     }
 
-    // ============================================================
-    // GET GRADUATING CLASSES - Replacement for ClassesQueries
-    // ============================================================
-
-    /**
-     * Get graduating classes for a tournament.
-     * This replaces ClassesQueries.getGraduatingClasses.
-     * 
-     * @param {string} tournamentId - Tournament ID
-     * @returns {Array} Array of graduating class objects
-     */
     function getGraduatingClasses(tournamentId) {
-        // Get the tournament
         var tournament = TournamentsQueries.getTournament(tournamentId);
         if (!tournament) {
             return [];
         }
 
-        // Get participants
         var participants = tournament.participants || [];
         var graduatingClasses = [];
+        var seenIds = {};
 
-        // Check each participant's class
         for (var i = 0; i < participants.length; i++) {
             var participant = participants[i];
             var participantId = participant.id;
 
-            // Try to find character
             var character = CharacterQueries.getCharacterById(participantId);
             if (character) {
-                // Check if character has classIds
                 if (Array.isArray(character.classIds) && character.classIds.length > 0) {
-                    // Add all classes associated with this character
-                    var classIds = character.classIds;
-                    for (var j = 0; j < classIds.length; j++) {
-                        // Find class by ID
-                        var classData = window.data && window.data.classes ? 
-                            window.data.classes.filter(function(c) { return String(c.id) === String(classIds[j]); }) : [];
-                        if (classData.length > 0) {
-                            var cls = classData[0];
-                            // Check if already added
-                            var exists = false;
-                            for (var k = 0; k < graduatingClasses.length; k++) {
-                                if (String(graduatingClasses[k].id) === String(cls.id)) {
-                                    exists = true;
-                                    break;
-                                }
-                            }
-                            if (!exists) {
-                                graduatingClasses.push(cls);
-                            }
+                    for (var j = 0; j < character.classIds.length; j++) {
+                        var classId = character.classIds[j];
+                        if (seenIds[classId]) continue;
+
+                        var cls = AcademyQueries.getClass(classId);
+                        if (cls) {
+                            seenIds[classId] = true;
+                            graduatingClasses.push(cls);
                         }
                     }
                 }
                 continue;
             }
 
-            // Try to find team
             var team = TeamQueries.getTeamById(participantId);
             if (team && team.classId) {
-                // Find class by ID
-                var classData = window.data && window.data.classes ?
-                    window.data.classes.filter(function(c) { return String(c.id) === String(team.classId); }) : [];
-                if (classData.length > 0) {
-                    var cls = classData[0];
-                    var exists = false;
-                    for (var k = 0; k < graduatingClasses.length; k++) {
-                        if (String(graduatingClasses[k].id) === String(cls.id)) {
-                            exists = true;
-                            break;
-                        }
-                    }
-                    if (!exists) {
+                var classId = team.classId;
+                if (!seenIds[classId]) {
+                    var cls = AcademyQueries.getClass(classId);
+                    if (cls) {
+                        seenIds[classId] = true;
                         graduatingClasses.push(cls);
                     }
                 }
@@ -1159,18 +1016,11 @@
         return graduatingClasses;
     }
 
-    // ============================================================
-    // EXPOSE
-    // ============================================================
-
     window.TournamentsUI = {
-        // Core
         render: render,
         viewTournament: viewTournament,
         closeDetail: closeDetail,
         showForm: showForm,
-
-        // Replacement for ClassesQueries.getGraduatingClasses
         getGraduatingClasses: getGraduatingClasses
     };
 
