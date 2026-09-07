@@ -1170,3 +1170,24 @@
         getGroupDisplayName: getGroupDisplayName,
 
         // Candidate builders (preferred - use with MutationPipeline)
+        buildCreateGroupCandidate: buildCreateGroupCandidate,
+        buildDeleteGroupCandidate: buildDeleteGroupCandidate,
+        buildAddStudentCandidate: buildAddStudentCandidate,
+        buildRemoveStudentCandidate: buildRemoveStudentCandidate,
+        buildAddSlotCandidate: buildAddSlotCandidate,
+        buildRemoveSlotCandidate: buildRemoveSlotCandidate,
+        buildAddStudentsCandidate: buildAddStudentsCandidate,
+        buildRemoveStudentsCandidate: buildRemoveStudentsCandidate,
+
+        // Legacy wrappers (DEPRECATED - use candidate builders)
+        createAutoGroup: createAutoGroup,
+        deleteAutoGroup: deleteAutoGroup,
+        addStudentToAutoGroup: addStudentToAutoGroup,
+        removeStudentFromAutoGroup: removeStudentFromAutoGroup,
+        addSlotToAutoGroup: addSlotToAutoGroup,
+        removeSlotFromAutoGroup: removeSlotFromAutoGroup,
+        addStudentsToAutoGroup: addStudentsToAutoGroup,
+        removeStudentsFromAutoGroup: removeStudentsFromAutoGroup
+    };
+
+})();
