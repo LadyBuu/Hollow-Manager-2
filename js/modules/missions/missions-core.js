@@ -3,10 +3,12 @@
  * CANONICAL mutation API for missions.
  * 
  * MUTATION PHILOSOPHY:
- *   - Caller is responsible for persistence (saveData)
+ *   - Caller is responsible for persistence via MutationUtils
  *   - Invalid inputs are REJECTED (operation returns null/false)
  *   - Mutations are ATOMIC: all or nothing
  *   - Uses MissionsSchema for validation
+ *   - Uses MissionRules for derivation
+ *   - Uses MissionsQueries for read access
  *   - Internal `id` is immutable; `missionId` is derived/human-readable
  *   - Mutations build complete proposed state before committing
  *   - Derived fields (progress, pay, completedAt) are CALCULATED, never accepted as input
@@ -28,42 +30,88 @@
  *   - Objective modifications are rejected for completed/cancelled missions
  *   - Cannot modify objectives in the same transaction that sets status to completed/cancelled
  * 
- * ID SEMANTICS:
- *   - id: immutable internal identity (never changes)
- *   - missionId: derived human-readable identifier; may change when team/year/difficulty changes
- *   - missionId sequence is stateful (scans existing missions for next number)
+ * PERSISTENCE CONTRACT:
+ *   - This module does NOT call saveData()
+ *   - This module does NOT log activity
+ *   - MutationUtils owns persistence and activity logging
  * 
  * DEPENDENCIES:
- *   - MissionsSchema (required)
- *   - window.saveData (for persistence - caller responsibility)
- *   - window.generateId (for ID generation)
- *   - window.logActivity (for activity logging)
+ *   - window.MissionsSchema (required)
+ *   - window.MissionRules (required)
+ *   - window.MissionsQueries (required)
+ *   - window.CharacterQueries (required)
+ *   - window.TeamQueries (required)
+ *   - window.IdUtils (required)
+ *   - window.ObjectUtils (required)
  */
 
 (function() {
     'use strict';
 
-    if (window.__missionsCoreLoaded) return;
+    if (window.__missionsCoreLoaded) {
+        return;
+    }
 
     // ============================================================
     // DEPENDENCY CHECK - NO FALLBACKS
     // ============================================================
 
+    var missing = [];
+
     if (!window.MissionsSchema) {
-        return;
+        missing.push('MissionsSchema');
+    }
+
+    if (!window.MissionRules) {
+        missing.push('MissionRules');
+    }
+
+    if (!window.MissionsQueries) {
+        missing.push('MissionsQueries');
+    }
+
+    if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
+        missing.push('CharacterQueries.getCharacterById');
+    }
+
+    if (!window.TeamQueries || typeof window.TeamQueries.getTeamById !== 'function') {
+        missing.push('TeamQueries.getTeamById');
+    }
+
+    if (!window.IdUtils || typeof window.IdUtils.generateId !== 'function') {
+        missing.push('IdUtils.generateId');
+    }
+    if (!window.IdUtils || typeof window.IdUtils.normaliseId !== 'function') {
+        missing.push('IdUtils.normaliseId');
+    }
+
+    if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
+        missing.push('ObjectUtils.deepClone');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[MissionsCore] Missing dependencies: ' + missing.join(', '));
     }
 
     window.__missionsCoreLoaded = true;
 
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
     var Schema = window.MissionsSchema;
-    var MISSION_TYPES = Schema.MISSION_TYPES;
-    var DIFFICULTY_CODES = Schema.DIFFICULTY_CODES;
+    var Rules = window.MissionRules;
+    var Queries = window.MissionsQueries;
+    var CharacterQueries = window.CharacterQueries;
+    var TeamQueries = window.TeamQueries;
+    var IdUtils = window.IdUtils;
+    var ObjectUtils = window.ObjectUtils;
 
     // ============================================================
-    // UPDATEABLE FIELDS WHITELIST
+    // CONSTANTS
     // ============================================================
 
-    var MUTABLE_FIELDS = [
+    var MUTABLE_FIELDS = Object.freeze([
         'title',
         'description',
         'year',
@@ -88,11 +136,31 @@
         'objectives',
         'notes',
         'tags'
-    ];
+    ]);
 
     // ============================================================
     // HELPERS
     // ============================================================
+
+    function isObject(value) {
+        return value !== null && typeof value === 'object' && !Array.isArray(value);
+    }
+
+    function isNonEmptyString(value) {
+        return typeof value === 'string' && value.trim() !== '';
+    }
+
+    function normaliseId(value) {
+        return IdUtils.normaliseId(value);
+    }
+
+    function deepClone(value) {
+        return ObjectUtils.deepClone(value);
+    }
+
+    function generateInternalId(prefix) {
+        return IdUtils.generateId(prefix || 'miss');
+    }
 
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
@@ -100,327 +168,6 @@
         }
         return window.data;
     }
-
-    function normaliseId(id) {
-        return Schema.normaliseId(id);
-    }
-
-    function generateInternalId(prefix) {
-        prefix = prefix || 'miss';
-        if (typeof window.generateId === 'function') {
-            return window.generateId(prefix);
-        }
-        return prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    }
-
-    function logActivity(message) {
-        try {
-            if (typeof window.logActivity === 'function') {
-                window.logActivity(message);
-            }
-        } catch (err) {
-            // Activity logging failure should not abort the mutation
-        }
-    }
-
-    function getTeamById(id) {
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.teams)) {
-            return null;
-        }
-        var target = normaliseId(id);
-        if (target === null) {
-            return null;
-        }
-        for (var i = 0; i < data.teams.length; i++) {
-            var team = data.teams[i];
-            if (team && normaliseId(team.id) === target) {
-                return team;
-            }
-        }
-        return null;
-    }
-
-    function getCharacterById(id) {
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.characters)) {
-            return null;
-        }
-        var target = normaliseId(id);
-        if (target === null) {
-            return null;
-        }
-        for (var i = 0; i < data.characters.length; i++) {
-            var character = data.characters[i];
-            if (character && normaliseId(character.id) === target) {
-                return character;
-            }
-        }
-        return null;
-    }
-
-    function getDisplayName(character) {
-        if (!character) {
-            return 'Unknown';
-        }
-        if (typeof window.getDisplayName === 'function') {
-            return window.getDisplayName(character);
-        }
-        return character.name || character.firstName || 'Unknown';
-    }
-
-    function hasOwnProperty(obj, key) {
-        return Object.prototype.hasOwnProperty.call(obj, key);
-    }
-
-    function escapeRegExp(value) {
-        return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    }
-
-    // ============================================================
-    // PAY PARSING
-    // ============================================================
-
-    function parsePayValue(value) {
-        if (value === null || value === undefined || value === '') {
-            return null;
-        }
-
-        var text = String(value).trim();
-        var match = text.match(/^-?\d+(?:\.\d+)?$/);
-
-        if (!match) {
-            return null;
-        }
-
-        var num = Number(text);
-        return Number.isFinite(num) ? num : null;
-    }
-
-    function calculatePay(basePay, surchargePay) {
-        var baseNum = parsePayValue(basePay);
-        var surchargeNum = parsePayValue(surchargePay);
-
-        // Negative pay is rejected (mission compensation cannot be negative)
-        if (baseNum !== null && baseNum < 0) {
-            return '';
-        }
-        if (surchargeNum !== null && surchargeNum < 0) {
-            return '';
-        }
-
-        if (baseNum !== null && surchargeNum !== null) {
-            return (baseNum + surchargeNum).toFixed(2) + ' credits';
-        }
-
-        if (baseNum !== null) {
-            return baseNum.toFixed(2) + ' credits';
-        }
-
-        if (surchargeNum !== null) {
-            return surchargeNum.toFixed(2) + ' credits';
-        }
-
-        return '';
-    }
-
-    // ============================================================
-    // PROGRESS CALCULATION
-    // ============================================================
-
-    function calculateProgress(objectives) {
-        if (!Array.isArray(objectives) || objectives.length === 0) {
-            return 0;
-        }
-
-        var completed = 0;
-        for (var i = 0; i < objectives.length; i++) {
-            var objective = objectives[i];
-            if (objective && objective.done) {
-                completed++;
-            }
-        }
-
-        return Math.round((completed / objectives.length) * 100);
-    }
-
-    // ============================================================
-    // MISSION ID GENERATION
-    // ============================================================
-
-    function generateMissionId(teamId, year, difficulty) {
-        var data = getDataStore();
-        if (!data) {
-            data = {};
-        }
-        var missions = data.missions || [];
-
-        // Get team abbreviation
-        var teamAbbr = '';
-        if (teamId) {
-            var team = getTeamById(teamId);
-            if (team) {
-                var teamName = typeof team.name === 'string' ? team.name.trim() : '';
-                if (teamName) {
-                    var nameParts = teamName.split(' ');
-                    if (nameParts.length === 1) {
-                        teamAbbr = nameParts[0].substring(0, 3).toUpperCase();
-                    } else {
-                        var abbrParts = [];
-                        for (var p = 0; p < nameParts.length; p++) {
-                            abbrParts.push(nameParts[p].charAt(0).toUpperCase());
-                        }
-                        teamAbbr = abbrParts.join('');
-                    }
-                    if (teamAbbr.length < 2) {
-                        teamAbbr = teamAbbr.padEnd(2, 'X');
-                    }
-                }
-            }
-        }
-        if (!teamAbbr) {
-            teamAbbr = 'UNS';
-        }
-
-        var yearStr = String(year).slice(-2);
-        var difficultyCode = DIFFICULTY_CODES[difficulty] || 'M';
-
-        var prefix = teamAbbr + '-' + yearStr + '-' + difficultyCode;
-        var sequence = 1;
-
-        var regex = new RegExp('^' + escapeRegExp(prefix) + '(\\d{3})$');
-
-        for (var i = 0; i < missions.length; i++) {
-            var m = missions[i];
-            if (m.missionId && typeof m.missionId === 'string') {
-                var match = regex.exec(m.missionId);
-                if (match) {
-                    var num = parseInt(match[1], 10);
-                    if (!isNaN(num) && num >= sequence) {
-                        sequence = num + 1;
-                    }
-                }
-            }
-        }
-
-        return prefix + String(sequence).padStart(3, '0');
-    }
-
-    // ============================================================
-    // CLONE MISSION (For atomic operations)
-    // ============================================================
-
-    function cloneMission(mission) {
-        if (!mission) {
-            return null;
-        }
-
-        var objectives = Array.isArray(mission.objectives)
-            ? mission.objectives.map(function(o) {
-                return {
-                    text: o.text || '',
-                    done: !!o.done
-                };
-            })
-            : [];
-
-        var supportPersonnel = Array.isArray(mission.supportPersonnel)
-            ? mission.supportPersonnel.slice()
-            : [];
-
-        var tags = Array.isArray(mission.tags)
-            ? mission.tags.slice()
-            : [];
-
-        var log = Array.isArray(mission.log)
-            ? mission.log.map(function(entry) {
-                return {
-                    timestamp: entry.timestamp || null,
-                    message: entry.message || ''
-                };
-            })
-            : [];
-
-        return {
-            id: mission.id,
-            missionId: mission.missionId,
-            title: mission.title,
-            description: mission.description || '',
-            year: mission.year,
-            month: mission.month,
-            day: mission.day,
-            primaryType: mission.primaryType || '',
-            subtype: mission.subtype || '',
-            secondaryType: mission.secondaryType || '',
-            escalation: mission.escalation || 'tier_ii',
-            threatType: mission.threatType || '',
-            environment: mission.environment || '',
-            location: mission.location || '',
-            duration: mission.duration || '',
-            difficulty: mission.difficulty || 'medium',
-            priority: mission.priority || 'medium',
-            basePay: mission.basePay || '',
-            surchargePay: mission.surchargePay || '',
-            pay: mission.pay || '',
-            billing: mission.billing || 'original',
-            assignedTeamId: mission.assignedTeamId || null,
-            supportPersonnel: supportPersonnel,
-            status: mission.status || 'active',
-            objectives: objectives,
-            progress: mission.progress || 0,
-            notes: mission.notes || '',
-            tags: tags,
-            createdAt: mission.createdAt || null,
-            completedAt: mission.completedAt || null,
-            log: log
-        };
-    }
-
-    // ============================================================
-    // VALIDATE TEAM REFERENCE
-    // ============================================================
-
-    function validateTeamReference(teamId) {
-        if (!teamId) {
-            return true;
-        }
-        var team = getTeamById(teamId);
-        if (!team) {
-            return false;
-        }
-        return true;
-    }
-
-    // ============================================================
-    // OBJECTIVES MUTABILITY CHECK
-    // ============================================================
-
-    function areObjectivesMutable(mission) {
-        if (!mission) {
-            return false;
-        }
-        return mission.status !== 'completed' && mission.status !== 'cancelled';
-    }
-
-    function canModifyObjectives(originalStatus, proposedStatus, hasObjectiveUpdate) {
-        if (!hasObjectiveUpdate) {
-            return true;
-        }
-
-        if (originalStatus === 'completed' || originalStatus === 'cancelled') {
-            return false;
-        }
-
-        if (proposedStatus === 'completed' || proposedStatus === 'cancelled') {
-            return false;
-        }
-
-        return true;
-    }
-
-    // ============================================================
-    // COMMIT MISSION (Shared helper)
-    // ============================================================
 
     function commitMission(id, proposed) {
         var store = getDataStore();
@@ -448,7 +195,58 @@
 
         store.missions[index] = proposed;
 
-        return cloneMission(proposed);
+        return deepClone(proposed);
+    }
+
+    function validateTeamReference(teamId) {
+        if (!teamId) {
+            return true;
+        }
+        var team = TeamQueries.getTeamById(teamId);
+        if (!team) {
+            return false;
+        }
+        return Rules.isTeamEligibleForMission(team);
+    }
+
+    function areObjectivesMutable(mission) {
+        return Rules.canModifyObjectives(mission);
+    }
+
+    function canModifyObjectivesWithTransition(originalStatus, proposedStatus, hasObjectiveUpdate) {
+        return Rules.canModifyObjectivesWithTransition(originalStatus, proposedStatus, hasObjectiveUpdate);
+    }
+
+    function cloneMission(mission) {
+        if (!mission) {
+            return null;
+        }
+        return deepClone(mission);
+    }
+
+    // ============================================================
+    // MISSION ID GENERATION - Delegates to MissionId
+    // ============================================================
+
+    function generateMissionId(teamId, year, difficulty, existingIds) {
+        if (!window.MissionId || typeof window.MissionId.generateMissionId !== 'function') {
+            // Fallback for backward compatibility during migration
+            var defaultId = generateInternalId('miss') + '-ID';
+            return defaultId;
+        }
+        return window.MissionId.generateMissionId(teamId, year, difficulty, existingIds);
+    }
+
+    function getExistingMissionIds() {
+        var missions = Queries.getMissions('all');
+        var ids = [];
+        for (var i = 0; i < missions.length; i++) {
+            var m = missions[i];
+            if (m.missionId && typeof m.missionId === 'string') {
+                ids.push(m.missionId);
+            }
+        }
+        return ids;
     }
 
     // ============================================================
@@ -456,104 +254,6 @@
     // ============================================================
 
     var MissionsCore = {
-        /**
-         * Get a mission by ID.
-         * Returns a CLONE - safe for reading, not a live reference.
-         */
-        getMission: function(id) {
-            var data = getDataStore();
-            if (!data || !Array.isArray(data.missions)) {
-                return null;
-            }
-            var target = normaliseId(id);
-            if (target === null) {
-                return null;
-            }
-            var mission = null;
-            for (var i = 0; i < data.missions.length; i++) {
-                var m = data.missions[i];
-                if (m && normaliseId(m.id) === target) {
-                    mission = m;
-                    break;
-                }
-            }
-            return mission ? cloneMission(mission) : null;
-        },
-
-        /**
-         * Get all missions (with optional filter).
-         * Returns a SHALLOW copy of the array with cloned mission objects.
-         * 
-         * @param {string} filter - 'all', 'active', 'completed', 'cancelled'
-         * @returns {array} Array of mission clones
-         */
-        getMissions: function(filter) {
-            var data = getDataStore();
-            if (!data || !Array.isArray(data.missions)) {
-                return [];
-            }
-
-            var missions = [];
-            for (var i = 0; i < data.missions.length; i++) {
-                missions.push(data.missions[i]);
-            }
-
-            if (filter === 'active') {
-                var active = [];
-                for (var j = 0; j < missions.length; j++) {
-                    var m = missions[j];
-                    if (m.status === 'active') {
-                        active.push(m);
-                    }
-                }
-                missions = active;
-            } else if (filter === 'completed') {
-                var completed = [];
-                for (var k = 0; k < missions.length; k++) {
-                    var m2 = missions[k];
-                    if (m2.status === 'completed') {
-                        completed.push(m2);
-                    }
-                }
-                missions = completed;
-            } else if (filter === 'cancelled') {
-                var cancelled = [];
-                for (var l = 0; l < missions.length; l++) {
-                    var m3 = missions[l];
-                    if (m3.status === 'cancelled') {
-                        cancelled.push(m3);
-                    }
-                }
-                missions = cancelled;
-            }
-
-            // Sort by priority then creation date
-            var priorityOrder = { 'critical': 0, 'high': 1, 'medium': 2, 'low': 3 };
-            missions.sort(function(a, b) {
-                var pa = priorityOrder[a.priority] !== undefined ? priorityOrder[a.priority] : 2;
-                var pb = priorityOrder[b.priority] !== undefined ? priorityOrder[b.priority] : 2;
-                if (pa !== pb) {
-                    return pa - pb;
-                }
-                var dateA = a.createdAt ? new Date(a.createdAt) : new Date(0);
-                var dateB = b.createdAt ? new Date(b.createdAt) : new Date(0);
-                return dateB - dateA;
-            });
-
-            // Return clones
-            var result = [];
-            for (var mIdx = 0; mIdx < missions.length; mIdx++) {
-                result.push(cloneMission(missions[mIdx]));
-            }
-            return result;
-        },
-
-        /**
-         * Generate a human-readable mission ID.
-         * Exposed for UI preview and CSV operations.
-         */
-        generateMissionId: generateMissionId,
-
         /**
          * Create a new mission.
          * Validates all inputs before mutation.
@@ -568,8 +268,13 @@
                 return null;
             }
 
-            // ---- PHASE 1: NORMALISE INPUT ----
-            var normalised = Schema.normaliseMission(data);
+            // ---- PHASE 1: CANONICALISE INPUT ----
+            var canonical = Schema.canonicaliseMissionShape(data);
+            if (!canonical.valid) {
+                return null;
+            }
+
+            var normalised = canonical.value;
             if (!normalised) {
                 return null;
             }
@@ -581,18 +286,22 @@
 
             // ---- PHASE 3: CALCULATE DERIVED FIELDS ----
             var objectives = normalised.objectives || [];
-            var progress = calculateProgress(objectives);
+            var progress = Rules.calculateProgress(objectives);
             var status = normalised.status || 'active';
 
             if (progress === 100 && status === 'active') {
                 status = 'completed';
             }
 
+            var pay = Rules.calculatePay(normalised.basePay, normalised.surchargePay);
+
             // ---- PHASE 4: GENERATE MISSION ID ----
+            var existingIds = getExistingMissionIds();
             var missionId = generateMissionId(
                 normalised.assignedTeamId,
                 normalised.year || new Date().getFullYear(),
-                normalised.difficulty
+                normalised.difficulty,
+                existingIds
             );
 
             // ---- PHASE 5: BUILD COMPLETE MISSION ----
@@ -616,7 +325,7 @@
                 priority: normalised.priority || 'medium',
                 basePay: normalised.basePay || '',
                 surchargePay: normalised.surchargePay || '',
-                pay: calculatePay(normalised.basePay, normalised.surchargePay),
+                pay: pay,
                 billing: normalised.billing || 'original',
                 assignedTeamId: normalised.assignedTeamId || null,
                 supportPersonnel: normalised.supportPersonnel || [],
@@ -627,7 +336,9 @@
                 tags: normalised.tags || [],
                 createdAt: new Date().toISOString(),
                 completedAt: status === 'completed' ? new Date().toISOString() : null,
-                log: []
+                log: [],
+                graduatingClassId: normalised.graduatingClassId || null,
+                classFilterEnabled: normalised.classFilterEnabled !== false
             };
 
             // ---- PHASE 6: VALIDATE MISSION ----
@@ -653,8 +364,7 @@
                 store.missions.push(mission);
             }
 
-            logActivity('Created mission: ' + mission.title + ' (' + mission.missionId + ')');
-            return cloneMission(mission);
+            return deepClone(mission);
         },
 
         /**
@@ -670,7 +380,7 @@
          * @returns {object|null} Updated mission or null if invalid
          */
         updateMission: function(id, updates) {
-            var original = this.getMission(id);
+            var original = Queries.getMission(id);
             if (!original) {
                 return null;
             }
@@ -679,18 +389,18 @@
                 return null;
             }
 
-            // ---- PHASE 1: FILTER TO ONLY MUTABLE FIELDS (ignore undefined) ----
+            // ---- PHASE 1: FILTER TO ONLY MUTABLE FIELDS ----
             var validUpdates = {};
             var keys = Object.keys(updates);
             for (var k = 0; k < keys.length; k++) {
                 var key = keys[k];
-                if (MUTABLE_FIELDS.indexOf(key) !== -1 && hasOwnProperty(updates, key) && updates[key] !== undefined) {
+                if (MUTABLE_FIELDS.indexOf(key) !== -1 && updates[key] !== undefined) {
                     validUpdates[key] = updates[key];
                 }
             }
 
             if (Object.keys(validUpdates).length === 0) {
-                return cloneMission(original);
+                return deepClone(original);
             }
 
             // ---- PHASE 2: CHECK OBJECTIVES MUTABILITY ----
@@ -698,38 +408,39 @@
                 ? validUpdates.status
                 : original.status;
 
-            if (!canModifyObjectives(
+            if (!canModifyObjectivesWithTransition(
                 original.status,
                 proposedStatus,
-                hasOwnProperty(validUpdates, 'objectives')
+                validUpdates.objectives !== undefined
             )) {
                 return null;
             }
 
             // ---- PHASE 3: BUILD PROPOSED STATE ----
-            var proposed = cloneMission(original);
+            var proposed = deepClone(original);
 
             var updateKeys = Object.keys(validUpdates);
             for (var uk = 0; uk < updateKeys.length; uk++) {
-                var uk2 = updateKeys[uk];
-                var value = validUpdates[uk2];
+                var key2 = updateKeys[uk];
+                var value = validUpdates[key2];
 
                 if (value === null) {
-                    if (uk2 === 'assignedTeamId') {
+                    // Clear field based on type
+                    if (key2 === 'assignedTeamId') {
                         proposed.assignedTeamId = null;
-                    } else if (uk2 === 'supportPersonnel') {
+                    } else if (key2 === 'supportPersonnel') {
                         proposed.supportPersonnel = [];
-                    } else if (uk2 === 'tags') {
+                    } else if (key2 === 'tags') {
                         proposed.tags = [];
-                    } else if (uk2 === 'objectives') {
+                    } else if (key2 === 'objectives') {
                         proposed.objectives = [];
-                    } else if (uk2 === 'notes' || uk2 === 'description') {
-                        proposed[uk2] = '';
+                    } else if (key2 === 'notes' || key2 === 'description') {
+                        proposed[key2] = '';
                     } else {
-                        proposed[uk2] = '';
+                        proposed[key2] = '';
                     }
-                } else if (validUpdates[uk2] !== undefined) {
-                    proposed[uk2] = validUpdates[uk2];
+                } else {
+                    proposed[key2] = validUpdates[key2];
                 }
             }
 
@@ -758,10 +469,10 @@
             }
 
             // ---- PHASE 6: RECALCULATE DERIVED FIELDS ----
-            proposed.progress = calculateProgress(proposed.objectives);
+            proposed.progress = Rules.calculateProgress(proposed.objectives);
+            proposed.pay = Rules.calculatePay(proposed.basePay, proposed.surchargePay);
 
-            proposed.pay = calculatePay(proposed.basePay, proposed.surchargePay);
-
+            // ---- PHASE 7: MISSION ID REGENERATION ----
             var originalTeamId = normaliseId(original.assignedTeamId);
             var proposedTeamId = normaliseId(proposed.assignedTeamId);
 
@@ -771,41 +482,51 @@
                 original.difficulty !== proposed.difficulty;
 
             if (shouldRegenerateId) {
+                var existingIds = getExistingMissionIds();
+                // Remove the current mission ID from existing IDs to avoid self-collision
+                var filteredIds = [];
+                for (var fi = 0; fi < existingIds.length; fi++) {
+                    if (existingIds[fi] !== original.missionId) {
+                        filteredIds.push(existingIds[fi]);
+                    }
+                }
                 var newId = generateMissionId(
                     proposed.assignedTeamId,
                     proposed.year || new Date().getFullYear(),
-                    proposed.difficulty
+                    proposed.difficulty,
+                    filteredIds
                 );
-                if (newId !== proposed.missionId) {
+                if (newId && newId !== proposed.missionId) {
                     proposed.missionId = newId;
                 }
             }
 
-            if (proposed.status === 'completed' && original.status !== 'completed') {
-                proposed.completedAt = new Date().toISOString();
-            } else if (proposed.status !== 'completed' && original.status === 'completed') {
-                proposed.completedAt = null;
-            }
+            // ---- PHASE 8: STATUS AND COMPLETED AT ----
+            // Derive status from progress
+            var derivedStatus = Rules.deriveStatus(proposed.status, proposed.progress, proposed.objectives);
 
-            if (proposed.progress === 100 && proposed.status === 'active') {
-                proposed.status = 'completed';
-                proposed.completedAt = new Date().toISOString();
-            }
+            // Apply completedAt rules
+            proposed.completedAt = Rules.deriveCompletedAt(
+                original.status,
+                derivedStatus,
+                original.completedAt,
+                proposed.progress,
+                'current'
+            );
 
-            // ---- PHASE 7: VALIDATE PROPOSED STATE ----
+            proposed.status = derivedStatus;
+
+            // ---- PHASE 9: VALIDATE PROPOSED STATE ----
             var validation = Schema.validateMission(proposed);
             if (!validation.valid) {
                 return null;
             }
 
-            // ---- PHASE 8: COMMIT ----
+            // ---- PHASE 10: COMMIT ----
             var committed = commitMission(id, proposed);
             if (!committed) {
                 return null;
             }
-
-            var changedKeys = Object.keys(validUpdates);
-            logActivity('Updated mission: ' + committed.title + ' (' + changedKeys.join(', ') + ')');
 
             return committed;
         },
@@ -817,7 +538,7 @@
          * @returns {boolean} Success
          */
         deleteMission: function(id) {
-            var mission = this.getMission(id);
+            var mission = Queries.getMission(id);
             if (!mission) {
                 return false;
             }
@@ -843,7 +564,6 @@
 
             store.missions.splice(index, 1);
 
-            logActivity('Deleted mission: ' + mission.title);
             return true;
         },
 
@@ -857,7 +577,7 @@
          * @returns {object|null} Updated mission or null if invalid
          */
         toggleObjective: function(missionId, objectiveIndex) {
-            var mission = this.getMission(missionId);
+            var mission = Queries.getMission(missionId);
             if (!mission) {
                 return null;
             }
@@ -870,15 +590,23 @@
                 return null;
             }
 
-            var proposed = cloneMission(mission);
+            var proposed = deepClone(mission);
             proposed.objectives[objectiveIndex].done = !proposed.objectives[objectiveIndex].done;
 
-            proposed.progress = calculateProgress(proposed.objectives);
+            // ---- Recalculate derived fields ----
+            proposed.progress = Rules.calculateProgress(proposed.objectives);
 
-            if (proposed.progress === 100 && proposed.status === 'active') {
-                proposed.status = 'completed';
-                proposed.completedAt = new Date().toISOString();
-            }
+            var derivedStatus = Rules.deriveStatus(proposed.status, proposed.progress, proposed.objectives);
+
+            proposed.completedAt = Rules.deriveCompletedAt(
+                mission.status,
+                derivedStatus,
+                mission.completedAt,
+                proposed.progress,
+                'current'
+            );
+
+            proposed.status = derivedStatus;
 
             var validation = Schema.validateMission(proposed);
             if (!validation.valid) {
@@ -889,9 +617,6 @@
             if (!committed) {
                 return null;
             }
-
-            var statusMsg = committed.status === 'completed' ? ' (auto-completed)' : '';
-            logActivity('Toggled objective for mission: ' + committed.title + statusMsg);
 
             return committed;
         },
@@ -911,7 +636,7 @@
                 return null;
             }
 
-            var mission = this.getMission(missionId);
+            var mission = Queries.getMission(missionId);
             if (!mission) {
                 return null;
             }
@@ -920,13 +645,26 @@
                 return null;
             }
 
-            var proposed = cloneMission(mission);
+            var proposed = deepClone(mission);
             proposed.objectives.push({
                 text: cleanText,
                 done: false
             });
 
-            proposed.progress = calculateProgress(proposed.objectives);
+            // ---- Recalculate derived fields ----
+            proposed.progress = Rules.calculateProgress(proposed.objectives);
+
+            var derivedStatus = Rules.deriveStatus(proposed.status, proposed.progress, proposed.objectives);
+
+            proposed.completedAt = Rules.deriveCompletedAt(
+                mission.status,
+                derivedStatus,
+                mission.completedAt,
+                proposed.progress,
+                'current'
+            );
+
+            proposed.status = derivedStatus;
 
             var validation = Schema.validateMission(proposed);
             if (!validation.valid) {
@@ -937,8 +675,6 @@
             if (!committed) {
                 return null;
             }
-
-            logActivity('Added objective to mission: ' + committed.title);
 
             return committed;
         },
@@ -952,7 +688,7 @@
          * @returns {object|null} Updated mission or null if invalid
          */
         removeObjective: function(missionId, objectiveIndex) {
-            var mission = this.getMission(missionId);
+            var mission = Queries.getMission(missionId);
             if (!mission) {
                 return null;
             }
@@ -965,10 +701,23 @@
                 return null;
             }
 
-            var proposed = cloneMission(mission);
+            var proposed = deepClone(mission);
             proposed.objectives.splice(objectiveIndex, 1);
 
-            proposed.progress = calculateProgress(proposed.objectives);
+            // ---- Recalculate derived fields ----
+            proposed.progress = Rules.calculateProgress(proposed.objectives);
+
+            var derivedStatus = Rules.deriveStatus(proposed.status, proposed.progress, proposed.objectives);
+
+            proposed.completedAt = Rules.deriveCompletedAt(
+                mission.status,
+                derivedStatus,
+                mission.completedAt,
+                proposed.progress,
+                'current'
+            );
+
+            proposed.status = derivedStatus;
 
             var validation = Schema.validateMission(proposed);
             if (!validation.valid) {
@@ -979,8 +728,6 @@
             if (!committed) {
                 return null;
             }
-
-            logActivity('Removed objective from mission: ' + committed.title);
 
             return committed;
         },
@@ -999,12 +746,12 @@
                 return null;
             }
 
-            var mission = this.getMission(missionId);
+            var mission = Queries.getMission(missionId);
             if (!mission) {
                 return null;
             }
 
-            var proposed = cloneMission(mission);
+            var proposed = deepClone(mission);
             if (!proposed.log) {
                 proposed.log = [];
             }
@@ -1040,17 +787,17 @@
                 return null;
             }
 
-            var character = getCharacterById(target);
+            var character = CharacterQueries.getCharacterById(target);
             if (!character) {
                 return null;
             }
 
-            var mission = this.getMission(missionId);
+            var mission = Queries.getMission(missionId);
             if (!mission) {
                 return null;
             }
 
-            var proposed = cloneMission(mission);
+            var proposed = deepClone(mission);
             if (!proposed.supportPersonnel) {
                 proposed.supportPersonnel = [];
             }
@@ -1064,7 +811,7 @@
             }
 
             if (exists) {
-                return cloneMission(mission);
+                return deepClone(mission);
             }
 
             proposed.supportPersonnel.push(target);
@@ -1078,9 +825,6 @@
             if (!committed) {
                 return null;
             }
-
-            var charName = getDisplayName(character);
-            logActivity('Added ' + charName + ' as support to mission: ' + committed.title);
 
             return committed;
         },
@@ -1098,16 +842,16 @@
                 return null;
             }
 
-            var mission = this.getMission(missionId);
+            var mission = Queries.getMission(missionId);
             if (!mission) {
                 return null;
             }
 
             if (!mission.supportPersonnel) {
-                return cloneMission(mission);
+                return deepClone(mission);
             }
 
-            var proposed = cloneMission(mission);
+            var proposed = deepClone(mission);
             var newSupport = [];
             for (var i = 0; i < proposed.supportPersonnel.length; i++) {
                 if (normaliseId(proposed.supportPersonnel[i]) !== target) {
@@ -1126,122 +870,141 @@
                 return null;
             }
 
-            logActivity('Removed support personnel from mission: ' + committed.title);
+            return committed;
+        },
+
+        /**
+         * Complete a mission.
+         * This is a domain command - sets status to completed and recalculates derived fields.
+         * 
+         * @param {string} missionId - Internal mission ID
+         * @returns {object|null} Updated mission or null if invalid
+         */
+        completeMission: function(missionId) {
+            var mission = Queries.getMission(missionId);
+            if (!mission) {
+                return null;
+            }
+
+            if (mission.status === 'completed') {
+                return deepClone(mission);
+            }
+
+            if (mission.status === 'cancelled') {
+                return null;
+            }
+
+            var proposed = deepClone(mission);
+            proposed.status = 'completed';
+
+            // Ensure all objectives are done
+            if (Array.isArray(proposed.objectives)) {
+                for (var i = 0; i < proposed.objectives.length; i++) {
+                    if (proposed.objectives[i]) {
+                        proposed.objectives[i].done = true;
+                    }
+                }
+            }
+
+            proposed.progress = Rules.calculateProgress(proposed.objectives);
+            proposed.completedAt = new Date().toISOString();
+
+            var validation = Schema.validateMission(proposed);
+            if (!validation.valid) {
+                return null;
+            }
+
+            var committed = commitMission(missionId, proposed);
+            if (!committed) {
+                return null;
+            }
 
             return committed;
         },
 
         /**
-         * Get support personnel as character objects for a mission.
-         * Handles both mission objects and mission IDs.
+         * Cancel a mission.
          * 
-         * @param {object|string} mission - Mission object or mission ID
-         * @returns {array} Array of character objects
+         * @param {string} missionId - Internal mission ID
+         * @returns {object|null} Updated mission or null if invalid
          */
-        getSupportPersonnel: function(mission) {
-            var missionObj;
-
-            if (mission && typeof mission === 'object') {
-                missionObj = mission;
-            } else {
-                missionObj = this.getMission(mission);
+        cancelMission: function(missionId) {
+            var mission = Queries.getMission(missionId);
+            if (!mission) {
+                return null;
             }
 
-            if (!missionObj || !missionObj.supportPersonnel) {
-                return [];
+            if (mission.status === 'cancelled') {
+                return deepClone(mission);
             }
 
-            var characters = [];
-            var data = getDataStore();
-            if (!data || !Array.isArray(data.characters)) {
-                return characters;
+            if (mission.status === 'completed') {
+                return null;
             }
 
-            for (var i = 0; i < missionObj.supportPersonnel.length; i++) {
-                var id = missionObj.supportPersonnel[i];
-                var target = normaliseId(id);
-                if (target === null) {
-                    continue;
-                }
-                var character = null;
-                for (var j = 0; j < data.characters.length; j++) {
-                    var c = data.characters[j];
-                    if (c && normaliseId(c.id) === target) {
-                        character = c;
-                        break;
-                    }
-                }
-                if (character) {
-                    characters.push(cloneCharacter(character));
-                }
+            var proposed = deepClone(mission);
+            proposed.status = 'cancelled';
+            proposed.completedAt = null;
+
+            var validation = Schema.validateMission(proposed);
+            if (!validation.valid) {
+                return null;
             }
 
-            return characters;
+            var committed = commitMission(missionId, proposed);
+            if (!committed) {
+                return null;
+            }
+
+            return committed;
         },
 
         /**
-         * Get missions by primary or secondary type.
+         * Reactivate a cancelled or completed mission.
          * 
-         * @param {string} typeId - Mission type ID
-         * @returns {array} Array of mission clones
+         * @param {string} missionId - Internal mission ID
+         * @returns {object|null} Updated mission or null if invalid
          */
-        getMissionsByType: function(typeId) {
-            var missions = this.getMissions('all');
-            var result = [];
-            for (var i = 0; i < missions.length; i++) {
-                var m = missions[i];
-                if (m.primaryType === typeId || m.secondaryType === typeId) {
-                    result.push(m);
-                }
+        reactivateMission: function(missionId) {
+            var mission = Queries.getMission(missionId);
+            if (!mission) {
+                return null;
             }
-            return result;
-        },
 
-        /**
-         * Get mission type counts.
-         * 
-         * @returns {object} Counts by mission type
-         */
-        getMissionTypeCounts: function() {
-            var missions = this.getMissions('all');
-            var counts = {};
-            var typeKeys = Object.keys(MISSION_TYPES);
-            for (var i = 0; i < typeKeys.length; i++) {
-                counts[typeKeys[i]] = 0;
+            if (mission.status === 'active') {
+                return deepClone(mission);
             }
-            for (var j = 0; j < missions.length; j++) {
-                var m = missions[j];
-                if (m.primaryType && counts[m.primaryType] !== undefined) {
-                    counts[m.primaryType]++;
-                }
+
+            var proposed = deepClone(mission);
+            proposed.status = 'active';
+            proposed.completedAt = null;
+
+            // Recalculate progress
+            proposed.progress = Rules.calculateProgress(proposed.objectives);
+
+            // If progress is 100%, auto-complete instead
+            if (proposed.progress === 100) {
+                proposed.status = 'completed';
+                proposed.completedAt = new Date().toISOString();
             }
-            return counts;
+
+            var validation = Schema.validateMission(proposed);
+            if (!validation.valid) {
+                return null;
+            }
+
+            var committed = commitMission(missionId, proposed);
+            if (!committed) {
+                return null;
+            }
+
+            return committed;
         },
 
         // Schema access
-        Schema: Schema
+        Schema: Schema,
+        Rules: Rules
     };
-
-    // ============================================================
-    // CLONE CHARACTER HELPER (For support personnel)
-    // ============================================================
-
-    function cloneCharacter(character) {
-        if (!character) {
-            return null;
-        }
-        return {
-            id: character.id,
-            firstName: character.firstName || '',
-            lastName: character.lastName || '',
-            middleName: character.middleName || '',
-            nickname: character.nickname || '',
-            name: character.name || character.firstName || 'Unknown',
-            deceased: !!character.deceased,
-            status: character.status || 'active',
-            classIds: Array.isArray(character.classIds) ? character.classIds.slice() : []
-        };
-    }
 
     // ============================================================
     // EXPOSE
