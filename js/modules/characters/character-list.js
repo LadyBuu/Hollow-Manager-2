@@ -14,19 +14,17 @@
  *   - RENDER ONLY - no event binding (handled by character-events.js)
  *   - No data mutations
  *   - No persistence calls
- *   - USES CharacterQueries for character data queries
- *   - USES AcademyQueries for class-related queries
- *   - USES Elimination for elimination status
- *   - USES DomUtils for safe DOM operations
- *   - USES State for current week (delegates to CalendarConstants)
+ *   - Uses CharacterAggregator for cross-domain data (list view model)
+ *   - Uses CharacterQueries for simple character data
+ *   - Uses DomUtils for safe DOM operations
+ *   - Uses State for current week (delegates to CalendarConstants)
  * 
  * DEPENDENCIES:
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.AcademyQueries (from academy-queries.js)
- *   - window.Elimination (from elimination.js)
- *   - window.DomUtils (from dom-utils.js)
- *   - window.getCurrentEditId (from index.js)
- *   - window.CALENDAR_CONSTANTS (from constants.js)
+ *   - window.CharacterAggregator (from character-aggregator.js) - MANDATORY
+ *   - window.CharacterQueries (from character-queries.js) - MANDATORY
+ *   - window.DomUtils (from dom-utils.js) - MANDATORY
+ *   - window.getCurrentEditId (from index.js) - MANDATORY
+ *   - window.CALENDAR_CONSTANTS (from constants.js) - MANDATORY
  */
 
 (function() {
@@ -41,9 +39,8 @@
     // DEPENDENCY IMPORTS
     // ============================================================
 
+    var CharacterAggregator = window.CharacterAggregator;
     var CharacterQueries = window.CharacterQueries;
-    var AcademyQueries = window.AcademyQueries;
-    var Elimination = window.Elimination;
     var DomUtils = window.DomUtils;
     var CalendarConstants = window.CALENDAR_CONSTANTS;
 
@@ -53,6 +50,10 @@
 
     function checkDependencies() {
         var missing = [];
+
+        if (!CharacterAggregator || typeof CharacterAggregator.getCharacterListViewModel !== 'function') {
+            missing.push('CharacterAggregator.getCharacterListViewModel');
+        }
 
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
             missing.push('CharacterQueries.getDisplayName');
@@ -64,20 +65,6 @@
             missing.push('CharacterQueries.getCurrentStatus');
         }
 
-        if (!AcademyQueries || typeof AcademyQueries.getCharacterClassNames !== 'function') {
-            missing.push('AcademyQueries.getCharacterClassNames');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
-            missing.push('AcademyQueries.getClasses');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.isCharacterInClass !== 'function') {
-            missing.push('AcademyQueries.isCharacterInClass');
-        }
-
-        if (!Elimination || typeof Elimination.isCharacterEliminated !== 'function') {
-            missing.push('Elimination.isCharacterEliminated');
-        }
-
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
@@ -87,7 +74,7 @@
         }
 
         if (missing.length > 0) {
-            throw new Error('CharacterList: Missing dependencies: ' + missing.join(', '));
+            throw new Error('[CharacterList] Missing dependencies: ' + missing.join(', '));
         }
 
         return true;
@@ -122,7 +109,7 @@
         var hideEliminated = document.getElementById('hide-eliminated');
 
         return {
-            name: nameFilter ? nameFilter.value.toLowerCase() : '',
+            name: nameFilter ? nameFilter.value : '',
             classId: classFilter ? classFilter.value : 'all',
             hideDeceased: hideDeceased ? hideDeceased.checked : true,
             hideEliminated: hideEliminated ? hideEliminated.checked : true
@@ -139,41 +126,6 @@
     }
 
     // ============================================================
-    // CHARACTER FILTERING
-    // ============================================================
-
-    function characterMatchesFilters(char, filters) {
-        if (!char) return false;
-
-        var name = CharacterQueries.getDisplayName(char).toLowerCase();
-        if (filters.name && name.indexOf(filters.name) === -1) {
-            return false;
-        }
-
-        if (filters.classId !== 'all' && filters.classId !== '') {
-            // Use AcademyQueries for class membership check
-            if (!AcademyQueries.isCharacterInClass(char, filters.classId)) {
-                return false;
-            }
-        }
-
-        if (filters.hideDeceased && char.deceased) {
-            return false;
-        }
-
-        if (filters.hideEliminated) {
-            var currentWeek = getCurrentWeek();
-            if (Elimination && typeof Elimination.isCharacterEliminated === 'function') {
-                if (Elimination.isCharacterEliminated(char.id, currentWeek)) {
-                    return false;
-                }
-            }
-        }
-
-        return true;
-    }
-
-    // ============================================================
     // RENDER CHARACTER LIST
     // ============================================================
 
@@ -183,71 +135,56 @@
             return;
         }
 
-        var data = window.data || {};
-        var characters = Array.isArray(data.characters) ? data.characters : [];
         var filters = getFilterValues();
+        var currentWeek = getCurrentWeek();
 
-        var filtered = [];
-        for (var i = 0; i < characters.length; i++) {
-            var char = characters[i];
-            if (characterMatchesFilters(char, filters)) {
-                filtered.push(char);
-            }
-        }
-
-        filtered.sort(function(a, b) {
-            var nameA = CharacterQueries.getDisplayName(a);
-            var nameB = CharacterQueries.getDisplayName(b);
-            return nameA.localeCompare(nameB);
+        // Use CharacterAggregator for cross-domain data
+        var items = CharacterAggregator.getCharacterListViewModel({
+            classFilter: filters.classId,
+            nameFilter: filters.name,
+            hideDeceased: filters.hideDeceased,
+            hideEliminated: filters.hideEliminated,
+            week: currentWeek
         });
 
-        if (filtered.length === 0) {
+        if (items.length === 0) {
             container.innerHTML = '<p class="empty-state">No characters found.</p>';
             return;
         }
 
         var currentEditId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        var currentWeek = getCurrentWeek();
 
         var html = '';
-        for (var i = 0; i < filtered.length; i++) {
-            var char = filtered[i];
-            var isSelected = String(char.id) === String(currentEditId);
+        for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            var isSelected = String(item.id) === String(currentEditId);
 
-            var displayName = CharacterQueries.getDisplayName(char);
-            var status = CharacterQueries.getCurrentStatus(char);
-            var isDeceased = char.deceased || false;
+            var safeId = escapeHtml(item.id);
+            var safeName = escapeHtml(item.name);
+            var safeStatus = escapeHtml(item.status);
 
-            var isEliminated = false;
-            if (Elimination && typeof Elimination.isCharacterEliminated === 'function') {
-                isEliminated = Elimination.isCharacterEliminated(char.id, currentWeek);
-            }
-
-            // Use AcademyQueries for class names
-            var classNames = AcademyQueries.getCharacterClassNames(char) || [];
-
-            var safeId = escapeHtml(char.id);
-            var safeName = escapeHtml(displayName);
-            var safeStatus = escapeHtml(status);
-
-            html += '<div class="char-list-item' + (isSelected ? ' selected' : '') + '" data-id="' + safeId + '" style="padding:4px 6px;border-bottom:1px solid var(--border-soft);cursor:pointer;' + 
+            html += '<div class="char-list-item' + (isSelected ? ' selected' : '') + '" data-id="' + safeId + '" style="padding:4px 6px;border-bottom:1px solid var(--border-soft);cursor:pointer;' +
                 (isSelected ? 'background:var(--accent-soft);border-left:3px solid var(--accent);' : '') +
-                (isDeceased ? 'opacity:0.4;' : '') + '">';
-            
+                (item.deceased ? 'opacity:0.4;' : '') + '">';
+
             html += '<div style="display:flex;justify-content:space-between;align-items:center;">';
             html += '<span style="font-size:0.75rem;">' + safeName + '</span>';
             html += '<span style="font-size:0.55rem;color:var(--text-dim);">' + safeStatus + '</span>';
             html += '</div>';
 
             var badges = [];
-            if (isDeceased) {
+            if (item.deceased) {
                 badges.push('<span style="font-size:0.5rem;color:var(--danger);">Deceased</span>');
             }
-            if (isEliminated) {
-                badges.push('<span style="font-size:0.5rem;color:var(--warning);">Eliminated</span>');
+            if (item.eliminated) {
+                var elimText = 'Eliminated';
+                if (item.eliminationWeek) {
+                    elimText += ' Wk' + item.eliminationWeek;
+                }
+                badges.push('<span style="font-size:0.5rem;color:var(--warning);">' + elimText + '</span>');
             }
-            if (classNames.length > 0) {
-                var classBadges = classNames.map(function(name) {
+            if (item.classNames && item.classNames.length > 0) {
+                var classBadges = item.classNames.map(function(name) {
                     return '<span style="font-size:0.5rem;color:var(--accent);">' + escapeHtml(name) + '</span>';
                 }).join(' ');
                 badges.push(classBadges);
@@ -269,18 +206,22 @@
 
     function populateClassFilter() {
         var select = document.getElementById('char-class-filter');
-        if (!select) return;
+        if (!select) {
+            return;
+        }
 
         var previousValue = select.value;
 
-        // Use AcademyQueries for classes
-        var classes = AcademyQueries.getClasses() || [];
+        // Use CharacterQueries for classes (simple read, no aggregation needed)
+        var classes = window.AcademyQueries ? window.AcademyQueries.getClasses() : [];
 
         select.innerHTML = '<option value="all">All Classes</option>';
 
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
-            if (!cls || typeof cls !== 'object') continue;
+            if (!cls || typeof cls !== 'object') {
+                continue;
+            }
             var option = document.createElement('option');
             option.value = cls.id;
             option.textContent = cls.name;
@@ -306,13 +247,21 @@
     }
 
     // ============================================================
+    // GET FILTER VALUES (public for other modules)
+    // ============================================================
+
+    function getFilterValuesPublic() {
+        return getFilterValues();
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.CharacterList = {
         render: render,
         populateClassFilter: populateClassFilter,
-        getFilterValues: getFilterValues
+        getFilterValues: getFilterValuesPublic
     };
 
 })();
