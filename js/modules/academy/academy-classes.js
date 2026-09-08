@@ -1,115 +1,122 @@
 /**
- * js/modules/academy/academy-classes.js - Academy Classes Domain
- * Single source of truth for all class mutations within the Academy
+ * js/modules/academy/academy-classes.js - Academy Classes
+ * SINGLE SOURCE OF TRUTH for all academy class data and operations
  * Path: js/modules/academy/academy-classes.js
  * 
- * This module handles:
+ * This module is responsible for:
  *   - Class CRUD operations (create, update, delete)
- *   - Character-class assignments (add, remove)
- *   - Bulk operations (add/remove multiple students)
- *   - Class validation
+ *   - Student class membership management
+ *   - Class lookup (internal and external)
+ *   - Class mutation operations
  * 
  * IMPORTANT:
- *   - This module is the CANONICAL source of truth for class mutations
- *   - All mutations are candidate-based: validate, build candidate, commit
- *   - This module does NOT commit to window.data or call saveData()
- *   - Persistence and logging are owned by MutationPipeline
- *   - All validation uses CalendarValidation from calendar-validation.js
- *   - All deep cloning uses ObjectUtils.deepClone()
- *   - All ID generation uses IdUtils.generateId()
+ *   - This module OWNS class data - it does NOT depend on AcademyQueries
+ *   - All mutations are candidate-based: VALIDATE → CLONE → MODIFY → COMMIT
+ *   - Invalid inputs are REJECTED (operation returns null/false)
+ *   - Mutations are ATOMIC: if any part is invalid, nothing changes
+ *   - This module does NOT call saveData() - callers own persistence
+ *   - Internal lookup functions are PRIVATE to this module
+ *   - AcademyQueries is the PUBLIC read facade that uses these internal lookups
+ * 
+ * DATA STORE CONTRACT:
+ *   - window.data.academy.graduatingClasses is the source of truth for classes
+ *   - window.data.academy.classStudents is the source of truth for membership
+ *   - If these structures don't exist, they are created
+ *   - This module does NOT query AcademyQueries for data it owns
  * 
  * DEPENDENCIES:
- *   - window.ObjectUtils (from object-utils.js)
- *   - window.IdUtils (from id-utils.js)
- *   - window.MutationPipeline (from mutation-pipeline.js)
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.AcademyQueries (from academy-queries.js)
- *   - window.CalendarValidation (from calendar-validation.js)
- *   - window.CalendarConstants (from calendar-constants.js)
+ *   - window.ObjectUtils (from object-utils.js) - MANDATORY
+ *   - window.IdUtils (from id-utils.js) - MANDATORY
+ *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
  * 
  * USAGE:
  *   var classes = window.AcademyClasses;
- *   var result = classes.create('Spring 2025');
- *   var result = classes.update('class_123', { name: 'Spring 2025 A' });
+ *   
+ *   // Create a class
+ *   var result = classes.create('Class of 2026');
+ *   
+ *   // Update a class
+ *   var result = classes.update('class_123', { name: 'New Name' });
+ *   
+ *   // Delete a class
  *   var result = classes.delete('class_123');
- *   var result = classes.addStudent('class_123', 'char_456');
+ *   
+ *   // Student membership
+ *   var result = classes.addStudent('class_123', 'student_456');
+ *   var result = classes.removeStudent('class_123', 'student_456');
+ *   var result = classes.removeStudentFromAllClasses('student_456');
+ *   
+ *   // Internal lookups (used by AcademyQueries)
+ *   var cls = classes.getClassInternal('class_123');
+ *   var all = classes.getClassesInternal();
+ *   var students = classes.getClassStudentsInternal('class_123');
  */
 
 (function() {
     'use strict';
 
+    // Guard against duplicate loading
     if (window.__academyClassesLoaded) {
         return;
     }
 
-    var ObjectUtils = window.ObjectUtils;
-    var IdUtils = window.IdUtils;
-    var MutationPipeline = window.MutationPipeline;
-    var CharacterQueries = window.CharacterQueries;
-    var AcademyQueries = window.AcademyQueries;
-    var CalendarValidation = window.CalendarValidation;
-    var CalendarConstants = window.CalendarConstants;
+    // ============================================================
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
+    // ============================================================
 
-    function checkDependencies() {
-        var missing = [];
+    var missing = [];
 
-        if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
-            missing.push('ObjectUtils.deepClone');
-        }
-
-        if (!IdUtils || typeof IdUtils.generateId !== 'function') {
-            missing.push('IdUtils.generateId');
-        }
-
-        if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
-            missing.push('MutationPipeline.performMutation');
-        }
-
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-
-        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
-            missing.push('AcademyQueries.getClass');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
-            missing.push('AcademyQueries.getClasses');
-        }
-
-        if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
-            missing.push('CalendarValidation.parseWeek');
-        }
-
-        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
-            missing.push('CalendarConstants.MIN_WEEK');
-        }
-
-        if (missing.length > 0) {
-            throw new Error('AcademyClasses: Missing dependencies: ' + missing.join(', '));
-        }
-
-        return true;
+    if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
+        missing.push('ObjectUtils.deepClone');
     }
 
-    checkDependencies();
+    if (!window.IdUtils || typeof window.IdUtils.generateId !== 'function') {
+        missing.push('IdUtils.generateId');
+    }
+
+    if (!window.ValidationUtils || typeof window.ValidationUtils.isNonEmptyString !== 'function') {
+        missing.push('ValidationUtils.isNonEmptyString');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[AcademyClasses] Missing dependencies: ' + missing.join(', '));
+    }
+
+    window.__academyClassesLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var ObjectUtils = window.ObjectUtils;
+    var IdUtils = window.IdUtils;
+    var ValidationUtils = window.ValidationUtils;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var VALID_STATUSES = ['active', 'archived', 'graduated'];
+    var DEFAULT_STATUS = 'active';
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
 
     function isObject(value) {
         return value !== null && typeof value === 'object' && !Array.isArray(value);
     }
 
     function isNonEmptyString(value) {
-        return typeof value === 'string' && value.trim() !== '';
+        return ValidationUtils.isNonEmptyString(value);
     }
 
     function deepClone(value) {
         return ObjectUtils.deepClone(value);
     }
 
-    function generateId(prefix) {
-        return IdUtils.generateId(prefix);
+    function generateId() {
+        return IdUtils.generateId('class');
     }
 
     function failure(message) {
@@ -120,6 +127,10 @@
         return { success: true, data: data };
     }
 
+    // ============================================================
+    // DATA STORE ACCESS - INTERNAL (no AcademyQueries dependency)
+    // ============================================================
+
     function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
             return null;
@@ -127,908 +138,869 @@
         return window.data;
     }
 
-    function normalizeClassName(name) {
-        return String(name).trim();
-    }
-
-    function generateClassId() {
-        return generateId('class');
-    }
-
-    function validateClassName(name, excludeId) {
-        if (!isNonEmptyString(name)) {
-            return { valid: false, message: 'Class name is required.' };
+    function getAcademyStore() {
+        var data = getDataStore();
+        if (!data) {
+            return null;
         }
 
-        var trimmed = normalizeClassName(name);
-        var classes = AcademyQueries.getClasses();
+        if (!data.academy || typeof data.academy !== 'object') {
+            data.academy = {};
+        }
+
+        return data.academy;
+    }
+
+    function ensureClassStructures() {
+        var academy = getAcademyStore();
+        if (!academy) {
+            return null;
+        }
+
+        // Use 'graduatingClasses' as the canonical class storage
+        if (!academy.graduatingClasses || typeof academy.graduatingClasses !== 'object') {
+            academy.graduatingClasses = {};
+        }
+
+        if (!academy.classStudents || typeof academy.classStudents !== 'object') {
+            academy.classStudents = {};
+        }
+
+        return academy;
+    }
+
+    // ============================================================
+    // INTERNAL CLASS LOOKUP - PRIVATE
+    // These are the CANONICAL lookup functions for AcademyClasses.
+    // AcademyQueries delegates to these, NOT the other way around.
+    // ============================================================
+
+    /**
+     * Get a class record by ID (internal).
+     * Returns a LIVE reference - do not mutate directly.
+     * Use the mutation functions (create/update/delete) instead.
+     * 
+     * @param {string} classId - Class ID
+     * @returns {object|null} Class object or null
+     */
+    function getClassInternal(classId) {
+        if (!isNonEmptyString(classId)) {
+            return null;
+        }
+
+        var academy = getAcademyStore();
+        if (!academy || !academy.graduatingClasses) {
+            return null;
+        }
+
+        var target = String(classId);
+        return academy.graduatingClasses[target] || null;
+    }
+
+    /**
+     * Get all class records (internal).
+     * Returns an array of class objects (shallow copy).
+     * 
+     * @returns {array} Array of class objects
+     */
+    function getClassesInternal() {
+        var academy = getAcademyStore();
+        if (!academy || !academy.graduatingClasses) {
+            return [];
+        }
+
+        var result = [];
+        for (var id in academy.graduatingClasses) {
+            if (Object.prototype.hasOwnProperty.call(academy.graduatingClasses, id)) {
+                var cls = academy.graduatingClasses[id];
+                if (cls) {
+                    result.push(cls);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Get class records by status (internal).
+     * 
+     * @param {string} status - Status filter ('active', 'archived', 'graduated')
+     * @returns {array} Array of class objects
+     */
+    function getClassesByStatusInternal(status) {
+        if (!isNonEmptyString(status)) {
+            return getClassesInternal();
+        }
+
+        var all = getClassesInternal();
+        var result = [];
+
+        for (var i = 0; i < all.length; i++) {
+            if (all[i].status === status) {
+                result.push(all[i]);
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Get active class records (internal).
+     * 
+     * @returns {array} Array of active class objects
+     */
+    function getActiveClassesInternal() {
+        return getClassesByStatusInternal('active');
+    }
+
+    /**
+     * Get a class by name (internal, case-insensitive).
+     * 
+     * @param {string} name - Class name
+     * @returns {object|null} Class object or null
+     */
+    function getClassByNameInternal(name) {
+        if (!isNonEmptyString(name)) {
+            return null;
+        }
+
+        var target = String(name).toLowerCase().trim();
+        var classes = getClassesInternal();
 
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
-            if (!cls || typeof cls !== 'object') continue;
-            if (excludeId && String(cls.id) === String(excludeId)) continue;
-            if (normalizeClassName(cls.name || '').toLowerCase() === trimmed.toLowerCase()) {
-                return { valid: false, message: 'A class with this name already exists.' };
+            if (cls && cls.name && String(cls.name).toLowerCase().trim() === target) {
+                return cls;
             }
         }
 
-        return { valid: true };
+        return null;
     }
 
-    function validateClassData(data, isPartial) {
-        if (!isObject(data)) {
-            return { valid: false, message: 'Class data must be an object.' };
+    /**
+     * Get students for a class (internal).
+     * 
+     * @param {string} classId - Class ID
+     * @returns {array} Array of student IDs
+     */
+    function getClassStudentsInternal(classId) {
+        if (!isNonEmptyString(classId)) {
+            return [];
         }
 
-        if (!isPartial) {
-            if (!isNonEmptyString(data.name)) {
-                return { valid: false, message: 'Class name is required.' };
-            }
-        } else {
-            if (data.name !== undefined && !isNonEmptyString(data.name)) {
-                return { valid: false, message: 'Class name cannot be empty.' };
-            }
+        var academy = getAcademyStore();
+        if (!academy || !academy.classStudents) {
+            return [];
         }
 
-        return { valid: true };
+        var target = String(classId);
+        var students = academy.classStudents[target];
+
+        if (!Array.isArray(students)) {
+            return [];
+        }
+
+        return students.slice();
     }
 
-    function buildCreateCandidate(name) {
-        var validation = validateClassName(name);
-        if (!validation.valid) {
-            return failure(validation.message);
+    /**
+     * Check if a student is in a class (internal).
+     * 
+     * @param {string} classId - Class ID
+     * @param {string} studentId - Student ID
+     * @returns {boolean} True if the student is in the class
+     */
+    function isStudentInClassInternal(classId, studentId) {
+        if (!isNonEmptyString(classId) || !isNonEmptyString(studentId)) {
+            return false;
         }
 
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
+        var students = getClassStudentsInternal(classId);
+        var target = String(studentId);
+
+        for (var i = 0; i < students.length; i++) {
+            if (String(students[i]) === target) {
+                return true;
+            }
         }
 
-        if (!Array.isArray(data.classes)) {
-            return failure('Class data is corrupted.');
+        return false;
+    }
+
+    /**
+     * Get class display name (internal).
+     * 
+     * @param {string} classId - Class ID
+     * @returns {string} Class display name or 'Unknown Class'
+     */
+    function getClassDisplayNameInternal(classId) {
+        if (!isNonEmptyString(classId)) {
+            return 'Unknown Class';
         }
 
-        var candidate = deepClone(data.classes);
-        if (candidate === null) {
-            return failure('Failed to prepare class data.');
+        var cls = getClassInternal(classId);
+        if (!cls) {
+            return 'Unknown Class';
         }
 
-        var trimmed = normalizeClassName(name);
+        return cls.name || 'Unnamed Class';
+    }
+
+    /**
+     * Get character class names (internal).
+     * 
+     * @param {object} character - Character object with classIds
+     * @returns {array} Array of class names
+     */
+    function getCharacterClassNamesInternal(character) {
+        if (!character || typeof character !== 'object') {
+            return [];
+        }
+
+        var classIds = character.classIds;
+        if (!Array.isArray(classIds) || classIds.length === 0) {
+            return [];
+        }
+
+        var names = [];
+        var classes = getClassesInternal();
+
+        for (var i = 0; i < classIds.length; i++) {
+            var id = classIds[i];
+            for (var j = 0; j < classes.length; j++) {
+                if (String(classes[j].id) === String(id)) {
+                    names.push(classes[j].name);
+                    break;
+                }
+            }
+        }
+
+        return names;
+    }
+
+    /**
+     * Get character classes (internal).
+     * 
+     * @param {object} character - Character object with classIds
+     * @returns {array} Array of class objects
+     */
+    function getCharacterClassesInternal(character) {
+        if (!character || typeof character !== 'object') {
+            return [];
+        }
+
+        var classIds = character.classIds;
+        if (!Array.isArray(classIds) || classIds.length === 0) {
+            return [];
+        }
+
+        var result = [];
+        var classes = getClassesInternal();
+
+        for (var i = 0; i < classIds.length; i++) {
+            var id = classIds[i];
+            for (var j = 0; j < classes.length; j++) {
+                if (String(classes[j].id) === String(id)) {
+                    result.push(classes[j]);
+                    break;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Get class students with full objects if requested (internal).
+     * 
+     * @param {string} classId - Class ID
+     * @param {boolean} returnObjects - If true, return full character objects
+     * @param {function} getCharacterById - Function to get character by ID
+     * @returns {array} Array of student IDs or character objects
+     */
+    function getClassStudentsWithDetailsInternal(classId, returnObjects, getCharacterById) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var studentIds = getClassStudentsInternal(classId);
+
+        if (!returnObjects) {
+            return studentIds;
+        }
+
+        if (typeof getCharacterById !== 'function') {
+            return studentIds;
+        }
+
+        var result = [];
+        for (var i = 0; i < studentIds.length; i++) {
+            var character = getCharacterById(studentIds[i]);
+            if (character) {
+                result.push(character);
+            }
+        }
+
+        return result;
+    }
+
+    // ============================================================
+    // PUBLIC API - MUTATIONS
+    // ============================================================
+
+    /**
+     * Create a new class.
+     * Candidate-based: validates, creates, commits.
+     * 
+     * @param {string} name - Class name
+     * @param {object} options - Optional configuration
+     * @param {string} options.status - Status ('active', 'archived', 'graduated')
+     * @param {number} options.year - Graduation year
+     * @param {string} options.description - Class description
+     * @param {string} options.instructorId - Instructor ID
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function create(name, options) {
+        // ---- PHASE 1: VALIDATE INPUT ----
+        if (!isNonEmptyString(name)) {
+            return failure('Class name is required.');
+        }
+
+        var trimmedName = String(name).trim();
+
+        // Check for duplicate name
+        var existing = getClassByNameInternal(trimmedName);
+        if (existing) {
+            return failure('A class with this name already exists.');
+        }
+
+        options = options || {};
+
+        // ---- PHASE 2: GET STORE ----
+        var academy = ensureClassStructures();
+        if (!academy) {
+            return failure('Academy data is not available.');
+        }
+
+        // Validate status
+        var status = options.status || DEFAULT_STATUS;
+        if (VALID_STATUSES.indexOf(status) === -1) {
+            return failure('Invalid status. Must be one of: ' + VALID_STATUSES.join(', '));
+        }
+
+        // ---- PHASE 3: BUILD CLASS OBJECT ----
+        var now = new Date().toISOString();
+        var classId = generateId();
 
         var newClass = {
-            id: generateClassId(),
-            name: trimmed,
-            createdAt: new Date().toISOString()
+            id: classId,
+            name: trimmedName,
+            status: status,
+            year: options.year || null,
+            description: options.description || '',
+            instructorId: options.instructorId || null,
+            createdAt: now,
+            updatedAt: now
         };
 
-        candidate.push(newClass);
+        // ---- PHASE 4: COMMIT ----
+        academy.graduatingClasses[classId] = newClass;
 
-        function mutate() {
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.classes)) {
-                throw new Error('Data store is not available.');
-            }
-            store.classes = candidate;
-            return { class: deepClone(newClass) };
+        // Initialize student list
+        if (!academy.classStudents[classId]) {
+            academy.classStudents[classId] = [];
         }
 
         return success({
-            mutate: mutate,
             class: newClass
         });
     }
 
-    function create(name) {
-        var candidate = buildCreateCandidate(name);
-        if (!candidate.success) {
-            return candidate;
-        }
-
-        try {
-            var result = candidate.data.mutate();
-            return success({ class: result.class });
-        } catch (e) {
-            return failure(e.message || 'Failed to create class.');
-        }
-    }
-
-    function buildUpdateCandidate(id, updates) {
-        if (!isNonEmptyString(id)) {
+    /**
+     * Update an existing class.
+     * Candidate-based: validates, clones, modifies, commits.
+     * 
+     * @param {string} classId - Class ID
+     * @param {object} updates - Updates to apply
+     * @param {string} updates.name - New class name
+     * @param {string} updates.status - New status
+     * @param {number} updates.year - New graduation year
+     * @param {string} updates.description - New description
+     * @param {string} updates.instructorId - New instructor ID
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function update(classId, updates) {
+        // ---- PHASE 1: VALIDATE INPUT ----
+        if (!isNonEmptyString(classId)) {
             return failure('Class ID is required.');
         }
 
-        if (!isObject(updates)) {
-            return failure('Updates must be an object.');
+        if (!isObject(updates) || Object.keys(updates).length === 0) {
+            return failure('Updates are required.');
         }
 
-        var dataValidation = validateClassData(updates, true);
-        if (!dataValidation.valid) {
-            return failure(dataValidation.message);
+        // ---- PHASE 2: GET STORE ----
+        var academy = ensureClassStructures();
+        if (!academy) {
+            return failure('Academy data is not available.');
         }
 
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.classes)) {
-            return failure('No classes found.');
-        }
+        // ---- PHASE 3: FIND EXISTING ----
+        var target = String(classId);
+        var existing = academy.graduatingClasses[target];
 
-        var index = -1;
-        var cls = null;
-        for (var i = 0; i < data.classes.length; i++) {
-            if (data.classes[i] && typeof data.classes[i] === 'object' && String(data.classes[i].id) === String(id)) {
-                index = i;
-                cls = data.classes[i];
-                break;
-            }
-        }
-
-        if (index === -1 || !cls) {
+        if (!existing) {
             return failure('Class not found.');
         }
 
-        var candidateClass = deepClone(cls);
-        if (candidateClass === null) {
+        // ---- PHASE 4: BUILD CANDIDATE ----
+        var candidate = deepClone(existing);
+        if (candidate === null) {
             return failure('Failed to clone class data.');
         }
 
-        var changed = false;
+        var hasChanges = false;
 
+        // Name update
         if (updates.name !== undefined) {
-            var nameValidation = validateClassName(updates.name, id);
-            if (!nameValidation.valid) {
-                return failure(nameValidation.message);
+            if (!isNonEmptyString(updates.name)) {
+                return failure('Class name cannot be empty.');
             }
-            var newName = normalizeClassName(updates.name);
-            if (candidateClass.name !== newName) {
-                candidateClass.name = newName;
-                changed = true;
+            var newName = String(updates.name).trim();
+            if (newName !== existing.name) {
+                // Check for duplicate name
+                var duplicate = getClassByNameInternal(newName);
+                if (duplicate && String(duplicate.id) !== target) {
+                    return failure('A class with this name already exists.');
+                }
+                candidate.name = newName;
+                hasChanges = true;
             }
         }
 
-        if (!changed) {
-            return success({
-                mutate: function() { return { class: deepClone(cls), changed: false }; },
-                class: cls,
-                changed: false
-            });
-        }
-
-        var candidateArray = deepClone(data.classes);
-        if (candidateArray === null) {
-            return failure('Failed to prepare class data.');
-        }
-
-        candidateArray[index] = candidateClass;
-
-        function mutate() {
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.classes)) {
-                throw new Error('Data store is not available.');
+        // Status update
+        if (updates.status !== undefined) {
+            if (VALID_STATUSES.indexOf(updates.status) === -1) {
+                return failure('Invalid status. Must be one of: ' + VALID_STATUSES.join(', '));
             }
-            store.classes = candidateArray;
-            return { class: deepClone(candidateClass), changed: true };
+            if (candidate.status !== updates.status) {
+                candidate.status = updates.status;
+                hasChanges = true;
+            }
         }
+
+        // Year update
+        if (updates.year !== undefined) {
+            if (updates.year !== null && (typeof updates.year !== 'number' || updates.year < 1900 || updates.year > 2100)) {
+                return failure('Year must be a valid number between 1900 and 2100.');
+            }
+            if (candidate.year !== updates.year) {
+                candidate.year = updates.year;
+                hasChanges = true;
+            }
+        }
+
+        // Description update
+        if (updates.description !== undefined) {
+            var newDescription = updates.description || '';
+            if (candidate.description !== newDescription) {
+                candidate.description = newDescription;
+                hasChanges = true;
+            }
+        }
+
+        // Instructor ID update
+        if (updates.instructorId !== undefined) {
+            var newInstructorId = updates.instructorId || null;
+            if (candidate.instructorId !== newInstructorId) {
+                candidate.instructorId = newInstructorId;
+                hasChanges = true;
+            }
+        }
+
+        if (!hasChanges) {
+            return success({ class: existing, changed: false });
+        }
+
+        // ---- PHASE 5: COMMIT ----
+        candidate.updatedAt = new Date().toISOString();
+        academy.graduatingClasses[target] = candidate;
 
         return success({
-            mutate: mutate,
-            class: candidateClass,
+            class: candidate,
             changed: true
         });
     }
 
-    function update(id, updates) {
-        var candidate = buildUpdateCandidate(id, updates);
-        if (!candidate.success) {
-            return candidate;
-        }
-
-        try {
-            var result = candidate.data.mutate();
-            return success({ class: result.class, changed: result.changed });
-        } catch (e) {
-            return failure(e.message || 'Failed to update class.');
-        }
-    }
-
-    function buildDeleteCandidate(id) {
-        if (!isNonEmptyString(id)) {
+    /**
+     * Delete a class permanently.
+     * Also removes all student memberships.
+     * 
+     * @param {string} classId - Class ID
+     * @returns {object} { success: boolean, message?: string, data?: object }
+     */
+    function deleteClass(classId) {
+        // ---- PHASE 1: VALIDATE INPUT ----
+        if (!isNonEmptyString(classId)) {
             return failure('Class ID is required.');
         }
 
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
+        // ---- PHASE 2: GET STORE ----
+        var academy = ensureClassStructures();
+        if (!academy) {
+            return failure('Academy data is not available.');
         }
 
-        if (!Array.isArray(data.classes)) {
-            return failure('No classes found.');
+        // ---- PHASE 3: FIND EXISTING ----
+        var target = String(classId);
+        var existing = academy.graduatingClasses[target];
+
+        if (!existing) {
+            return failure('Class not found.');
         }
 
-        if (!Array.isArray(data.characters)) {
-            return failure('Character data is corrupted.');
+        var className = existing.name;
+
+        // ---- PHASE 4: REMOVE ----
+        delete academy.graduatingClasses[target];
+        delete academy.classStudents[target];
+
+        return success({
+            deleted: true,
+            classId: target,
+            className: className
+        });
+    }
+
+    // ============================================================
+    // STUDENT MEMBERSHIP OPERATIONS
+    // ============================================================
+
+    /**
+     * Add a student to a class.
+     * Candidate-based: validates, clones, modifies, commits.
+     * 
+     * @param {string} classId - Class ID
+     * @param {string} studentId - Student ID
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function addStudent(classId, studentId) {
+        // ---- PHASE 1: VALIDATE INPUT ----
+        if (!isNonEmptyString(classId)) {
+            return failure('Class ID is required.');
         }
 
-        if (!Array.isArray(data.teams)) {
-            return failure('Team data is corrupted.');
+        if (!isNonEmptyString(studentId)) {
+            return failure('Student ID is required.');
         }
 
-        var index = -1;
-        var cls = null;
-        for (var i = 0; i < data.classes.length; i++) {
-            if (data.classes[i] && typeof data.classes[i] === 'object' && String(data.classes[i].id) === String(id)) {
-                index = i;
-                cls = data.classes[i];
+        // ---- PHASE 2: GET STORE ----
+        var academy = ensureClassStructures();
+        if (!academy) {
+            return failure('Academy data is not available.');
+        }
+
+        // ---- PHASE 3: VERIFY CLASS EXISTS ----
+        var targetClass = String(classId);
+        var existingClass = academy.graduatingClasses[targetClass];
+
+        if (!existingClass) {
+            return failure('Class not found.');
+        }
+
+        // ---- PHASE 4: CHECK FOR DUPLICATE ----
+        if (isStudentInClassInternal(targetClass, studentId)) {
+            return failure('Student is already in this class.');
+        }
+
+        // ---- PHASE 5: BUILD CANDIDATE ----
+        var targetStudent = String(studentId);
+        var students = academy.classStudents[targetClass];
+
+        if (!Array.isArray(students)) {
+            students = [];
+        }
+
+        var candidateStudents = students.slice();
+        candidateStudents.push(targetStudent);
+
+        // ---- PHASE 6: COMMIT ----
+        academy.classStudents[targetClass] = candidateStudents;
+
+        return success({
+            classId: targetClass,
+            studentId: targetStudent,
+            added: true
+        });
+    }
+
+    /**
+     * Remove a student from a class.
+     * Candidate-based: validates, clones, modifies, commits.
+     * 
+     * @param {string} classId - Class ID
+     * @param {string} studentId - Student ID
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function removeStudent(classId, studentId) {
+        // ---- PHASE 1: VALIDATE INPUT ----
+        if (!isNonEmptyString(classId)) {
+            return failure('Class ID is required.');
+        }
+
+        if (!isNonEmptyString(studentId)) {
+            return failure('Student ID is required.');
+        }
+
+        // ---- PHASE 2: GET STORE ----
+        var academy = ensureClassStructures();
+        if (!academy) {
+            return failure('Academy data is not available.');
+        }
+
+        // ---- PHASE 3: VERIFY CLASS EXISTS ----
+        var targetClass = String(classId);
+        var existingClass = academy.graduatingClasses[targetClass];
+
+        if (!existingClass) {
+            return failure('Class not found.');
+        }
+
+        // ---- PHASE 4: CHECK STUDENT EXISTS IN CLASS ----
+        var targetStudent = String(studentId);
+        var students = academy.classStudents[targetClass];
+
+        if (!Array.isArray(students) || students.length === 0) {
+            return failure('Student is not in this class.');
+        }
+
+        var found = false;
+        for (var i = 0; i < students.length; i++) {
+            if (String(students[i]) === targetStudent) {
+                found = true;
                 break;
             }
         }
 
-        if (index === -1 || !cls) {
-            return failure('Class not found.');
+        if (!found) {
+            return failure('Student is not in this class.');
         }
 
-        var className = cls.name;
-
-        var candidateClasses = deepClone(data.classes);
-        if (candidateClasses === null) {
-            return failure('Failed to prepare class data.');
-        }
-
-        var candidateCharacters = deepClone(data.characters);
-        if (candidateCharacters === null) {
-            return failure('Failed to prepare character data.');
-        }
-
-        var candidateTeams = deepClone(data.teams);
-        if (candidateTeams === null) {
-            return failure('Failed to prepare team data.');
-        }
-
-        var affectedCharacters = 0;
-        var affectedTeams = 0;
-
-        for (var charIdx = 0; charIdx < candidateCharacters.length; charIdx++) {
-            var character = candidateCharacters[charIdx];
-            if (!character || typeof character !== 'object' || !Array.isArray(character.classIds)) {
-                continue;
+        // ---- PHASE 5: BUILD CANDIDATE ----
+        var candidateStudents = [];
+        for (var j = 0; j < students.length; j++) {
+            if (String(students[j]) !== targetStudent) {
+                candidateStudents.push(students[j]);
             }
+        }
 
-            var hadClass = false;
-            for (var cidIdx = 0; cidIdx < character.classIds.length; cidIdx++) {
-                if (String(character.classIds[cidIdx]) === String(id)) {
-                    hadClass = true;
-                    break;
+        // ---- PHASE 6: COMMIT ----
+        academy.classStudents[targetClass] = candidateStudents;
+
+        return success({
+            classId: targetClass,
+            studentId: targetStudent,
+            removed: true
+        });
+    }
+
+    /**
+     * Remove a student from all classes.
+     * 
+     * @param {string} studentId - Student ID
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function removeStudentFromAllClasses(studentId) {
+        if (!isNonEmptyString(studentId)) {
+            return failure('Student ID is required.');
+        }
+
+        var academy = ensureClassStructures();
+        if (!academy) {
+            return failure('Academy data is not available.');
+        }
+
+        var targetStudent = String(studentId);
+        var removedCount = 0;
+        var removedFrom = [];
+
+        for (var classId in academy.classStudents) {
+            if (Object.prototype.hasOwnProperty.call(academy.classStudents, classId)) {
+                var students = academy.classStudents[classId];
+                if (!Array.isArray(students)) {
+                    continue;
                 }
-            }
 
-            if (hadClass) {
-                affectedCharacters++;
-                var newClassIds = [];
-                for (var cidIdx2 = 0; cidIdx2 < character.classIds.length; cidIdx2++) {
-                    if (String(character.classIds[cidIdx2]) !== String(id)) {
-                        newClassIds.push(character.classIds[cidIdx2]);
+                var found = false;
+                var candidateStudents = [];
+
+                for (var i = 0; i < students.length; i++) {
+                    if (String(students[i]) === targetStudent) {
+                        found = true;
+                        removedFrom.push(classId);
+                    } else {
+                        candidateStudents.push(students[i]);
                     }
                 }
-                character.classIds = newClassIds;
-            }
-        }
 
-        for (var teamIdx = 0; teamIdx < candidateTeams.length; teamIdx++) {
-            var team = candidateTeams[teamIdx];
-            if (!team || typeof team !== 'object' || team.type !== 'academic') {
-                continue;
-            }
-
-            if (String(team.classId) === String(id)) {
-                affectedTeams++;
-                team.classId = null;
-            }
-        }
-
-        candidateClasses.splice(index, 1);
-
-        function mutate() {
-            var store = getDataStore();
-            if (!store) {
-                throw new Error('Data store is not available.');
-            }
-            store.classes = candidateClasses;
-            store.characters = candidateCharacters;
-            store.teams = candidateTeams;
-            return {
-                className: className,
-                affectedCharacters: affectedCharacters,
-                affectedTeams: affectedTeams
-            };
-        }
-
-        return success({
-            mutate: mutate,
-            className: className,
-            affectedCharacters: affectedCharacters,
-            affectedTeams: affectedTeams
-        });
-    }
-
-    function deleteClass(id) {
-        var candidate = buildDeleteCandidate(id);
-        if (!candidate.success) {
-            return candidate;
-        }
-
-        try {
-            var result = candidate.data.mutate();
-            return success({
-                className: result.className,
-                affectedCharacters: result.affectedCharacters,
-                affectedTeams: result.affectedTeams
-            });
-        } catch (e) {
-            return failure(e.message || 'Failed to delete class.');
-        }
-    }
-
-    function buildAddStudentCandidate(classId, studentId) {
-        if (!isNonEmptyString(classId)) {
-            return failure('Class ID is required.');
-        }
-        if (!isNonEmptyString(studentId)) {
-            return failure('Student ID is required.');
-        }
-
-        var cls = AcademyQueries.getClass(classId);
-        if (!cls) {
-            return failure('Class not found.');
-        }
-
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.characters)) {
-            return failure('No characters found.');
-        }
-
-        var charIndex = -1;
-        var character = null;
-
-        for (var i = 0; i < data.characters.length; i++) {
-            if (data.characters[i] && typeof data.characters[i] === 'object' && String(data.characters[i].id) === String(studentId)) {
-                charIndex = i;
-                character = data.characters[i];
-                break;
-            }
-        }
-
-        if (!character) {
-            return failure('Character not found.');
-        }
-
-        var existingClassIds = Array.isArray(character.classIds) ? character.classIds : [];
-
-        for (var cidIdx = 0; cidIdx < existingClassIds.length; cidIdx++) {
-            if (String(existingClassIds[cidIdx]) === String(classId)) {
-                return failure('Character is already in this class.');
-            }
-        }
-
-        var candidate = deepClone(data.characters);
-        if (candidate === null) {
-            return failure('Failed to prepare character data.');
-        }
-
-        var candidateChar = candidate[charIndex];
-        if (!candidateChar) {
-            return failure('Character data corrupted.');
-        }
-
-        if (!Array.isArray(candidateChar.classIds)) {
-            candidateChar.classIds = [];
-        }
-
-        candidateChar.classIds.push(classId);
-
-        var studentName = CharacterQueries.getDisplayName(character);
-
-        function mutate() {
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.characters)) {
-                throw new Error('Data store is not available.');
-            }
-            store.characters = candidate;
-            return {
-                characterId: studentId,
-                classId: classId,
-                className: cls.name,
-                studentName: studentName
-            };
-        }
-
-        return success({
-            mutate: mutate,
-            characterId: studentId,
-            classId: classId,
-            className: cls.name,
-            studentName: studentName
-        });
-    }
-
-    function addStudent(classId, studentId) {
-        var candidate = buildAddStudentCandidate(classId, studentId);
-        if (!candidate.success) {
-            return candidate;
-        }
-
-        try {
-            candidate.data.mutate();
-            return success({
-                characterId: studentId,
-                classId: classId,
-                className: candidate.data.className
-            });
-        } catch (e) {
-            return failure(e.message || 'Failed to add student to class.');
-        }
-    }
-
-    function buildRemoveStudentCandidate(classId, studentId) {
-        if (!isNonEmptyString(classId)) {
-            return failure('Class ID is required.');
-        }
-        if (!isNonEmptyString(studentId)) {
-            return failure('Student ID is required.');
-        }
-
-        var cls = AcademyQueries.getClass(classId);
-        if (!cls) {
-            return failure('Class not found.');
-        }
-
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.characters)) {
-            return failure('No characters found.');
-        }
-
-        var charIndex = -1;
-        var character = null;
-
-        for (var i = 0; i < data.characters.length; i++) {
-            if (data.characters[i] && typeof data.characters[i] === 'object' && String(data.characters[i].id) === String(studentId)) {
-                charIndex = i;
-                character = data.characters[i];
-                break;
-            }
-        }
-
-        if (!character) {
-            return failure('Character not found.');
-        }
-
-        var existingClassIds = Array.isArray(character.classIds) ? character.classIds : [];
-
-        var isInClass = false;
-        for (var cidIdx = 0; cidIdx < existingClassIds.length; cidIdx++) {
-            if (String(existingClassIds[cidIdx]) === String(classId)) {
-                isInClass = true;
-                break;
-            }
-        }
-
-        if (!isInClass) {
-            return failure('Character is not in this class.');
-        }
-
-        var candidate = deepClone(data.characters);
-        if (candidate === null) {
-            return failure('Failed to prepare character data.');
-        }
-
-        var candidateChar = candidate[charIndex];
-        if (!candidateChar) {
-            return failure('Character data corrupted.');
-        }
-
-        if (!Array.isArray(candidateChar.classIds)) {
-            candidateChar.classIds = [];
-        }
-
-        var newClassIds = [];
-        for (var cidIdx2 = 0; cidIdx2 < candidateChar.classIds.length; cidIdx2++) {
-            if (String(candidateChar.classIds[cidIdx2]) !== String(classId)) {
-                newClassIds.push(candidateChar.classIds[cidIdx2]);
-            }
-        }
-        candidateChar.classIds = newClassIds;
-
-        var studentName = CharacterQueries.getDisplayName(character);
-
-        function mutate() {
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.characters)) {
-                throw new Error('Data store is not available.');
-            }
-            store.characters = candidate;
-            return {
-                characterId: studentId,
-                classId: classId,
-                className: cls.name,
-                studentName: studentName
-            };
-        }
-
-        return success({
-            mutate: mutate,
-            characterId: studentId,
-            classId: classId,
-            className: cls.name,
-            studentName: studentName
-        });
-    }
-
-    function removeStudent(classId, studentId) {
-        var candidate = buildRemoveStudentCandidate(classId, studentId);
-        if (!candidate.success) {
-            return candidate;
-        }
-
-        try {
-            candidate.data.mutate();
-            return success({
-                characterId: studentId,
-                classId: classId,
-                className: candidate.data.className
-            });
-        } catch (e) {
-            return failure(e.message || 'Failed to remove student from class.');
-        }
-    }
-
-    function buildRemoveStudentFromAllCandidate(studentId) {
-        if (!isNonEmptyString(studentId)) {
-            return failure('Student ID is required.');
-        }
-
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.characters)) {
-            return failure('No characters found.');
-        }
-
-        var charIndex = -1;
-        var character = null;
-
-        for (var i = 0; i < data.characters.length; i++) {
-            if (data.characters[i] && typeof data.characters[i] === 'object' && String(data.characters[i].id) === String(studentId)) {
-                charIndex = i;
-                character = data.characters[i];
-                break;
-            }
-        }
-
-        if (!character) {
-            return failure('Character not found.');
-        }
-
-        var existingClassIds = Array.isArray(character.classIds) ? character.classIds : [];
-
-        if (existingClassIds.length === 0) {
-            return success({
-                mutate: function() { return { removedCount: 0 }; },
-                removedCount: 0
-            });
-        }
-
-        var removedCount = existingClassIds.length;
-
-        var candidate = deepClone(data.characters);
-        if (candidate === null) {
-            return failure('Failed to prepare character data.');
-        }
-
-        var candidateChar = candidate[charIndex];
-        if (!candidateChar) {
-            return failure('Character data corrupted.');
-        }
-
-        candidateChar.classIds = [];
-
-        var studentName = CharacterQueries.getDisplayName(character);
-
-        function mutate() {
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.characters)) {
-                throw new Error('Data store is not available.');
-            }
-            store.characters = candidate;
-            return {
-                studentId: studentId,
-                studentName: studentName,
-                removedCount: removedCount
-            };
-        }
-
-        return success({
-            mutate: mutate,
-            studentId: studentId,
-            studentName: studentName,
-            removedCount: removedCount
-        });
-    }
-
-    function removeStudentFromAll(studentId) {
-        var candidate = buildRemoveStudentFromAllCandidate(studentId);
-        if (!candidate.success) {
-            return candidate;
-        }
-
-        try {
-            var result = candidate.data.mutate();
-            return success({ removedCount: result.removedCount });
-        } catch (e) {
-            return failure(e.message || 'Failed to remove student from all classes.');
-        }
-    }
-
-    function buildAddStudentsCandidate(classId, studentIds) {
-        if (!isNonEmptyString(classId)) {
-            return failure('Class ID is required.');
-        }
-
-        if (!Array.isArray(studentIds) || studentIds.length === 0) {
-            return failure('At least one student ID is required.');
-        }
-
-        var cls = AcademyQueries.getClass(classId);
-        if (!cls) {
-            return failure('Class not found.');
-        }
-
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.characters)) {
-            return failure('No characters found.');
-        }
-
-        var candidate = deepClone(data.characters);
-        if (candidate === null) {
-            return failure('Failed to prepare character data.');
-        }
-
-        var added = 0;
-        var failed = [];
-
-        for (var i = 0; i < studentIds.length; i++) {
-            var studentId = studentIds[i];
-            if (!isNonEmptyString(studentId)) {
-                failed.push({ studentId: studentId, reason: 'Invalid student ID' });
-                continue;
-            }
-
-            var charIndex = -1;
-            for (var j = 0; j < candidate.length; j++) {
-                if (candidate[j] && typeof candidate[j] === 'object' && String(candidate[j].id) === String(studentId)) {
-                    charIndex = j;
-                    break;
+                if (found) {
+                    academy.classStudents[classId] = candidateStudents;
+                    removedCount++;
                 }
             }
-
-            if (charIndex === -1) {
-                failed.push({ studentId: studentId, reason: 'Student not found' });
-                continue;
-            }
-
-            var character = candidate[charIndex];
-            if (!Array.isArray(character.classIds)) {
-                character.classIds = [];
-            }
-
-            var alreadyInClass = false;
-            for (var k = 0; k < character.classIds.length; k++) {
-                if (String(character.classIds[k]) === String(classId)) {
-                    alreadyInClass = true;
-                    break;
-                }
-            }
-
-            if (alreadyInClass) {
-                failed.push({ studentId: studentId, reason: 'Already in class' });
-                continue;
-            }
-
-            character.classIds.push(classId);
-            added++;
-        }
-
-        if (added === 0) {
-            return failure('No students were added. ' + failed.length + ' failed.');
-        }
-
-        function mutate() {
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.characters)) {
-                throw new Error('Data store is not available.');
-            }
-            store.characters = candidate;
-            return {
-                added: added,
-                failed: failed,
-                classId: classId,
-                className: cls.name
-            };
         }
 
         return success({
-            mutate: mutate,
-            added: added,
-            failed: failed,
-            classId: classId,
-            className: cls.name
+            studentId: targetStudent,
+            removedCount: removedCount,
+            removedFrom: removedFrom
         });
     }
 
-    function addStudents(classId, studentIds) {
-        var candidate = buildAddStudentsCandidate(classId, studentIds);
-        if (!candidate.success) {
-            return candidate;
-        }
+    // ============================================================
+    // PUBLIC INTERNAL LOOKUP (for AcademyQueries)
+    // These are exposed so AcademyQueries can delegate to them.
+    // ============================================================
 
-        try {
-            var result = candidate.data.mutate();
-            return success({
-                added: result.added,
-                failed: result.failed,
-                className: result.className
-            });
-        } catch (e) {
-            return failure(e.message || 'Failed to add students to class.');
-        }
+    /**
+     * Get a class by ID (internal).
+     * 
+     * @param {string} classId - Class ID
+     * @returns {object|null} Class object or null
+     */
+    function getClass(classId) {
+        return getClassInternal(classId);
     }
 
-    function buildRemoveStudentsCandidate(classId, studentIds) {
-        if (!isNonEmptyString(classId)) {
-            return failure('Class ID is required.');
-        }
-
-        if (!Array.isArray(studentIds) || studentIds.length === 0) {
-            return failure('At least one student ID is required.');
-        }
-
-        var cls = AcademyQueries.getClass(classId);
-        if (!cls) {
-            return failure('Class not found.');
-        }
-
-        var data = getDataStore();
-        if (!data || !Array.isArray(data.characters)) {
-            return failure('No characters found.');
-        }
-
-        var candidate = deepClone(data.characters);
-        if (candidate === null) {
-            return failure('Failed to prepare character data.');
-        }
-
-        var removed = 0;
-        var failed = [];
-
-        for (var i = 0; i < studentIds.length; i++) {
-            var studentId = studentIds[i];
-            if (!isNonEmptyString(studentId)) {
-                failed.push({ studentId: studentId, reason: 'Invalid student ID' });
-                continue;
-            }
-
-            var charIndex = -1;
-            for (var j = 0; j < candidate.length; j++) {
-                if (candidate[j] && typeof candidate[j] === 'object' && String(candidate[j].id) === String(studentId)) {
-                    charIndex = j;
-                    break;
-                }
-            }
-
-            if (charIndex === -1) {
-                failed.push({ studentId: studentId, reason: 'Student not found' });
-                continue;
-            }
-
-            var character = candidate[charIndex];
-            if (!Array.isArray(character.classIds)) {
-                character.classIds = [];
-            }
-
-            var isInClass = false;
-            for (var k = 0; k < character.classIds.length; k++) {
-                if (String(character.classIds[k]) === String(classId)) {
-                    isInClass = true;
-                    break;
-                }
-            }
-
-            if (!isInClass) {
-                failed.push({ studentId: studentId, reason: 'Not in class' });
-                continue;
-            }
-
-            var newClassIds = [];
-            for (var k2 = 0; k2 < character.classIds.length; k2++) {
-                if (String(character.classIds[k2]) !== String(classId)) {
-                    newClassIds.push(character.classIds[k2]);
-                }
-            }
-            character.classIds = newClassIds;
-            removed++;
-        }
-
-        if (removed === 0) {
-            return failure('No students were removed. ' + failed.length + ' failed.');
-        }
-
-        function mutate() {
-            var store = getDataStore();
-            if (!store || !Array.isArray(store.characters)) {
-                throw new Error('Data store is not available.');
-            }
-            store.characters = candidate;
-            return {
-                removed: removed,
-                failed: failed,
-                classId: classId,
-                className: cls.name
-            };
-        }
-
-        return success({
-            mutate: mutate,
-            removed: removed,
-            failed: failed,
-            classId: classId,
-            className: cls.name
-        });
+    /**
+     * Get all classes (internal).
+     * 
+     * @returns {array} Array of class objects
+     */
+    function getClasses() {
+        return getClassesInternal();
     }
 
-    function removeStudents(classId, studentIds) {
-        var candidate = buildRemoveStudentsCandidate(classId, studentIds);
-        if (!candidate.success) {
-            return candidate;
+    /**
+     * Get classes by status (internal).
+     * 
+     * @param {string} status - Status filter
+     * @returns {array} Array of class objects
+     */
+    function getClassesByStatus(status) {
+        return getClassesByStatusInternal(status);
+    }
+
+    /**
+     * Get class by name (internal).
+     * 
+     * @param {string} name - Class name
+     * @returns {object|null} Class object or null
+     */
+    function getClassByName(name) {
+        return getClassByNameInternal(name);
+    }
+
+    /**
+     * Get class display name (internal).
+     * 
+     * @param {string} classId - Class ID
+     * @returns {string} Class display name
+     */
+    function getDisplayName(classId) {
+        return getClassDisplayNameInternal(classId);
+    }
+
+    /**
+     * Get class students (internal).
+     * 
+     * @param {string} classId - Class ID
+     * @returns {array} Array of student IDs
+     */
+    function getClassStudents(classId) {
+        return getClassStudentsInternal(classId);
+    }
+
+    /**
+     * Check if a student is in a class (internal).
+     * 
+     * @param {object} character - Character object
+     * @param {string} classId - Class ID
+     * @returns {boolean} True if in class
+     */
+    function isCharacterInClass(character, classId) {
+        if (!character || typeof character !== 'object') {
+            return false;
         }
-
-        try {
-            var result = candidate.data.mutate();
-            return success({
-                removed: result.removed,
-                failed: result.failed,
-                className: result.className
-            });
-        } catch (e) {
-            return failure(e.message || 'Failed to remove students from class.');
+        var studentId = character.id;
+        if (!studentId) {
+            return false;
         }
+        return isStudentInClassInternal(classId, studentId);
     }
 
-    function validateClassNamePublic(name, excludeId) {
-        return validateClassName(name, excludeId);
+    /**
+     * Get character class names (internal).
+     * 
+     * @param {object} character - Character object
+     * @returns {array} Array of class names
+     */
+    function getCharacterClassNames(character) {
+        return getCharacterClassNamesInternal(character);
     }
 
-    function validateClassDataPublic(data, isPartial) {
-        return validateClassData(data, isPartial);
+    /**
+     * Get character classes (internal).
+     * 
+     * @param {object} character - Character object
+     * @returns {array} Array of class objects
+     */
+    function getCharacterClasses(character) {
+        return getCharacterClassesInternal(character);
     }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
 
     window.AcademyClasses = {
+        // ---- Public Mutations ----
         create: create,
-        createCandidate: buildCreateCandidate,
         update: update,
-        updateCandidate: buildUpdateCandidate,
         delete: deleteClass,
-        deleteCandidate: buildDeleteCandidate,
 
+        // ---- Student Membership ----
         addStudent: addStudent,
-        addStudentCandidate: buildAddStudentCandidate,
         removeStudent: removeStudent,
-        removeStudentCandidate: buildRemoveStudentCandidate,
-        removeStudentFromAll: removeStudentFromAll,
-        removeStudentFromAllCandidate: buildRemoveStudentFromAllCandidate,
+        removeStudentFromAllClasses: removeStudentFromAllClasses,
 
-        addStudents: addStudents,
-        addStudentsCandidate: buildAddStudentsCandidate,
-        removeStudents: removeStudents,
-        removeStudentsCandidate: buildRemoveStudentsCandidate,
+        // ---- Internal Lookup (for AcademyQueries) ----
+        getClass: getClass,
+        getClasses: getClasses,
+        getClassesByStatus: getClassesByStatus,
+        getClassByName: getClassByName,
+        getDisplayName: getDisplayName,
+        getClassStudents: getClassStudents,
+        isCharacterInClass: isCharacterInClass,
+        getCharacterClassNames: getCharacterClassNames,
+        getCharacterClasses: getCharacterClasses,
 
-        validateClassName: validateClassNamePublic,
-        validateClassData: validateClassDataPublic
+        // ---- Internal (low-level) ----
+        getClassInternal: getClassInternal,
+        getClassesInternal: getClassesInternal,
+        getClassesByStatusInternal: getClassesByStatusInternal,
+        getClassByNameInternal: getClassByNameInternal,
+        getClassStudentsInternal: getClassStudentsInternal,
+        isStudentInClassInternal: isStudentInClassInternal,
+        getClassDisplayNameInternal: getClassDisplayNameInternal,
+        getCharacterClassNamesInternal: getCharacterClassNamesInternal,
+        getCharacterClassesInternal: getCharacterClassesInternal,
+        getClassStudentsWithDetailsInternal: getClassStudentsWithDetailsInternal,
+
+        // ---- Constants ----
+        VALID_STATUSES: VALID_STATUSES,
+        DEFAULT_STATUS: DEFAULT_STATUS
     };
-
-    window.__academyClassesLoaded = true;
 
 })();
