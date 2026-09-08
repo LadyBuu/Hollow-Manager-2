@@ -33,7 +33,15 @@
     }
     window.__calendarValidationLoaded = true;
 
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
     var CC = window.CalendarConstants;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -76,13 +84,17 @@
         }
 
         if (missing.length > 0) {
-            throw new Error('CalendarValidation: Missing dependencies: ' + missing.join(', '));
+            console.warn('[CalendarValidation] Missing dependencies:', missing.join(', '));
         }
 
-        return true;
+        return missing.length === 0;
     }
 
     checkDependencies();
+
+    // ============================================================
+    // PRIVATE HELPERS
+    // ============================================================
 
     function isString(value) {
         return typeof value === 'string';
@@ -117,6 +129,10 @@
         return Number.isFinite(num);
     }
 
+    // ============================================================
+    // WEEK VALIDATION
+    // ============================================================
+
     function parseWeek(value) {
         if (value === undefined || value === null) {
             return null;
@@ -143,6 +159,10 @@
         return parseWeek(value) !== null;
     }
 
+    // ============================================================
+    // DAY VALIDATION
+    // ============================================================
+
     function parseDay(value) {
         if (value === undefined || value === null) {
             return null;
@@ -168,6 +188,10 @@
     function isDayValid(value) {
         return parseDay(value) !== null;
     }
+
+    // ============================================================
+    // HOUR VALIDATION
+    // ============================================================
 
     function parseHour(value) {
         if (value === undefined || value === null) {
@@ -210,6 +234,10 @@
         return parseCalendarHour(value) !== null;
     }
 
+    // ============================================================
+    // DURATION VALIDATION
+    // ============================================================
+
     function parseDuration(value) {
         if (value === undefined || value === null) {
             return null;
@@ -236,6 +264,10 @@
         return parseDuration(value) !== null;
     }
 
+    // ============================================================
+    // YEAR VALIDATION
+    // ============================================================
+
     function parseYear(value) {
         if (value === undefined || value === null) {
             return null;
@@ -261,6 +293,10 @@
     function isYearValid(value) {
         return parseYear(value) !== null;
     }
+
+    // ============================================================
+    // SLOT VALIDATION
+    // ============================================================
 
     function parseSlot(week, day, hour, duration) {
         var parsedWeek = parseWeek(week);
@@ -299,6 +335,10 @@
         return parseSlot(week, day, hour, duration) !== null;
     }
 
+    // ============================================================
+    // RANGE VALIDATION
+    // ============================================================
+
     function parseInRange(value, min, max, allowNull) {
         allowNull = allowNull === true;
 
@@ -331,6 +371,10 @@
         }
         return isFiniteNumber(result);
     }
+
+    // ============================================================
+    // BOUNDS ACCESSORS
+    // ============================================================
 
     function getWeekBounds() {
         return {
@@ -374,23 +418,42 @@
         };
     }
 
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
     window.CalendarValidation = {
+        // Week
         parseWeek: parseWeek,
         isWeekValid: isWeekValid,
+
+        // Day
         parseDay: parseDay,
         isDayValid: isDayValid,
+
+        // Hour
         parseHour: parseHour,
         isHourValid: isHourValid,
         parseCalendarHour: parseCalendarHour,
         isCalendarHourValid: isCalendarHourValid,
+
+        // Duration
         parseDuration: parseDuration,
         isDurationValid: isDurationValid,
+
+        // Year
         parseYear: parseYear,
         isYearValid: isYearValid,
+
+        // Slot
         parseSlot: parseSlot,
         isSlotValid: isSlotValid,
+
+        // Range
         parseInRange: parseInRange,
         isInRange: isInRange,
+
+        // Bounds
         getWeekBounds: getWeekBounds,
         getDayBounds: getDayBounds,
         getHourBounds: getHourBounds,
