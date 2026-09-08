@@ -11,7 +11,7 @@
  * 
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no persistence
- *   - No direct window.data access - uses AcademyQueries
+ *   - No direct window.data access - uses AcademyQueries for class data
  *   - Uses CharacterQueries for character data
  *   - Uses DomUtils for safe DOM operations
  *   - All user-controlled content uses textContent
@@ -38,10 +38,18 @@
     }
     window.__characterClassViewLoaded = true;
 
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
     var AcademyQueries = window.AcademyQueries;
     var CharacterQueries = window.CharacterQueries;
     var DomUtils = window.DomUtils;
     var CharacterConstants = window.CharacterConstants;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -68,13 +76,46 @@
         }
 
         if (missing.length > 0) {
-            throw new Error('CharacterClassView: Missing dependencies: ' + missing.join(', '));
+            throw new Error('[CharacterClassView] Missing dependencies: ' + missing.join(', '));
         }
 
         return true;
     }
 
     checkDependencies();
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    function getNormalisedClassIds(char) {
+        if (!char) {
+            return [];
+        }
+        if (!Array.isArray(char.classIds)) {
+            return [];
+        }
+
+        var seen = {};
+        var result = [];
+        for (var i = 0; i < char.classIds.length; i++) {
+            var id = char.classIds[i];
+            if (id === undefined || id === null || id === '') {
+                continue;
+            }
+            var key = String(id);
+            if (seen[key]) {
+                continue;
+            }
+            seen[key] = true;
+            result.push(id);
+        }
+        return result;
+    }
+
+    // ============================================================
+    // CLASS TAG RENDERER
+    // ============================================================
 
     function createEmptyState(message) {
         var el = document.createElement('span');
@@ -87,7 +128,9 @@
         if (!container) {
             container = document.getElementById('class-tag-container');
         }
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         clearClassTags(container);
 
@@ -103,12 +146,17 @@
             return;
         }
 
+        // Simple read: AcademyQueries.getClasses() directly
         var classes = AcademyQueries.getClasses();
 
         classIds.forEach(function(classId) {
-            var cls = classes.find(function(c) {
-                return c && String(c.id) === String(classId);
-            });
+            var cls = null;
+            for (var i = 0; i < classes.length; i++) {
+                if (classes[i] && String(classes[i].id) === String(classId)) {
+                    cls = classes[i];
+                    break;
+                }
+            }
 
             if (cls) {
                 var tag = createClassTag(cls.id, cls.name);
@@ -146,7 +194,9 @@
         if (!container) {
             container = document.getElementById('class-tag-container');
         }
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         container.textContent = '';
     }
@@ -155,7 +205,9 @@
         if (!container) {
             container = document.getElementById('class-tag-container');
         }
-        if (!container) return [];
+        if (!container) {
+            return [];
+        }
 
         var ids = [];
         container.querySelectorAll('[data-class-id]').forEach(function(tag) {
@@ -164,26 +216,19 @@
         return ids;
     }
 
-    function getNormalisedClassIds(char) {
-        if (!char) return [];
-        if (!Array.isArray(char.classIds)) return [];
-
-        var seen = new Set();
-        return char.classIds.filter(function(id) {
-            if (id === undefined || id === null || id === '') return false;
-            var key = String(id);
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        });
-    }
+    // ============================================================
+    // CLASS SELECTORS
+    // ============================================================
 
     function populateClassSelector(char, select) {
         if (!select) {
             select = document.getElementById('academic-class-select');
         }
-        if (!select) return;
+        if (!select) {
+            return;
+        }
 
+        // Simple read: AcademyQueries.getClasses() directly
         var classes = AcademyQueries.getClasses();
         var existingClassIds = (char && Array.isArray(char.classIds)) ? char.classIds : [];
 
@@ -196,11 +241,17 @@
         });
 
         sorted.forEach(function(cls) {
-            if (!cls) return;
+            if (!cls) {
+                return;
+            }
 
-            var isAssigned = existingClassIds.some(function(cid) {
-                return String(cid) === String(cls.id);
-            });
+            var isAssigned = false;
+            for (var i = 0; i < existingClassIds.length; i++) {
+                if (String(existingClassIds[i]) === String(cls.id)) {
+                    isAssigned = true;
+                    break;
+                }
+            }
 
             if (!isAssigned) {
                 var option = document.createElement('option');
@@ -232,8 +283,11 @@
         if (!select) {
             select = document.getElementById('char-class-filter');
         }
-        if (!select) return;
+        if (!select) {
+            return;
+        }
 
+        // Simple read: AcademyQueries.getClasses() directly
         var classes = AcademyQueries.getClasses();
         var currentValue = select.value;
 
@@ -244,7 +298,9 @@
         });
 
         sorted.forEach(function(cls) {
-            if (!cls) return;
+            if (!cls) {
+                return;
+            }
 
             var option = document.createElement('option');
             option.value = cls.id;
@@ -270,11 +326,17 @@
         }
     }
 
+    // ============================================================
+    // CURRENT CLASSES DISPLAY
+    // ============================================================
+
     function updateCurrentClassesDisplay(char, display) {
         if (!display) {
             display = document.getElementById('current-classes-list');
         }
-        if (!display) return;
+        if (!display) {
+            return;
+        }
 
         if (!char) {
             display.textContent = 'None';
@@ -288,15 +350,16 @@
             return;
         }
 
+        // Simple read: AcademyQueries.getClasses() directly
         var classes = AcademyQueries.getClasses();
         var names = [];
 
         classIds.forEach(function(cid) {
-            var cls = classes.find(function(c) {
-                return c && String(c.id) === String(cid);
-            });
-            if (cls) {
-                names.push(cls.name);
+            for (var i = 0; i < classes.length; i++) {
+                if (classes[i] && String(classes[i].id) === String(cid)) {
+                    names.push(classes[i].name);
+                    break;
+                }
             }
         });
 
@@ -304,29 +367,39 @@
     }
 
     function getCurrentClassesDisplayText(char) {
-        if (!char) return 'None';
+        if (!char) {
+            return 'None';
+        }
 
         var classIds = getNormalisedClassIds(char);
 
-        if (classIds.length === 0) return 'None';
+        if (classIds.length === 0) {
+            return 'None';
+        }
 
         var classes = AcademyQueries.getClasses();
         var names = [];
 
         classIds.forEach(function(cid) {
-            var cls = classes.find(function(c) {
-                return c && String(c.id) === String(cid);
-            });
-            if (cls) {
-                names.push(cls.name);
+            for (var i = 0; i < classes.length; i++) {
+                if (classes[i] && String(classes[i].id) === String(cid)) {
+                    names.push(classes[i].name);
+                    break;
+                }
             }
         });
 
         return names.length > 0 ? names.join(', ') : 'None';
     }
 
+    // ============================================================
+    // CLASS OPTIONS HTML
+    // ============================================================
+
     function getClassOptionsHTML(selectedId, excludeIds) {
         excludeIds = excludeIds || [];
+
+        // Simple read: AcademyQueries.getClasses() directly
         var classes = AcademyQueries.getClasses();
         var html = '<option value="">None</option>';
 
@@ -335,13 +408,21 @@
         });
 
         sorted.forEach(function(cls) {
-            if (!cls) return;
+            if (!cls) {
+                return;
+            }
 
-            var isExcluded = excludeIds.some(function(id) {
-                return String(id) === String(cls.id);
-            });
+            var isExcluded = false;
+            for (var i = 0; i < excludeIds.length; i++) {
+                if (String(excludeIds[i]) === String(cls.id)) {
+                    isExcluded = true;
+                    break;
+                }
+            }
 
-            if (isExcluded) return;
+            if (isExcluded) {
+                return;
+            }
 
             var isSelected = selectedId !== undefined &&
                 selectedId !== null &&
@@ -360,21 +441,30 @@
         return getClassOptionsHTML(selectedId, excludeIds);
     }
 
+    // ============================================================
+    // CHARACTER CLASS QUERIES
+    // ============================================================
+
     function getCharacterClassNames(char) {
-        if (!char) return [];
+        if (!char) {
+            return [];
+        }
 
         var classIds = getNormalisedClassIds(char);
-        if (classIds.length === 0) return [];
+        if (classIds.length === 0) {
+            return [];
+        }
 
+        // Simple read: AcademyQueries.getClasses() directly
         var classes = AcademyQueries.getClasses();
         var names = [];
 
         classIds.forEach(function(cid) {
-            var cls = classes.find(function(c) {
-                return c && String(c.id) === String(cid);
-            });
-            if (cls) {
-                names.push(cls.name);
+            for (var i = 0; i < classes.length; i++) {
+                if (classes[i] && String(classes[i].id) === String(cid)) {
+                    names.push(classes[i].name);
+                    break;
+                }
             }
         });
 
@@ -382,24 +472,37 @@
     }
 
     function isCharacterInClass(char, classId) {
-        if (!char || !classId) return false;
+        if (!char || !classId) {
+            return false;
+        }
 
         var classIds = getNormalisedClassIds(char);
-        return classIds.some(function(cid) {
-            return String(cid) === String(classId);
-        });
+        for (var i = 0; i < classIds.length; i++) {
+            if (String(classIds[i]) === String(classId)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     function getClassCount(char) {
-        if (!char) return 0;
+        if (!char) {
+            return 0;
+        }
         return getNormalisedClassIds(char).length;
     }
+
+    // ============================================================
+    // RENDER ACADEMIC CLASS VIEW
+    // ============================================================
 
     function renderAcademicClassView(char, container) {
         if (!container) {
             container = document.getElementById('academic-class-view');
         }
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         container.textContent = '';
 
@@ -413,6 +516,7 @@
         }
 
         var classIds = getNormalisedClassIds(char);
+        // Simple read: AcademyQueries.getClasses() directly
         var classes = AcademyQueries.getClasses();
 
         if (classIds.length === 0) {
@@ -428,11 +532,17 @@
         list.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
 
         classIds.forEach(function(cid) {
-            var cls = classes.find(function(c) {
-                return c && String(c.id) === String(cid);
-            });
+            var cls = null;
+            for (var i = 0; i < classes.length; i++) {
+                if (classes[i] && String(classes[i].id) === String(cid)) {
+                    cls = classes[i];
+                    break;
+                }
+            }
 
-            if (!cls) return;
+            if (!cls) {
+                return;
+            }
 
             var item = document.createElement('div');
             item.style.cssText = 'padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);display:flex;justify-content:space-between;align-items:center;';
@@ -448,28 +558,39 @@
         container.appendChild(list);
     }
 
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
     window.CharacterClassView = {
+        // Class tags
         renderClassTags: renderClassTags,
         createClassTag: createClassTag,
         clearClassTags: clearClassTags,
         getClassTagIds: getClassTagIds,
 
+        // Selectors
         populateClassSelector: populateClassSelector,
         populateClassFilter: populateClassFilter,
 
+        // Current classes display
         updateCurrentClassesDisplay: updateCurrentClassesDisplay,
         getCurrentClassesDisplayText: getCurrentClassesDisplayText,
 
+        // Class options
         getClassOptionsHTML: getClassOptionsHTML,
         getAvailableClassOptionsHTML: getAvailableClassOptionsHTML,
 
+        // Character class queries
         getCharacterClassNames: getCharacterClassNames,
         isCharacterInClass: isCharacterInClass,
         getClassCount: getClassCount,
         getNormalisedClassIds: getNormalisedClassIds,
 
+        // Academic view
         renderAcademicClassView: renderAcademicClassView,
 
+        // Helpers
         createEmptyState: createEmptyState
     };
 
