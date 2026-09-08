@@ -1,45 +1,65 @@
 /**
  * shared/queries/calendar-queries.js - Calendar Queries
- * Read-only calendar/scheduling queries
- * Path: js/shared/queries/calendar-queries.js
+ * Read-only calendar/schedule queries
  * 
- * This module provides READ-ONLY access to calendar/schedule data.
- * All mutations go through schedule-core.js
+ * IMPORTANT:
+ *   - READ ONLY - no mutations
+ *   - NO dependencies on ScheduleCore
+ *   - NO dependencies on MutationUtils
+ *   - NO UI dependencies
+ *   - Reads window.data.curriculum directly
  * 
- * OWNERSHIP: Calendar domain
- * DEPENDENCIES: ScheduleCore, CharacterQueries, DisciplineQueries, LocationQueries
- * 
- * IMPORTANT: This module is a read facade for scheduling data.
- * It does NOT perform mutations.
+ * DEPENDENCIES:
+ *   - window.data (canonical state)
+ *   - CalendarConstants (for bounds)
+ *   - CalendarValidation (for validation) - if available
  */
 
 (function() {
     'use strict';
 
-    if (window.__calendarQueriesLoaded) return;
+    if (window.__calendarQueriesLoaded) { return; }
     window.__calendarQueriesLoaded = true;
 
-    // ============================================================
-    // DEPENDENCIES
-    // ============================================================
+    var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
 
-    var ScheduleCore = window.ScheduleCore;
-    var CharacterQueries = window.CharacterQueries;
-    var DisciplineQueries = window.DisciplineQueries;
-    var LocationQueries = window.LocationQueries;
-
-    // ============================================================
-    // HELPERS
-    // ============================================================
-
-    function isNonEmptyString(value) {
-        return typeof value === 'string' && value.trim() !== '';
+    function getCurriculum() {
+        var data = window.data || {};
+        if (!data.curriculum || typeof data.curriculum !== 'object') {
+            return {};
+        }
+        return data.curriculum;
     }
 
-    function parseInteger(value) {
-        if (value === undefined || value === null || value === '') return null;
-        var num = Number(value);
-        return Number.isInteger(num) ? num : null;
+    function getScheduleData() {
+        var curriculum = getCurriculum();
+        return curriculum.schedules || {};
+    }
+
+    function getRestDaysData() {
+        var curriculum = getCurriculum();
+        return curriculum.restDays || {};
+    }
+
+    function getMetadataData() {
+        var curriculum = getCurriculum();
+        return curriculum.metadata || {};
+    }
+
+    function getInstructorTemplatesData() {
+        var curriculum = getCurriculum();
+        return curriculum.instructorTemplates || {};
+    }
+
+    function getInstructorBlocksData() {
+        var curriculum = getCurriculum();
+        return curriculum.instructorBlocks || {};
+    }
+
+    function getLocationSchedulesData() {
+        var curriculum = getCurriculum();
+        return curriculum.locationSchedules || {};
     }
 
     // ============================================================
@@ -47,241 +67,80 @@
     // ============================================================
 
     function getStudentSchedule(studentId, week) {
-        return ScheduleCore.getStudentSchedule(studentId, week);
+        var weekNum = CalendarConstants.isValidWeek ? CalendarConstants.isValidWeek(week) : parseInt(week, 10);
+        if (weekNum === null || weekNum === undefined || isNaN(weekNum) || !studentId) {
+            return {};
+        }
+
+        var schedules = getScheduleData();
+        if (!schedules[studentId] || !schedules[studentId][weekNum]) {
+            return {};
+        }
+
+        return schedules[studentId][weekNum];
     }
 
     function getStudentRestDays(studentId, week) {
-        return ScheduleCore.getStudentRestDays(studentId, week);
+        var weekNum = CalendarConstants.isValidWeek ? CalendarConstants.isValidWeek(week) : parseInt(week, 10);
+        if (weekNum === null || weekNum === undefined || isNaN(weekNum) || !studentId) {
+            return [];
+        }
+
+        var restDays = getRestDaysData();
+        if (!restDays[studentId] || !restDays[studentId][weekNum]) {
+            return [];
+        }
+
+        return restDays[studentId][weekNum].slice();
     }
 
     function getSlotMetadata(studentId, week, day, hour) {
-        return ScheduleCore.getSlotMetadata(studentId, week, day, hour);
-    }
+        var weekNum = CalendarConstants.isValidWeek ? CalendarConstants.isValidWeek(week) : parseInt(week, 10);
+        var dayNum = CalendarConstants.isValidDay ? CalendarConstants.isValidDay(day) : parseInt(day, 10);
+        var hourNum = CalendarConstants.isValidHour ? CalendarConstants.isValidHour(hour) : parseInt(hour, 10);
 
-    function getClassDetails(studentId, week, day, hour) {
-        var schedule = getStudentSchedule(studentId, week);
-        var weekNum = parseInteger(week);
-        var dayNum = parseInteger(day);
-        var hourNum = parseInteger(hour);
-
-        if (weekNum === null || dayNum === null || hourNum === null) {
+        if (weekNum === null || weekNum === undefined || isNaN(weekNum) ||
+            dayNum === null || dayNum === undefined || isNaN(dayNum) ||
+            hourNum === null || hourNum === undefined || isNaN(hourNum) ||
+            !studentId) {
             return null;
         }
 
-        if (!schedule[dayNum] || !schedule[dayNum][hourNum]) {
-            return null;
-        }
-
-        var disciplineId = schedule[dayNum][hourNum];
-        var discipline = DisciplineQueries.getDiscipline(disciplineId);
-        var metadata = getSlotMetadata(studentId, weekNum, dayNum, hourNum);
-
-        var instructorId = metadata ? metadata.instructorId : null;
-        var instructor = instructorId ? CharacterQueries.getCharacterById(instructorId) : null;
-
-        return {
-            studentId: studentId,
-            week: weekNum,
-            day: dayNum,
-            hour: hourNum,
-            duration: metadata ? metadata.duration || 1 : 1,
-            disciplineId: disciplineId,
-            disciplineName: discipline ? discipline.name : 'Unknown',
-            instructorId: instructorId,
-            instructorName: instructor ? CharacterQueries.getDisplayName(instructor) : 'Not assigned',
-            label: metadata ? metadata.label || '' : '',
-            groupLabel: metadata ? metadata.groupLabel || '' : '',
-            locationId: metadata ? metadata.locationId : null,
-            isContinuation: false
-        };
-    }
-
-    function getStudentClasses(studentId, week) {
-        var schedule = getStudentSchedule(studentId, week);
-        var weekNum = parseInteger(week);
-        if (weekNum === null) return [];
-
-        var classes = [];
-        for (var day in schedule) {
-            if (!Object.prototype.hasOwnProperty.call(schedule, day)) continue;
-            var dayNum = parseInteger(day);
-            if (dayNum === null) continue;
-
-            var daySchedule = schedule[day];
-            if (!daySchedule || typeof daySchedule !== 'object') continue;
-
-            for (var hour in daySchedule) {
-                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
-                var hourNum = parseInteger(hour);
-                if (hourNum === null) continue;
-
-                var details = getClassDetails(studentId, weekNum, dayNum, hourNum);
-                if (details) {
-                    classes.push(details);
-                }
-            }
-        }
-
-        classes.sort(function(a, b) {
-            if (a.day !== b.day) return a.day - b.day;
-            return a.hour - b.hour;
-        });
-
-        return classes;
-    }
-
-    function getStudentWeeklyUsage(studentId, week) {
-        var classes = getStudentClasses(studentId, week);
-        var total = 0;
-        var byDiscipline = {};
-
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            total += cls.duration || 1;
-            var id = cls.disciplineId;
-            if (!byDiscipline[id]) {
-                byDiscipline[id] = {
-                    disciplineId: id,
-                    disciplineName: cls.disciplineName,
-                    hours: 0
-                };
-            }
-            byDiscipline[id].hours += cls.duration || 1;
-        }
-
-        return { total: total, byDiscipline: byDiscipline };
+        var metadata = getMetadataData();
+        var key = String(studentId) + '_' + String(weekNum) + '_' + String(dayNum) + '_' + String(hourNum);
+        return metadata[key] || null;
     }
 
     // ============================================================
     // INSTRUCTOR SCHEDULE QUERIES
     // ============================================================
 
-    function getInstructorSchedule(instructorId, week) {
-        var weekNum = parseInteger(week);
-        if (weekNum === null || !isNonEmptyString(instructorId)) return {};
-
-        var students = CharacterQueries.getStudents() || [];
-        var schedule = {};
-
-        for (var i = 0; i < students.length; i++) {
-            var student = students[i];
-            var studentSchedule = getStudentSchedule(student.id, weekNum);
-
-            for (var day in studentSchedule) {
-                if (!Object.prototype.hasOwnProperty.call(studentSchedule, day)) continue;
-                var dayNum = parseInteger(day);
-                if (dayNum === null) continue;
-
-                var daySchedule = studentSchedule[day];
-                if (!daySchedule || typeof daySchedule !== 'object') continue;
-
-                for (var hour in daySchedule) {
-                    if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
-                    var hourNum = parseInteger(hour);
-                    if (hourNum === null) continue;
-
-                    var disciplineId = daySchedule[hour];
-                    if (!disciplineId) continue;
-
-                    var metadata = getSlotMetadata(student.id, weekNum, dayNum, hourNum);
-                    if (!metadata || String(metadata.instructorId) !== String(instructorId)) continue;
-
-                    if (!schedule[dayNum]) schedule[dayNum] = {};
-                    if (!schedule[dayNum][hourNum]) {
-                        schedule[dayNum][hourNum] = {
-                            students: [],
-                            disciplineId: disciplineId,
-                            duration: metadata.duration || 1,
-                            label: metadata.label || '',
-                            groupLabel: metadata.groupLabel || ''
-                        };
-                    }
-
-                    var studentEntry = {
-                        studentId: student.id,
-                        studentName: CharacterQueries.getDisplayName(student),
-                        groupLabel: metadata.groupLabel || null
-                    };
-
-                    var exists = false;
-                    for (var s = 0; s < schedule[dayNum][hourNum].students.length; s++) {
-                        if (String(schedule[dayNum][hourNum].students[s].studentId) === String(student.id)) {
-                            exists = true;
-                            break;
-                        }
-                    }
-                    if (!exists) {
-                        schedule[dayNum][hourNum].students.push(studentEntry);
-                    }
-                }
-            }
+    function getInstructorTemplates(instructorId, week) {
+        var weekNum = CalendarConstants.isValidWeek ? CalendarConstants.isValidWeek(week) : parseInt(week, 10);
+        if (weekNum === null || weekNum === undefined || isNaN(weekNum) || !instructorId) {
+            return {};
         }
 
-        return schedule;
-    }
+        var templates = getInstructorTemplatesData();
+        if (!templates[instructorId] || !templates[instructorId][weekNum]) {
+            return {};
+        }
 
-    function getInstructorTemplates(instructorId, week) {
-        var weekNum = parseInteger(week);
-        if (weekNum === null || !isNonEmptyString(instructorId)) return {};
-
-        var curriculum = window.data && window.data.curriculum ? window.data.curriculum : {};
-        var templates = curriculum.instructorTemplates || {};
-        var instructorTemplates = templates[instructorId] || {};
-        return instructorTemplates[weekNum] || {};
+        return templates[instructorId][weekNum];
     }
 
     function getInstructorBlocks(instructorId, week) {
-        var weekNum = parseInteger(week);
-        if (weekNum === null || !isNonEmptyString(instructorId)) return {};
-
-        var curriculum = window.data && window.data.curriculum ? window.data.curriculum : {};
-        var blocks = curriculum.instructorBlocks || {};
-        var instructorBlocks = blocks[instructorId] || {};
-        return instructorBlocks[weekNum] || {};
-    }
-
-    function getAssignedStudents(instructorId, week, day, hour) {
-        var weekNum = parseInteger(week);
-        var dayNum = parseInteger(day);
-        var hourNum = parseInteger(hour);
-
-        if (weekNum === null || dayNum === null || hourNum === null || !isNonEmptyString(instructorId)) {
-            return [];
+        var weekNum = CalendarConstants.isValidWeek ? CalendarConstants.isValidWeek(week) : parseInt(week, 10);
+        if (weekNum === null || weekNum === undefined || isNaN(weekNum) || !instructorId) {
+            return {};
         }
 
-        var schedule = getInstructorSchedule(instructorId, weekNum);
-        if (!schedule[dayNum] || !schedule[dayNum][hourNum]) return [];
-
-        return schedule[dayNum][hourNum].students || [];
-    }
-
-    function getInstructorAvailableDisciplines(instructorId, week) {
-        var weekNum = parseInteger(week);
-        if (weekNum === null || !isNonEmptyString(instructorId)) return [];
-
-        var allDisciplines = DisciplineQueries.getAvailableDisciplines(weekNum) || [];
-        var available = [];
-
-        for (var i = 0; i < allDisciplines.length; i++) {
-            var d = allDisciplines[i];
-            if (!d) continue;
-
-            if (d.instructorIds) {
-                for (var j = 0; j < d.instructorIds.length; j++) {
-                    if (String(d.instructorIds[j]) === String(instructorId)) {
-                        available.push({
-                            id: d.id,
-                            name: d.name,
-                            label: d.name,
-                            subtitle: 'Available',
-                            weeklyHours: d.weeklyHours || 0
-                        });
-                        break;
-                    }
-                }
-            }
+        var blocks = getInstructorBlocksData();
+        if (!blocks[instructorId] || !blocks[instructorId][weekNum]) {
+            return {};
         }
-        return available;
+
+        return blocks[instructorId][weekNum];
     }
 
     // ============================================================
@@ -289,301 +148,158 @@
     // ============================================================
 
     function getLocationSchedule(locationId, week) {
-        var weekNum = parseInteger(week);
-        if (weekNum === null || !isNonEmptyString(locationId)) return {};
-
-        var students = CharacterQueries.getStudents() || [];
-        var schedule = {};
-
-        for (var i = 0; i < students.length; i++) {
-            var student = students[i];
-            var studentSchedule = getStudentSchedule(student.id, weekNum);
-
-            for (var day in studentSchedule) {
-                if (!Object.prototype.hasOwnProperty.call(studentSchedule, day)) continue;
-                var dayNum = parseInteger(day);
-                if (dayNum === null) continue;
-
-                var daySchedule = studentSchedule[day];
-                if (!daySchedule || typeof daySchedule !== 'object') continue;
-
-                for (var hour in daySchedule) {
-                    if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
-                    var hourNum = parseInteger(hour);
-                    if (hourNum === null) continue;
-
-                    var metadata = getSlotMetadata(student.id, weekNum, dayNum, hourNum);
-                    if (!metadata || String(metadata.locationId) !== String(locationId)) continue;
-
-                    if (!schedule[dayNum]) schedule[dayNum] = {};
-                    if (!schedule[dayNum][hourNum]) {
-                        schedule[dayNum][hourNum] = {
-                            students: [],
-                            disciplineId: daySchedule[hour],
-                            duration: metadata.duration || 1,
-                            label: metadata.label || '',
-                            groupLabel: metadata.groupLabel || ''
-                        };
-                    }
-
-                    var studentEntry = {
-                        studentId: student.id,
-                        studentName: CharacterQueries.getDisplayName(student),
-                        groupLabel: metadata.groupLabel || null
-                    };
-
-                    var exists = false;
-                    for (var s = 0; s < schedule[dayNum][hourNum].students.length; s++) {
-                        if (String(schedule[dayNum][hourNum].students[s].studentId) === String(student.id)) {
-                            exists = true;
-                            break;
-                        }
-                    }
-                    if (!exists) {
-                        schedule[dayNum][hourNum].students.push(studentEntry);
-                    }
-                }
-            }
+        var weekNum = CalendarConstants.isValidWeek ? CalendarConstants.isValidWeek(week) : parseInt(week, 10);
+        if (weekNum === null || weekNum === undefined || isNaN(weekNum) || !locationId) {
+            return {};
         }
 
-        return schedule;
-    }
-
-    function getLocationClassDetails(locationId, week, day, hour) {
-        var weekNum = parseInteger(week);
-        var dayNum = parseInteger(day);
-        var hourNum = parseInteger(hour);
-
-        if (weekNum === null || dayNum === null || hourNum === null || !isNonEmptyString(locationId)) {
-            return null;
+        var schedules = getLocationSchedulesData();
+        if (!schedules[locationId] || !schedules[locationId][weekNum]) {
+            return {};
         }
 
-        var schedule = getLocationSchedule(locationId, weekNum);
-        if (!schedule[dayNum] || !schedule[dayNum][hourNum]) return null;
-
-        var slot = schedule[dayNum][hourNum];
-        var discipline = DisciplineQueries.getDiscipline(slot.disciplineId);
-
-        return {
-            locationId: locationId,
-            week: weekNum,
-            day: dayNum,
-            hour: hourNum,
-            disciplineId: slot.disciplineId,
-            disciplineName: discipline ? discipline.name : 'Unknown',
-            duration: slot.duration || 1,
-            label: slot.label || '',
-            groupLabel: slot.groupLabel || '',
-            studentCount: slot.students ? slot.students.length : 0
-        };
-    }
-
-    function getStudentsAtLocation(locationId, week, day, hour) {
-        var weekNum = parseInteger(week);
-        var dayNum = parseInteger(day);
-        var hourNum = parseInteger(hour);
-
-        if (weekNum === null || dayNum === null || hourNum === null || !isNonEmptyString(locationId)) {
-            return [];
-        }
-
-        var schedule = getLocationSchedule(locationId, weekNum);
-        if (!schedule[dayNum] || !schedule[dayNum][hourNum]) return [];
-
-        return schedule[dayNum][hourNum].students || [];
-    }
-
-    function getLocationUsage(locationId, week) {
-        var weekNum = parseInteger(week);
-        if (weekNum === null || !isNonEmptyString(locationId)) {
-            return { totalSlots: 0, totalStudents: 0, daysWithClasses: 0 };
-        }
-
-        var schedule = getLocationSchedule(locationId, weekNum);
-        var totalSlots = 0;
-        var totalStudents = 0;
-        var daysWithClasses = 0;
-        var days = {};
-
-        for (var day in schedule) {
-            if (!Object.prototype.hasOwnProperty.call(schedule, day)) continue;
-            var dayNum = parseInteger(day);
-            if (dayNum === null) continue;
-
-            var daySchedule = schedule[day];
-            if (!daySchedule || typeof daySchedule !== 'object') continue;
-
-            var daySlots = 0;
-            for (var hour in daySchedule) {
-                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
-                var slot = daySchedule[hour];
-                if (!slot) continue;
-
-                totalSlots++;
-                daySlots++;
-                if (slot.students) {
-                    totalStudents += slot.students.length;
-                }
-            }
-
-            if (daySlots > 0) {
-                days[dayNum] = true;
-            }
-        }
-
-        daysWithClasses = Object.keys(days).length;
-
-        return {
-            totalSlots: totalSlots,
-            totalStudents: totalStudents,
-            daysWithClasses: daysWithClasses
-        };
-    }
-
-    function getLocationDisciplineAvailability(locationId, week) {
-        var weekNum = parseInteger(week);
-        if (weekNum === null || !isNonEmptyString(locationId)) return [];
-
-        var schedule = getLocationSchedule(locationId, weekNum);
-        var disciplines = DisciplineQueries.getAvailableDisciplines(weekNum) || [];
-        var usageCount = {};
-
-        for (var day in schedule) {
-            if (!Object.prototype.hasOwnProperty.call(schedule, day)) continue;
-            var daySchedule = schedule[day];
-            if (!daySchedule || typeof daySchedule !== 'object') continue;
-
-            for (var hour in daySchedule) {
-                if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) continue;
-                var slot = daySchedule[hour];
-                if (!slot || !slot.disciplineId) continue;
-
-                usageCount[slot.disciplineId] = (usageCount[slot.disciplineId] || 0) + 1;
-            }
-        }
-
-        var result = [];
-        for (var i = 0; i < disciplines.length; i++) {
-            var d = disciplines[i];
-            if (!d) continue;
-
-            var canHost = true;
-            if (d.locationIds) {
-                canHost = false;
-                for (var j = 0; j < d.locationIds.length; j++) {
-                    if (String(d.locationIds[j]) === String(locationId)) {
-                        canHost = true;
-                        break;
-                    }
-                }
-            }
-
-            var usedCount = usageCount[d.id] || 0;
-            var maxSlots = d.maxSlotsPerLocation || 0;
-            var available = maxSlots === 0 || usedCount < maxSlots;
-
-            result.push({
-                id: d.id,
-                name: d.name,
-                label: d.name,
-                usedCount: usedCount,
-                maxSlots: maxSlots,
-                available: available && canHost,
-                canHost: canHost,
-                weeklyHours: d.weeklyHours || 0
-            });
-        }
-        return result;
+        return schedules[locationId][weekNum];
     }
 
     // ============================================================
     // CONFLICT DETECTION
     // ============================================================
 
-    function hasConflict(studentId, week, day, hour, duration) {
-        var schedule = getStudentSchedule(studentId, week);
-        var restDays = getStudentRestDays(studentId, week);
-        var dayNum = parseInteger(day);
-        var hourNum = parseInteger(hour);
-        var durationNum = parseInteger(duration);
+    function hasConflict(schedule, day, hour, duration) {
+        var dayNum = CalendarConstants.isValidDay ? CalendarConstants.isValidDay(day) : parseInt(day, 10);
+        var hourNum = CalendarConstants.isValidHour ? CalendarConstants.isValidHour(hour) : parseInt(hour, 10);
+        var durationNum = CalendarConstants.isValidDuration ? CalendarConstants.isValidDuration(duration) : parseInt(duration, 10);
 
-        if (dayNum === null || hourNum === null || durationNum === null) return true;
-        if (restDays.indexOf(dayNum) !== -1) return true;
+        if (dayNum === null || dayNum === undefined || isNaN(dayNum) ||
+            hourNum === null || hourNum === undefined || isNaN(hourNum) ||
+            durationNum === null || durationNum === undefined || isNaN(durationNum)) {
+            return true;
+        }
 
-        return ScheduleCore.hasConflict(schedule, dayNum, hourNum, durationNum);
-    }
+        if (!schedule || !schedule[dayNum]) {
+            return false;
+        }
 
-    function getConflicts(studentId, week, day, hour, duration) {
-        var schedule = getStudentSchedule(studentId, week);
-        var dayNum = parseInteger(day);
-        var hourNum = parseInteger(hour);
-        var durationNum = parseInteger(duration);
-
-        if (dayNum === null || hourNum === null || durationNum === null) return [];
-        if (!schedule || !schedule[dayNum]) return [];
-
-        var conflicts = [];
-        var maxHour = Math.min(hourNum + durationNum, 24);
-
+        var maxHour = Math.min(hourNum + durationNum, CalendarConstants.MAX_HOUR + 1);
         for (var h = hourNum; h < maxHour; h++) {
-            if (schedule[dayNum] && schedule[dayNum][h]) {
-                var disciplineId = schedule[dayNum][h];
-                var discipline = DisciplineQueries.getDiscipline(disciplineId);
-                var metadata = getSlotMetadata(studentId, week, dayNum, h);
-                var instructorId = metadata ? metadata.instructorId : null;
-                var instructor = instructorId ? CharacterQueries.getCharacterById(instructorId) : null;
-
-                conflicts.push({
-                    hour: h,
-                    disciplineId: disciplineId,
-                    disciplineName: discipline ? discipline.name : 'Unknown',
-                    instructorId: instructorId,
-                    instructorName: instructor ? CharacterQueries.getDisplayName(instructor) : 'Unknown',
-                    label: metadata ? metadata.label || '' : ''
-                });
+            if (schedule[dayNum][h]) {
+                return true;
             }
         }
-        return conflicts;
+
+        return false;
     }
 
-    function isRestDay(studentId, week, day) {
-        var restDays = getStudentRestDays(studentId, week);
-        var dayNum = parseInteger(day);
-        if (dayNum === null) return false;
+    function isRestDay(restDays, day) {
+        if (!Array.isArray(restDays)) { return false; }
+        var dayNum = CalendarConstants.isValidDay ? CalendarConstants.isValidDay(day) : parseInt(day, 10);
+        if (dayNum === null || dayNum === undefined || isNaN(dayNum)) { return false; }
         return restDays.indexOf(dayNum) !== -1;
     }
 
-    // ============================================================
-    // EXPOSE
-    // ============================================================
+    function findClassStart(schedule, metadata, studentId, week, day, hour) {
+        var dayNum = CalendarConstants.isValidDay ? CalendarConstants.isValidDay(day) : parseInt(day, 10);
+        var hourNum = CalendarConstants.isValidHour ? CalendarConstants.isValidHour(hour) : parseInt(hour, 10);
+        var weekNum = CalendarConstants.isValidWeek ? CalendarConstants.isValidWeek(week) : parseInt(week, 10);
+
+        if (dayNum === null || dayNum === undefined || isNaN(dayNum) ||
+            hourNum === null || hourNum === undefined || isNaN(hourNum) ||
+            weekNum === null || weekNum === undefined || isNaN(weekNum) ||
+            !schedule || !schedule[dayNum]) {
+            return null;
+        }
+
+        var disciplineId = schedule[dayNum][hourNum];
+        if (!disciplineId) { return null; }
+
+        var key = String(studentId) + '_' + String(weekNum) + '_' + String(dayNum) + '_' + String(hourNum);
+        var meta = metadata && metadata[key] ? metadata[key] : null;
+
+        if (meta && meta.duration) {
+            var duration = CalendarConstants.isValidDuration ? CalendarConstants.isValidDuration(meta.duration) : parseInt(meta.duration, 10);
+            if (duration !== null && duration !== undefined && !isNaN(duration)) {
+                var actualDuration = 1;
+                for (var h = hourNum + 1; h < hourNum + duration && h <= CalendarConstants.MAX_HOUR; h++) {
+                    if (String(schedule[dayNum][h]) === String(disciplineId)) {
+                        actualDuration++;
+                    } else {
+                        break;
+                    }
+                }
+                if (duration === actualDuration) {
+                    return {
+                        startHour: hourNum,
+                        duration: duration,
+                        disciplineId: disciplineId,
+                        key: key,
+                        metadata: meta
+                    };
+                }
+            }
+        }
+
+        // Search backwards for a metadata-defined class start
+        for (var candidate = hourNum - 1; candidate >= 0; candidate--) {
+            if (String(schedule[dayNum][candidate]) !== String(disciplineId)) {
+                break;
+            }
+
+            var candidateKey = String(studentId) + '_' + String(weekNum) + '_' + String(dayNum) + '_' + String(candidate);
+            var candidateMeta = metadata && metadata[candidateKey] ? metadata[candidateKey] : null;
+
+            if (candidateMeta && candidateMeta.duration) {
+                var candidateDuration = CalendarConstants.isValidDuration ? CalendarConstants.isValidDuration(candidateMeta.duration) : parseInt(candidateMeta.duration, 10);
+                if (candidateDuration !== null && candidateDuration !== undefined && !isNaN(candidateDuration)) {
+                    var actualDuration = 1;
+                    for (var h2 = candidate + 1; h2 < candidate + candidateDuration && h2 <= CalendarConstants.MAX_HOUR; h2++) {
+                        if (String(schedule[dayNum][h2]) === String(disciplineId)) {
+                            actualDuration++;
+                        } else {
+                            break;
+                        }
+                    }
+                    if (actualDuration === candidateDuration) {
+                        if (hourNum < candidate + candidateDuration) {
+                            return {
+                                startHour: candidate,
+                                duration: candidateDuration,
+                                disciplineId: disciplineId,
+                                key: candidateKey,
+                                metadata: candidateMeta
+                            };
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        return {
+            startHour: hourNum,
+            duration: 1,
+            disciplineId: disciplineId,
+            key: key,
+            metadata: null
+        };
+    }
 
     window.CalendarQueries = {
         // Student
         getStudentSchedule: getStudentSchedule,
         getStudentRestDays: getStudentRestDays,
         getSlotMetadata: getSlotMetadata,
-        getClassDetails: getClassDetails,
-        getStudentClasses: getStudentClasses,
-        getStudentWeeklyUsage: getStudentWeeklyUsage,
 
         // Instructor
-        getInstructorSchedule: getInstructorSchedule,
         getInstructorTemplates: getInstructorTemplates,
         getInstructorBlocks: getInstructorBlocks,
-        getAssignedStudents: getAssignedStudents,
-        getInstructorAvailableDisciplines: getInstructorAvailableDisciplines,
 
         // Location
         getLocationSchedule: getLocationSchedule,
-        getLocationClassDetails: getLocationClassDetails,
-        getStudentsAtLocation: getStudentsAtLocation,
-        getLocationUsage: getLocationUsage,
-        getLocationDisciplineAvailability: getLocationDisciplineAvailability,
 
         // Conflict
         hasConflict: hasConflict,
-        getConflicts: getConflicts,
-        isRestDay: isRestDay
+        isRestDay: isRestDay,
+        findClassStart: findClassStart
     };
 
 })();
