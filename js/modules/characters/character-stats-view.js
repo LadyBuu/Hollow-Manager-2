@@ -18,7 +18,7 @@
  *   - No persistence calls
  *   - Uses CharacterConstants for definitions
  *   - Uses CharacterQueries for character data
- *   - Uses CharacterStats for domain logic
+ *   - Uses CharacterStats for domain logic (directly)
  *   - Uses FormUtils for form field operations
  *   - Uses DomUtils for safe DOM operations
  *   - Uses Modal for modal lifecycle
@@ -43,7 +43,6 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__characterStatsViewLoaded) {
         return;
     }
@@ -114,7 +113,7 @@
         }
 
         if (missing.length > 0) {
-            console.warn('CharacterStatsView: Missing dependencies:', missing.join(', '));
+            console.warn('[CharacterStatsView] Missing dependencies:', missing.join(', '));
             return false;
         }
         return true;
@@ -126,17 +125,25 @@
 
     function getStatValue(key) {
         var val = FormUtils.getField('char-' + key);
-        if (val === null || val === undefined) return STAT_DEFAULT;
+        if (val === null || val === undefined) {
+            return STAT_DEFAULT;
+        }
         var num = Number(val);
-        if (isNaN(num)) return STAT_DEFAULT;
+        if (isNaN(num)) {
+            return STAT_DEFAULT;
+        }
         return Math.max(STAT_MIN, Math.min(STAT_MAX, num));
     }
 
     function getMagicValue(key) {
         var val = FormUtils.getField('magic-' + key);
-        if (val === null || val === undefined) return 0;
+        if (val === null || val === undefined) {
+            return 0;
+        }
         var num = Number(val);
-        if (isNaN(num)) return 0;
+        if (isNaN(num)) {
+            return 0;
+        }
         return Math.max(0, Math.min(MAGIC_MAX, num));
     }
 
@@ -305,17 +312,21 @@
 
     function populateClassSelect() {
         var select = document.getElementById('manual-class-select');
-        if (!select) return;
-        
+        if (!select) {
+            return;
+        }
+
         var currentValue = select.value || '';
         select.innerHTML = '<option value="">Auto-suggest</option>';
-        
+
         var sorted = CLASS_DEFINITIONS.slice().sort(function(a, b) {
             var priorityDiff = (b.priority || 0) - (a.priority || 0);
-            if (priorityDiff !== 0) return priorityDiff;
+            if (priorityDiff !== 0) {
+                return priorityDiff;
+            }
             return (a.label || '').localeCompare(b.label || '');
         });
-        
+
         sorted.forEach(function(cls) {
             if (cls && cls.id) {
                 var option = document.createElement('option');
@@ -324,7 +335,7 @@
                 select.appendChild(option);
             }
         });
-        
+
         if (currentValue) {
             var optionExists = false;
             for (var i = 0; i < select.options.length; i++) {
@@ -353,6 +364,7 @@
             stats[key] = getStatValue(key);
         });
 
+        // Direct use of CharacterStats for domain logic
         var suggested = CharacterStats.suggestClass(stats);
         var display = document.getElementById('suggested-class');
         var descDisplay = document.getElementById('class-description-display');
@@ -392,7 +404,7 @@
             magic[key] = getMagicValue(key);
         });
 
-        // Create temporary character for suggestion
+        // Direct use of CharacterStats for domain logic
         var tempChar = { magic: magic };
         var suggested = CharacterStats.suggestMagicClass(tempChar);
         var display = document.getElementById('suggested-magic-class');
@@ -422,6 +434,7 @@
             magic[key] = getMagicValue(key);
         });
 
+        // Direct use of CharacterStats for domain logic
         var tempChar = { magic: magic };
         var power = CharacterStats.calculateMagicPower(tempChar);
         var display = document.getElementById('magic-power-display-text');
@@ -444,7 +457,9 @@
 
     function renderSpecialMoves(containerId, moves, type) {
         var container = document.getElementById(containerId);
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         container.textContent = '';
 
@@ -524,17 +539,17 @@
         }
 
         if (!charId) {
-            console.warn('CharacterStatsView: charId is required');
+            console.warn('[CharacterStatsView] charId is required');
             return;
         }
 
         if (type !== 'physical' && type !== 'magical') {
-            console.warn('CharacterStatsView: invalid move type');
+            console.warn('[CharacterStatsView] invalid move type');
             return;
         }
 
         if (!moveId) {
-            console.warn('CharacterStatsView: moveId is required');
+            console.warn('[CharacterStatsView] moveId is required');
             return;
         }
 
@@ -689,7 +704,7 @@
         // Class select
         populateClassSelect: populateClassSelect,
 
-        // UI updates (render only)
+        // UI updates (render only) - direct CharacterStats usage
         updateClassSuggestion: updateClassSuggestion,
         updateMagicClassSuggestion: updateMagicClassSuggestion,
         updateMagicPowerDisplay: updateMagicPowerDisplay,
