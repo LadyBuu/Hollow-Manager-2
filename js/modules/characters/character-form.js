@@ -31,7 +31,6 @@
  *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.FormUtils (from form-utils.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
- *   - window.CalendarCore (from calendar-core.js) - MANDATORY
  *   - window.getCurrentEditId (from index.js) - MANDATORY
  *   - window.setCurrentEditId (from index.js) - MANDATORY
  */
@@ -44,14 +43,21 @@
     }
     window.__characterFormLoaded = true;
 
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
     var CharacterQueries = window.CharacterQueries;
     var CharacterCRUD = window.CharacterCRUD;
     var CharacterGenerator = window.CharacterGenerator;
     var CharacterConstants = window.CharacterConstants;
     var AcademyQueries = window.AcademyQueries;
-    var CalendarCore = window.CalendarCore;
     var FormUtils = window.FormUtils;
     var DomUtils = window.DomUtils;
+
+    // ============================================================
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -91,10 +97,6 @@
             missing.push('AcademyQueries.getClassDisplayName');
         }
 
-        if (!CalendarCore || typeof CalendarCore.getCurrentYear !== 'function') {
-            missing.push('CalendarCore.getCurrentYear');
-        }
-
         if (!FormUtils || typeof FormUtils.getField !== 'function') {
             missing.push('FormUtils.getField');
         }
@@ -131,6 +133,10 @@
 
     checkDependencies();
 
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
     var STAT_KEYS = CharacterConstants.STAT_KEYS;
     var STAT_MIN = CharacterConstants.STAT_MIN;
     var STAT_MAX = CharacterConstants.STAT_MAX;
@@ -147,9 +153,28 @@
     var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'stats', 'social', 'notes'];
     var _initialized = false;
 
+    // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils
+    // ============================================================
+
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
     }
+
+    // ============================================================
+    // GET CURRENT YEAR - Removed CalendarCore dependency
+    // ============================================================
+
+    function getCurrentYear() {
+        if (window.data && typeof window.data.currentYear === 'number') {
+            return window.data.currentYear;
+        }
+        return new Date().getFullYear();
+    }
+
+    // ============================================================
+    // EDIT ID HELPERS
+    // ============================================================
 
     function getCurrentEditId() {
         return window.getCurrentEditId();
@@ -159,9 +184,9 @@
         window.setCurrentEditId(id);
     }
 
-    function getCurrentYear() {
-        return CalendarCore.getCurrentYear();
-    }
+    // ============================================================
+    // RENDER FORM
+    // ============================================================
 
     function render(editId) {
         var char = null;
@@ -228,6 +253,10 @@
         }
     }
 
+    // ============================================================
+    // FORM HTML GENERATORS
+    // ============================================================
+
     function getCharacterFormHTML(char, editId, currentYear) {
         var tabs = getTabsHTML();
 
@@ -274,6 +303,10 @@
         }
         return html;
     }
+
+    // ============================================================
+    // TAB HTML GENERATORS
+    // ============================================================
 
     function getNameTabHTML(char, editId) {
         var active = state.currentTab === 'name' ? 'block' : 'none';
@@ -558,6 +591,10 @@
         `;
     }
 
+    // ============================================================
+    // FORM FIELD POPULATION
+    // ============================================================
+
     function populateFormFields(char) {
         if (!char) return;
 
@@ -609,6 +646,10 @@
             });
         }
     }
+
+    // ============================================================
+    // FORM DATA COLLECTION
+    // ============================================================
 
     function collect() {
         var form = document.getElementById('character-form');
@@ -688,6 +729,10 @@
         return dto;
     }
 
+    // ============================================================
+    // TAB SWITCHING
+    // ============================================================
+
     function switchTab(tab) {
         if (!tab || VALID_TABS.indexOf(tab) === -1) return;
 
@@ -707,6 +752,10 @@
             panel.style.display = isActive ? 'block' : 'none';
         });
     }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
 
     window.CharacterForm = {
         render: render,
