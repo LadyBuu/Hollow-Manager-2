@@ -96,6 +96,11 @@
             missing.push('ActivityLog.record');
         }
 
+        // NotificationSystem is optional - falls back to alert()
+        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
+            console.warn('[MutationPipeline] NotificationSystem not available - notifications will fall back to alert()');
+        }
+
         if (missing.length > 0) {
             throw new Error('MutationPipeline: Missing critical dependencies: ' + missing.join(', '));
         }
