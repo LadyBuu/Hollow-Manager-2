@@ -42,36 +42,13 @@
     <script src="js/modules/shared/constants.js"></script>
     <script src="js/modules/shared/calendar-constants.js"></script>
     <script src="js/modules/shared/character-constants.js"></script>
-    <script src="js/modules/shared/academy-constants.js"></script>
     <script src="js/modules/shared/magic-constants.js"></script>
 
     <!-- ============================================================
-         SHARED QUERIES - READ-ONLY DOMAIN ACCESS
+         SHARED QUERIES - MINIMUM REQUIRED
          ============================================================ -->
     <script src="js/modules/shared/queries/character-queries.js"></script>
-    <script src="js/modules/shared/queries/team-queries.js"></script>
-    <script src="js/modules/shared/queries/academy-queries.js"></script>
-    <script src="js/modules/shared/queries/tournament-queries.js"></script>
-    <script src="js/modules/shared/queries/mission-queries.js"></script>
     <script src="js/modules/shared/queries/calendar-queries.js"></script>
-    <script src="js/modules/shared/queries/discipline-queries.js"></script>
-    <script src="js/modules/shared/queries/location-queries.js"></script>
-
-    <!-- ============================================================
-         ELIMINATION & SOCIAL QUERIES - NEED TO BE CREATED
-         ============================================================ -->
-    <!--
-    NOTE: These files need to be created:
-    - js/modules/shared/queries/elimination-queries.js
-    - js/modules/shared/queries/social-queries.js
-    -->
-    <script src="js/modules/shared/queries/elimination-queries.js"></script>
-    <script src="js/modules/shared/queries/social-queries.js"></script>
-
-    <!-- ============================================================
-         CALENDAR VALIDATION
-         ============================================================ -->
-    <script src="js/utils/calendar-validation.js"></script>
 
     <!-- ============================================================
          CORE INFRASTRUCTURE
@@ -85,9 +62,9 @@
     <script src="js/core/bootstrap.js"></script>
 
     <!-- ============================================================
-         CALENDAR MODULE
+         CALENDAR MODULE - MINIMUM
          ============================================================ -->
-    <script src="js/modules/calendar/calendar-validation.js"></script>
+    <script src="js/utils/calendar-validation.js"></script>
     <script src="js/modules/calendar/schedule-core.js"></script>
     <script src="js/modules/calendar/calendar-renderer.js"></script>
     <script src="js/modules/calendar/calendar-aggregator.js"></script>
@@ -98,7 +75,7 @@
     <script src="js/modules/calendar/index.js"></script>
 
     <!-- ============================================================
-         CHARACTER MODULE - INDEPENDENT
+         CHARACTER MODULE - MINIMUM (NO EXTERNAL DEPENDENCIES)
          ============================================================ -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
