@@ -7,6 +7,7 @@
  *   - renderDashboard() - Full dashboard HTML
  *   - renderStatistics() - Statistics cards
  *   - renderQuickLinks() - Navigation quick links
+ *   - renderRecentActivity() - Recent activity feed
  * 
  * IMPORTANT:
  *   - RENDER ONLY - no event binding
@@ -41,6 +42,12 @@
     }
     if (!window.DashboardQueries || typeof window.DashboardQueries.getCurrentYear !== 'function') {
         missing.push('DashboardQueries.getCurrentYear');
+    }
+    if (!window.DashboardQueries || typeof window.DashboardQueries.getRecentActivity !== 'function') {
+        missing.push('DashboardQueries.getRecentActivity');
+    }
+    if (!window.DashboardQueries || typeof window.DashboardQueries.getQuickStats !== 'function') {
+        missing.push('DashboardQueries.getQuickStats');
     }
 
     if (!window.DomUtils || typeof window.DomUtils.escapeHtml !== 'function') {
@@ -80,6 +87,7 @@
     function renderDashboard() {
         var stats = Queries.getStatistics();
         var currentYear = Queries.getCurrentYear();
+        var recentActivity = Queries.getRecentActivity(10);
 
         var html = '';
         html += '<div class="dashboard">';
@@ -89,6 +97,9 @@
 
         // Statistics cards
         html += renderStatistics(stats);
+
+        // Recent activity
+        html += renderRecentActivity(recentActivity);
 
         // Quick links
         html += renderQuickLinks();
@@ -159,7 +170,7 @@
             {
                 value: stats.totalTournaments,
                 label: 'Tournaments',
-                sublabel: null,
+                sublabel: stats.activeTournaments + ' active',
                 cssClass: 'stat-tournaments'
             },
             {
@@ -170,8 +181,8 @@
             },
             {
                 value: stats.totalGraduatingClasses,
-                label: 'Graduating Classes',
-                sublabel: null,
+                label: 'Classes',
+                sublabel: stats.totalEnrolledStudents + ' students',
                 cssClass: 'stat-classes'
             }
         ];
@@ -195,6 +206,93 @@
     }
 
     // ============================================================
+    // RENDER RECENT ACTIVITY
+    // ============================================================
+
+    /**
+     * Render recent activity feed.
+     * 
+     * @param {array} activities - Array of activity items
+     * @returns {string} HTML string
+     */
+    function renderRecentActivity(activities) {
+        var html = '';
+        html += '<div class="dashboard-recent-activity">';
+        html += '<h3 class="section-title">Recent Activity</h3>';
+
+        if (!activities || activities.length === 0) {
+            html += '<p class="empty-state">No recent activity</p>';
+        } else {
+            html += '<div class="activity-feed">';
+
+            for (var i = 0; i < activities.length; i++) {
+                var activity = activities[i];
+                var domainLabel = activity.domain || 'unknown';
+                var typeLabel = activity.type || 'activity';
+                var timestamp = formatTime(activity.timestamp);
+
+                html += '<div class="activity-item" data-domain="' + escapeHtml(domainLabel) + '">';
+                html += '<div class="activity-icon">' + getDomainIcon(domainLabel) + '</div>';
+                html += '<div class="activity-content">';
+                html += '<div class="activity-title">' + escapeHtml(activity.title) + '</div>';
+                html += '<div class="activity-meta">' + escapeHtml(typeLabel) + ' · ' + escapeHtml(timestamp) + '</div>';
+                html += '</div>';
+                html += '</div>';
+            }
+
+            html += '</div>';
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    /**
+     * Get a domain icon.
+     * 
+     * @param {string} domain - Domain name
+     * @returns {string} Icon character
+     */
+    function getDomainIcon(domain) {
+        var icons = {
+            'characters': '👤',
+            'teams': '👥',
+            'tournaments': '🏆',
+            'missions': '📋',
+            'academy': '🎓'
+        };
+        return icons[domain] || '📌';
+    }
+
+    /**
+     * Format a timestamp for display.
+     * 
+     * @param {string} timestamp - ISO timestamp
+     * @returns {string} Formatted time string
+     */
+    function formatTime(timestamp) {
+        if (!timestamp) return 'Recently';
+        try {
+            var date = new Date(timestamp);
+            if (isNaN(date.getTime())) return 'Recently';
+            var now = new Date();
+            var diffMs = now - date;
+            var diffMins = Math.floor(diffMs / 60000);
+            var diffHours = Math.floor(diffMs / 3600000);
+            var diffDays = Math.floor(diffMs / 86400000);
+
+            if (diffMins < 1) return 'Just now';
+            if (diffMins < 60) return diffMins + 'm ago';
+            if (diffHours < 24) return diffHours + 'h ago';
+            if (diffDays < 7) return diffDays + 'd ago';
+
+            return date.toLocaleDateString();
+        } catch (e) {
+            return 'Recently';
+        }
+    }
+
+    // ============================================================
     // RENDER QUICK LINKS
     // ============================================================
 
@@ -205,28 +303,46 @@
      */
     function renderQuickLinks() {
         var links = [
-            { tab: 'characters', label: 'Characters', description: 'Manage all characters' },
-            { tab: 'classes', label: 'Classes', description: 'Manage graduating classes' },
-            { tab: 'teams', label: 'Teams', description: 'Manage teams' },
-            { tab: 'curriculum', label: 'Curriculum', description: 'Disciplines & locations' },
-            { tab: 'calendar', label: 'Calendar', description: 'Schedules & timetables' },
-            { tab: 'missions', label: 'Missions', description: 'Manage missions' }
+            { tab: 'characters', label: 'Characters', description: 'Manage all characters', icon: '👤' },
+            { tab: 'classes', label: 'Classes', description: 'Manage graduating classes', icon: '🎓' },
+            { tab: 'teams', label: 'Teams', description: 'Manage teams', icon: '👥' },
+            { tab: 'curriculum', label: 'Curriculum', description: 'Disciplines & locations', icon: '📚' },
+            { tab: 'calendar', label: 'Calendar', description: 'Schedules & timetables', icon: '📅' },
+            { tab: 'missions', label: 'Missions', description: 'Manage missions', icon: '📋' },
+            { tab: 'tournaments', label: 'Tournaments', description: 'Manage tournaments', icon: '🏆' }
         ];
 
         var html = '';
         html += '<div class="dashboard-quick-links">';
+        html += '<h3 class="section-title">Quick Links</h3>';
+        html += '<div class="quick-links-grid">';
 
         for (var i = 0; i < links.length; i++) {
             var link = links[i];
             html += '<a href="#" data-tab="' + escapeHtml(link.tab) + '" class="quick-link">';
-            html += '<div class="quick-link-icon">◆</div>';
+            html += '<div class="quick-link-icon">' + escapeHtml(link.icon) + '</div>';
             html += '<div class="quick-link-label">' + escapeHtml(link.label) + '</div>';
             html += '<div class="quick-link-description">' + escapeHtml(link.description) + '</div>';
             html += '</a>';
         }
 
         html += '</div>';
+        html += '</div>';
         return html;
+    }
+
+    // ============================================================
+    // RENDER EMPTY STATE
+    // ============================================================
+
+    /**
+     * Render an empty state.
+     * 
+     * @param {string} message - Empty state message
+     * @returns {string} HTML string
+     */
+    function renderEmptyState(message) {
+        return '<p class="empty-state">' + escapeHtml(message || 'No data available') + '</p>';
     }
 
     // ============================================================
@@ -237,7 +353,11 @@
         renderDashboard: renderDashboard,
         renderHeader: renderHeader,
         renderStatistics: renderStatistics,
-        renderQuickLinks: renderQuickLinks
+        renderRecentActivity: renderRecentActivity,
+        renderQuickLinks: renderQuickLinks,
+        renderEmptyState: renderEmptyState,
+        formatTime: formatTime,
+        getDomainIcon: getDomainIcon
     };
 
 })();
