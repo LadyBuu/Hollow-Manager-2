@@ -5,6 +5,9 @@
  * 
  * This module provides the fundamental scheduling operations:
  *   - Student slot management (set/remove)
+ *   - Instructor template management (set/remove)
+ *   - Instructor block management (set/remove)
+ *   - Location class management (set/remove/clear)
  *   - Rest day management
  *   - Schedule query helpers
  *   - Conflict detection
@@ -27,7 +30,9 @@
  * USAGE:
  *   var core = window.ScheduleCore;
  *   var result = core.setStudentSlot(studentId, week, day, hour, disciplineId, duration);
- *   var restDays = core.getRestDays(studentId, week);
+ *   var result = core.setInstructorTemplate(instructorId, week, day, hour, disciplineId, duration, label);
+ *   var result = core.setLocationClass(locationId, week, day, hour, disciplineId);
+ *   var restDays = core.getStudentRestDays(studentId, week);
  *   var conflicts = core.hasConflict(schedule, day, hour, duration);
  */
 
@@ -115,6 +120,14 @@
 
     function getScheduleKey(studentId, week, day, hour) {
         return String(studentId) + '_' + String(week) + '_' + String(day) + '_' + String(hour);
+    }
+
+    function getInstructorKey(instructorId, week, day, hour) {
+        return 'instructor_' + String(instructorId) + '_' + String(week) + '_' + String(day) + '_' + String(hour);
+    }
+
+    function getLocationKey(locationId, week, day, hour) {
+        return 'location_' + String(locationId) + '_' + String(week) + '_' + String(day) + '_' + String(hour);
     }
 
     // ============================================================
@@ -213,6 +226,44 @@
             valid: true,
             week: weekNum,
             days: validDays
+        };
+    }
+
+    function validateInstructorSlot(instructorId, week, day, hour, duration) {
+        if (!isNonEmptyString(instructorId)) {
+            return { valid: false, message: 'Instructor ID is required.' };
+        }
+
+        var weekNum = CalendarValidation.parseWeek(week);
+        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
+            return { valid: false, message: 'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').' };
+        }
+
+        var dayNum = CalendarValidation.parseDay(day);
+        if (dayNum === null || dayNum < MIN_DAY || dayNum > MAX_DAY) {
+            return { valid: false, message: 'Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').' };
+        }
+
+        var hourNum = CalendarValidation.parseHour(hour);
+        if (hourNum === null || hourNum < MIN_HOUR || hourNum > MAX_HOUR) {
+            return { valid: false, message: 'Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').' };
+        }
+
+        var durationNum = CalendarValidation.parseDuration(duration);
+        if (durationNum === null || durationNum < MIN_CLASS_DURATION || durationNum > MAX_DURATION) {
+            return { valid: false, message: 'Duration must be between ' + MIN_CLASS_DURATION + ' and ' + MAX_DURATION + ' hours.' };
+        }
+
+        if (hourNum + durationNum > MAX_HOUR + 1) {
+            return { valid: false, message: 'Slot extends beyond the end of the day.' };
+        }
+
+        return {
+            valid: true,
+            week: weekNum,
+            day: dayNum,
+            hour: hourNum,
+            duration: durationNum
         };
     }
 
@@ -335,7 +386,7 @@
      * @param {number|string} hour - Hour number
      * @param {string} disciplineId - Discipline ID
      * @param {number|string} duration - Duration in hours
-     * @param {string} metadata - Additional metadata (instructor, label, etc.)
+     * @param {object} metadata - Additional metadata (instructor, label, etc.)
      * @returns {object} { success: boolean, message?: string, data?: object }
      */
     function setStudentSlot(studentId, week, day, hour, disciplineId, duration, metadata) {
@@ -615,432 +666,42 @@
     }
 
     // ============================================================
-    // REST DAY OPERATIONS
+    // INSTRUCTOR TEMPLATE OPERATIONS
     // ============================================================
 
     /**
-     * Set a student's rest days for a week.
+     * Get instructor templates for a specific week.
      * 
-     * @param {string} studentId - Student ID
+     * @param {string} instructorId - Instructor ID
      * @param {number|string} week - Week number
-     * @param {array} days - Array of day numbers (1-7)
-     * @returns {object} { success: boolean, message?: string, data?: object }
+     * @returns {object} Templates object { day_hour: { disciplineId, duration, label, assignedStudents } }
      */
-    function setRestDays(studentId, week, days) {
-        // ---- PHASE 1: VALIDATE ----
-        var validation = validateRestDays(studentId, week, days);
-        if (!validation.valid) {
-            return failure(validation.message);
-        }
-
-        var weekNum = validation.week;
-        var validDays = validation.days;
-
-        // ---- PHASE 2: GET STORE ----
-        var curriculum = getCurriculum();
-        if (!curriculum) {
-            return failure('Curriculum data is not available.');
-        }
-
-        // ---- PHASE 3: BUILD CANDIDATES ----
-        var candidateSchedules = deepClone(curriculum.schedules || {});
-        if (candidateSchedules === null) {
-            return failure('Failed to prepare schedule data.');
-        }
-
-        var candidateRestDays = deepClone(curriculum.restDays || {});
-        if (candidateRestDays === null) {
-            return failure('Failed to prepare rest days data.');
-        }
-
-        var candidateMetadata = deepClone(curriculum.metadata || {});
-        if (candidateMetadata === null) {
-            candidateMetadata = {};
-        }
-
-        // ---- PHASE 4: REMOVE CLASSES ON REST DAYS ----
-        if (candidateSchedules[studentId] && candidateSchedules[studentId][weekNum]) {
-            var weekSchedule = candidateSchedules[studentId][weekNum];
-            var prefix = String(studentId) + '_' + String(weekNum) + '_';
-
-            for (var i = 0; i < validDays.length; i++) {
-                var day = validDays[i];
-                if (weekSchedule[day]) {
-                    // Remove all classes on this day
-                    for (var hour in weekSchedule[day]) {
-                        if (Object.prototype.hasOwnProperty.call(weekSchedule[day], hour)) {
-                            var hourNum = parseInt(hour, 10);
-                            if (!isNaN(hourNum)) {
-                                var key = getScheduleKey(studentId, weekNum, day, hourNum);
-                                delete candidateMetadata[key];
-                            }
-                        }
-                    }
-                    delete weekSchedule[day];
-                }
-            }
-        }
-
-        // ---- PHASE 5: SET REST DAYS ----
-        if (!candidateRestDays[studentId]) {
-            candidateRestDays[studentId] = {};
-        }
-        candidateRestDays[studentId][weekNum] = validDays;
-
-        // ---- PHASE 6: COMMIT ----
-        curriculum.schedules = candidateSchedules;
-        curriculum.restDays = candidateRestDays;
-        curriculum.metadata = candidateMetadata;
-
-        return success({
-            studentId: studentId,
-            week: weekNum,
-            days: validDays
-        });
-    }
-
-    /**
-     * Remove rest days for a student in a week.
-     * 
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @returns {object} { success: boolean, message?: string, data?: object }
-     */
-    function removeRestDays(studentId, week) {
-        if (!isNonEmptyString(studentId)) {
-            return failure('Student ID is required.');
-        }
-
+    function getInstructorTemplates(instructorId, week) {
         var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+        if (weekNum === null || !isNonEmptyString(instructorId)) {
+            return {};
         }
 
         var curriculum = getCurriculum();
-        if (!curriculum) {
-            return failure('Curriculum data is not available.');
+        if (!curriculum || !curriculum.instructorTemplates) {
+            return {};
         }
 
-        if (!curriculum.restDays || !curriculum.restDays[studentId] || !curriculum.restDays[studentId][weekNum]) {
-            return success({ removed: false, message: 'No rest days for this week.' });
+        var key = String(instructorId) + '_' + String(weekNum);
+        var templates = curriculum.instructorTemplates[key];
+
+        if (!templates) {
+            return {};
         }
 
-        var candidateRestDays = deepClone(curriculum.restDays || {});
-        if (candidateRestDays === null) {
-            return failure('Failed to prepare rest days data.');
-        }
-
-        delete candidateRestDays[studentId][weekNum];
-
-        curriculum.restDays = candidateRestDays;
-
-        return success({
-            studentId: studentId,
-            week: weekNum,
-            removed: true
-        });
+        return deepClone(templates) || {};
     }
 
-    // ============================================================
-    // METADATA OPERATIONS
-    // ============================================================
-
     /**
-     * Get metadata for a specific slot.
+     * Set an instructor template for a specific slot.
      * 
-     * @param {string} studentId - Student ID
+     * @param {string} instructorId - Instructor ID
      * @param {number|string} week - Week number
      * @param {number|string} day - Day number (1-7)
      * @param {number|string} hour - Hour number
-     * @returns {object|null} Metadata object or null
-     */
-    function getSlotMetadata(studentId, week, day, hour) {
-        if (!isNonEmptyString(studentId)) {
-            return null;
-        }
-
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return null;
-        }
-
-        var dayNum = CalendarValidation.parseDay(day);
-        if (dayNum === null) {
-            return null;
-        }
-
-        var hourNum = CalendarValidation.parseHour(hour);
-        if (hourNum === null) {
-            return null;
-        }
-
-        var curriculum = getCurriculum();
-        if (!curriculum || !curriculum.metadata) {
-            return null;
-        }
-
-        var key = getScheduleKey(studentId, weekNum, dayNum, hourNum);
-        var metadata = curriculum.metadata[key];
-
-        if (!metadata) {
-            return null;
-        }
-
-        return deepClone(metadata);
-    }
-
-    /**
-     * Set metadata for a specific slot.
-     * 
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @param {object} data - Metadata data to set
-     * @returns {object} { success: boolean, message?: string }
-     */
-    function setSlotMetadata(studentId, week, day, hour, data) {
-        if (!isNonEmptyString(studentId)) {
-            return failure('Student ID is required.');
-        }
-
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
-        }
-
-        var dayNum = CalendarValidation.parseDay(day);
-        if (dayNum === null) {
-            return failure('Valid day is required (' + MIN_DAY + '-' + MAX_DAY + ').');
-        }
-
-        var hourNum = CalendarValidation.parseHour(hour);
-        if (hourNum === null) {
-            return failure('Valid hour is required (' + MIN_HOUR + '-' + MAX_HOUR + ').');
-        }
-
-        if (!data || typeof data !== 'object') {
-            return failure('Metadata data is required.');
-        }
-
-        var curriculum = getCurriculum();
-        if (!curriculum) {
-            return failure('Curriculum data is not available.');
-        }
-
-        var candidateMetadata = deepClone(curriculum.metadata || {});
-        if (candidateMetadata === null) {
-            return failure('Failed to prepare metadata data.');
-        }
-
-        var key = getScheduleKey(studentId, weekNum, dayNum, hourNum);
-
-        if (!candidateMetadata[key]) {
-            candidateMetadata[key] = {};
-        }
-
-        for (var prop in data) {
-            if (Object.prototype.hasOwnProperty.call(data, prop)) {
-                if (data[prop] === null || data[prop] === undefined) {
-                    delete candidateMetadata[key][prop];
-                } else {
-                    candidateMetadata[key][prop] = data[prop];
-                }
-            }
-        }
-
-        // If no properties left, remove the key
-        if (Object.keys(candidateMetadata[key]).length === 0) {
-            delete candidateMetadata[key];
-        }
-
-        curriculum.metadata = candidateMetadata;
-
-        return success({
-            studentId: studentId,
-            week: weekNum,
-            day: dayNum,
-            hour: hourNum,
-            updated: true
-        });
-    }
-
-    // ============================================================
-    // CLASS START RESOLUTION
-    // ============================================================
-
-    /**
-     * Find the class start hour for a given occupied hour.
-     * 
-     * @param {object} schedule - Schedule data { day: { hour: disciplineId } }
-     * @param {object} metadata - Metadata object
-     * @param {string} studentId - Student ID
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour to check
-     * @returns {object|null} { startHour, duration, disciplineId, key } or null
-     */
-    function findClassStart(schedule, metadata, studentId, week, day, hour) {
-        var dayNum = CalendarValidation.parseDay(day);
-        var hourNum = CalendarValidation.parseHour(hour);
-
-        if (dayNum === null || hourNum === null || !schedule || !schedule[dayNum]) {
-            return null;
-        }
-
-        var disciplineId = schedule[dayNum][hourNum];
-        if (!disciplineId) {
-            return null;
-        }
-
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return null;
-        }
-
-        // Check if this hour itself has metadata
-        var key = getScheduleKey(studentId, weekNum, dayNum, hourNum);
-        var meta = metadata && metadata[key] ? metadata[key] : null;
-
-        if (meta && meta.duration) {
-            var duration = CalendarValidation.parseDuration(meta.duration);
-            if (duration !== null) {
-                // Verify the class is actually contiguous
-                var actualDuration = validateOccupiedDuration(schedule, dayNum, hourNum, disciplineId);
-                if (actualDuration !== null && duration === actualDuration) {
-                    return {
-                        startHour: hourNum,
-                        duration: duration,
-                        disciplineId: disciplineId,
-                        key: key,
-                        metadata: meta
-                    };
-                }
-            }
-        }
-
-        // Search backwards for a metadata-defined class start
-        for (var candidate = hourNum - 1; candidate >= 0; candidate--) {
-            if (String(schedule[dayNum][candidate]) !== String(disciplineId)) {
-                break;
-            }
-
-            var candidateKey = getScheduleKey(studentId, weekNum, dayNum, candidate);
-            var candidateMeta = metadata && metadata[candidateKey] ? metadata[candidateKey] : null;
-
-            if (candidateMeta && candidateMeta.duration) {
-                var candidateDuration = CalendarValidation.parseDuration(candidateMeta.duration);
-                if (candidateDuration !== null) {
-                    var actualDuration = validateOccupiedDuration(schedule, dayNum, candidate, disciplineId);
-                    if (actualDuration !== null && candidateDuration === actualDuration) {
-                        if (hourNum < candidate + candidateDuration) {
-                            return {
-                                startHour: candidate,
-                                duration: candidateDuration,
-                                disciplineId: disciplineId,
-                                key: candidateKey,
-                                metadata: candidateMeta
-                            };
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-
-        // No metadata found - use simple occupancy
-        return {
-            startHour: hourNum,
-            duration: 1,
-            disciplineId: disciplineId,
-            key: key,
-            metadata: null
-        };
-    }
-
-    /**
-     * Validate that occupied hours match the expected duration.
-     * 
-     * @param {object} schedule - Schedule data { day: { hour: disciplineId } }
-     * @param {number} day - Day number (1-7)
-     * @param {number} startHour - Start hour
-     * @param {string} disciplineId - Discipline ID
-     * @returns {number|null} Actual duration or null if inconsistent
-     */
-    function validateOccupiedDuration(schedule, day, startHour, disciplineId) {
-        var dayNum = CalendarValidation.parseDay(day);
-        var startNum = CalendarValidation.parseHour(startHour);
-
-        if (dayNum === null || startNum === null || !schedule || !schedule[dayNum]) {
-            return null;
-        }
-
-        var duration = 0;
-
-        for (var h = startNum; h <= MAX_HOUR; h++) {
-            if (String(schedule[dayNum][h]) === String(disciplineId)) {
-                duration++;
-            } else {
-                break;
-            }
-        }
-
-        // Check that the class is contiguous - no gaps
-        for (var h = startNum + duration; h <= Math.min(startNum + duration + MAX_DURATION, MAX_HOUR); h++) {
-            if (String(schedule[dayNum][h]) === String(disciplineId)) {
-                return null;
-            }
-        }
-
-        return duration;
-    }
-
-    // ============================================================
-    // EXPOSE
-    // ============================================================
-
-    window.ScheduleCore = {
-        // Validation
-        validateSlot: validateSlot,
-        validateRestDays: validateRestDays,
-
-        // Conflict detection
-        hasConflict: hasConflict,
-        isRestDay: isRestDay,
-
-        // Student schedule operations
-        getStudentSchedule: getStudentSchedule,
-        setStudentSlot: setStudentSlot,
-        removeStudentSlot: removeStudentSlot,
-        clearStudentSchedule: clearStudentSchedule,
-
-        // Rest day operations
-        getStudentRestDays: getStudentRestDays,
-        setRestDays: setRestDays,
-        removeRestDays: removeRestDays,
-
-        // Metadata operations
-        getSlotMetadata: getSlotMetadata,
-        setSlotMetadata: setSlotMetadata,
-
-        // Class start resolution
-        findClassStart: findClassStart,
-        validateOccupiedDuration: validateOccupiedDuration,
-
-        // Helpers
-        getScheduleKey: getScheduleKey,
-
-        // Constants
-        MIN_WEEK: MIN_WEEK,
-        MAX_WEEK: MAX_WEEK,
-        MIN_DAY: MIN_DAY,
-        MAX_DAY: MAX_DAY,
-        MIN_HOUR: MIN_HOUR,
-        MAX_HOUR: MAX_HOUR,
-        CALENDAR_START_HOUR: CALENDAR_START_HOUR,
-        CALENDAR_END_HOUR: CALENDAR_END_HOUR,
-        MAX_DURATION: MAX_DURATION,
-        MIN_CLASS_DURATION: MIN_CLASS_DURATION
-    };
-
-})();
+    
