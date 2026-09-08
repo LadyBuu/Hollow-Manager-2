@@ -15,7 +15,7 @@
  *   - createSafeBackup() uses CoreUtils.deepClone() (SINGLE SOURCE OF TRUTH)
  *   - saveWithPromise() ensures saveData() errors become Promise rejections
  *   - This module does NOT show UI - caller handles UX via callbacks
- *   - Uses NotificationSystem for notifications (SINGLE SOURCE OF TRUTH)
+ *   - Uses NotificationSystem for notifications when available
  *   - Uses ActivityLog for logging (SINGLE SOURCE OF TRUTH)
  *   - Uses CoreUtils for cloning (SINGLE SOURCE OF TRUTH)
  * 
@@ -54,13 +54,12 @@
  *   - window.data (global state)
  *   - window.CoreUtils (for deepClone)
  *   - window.ActivityLog (for activity logging)
- *   - window.NotificationSystem (for notifications)
+ *   - window.NotificationSystem (for notifications - optional, falls back to alert)
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__mutationPipelineLoaded) {
         return;
     }
@@ -97,12 +96,8 @@
             missing.push('ActivityLog.record');
         }
 
-        if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
-            missing.push('NotificationSystem.notify');
-        }
-
         if (missing.length > 0) {
-            throw new Error('MutationPipeline: Missing dependencies: ' + missing.join(', '));
+            throw new Error('MutationPipeline: Missing critical dependencies: ' + missing.join(', '));
         }
 
         return true;
@@ -156,7 +151,7 @@
     }
 
     // ============================================================
-    // NOTIFICATION HELPER - USES NotificationSystem
+    // NOTIFICATION HELPER - Uses NotificationSystem or falls back
     // ============================================================
 
     function showNotification(message, type) {
@@ -167,8 +162,9 @@
             return;
         }
 
-        // If NotificationSystem is missing, this is a dependency failure
-        throw new Error('MutationPipeline: NotificationSystem not available');
+        if (typeof window.alert === 'function') {
+            window.alert(message);
+        }
     }
 
     // ============================================================
@@ -176,29 +172,21 @@
     // ============================================================
 
     function restoreFromBackup(data, backup) {
-        // Clear existing data
-        Object.keys(data).forEach(function(key) {
-            delete data[key];
-        });
+        var keys = Object.keys(data);
+        for (var i = 0; i < keys.length; i++) {
+            delete data[keys[i]];
+        }
 
-        // Restore from backup
-        Object.keys(backup).forEach(function(key) {
-            data[key] = backup[key];
-        });
+        var backupKeys = Object.keys(backup);
+        for (var j = 0; j < backupKeys.length; j++) {
+            data[backupKeys[j]] = backup[backupKeys[j]];
+        }
     }
 
     // ============================================================
     // CENTRALISED BACKUP CREATION
     // ============================================================
 
-    /**
-     * Create a safe backup of application state.
-     * Uses CoreUtils.deepClone() - the SINGLE SOURCE OF TRUTH.
-     * 
-     * @param {object} data - The data to clone (usually window.data)
-     * @returns {object} Deep clone of data
-     * @throws {Error} If cloning fails
-     */
     function createSafeBackup(data) {
         if (!data || typeof data !== 'object') {
             throw new Error('MutationPipeline: Cannot backup invalid data.');
@@ -211,14 +199,6 @@
     // SAVE WRAPPER - Converts sync exceptions to Promise rejections
     // ============================================================
 
-    /**
-     * Wrapper around window.saveData() that catches synchronous exceptions.
-     * Ensures all save errors become Promise rejections.
-     * 
-     * @param {object} options - Optional configuration
-     * @param {boolean} options._testFailure - Force failure for testing
-     * @returns {Promise<void>}
-     */
     function saveWithPromise(options) {
         options = options || {};
 
@@ -226,18 +206,15 @@
             return Promise.reject(new Error('saveData is not available.'));
         }
 
-        // For testing: simulate save failure
         if (options._testFailure) {
             return Promise.reject(new Error('Simulated save failure for testing.'));
         }
 
-        // Wrap in Promise.resolve to catch synchronous exceptions
         return Promise.resolve()
             .then(function() {
                 return window.saveData();
             })
             .then(function(result) {
-                // If saveData returns false or { success: false }, treat as failure
                 if (result === false) {
                     return Promise.reject(new Error('Save operation returned false.'));
                 }
@@ -330,11 +307,9 @@
                 try {
                     mutationResult = config.mutate(data, backup);
                 } catch (err) {
-                    // Rollback on mutation error
                     try {
                         restoreFromBackup(data, backup);
                     } catch (rollbackErr) {
-                        // Rollback failure is critical - throw to prevent corrupted state
                         reject(new Error('Mutation failed and rollback failed: ' + rollbackErr.message));
                         return;
                     }
@@ -418,7 +393,6 @@
                         try {
                             restoreFromBackup(window.data, backup);
                         } catch (rollbackErr) {
-                            // Rollback failure is critical - throw to prevent corrupted state
                             reject(new Error('Persistence failed and rollback failed: ' + rollbackErr.message));
                             return;
                         }
@@ -464,29 +438,10 @@
     // PUBLIC API
     // ============================================================
 
-    /**
-     * Perform a mutation with the standard pipeline:
-     * VALIDATE -> SNAPSHOT -> MUTATE -> PERSIST -> LOG -> UI COMMIT
-     * 
-     * Mutations are serialised to prevent rollback conflicts.
-     * 
-     * @param {object} config - Mutation configuration
-     * @returns {Promise<{ success: boolean, data?: any, message?: string }>}
-     */
     function performMutation(config) {
         return enqueueMutation(config);
     }
 
-    /**
-     * Simple mutation wrapper for operations that don't need complex config.
-     * 
-     * @param {string} logMessage - Activity log message
-     * @param {string} successMessage - User-facing success message
-     * @param {string} failureMessage - User-facing failure message
-     * @param {Function} mutateFn - Mutation function that receives (data, backup)
-     * @param {Function} validateFn - Optional validation function
-     * @returns {Promise<{ success: boolean, data?: any, message?: string }>}
-     */
     function simpleMutation(logMessage, successMessage, failureMessage, mutateFn, validateFn) {
         validateFn = validateFn || function(data) {
             return { valid: true };
@@ -506,12 +461,9 @@
     // ============================================================
 
     window.MutationPipeline = {
-        // Core
         performMutation: performMutation,
         createSafeBackup: createSafeBackup,
         saveWithPromise: saveWithPromise,
-
-        // Convenience
         simpleMutation: simpleMutation
     };
 
