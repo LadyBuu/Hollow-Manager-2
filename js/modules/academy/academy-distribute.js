@@ -72,6 +72,7 @@
 
     var missing = [];
 
+    // ScheduleCore - conflict detection
     if (!window.ScheduleCore || typeof window.ScheduleCore.hasConflict !== 'function') {
         missing.push('ScheduleCore.hasConflict');
     }
@@ -82,6 +83,7 @@
         missing.push('ScheduleCore.getStudentSchedule');
     }
 
+    // AcademyQueries - data access
     if (!window.AcademyQueries || typeof window.AcademyQueries.getClassStudents !== 'function') {
         missing.push('AcademyQueries.getClassStudents');
     }
@@ -92,6 +94,7 @@
         missing.push('AcademyQueries.getAvailableStudents');
     }
 
+    // AcademySchedule - scheduling operations
     if (!window.AcademySchedule || typeof window.AcademySchedule.setStudentScheduleClass !== 'function') {
         missing.push('AcademySchedule.setStudentScheduleClass');
     }
@@ -120,6 +123,7 @@
         missing.push('AcademySchedule.getStudentRestDays');
     }
 
+    // Constants & Validation
     if (!window.CalendarConstants) {
         missing.push('CalendarConstants');
     }
@@ -137,6 +141,7 @@
         missing.push('CalendarValidation.parseDuration');
     }
 
+    // CharacterQueries
     if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
         missing.push('CharacterQueries.getCharacterById');
     }
@@ -144,6 +149,7 @@
         missing.push('CharacterQueries.getDisplayName');
     }
 
+    // DisciplineQueries
     if (!window.DisciplineQueries || typeof window.DisciplineQueries.getDiscipline !== 'function') {
         missing.push('DisciplineQueries.getDiscipline');
     }
@@ -151,6 +157,7 @@
         missing.push('DisciplineQueries.getAvailableDisciplines');
     }
 
+    // ObjectUtils
     if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
         missing.push('ObjectUtils.deepClone');
     }
@@ -626,7 +633,7 @@
                         var student = students[s];
                         if (!student || !student.id) continue;
 
-                        // Check for conflicts
+                        // Check for conflicts using AcademySchedule
                         if (AcademySchedule.hasStudentScheduleConflict(student.id, weekNum, day, hour, duration)) {
                             slotAvailable = false;
                             break;
