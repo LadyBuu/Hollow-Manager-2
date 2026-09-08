@@ -1,104 +1,166 @@
 /**
- * js/modules/academy/academy-ranking.js - Academy Ranking Domain
- * Single source of truth for all ranking operations within the Academy
+ * js/modules/academy/academy-ranking.js - Academy Ranking
+ * SINGLE SOURCE OF TRUTH for all academy ranking data and operations
  * Path: js/modules/academy/academy-ranking.js
  * 
- * This module handles:
- *   - Ranking CRUD operations
- *   - Auto-generation of rankings from grades
- *   - Class ranking summaries
- *   - Ranking history
- *   - Ranking statistics
+ * This module is responsible for:
+ *   - Ranking CRUD operations (create, update, delete)
+ *   - Ranking queries (get by class, student, week)
+ *   - Ranking calculations (auto-generation from grades)
+ *   - Ranking statistics (percentile, distribution)
+ *   - Ranking validation
  * 
  * IMPORTANT:
- *   - This module is the CANONICAL source of truth for rankings
- *   - All mutations are candidate-based: validate, clone, modify, return candidate
- *   - This module does NOT commit to window.data or call saveData()
- *   - Persistence and logging are owned by MutationPipeline
- *   - All validation uses CalendarValidation from calendar-validation.js
- *   - All deep cloning uses ObjectUtils.deepClone()
- *   - Rankings are POSITIONAL: ranks are normalised to 1..N on every mutation
- *   - Input rank values are treated as desired positions, not absolute ranks
+ *   - This module OWNS ranking data - it does NOT depend on AcademyQueries
+ *   - Uses AcademyGrades for grade data (no circular dependency)
+ *   - Uses AcademyClasses for class data (no circular dependency)
+ *   - All mutations are candidate-based: VALIDATE → CLONE → MODIFY → COMMIT
+ *   - Invalid inputs are REJECTED (operation returns null/false)
+ *   - Mutations are ATOMIC: if any part is invalid, nothing changes
+ *   - This module does NOT call saveData() - callers own persistence
+ *   - AcademyQueries is the PUBLIC read facade that uses these internal lookups
+ * 
+ * RANKING DATA STRUCTURE:
+ *   window.data.academy.rankings = {
+ *     'rank_123': {
+ *       id: 'rank_123',
+ *       classId: 'class_789',
+ *       studentId: 'char_456',
+ *       week: 5,
+ *       rank: 1,
+ *       totalStudents: 25,
+ *       percentile: 96,
+ *       averageScore: 85.5,
+ *       score: 92,
+ *       createdAt: '2026-02-15T10:00:00Z',
+ *       updatedAt: '2026-02-15T10:00:00Z'
+ *     }
+ *   }
  * 
  * DEPENDENCIES:
- *   - window.ObjectUtils (from object-utils.js)
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.AcademyQueries (from academy-queries.js)
- *   - window.AcademyGrades (from academy-grades.js)
- *   - window.CalendarValidation (from calendar-validation.js)
- *   - window.CalendarConstants (from calendar-constants.js)
+ *   - window.ObjectUtils (from object-utils.js) - MANDATORY
+ *   - window.IdUtils (from id-utils.js) - MANDATORY
+ *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
+ *   - window.AcademyGrades (from academy-grades.js) - MANDATORY
+ *   - window.AcademyClasses (from academy-classes.js) - MANDATORY
+ *   - window.CharacterQueries (from character-queries.js) - MANDATORY
+ *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
  * 
  * USAGE:
  *   var rankings = window.AcademyRanking;
- *   var result = rankings.autoGenerate(week);
- *   var classRankings = rankings.getClassRankings(classId, week);
- *   var summary = rankings.getClassRankingSummary(classId, week);
+ *   
+ *   // Create/update rankings
+ *   var result = rankings.autoGenerate('class_789', 5);
+ *   var result = rankings.saveRanking(rankData);
+ *   
+ *   // Get rankings
+ *   var classRankings = rankings.getClassRankings('class_789', 5);
+ *   var studentRank = rankings.getStudentRank('class_789', 'char_456', 5);
+ *   
+ *   // Get ranking details
+ *   var ranking = rankings.getRanking('rank_123');
+ *   var all = rankings.getRankings();
  */
 
 (function() {
     'use strict';
 
+    // Guard against duplicate loading
     if (window.__academyRankingLoaded) {
         return;
     }
 
-    var ObjectUtils = window.ObjectUtils;
-    var CharacterQueries = window.CharacterQueries;
-    var AcademyQueries = window.AcademyQueries;
-    var AcademyGrades = window.AcademyGrades;
-    var CalendarValidation = window.CalendarValidation;
-    var CalendarConstants = window.CalendarConstants;
+    // ============================================================
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
+    // ============================================================
 
-    function checkDependencies() {
-        var missing = [];
+    var missing = [];
 
-        if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
-            missing.push('ObjectUtils.deepClone');
-        }
-
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
-            missing.push('CharacterQueries.getCurrentStatus');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getStudents !== 'function') {
-            missing.push('CharacterQueries.getStudents');
-        }
-
-        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
-            missing.push('AcademyQueries.getClass');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getClassStudents !== 'function') {
-            missing.push('AcademyQueries.getClassStudents');
-        }
-
-        if (!AcademyGrades || typeof AcademyGrades.calculateSummary !== 'function') {
-            missing.push('AcademyGrades.calculateSummary');
-        }
-
-        if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
-            missing.push('CalendarValidation.parseWeek');
-        }
-
-        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
-            missing.push('CalendarConstants.MIN_WEEK');
-        }
-
-        if (missing.length > 0) {
-            throw new Error('AcademyRanking: Missing dependencies: ' + missing.join(', '));
-        }
-
-        return true;
+    if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
+        missing.push('ObjectUtils.deepClone');
     }
 
-    checkDependencies();
+    if (!window.IdUtils || typeof window.IdUtils.generateId !== 'function') {
+        missing.push('IdUtils.generateId');
+    }
+
+    if (!window.ValidationUtils || typeof window.ValidationUtils.isNonEmptyString !== 'function') {
+        missing.push('ValidationUtils.isNonEmptyString');
+    }
+
+    if (!window.AcademyGrades || typeof window.AcademyGrades.getClassGrades !== 'function') {
+        missing.push('AcademyGrades.getClassGrades');
+    }
+    if (!window.AcademyGrades || typeof window.AcademyGrades.calculateSummary !== 'function') {
+        missing.push('AcademyGrades.calculateSummary');
+    }
+    if (!window.AcademyGrades || typeof window.AcademyGrades.calculateClassRanking !== 'function') {
+        missing.push('AcademyGrades.calculateClassRanking');
+    }
+
+    if (!window.AcademyClasses || typeof window.AcademyClasses.getClassRecord !== 'function') {
+        missing.push('AcademyClasses.getClassRecord');
+    }
+
+    if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
+        missing.push('CharacterQueries.getCharacterById');
+    }
+    if (!window.CharacterQueries || typeof window.CharacterQueries.getDisplayName !== 'function') {
+        missing.push('CharacterQueries.getDisplayName');
+    }
+
+    if (!window.CalendarConstants) {
+        missing.push('CalendarConstants');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[AcademyRanking] Missing dependencies: ' + missing.join(', '));
+    }
+
+    window.__academyRankingLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var ObjectUtils = window.ObjectUtils;
+    var IdUtils = window.IdUtils;
+    var ValidationUtils = window.ValidationUtils;
+    var AcademyGrades = window.AcademyGrades;
+    var AcademyClasses = window.AcademyClasses;
+    var CharacterQueries = window.CharacterQueries;
+    var CalendarConstants = window.CalendarConstants;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var MIN_RANK = 1;
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    function isObject(value) {
+        return value !== null && typeof value === 'object' && !Array.isArray(value);
+    }
+
+    function isNonEmptyString(value) {
+        return ValidationUtils.isNonEmptyString(value);
+    }
+
+    function isNumber(value) {
+        return typeof value === 'number' && isFinite(value);
+    }
 
     function deepClone(value) {
         return ObjectUtils.deepClone(value);
+    }
+
+    function generateId() {
+        return IdUtils.generateId('rank');
     }
 
     function failure(message) {
@@ -109,831 +171,1028 @@
         return { success: true, data: data };
     }
 
-    function isNonEmptyString(value) {
-        return typeof value === 'string' && value.trim() !== '';
+    function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
     }
 
-    function getRankingsStore() {
+    function calculatePercentile(rank, total) {
+        if (total <= 0 || rank <= 0) {
+            return 0;
+        }
+        return Math.round(((total - rank + 1) / total) * 100);
+    }
+
+    // ============================================================
+    // DATA STORE ACCESS - INTERNAL (no AcademyQueries dependency)
+    // ============================================================
+
+    function getDataStore() {
         if (!window.data || typeof window.data !== 'object') {
             return null;
         }
-        if (!window.data.curriculum || typeof window.data.curriculum !== 'object') {
-            return null;
-        }
-        return window.data.curriculum.rankings;
+        return window.data;
     }
 
-    function validateRank(value) {
-        if (value === undefined || value === null || value === '') {
+    function getAcademyStore() {
+        var data = getDataStore();
+        if (!data) {
             return null;
         }
-        var num = Number(value);
-        if (!Number.isInteger(num) || num < 1) {
+
+        if (!data.academy || typeof data.academy !== 'object') {
+            data.academy = {};
+        }
+
+        return data.academy;
+    }
+
+    function ensureRankingStructures() {
+        var academy = getAcademyStore();
+        if (!academy) {
             return null;
         }
-        return num;
+
+        if (!academy.rankings || typeof academy.rankings !== 'object') {
+            academy.rankings = {};
+        }
+
+        return academy;
     }
 
-    function validateStudentId(studentId) {
-        if (!isNonEmptyString(studentId)) {
-            return { valid: false, message: 'Student ID is required.' };
+    // ============================================================
+    // INTERNAL RANKING LOOKUP - PRIVATE
+    // ============================================================
+
+    /**
+     * Get a ranking record by ID (internal).
+     * 
+     * @param {string} rankId - Ranking ID
+     * @returns {object|null} Ranking object or null
+     */
+    function getRankingRecord(rankId) {
+        if (!isNonEmptyString(rankId)) {
+            return null;
         }
-        var student = CharacterQueries.getCharacterById(studentId);
-        if (!student) {
-            return { valid: false, message: 'Student not found.' };
+
+        var academy = getAcademyStore();
+        if (!academy || !academy.rankings) {
+            return null;
         }
-        var status = CharacterQueries.getCurrentStatus(student);
-        if (status !== 'trainee' && status !== 'rookie' && status !== 'junior') {
-            return { valid: false, message: 'Character is not a student.' };
-        }
-        return { valid: true, student: student };
+
+        var target = String(rankId);
+        return academy.rankings[target] || null;
     }
 
-    function validateRankingsData(week, rankings) {
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return { valid: false, message: 'Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').' };
+    /**
+     * Get all ranking records (internal).
+     * 
+     * @param {string} classId - Optional class filter
+     * @param {number} week - Optional week filter
+     * @returns {array} Array of ranking objects
+     */
+    function getRankingRecords(classId, week) {
+        var academy = getAcademyStore();
+        if (!academy || !academy.rankings) {
+            return [];
         }
 
-        if (!Array.isArray(rankings)) {
-            return { valid: false, message: 'Rankings must be an array.' };
+        var result = [];
+
+        for (var id in academy.rankings) {
+            if (Object.prototype.hasOwnProperty.call(academy.rankings, id)) {
+                var rank = academy.rankings[id];
+                if (!rank) {
+                    continue;
+                }
+
+                if (classId !== undefined && String(rank.classId) !== String(classId)) {
+                    continue;
+                }
+
+                if (week !== undefined) {
+                    var weekNum = parseInt(week, 10);
+                    if (!isNaN(weekNum) && rank.week !== weekNum) {
+                        continue;
+                    }
+                }
+
+                result.push(rank);
+            }
         }
 
-        var validated = [];
-        var seen = {};
-        var errors = [];
+        // Sort by rank ascending (1 is best)
+        result.sort(function(a, b) {
+            return (a.rank || 999) - (b.rank || 999);
+        });
+
+        return result;
+    }
+
+    /**
+     * Get rankings for a specific class and week.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number} week - Week number
+     * @returns {array} Array of ranking objects
+     */
+    function getClassRankingsInternal(classId, week) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var weekNum = parseInt(week, 10);
+        if (isNaN(weekNum) || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
+            weekNum = 1;
+        }
+
+        return getRankingRecords(classId, weekNum);
+    }
+
+    /**
+     * Get a student's ranking for a class and week.
+     * 
+     * @param {string} classId - Class ID
+     * @param {string} studentId - Student ID
+     * @param {number} week - Week number
+     * @returns {object|null} Ranking object or null
+     */
+    function getStudentRankInternal(classId, studentId, week) {
+        if (!isNonEmptyString(classId) || !isNonEmptyString(studentId)) {
+            return null;
+        }
+
+        var weekNum = parseInt(week, 10);
+        if (isNaN(weekNum) || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
+            weekNum = 1;
+        }
+
+        var rankings = getClassRankingsInternal(classId, weekNum);
+        var targetStudent = String(studentId);
 
         for (var i = 0; i < rankings.length; i++) {
-            var entry = rankings[i];
-            if (!entry || typeof entry !== 'object') {
-                errors.push('Invalid ranking entry at index ' + i + '.');
-                continue;
-            }
-
-            var studentResult = validateStudentId(entry.studentId);
-            if (!studentResult.valid) {
-                errors.push('Entry ' + i + ': ' + studentResult.message);
-                continue;
-            }
-
-            var rankNum = validateRank(entry.rank);
-            if (rankNum === null) {
-                errors.push('Entry ' + i + ': Valid rank is required.');
-                continue;
-            }
-
-            var id = String(entry.studentId);
-            if (seen[id]) {
-                errors.push('Duplicate student ID: ' + id);
-                continue;
-            }
-            seen[id] = true;
-
-            validated.push({
-                studentId: id,
-                student: studentResult.student,
-                rank: rankNum
-            });
-        }
-
-        if (errors.length > 0) {
-            return { valid: false, message: errors.join('; ') };
-        }
-
-        if (validated.length === 0) {
-            return { valid: false, message: 'No valid ranking entries.' };
-        }
-
-        return {
-            valid: true,
-            week: weekNum,
-            rankings: validated
-        };
-    }
-
-    function getRankings(week) {
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return [];
-        }
-
-        var store = getRankingsStore();
-        if (!store || typeof store !== 'object') {
-            return [];
-        }
-
-        var rankings = store[weekNum];
-        if (!Array.isArray(rankings)) {
-            return [];
-        }
-
-        return deepClone(rankings) || [];
-    }
-
-    function getStudentRank(week, studentId) {
-        var rankings = getRankings(week);
-        for (var i = 0; i < rankings.length; i++) {
-            if (String(rankings[i].studentId) === String(studentId)) {
-                return rankings[i].rank;
+            if (String(rankings[i].studentId) === targetStudent) {
+                return rankings[i];
             }
         }
+
         return null;
     }
 
-    function hasRankings(week) {
-        return getRankings(week).length > 0;
-    }
+    // ============================================================
+    // RANKING VALIDATION
+    // ============================================================
 
-    function getRankingCount(week) {
-        return getRankings(week).length;
-    }
-
-    function getRankingsWithDetails(week) {
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return [];
+    function validateRankingData(data, isPartial) {
+        if (!isObject(data)) {
+            return { valid: false, message: 'Ranking data must be an object.' };
         }
 
-        var rankings = getRankings(weekNum);
-        var result = [];
+        // Class ID - required for full creation
+        if (!isPartial || data.classId !== undefined) {
+            if (!isNonEmptyString(data.classId)) {
+                return { valid: false, message: 'Class ID is required.' };
+            }
+        }
 
-        for (var i = 0; i < rankings.length; i++) {
-            var entry = rankings[i];
-            var student = CharacterQueries.getCharacterById(entry.studentId);
-            var summary = AcademyGrades.calculateSummary(entry.studentId, weekNum);
+        // Student ID - required for full creation
+        if (!isPartial || data.studentId !== undefined) {
+            if (!isNonEmptyString(data.studentId)) {
+                return { valid: false, message: 'Student ID is required.' };
+            }
+        }
 
-            result.push({
-                rank: entry.rank,
-                studentId: entry.studentId,
-                studentName: student ? CharacterQueries.getDisplayName(student) : 'Unknown',
-                studentStatus: student ? CharacterQueries.getCurrentStatus(student) : '',
-                average: summary ? summary.average : null,
-                gradedCount: summary ? summary.gradedCount : 0,
-                scheduledCount: summary ? summary.scheduledCount : 0,
-                hasGrades: summary ? summary.hasGrades : false
+        // Week - required for full creation
+        if (!isPartial || data.week !== undefined) {
+            var week = parseInt(data.week, 10);
+            if (isNaN(week) || week < MIN_WEEK || week > MAX_WEEK) {
+                return { valid: false, message: 'Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').' };
+            }
+        }
+
+        // Rank - required for full creation
+        if (!isPartial || data.rank !== undefined) {
+            var rank = parseInt(data.rank, 10);
+            if (isNaN(rank) || rank < MIN_RANK) {
+                return { valid: false, message: 'Rank must be a number greater than or equal to 1.' };
+            }
+        }
+
+        // Total students - optional, but if provided must be valid
+        if (data.totalStudents !== undefined) {
+            var total = parseInt(data.totalStudents, 10);
+            if (isNaN(total) || total < 0) {
+                return { valid: false, message: 'Total students must be a number greater than or equal to 0.' };
+            }
+        }
+
+        // Score - optional
+        if (data.score !== undefined) {
+            var score = parseFloat(data.score);
+            if (isNaN(score) || score < 0) {
+                return { valid: false, message: 'Score must be a number greater than or equal to 0.' };
+            }
+        }
+
+        // Average score - optional
+        if (data.averageScore !== undefined) {
+            var avg = parseFloat(data.averageScore);
+            if (isNaN(avg) || avg < 0) {
+                return { valid: false, message: 'Average score must be a number greater than or equal to 0.' };
+            }
+        }
+
+        return { valid: true };
+    }
+
+    // ============================================================
+    // PUBLIC API - RANKING CRUD
+    // ============================================================
+
+    /**
+     * Create a ranking record.
+     * Candidate-based: validates, creates, commits.
+     * 
+     * @param {object} data - Ranking data
+     * @param {string} data.classId - Class ID
+     * @param {string} data.studentId - Student ID
+     * @param {number} data.week - Week number
+     * @param {number} data.rank - Rank position (1 is best)
+     * @param {number} data.totalStudents - Total students in class
+     * @param {number} data.score - Student's score
+     * @param {number} data.averageScore - Class average score
+     * @param {number} data.percentile - Percentile (optional, auto-calculated)
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function create(data) {
+        // ---- PHASE 1: VALIDATE INPUT ----
+        var validation = validateRankingData(data, false);
+        if (!validation.valid) {
+            return failure(validation.message);
+        }
+
+        // ---- PHASE 2: GET STORE ----
+        var academy = ensureRankingStructures();
+        if (!academy) {
+            return failure('Academy data is not available.');
+        }
+
+        // ---- PHASE 3: VALIDATE CLASS EXISTS ----
+        var classRecord = AcademyClasses.getClassRecord(data.classId);
+        if (!classRecord) {
+            return failure('Class not found.');
+        }
+
+        // ---- PHASE 4: CHECK FOR DUPLICATE ----
+        var existing = getStudentRankInternal(data.classId, data.studentId, data.week);
+        if (existing) {
+            return failure('Ranking already exists for this student, class, and week. Use update instead.');
+        }
+
+        // ---- PHASE 5: BUILD RANKING OBJECT ----
+        var now = new Date().toISOString();
+        var rankId = generateId();
+
+        var rank = parseInt(data.rank, 10);
+        var totalStudents = data.totalStudents !== undefined ? parseInt(data.totalStudents, 10) : 0;
+        var score = data.score !== undefined ? parseFloat(data.score) : null;
+        var averageScore = data.averageScore !== undefined ? parseFloat(data.averageScore) : null;
+        var percentile = data.percentile !== undefined ? parseFloat(data.percentile) : calculatePercentile(rank, totalStudents);
+
+        var newRanking = {
+            id: rankId,
+            classId: String(data.classId),
+            studentId: String(data.studentId),
+            week: parseInt(data.week, 10),
+            rank: rank,
+            totalStudents: totalStudents,
+            percentile: clamp(percentile, 0, 100),
+            score: score,
+            averageScore: averageScore,
+            createdAt: now,
+            updatedAt: now
+        };
+
+        // ---- PHASE 6: COMMIT ----
+        academy.rankings[rankId] = newRanking;
+
+        return success({
+            ranking: newRanking
+        });
+    }
+
+    /**
+     * Update an existing ranking.
+     * Candidate-based: validates, clones, modifies, commits.
+     * 
+     * @param {string} rankId - Ranking ID
+     * @param {object} updates - Updates to apply
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function update(rankId, updates) {
+        // ---- PHASE 1: VALIDATE INPUT ----
+        if (!isNonEmptyString(rankId)) {
+            return failure('Ranking ID is required.');
+        }
+
+        if (!isObject(updates) || Object.keys(updates).length === 0) {
+            return failure('Updates are required.');
+        }
+
+        // ---- PHASE 2: GET STORE ----
+        var academy = ensureRankingStructures();
+        if (!academy) {
+            return failure('Academy data is not available.');
+        }
+
+        // ---- PHASE 3: FIND EXISTING ----
+        var target = String(rankId);
+        var existing = academy.rankings[target];
+
+        if (!existing) {
+            return failure('Ranking not found.');
+        }
+
+        // ---- PHASE 4: BUILD CANDIDATE ----
+        var candidate = deepClone(existing);
+        if (candidate === null) {
+            return failure('Failed to clone ranking data.');
+        }
+
+        var hasChanges = false;
+
+        // Validate and apply updates
+        var updateFields = ['classId', 'studentId', 'week', 'rank', 'totalStudents', 'score', 'averageScore'];
+
+        for (var i = 0; i < updateFields.length; i++) {
+            var field = updateFields[i];
+            if (updates[field] === undefined) {
+                continue;
+            }
+
+            var value = updates[field];
+
+            switch (field) {
+                case 'classId':
+                case 'studentId':
+                    if (!isNonEmptyString(value)) {
+                        return failure(field + ' must be a non-empty string.');
+                    }
+                    if (candidate[field] !== String(value)) {
+                        candidate[field] = String(value);
+                        hasChanges = true;
+                    }
+                    break;
+
+                case 'week':
+                    var week = parseInt(value, 10);
+                    if (isNaN(week) || week < MIN_WEEK || week > MAX_WEEK) {
+                        return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+                    }
+                    if (candidate.week !== week) {
+                        candidate.week = week;
+                        hasChanges = true;
+                    }
+                    break;
+
+                case 'rank':
+                    var rank = parseInt(value, 10);
+                    if (isNaN(rank) || rank < MIN_RANK) {
+                        return failure('Rank must be a number greater than or equal to 1.');
+                    }
+                    if (candidate.rank !== rank) {
+                        candidate.rank = rank;
+                        hasChanges = true;
+                        // Recalculate percentile
+                        candidate.percentile = calculatePercentile(rank, candidate.totalStudents);
+                    }
+                    break;
+
+                case 'totalStudents':
+                    var total = parseInt(value, 10);
+                    if (isNaN(total) || total < 0) {
+                        return failure('Total students must be a number greater than or equal to 0.');
+                    }
+                    if (candidate.totalStudents !== total) {
+                        candidate.totalStudents = total;
+                        hasChanges = true;
+                        // Recalculate percentile
+                        candidate.percentile = calculatePercentile(candidate.rank, total);
+                    }
+                    break;
+
+                case 'score':
+                    var score = parseFloat(value);
+                    if (isNaN(score) || score < 0) {
+                        return failure('Score must be a number greater than or equal to 0.');
+                    }
+                    if (candidate.score !== score) {
+                        candidate.score = score;
+                        hasChanges = true;
+                    }
+                    break;
+
+                case 'averageScore':
+                    var avg = parseFloat(value);
+                    if (isNaN(avg) || avg < 0) {
+                        return failure('Average score must be a number greater than or equal to 0.');
+                    }
+                    if (candidate.averageScore !== avg) {
+                        candidate.averageScore = avg;
+                        hasChanges = true;
+                    }
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
+        if (!hasChanges) {
+            return success({ ranking: existing, changed: false });
+        }
+
+        // ---- PHASE 5: COMMIT ----
+        candidate.updatedAt = new Date().toISOString();
+        academy.rankings[target] = candidate;
+
+        return success({
+            ranking: candidate,
+            changed: true
+        });
+    }
+
+    /**
+     * Delete a ranking permanently.
+     * 
+     * @param {string} rankId - Ranking ID
+     * @returns {object} { success: boolean, message?: string, data?: object }
+     */
+    function deleteRanking(rankId) {
+        // ---- PHASE 1: VALIDATE INPUT ----
+        if (!isNonEmptyString(rankId)) {
+            return failure('Ranking ID is required.');
+        }
+
+        // ---- PHASE 2: GET STORE ----
+        var academy = ensureRankingStructures();
+        if (!academy) {
+            return failure('Academy data is not available.');
+        }
+
+        // ---- PHASE 3: FIND EXISTING ----
+        var target = String(rankId);
+        var existing = academy.rankings[target];
+
+        if (!existing) {
+            return failure('Ranking not found.');
+        }
+
+        var rankInfo = {
+            id: target,
+            classId: existing.classId,
+            studentId: existing.studentId,
+            week: existing.week,
+            rank: existing.rank
+        };
+
+        // ---- PHASE 4: REMOVE ----
+        delete academy.rankings[target];
+
+        return success({
+            deleted: true,
+            ranking: rankInfo
+        });
+    }
+
+    /**
+     * Delete all rankings for a class and week.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number} week - Week number
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function deleteClassRankings(classId, week) {
+        if (!isNonEmptyString(classId)) {
+            return failure('Class ID is required.');
+        }
+
+        var weekNum = parseInt(week, 10);
+        if (isNaN(weekNum) || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
+            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+        }
+
+        var academy = ensureRankingStructures();
+        if (!academy) {
+            return failure('Academy data is not available.');
+        }
+
+        var targetClass = String(classId);
+        var removed = [];
+        var toRemove = [];
+
+        for (var id in academy.rankings) {
+            if (Object.prototype.hasOwnProperty.call(academy.rankings, id)) {
+                var rank = academy.rankings[id];
+                if (rank && String(rank.classId) === targetClass && rank.week === weekNum) {
+                    toRemove.push(id);
+                    removed.push({
+                        id: id,
+                        studentId: rank.studentId,
+                        rank: rank.rank
+                    });
+                }
+            }
+        }
+
+        for (var i = 0; i < toRemove.length; i++) {
+            delete academy.rankings[toRemove[i]];
+        }
+
+        return success({
+            classId: targetClass,
+            week: weekNum,
+            removedCount: removed.length,
+            removed: removed
+        });
+    }
+
+    // ============================================================
+    // QUERY FUNCTIONS - Read-only (internal)
+    // ============================================================
+
+    /**
+     * Get rankings for a class and week.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number} week - Week number
+     * @param {boolean} includeStudentDetails - Include student details
+     * @returns {array} Array of ranking objects with student details
+     */
+    function getClassRankings(classId, week, includeStudentDetails) {
+        var rankings = getClassRankingsInternal(classId, week);
+
+        if (!includeStudentDetails) {
+            return rankings.map(function(rank) {
+                return deepClone(rank);
             });
         }
 
-        result.sort(function(a, b) {
-            return a.rank - b.rank;
-        });
-
-        return result;
-    }
-
-    function getStudentRankingHistory(studentId, startWeek, endWeek) {
-        if (!isNonEmptyString(studentId)) {
-            return [];
-        }
-
-        var start = CalendarValidation.parseWeek(startWeek);
-        var end = CalendarValidation.parseWeek(endWeek);
-
-        if (start === null) {
-            start = CalendarConstants.MIN_WEEK;
-        }
-        if (end === null) {
-            end = CalendarConstants.MAX_WEEK;
-        }
-
-        var history = [];
-
-        for (var week = start; week <= end; week++) {
-            var rank = getStudentRank(week, studentId);
-            if (rank !== null) {
-                history.push({
-                    week: week,
-                    rank: rank
-                });
-            }
-        }
-
-        return history;
-    }
-
-    function getClassRankings(classId, week) {
-        if (!isNonEmptyString(classId)) {
-            return [];
-        }
-
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return [];
-        }
-
-        var students = AcademyQueries.getClassStudents(classId);
-        var rankings = getRankingsWithDetails(weekNum);
         var result = [];
-
-        var studentIds = {};
-        for (var i = 0; i < students.length; i++) {
-            studentIds[String(students[i].id)] = true;
-        }
-
-        for (var j = 0; j < rankings.length; j++) {
-            var entry = rankings[j];
-            if (studentIds[entry.studentId]) {
-                result.push(entry);
+        for (var i = 0; i < rankings.length; i++) {
+            var rank = deepClone(rankings[i]);
+            var student = CharacterQueries.getCharacterById(rank.studentId);
+            if (student) {
+                rank.studentName = CharacterQueries.getDisplayName(student);
+                rank.student = student;
             }
-        }
-
-        result.sort(function(a, b) {
-            return a.rank - b.rank;
-        });
-
-        for (var k = 0; k < result.length; k++) {
-            result[k].classRank = k + 1;
+            result.push(rank);
         }
 
         return result;
     }
 
-    function getClassRankingSummary(classId, week) {
-        if (!isNonEmptyString(classId)) {
+    /**
+     * Get a student's ranking for a class and week.
+     * 
+     * @param {string} classId - Class ID
+     * @param {string} studentId - Student ID
+     * @param {number} week - Week number
+     * @param {boolean} includeDetails - Include ranking details
+     * @returns {object|null} Ranking object or null
+     */
+    function getStudentRank(classId, studentId, week, includeDetails) {
+        var rank = getStudentRankInternal(classId, studentId, week);
+
+        if (!rank) {
             return null;
         }
 
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return null;
-        }
+        var result = deepClone(rank);
 
-        var rankings = getClassRankings(classId, weekNum);
-        var students = AcademyQueries.getClassStudents(classId);
-
-        var rankedStudents = rankings.length;
-        var unrankedStudents = students.length - rankedStudents;
-
-        var averages = [];
-        for (var i = 0; i < rankings.length; i++) {
-            if (rankings[i].average !== null) {
-                averages.push(rankings[i].average);
+        if (includeDetails) {
+            var student = CharacterQueries.getCharacterById(result.studentId);
+            if (student) {
+                result.studentName = CharacterQueries.getDisplayName(student);
+                result.student = student;
             }
+
+            // Get all rankings for context
+            var allRankings = getClassRankingsInternal(classId, week);
+            result.totalRanked = allRankings.length;
+            result.percentile = calculatePercentile(result.rank, result.totalRanked);
         }
 
-        var classAverage = averages.length > 0 ? averages.reduce(function(a, b) { return a + b; }, 0) / averages.length : null;
+        return result;
+    }
+
+    /**
+     * Get rankings with details (comprehensive view).
+     * 
+     * @param {string} classId - Class ID
+     * @param {number} week - Week number
+     * @returns {object} { rankings, summary, distribution }
+     */
+    function getRankingsWithDetails(classId, week) {
+        var rankings = getClassRankings(classId, week, true);
+        var summary = calculateRankingSummary(rankings);
+        var distribution = calculateRankDistribution(rankings);
 
         return {
             classId: classId,
-            week: weekNum,
-            totalStudents: students.length,
-            rankedStudents: rankedStudents,
-            unrankedStudents: unrankedStudents,
-            classAverage: classAverage,
+            week: week,
             rankings: rankings,
-            highestRank: rankings.length > 0 ? rankings[0] : null,
-            lowestRank: rankings.length > 0 ? rankings[rankings.length - 1] : null
+            summary: summary,
+            distribution: distribution,
+            count: rankings.length
         };
     }
 
-    function getRankingStatistics(week) {
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return null;
+    /**
+     * Get all rankings (defensive copies).
+     * 
+     * @param {string} classId - Optional class filter
+     * @param {number} week - Optional week filter
+     * @returns {array} Array of ranking objects
+     */
+    function getRankings(classId, week) {
+        var records = getRankingRecords(classId, week);
+        return records.map(function(rank) {
+            return deepClone(rank);
+        });
+    }
+
+    /**
+     * Get a ranking by ID (defensive copy).
+     * 
+     * @param {string} rankId - Ranking ID
+     * @returns {object|null} Ranking object or null
+     */
+    function getRanking(rankId) {
+        var rank = getRankingRecord(rankId);
+        return rank ? deepClone(rank) : null;
+    }
+
+    // ============================================================
+    // RANKING CALCULATIONS
+    // ============================================================
+
+    /**
+     * Calculate a ranking summary.
+     * 
+     * @param {array} rankings - Array of ranking objects
+     * @returns {object} Summary statistics
+     */
+    function calculateRankingSummary(rankings) {
+        if (!Array.isArray(rankings) || rankings.length === 0) {
+            return {
+                count: 0,
+                minRank: null,
+                maxRank: null,
+                averageRank: 0,
+                topStudent: null,
+                bottomStudent: null
+            };
         }
 
-        var rankings = getRankingsWithDetails(weekNum);
-        var students = CharacterQueries.getStudents();
+        var count = rankings.length;
+        var minRank = Infinity;
+        var maxRank = -Infinity;
+        var totalRank = 0;
+        var topStudent = null;
+        var bottomStudent = null;
 
-        var ranked = rankings.length;
-        var unranked = students.length - ranked;
-
-        var averages = [];
         for (var i = 0; i < rankings.length; i++) {
-            if (rankings[i].average !== null) {
-                averages.push(rankings[i].average);
+            var rank = rankings[i];
+            if (!rank) continue;
+
+            var rankValue = rank.rank || 999;
+            totalRank += rankValue;
+
+            if (rankValue < minRank) {
+                minRank = rankValue;
+                topStudent = rank.studentName || rank.studentId;
+            }
+            if (rankValue > maxRank) {
+                maxRank = rankValue;
+                bottomStudent = rank.studentName || rank.studentId;
             }
         }
 
-        var averageScore = averages.length > 0 ? averages.reduce(function(a, b) { return a + b; }, 0) / averages.length : null;
-
-        var topStudent = rankings.length > 0 ? rankings[0] : null;
-        var bottomStudent = rankings.length > 0 ? rankings[rankings.length - 1] : null;
-
         return {
-            week: weekNum,
-            totalStudents: students.length,
-            rankedStudents: ranked,
-            unrankedStudents: unranked,
-            averageScore: averageScore,
+            count: count,
+            minRank: minRank === Infinity ? null : minRank,
+            maxRank: maxRank === -Infinity ? null : maxRank,
+            averageRank: count > 0 ? Math.round((totalRank / count) * 10) / 10 : 0,
             topStudent: topStudent,
             bottomStudent: bottomStudent
         };
     }
 
-    function getRankingDistribution(week) {
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return null;
+    /**
+     * Calculate rank distribution.
+     * 
+     * @param {array} rankings - Array of ranking objects
+     * @param {number} bins - Number of bins (default: 5)
+     * @returns {object} Distribution by percentile bins
+     */
+    function calculateRankDistribution(rankings, bins) {
+        bins = bins || 5;
+
+        if (!Array.isArray(rankings) || rankings.length === 0) {
+            return {};
         }
 
-        var rankings = getRankingsWithDetails(weekNum);
-        var distribution = {
-            top10: 0,
-            top25: 0,
-            top50: 0,
-            bottom50: 0,
-            bottom25: 0,
-            bottom10: 0
-        };
-
-        var total = rankings.length;
-        if (total === 0) {
-            return distribution;
-        }
+        var distribution = {};
+        var binSize = Math.ceil(100 / bins);
 
         for (var i = 0; i < rankings.length; i++) {
-            var rank = rankings[i].rank;
-            var pct = rank / total;
+            var rank = rankings[i];
+            if (!rank) continue;
 
-            if (pct <= 0.1) {
-                distribution.top10++;
+            var percentile = rank.percentile || 0;
+            var binKey = Math.floor(percentile / binSize) * binSize;
+
+            // Bin label: "0-19", "20-39", etc.
+            var binLabel = binKey + '-' + Math.min(binKey + binSize - 1, 100);
+            if (binKey >= 100) {
+                binLabel = '100';
             }
-            if (pct <= 0.25) {
-                distribution.top25++;
+
+            if (!distribution[binLabel]) {
+                distribution[binLabel] = {
+                    count: 0,
+                    students: []
+                };
             }
-            if (pct <= 0.5) {
-                distribution.top50++;
-            }
-            if (pct > 0.5) {
-                distribution.bottom50++;
-            }
-            if (pct > 0.75) {
-                distribution.bottom25++;
-            }
-            if (pct > 0.9) {
-                distribution.bottom10++;
+
+            distribution[binLabel].count++;
+            if (rank.studentName) {
+                distribution[binLabel].students.push(rank.studentName);
             }
         }
 
         return distribution;
     }
 
-    function getTopRankedStudents(week, count) {
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return [];
+    // ============================================================
+    // AUTO-GENERATE RANKINGS FROM GRADES
+    // ============================================================
+
+    /**
+     * Auto-generate rankings from grade data.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number} week - Week number
+     * @param {object} options - Generation options
+     * @param {boolean} options.overwrite - Overwrite existing rankings
+     * @param {number} options.weightThreshold - Minimum weight to include
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function autoGenerate(classId, week, options) {
+        if (!isNonEmptyString(classId)) {
+            return failure('Class ID is required.');
         }
 
-        var parsedCount = CalendarValidation.parseInRange(count, 1, 100, true);
-        if (parsedCount === null || !Number.isFinite(parsedCount)) {
-            parsedCount = 10;
+        var weekNum = parseInt(week, 10);
+        if (isNaN(weekNum) || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
+            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
         }
 
-        var rankings = getRankingsWithDetails(weekNum);
-        return rankings.slice(0, Math.min(parsedCount, rankings.length));
-    }
+        options = options || {};
+        var overwrite = options.overwrite !== false;
+        var weightThreshold = options.weightThreshold || 0.5;
 
-    function buildSetRankingsCandidate(week, rankings) {
-        var validation = validateRankingsData(week, rankings);
-        if (!validation.valid) {
-            return failure(validation.message);
+        // ---- PHASE 1: VALIDATE CLASS EXISTS ----
+        var classRecord = AcademyClasses.getClassRecord(classId);
+        if (!classRecord) {
+            return failure('Class not found.');
         }
 
-        var weekNum = validation.week;
-        var validatedRankings = validation.rankings;
+        // ---- PHASE 2: GET GRADES ----
+        var grades = AcademyGrades.getClassGrades(classId, weekNum);
 
-        var sorted = validatedRankings.slice().sort(function(a, b) {
-            return a.rank - b.rank;
-        });
-
-        var finalRankings = [];
-        for (var i = 0; i < sorted.length; i++) {
-            finalRankings.push({
-                studentId: sorted[i].studentId,
-                rank: i + 1
-            });
+        if (grades.length === 0) {
+            return failure('No grades found for this class and week.');
         }
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
+        // ---- PHASE 3: CALCULATE RANKINGS ----
+        var rankingData = AcademyGrades.calculateClassRanking(
+            classId,
+            weekNum,
+            CharacterQueries.getCharacterById
+        );
+
+        if (!rankingData || rankingData.length === 0) {
+            return failure('Failed to calculate rankings from grades.');
+        }
+
+        // ---- PHASE 4: GET STORE ----
+        var academy = ensureRankingStructures();
+        if (!academy) {
+            return failure('Academy data is not available.');
+        }
+
+        // ---- PHASE 5: PREPARE FOR MUTATION ----
+        var created = 0;
+        var updated = 0;
+        var skipped = 0;
+        var errors = [];
+
+        var totalStudents = rankingData.length;
+
+        for (var i = 0; i < rankingData.length; i++) {
+            var data = rankingData[i];
+            var rankPosition = data.rank || (i + 1);
+            var score = data.average || null;
+            var studentId = data.studentId;
+
+            // Check if ranking already exists
+            var existing = getStudentRankInternal(classId, studentId, weekNum);
+
+            if (existing && !overwrite) {
+                skipped++;
+                continue;
             }
-            if (!dataStore.curriculum.rankings) {
-                dataStore.curriculum.rankings = {};
-            }
-            dataStore.curriculum.rankings[weekNum] = finalRankings;
-            return { rankings: finalRankings, count: finalRankings.length };
-        }
 
-        return success({
-            mutate: mutate,
-            week: weekNum,
-            rankings: finalRankings,
-            count: finalRankings.length
-        });
-    }
-
-    function buildAutoGenerateCandidate(week) {
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return failure('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').');
-        }
-
-        var students = CharacterQueries.getStudents();
-        var studentAverages = [];
-
-        for (var i = 0; i < students.length; i++) {
-            var student = students[i];
-            var summary = AcademyGrades.calculateSummary(student.id, weekNum);
-
-            if (summary && summary.hasGrades && summary.average !== null) {
-                studentAverages.push({
-                    studentId: student.id,
-                    student: student,
-                    average: summary.average
-                });
-            }
-        }
-
-        if (studentAverages.length === 0) {
-            return failure('No students with valid grades found for week ' + weekNum + '.');
-        }
-
-        studentAverages.sort(function(a, b) {
-            if (b.average !== a.average) {
-                return b.average - a.average;
-            }
-            var nameA = CharacterQueries.getDisplayName(a.student);
-            var nameB = CharacterQueries.getDisplayName(b.student);
-            var nameComparison = nameA.localeCompare(nameB);
-            if (nameComparison !== 0) {
-                return nameComparison;
-            }
-            return String(a.studentId).localeCompare(String(b.studentId));
-        });
-
-        var newRankings = [];
-        for (var i = 0; i < studentAverages.length; i++) {
-            newRankings.push({
-                studentId: studentAverages[i].studentId,
-                rank: i + 1
-            });
-        }
-
-        var gradedCount = studentAverages.length;
-        var totalStudents = students.length;
-
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
-            }
-            if (!dataStore.curriculum.rankings) {
-                dataStore.curriculum.rankings = {};
-            }
-            dataStore.curriculum.rankings[weekNum] = newRankings;
-            return {
-                rankings: newRankings,
-                count: gradedCount,
-                totalStudents: totalStudents
-            };
-        }
-
-        return success({
-            mutate: mutate,
-            week: weekNum,
-            rankings: newRankings,
-            count: gradedCount,
-            totalStudents: totalStudents
-        });
-    }
-
-    function buildSetStudentPositionCandidate(week, studentId, desiredRank) {
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return failure('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').');
-        }
-
-        var studentResult = validateStudentId(studentId);
-        if (!studentResult.valid) {
-            return failure(studentResult.message);
-        }
-
-        var rankNum = validateRank(desiredRank);
-        if (rankNum === null) {
-            return failure('Valid rank is required.');
-        }
-
-        var store = getRankingsStore();
-        var currentRankings = (store && store[weekNum] && Array.isArray(store[weekNum]))
-            ? store[weekNum]
-            : [];
-
-        var existingIndex = -1;
-        var existingRank = null;
-
-        for (var i = 0; i < currentRankings.length; i++) {
-            if (String(currentRankings[i].studentId) === String(studentId)) {
-                existingIndex = i;
-                existingRank = currentRankings[i].rank;
-                break;
-            }
-        }
-
-        if (existingIndex !== -1 && existingRank === rankNum) {
-            return success({
-                mutate: function() {
-                    return { rankings: currentRankings, count: currentRankings.length, operation: 'unchanged' };
-                },
-                operation: 'unchanged',
-                count: currentRankings.length
-            });
-        }
-
-        var workingRankings = currentRankings.slice();
-
-        if (existingIndex !== -1) {
-            workingRankings.splice(existingIndex, 1);
-        }
-
-        workingRankings.sort(function(a, b) {
-            return a.rank - b.rank;
-        });
-        for (var i = 0; i < workingRankings.length; i++) {
-            workingRankings[i].rank = i + 1;
-        }
-
-        var targetIndex = Math.min(rankNum - 1, workingRankings.length);
-
-        var newEntry = {
-            studentId: String(studentId),
-            rank: targetIndex + 1
-        };
-
-        workingRankings.splice(targetIndex, 0, newEntry);
-
-        for (var i = 0; i < workingRankings.length; i++) {
-            workingRankings[i].rank = i + 1;
-        }
-
-        var operation = existingIndex !== -1 ? 'updated' : 'added';
-        var studentName = CharacterQueries.getDisplayName(studentResult.student);
-
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
-            }
-            if (!dataStore.curriculum.rankings) {
-                dataStore.curriculum.rankings = {};
-            }
-            dataStore.curriculum.rankings[weekNum] = workingRankings;
-            return {
-                rankings: workingRankings,
-                count: workingRankings.length,
-                operation: operation,
+            // Prepare ranking data
+            var rankData = {
+                classId: classId,
                 studentId: studentId,
-                studentName: studentName
+                week: weekNum,
+                rank: rankPosition,
+                totalStudents: totalStudents,
+                score: score,
+                averageScore: null // We don't have class average from this data
             };
-        }
 
-        return success({
-            mutate: mutate,
-            operation: operation,
-            count: workingRankings.length,
-            studentId: studentId,
-            studentName: studentName
-        });
-    }
-
-    function buildRemoveStudentCandidate(week, studentId) {
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return failure('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').');
-        }
-
-        if (!isNonEmptyString(studentId)) {
-            return failure('Student ID is required.');
-        }
-
-        var store = getRankingsStore();
-        var currentRankings = (store && store[weekNum] && Array.isArray(store[weekNum]))
-            ? store[weekNum]
-            : [];
-
-        if (currentRankings.length === 0) {
-            return success({
-                mutate: function() {
-                    return { rankings: [], count: 0, operation: 'unchanged' };
-                },
-                operation: 'unchanged',
-                count: 0
-            });
-        }
-
-        var exists = false;
-        for (var i = 0; i < currentRankings.length; i++) {
-            if (String(currentRankings[i].studentId) === String(studentId)) {
-                exists = true;
-                break;
-            }
-        }
-
-        if (!exists) {
-            return success({
-                mutate: function() {
-                    return { rankings: currentRankings, count: currentRankings.length, operation: 'unchanged' };
-                },
-                operation: 'unchanged',
-                count: currentRankings.length
-            });
-        }
-
-        var newRankings = [];
-        for (var i = 0; i < currentRankings.length; i++) {
-            if (String(currentRankings[i].studentId) !== String(studentId)) {
-                newRankings.push({
-                    studentId: currentRankings[i].studentId,
-                    rank: currentRankings[i].rank
+            if (existing) {
+                // Update existing
+                var updateResult = update(existing.id, {
+                    rank: rankPosition,
+                    totalStudents: totalStudents,
+                    score: score
                 });
-            }
-        }
 
-        newRankings.sort(function(a, b) {
-            return a.rank - b.rank;
-        });
-
-        for (var i = 0; i < newRankings.length; i++) {
-            newRankings[i].rank = i + 1;
-        }
-
-        var student = CharacterQueries.getCharacterById(studentId);
-        var studentName = student ? CharacterQueries.getDisplayName(student) : 'Unknown';
-
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
-            }
-            if (!dataStore.curriculum.rankings) {
-                dataStore.curriculum.rankings = {};
-            }
-
-            if (newRankings.length === 0) {
-                delete dataStore.curriculum.rankings[weekNum];
+                if (updateResult.success) {
+                    updated++;
+                } else {
+                    errors.push({
+                        studentId: studentId,
+                        error: updateResult.message
+                    });
+                }
             } else {
-                dataStore.curriculum.rankings[weekNum] = newRankings;
-            }
+                // Create new
+                var createResult = create(rankData);
 
-            return {
-                rankings: newRankings,
-                count: newRankings.length,
-                operation: 'removed',
-                studentId: studentId,
-                studentName: studentName
-            };
+                if (createResult.success) {
+                    created++;
+                } else {
+                    errors.push({
+                        studentId: studentId,
+                        error: createResult.message
+                    });
+                }
+            }
         }
 
         return success({
-            mutate: mutate,
-            operation: 'removed',
-            count: newRankings.length,
-            studentId: studentId,
-            studentName: studentName
+            classId: classId,
+            week: weekNum,
+            totalStudents: totalStudents,
+            created: created,
+            updated: updated,
+            skipped: skipped,
+            errors: errors,
+            rankings: getClassRankingsInternal(classId, weekNum)
         });
     }
 
-    function buildClearRankingsCandidate(week) {
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null) {
-            return failure('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').');
+    // ============================================================
+    // BULK OPERATIONS
+    // ============================================================
+
+    /**
+     * Save multiple rankings at once.
+     * 
+     * @param {array} rankingDataArray - Array of ranking data objects
+     * @param {object} options - Save options
+     * @param {boolean} options.overwrite - Overwrite existing rankings
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function saveRankings(rankingDataArray, options) {
+        if (!Array.isArray(rankingDataArray) || rankingDataArray.length === 0) {
+            return failure('Ranking data array is required.');
         }
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
+        options = options || {};
+        var overwrite = options.overwrite !== false;
+
+        var created = 0;
+        var updated = 0;
+        var skipped = 0;
+        var errors = [];
+
+        for (var i = 0; i < rankingDataArray.length; i++) {
+            var data = rankingDataArray[i];
+            if (!isObject(data)) {
+                errors.push({
+                    index: i,
+                    error: 'Invalid ranking data.'
+                });
+                continue;
             }
-            if (!dataStore.curriculum.rankings) {
-                dataStore.curriculum.rankings = {};
+
+            // Validate required fields
+            if (!data.classId || !data.studentId || !data.week || data.rank === undefined) {
+                errors.push({
+                    index: i,
+                    error: 'Missing required fields: classId, studentId, week, rank'
+                });
+                continue;
             }
-            delete dataStore.curriculum.rankings[weekNum];
-            return { week: weekNum };
+
+            // Check if ranking already exists
+            var existing = getStudentRankInternal(data.classId, data.studentId, data.week);
+
+            if (existing && !overwrite) {
+                skipped++;
+                continue;
+            }
+
+            if (existing) {
+                // Update existing
+                var updateResult = update(existing.id, data);
+                if (updateResult.success) {
+                    updated++;
+                } else {
+                    errors.push({
+                        index: i,
+                        studentId: data.studentId,
+                        error: updateResult.message
+                    });
+                }
+            } else {
+                // Create new
+                var createResult = create(data);
+                if (createResult.success) {
+                    created++;
+                } else {
+                    errors.push({
+                        index: i,
+                        studentId: data.studentId,
+                        error: createResult.message
+                    });
+                }
+            }
         }
 
         return success({
-            mutate: mutate,
-            week: weekNum
+            total: rankingDataArray.length,
+            created: created,
+            updated: updated,
+            skipped: skipped,
+            errors: errors,
+            successCount: created + updated
         });
     }
 
-    function setRankings(week, rankings) {
-        var candidate = buildSetRankingsCandidate(week, rankings);
-        if (!candidate.success) {
-            return candidate;
-        }
-
-        try {
-            var result = candidate.data.mutate();
-            return success({
-                rankings: result.rankings,
-                count: result.count
-            });
-        } catch (e) {
-            return failure(e.message || 'Failed to set rankings.');
-        }
-    }
-
-    function autoGenerate(week) {
-        var candidate = buildAutoGenerateCandidate(week);
-        if (!candidate.success) {
-            return candidate;
-        }
-
-        try {
-            var result = candidate.data.mutate();
-            return success({
-                rankings: result.rankings,
-                count: result.count,
-                totalStudents: result.totalStudents
-            });
-        } catch (e) {
-            return failure(e.message || 'Failed to auto-generate rankings.');
-        }
-    }
-
-    function updateStudentRank(week, studentId, newRank) {
-        var candidate = buildSetStudentPositionCandidate(week, studentId, newRank);
-        if (!candidate.success) {
-            return candidate;
-        }
-
-        try {
-            var result = candidate.data.mutate();
-            return success({
-                rankings: result.rankings,
-                count: result.count,
-                operation: result.operation
-            });
-        } catch (e) {
-            return failure(e.message || 'Failed to update student rank.');
-        }
-    }
-
-    function removeStudentFromRankings(week, studentId) {
-        var candidate = buildRemoveStudentCandidate(week, studentId);
-        if (!candidate.success) {
-            return candidate;
-        }
-
-        try {
-            var result = candidate.data.mutate();
-            return success({
-                rankings: result.rankings,
-                count: result.count,
-                operation: result.operation
-            });
-        } catch (e) {
-            return failure(e.message || 'Failed to remove student from rankings.');
-        }
-    }
-
-    function clearRankings(week) {
-        var candidate = buildClearRankingsCandidate(week);
-        if (!candidate.success) {
-            return candidate;
-        }
-
-        try {
-            var result = candidate.data.mutate();
-            return success({ week: result.week });
-        } catch (e) {
-            return failure(e.message || 'Failed to clear rankings.');
-        }
-    }
+    // ============================================================
+    // EXPOSE
+    // ============================================================
 
     window.AcademyRanking = {
-        getRankings: getRankings,
-        getStudentRank: getStudentRank,
-        hasRankings: hasRankings,
-        getRankingCount: getRankingCount,
-        getRankingsWithDetails: getRankingsWithDetails,
-        getStudentRankingHistory: getStudentRankingHistory,
+        // ---- CRUD ----
+        create: create,
+        update: update,
+        delete: deleteRanking,
+        deleteClassRankings: deleteClassRankings,
 
+        // ---- Queries ----
         getClassRankings: getClassRankings,
-        getClassRankingSummary: getClassRankingSummary,
+        getStudentRank: getStudentRank,
+        getRankingsWithDetails: getRankingsWithDetails,
+        getRankings: getRankings,
+        getRanking: getRanking,
 
-        getRankingStatistics: getRankingStatistics,
-        getRankingDistribution: getRankingDistribution,
-        getTopRankedStudents: getTopRankedStudents,
+        // ---- Calculations ----
+        calculateRankingSummary: calculateRankingSummary,
+        calculateRankDistribution: calculateRankDistribution,
+        calculatePercentile: calculatePercentile,
 
-        buildSetRankingsCandidate: buildSetRankingsCandidate,
-        buildAutoGenerateCandidate: buildAutoGenerateCandidate,
-        buildSetStudentPositionCandidate: buildSetStudentPositionCandidate,
-        buildRemoveStudentCandidate: buildRemoveStudentCandidate,
-        buildClearRankingsCandidate: buildClearRankingsCandidate,
-
-        setRankings: setRankings,
+        // ---- Auto-generation ----
         autoGenerate: autoGenerate,
-        updateStudentRank: updateStudentRank,
-        removeStudentFromRankings: removeStudentFromRankings,
-        clearRankings: clearRankings,
+        saveRankings: saveRankings,
 
-        validateRank: validateRank
+        // ---- Internal (for AcademyQueries) ----
+        getClassRankingsInternal: getClassRankingsInternal,
+        getStudentRankInternal: getStudentRankInternal,
+        getRankingRecords: getRankingRecords,
+
+        // ---- Constants ----
+        MIN_WEEK: MIN_WEEK,
+        MAX_WEEK: MAX_WEEK,
+        MIN_RANK: MIN_RANK
     };
-
-    window.__academyRankingLoaded = true;
 
 })();
