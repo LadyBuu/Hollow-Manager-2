@@ -61,6 +61,7 @@
         missing.push('CalendarRenderer.renderGrid');
     }
 
+    // CalendarQueries - READ operations
     if (!window.CalendarQueries || typeof window.CalendarQueries.getInstructorSchedule !== 'function') {
         missing.push('CalendarQueries.getInstructorSchedule');
     }
@@ -73,13 +74,11 @@
     if (!window.CalendarQueries || typeof window.CalendarQueries.getAssignedStudents !== 'function') {
         missing.push('CalendarQueries.getAssignedStudents');
     }
-    if (!window.CalendarQueries || typeof window.CalendarQueries.getAvailableDisciplines !== 'function') {
-        missing.push('CalendarQueries.getAvailableDisciplines');
-    }
     if (!window.CalendarQueries || typeof window.CalendarQueries.getInstructorAvailableDisciplines !== 'function') {
         missing.push('CalendarQueries.getInstructorAvailableDisciplines');
     }
 
+    // ScheduleCore - WRITE operations
     if (!window.ScheduleCore || typeof window.ScheduleCore.setInstructorTemplate !== 'function') {
         missing.push('ScheduleCore.setInstructorTemplate');
     }
@@ -211,7 +210,7 @@
     }
 
     // ============================================================
-    // GET SCHEDULE DATA
+    // GET SCHEDULE DATA - Uses CalendarQueries for reads
     // ============================================================
 
     function getScheduleData(instructorId, week) {
@@ -570,7 +569,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Add Template
+    // HANDLERS - Add Template (Uses ScheduleCore for write)
     // ============================================================
 
     function handleAddTemplate(day, hour) {
@@ -599,6 +598,7 @@
                     return;
                 }
 
+                // Use ScheduleCore for mutation
                 var result = ScheduleCore.setInstructorTemplate(
                     _state.selectedId,
                     _state.week,
@@ -624,7 +624,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Template Details
+    // HANDLERS - Template Details (Uses CalendarQueries for read)
     // ============================================================
 
     function handleTemplateDetails(day, hour) {
@@ -644,7 +644,7 @@
         var discipline = DisciplineQueries.getDiscipline(template.disciplineId);
         var disciplineName = discipline ? discipline.name : 'Unknown';
 
-        // Get assigned students
+        // Get assigned students using CalendarQueries
         var assignedStudents = CalendarQueries.getAssignedStudents(_state.selectedId, _state.week, day, hour);
 
         var dayName = CalendarConstants.getDayName(day);
@@ -699,7 +699,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Block Details
+    // HANDLERS - Block Details (Uses CalendarQueries for read)
     // ============================================================
 
     function handleBlockDetails(day, hour) {
@@ -745,7 +745,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Manage Students
+    // HANDLERS - Manage Students (Uses ScheduleCore for write)
     // ============================================================
 
     function handleManageStudents(day, hour) {
@@ -779,7 +779,7 @@
             title: 'Manage Students - ' + (disciplineName.name || 'Unknown'),
             students: students,
             onConfirm: function(selectedStudents, closeModal) {
-                // Update template.assignedStudents
+                // Use ScheduleCore to update template with selected students
                 var updateResult = ScheduleCore.setInstructorTemplate(
                     _state.selectedId,
                     _state.week,
@@ -806,7 +806,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Remove Slot
+    // HANDLERS - Remove Slot (Uses ScheduleCore for write)
     // ============================================================
 
     function handleRemoveSlot(day, hour) {
@@ -826,7 +826,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Remove Block
+    // HANDLERS - Remove Block (Uses ScheduleCore for write)
     // ============================================================
 
     function handleRemoveBlock(day, hour) {
@@ -846,7 +846,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Available Item Click
+    // HANDLERS - Available Item Click (Uses ScheduleCore for write)
     // ============================================================
 
     function handleAvailableItemClick(disciplineId) {
@@ -861,7 +861,7 @@
             return;
         }
 
-        // Find an available slot
+        // Find an available slot using CalendarQueries
         var schedule = CalendarQueries.getInstructorSchedule(_state.selectedId, _state.week);
         var foundSlot = false;
 
