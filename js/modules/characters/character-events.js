@@ -7,6 +7,8 @@
  * IMPORTANT:
  *   - ORCHESTRATION ONLY - no domain logic, no direct mutations
  *   - All mutations delegate to the appropriate module (CharacterCRUD, CharacterClasses, etc.)
+ *   - Uses CharacterAggregator for cross-domain projections
+ *   - Uses CharacterQueries for simple character reads
  *   - Uses CharacterForm.collect() to get form data
  *   - Uses CharacterCRUD for save/delete operations
  *   - Uses CharacterClassView for class rendering
@@ -25,6 +27,7 @@
  *   - Re-initialization is supported for dynamic DOM replacement
  * 
  * DEPENDENCIES (ALL MANDATORY):
+ *   - window.CharacterAggregator (from character-aggregator.js)
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.CharacterCRUD (from character-crud.js)
  *   - window.CharacterForm (from character-form.js)
@@ -44,7 +47,6 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate script loading
     if (window.__characterEventsLoaded) {
         return;
     }
@@ -54,6 +56,7 @@
     // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
     // ============================================================
 
+    var CharacterAggregator = window.CharacterAggregator;
     var CharacterQueries = window.CharacterQueries;
     var CharacterCRUD = window.CharacterCRUD;
     var CharacterForm = window.CharacterForm;
@@ -95,6 +98,13 @@
         });
 
         // Mandatory modules
+        if (!CharacterAggregator || typeof CharacterAggregator.getCharacterDetail !== 'function') {
+            missing.push('CharacterAggregator.getCharacterDetail');
+        }
+        if (!CharacterAggregator || typeof CharacterAggregator.getCharacterListViewModel !== 'function') {
+            missing.push('CharacterAggregator.getCharacterListViewModel');
+        }
+
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
@@ -164,7 +174,7 @@
         }
 
         if (missing.length > 0) {
-            console.warn('CharacterEvents: Missing required dependencies:', missing.join(', '));
+            console.warn('[CharacterEvents] Missing required dependencies:', missing.join(', '));
             return false;
         }
 
@@ -181,11 +191,70 @@
     }
 
     // ============================================================
+    // UI REFRESH - Uses CharacterAggregator for projections
+    // ============================================================
+
+    function refreshUI(char) {
+        // Refresh character list - uses Aggregator internally
+        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
+            try {
+                window.CharacterList.render();
+            } catch (e) {
+                // Ignore render errors
+            }
+        }
+
+        // Refresh class tags - uses CharacterClassView (direct AcademyQueries)
+        var classTagContainer = document.getElementById('class-tag-container');
+        if (classTagContainer) {
+            CharacterClassView.renderClassTags(char, classTagContainer);
+        }
+
+        // Refresh current classes display - uses CharacterClassView
+        var currentClassesDisplay = document.getElementById('current-classes-list');
+        if (currentClassesDisplay) {
+            CharacterClassView.updateCurrentClassesDisplay(char, currentClassesDisplay);
+        }
+
+        // Refresh class selector - uses CharacterClassView
+        var classSelect = document.getElementById('academic-class-select');
+        if (classSelect) {
+            CharacterClassView.populateClassSelector(char, classSelect);
+        }
+
+        // Refresh tournament eliminations - uses CharacterEliminationView
+        var tournElimContainer = document.getElementById('tournament-eliminations-view');
+        if (tournElimContainer) {
+            CharacterEliminationView.renderTournamentEliminations(char, tournElimContainer);
+        }
+
+        // Refresh standalone eliminations - uses CharacterEliminationView
+        var standaloneElimContainer = document.getElementById('standalone-eliminations-container');
+        if (standaloneElimContainer) {
+            CharacterEliminationView.renderStandaloneEliminations(char, standaloneElimContainer);
+        }
+
+        // Refresh detail tab panels - uses CharacterDetail (Aggregator)
+        // This is handled by CharacterDetail.refresh() if the modal is open
+
+        // Update dashboard stats
+        if (typeof window.updateDashboardStats === 'function') {
+            try {
+                window.updateDashboardStats();
+            } catch (e) {
+                // Ignore render errors
+            }
+        }
+    }
+
+    // ============================================================
     // SAFE EVENT BINDING WITH CLEANUP
     // ============================================================
 
     function addSafeEventListener(element, eventName, handler, options) {
-        if (!element) return;
+        if (!element) {
+            return;
+        }
         element.addEventListener(eventName, handler, options || false);
         _eventListeners.push({
             element: element,
@@ -198,7 +267,9 @@
     function addSafeDelegatedListener(selector, eventName, handler) {
         function wrappedHandler(e) {
             var target = e.target.closest ? e.target.closest(selector) : null;
-            if (!target) return;
+            if (!target) {
+                return;
+            }
             handler(e, target);
         }
 
@@ -233,7 +304,7 @@
 
     function init(container) {
         if (!checkDependencies()) {
-            console.warn('CharacterEvents: Dependencies not met, skipping initialization');
+            console.warn('[CharacterEvents] Dependencies not met, skipping initialization');
             return;
         }
 
@@ -245,7 +316,7 @@
             container = document.getElementById('tab-characters');
         }
         if (!container) {
-            console.warn('CharacterEvents: Container not found');
+            console.warn('[CharacterEvents] Container not found');
             return;
         }
 
@@ -342,6 +413,7 @@
                         if (typeof window.setCurrentEditId === 'function') {
                             window.setCurrentEditId(savedId);
                         }
+                        // Use CharacterQueries for simple read after save
                         var char = CharacterQueries.getCharacterById(savedId);
                         CharacterForm.render(savedId);
                         refreshUI(char);
@@ -350,7 +422,6 @@
             })
             .catch(function(err) {
                 notify('An error occurred while saving.', 'error');
-                console.error('[CharacterEvents] Save error:', err);
             });
     }
 
@@ -371,8 +442,11 @@
     }
 
     function handleDelete(id) {
-        if (!id) return;
+        if (!id) {
+            return;
+        }
 
+        // Use CharacterQueries for simple read
         var char = CharacterQueries.getCharacterById(id);
         if (!char) {
             notify('Character not found.', 'error');
@@ -397,7 +471,6 @@
             })
             .catch(function(err) {
                 notify('An error occurred while deleting.', 'error');
-                console.error('[CharacterEvents] Delete error:', err);
             });
     }
 
@@ -466,10 +539,18 @@
                 var hideDeadEl = document.getElementById('hide-deceased');
                 var hideElimEl = document.getElementById('hide-eliminated');
 
-                if (nameEl) nameEl.value = '';
-                if (classEl) classEl.value = 'all';
-                if (hideDeadEl) hideDeadEl.checked = true;
-                if (hideElimEl) hideElimEl.checked = true;
+                if (nameEl) {
+                    nameEl.value = '';
+                }
+                if (classEl) {
+                    classEl.value = 'all';
+                }
+                if (hideDeadEl) {
+                    hideDeadEl.checked = true;
+                }
+                if (hideElimEl) {
+                    hideElimEl.checked = true;
+                }
 
                 if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                     window.CharacterList.render();
@@ -520,6 +601,7 @@
             return;
         }
 
+        // Use CharacterQueries for simple read
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             notify('Character not found.', 'error');
@@ -530,13 +612,14 @@
             .then(function(result) {
                 if (result && result.success) {
                     var input = document.getElementById('class-tag-input');
-                    if (input) input.value = '';
+                    if (input) {
+                        input.value = '';
+                    }
                     refreshUI(char);
                 }
             })
             .catch(function(err) {
                 notify('Failed to add class.', 'error');
-                console.error('[CharacterEvents] Add class error:', err);
             });
     }
 
@@ -569,7 +652,6 @@
             })
             .catch(function(err) {
                 notify('Failed to remove class.', 'error');
-                console.error('[CharacterEvents] Remove class error:', err);
             });
     }
 
@@ -609,8 +691,11 @@
     }
 
     function handleCharacterSelect(id) {
-        if (!id) return;
+        if (!id) {
+            return;
+        }
 
+        // Use CharacterQueries for simple read
         var char = CharacterQueries.getCharacterById(id);
         if (!char) {
             notify('Character not found.', 'error');
@@ -698,90 +783,6 @@
             FormUtils.setField('char-stat-' + key, value);
         });
         notify('Random stats generated!', 'info');
-    }
-
-    // ============================================================
-    // UI REFRESH
-    // ============================================================
-
-    function refreshUI(char) {
-        // Refresh character list
-        if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-            try {
-                window.CharacterList.render();
-            } catch (e) {
-                // Ignore render errors
-            }
-        }
-
-        // Refresh class tags
-        var classTagContainer = document.getElementById('class-tag-container');
-        if (classTagContainer) {
-            CharacterClassView.renderClassTags(char, classTagContainer);
-        }
-
-        // Refresh current classes display
-        var currentClassesDisplay = document.getElementById('current-classes-list');
-        if (currentClassesDisplay) {
-            CharacterClassView.updateCurrentClassesDisplay(char, currentClassesDisplay);
-        }
-
-        // Refresh class selector
-        var classSelect = document.getElementById('academic-class-select');
-        if (classSelect) {
-            CharacterClassView.populateClassSelector(char, classSelect);
-        }
-
-        // Refresh tournament eliminations
-        var tournElimContainer = document.getElementById('tournament-eliminations-view');
-        if (tournElimContainer) {
-            CharacterEliminationView.renderTournamentEliminations(char, tournElimContainer);
-        }
-
-        // Refresh standalone eliminations
-        var standaloneElimContainer = document.getElementById('standalone-eliminations-container');
-        if (standaloneElimContainer) {
-            CharacterEliminationView.renderStandaloneEliminations(char, standaloneElimContainer);
-        }
-
-        // Refresh academic view
-        var academicView = document.getElementById('academic-view');
-        if (academicView && window.CharacterViews && typeof window.CharacterViews.renderAcademic === 'function') {
-            try {
-                window.CharacterViews.renderAcademic(char);
-            } catch (e) {
-                // Ignore render errors
-            }
-        }
-
-        // Refresh professional view
-        var professionalView = document.getElementById('professional-view');
-        if (professionalView && window.CharacterViews && typeof window.CharacterViews.renderProfessional === 'function') {
-            try {
-                window.CharacterViews.renderProfessional(char);
-            } catch (e) {
-                // Ignore render errors
-            }
-        }
-
-        // Refresh social view
-        var socialView = document.getElementById('social-view');
-        if (socialView && window.CharacterViews && typeof window.CharacterViews.renderSocial === 'function') {
-            try {
-                window.CharacterViews.renderSocial(char);
-            } catch (e) {
-                // Ignore render errors
-            }
-        }
-
-        // Update dashboard stats
-        if (typeof window.updateDashboardStats === 'function') {
-            try {
-                window.updateDashboardStats();
-            } catch (e) {
-                // Ignore render errors
-            }
-        }
     }
 
     // ============================================================
