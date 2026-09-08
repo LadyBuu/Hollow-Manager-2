@@ -968,4 +968,83 @@
         }
 
         var weekNum = CV.parseWeek(week);
-        if (weekNum === null || weekNum < CC.MIN
+        if (weekNum === null || weekNum < CC.MIN_WEEK || weekNum > CC.MAX_WEEK) {
+            return failure('Valid week is required (' + CC.MIN_WEEK + '-' + CC.MAX_WEEK + ').');
+        }
+
+        var curriculum = ensureCurriculumStructure();
+        if (!curriculum) { return failure('Curriculum data is not available.'); }
+
+        var schedules = curriculum.locationSchedules || {};
+        if (!schedules[locationId] || !schedules[locationId][weekNum]) {
+            return success({ cleared: false, message: 'No schedule for this week.' });
+        }
+
+        var candidateSchedules = deepClone(curriculum.locationSchedules);
+        if (!candidateSchedules) { return failure('Failed to prepare location schedule data.'); }
+
+        var candidateMetadata = deepClone(curriculum.metadata);
+        if (!candidateMetadata) { candidateMetadata = {}; }
+
+        delete candidateSchedules[locationId][weekNum];
+
+        var prefix = String(locationId) + '_' + String(weekNum) + '_';
+        for (var key in candidateMetadata) {
+            if (Object.prototype.hasOwnProperty.call(candidateMetadata, key) && key.indexOf(prefix) === 0) {
+                delete candidateMetadata[key];
+            }
+        }
+
+        curriculum.locationSchedules = candidateSchedules;
+        curriculum.metadata = candidateMetadata;
+
+        return success({ cleared: true, week: weekNum });
+    }
+
+    window.ScheduleCore = {
+        // Validation
+        validateSlot: validateSlot,
+        validateRestDays: validateRestDays,
+
+        // Conflict
+        hasConflict: hasConflict,
+        isRestDay: isRestDay,
+
+        // Student
+        setStudentSlot: setStudentSlot,
+        removeStudentSlot: removeStudentSlot,
+        clearStudentSchedule: clearStudentSchedule,
+        duplicateStudentSchedule: duplicateStudentSchedule,
+
+        // Rest Days
+        setRestDays: setRestDays,
+        removeRestDays: removeRestDays,
+
+        // Metadata
+        setSlotMetadata: setSlotMetadata,
+
+        // Instructor
+        setInstructorTemplate: setInstructorTemplate,
+        removeInstructorTemplate: removeInstructorTemplate,
+        setInstructorBlock: setInstructorBlock,
+        removeInstructorBlock: removeInstructorBlock,
+
+        // Location
+        setLocationClass: setLocationClass,
+        removeLocationClass: removeLocationClass,
+        clearLocationSchedule: clearLocationSchedule,
+
+        // Constants
+        MIN_WEEK: CC.MIN_WEEK,
+        MAX_WEEK: CC.MAX_WEEK,
+        MIN_DAY: CC.MIN_DAY,
+        MAX_DAY: CC.MAX_DAY,
+        MIN_HOUR: CC.MIN_HOUR,
+        MAX_HOUR: CC.MAX_HOUR,
+        CALENDAR_START_HOUR: CC.CALENDAR_START_HOUR,
+        CALENDAR_END_HOUR: CC.CALENDAR_END_HOUR,
+        MAX_DURATION: CC.MAX_CLASS_DURATION,
+        MIN_CLASS_DURATION: CC.MIN_CLASS_DURATION
+    };
+
+})();
