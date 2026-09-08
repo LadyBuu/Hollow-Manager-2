@@ -33,15 +33,7 @@
     }
     window.__calendarValidationLoaded = true;
 
-    // ============================================================
-    // DEPENDENCY IMPORTS
-    // ============================================================
-
     var CC = window.CalendarConstants;
-
-    // ============================================================
-    // DEPENDENCY CHECK
-    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -92,19 +84,8 @@
 
     checkDependencies();
 
-    // ============================================================
-    // PRIVATE HELPERS
-    // ============================================================
-
     function isString(value) {
         return typeof value === 'string';
-    }
-
-    function trimString(value) {
-        if (!isString(value)) {
-            return value;
-        }
-        return value.trim();
     }
 
     function isEmptyString(value) {
@@ -136,17 +117,6 @@
         return Number.isFinite(num);
     }
 
-    // ============================================================
-    // WEEK VALIDATION
-    // ============================================================
-
-    /**
-     * Parse and validate a week number.
-     * Returns null for invalid input.
-     * 
-     * @param {*} value - Week value to parse
-     * @returns {number|null} Validated week or null
-     */
     function parseWeek(value) {
         if (value === undefined || value === null) {
             return null;
@@ -169,27 +139,10 @@
         return num;
     }
 
-    /**
-     * Check if a week number is valid.
-     * 
-     * @param {*} value - Week value to check
-     * @returns {boolean} True if valid
-     */
     function isWeekValid(value) {
         return parseWeek(value) !== null;
     }
 
-    // ============================================================
-    // DAY VALIDATION
-    // ============================================================
-
-    /**
-     * Parse and validate a day number.
-     * Returns null for invalid input.
-     * 
-     * @param {*} value - Day value to parse (1-7, Monday=1)
-     * @returns {number|null} Validated day or null
-     */
     function parseDay(value) {
         if (value === undefined || value === null) {
             return null;
@@ -212,27 +165,10 @@
         return num;
     }
 
-    /**
-     * Check if a day number is valid.
-     * 
-     * @param {*} value - Day value to check
-     * @returns {boolean} True if valid
-     */
     function isDayValid(value) {
         return parseDay(value) !== null;
     }
 
-    // ============================================================
-    // HOUR VALIDATION
-    // ============================================================
-
-    /**
-     * Parse and validate an hour number.
-     * Returns null for invalid input.
-     * 
-     * @param {*} value - Hour value to parse (0-23)
-     * @returns {number|null} Validated hour or null
-     */
     function parseHour(value) {
         if (value === undefined || value === null) {
             return null;
@@ -255,24 +191,10 @@
         return num;
     }
 
-    /**
-     * Check if an hour number is valid.
-     * 
-     * @param {*} value - Hour value to check
-     * @returns {boolean} True if valid
-     */
     function isHourValid(value) {
         return parseHour(value) !== null;
     }
 
-    /**
-     * Parse and validate a calendar display hour.
-     * Returns null for invalid input.
-     * Calendar display hours are constrained to CALENDAR_START_HOUR to CALENDAR_END_HOUR.
-     * 
-     * @param {*} value - Hour value to parse
-     * @returns {number|null} Validated hour or null
-     */
     function parseCalendarHour(value) {
         var num = parseHour(value);
         if (num === null) {
@@ -284,27 +206,10 @@
         return num;
     }
 
-    /**
-     * Check if a calendar display hour is valid.
-     * 
-     * @param {*} value - Hour value to check
-     * @returns {boolean} True if valid
-     */
     function isCalendarHourValid(value) {
         return parseCalendarHour(value) !== null;
     }
 
-    // ============================================================
-    // DURATION VALIDATION
-    // ============================================================
-
-    /**
-     * Parse and validate a class duration.
-     * Returns null for invalid input.
-     * 
-     * @param {*} value - Duration value to parse
-     * @returns {number|null} Validated duration or null
-     */
     function parseDuration(value) {
         if (value === undefined || value === null) {
             return null;
@@ -327,27 +232,10 @@
         return num;
     }
 
-    /**
-     * Check if a duration is valid.
-     * 
-     * @param {*} value - Duration value to check
-     * @returns {boolean} True if valid
-     */
     function isDurationValid(value) {
         return parseDuration(value) !== null;
     }
 
-    // ============================================================
-    // YEAR VALIDATION
-    // ============================================================
-
-    /**
-     * Parse and validate a year number.
-     * Returns null for invalid input.
-     * 
-     * @param {*} value - Year value to parse
-     * @returns {number|null} Validated year or null
-     */
     function parseYear(value) {
         if (value === undefined || value === null) {
             return null;
@@ -370,29 +258,10 @@
         return num;
     }
 
-    /**
-     * Check if a year is valid.
-     * 
-     * @param {*} value - Year value to check
-     * @returns {boolean} True if valid
-     */
     function isYearValid(value) {
         return parseYear(value) !== null;
     }
 
-    // ============================================================
-    // SLOT VALIDATION
-    // ============================================================
-
-    /**
-     * Validate a complete schedule slot.
-     * 
-     * @param {*} week - Week value
-     * @param {*} day - Day value
-     * @param {*} hour - Hour value
-     * @param {*} duration - Duration value
-     * @returns {object|null} { week, day, hour, duration } or null
-     */
     function parseSlot(week, day, hour, duration) {
         var parsedWeek = parseWeek(week);
         if (parsedWeek === null) {
@@ -414,7 +283,6 @@
             return null;
         }
 
-        // Check that slot fits within the day
         if (parsedHour + parsedDuration > CC.MAX_HOUR + 1) {
             return null;
         }
@@ -427,32 +295,10 @@
         };
     }
 
-    /**
-     * Check if a slot is valid.
-     * 
-     * @param {*} week - Week value
-     * @param {*} day - Day value
-     * @param {*} hour - Hour value
-     * @param {*} duration - Duration value
-     * @returns {boolean} True if valid
-     */
     function isSlotValid(week, day, hour, duration) {
         return parseSlot(week, day, hour, duration) !== null;
     }
 
-    // ============================================================
-    // RANGE VALIDATION
-    // ============================================================
-
-    /**
-     * Validate that a value is within a range.
-     * 
-     * @param {*} value - Value to validate
-     * @param {number} min - Minimum allowed value
-     * @param {number} max - Maximum allowed value
-     * @param {boolean} allowNull - Whether null is allowed
-     * @returns {number|null} Validated value or null
-     */
     function parseInRange(value, min, max, allowNull) {
         allowNull = allowNull === true;
 
@@ -478,15 +324,6 @@
         return num;
     }
 
-    /**
-     * Check if a value is within a range.
-     * 
-     * @param {*} value - Value to check
-     * @param {number} min - Minimum allowed value
-     * @param {number} max - Maximum allowed value
-     * @param {boolean} allowNull - Whether null is allowed
-     * @returns {boolean} True if valid
-     */
     function isInRange(value, min, max, allowNull) {
         var result = parseInRange(value, min, max, allowNull);
         if (allowNull && result === null) {
@@ -494,10 +331,6 @@
         }
         return isFiniteNumber(result);
     }
-
-    // ============================================================
-    // BOUNDS ACCESSORS
-    // ============================================================
 
     function getWeekBounds() {
         return {
@@ -541,42 +374,23 @@
         };
     }
 
-    // ============================================================
-    // EXPOSE
-    // ============================================================
-
     window.CalendarValidation = {
-        // Week
         parseWeek: parseWeek,
         isWeekValid: isWeekValid,
-
-        // Day
         parseDay: parseDay,
         isDayValid: isDayValid,
-
-        // Hour
         parseHour: parseHour,
         isHourValid: isHourValid,
         parseCalendarHour: parseCalendarHour,
         isCalendarHourValid: isCalendarHourValid,
-
-        // Duration
         parseDuration: parseDuration,
         isDurationValid: isDurationValid,
-
-        // Year
         parseYear: parseYear,
         isYearValid: isYearValid,
-
-        // Slot
         parseSlot: parseSlot,
         isSlotValid: isSlotValid,
-
-        // Range
         parseInRange: parseInRange,
         isInRange: isInRange,
-
-        // Bounds
         getWeekBounds: getWeekBounds,
         getDayBounds: getDayBounds,
         getHourBounds: getHourBounds,
