@@ -60,6 +60,7 @@
         missing.push('CalendarRenderer.renderGrid');
     }
 
+    // CalendarQueries - READ operations
     if (!window.CalendarQueries || typeof window.CalendarQueries.getStudentSchedule !== 'function') {
         missing.push('CalendarQueries.getStudentSchedule');
     }
@@ -70,6 +71,7 @@
         missing.push('CalendarQueries.getClassDetails');
     }
 
+    // ScheduleCore - WRITE operations
     if (!window.ScheduleCore || typeof window.ScheduleCore.setStudentSlot !== 'function') {
         missing.push('ScheduleCore.setStudentSlot');
     }
@@ -193,7 +195,7 @@
     }
 
     // ============================================================
-    // GET SCHEDULE DATA
+    // GET SCHEDULE DATA - Uses CalendarQueries for reads
     // ============================================================
 
     function getScheduleData(studentId, week) {
@@ -418,7 +420,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Add Class
+    // HANDLERS - Add Class (Uses ScheduleCore for write)
     // ============================================================
 
     function handleAddClass(day, hour) {
@@ -447,13 +449,14 @@
                     return;
                 }
 
-                // Check for conflicts
+                // Check for conflicts using CalendarQueries
                 var schedule = CalendarQueries.getStudentSchedule(_state.selectedId, _state.week);
                 if (hasRangeOverlap(schedule, _state.selectedId, _state.week, day, hour, duration)) {
                     notify('This would overlap with an existing class.', 'error');
                     return;
                 }
 
+                // Use ScheduleCore for mutation
                 var result = ScheduleCore.setStudentSlot(
                     _state.selectedId,
                     _state.week,
@@ -478,7 +481,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Class Details
+    // HANDLERS - Class Details (Uses CalendarQueries for read)
     // ============================================================
 
     function handleClassDetails(day, hour) {
@@ -535,7 +538,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Remove Class
+    // HANDLERS - Remove Class (Uses ScheduleCore for write)
     // ============================================================
 
     function handleRemoveClass(day, hour) {
@@ -555,7 +558,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Save Rest Days
+    // HANDLERS - Save Rest Days (Uses ScheduleCore for write)
     // ============================================================
 
     function handleSaveRestDays() {
@@ -587,7 +590,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Available Item Click
+    // HANDLERS - Available Item Click (Uses ScheduleCore for write)
     // ============================================================
 
     function handleAvailableItemClick(disciplineId) {
@@ -602,7 +605,7 @@
             return;
         }
 
-        // Find an available slot
+        // Find an available slot using CalendarQueries
         var schedule = CalendarQueries.getStudentSchedule(_state.selectedId, _state.week);
         var restDays = CalendarQueries.getStudentRestDays(_state.selectedId, _state.week);
         var occupiedMap = CalendarRenderer.buildOccupiedMap(schedule);
@@ -642,7 +645,7 @@
     }
 
     // ============================================================
-    // OVERLAP CHECK
+    // OVERLAP CHECK - Uses CalendarQueries for read
     // ============================================================
 
     function hasRangeOverlap(schedule, studentId, week, day, startHour, duration) {
