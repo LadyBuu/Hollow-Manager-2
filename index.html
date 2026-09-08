@@ -36,137 +36,33 @@
     </div>
 
     <!-- ============================================================
-         CORE UTILITIES - MUST LOAD FIRST
+         CORE UTILITIES (from attached files)
          ============================================================ -->
-    <script src="js/utils/constants.js"></script>
     <script src="js/utils/validation-utils.js"></script>
     <script src="js/utils/id-utils.js"></script>
     <script src="js/utils/object-utils.js"></script>
     <script src="js/utils/dom-utils.js"></script>
     <script src="js/utils/form-utils.js"></script>
+    <script src="js/utils/calendar-constants.js"></script>
+    <script src="js/utils/calendar-validation.js"></script>
+    <script src="js/utils/format-utils.js"></script>
+    <script src="js/utils/timing-utils.js"></script>
     <script src="js/utils/character-constants.js"></script>
     <script src="js/utils/social-constants.js"></script>
     <script src="js/utils/magic-constants.js"></script>
-    <script src="js/utils/calendar-constants.js"></script>
-    <script src="js/utils/calendar-validation.js"></script>
+    <script src="js/utils/modal.js"></script>
+    <script src="js/utils/notification.js"></script>
 
     <!-- ============================================================
-         DATA & PERSISTENCE
+         CORE INFRASTRUCTURE (from attached files)
          ============================================================ -->
-    <script src="js/data/database.js"></script>
-    <script src="js/data/mutation-pipeline.js"></script>
-    <script src="js/data/activity-log.js"></script>
+    <script src="js/core/activity-log.js"></script>
+    <script src="js/core/database.js"></script>
+    <script src="js/core/loader.js"></script>
+    <script src="js/core/state.js"></script>
+    <script src="js/core/tab-manager.js"></script>
+    <script src="js/core/mutation-pipeline.js"></script>
+    <script src="js/core/bootstrap.js"></script>
 
-    <!-- ============================================================
-         CORE DOMAIN - CHARACTERS
-         ============================================================ -->
-    <script src="js/modules/characters/character-queries.js"></script>
-    <script src="js/modules/characters/character-generator.js"></script>
-    <script src="js/modules/characters/character-stats.js"></script>
-    <script src="js/modules/characters/character-crud.js"></script>
-    <script src="js/modules/characters/character-classes.js"></script>
-    <script src="js/modules/characters/character-eliminations.js"></script>
-    <script src="js/modules/characters/character-detail-queries.js"></script>
-    <script src="js/modules/characters/character-detail.js"></script>
-    <script src="js/modules/characters/character-views.js"></script>
-    <script src="js/modules/characters/character-list.js"></script>
-    <script src="js/modules/characters/character-form.js"></script>
-    <script src="js/modules/characters/character-class-view.js"></script>
-    <script src="js/modules/characters/character-elimination-view.js"></script>
-    <script src="js/modules/characters/character-stats-view.js"></script>
-    <script src="js/modules/characters/character-events.js"></script>
-    <script src="js/modules/characters/index.js"></script>
-
-    <!-- ============================================================
-         CORE DOMAIN - TEAMS (depends on Characters + AcademyQueries)
-         ============================================================ -->
-    <script src="js/modules/teams/team-core.js"></script>
-    <script src="js/modules/teams/team-queries.js"></script>
-    <script src="js/modules/teams/team-members.js"></script>
-    <script src="js/modules/teams/team-rankings.js"></script>
-    <script src="js/modules/teams/team-filters.js"></script>
-    <script src="js/modules/teams/team-render.js"></script>
-    <script src="js/modules/teams/team-manager.js"></script>
-
-    <!-- ============================================================
-         CORE DOMAIN - ACADEMY (depends on Characters + Teams)
-         ============================================================ -->
-    <!-- Academy data structures first -->
-    <script src="js/modules/academy/academy-data.js"></script>
-    <!-- Academy domain modules (no AcademyQueries dependency) -->
-    <script src="js/modules/academy/academy-classes.js"></script>
-    <script src="js/modules/academy/academy-grades.js"></script>
-    <script src="js/modules/academy/academy-groups.js"></script>
-    <script src="js/modules/academy/academy-ranking.js"></script>
-    <!-- Academy read facade (depends on above modules) -->
-    <script src="js/modules/academy/academy-queries.js"></script>
-    <!-- Academy scheduling (depends on Calendar) -->
-    <script src="js/modules/academy/academy-schedule.js"></script>
-    <script src="js/modules/academy/academy-distribute.js"></script>
-    <!-- Academy UI tabs -->
-    <script src="js/modules/academy/tabs/class-tab.js"></script>
-    <script src="js/modules/academy/tabs/student-tab.js"></script>
-    <script src="js/modules/academy/tabs/faculty-tab.js"></script>
-    <!-- Academy module entry -->
-    <script src="js/modules/academy/index.js"></script>
-
-    <!-- ============================================================
-         CORE DOMAIN - CALENDAR (depends on Characters + Academy)
-         ============================================================ -->
-    <script src="js/modules/calendar/schedule-core.js"></script>
-    <script src="js/modules/calendar/calendar-queries.js"></script>
-    <script src="js/modules/calendar/calendar-renderer.js"></script>
-    <script src="js/modules/calendar/student-calendar-ui.js"></script>
-    <script src="js/modules/calendar/instructor-calendar-ui.js"></script>
-    <script src="js/modules/calendar/location-calendar-ui.js"></script>
-    <script src="js/modules/calendar/index.js"></script>
-
-    <!-- ============================================================
-         CORE DOMAIN - TOURNAMENTS (depends on Characters + Teams + Academy)
-         ============================================================ -->
-    <script src="js/modules/tournaments/tournaments-schema.js"></script>
-    <script src="js/modules/tournaments/tournament-lifecycle.js"></script>
-    <script src="js/modules/tournaments/tournaments-core.js"></script>
-    <script src="js/modules/tournaments/tournaments-queries.js"></script>
-    <script src="js/modules/tournaments/tournaments-matches.js"></script>
-    <script src="js/modules/tournaments/tournament-elimination-workflow.js"></script>
-    <script src="js/modules/tournaments/tournaments-render.js"></script>
-    <script src="js/modules/tournaments/tournaments-repair.js"></script>
-    <script src="js/modules/tournaments/tournaments-ui.js"></script>
-    <script src="js/modules/tournaments/index.js"></script>
-
-    <!-- ============================================================
-         CORE DOMAIN - MISSIONS (depends on Characters + Teams)
-         ============================================================ -->
-    <script src="js/modules/missions/missions-schema.js"></script>
-    <script src="js/modules/missions/mission-rules.js"></script>
-    <script src="js/modules/missions/mission-views.js"></script>
-    <script src="js/modules/missions/mission-id.js"></script>
-    <script src="js/modules/missions/missions-core.js"></script>
-    <script src="js/modules/missions/missions-queries.js"></script>
-    <script src="js/modules/missions/missions-render.js"></script>
-    <script src="js/modules/missions/missions-ui.js"></script>
-    <script src="js/modules/missions/index.js"></script>
-
-    <!-- ============================================================
-         CROSS-DOMAIN - DASHBOARD (depends on ALL upstream domains)
-         MUST BE LAST
-         ============================================================ -->
-    <script src="js/modules/dashboard/dashboard-queries.js"></script>
-    <script src="js/modules/dashboard/dashboard-render.js"></script>
-    <script src="js/modules/dashboard/dashboard-ui.js"></script>
-    <script src="js/modules/dashboard/index.js"></script>
-
-    <!-- ============================================================
-         UI HELPERS - Modals, Notifications, TabManager
-         ============================================================ -->
-    <script src="js/ui/modal.js"></script>
-    <script src="js/ui/notification.js"></script>
-    <script src="js/ui/tab-manager.js"></script>
-
-    <!-- ============================================================
-         APPLICATION INITIALIZATION
-         ============================================================ -->
-    <script src="js/app.js"></script>
 </body>
 </html>
