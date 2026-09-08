@@ -1,12 +1,20 @@
 /**
- * js/modules/shared/discipline-queries.js - Discipline Queries
- * Read-only discipline queries
+ * shared/queries/discipline-queries.js - Discipline Queries
+ * Read-only discipline domain queries
+ * 
+ * IMPORTANT:
+ *   - READ ONLY - no mutations
+ *   - No dependencies on other modules
+ *   - Reads from window.data directly
+ * 
+ * DEPENDENCIES:
+ *   - window.data (canonical state)
  */
 
 (function() {
     'use strict';
 
-    if (window.__disciplineQueriesLoaded) return;
+    if (window.__disciplineQueriesLoaded) { return; }
     window.__disciplineQueriesLoaded = true;
 
     function getDisciplines() {
@@ -18,7 +26,7 @@
     }
 
     function getDiscipline(id) {
-        if (!id) return null;
+        if (!id) { return null; }
         var disciplines = getDisciplines();
         for (var i = 0; i < disciplines.length; i++) {
             if (String(disciplines[i].id) === String(id)) {
@@ -30,7 +38,7 @@
 
     function getAvailableDisciplines(week) {
         var weekNum = parseInt(week, 10);
-        if (isNaN(weekNum)) return [];
+        if (isNaN(weekNum)) { return []; }
         var disciplines = getDisciplines();
         var result = [];
         for (var i = 0; i < disciplines.length; i++) {
@@ -49,4 +57,5 @@
         getDiscipline: getDiscipline,
         getAvailableDisciplines: getAvailableDisciplines
     };
+
 })();
