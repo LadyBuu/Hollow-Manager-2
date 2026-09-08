@@ -35,16 +35,15 @@
     <script src="js/utils/timing-utils.js"></script>
     <script src="js/utils/modal.js"></script>
     <script src="js/utils/notification.js"></script>
-    <script src="js/utils/calendar-validation.js"></script>
 
     <!-- ============================================================
          SHARED CONSTANTS
          ============================================================ -->
+    <script src="js/modules/shared/constants.js"></script>
     <script src="js/modules/shared/calendar-constants.js"></script>
     <script src="js/modules/shared/character-constants.js"></script>
     <script src="js/modules/shared/academy-constants.js"></script>
     <script src="js/modules/shared/magic-constants.js"></script>
-    <script src="js/constants.js"></script>
 
     <!-- ============================================================
          SHARED QUERIES - READ-ONLY DOMAIN ACCESS
@@ -57,8 +56,22 @@
     <script src="js/modules/shared/queries/calendar-queries.js"></script>
     <script src="js/modules/shared/queries/discipline-queries.js"></script>
     <script src="js/modules/shared/queries/location-queries.js"></script>
+
+    <!-- ============================================================
+         ELIMINATION & SOCIAL QUERIES - NEED TO BE CREATED
+         ============================================================ -->
+    <!--
+    NOTE: These files need to be created:
+    - js/modules/shared/queries/elimination-queries.js
+    - js/modules/shared/queries/social-queries.js
+    -->
     <script src="js/modules/shared/queries/elimination-queries.js"></script>
     <script src="js/modules/shared/queries/social-queries.js"></script>
+
+    <!-- ============================================================
+         CALENDAR VALIDATION
+         ============================================================ -->
+    <script src="js/utils/calendar-validation.js"></script>
 
     <!-- ============================================================
          CORE INFRASTRUCTURE
@@ -74,6 +87,7 @@
     <!-- ============================================================
          CALENDAR MODULE
          ============================================================ -->
+    <script src="js/modules/calendar/calendar-validation.js"></script>
     <script src="js/modules/calendar/schedule-core.js"></script>
     <script src="js/modules/calendar/calendar-renderer.js"></script>
     <script src="js/modules/calendar/calendar-aggregator.js"></script>
@@ -84,39 +98,22 @@
     <script src="js/modules/calendar/index.js"></script>
 
     <!-- ============================================================
-         CHARACTER MODULE
+         CHARACTER MODULE - INDEPENDENT
          ============================================================ -->
-    <!-- Generators -->
     <script src="js/modules/characters/character-generator.js"></script>
-
-    <!-- Core -->
     <script src="js/modules/characters/character-stats.js"></script>
     <script src="js/modules/characters/character-crud.js"></script>
     <script src="js/modules/characters/character-classes.js"></script>
     <script src="js/modules/characters/character-eliminations.js"></script>
-
-    <!-- Views -->
     <script src="js/modules/characters/character-list.js"></script>
     <script src="js/modules/characters/character-form.js"></script>
     <script src="js/modules/characters/character-detail.js"></script>
-
-    <!-- UI -->
     <script src="js/modules/characters/character-class-view.js"></script>
     <script src="js/modules/characters/character-elimination-view.js"></script>
     <script src="js/modules/characters/character-stats-view.js"></script>
     <script src="js/modules/characters/character-events.js"></script>
-
-    <!-- Aggregator & Entry -->
     <script src="js/modules/characters/character-aggregator.js"></script>
     <script src="js/modules/characters/index.js"></script>
-
-    <!-- ============================================================
-         OTHER MODULES - PLACEHOLDER
-         ============================================================ -->
-    <!-- Teams, Academy, Tournaments, Missions, Dashboard, Export modules
-         are currently placeholders and will be re-implemented
-         following the same architectural patterns established by
-         Calendar and Character modules. -->
 
     <!-- ============================================================
          APP BOOTSTRAP
