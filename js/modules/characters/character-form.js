@@ -16,7 +16,7 @@
  *   - USES CharacterCRUD for save operations
  *   - USES CharacterGenerator for random generation
  *   - USES CharacterConstants for canonical constants
- *   - USES AcademyQueries for class queries
+ *   - USES AcademyQueries directly for class queries (simple read)
  *   - USES FormUtils for form field operations
  *   - USES DomUtils for safe DOM operations
  *   - No direct data mutation
@@ -87,6 +87,7 @@
             missing.push('CharacterConstants.STAT_KEYS');
         }
 
+        // AcademyQueries is a simple read - used directly for class options
         if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
             missing.push('AcademyQueries.getClasses');
         }
@@ -125,7 +126,7 @@
         }
 
         if (missing.length > 0) {
-            throw new Error('CharacterForm: Missing dependencies: ' + missing.join(', '));
+            throw new Error('[CharacterForm] Missing dependencies: ' + missing.join(', '));
         }
 
         return true;
@@ -162,7 +163,7 @@
     }
 
     // ============================================================
-    // GET CURRENT YEAR - Removed CalendarCore dependency
+    // GET CURRENT YEAR
     // ============================================================
 
     function getCurrentYear() {
@@ -216,7 +217,9 @@
         var currentYear = getCurrentYear();
 
         var content = document.getElementById('character-form-content');
-        if (!content) return;
+        if (!content) {
+            return;
+        }
 
         var html = getCharacterFormHTML(char, editId, currentYear);
         content.innerHTML = html;
@@ -372,12 +375,15 @@
     }
 
     function getClassOptionsHTML(selectedId) {
+        // Simple read: AcademyQueries.getClasses() directly
         var classes = AcademyQueries.getClasses();
         var html = '<option value="">None</option>';
 
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
-            if (!cls || typeof cls !== 'object') continue;
+            if (!cls || typeof cls !== 'object') {
+                continue;
+            }
             var isSelected = String(cls.id) === String(selectedId);
             html += '<option value="' + escapeHtml(cls.id) + '" ' + (isSelected ? 'selected' : '') + '>' + escapeHtml(cls.name) + '</option>';
         }
@@ -596,7 +602,9 @@
     // ============================================================
 
     function populateFormFields(char) {
-        if (!char) return;
+        if (!char) {
+            return;
+        }
 
         FormUtils.setField('char-firstName', char.firstName);
         FormUtils.setField('char-lastName', char.lastName);
@@ -711,6 +719,7 @@
                     dto.careerStatus = parsed;
                 }
             } catch (e) {
+                // Ignore parse errors
             }
         }
 
@@ -734,7 +743,9 @@
     // ============================================================
 
     function switchTab(tab) {
-        if (!tab || VALID_TABS.indexOf(tab) === -1) return;
+        if (!tab || VALID_TABS.indexOf(tab) === -1) {
+            return;
+        }
 
         state.currentTab = tab;
 
