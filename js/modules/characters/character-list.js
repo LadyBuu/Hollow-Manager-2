@@ -37,11 +37,19 @@
     }
     window.__characterListLoaded = true;
 
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
     var CharacterQueries = window.CharacterQueries;
     var AcademyQueries = window.AcademyQueries;
     var Elimination = window.Elimination;
     var DomUtils = window.DomUtils;
     var CalendarConstants = window.CALENDAR_CONSTANTS;
+
+    // ============================================================
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -87,13 +95,25 @@
 
     checkDependencies();
 
+    // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils
+    // ============================================================
+
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
     }
 
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
     var MIN_WEEK = CalendarConstants ? CalendarConstants.MIN_WEEK : 1;
     var MAX_WEEK = CalendarConstants ? CalendarConstants.MAX_WEEK : 52;
     var DEFAULT_WEEK = 1;
+
+    // ============================================================
+    // FILTER HELPERS
+    // ============================================================
 
     function getFilterValues() {
         var nameFilter = document.getElementById('char-name-filter');
@@ -108,6 +128,19 @@
             hideEliminated: hideEliminated ? hideEliminated.checked : true
         };
     }
+
+    function getCurrentWeek() {
+        var data = window.data || {};
+        var week = data.currentWeek;
+        if (typeof week === 'number' && week >= MIN_WEEK && week <= MAX_WEEK) {
+            return week;
+        }
+        return DEFAULT_WEEK;
+    }
+
+    // ============================================================
+    // CHARACTER FILTERING
+    // ============================================================
 
     function characterMatchesFilters(char, filters) {
         if (!char) return false;
@@ -140,14 +173,9 @@
         return true;
     }
 
-    function getCurrentWeek() {
-        var data = window.data || {};
-        var week = data.currentWeek;
-        if (typeof week === 'number' && week >= MIN_WEEK && week <= MAX_WEEK) {
-            return week;
-        }
-        return DEFAULT_WEEK;
-    }
+    // ============================================================
+    // RENDER CHARACTER LIST
+    // ============================================================
 
     function render() {
         var container = document.getElementById('characters-container');
@@ -235,6 +263,10 @@
         container.innerHTML = html;
     }
 
+    // ============================================================
+    // POPULATE CLASS FILTER
+    // ============================================================
+
     function populateClassFilter() {
         var select = document.getElementById('char-class-filter');
         if (!select) return;
@@ -272,6 +304,10 @@
             select.value = 'all';
         }
     }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
 
     window.CharacterList = {
         render: render,
