@@ -14,6 +14,7 @@
  *   - This module does NOT implement dashboard logic directly
  *   - It delegates to DashboardUI for all operations
  *   - TabManager is the single source of truth for lifecycle
+ *   - Dashboard is the LAST module to load - all upstream domains must be available
  * 
  * DEPENDENCIES:
  *   - window.DashboardUI (from dashboard-ui.js)
