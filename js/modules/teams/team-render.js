@@ -39,40 +39,38 @@
     // DEPENDENCY CHECK - NO FALLBACKS
     // ============================================================
 
+    var missing = [];
+
     if (!window.TeamCore) {
-        console.warn('TeamRender: TeamCore not available.');
-        return;
+        missing.push('TeamCore');
     }
     if (!window.TeamQueries) {
-        console.warn('TeamRender: TeamQueries not available.');
-        return;
+        missing.push('TeamQueries');
     }
     if (!window.TeamMembers) {
-        console.warn('TeamRender: TeamMembers not available.');
-        return;
+        missing.push('TeamMembers');
     }
     if (!window.TeamRankings) {
-        console.warn('TeamRender: TeamRankings not available.');
-        return;
+        missing.push('TeamRankings');
     }
     if (!window.CharacterQueries) {
-        console.warn('TeamRender: CharacterQueries not available.');
-        return;
+        missing.push('CharacterQueries');
     }
     if (!window.AcademyQueries) {
-        console.warn('TeamRender: AcademyQueries not available.');
-        return;
+        missing.push('AcademyQueries');
     }
     if (!window.CALENDAR_CONSTANTS) {
-        console.warn('TeamRender: CALENDAR_CONSTANTS not available.');
-        return;
+        missing.push('CALENDAR_CONSTANTS');
     }
     if (!window.DomUtils) {
-        console.warn('TeamRender: DomUtils not available.');
-        return;
+        missing.push('DomUtils');
     }
     if (!window.ValidationUtils) {
-        console.warn('TeamRender: ValidationUtils not available.');
+        missing.push('ValidationUtils');
+    }
+
+    if (missing.length > 0) {
+        console.warn('TeamRender: Missing dependencies:', missing.join(', '));
         return;
     }
 
