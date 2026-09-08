@@ -8,6 +8,7 @@
  *   - Activity logging with timestamp
  *   - Activity history management
  *   - Automatic trimming to 100 entries
+ *   - Structured metadata support
  * 
  * IMPORTANT:
  *   - This is application infrastructure, not a utility
@@ -23,7 +24,7 @@
  * 
  * USAGE:
  *   ActivityLog.record('Character graduated', 'success');
- *   ActivityLog.record('Tournament completed', 'info');
+ *   ActivityLog.record('Tournament completed', 'info', { tournamentId: 't_123' });
  */
 
 (function() {
@@ -36,77 +37,48 @@
     // ACTIVITY LOGGING
     // ============================================================
 
-    /**
-     * Record an activity in the application history.
-     * 
-     * @param {string} message - Activity description
-     * @param {string} type - Activity type: 'info', 'success', 'warning', 'error'
-     * 
-     * BEHAVIOR:
-     *   - If window.data doesn't exist, logs a warning and returns
-     *   - If window.data.activities doesn't exist, creates it
-     *   - Trims history to 100 entries (newest first)
-     *   - All errors are caught and logged to console (non-fatal)
-     * 
-     * USAGE:
-     *   ActivityLog.record('Character created', 'success');
-     *   ActivityLog.record('Mission failed', 'error');
-     */
-    function record(message, type) {
+    function record(message, type, metadata) {
         try {
-            // Validate input
             if (message === undefined || message === null) {
                 return;
             }
 
             message = String(message);
             type = type || 'info';
+            metadata = metadata || null;
 
-            // Do NOT create window.data - it must exist
             if (!window.data || typeof window.data !== 'object') {
-                console.warn('[ActivityLog] window.data is not available');
                 return;
             }
 
-            // Create activities array if it doesn't exist
             if (!Array.isArray(window.data.activities)) {
                 window.data.activities = [];
             }
 
-            // Generate ID using IdUtils (single source of truth)
             var id = null;
             if (window.IdUtils && typeof window.IdUtils.generateId === 'function') {
                 id = window.IdUtils.generateId('act');
             } else {
-                // Emergency fallback if IdUtils is missing
                 id = 'act_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
             }
 
-            // Prepend new activity (newest first)
             window.data.activities.unshift({
                 id: id,
                 message: message,
                 type: type,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                metadata: metadata
             });
 
-            // Trim to 100 entries
             if (window.data.activities.length > 100) {
                 window.data.activities.length = 100;
             }
 
         } catch (error) {
             // Non-fatal: logging failures should not propagate
-            console.error('[ActivityLog] Failed to record activity:', error);
         }
     }
 
-    /**
-     * Get the current activity history.
-     * Returns a copy of the activities array.
-     * 
-     * @returns {Array} Array of activity objects (newest first)
-     */
     function getHistory() {
         if (!window.data || !Array.isArray(window.data.activities)) {
             return [];
@@ -114,25 +86,39 @@
         return window.data.activities.slice();
     }
 
-    /**
-     * Clear the activity history.
-     */
     function clearHistory() {
         if (window.data && Array.isArray(window.data.activities)) {
             window.data.activities = [];
         }
     }
 
-    /**
-     * Get the number of activities in the history.
-     * 
-     * @returns {number} Number of activities
-     */
     function getCount() {
         if (!window.data || !Array.isArray(window.data.activities)) {
             return 0;
         }
         return window.data.activities.length;
+    }
+
+    function getByType(type) {
+        if (!window.data || !Array.isArray(window.data.activities)) {
+            return [];
+        }
+        return window.data.activities.filter(function(entry) {
+            return entry.type === type;
+        });
+    }
+
+    function search(query) {
+        if (!window.data || !Array.isArray(window.data.activities)) {
+            return [];
+        }
+        if (!query || typeof query !== 'string') {
+            return [];
+        }
+        var lowerQuery = query.toLowerCase();
+        return window.data.activities.filter(function(entry) {
+            return entry.message.toLowerCase().indexOf(lowerQuery) !== -1;
+        });
     }
 
     // ============================================================
@@ -143,7 +129,9 @@
         record: record,
         getHistory: getHistory,
         clearHistory: clearHistory,
-        getCount: getCount
+        getCount: getCount,
+        getByType: getByType,
+        search: search
     };
 
 })();
