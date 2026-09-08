@@ -1,7 +1,6 @@
 /**
- * js/modules/academy/tabs/student-tab.js - Student Sub-Tab
+ * modules/academy/tabs/student-tab.js - Student Sub-Tab
  * Handles student management, grades, rankings, and schedules
- * Path: js/modules/academy/tabs/student-tab.js
  * 
  * This module is responsible for:
  *   - Character list filtered by selected class (reuses CharacterList)
@@ -11,29 +10,36 @@
  *   - Schedule viewing
  * 
  * IMPORTANT:
- *   - CharacterList is REUSED (not duplicated)
- *   - All mutations delegate to domain cores
- *   - This module is UI-ONLY - all mutations delegate to domain cores
+ *   - UI-ONLY - all mutations delegate to domain cores
+ *   - Uses AcademyUI for state management
+ *   - Uses AcademyAggregator for projections
+ *   - Uses AcademyCore for student mutations
  *   - Uses AcademyGrades for grade operations
  *   - Uses AcademyRanking for ranking operations
  *   - Uses AcademySchedule for schedule operations
  *   - Uses AcademyQueries for read-only access
+ *   - CharacterList is REUSED (not duplicated)
  *   - All HTML escaping uses DomUtils.escapeHtml()
  *   - All notifications use NotificationSystem.notify()
- *   - All modals use Modal system
- *   - Calendar bounds use CalendarConstants
  * 
  * DEPENDENCIES:
- *   - window.AcademyGrades (from academy-grades.js)
- *   - window.AcademyRanking (from academy-ranking.js)
- *   - window.AcademySchedule (from academy-schedule.js)
- *   - window.AcademyQueries (from academy-queries.js)
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.CharacterList (from character-list.js)
- *   - window.CalendarConstants (from calendar-constants.js)
- *   - window.NotificationSystem (from notification.js)
- *   - window.DomUtils (from dom-utils.js)
- *   - window.Modal (from modal.js)
+ *   - window.AcademyUI (from academy-ui.js) - MANDATORY
+ *   - window.AcademyAggregator (from academy-aggregator.js) - MANDATORY
+ *   - window.AcademyCore (from academy-core.js) - MANDATORY
+ *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
+ *   - window.AcademyGrades (from academy-grades.js) - MANDATORY
+ *   - window.AcademyRanking (from academy-ranking.js) - MANDATORY
+ *   - window.AcademySchedule (from academy-schedule.js) - MANDATORY
+ *   - window.CharacterQueries (from character-queries.js) - MANDATORY
+ *   - window.CharacterList (from character-list.js) - MANDATORY
+ *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
+ *   - window.NotificationSystem (from notification.js) - MANDATORY
+ *   - window.DomUtils (from dom-utils.js) - MANDATORY
+ * 
+ * USAGE:
+ *   var tab = window.StudentTab;
+ *   var html = tab.render(state);
+ *   tab.bindEvents(container);
  */
 
 (function() {
@@ -43,22 +49,69 @@
         return;
     }
 
+    // ============================================================
+    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // ============================================================
+
+    var AcademyUI = window.AcademyUI;
+    var AcademyAggregator = window.AcademyAggregator;
+    var AcademyCore = window.AcademyCore;
+    var AcademyQueries = window.AcademyQueries;
     var AcademyGrades = window.AcademyGrades;
     var AcademyRanking = window.AcademyRanking;
     var AcademySchedule = window.AcademySchedule;
-    var AcademyQueries = window.AcademyQueries;
     var CharacterQueries = window.CharacterQueries;
     var CharacterList = window.CharacterList;
     var CalendarConstants = window.CalendarConstants;
     var NotificationSystem = window.NotificationSystem;
     var DomUtils = window.DomUtils;
-    var Modal = window.Modal;
+
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
-        if (!AcademyGrades || typeof AcademyGrades.getGrades !== 'function') {
-            missing.push('AcademyGrades.getGrades');
+        if (!AcademyUI || typeof AcademyUI.getSelectedClassId !== 'function') {
+            missing.push('AcademyUI.getSelectedClassId');
+        }
+        if (!AcademyUI || typeof AcademyUI.getSelectedStudentId !== 'function') {
+            missing.push('AcademyUI.getSelectedStudentId');
+        }
+        if (!AcademyUI || typeof AcademyUI.selectStudent !== 'function') {
+            missing.push('AcademyUI.selectStudent');
+        }
+        if (!AcademyUI || typeof AcademyUI.getDisplayWeek !== 'function') {
+            missing.push('AcademyUI.getDisplayWeek');
+        }
+
+        if (!AcademyAggregator || typeof AcademyAggregator.getStudentViewModel !== 'function') {
+            missing.push('AcademyAggregator.getStudentViewModel');
+        }
+        if (!AcademyAggregator || typeof AcademyAggregator.getClassViewModel !== 'function') {
+            missing.push('AcademyAggregator.getClassViewModel');
+        }
+
+        if (!AcademyCore || typeof AcademyCore.addStudentToClass !== 'function') {
+            missing.push('AcademyCore.addStudentToClass');
+        }
+        if (!AcademyCore || typeof AcademyCore.removeStudentFromClass !== 'function') {
+            missing.push('AcademyCore.removeStudentFromClass');
+        }
+
+        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
+            missing.push('AcademyQueries.getClass');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getClassStudents !== 'function') {
+            missing.push('AcademyQueries.getClassStudents');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getAvailableStudents !== 'function') {
+            missing.push('AcademyQueries.getAvailableStudents');
+        }
+
+        if (!AcademyGrades || typeof AcademyGrades.getStudentGrades !== 'function') {
+            missing.push('AcademyGrades.getStudentGrades');
         }
         if (!AcademyGrades || typeof AcademyGrades.saveGrades !== 'function') {
             missing.push('AcademyGrades.saveGrades');
@@ -66,21 +119,15 @@
         if (!AcademyGrades || typeof AcademyGrades.calculateSummary !== 'function') {
             missing.push('AcademyGrades.calculateSummary');
         }
-        if (!AcademyGrades || typeof AcademyGrades.getClassSummary !== 'function') {
-            missing.push('AcademyGrades.getClassSummary');
+        if (!AcademyGrades || typeof AcademyGrades.calculateStudentGPA !== 'function') {
+            missing.push('AcademyGrades.calculateStudentGPA');
         }
 
-        if (!AcademyRanking || typeof AcademyRanking.getRankings !== 'function') {
-            missing.push('AcademyRanking.getRankings');
-        }
         if (!AcademyRanking || typeof AcademyRanking.getStudentRank !== 'function') {
             missing.push('AcademyRanking.getStudentRank');
         }
         if (!AcademyRanking || typeof AcademyRanking.autoGenerate !== 'function') {
             missing.push('AcademyRanking.autoGenerate');
-        }
-        if (!AcademyRanking || typeof AcademyRanking.getRankingsWithDetails !== 'function') {
-            missing.push('AcademyRanking.getRankingsWithDetails');
         }
 
         if (!AcademySchedule || typeof AcademySchedule.getStudentSchedule !== 'function') {
@@ -89,21 +136,11 @@
         if (!AcademySchedule || typeof AcademySchedule.getStudentRestDays !== 'function') {
             missing.push('AcademySchedule.getStudentRestDays');
         }
-        if (!AcademySchedule || typeof AcademySchedule.setRestDays !== 'function') {
-            missing.push('AcademySchedule.setRestDays');
+        if (!AcademySchedule || typeof AcademySchedule.setStudentRestDays !== 'function') {
+            missing.push('AcademySchedule.setStudentRestDays');
         }
         if (!AcademySchedule || typeof AcademySchedule.getClassDetails !== 'function') {
             missing.push('AcademySchedule.getClassDetails');
-        }
-
-        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
-            missing.push('AcademyQueries.getClass');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getAvailableDisciplines !== 'function') {
-            missing.push('AcademyQueries.getAvailableDisciplines');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getDiscipline !== 'function') {
-            missing.push('AcademyQueries.getDiscipline');
         }
 
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
@@ -138,12 +175,9 @@
             missing.push('DomUtils.escapeHtml');
         }
 
-        if (!Modal || typeof Modal.createModal !== 'function') {
-            missing.push('Modal.createModal');
-        }
-
         if (missing.length > 0) {
-            throw new Error('StudentTab: Missing dependencies: ' + missing.join(', '));
+            console.warn('[StudentTab] Missing dependencies:', missing.join(', '));
+            return false;
         }
 
         return true;
@@ -151,25 +185,59 @@
 
     checkDependencies();
 
+    // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils
+    // ============================================================
+
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
     }
 
-    function showNotification(message, type) {
+    function escapeAttribute(value) {
+        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
+            return DomUtils.escapeAttribute(value);
+        }
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    // ============================================================
+    // NOTIFICATION - Delegates to NotificationSystem
+    // ============================================================
+
+    function notify(message, type) {
         type = type || 'info';
         NotificationSystem.notify(message, type);
     }
 
-    function renderStudentTab(state) {
-        var selectedClassId = state.selectedClassId;
-        var selectedStudentId = state.selectedStudentId;
-        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
+    // ============================================================
+    // RENDER - Main entry point
+    // ============================================================
+
+    function render(state) {
+        if (!checkDependencies()) {
+            return '<p class="empty-state">Student tab dependencies not loaded.</p>';
+        }
+
+        state = state || {};
+        var selectedClassId = state.selectedClassId || null;
+        var selectedStudentId = state.selectedStudentId || null;
+        var week = state.displayWeek || 1;
 
         var selectedClass = selectedClassId ? AcademyQueries.getClass(selectedClassId) : null;
-        var selectedStudent = selectedStudentId ? CharacterQueries.getCharacterById(selectedStudentId) : null;
+        var studentVM = selectedStudentId ? AcademyAggregator.getStudentViewModel(selectedStudentId, {
+            week: week,
+            includeGrades: true,
+            includeRanking: true,
+            includeSchedule: true,
+            includeClasses: true
+        }) : null;
 
         var html = '';
 
+        // Header
         html += '<div class="student-tab-header">';
         html += '<div class="student-tab-title">';
         html += '<h3>Students</h3>';
@@ -188,10 +256,12 @@
         html += '</div>';
         html += '</div>';
 
+        // Layout
         html += '<div class="student-tab-layout">';
         html += '<div class="student-tab-sidebar">';
         html += '<div class="student-tab-filters">';
-        html += '<input type="text" id="student-name-filter" placeholder="Filter by name..." class="small">';
+        html += '<input type="text" id="student-name-filter" placeholder="Filter by name..." class="small" value="' +
+            escapeHtml((AcademyUI.getFilter('student') || {}).search || '') + '">';
         html += '<button id="student-filter-clear" class="small secondary">Clear</button>';
         html += '</div>';
         html += '<div id="student-character-list">';
@@ -199,84 +269,93 @@
         html += '</div>';
         html += '</div>';
 
+        // Detail
         html += '<div class="student-tab-detail">';
-        if (selectedStudent) {
-            html += renderStudentDetail(state, selectedStudent);
-        } else {
+        if (studentVM) {
+            html += renderStudentDetail(studentVM, week);
+        } else if (selectedClassId) {
             html += '<p class="empty-state">Select a student to view details.</p>';
+        } else {
+            html += '<p class="empty-state">Select a class to view students.</p>';
         }
         html += '</div>';
+
         html += '</div>';
 
         return html;
     }
 
-    function renderStudentDetail(state, student) {
-        if (!student) {
+    // ============================================================
+    // RENDER STUDENT DETAIL
+    // ============================================================
+
+    function renderStudentDetail(studentVM, week) {
+        if (!studentVM) {
             return '<p class="empty-state">Student not found.</p>';
         }
 
-        var studentId = student.id;
-        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
-        var name = CharacterQueries.getDisplayName(student);
-        var status = CharacterQueries.getCurrentStatus(student);
-
         var html = '';
 
+        // Header
         html += '<div class="student-detail-header">';
-        html += '<h3 class="student-detail-name">' + escapeHtml(name) + '</h3>';
-        html += '<span class="student-detail-status">' + escapeHtml(status) + '</span>';
-        if (student.deceased) {
+        html += '<h3 class="student-detail-name">' + escapeHtml(studentVM.name) + '</h3>';
+        html += '<span class="student-detail-status">' + escapeHtml(studentVM.status || '') + '</span>';
+        if (studentVM.deceased) {
             html += '<span class="student-detail-deceased">[Deceased]</span>';
         }
         html += '</div>';
 
+        // Tabs
         html += '<div class="student-detail-tabs">';
         html += '<button class="detail-tab-btn active" data-tab="grades">Grades</button>';
         html += '<button class="detail-tab-btn" data-tab="ranking">Ranking</button>';
         html += '<button class="detail-tab-btn" data-tab="schedule">Schedule</button>';
         html += '</div>';
 
+        // Grades tab
         html += '<div class="detail-tab-panel active" data-tab="grades">';
-        html += renderGradesTab(state, student);
+        html += renderGradesTab(studentVM, week);
         html += '</div>';
 
+        // Ranking tab
         html += '<div class="detail-tab-panel" data-tab="ranking" style="display:none;">';
-        html += renderRankingTab(state, student);
+        html += renderRankingTab(studentVM, week);
         html += '</div>';
 
+        // Schedule tab
         html += '<div class="detail-tab-panel" data-tab="schedule" style="display:none;">';
-        html += renderScheduleTab(state, student);
+        html += renderScheduleTab(studentVM, week);
         html += '</div>';
 
         return html;
     }
 
-    function renderGradesTab(state, student) {
-        var studentId = student.id;
-        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
+    // ============================================================
+    // RENDER GRADES TAB
+    // ============================================================
 
-        var grades = AcademyGrades.getGrades(studentId, week);
-        var summary = AcademyGrades.calculateSummary(studentId, week);
+    function renderGradesTab(studentVM, week) {
+        var grades = studentVM.grades || [];
+        var gradeSummary = studentVM.gradeSummary || {};
+        var gpa = studentVM.gpa || {};
 
         var html = '';
 
+        // Summary
         html += '<div class="grades-summary">';
-        if (summary) {
-            html += '<div class="stat-item"><span class="stat-label">Average</span><span class="stat-value">' + 
-                (summary.average !== null ? summary.average.toFixed(1) + '%' : '--') + '</span></div>';
-            html += '<div class="stat-item"><span class="stat-label">Graded</span><span class="stat-value">' + 
-                summary.gradedCount + '/' + summary.scheduledCount + '</span></div>';
-            html += '<div class="stat-item"><span class="stat-label">Weighted</span><span class="stat-value">' + 
-                summary.totalWeight.toFixed(1) + '</span></div>';
-        } else {
-            html += '<div class="stat-item"><span class="stat-label">No grades</span></div>';
-        }
+        html += '<div class="stat-item"><span class="stat-label">Average</span><span class="stat-value">' +
+            (gradeSummary.average !== undefined && gradeSummary.average !== null ? gradeSummary.average.toFixed(1) + '%' : '--') + '</span></div>';
+        html += '<div class="stat-item"><span class="stat-label">GPA</span><span class="stat-value">' +
+            (gpa.gpa !== undefined && gpa.gpa !== null ? gpa.gpa.toFixed(2) : '--') + '</span></div>';
+        html += '<div class="stat-item"><span class="stat-label">Pass Rate</span><span class="stat-value">' +
+            (gradeSummary.passRate !== undefined && gradeSummary.passRate !== null ? gradeSummary.passRate + '%' : '--') + '</span></div>';
+        html += '<div class="stat-item"><span class="stat-label">Graded</span><span class="stat-value">' +
+            (gradeSummary.passing !== undefined && gradeSummary.failing !== undefined ? (gradeSummary.passing + gradeSummary.failing) : '0') + '</span></div>';
         html += '</div>';
 
-        var disciplines = AcademyQueries.getAvailableDisciplines(week);
-        if (disciplines.length === 0) {
-            html += '<p class="empty-state small">No disciplines available this week.</p>';
+        // Grades table
+        if (grades.length === 0) {
+            html += '<p class="empty-state small">No grades recorded for this week.</p>';
         } else {
             html += '<div class="grades-table-container">';
             html += '<table class="grades-table">';
@@ -286,39 +365,28 @@
             html += '<th>Type</th>';
             html += '<th>Weight</th>';
             html += '<th>Score</th>';
-            html += '<th>Letter</th>';
+            html += '<th>Grade</th>';
             html += '<th>Weighted</th>';
             html += '</tr>';
             html += '</thead>';
             html += '<tbody>';
 
-            for (var i = 0; i < disciplines.length; i++) {
-                var disc = disciplines[i];
-                var score = grades[disc.id] !== undefined ? grades[disc.id] : '';
-                var letter = '';
-                var weighted = '';
-
-                if (score !== '' && score !== null) {
-                    var numScore = parseFloat(score);
-                    if (!isNaN(numScore) && numScore >= 0 && numScore <= 100) {
-                        var weight = parseFloat(disc.weight) || 1;
-                        weighted = (numScore * weight).toFixed(1);
-                    }
-                }
-
-                var isMandatory = disc.type === 'mandatory';
+            for (var i = 0; i < grades.length; i++) {
+                var g = grades[i];
+                var letter = getLetterGrade(g.percentage || g.score || 0);
+                var weighted = (g.weight || 1) * (g.percentage || g.score || 0);
 
                 html += '<tr>';
-                html += '<td>' + escapeHtml(disc.name) + '</td>';
-                html += '<td>' + (isMandatory ? 'Mandatory' : 'Optional') + '</td>';
-                html += '<td>' + escapeHtml(disc.weight || '1') + '</td>';
+                html += '<td>' + escapeHtml(g.disciplineName || 'Unknown') + '</td>';
+                html += '<td>' + escapeHtml(g.type || 'assignment') + '</td>';
+                html += '<td>' + (g.weight || 1).toFixed(1) + '</td>';
                 html += '<td>';
-                html += '<input type="number" class="grade-input" data-discipline="' + escapeHtml(disc.id) + '" ';
-                html += 'value="' + escapeHtml(score) + '" min="0" max="100" step="0.5" ';
+                html += '<input type="number" class="grade-input" data-discipline="' + escapeHtml(g.disciplineId) + '" ';
+                html += 'value="' + (g.score !== undefined && g.score !== null ? g.score : '') + '" min="0" max="100" step="0.5" ';
                 html += 'style="width:60px;padding:2px 4px;font-size:0.7rem;">';
                 html += '</td>';
-                html += '<td class="grade-letter">' + escapeHtml(letter) + '</td>';
-                html += '<td class="weighted-score">' + escapeHtml(weighted) + '</td>';
+                html += '<td class="grade-letter">' + escapeHtml(letter.label) + '</td>';
+                html += '<td class="weighted-score">' + (weighted ? weighted.toFixed(1) : '--') + '</td>';
                 html += '</tr>';
             }
 
@@ -334,74 +402,54 @@
         return html;
     }
 
-    function renderRankingTab(state, student) {
-        var studentId = student.id;
-        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
+    // ============================================================
+    // RENDER RANKING TAB
+    // ============================================================
 
-        var rankings = AcademyRanking.getRankingsWithDetails(week);
-        var studentRank = AcademyRanking.getStudentRank(week, studentId);
+    function renderRankingTab(studentVM, week) {
+        var ranking = studentVM.ranking || null;
 
         var html = '';
 
+        // Current ranking
         html += '<div class="ranking-header">';
         html += '<div class="ranking-info">';
-        html += '<span class="ranking-label">Your Rank:</span>';
-        html += '<span class="ranking-value">' + (studentRank !== null ? '#' + studentRank : 'Unranked') + '</span>';
-        html += '<span class="ranking-total">of ' + rankings.length + ' students</span>';
+        html += '<span class="ranking-label">Rank:</span>';
+        html += '<span class="ranking-value">' + (ranking ? '#' + ranking.rank : 'Unranked') + '</span>';
+        if (ranking && ranking.totalStudents) {
+            html += '<span class="ranking-total">of ' + ranking.totalStudents + ' students</span>';
+        }
+        if (ranking && ranking.className) {
+            html += '<span class="ranking-class">in ' + escapeHtml(ranking.className) + '</span>';
+        }
         html += '</div>';
         html += '<div class="ranking-actions">';
         html += '<button id="ranking-auto-btn" class="primary small">Auto-Generate</button>';
-        html += '<button id="ranking-refresh-btn" class="secondary small">Refresh</button>';
         html += '</div>';
         html += '</div>';
 
-        if (rankings.length === 0) {
-            html += '<p class="empty-state small">No rankings for this week.</p>';
-        } else {
-            html += '<div class="ranking-table-container">';
-            html += '<table class="ranking-table">';
-            html += '<thead>';
-            html += '<tr>';
-            html += '<th>Rank</th>';
-            html += '<th>Student</th>';
-            html += '<th>Status</th>';
-            html += '<th>Average</th>';
-            html += '</tr>';
-            html += '</thead>';
-            html += '<tbody>';
-
-            for (var i = 0; i < rankings.length; i++) {
-                var entry = rankings[i];
-                var char = CharacterQueries.getCharacterById(entry.studentId);
-                var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
-                var status = char ? CharacterQueries.getCurrentStatus(char) : '';
-                var isCurrent = String(entry.studentId) === String(studentId);
-
-                var summary = AcademyGrades.calculateSummary(entry.studentId, week);
-                var avg = summary && summary.average !== null ? summary.average.toFixed(1) + '%' : '--';
-
-                html += '<tr class="' + (isCurrent ? 'current-student' : '') + '">';
-                html += '<td><strong>#' + entry.rank + '</strong></td>';
-                html += '<td>' + escapeHtml(name) + (isCurrent ? ' <span class="current-badge">(You)</span>' : '') + '</td>';
-                html += '<td>' + escapeHtml(status) + '</td>';
-                html += '<td>' + escapeHtml(avg) + '</td>';
-                html += '</tr>';
-            }
-
-            html += '</tbody>';
-            html += '</table>';
+        // Ranking details
+        if (ranking) {
+            html += '<div class="ranking-details">';
+            html += '<div class="ranking-stat"><span class="stat-label">Average</span><span class="stat-value">' +
+                (ranking.average !== null ? ranking.average.toFixed(1) + '%' : '--') + '</span></div>';
+            html += '<div class="ranking-stat"><span class="stat-label">Grade Count</span><span class="stat-value">' +
+                (ranking.gradeCount || 0) + '</span></div>';
             html += '</div>';
+        } else {
+            html += '<p class="empty-state small">No ranking data available.</p>';
         }
 
         return html;
     }
 
-    function renderScheduleTab(state, student) {
-        var studentId = student.id;
-        var week = state.selectedWeek || CalendarConstants.MIN_WEEK;
+    // ============================================================
+    // RENDER SCHEDULE TAB
+    // ============================================================
 
-        var schedule = AcademySchedule.getStudentSchedule(studentId, week);
-        var restDays = AcademySchedule.getStudentRestDays(studentId, week);
+    function renderScheduleTab(studentVM, week) {
+        var schedule = studentVM.schedule || [];
+        var restDays = AcademySchedule.getStudentRestDays(studentVM.id, week);
 
         var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
         var startHour = CalendarConstants.CALENDAR_START_HOUR || 8;
@@ -414,6 +462,7 @@
 
         var html = '';
 
+        // Rest days
         html += '<div class="schedule-rest-days">';
         html += '<label>Rest Days:</label>';
         html += '<div class="rest-days-checkboxes">';
@@ -428,6 +477,7 @@
         html += '<button id="schedule-rest-days-save" class="small secondary">Save Rest Days</button>';
         html += '</div>';
 
+        // Schedule grid
         html += '<div class="schedule-grid-container">';
         html += '<table class="schedule-grid">';
         html += '<thead>';
@@ -439,45 +489,49 @@
         html += '</thead>';
         html += '<tbody>';
 
+        // Build lookup for schedule entries
+        var scheduleLookup = {};
+        for (var i = 0; i < schedule.length; i++) {
+            var entry = schedule[i];
+            var key = entry.day + '_' + entry.hour;
+            scheduleLookup[key] = entry;
+        }
+
         for (var h2 = 0; h2 < hours.length; h2++) {
             var hour = hours[h2];
-            var timeLabel = hour + ':00';
             html += '<tr>';
-            html += '<td class="schedule-time">' + timeLabel + '</td>';
+            html += '<td class="schedule-time">' + hour + ':00</td>';
 
             for (var d3 = 1; d3 <= 7; d3++) {
-                var classId = schedule[d3] && schedule[d3][hour] ? schedule[d3][hour] : null;
+                var key = d3 + '_' + hour;
+                var entry = scheduleLookup[key] || null;
+                var isRestDay = restDays.indexOf(d3) !== -1;
+
                 var display = '';
                 var className = 'schedule-empty';
-                var duration = 1;
-                var instructorName = '';
 
-                if (restDays.indexOf(d3) !== -1) {
+                if (isRestDay) {
                     display = '--';
                     className = 'schedule-rest';
-                } else if (classId) {
-                    var details = AcademySchedule.getClassDetails(studentId, week, d3, hour);
-                    display = details ? details.disciplineName : 'Unknown';
+                } else if (entry) {
+                    display = entry.disciplineName || 'Unknown';
                     className = 'schedule-class';
-                    duration = details ? details.duration : 1;
-                    instructorName = details ? details.instructorName : '';
+                    if (entry.duration && entry.duration > 1) {
+                        display += ' (' + entry.duration + 'h)';
+                    }
                 } else {
                     display = '\u00b7';
                     className = 'schedule-empty';
                 }
 
-                var dataAttrs = '';
-                if (classId) {
-                    dataAttrs = ' data-discipline="' + escapeHtml(classId) + '"';
+                html += '<td class="' + className + '" data-day="' + d3 + '" data-hour="' + hour + '"';
+                if (entry) {
+                    html += ' data-discipline="' + escapeHtml(entry.disciplineId || '') + '"';
                 }
-
-                html += '<td class="' + className + '" data-day="' + d3 + '" data-hour="' + hour + '"' + dataAttrs + '>';
+                html += '>';
                 html += '<span class="schedule-cell-content">' + escapeHtml(display) + '</span>';
-                if (classId && duration > 1) {
-                    html += '<span class="schedule-duration">' + duration + 'h</span>';
-                }
-                if (instructorName) {
-                    html += '<span class="schedule-instructor">(' + escapeHtml(instructorName) + ')</span>';
+                if (entry && entry.instructorName) {
+                    html += '<span class="schedule-instructor">(' + escapeHtml(entry.instructorName) + ')</span>';
                 }
                 html += '</td>';
             }
@@ -492,23 +546,51 @@
         return html;
     }
 
+    // ============================================================
+    // HELPER - Letter Grade
+    // ============================================================
+
+    function getLetterGrade(score) {
+        var num = Number(score);
+        if (isNaN(num) || num < 0 || num > 100) {
+            return { label: '?', description: 'Invalid' };
+        }
+
+        if (num >= 90) { return { label: 'A', description: 'Excellent' }; }
+        if (num >= 80) { return { label: 'B', description: 'Good' }; }
+        if (num >= 70) { return { label: 'C', description: 'Satisfactory' }; }
+        if (num >= 60) { return { label: 'D', description: 'Below Average' }; }
+        return { label: 'F', description: 'Failing' };
+    }
+
+    // ============================================================
+    // REFRESH CHARACTER LIST
+    // ============================================================
+
     function refreshCharacterList() {
         var container = document.getElementById('student-character-list');
         if (!container) { return; }
 
         if (CharacterList && typeof CharacterList.render === 'function') {
-            var classId = window.Academy ? window.Academy.getSelectedClassId() : null;
-            if (classId) {
-                var classFilter = document.getElementById('char-class-filter');
-                if (classFilter) {
-                    classFilter.value = classId;
-                }
+            var classId = AcademyUI.getSelectedClassId();
+            var classFilter = document.getElementById('char-class-filter');
+            if (classFilter && classId) {
+                classFilter.value = classId;
             }
             CharacterList.render();
         }
     }
 
-    function bindStudentTabEvents(container) {
+    // ============================================================
+    // BIND EVENTS - Main entry point for event binding
+    // ============================================================
+
+    function bindEvents(container) {
+        if (!container) {
+            return;
+        }
+
+        // ---- Week apply ----
         var weekApply = container.querySelector('#student-week-apply');
         if (weekApply) {
             weekApply.addEventListener('click', function() {
@@ -516,19 +598,19 @@
                 if (input) {
                     var week = parseInt(input.value, 10);
                     if (!isNaN(week) && week >= CalendarConstants.MIN_WEEK && week <= CalendarConstants.MAX_WEEK) {
-                        if (window.Academy && typeof window.Academy.selectWeek === 'function') {
-                            window.Academy.selectWeek(week);
-                            if (typeof window.Academy.refresh === 'function') {
-                                window.Academy.refresh();
-                            }
+                        AcademyUI.setDisplayWeek(week);
+                        if (typeof window.AcademyEvents !== 'undefined' &&
+                            window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
+                            window.AcademyEvents.refreshUI();
                         }
                     } else {
-                        showNotification('Please enter a valid week (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').', 'error');
+                        notify('Please enter a valid week (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').', 'error');
                     }
                 }
             });
         }
 
+        // ---- Week input enter ----
         var weekInput = container.querySelector('#student-week-input');
         if (weekInput) {
             weekInput.addEventListener('keydown', function(e) {
@@ -539,26 +621,30 @@
             });
         }
 
+        // ---- Name filter ----
         var nameFilter = container.querySelector('#student-name-filter');
         if (nameFilter) {
             nameFilter.addEventListener('input', function() {
-                if (CharacterList && typeof CharacterList.render === 'function') {
-                    CharacterList.render();
-                }
+                var tab = this.dataset.tab || 'student';
+                var key = 'search';
+                AcademyUI.setFilter(tab, key, this.value);
+                refreshCharacterList();
             });
         }
 
+        // ---- Filter clear ----
         var clearBtn = container.querySelector('#student-filter-clear');
         if (clearBtn) {
             clearBtn.addEventListener('click', function() {
                 var filter = container.querySelector('#student-name-filter');
                 if (filter) { filter.value = ''; }
-                if (CharacterList && typeof CharacterList.render === 'function') {
-                    CharacterList.render();
-                }
+                var tab = 'student';
+                AcademyUI.resetFilter(tab);
+                refreshCharacterList();
             });
         }
 
+        // ---- Detail tab switching ----
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.detail-tab-btn');
             if (btn) {
@@ -569,6 +655,7 @@
             }
         });
 
+        // ---- Save grades ----
         var saveGradesBtn = container.querySelector('#grades-save-btn');
         if (saveGradesBtn) {
             saveGradesBtn.addEventListener('click', function() {
@@ -576,22 +663,15 @@
             });
         }
 
+        // ---- Auto-generate rankings ----
         var autoRankBtn = container.querySelector('#ranking-auto-btn');
         if (autoRankBtn) {
             autoRankBtn.addEventListener('click', function() {
-                handleAutoGenerateRankings(container);
+                handleAutoGenerateRankings();
             });
         }
 
-        var refreshRankBtn = container.querySelector('#ranking-refresh-btn');
-        if (refreshRankBtn) {
-            refreshRankBtn.addEventListener('click', function() {
-                if (window.Academy && typeof window.Academy.refresh === 'function') {
-                    window.Academy.refresh();
-                }
-            });
-        }
-
+        // ---- Save rest days ----
         var restDaysBtn = container.querySelector('#schedule-rest-days-save');
         if (restDaysBtn) {
             restDaysBtn.addEventListener('click', function() {
@@ -599,6 +679,7 @@
             });
         }
 
+        // ---- Grade input validation ----
         container.addEventListener('input', function(e) {
             var input = e.target.closest('.grade-input');
             if (input) {
@@ -613,11 +694,29 @@
             }
         }, true);
 
+        // ---- Student selection via CharacterList ----
+        // CharacterList handles its own click events, but we need to listen for selection changes
+        document.addEventListener('characterSelected', function(e) {
+            if (e.detail && e.detail.characterId) {
+                AcademyUI.selectStudent(e.detail.characterId);
+                if (typeof window.AcademyEvents !== 'undefined' &&
+                    window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
+                    window.AcademyEvents.refreshUI();
+                }
+            }
+        });
+
+        // Initial render
         refreshCharacterList();
 
         return function() {
+            // Cleanup
         };
     }
+
+    // ============================================================
+    // SWITCH DETAIL TAB
+    // ============================================================
 
     function switchDetailTab(container, tab) {
         var btns = container.querySelectorAll('.detail-tab-btn');
@@ -634,29 +733,27 @@
         }
     }
 
+    // ============================================================
+    // GRADE HELPERS
+    // ============================================================
+
     function updateGradePreview(input) {
         var row = input.closest('tr');
         if (!row) { return; }
 
-        var disciplineId = input.dataset.discipline;
         var value = input.value.trim();
         var letterEl = row.querySelector('.grade-letter');
         var weightedEl = row.querySelector('.weighted-score');
 
-        if (!disciplineId) { return; }
-
-        var disc = AcademyQueries.getDiscipline(disciplineId);
-        if (!disc) { return; }
-
         if (value !== '' && !isNaN(Number(value))) {
             var numericScore = Number(value);
             if (numericScore >= 0 && numericScore <= 100) {
-                if (letterEl) {
-                    letterEl.textContent = '--';
-                }
-                if (weightedEl && disc.weight) {
-                    var weighted = numericScore * Number(disc.weight);
-                    weightedEl.textContent = weighted.toFixed(1);
+                var letter = getLetterGrade(numericScore);
+                if (letterEl) { letterEl.textContent = letter.label; }
+                if (weightedEl) {
+                    // Weighted score calculation needs discipline data
+                    // This will be handled on save
+                    weightedEl.textContent = '--';
                 }
             }
         } else if (value === '') {
@@ -677,14 +774,18 @@
         }
     }
 
+    // ============================================================
+    // HANDLERS
+    // ============================================================
+
     function handleSaveGrades(container) {
-        var studentId = window.Academy ? window.Academy.getSelectedStudentId() : null;
+        var studentId = AcademyUI.getSelectedStudentId();
         if (!studentId) {
-            showNotification('No student selected.', 'error');
+            notify('No student selected.', 'error');
             return;
         }
 
-        var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
+        var week = AcademyUI.getDisplayWeek();
 
         var grades = {};
         var hasChanges = false;
@@ -714,32 +815,33 @@
 
         if (invalidInputs.length > 0) {
             var names = invalidInputs.map(function(id) {
-                var d = AcademyQueries.getDiscipline(id);
+                var d = AcademyQueries.getDiscipline ? AcademyQueries.getDiscipline(id) : null;
                 return d ? d.name : id;
             });
-            showNotification('Invalid scores for: ' + names.join(', '), 'error');
+            notify('Invalid scores for: ' + names.join(', '), 'error');
             return;
         }
 
         if (!hasChanges) {
-            showNotification('No changes to save.', 'info');
+            notify('No changes to save.', 'info');
             return;
         }
 
         var result = AcademyGrades.saveGrades(studentId, week, grades);
 
         if (result && result.success) {
-            showNotification('Grades saved successfully.', 'success');
-            if (typeof window.Academy.refresh === 'function') {
-                window.Academy.refresh();
+            notify('Grades saved successfully.', 'success');
+            if (typeof window.AcademyEvents !== 'undefined' &&
+                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
+                window.AcademyEvents.refreshUI();
             }
         } else {
-            showNotification(result ? result.message : 'Failed to save grades.', 'error');
+            notify(result ? result.message : 'Failed to save grades.', 'error');
         }
     }
 
-    function handleAutoGenerateRankings(container) {
-        var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
+    function handleAutoGenerateRankings() {
+        var week = AcademyUI.getDisplayWeek();
 
         if (!confirm('Auto-generate rankings for week ' + week + ' from grade data?')) {
             return;
@@ -749,23 +851,24 @@
 
         if (result && result.success) {
             var count = result.count || 0;
-            showNotification('Auto-generated rankings for week ' + week + ' (' + count + ' students ranked).', 'success');
-            if (typeof window.Academy.refresh === 'function') {
-                window.Academy.refresh();
+            notify('Auto-generated rankings for week ' + week + ' (' + count + ' students ranked).', 'success');
+            if (typeof window.AcademyEvents !== 'undefined' &&
+                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
+                window.AcademyEvents.refreshUI();
             }
         } else {
-            showNotification(result ? result.message : 'Failed to auto-generate rankings.', 'error');
+            notify(result ? result.message : 'Failed to auto-generate rankings.', 'error');
         }
     }
 
     function handleSaveRestDays(container) {
-        var studentId = window.Academy ? window.Academy.getSelectedStudentId() : null;
+        var studentId = AcademyUI.getSelectedStudentId();
         if (!studentId) {
-            showNotification('No student selected.', 'error');
+            notify('No student selected.', 'error');
             return;
         }
 
-        var week = window.Academy ? window.Academy.getSelectedWeek() : CalendarConstants.MIN_WEEK;
+        var week = AcademyUI.getDisplayWeek();
 
         var checkboxes = container.querySelectorAll('.rest-day-checkbox:checked');
         var days = [];
@@ -773,27 +876,28 @@
             days.push(parseInt(checkboxes[i].value, 10));
         }
 
-        var result = AcademySchedule.setRestDays(studentId, week, days);
+        var result = AcademySchedule.setStudentRestDays(studentId, week, days);
 
         if (result && result.success) {
-            showNotification('Rest days saved successfully.', 'success');
-            if (typeof window.Academy.refresh === 'function') {
-                window.Academy.refresh();
+            notify('Rest days saved successfully.', 'success');
+            if (typeof window.AcademyEvents !== 'undefined' &&
+                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
+                window.AcademyEvents.refreshUI();
             }
         } else {
-            showNotification(result ? result.message : 'Failed to save rest days.', 'error');
+            notify(result ? result.message : 'Failed to save rest days.', 'error');
         }
     }
 
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
     window.StudentTab = {
-        render: renderStudentTab,
-        renderStudentDetail: renderStudentDetail,
-        renderGradesTab: renderGradesTab,
-        renderRankingTab: renderRankingTab,
-        renderScheduleTab: renderScheduleTab,
-        bindEvents: bindStudentTabEvents,
-        refreshCharacterList: refreshCharacterList,
+        render: render,
+        bindEvents: bindEvents,
         switchDetailTab: switchDetailTab,
+        refreshCharacterList: refreshCharacterList,
         handleSaveGrades: handleSaveGrades,
         handleAutoGenerateRankings: handleAutoGenerateRankings,
         handleSaveRestDays: handleSaveRestDays

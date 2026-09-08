@@ -1,39 +1,43 @@
 /**
  * modules/social/social-core.js - Social Domain Core
  * Relationship CRUD operations with full mutation pipeline
- * Path: js/modules/social/social-core.js
  * 
  * This module provides:
  *   - createRelationship - Create a new relationship
  *   - updateRelationship - Update an existing relationship
  *   - deleteRelationship - Delete a relationship
+ *   - deleteAllRelationshipsForCharacter - Delete all relationships for a character
  *   - validateRelationshipData - Pure validation function
  * 
  * IMPORTANT:
  *   - All mutations use MutationPipeline for transactional safety
  *   - No DOM, no UI, no notifications, no rendering
- *   - Uses SocialQueries for read operations
+ *   - Uses SocialQueries for read operations (Social data only)
+ *   - Uses injected characterProvider for character existence (tiny interface)
  *   - Uses SocialConstants for type definitions
- *   - Uses CharacterQueries for character validation
  *   - Returns structured results { success, data?, message?, error? }
  *   - No confirm() dialogs - caller handles UI
  *   - No window.data fallbacks - data structure must exist
+ *   - characterProvider is INJECTED via init() - no fallback to CharacterQueries
  * 
- * MUTATION CONTRACT:
- *   - All mutations are serialised via MutationPipeline
- *   - Rollback is automatic on persistence failure
- *   - Activity logging is handled by MutationPipeline
- *   - Notifications are caller responsibility
+ * CHARACTER PROVIDER INTERFACE:
+ *   {
+ *       exists: function(characterId) { return true/false }
+ *   }
  * 
  * DEPENDENCIES:
  *   - window.SocialQueries (from social-queries.js) - MANDATORY
  *   - window.SocialConstants (from social-constants.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  * 
  * USAGE:
- *   var SC = window.SocialCore;
- *   var result = SC.createRelationship('char1', 'char2', 'friendship');
+ *   SocialCore.init({
+ *       characterProvider: {
+ *           exists: function(id) { return CharacterQueries.getCharacterById(id) !== null; }
+ *       }
+ *   });
+ *   
+ *   var result = SocialCore.createRelationship('char1', 'char2', 'friendship');
  *   if (result.success) {
  *       // relationship created
  *   }
@@ -42,7 +46,6 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__socialCoreLoaded) {
         return;
     }
@@ -54,8 +57,34 @@
 
     var SocialQueries = window.SocialQueries;
     var SocialConstants = window.SocialConstants;
-    var CharacterQueries = window.CharacterQueries;
     var MutationPipeline = window.MutationPipeline;
+
+    // ============================================================
+    // INJECTED DEPENDENCIES
+    // ============================================================
+
+    var _characterProvider = null;
+
+    /**
+     * Initialize SocialCore with injected dependencies.
+     * Must be called before any mutation operations.
+     * 
+     * @param {object} deps - Dependency injection object
+     * @param {object} deps.characterProvider - Character provider with exists() method
+     */
+    function init(deps) {
+        deps = deps || {};
+
+        if (deps.characterProvider) {
+            if (typeof deps.characterProvider.exists !== 'function') {
+                console.warn('[SocialCore] characterProvider must have an exists() method.');
+            } else {
+                _characterProvider = deps.characterProvider;
+            }
+        }
+
+        return _characterProvider !== null;
+    }
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -84,12 +113,13 @@
             missing.push('SocialConstants.getDefaultTypeId');
         }
 
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-
         if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
             missing.push('MutationPipeline.performMutation');
+        }
+
+        // characterProvider is optional (for tests), but warn if not set
+        if (!_characterProvider || typeof _characterProvider.exists !== 'function') {
+            missing.push('characterProvider.exists (call SocialCore.init() first)');
         }
 
         if (missing.length > 0) {
@@ -136,17 +166,15 @@
             errors.push('Cannot create a relationship between the same character.');
         }
 
-        // Character existence validation
-        if (char1) {
-            var c1 = CharacterQueries.getCharacterById(char1);
-            if (!c1) {
+        // Character existence validation - uses injected characterProvider
+        if (char1 && _characterProvider && typeof _characterProvider.exists === 'function') {
+            if (!_characterProvider.exists(char1)) {
                 errors.push('Character 1 does not exist.');
             }
         }
 
-        if (char2) {
-            var c2 = CharacterQueries.getCharacterById(char2);
-            if (!c2) {
+        if (char2 && _characterProvider && typeof _characterProvider.exists === 'function') {
+            if (!_characterProvider.exists(char2)) {
                 errors.push('Character 2 does not exist.');
             }
         }
@@ -402,18 +430,12 @@
                 return { relationship: relationship };
             },
 
-            logMessage: function(result) {
-                var char1 = CharacterQueries.getCharacterById(c1);
-                var char2 = CharacterQueries.getCharacterById(c2);
-                var name1 = char1 ? CharacterQueries.getDisplayName(char1) : 'Unknown';
-                var name2 = char2 ? CharacterQueries.getDisplayName(char2) : 'Unknown';
-                return 'Created ' + label + ' relationship between ' + name1 + ' and ' + name2;
+            logMessage: function() {
+                return 'Created ' + label + ' relationship';
             },
 
             successMessage: 'Relationship created successfully!',
-            failureMessage: 'Failed to create relationship.',
-            skipNotification: false,
-            skipLog: false
+            failureMessage: 'Failed to create relationship.'
         });
     }
 
@@ -446,10 +468,8 @@
             });
         }
 
-        // Normalise ID
         var relId = String(id);
 
-        // Find the relationship (read-only check)
         var existing = SocialQueries.getRelationshipById(relId);
         if (!existing) {
             return Promise.resolve({
@@ -490,7 +510,6 @@
 
         return MutationPipeline.performMutation({
             validate: function(data) {
-                // Verify relationship still exists
                 var currentRel = SocialQueries.getRelationshipById(relId);
                 if (!currentRel) {
                     return {
@@ -499,7 +518,6 @@
                     };
                 }
 
-                // Re-validate with current state
                 var currentValidation = validateRelationshipData({
                     character1: c1,
                     character2: c2,
@@ -521,7 +539,6 @@
             },
 
             mutate: function(data) {
-                // Find the relationship in the live data
                 var rel = null;
                 var index = -1;
 
@@ -539,7 +556,6 @@
                     throw new Error('Relationship not found in data store.');
                 }
 
-                // Apply updates
                 rel.character1 = c1;
                 rel.character2 = c2;
                 rel.typeId = type;
@@ -551,18 +567,12 @@
                 return { relationship: rel };
             },
 
-            logMessage: function(result) {
-                var char1 = CharacterQueries.getCharacterById(c1);
-                var char2 = CharacterQueries.getCharacterById(c2);
-                var name1 = char1 ? CharacterQueries.getDisplayName(char1) : 'Unknown';
-                var name2 = char2 ? CharacterQueries.getDisplayName(char2) : 'Unknown';
-                return 'Updated ' + label + ' relationship between ' + name1 + ' and ' + name2;
+            logMessage: function() {
+                return 'Updated ' + label + ' relationship';
             },
 
             successMessage: 'Relationship updated successfully!',
-            failureMessage: 'Failed to update relationship.',
-            skipNotification: false,
-            skipLog: false
+            failureMessage: 'Failed to update relationship.'
         });
     }
 
@@ -589,7 +599,6 @@
 
         var relId = String(id);
 
-        // Verify relationship exists (read-only check)
         var existing = SocialQueries.getRelationshipById(relId);
         if (!existing) {
             return Promise.resolve({
@@ -598,15 +607,10 @@
             });
         }
 
-        var char1 = CharacterQueries.getCharacterById(existing.character1);
-        var char2 = CharacterQueries.getCharacterById(existing.character2);
-        var name1 = char1 ? CharacterQueries.getDisplayName(char1) : 'Unknown';
-        var name2 = char2 ? CharacterQueries.getDisplayName(char2) : 'Unknown';
         var label = SocialConstants.getLabel(existing.typeId);
 
         return MutationPipeline.performMutation({
             validate: function(data) {
-                // Verify relationship still exists
                 var currentRel = SocialQueries.getRelationshipById(relId);
                 if (!currentRel) {
                     return {
@@ -640,13 +644,11 @@
             },
 
             logMessage: function() {
-                return 'Deleted ' + label + ' relationship between ' + name1 + ' and ' + name2;
+                return 'Deleted ' + label + ' relationship';
             },
 
             successMessage: 'Relationship deleted successfully!',
-            failureMessage: 'Failed to delete relationship.',
-            skipNotification: false,
-            skipLog: false
+            failureMessage: 'Failed to delete relationship.'
         });
     }
 
@@ -673,16 +675,16 @@
 
         var target = String(charId);
 
-        // Check character exists
-        var char = CharacterQueries.getCharacterById(target);
-        if (!char) {
-            return Promise.resolve({
-                success: false,
-                message: 'Character not found.'
-            });
+        // Check character exists via injected provider
+        if (_characterProvider && typeof _characterProvider.exists === 'function') {
+            if (!_characterProvider.exists(target)) {
+                return Promise.resolve({
+                    success: false,
+                    message: 'Character not found.'
+                });
+            }
         }
 
-        // Get all relationships for the character
         var rels = SocialQueries.getCharacterRelationships(target);
         if (rels.length === 0) {
             return Promise.resolve({
@@ -693,7 +695,6 @@
         }
 
         var relIds = rels.map(function(rel) { return String(rel.id); });
-        var name = CharacterQueries.getDisplayName(char);
 
         return MutationPipeline.performMutation({
             validate: function(data) {
@@ -707,7 +708,7 @@
 
                 var count = 0;
                 data.social.relationships = data.social.relationships.filter(function(rel) {
-                    if (!rel) return true;
+                    if (!rel) { return true; }
 
                     var c1 = String(rel.character1);
                     var c2 = String(rel.character2);
@@ -723,15 +724,13 @@
             },
 
             logMessage: function(result) {
-                return 'Deleted ' + result.deletedCount + ' relationships involving ' + name;
+                return 'Deleted ' + result.deletedCount + ' relationships for character';
             },
 
             successMessage: function(result) {
-                return 'Deleted ' + result.deletedCount + ' relationships for ' + name + '.';
+                return 'Deleted ' + result.deletedCount + ' relationships.';
             },
-            failureMessage: 'Failed to delete relationships.',
-            skipNotification: false,
-            skipLog: false
+            failureMessage: 'Failed to delete relationships.'
         });
     }
 
@@ -740,6 +739,9 @@
     // ============================================================
 
     window.SocialCore = {
+        // Initialization
+        init: init,
+
         // Mutations
         createRelationship: createRelationship,
         updateRelationship: updateRelationship,

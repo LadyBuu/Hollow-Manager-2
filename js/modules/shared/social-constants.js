@@ -1,5 +1,5 @@
 /**
- * modules/social/social-constants.js - Social Constants
+ * modules/shared/social-constants.js - Social Constants
  * Single source of truth for all social/relationship constants
  * Path: js/modules/social/social-constants.js
  * 

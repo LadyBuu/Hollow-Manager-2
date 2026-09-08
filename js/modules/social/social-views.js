@@ -1,7 +1,6 @@
 /**
  * modules/social/social-views.js - Social Views
  * Rendering functions for the social/relationship domain
- * Path: js/modules/social/social-views.js
  * 
  * This module provides:
  *   - renderSocialView - Main render entry point
@@ -14,19 +13,18 @@
  * 
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no persistence
- *   - No direct window.data access - uses SocialQueries
+ *   - No direct window.data access - uses SocialQueries + SocialAggregator
  *   - Uses SocialConstants for type definitions
- *   - Uses CharacterQueries for character data
+ *   - Uses SocialAggregator for character data (names, status, etc.)
  *   - Uses DomUtils for safe DOM operations
  *   - All user-controlled content uses textContent
  *   - No inline event binding here (delegated to SocialEvents)
  * 
  * DEPENDENCIES:
  *   - window.SocialQueries (from social-queries.js) - MANDATORY
+ *   - window.SocialAggregator (from social-aggregator.js) - MANDATORY
  *   - window.SocialConstants (from social-constants.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
- *   - window.CharacterConstants (from character-constants.js) - MANDATORY
  * 
  * USAGE:
  *   var SV = window.SocialViews;
@@ -37,7 +35,6 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__socialViewsLoaded) {
         return;
     }
@@ -48,10 +45,9 @@
     // ============================================================
 
     var SocialQueries = window.SocialQueries;
+    var SocialAggregator = window.SocialAggregator;
     var SocialConstants = window.SocialConstants;
-    var CharacterQueries = window.CharacterQueries;
     var DomUtils = window.DomUtils;
-    var CharacterConstants = window.CharacterConstants;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -66,11 +62,18 @@
         if (!SocialQueries || typeof SocialQueries.getCharacterRelationships !== 'function') {
             missing.push('SocialQueries.getCharacterRelationships');
         }
-        if (!SocialQueries || typeof SocialQueries.getConnectedCharacters !== 'function') {
-            missing.push('SocialQueries.getConnectedCharacters');
-        }
         if (!SocialQueries || typeof SocialQueries.getAllRelationships !== 'function') {
             missing.push('SocialQueries.getAllRelationships');
+        }
+
+        if (!SocialAggregator || typeof SocialAggregator.getRelationshipViewModel !== 'function') {
+            missing.push('SocialAggregator.getRelationshipViewModel');
+        }
+        if (!SocialAggregator || typeof SocialAggregator.getCharacterRelationshipsViewModel !== 'function') {
+            missing.push('SocialAggregator.getCharacterRelationshipsViewModel');
+        }
+        if (!SocialAggregator || typeof SocialAggregator.getConnectedCharactersViewModel !== 'function') {
+            missing.push('SocialAggregator.getConnectedCharactersViewModel');
         }
 
         if (!SocialConstants || typeof SocialConstants.getLabel !== 'function') {
@@ -83,25 +86,11 @@
             missing.push('SocialConstants.isDirectional');
         }
 
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
-            missing.push('CharacterQueries.getCurrentStatus');
-        }
-
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
             missing.push('DomUtils.escapeHtml');
         }
         if (!DomUtils || typeof DomUtils.createElement !== 'function') {
             missing.push('DomUtils.createElement');
-        }
-
-        if (!CharacterConstants || typeof CharacterConstants.STAT_KEYS === 'undefined') {
-            missing.push('CharacterConstants.STAT_KEYS');
         }
 
         if (missing.length > 0) {
@@ -124,23 +113,19 @@
     // MAIN RENDER ENTRY
     // ============================================================
 
-    /**
-     * Render the social view in the given container.
-     * 
-     * @param {HTMLElement} container - Container element
-     */
     function renderSocialView(container) {
         if (!container) {
             container = document.getElementById('tab-social');
         }
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         if (!checkDependencies()) {
             container.innerHTML = '<p class="empty-state">Social view dependencies not loaded. Please refresh the page.</p>';
             return;
         }
 
-        // Ensure data exists
         if (!window.data || !window.data.social) {
             container.innerHTML = '<p class="empty-state">Loading social data...</p>';
             return;
@@ -292,23 +277,21 @@
 
     function populateCharacterFilter() {
         var filterSelect = document.getElementById('social-character-filter');
-        if (!filterSelect) return;
+        if (!filterSelect) {
+            return;
+        }
 
-        var chars = getCharacters();
+        // Use Aggregator for character data
+        var pageVM = SocialAggregator.getSocialPageViewModel({});
+        var characters = pageVM.characters || [];
         var currentValue = filterSelect.value;
 
         filterSelect.innerHTML = '<option value="all">All Characters</option>';
 
-        chars.sort(function(a, b) {
-            var nameA = CharacterQueries.getDisplayName(a).toLowerCase();
-            var nameB = CharacterQueries.getDisplayName(b).toLowerCase();
-            return nameA.localeCompare(nameB);
-        });
-
-        chars.forEach(function(c) {
+        characters.forEach(function(c) {
             var option = document.createElement('option');
             option.value = c.id;
-            option.textContent = CharacterQueries.getDisplayName(c);
+            option.textContent = c.name || 'Unknown';
             filterSelect.appendChild(option);
         });
 
@@ -319,7 +302,9 @@
 
     function populateTypeFilter() {
         var typeFilter = document.getElementById('social-type-filter');
-        if (!typeFilter) return;
+        if (!typeFilter) {
+            return;
+        }
 
         var types = SocialQueries.getRelationshipTypes();
         var currentValue = typeFilter.value;
@@ -341,23 +326,25 @@
     function populateFormSelectors() {
         var select1 = document.getElementById('rel-char1');
         var select2 = document.getElementById('rel-char2');
-        if (!select1 || !select2) return;
+        if (!select1 || !select2) {
+            return;
+        }
 
-        var chars = getCharacters();
+        // Use Aggregator for character data
+        var pageVM = SocialAggregator.getSocialPageViewModel({});
+        var characters = pageVM.characters || [];
         var current1 = select1.value;
         var current2 = select2.value;
 
         select1.innerHTML = '<option value="">Select character...</option>';
         select2.innerHTML = '<option value="">Select character...</option>';
 
-        chars.sort(function(a, b) {
-            var nameA = CharacterQueries.getDisplayName(a).toLowerCase();
-            var nameB = CharacterQueries.getDisplayName(b).toLowerCase();
-            return nameA.localeCompare(nameB);
+        characters.sort(function(a, b) {
+            return (a.name || '').localeCompare(b.name || '');
         });
 
-        chars.forEach(function(c) {
-            var name = CharacterQueries.getDisplayName(c);
+        characters.forEach(function(c) {
+            var name = c.name || 'Unknown';
             var option1 = document.createElement('option');
             option1.value = c.id;
             option1.textContent = name;
@@ -379,7 +366,9 @@
 
     function populateTypeSelectors() {
         var typeSelect = document.getElementById('rel-type');
-        if (!typeSelect) return;
+        if (!typeSelect) {
+            return;
+        }
 
         var types = SocialQueries.getRelationshipTypes();
         var currentValue = typeSelect.value;
@@ -393,7 +382,6 @@
             typeSelect.appendChild(option);
         });
 
-        // Don't auto-select - let user choose intentionally
         if (currentValue) {
             typeSelect.value = currentValue;
         }
@@ -406,7 +394,9 @@
     function renderRelationships() {
         var container = document.getElementById('relationships-container');
         var countDisplay = document.getElementById('relationship-count');
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         var charFilter = document.getElementById('social-character-filter');
         var typeFilter = document.getElementById('social-type-filter');
@@ -414,26 +404,14 @@
         var charId = charFilter ? charFilter.value : 'all';
         var typeId = typeFilter ? typeFilter.value : 'all';
 
-        var relationships = SocialQueries.getAllRelationships();
-
-        // Apply filters
-        if (charId !== 'all') {
-            relationships = relationships.filter(function(r) {
-                return String(r.character1) === String(charId) ||
-                       String(r.character2) === String(charId);
-            });
-        }
-
-        if (typeId !== 'all') {
-            relationships = relationships.filter(function(r) {
-                return r.typeId === typeId;
-            });
-        }
-
-        // Sort by creation date (newest first)
-        relationships.sort(function(a, b) {
-            return new Date(b.createdAt) - new Date(a.createdAt);
+        // Use Aggregator for view models
+        var pageVM = SocialAggregator.getSocialPageViewModel({
+            characterFilter: charId,
+            typeFilter: typeId,
+            includeConnectedCharacters: false
         });
+
+        var relationships = pageVM.relationships || [];
 
         if (countDisplay) {
             countDisplay.textContent = relationships.length;
@@ -446,54 +424,34 @@
 
         container.textContent = '';
 
-        relationships.forEach(function(rel) {
-            var char1 = CharacterQueries.getCharacterById(rel.character1);
-            var char2 = CharacterQueries.getCharacterById(rel.character2);
-
-            var name1 = char1 ? CharacterQueries.getDisplayName(char1) : 'Unknown';
-            var name2 = char2 ? CharacterQueries.getDisplayName(char2) : 'Unknown';
-
-            var typeLabel = SocialQueries.getRelationshipTypeLabel(rel.typeId);
-            var typeColor = SocialQueries.getRelationshipTypeColor(rel.typeId);
-            var isDirectional = SocialQueries.isRelationshipDirectional(rel.typeId);
-
-            var directionArrow = isDirectional ? ' → ' : ' ↔ ';
-
-            var period = '';
-            if (rel.startYear && rel.endYear) {
-                period = rel.startYear + ' - ' + rel.endYear;
-            } else if (rel.startYear) {
-                period = 'From ' + rel.startYear;
-            }
-
-            var clarificationDisplay = rel.clarification ? ' (' + rel.clarification + ')' : '';
-            var notesDisplay = rel.notes ? ' 📝' : '';
+        relationships.forEach(function(vm) {
+            if (!vm) { return; }
 
             var div = document.createElement('div');
             div.className = 'list-item';
-            div.style.cssText = 'grid-template-columns:1fr 1fr 0.8fr 1.2fr 1fr;border-left:3px solid ' + typeColor + ';padding:6px 10px;background:var(--bg);border-radius:4px;margin-bottom:4px;display:grid;align-items:center;gap:8px;font-size:0.75rem;';
-            div.dataset.id = rel.id;
+            div.style.cssText = 'grid-template-columns:1fr 1fr 0.8fr 1.2fr 1fr;border-left:3px solid ' + vm.typeColor + ';padding:6px 10px;background:var(--bg);border-radius:4px;margin-bottom:4px;display:grid;align-items:center;gap:8px;font-size:0.75rem;';
+            div.dataset.id = vm.id;
 
             var name1Span = document.createElement('span');
             var strong1 = document.createElement('strong');
-            strong1.textContent = name1;
+            strong1.textContent = vm.name1 || 'Unknown';
             name1Span.appendChild(strong1);
             div.appendChild(name1Span);
 
             var name2Span = document.createElement('span');
             var strong2 = document.createElement('strong');
-            strong2.textContent = name2;
+            strong2.textContent = vm.name2 || 'Unknown';
             name2Span.appendChild(strong2);
             div.appendChild(name2Span);
 
             var typeSpan = document.createElement('span');
-            typeSpan.style.cssText = 'color:' + typeColor + ';font-weight:600;';
-            typeSpan.textContent = typeLabel + directionArrow + clarificationDisplay;
+            typeSpan.style.cssText = 'color:' + vm.typeColor + ';font-weight:600;';
+            typeSpan.textContent = vm.typeLabel + (vm.isDirectional ? ' → ' : ' ↔ ') + (vm.clarification ? '(' + vm.clarification + ')' : '');
             div.appendChild(typeSpan);
 
             var metaSpan = document.createElement('span');
             metaSpan.style.cssText = 'color:var(--text-dim);font-size:0.7rem;';
-            metaSpan.textContent = period + notesDisplay;
+            metaSpan.textContent = vm.period + (vm.notes ? ' 📝' : '');
             div.appendChild(metaSpan);
 
             var actionsSpan = document.createElement('span');
@@ -501,13 +459,13 @@
 
             var editBtn = document.createElement('button');
             editBtn.className = 'small edit-relationship';
-            editBtn.dataset.id = rel.id;
+            editBtn.dataset.id = vm.id;
             editBtn.textContent = 'Edit';
             actionsSpan.appendChild(editBtn);
 
             var deleteBtn = document.createElement('button');
             deleteBtn.className = 'small danger delete-relationship';
-            deleteBtn.dataset.id = rel.id;
+            deleteBtn.dataset.id = vm.id;
             deleteBtn.textContent = 'Delete';
             actionsSpan.appendChild(deleteBtn);
 
@@ -524,23 +482,24 @@
         if (!container) {
             container = document.getElementById('char-detail-content');
         }
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
+        // Use Aggregator for view models
+        var connectedVM = SocialAggregator.getConnectedCharactersViewModel(charId);
+        var relVM = SocialAggregator.getCharacterRelationshipsViewModel(charId);
+
+        if (!connectedVM || !relVM) {
             container.innerHTML = '<p class="empty-state">Character not found.</p>';
             return;
         }
 
-        var name = CharacterQueries.getDisplayName(char);
+        var name = connectedVM.characterName || 'Unknown';
         var title = document.getElementById('detail-char-name');
         if (title) {
             title.textContent = name;
         }
-
-        var status = CharacterQueries.getCurrentStatus(char);
-        var age = CharacterQueries.getCharacterAge(char);
-        var connections = SocialQueries.getConnectedCharacters(charId);
 
         container.textContent = '';
 
@@ -556,7 +515,7 @@
         statusLabel.style.cssText = 'color:var(--text-dim);font-size:0.8rem;';
         statusLabel.textContent = 'Status:';
         var statusValue = document.createElement('span');
-        statusValue.textContent = status || '—';
+        statusValue.textContent = connectedVM.characterStatus || '—';
         statusRow.appendChild(statusLabel);
         statusRow.appendChild(statusValue);
         infoDiv.appendChild(statusRow);
@@ -569,12 +528,12 @@
         ageLabel.style.cssText = 'color:var(--text-dim);font-size:0.8rem;';
         ageLabel.textContent = 'Age:';
         var ageValue = document.createElement('span');
-        ageValue.textContent = age || '—';
+        ageValue.textContent = connectedVM.characterAge || '—';
         ageRow.appendChild(ageLabel);
         ageRow.appendChild(ageValue);
         infoDiv.appendChild(ageRow);
 
-        if (char.deceased) {
+        if (connectedVM.characterDeceased) {
             var deceasedRow = document.createElement('div');
             deceasedRow.className = 'detail-row';
             deceasedRow.style.cssText = 'display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid var(--border-soft);';
@@ -593,6 +552,7 @@
         container.appendChild(infoDiv);
 
         // Connections
+        var connections = connectedVM.connections || [];
         if (connections.length > 0) {
             var connHeading = document.createElement('h4');
             connHeading.style.cssText = 'color:var(--accent);font-size:0.85rem;margin:8px 0;';
@@ -603,47 +563,30 @@
             connList.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
 
             connections.forEach(function(conn) {
-                var charName = CharacterQueries.getDisplayName(conn.character);
-
                 var connDiv = document.createElement('div');
                 connDiv.style.cssText = 'background:var(--bg);border-radius:4px;padding:4px 8px;';
 
                 var nameDiv = document.createElement('div');
                 nameDiv.style.cssText = 'font-size:0.8rem;';
                 var strong = document.createElement('strong');
-                strong.textContent = charName;
+                strong.textContent = conn.characterName || 'Unknown';
                 nameDiv.appendChild(strong);
                 connDiv.appendChild(nameDiv);
 
-                conn.relationships.forEach(function(rel) {
-                    var typeLabel = SocialQueries.getRelationshipTypeLabel(rel.typeId);
-                    var typeColor = SocialQueries.getRelationshipTypeColor(rel.typeId);
-                    var isDirectional = SocialQueries.isRelationshipDirectional(rel.typeId);
-
-                    var targetCharId = String(charId);
-                    var isSource = String(rel.character1) === targetCharId;
-                    var directionText = isDirectional ? (isSource ? ' → ' : ' ← ') : ' ↔ ';
-
-                    var period = '';
-                    if (rel.startYear && rel.endYear) {
-                        period = rel.startYear + ' - ' + rel.endYear;
-                    } else if (rel.startYear) {
-                        period = 'From ' + rel.startYear;
-                    }
-
-                    var clarification = rel.clarification ? ' (' + rel.clarification + ')' : '';
+                (conn.relationships || []).forEach(function(rel) {
+                    if (!rel) { return; }
 
                     var relDiv = document.createElement('div');
-                    relDiv.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:2px 4px;margin:2px 0;border-left:2px solid ' + typeColor + ';font-size:0.7rem;';
+                    relDiv.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:2px 4px;margin:2px 0;border-left:2px solid ' + rel.typeColor + ';font-size:0.7rem;';
 
                     var relText = document.createElement('span');
-                    relText.style.cssText = 'color:' + typeColor + ';';
-                    relText.textContent = directionText + typeLabel + clarification;
+                    relText.style.cssText = 'color:' + rel.typeColor + ';';
+                    relText.textContent = rel.directionText + rel.typeLabel + (rel.clarification ? ' (' + rel.clarification + ')' : '');
                     relDiv.appendChild(relText);
 
                     var relPeriod = document.createElement('span');
                     relPeriod.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
-                    relPeriod.textContent = period;
+                    relPeriod.textContent = rel.period || '';
                     relDiv.appendChild(relPeriod);
 
                     connDiv.appendChild(relDiv);
@@ -678,11 +621,6 @@
     // ============================================================
     // HELPERS
     // ============================================================
-
-    function getCharacters() {
-        var data = window.data || {};
-        return Array.isArray(data.characters) ? data.characters : [];
-    }
 
     function getRelationshipPeriod(rel) {
         if (rel.startYear && rel.endYear) {
@@ -719,7 +657,6 @@
         renderCharacterDetailContent: renderCharacterDetailContent,
 
         // Helpers
-        getCharacters: getCharacters,
         getRelationshipPeriod: getRelationshipPeriod
     };
 

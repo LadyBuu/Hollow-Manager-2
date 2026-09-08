@@ -14,12 +14,14 @@
                 <ul>
                     <li><a href="#characters" data-tab="characters">Characters</a></li>
                     <li><a href="#calendar" data-tab="calendar">Calendar</a></li>
+                    <li><a href="#social" data-tab="social">Social</a></li>
                 </ul>
             </nav>
         </header>
         <main id="main-content">
             <div id="tab-characters" class="tab-content active"></div>
             <div id="tab-calendar" class="tab-content"></div>
+            <div id="tab-social" class="tab-content"></div>
         </main>
     </div>
 
@@ -37,18 +39,39 @@
     <script src="js/utils/notification.js"></script>
 
     <!-- ============================================================
-         SHARED CONSTANTS
+         SHARED CONSTANTS - js/modules/shared/
          ============================================================ -->
     <script src="js/modules/shared/constants.js"></script>
     <script src="js/modules/shared/calendar-constants.js"></script>
     <script src="js/modules/shared/character-constants.js"></script>
+    <script src="js/modules/shared/academy-constants.js"></script>
     <script src="js/modules/shared/magic-constants.js"></script>
+    <script src="js/modules/shared/social-constants.js"></script>
 
     <!-- ============================================================
-         SHARED QUERIES - MINIMUM REQUIRED
+         SHARED QUERIES - js/modules/shared/queries/
          ============================================================ -->
     <script src="js/modules/shared/queries/character-queries.js"></script>
+    <script src="js/modules/shared/queries/team-queries.js"></script>
+    <script src="js/modules/shared/queries/academy-queries.js"></script>
+    <script src="js/modules/shared/queries/tournament-queries.js"></script>
+    <script src="js/modules/shared/queries/mission-queries.js"></script>
     <script src="js/modules/shared/queries/calendar-queries.js"></script>
+    <script src="js/modules/shared/queries/discipline-queries.js"></script>
+    <script src="js/modules/shared/queries/location-queries.js"></script>
+    <script src="js/modules/shared/queries/elimination-queries.js"></script>
+    <script src="js/modules/shared/queries/social-queries.js"></script>
+
+    <!-- ============================================================
+         ACADEMY MODULE (for CharacterClasses dependency)
+         ============================================================ -->
+    <script src="js/modules/academy/academy-data.js"></script>
+    <script src="js/modules/academy/academy-classes.js"></script>
+
+    <!-- ============================================================
+         CALENDAR VALIDATION
+         ============================================================ -->
+    <script src="js/utils/calendar-validation.js"></script>
 
     <!-- ============================================================
          CORE INFRASTRUCTURE
@@ -62,9 +85,9 @@
     <script src="js/core/bootstrap.js"></script>
 
     <!-- ============================================================
-         CALENDAR MODULE - MINIMUM
+         CALENDAR MODULE
          ============================================================ -->
-    <script src="js/utils/calendar-validation.js"></script>
+    <script src="js/modules/calendar/calendar-validation.js"></script>
     <script src="js/modules/calendar/schedule-core.js"></script>
     <script src="js/modules/calendar/calendar-renderer.js"></script>
     <script src="js/modules/calendar/calendar-aggregator.js"></script>
@@ -75,7 +98,7 @@
     <script src="js/modules/calendar/index.js"></script>
 
     <!-- ============================================================
-         CHARACTER MODULE - MINIMUM (NO EXTERNAL DEPENDENCIES)
+         CHARACTER MODULE
          ============================================================ -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
@@ -91,6 +114,16 @@
     <script src="js/modules/characters/character-events.js"></script>
     <script src="js/modules/characters/character-aggregator.js"></script>
     <script src="js/modules/characters/index.js"></script>
+
+    <!-- ============================================================
+         SOCIAL MODULE
+         ============================================================ -->
+    <script src="js/modules/social/social-core.js"></script>
+    <script src="js/modules/social/social-aggregator.js"></script>
+    <script src="js/modules/social/social-views.js"></script>
+    <script src="js/modules/social/social-events.js"></script>
+    <script src="js/modules/social/social-graph.js"></script>
+    <script src="js/modules/social/index.js"></script>
 
     <!-- ============================================================
          APP BOOTSTRAP

@@ -1,50 +1,50 @@
 /**
- * modules/social/index.js - Social Module Entry Point
- * Single entry point for all social functionality
+ * modules/teams/index.js - Team Module Entry Point
+ * Single entry point for all team functionality
  * 
  * This module is responsible for:
  *   - Registering with TabManager
- *   - Rendering the social container
- *   - Initializing all social sub-modules
- *   - Managing social feature lifecycle
+ *   - Rendering the team container
+ *   - Initializing all team sub-modules
+ *   - Managing team feature lifecycle
  *   - Injecting dependencies (characterProvider)
  *   - Exposing public API
  * 
  * LIFECYCLE:
- *   TabManager registers 'social' → mountSocial() → 
- *   SocialCore.init(characterProvider) → SocialEvents.init() → 
- *   SocialViews.renderSocialView()
+ *   TabManager.register('teams') -> mountTeams() -> 
+ *   TeamCore.configure(characterProvider) -> TeamEvents.init() -> 
+ *   TeamUI.init() -> TeamRender.renderContainer()
  * 
  * IMPORTANT:
- *   - This module is the only external entry point for social
- *   - All social logic lives in the sub-modules
- *   - This module does NOT implement social logic directly
+ *   - This module is the only external entry point for teams
+ *   - All team logic lives in the sub-modules
+ *   - This module does NOT implement team logic directly
  *   - It delegates to sub-modules for all operations
- *   - mountSocial() is the ONLY function that constructs the full HTML
+ *   - mountTeams() is the ONLY function that constructs the full HTML
  *   - TabManager is the single source of truth for lifecycle
- *   - characterProvider is assembled here and injected into SocialCore
- *   - No direct CharacterQueries usage - only via aggregator
+ *   - characterProvider is assembled here and injected into TeamCore
+ *   - No direct CharacterQueries usage - only via provider
  * 
  * DEPENDENCIES:
  *   - window.TabManager (from tab-manager.js)
  *   - window.CharacterQueries (from character-queries.js) - for provider only
- *   - window.SocialCore (from social-core.js)
- *   - window.SocialEvents (from social-events.js)
- *   - window.SocialViews (from social-views.js)
- *   - window.SocialGraph (from social-graph.js)
+ *   - window.TeamCore (from team-core.js)
+ *   - window.TeamEvents (from team-events.js)
+ *   - window.TeamUI (from team-ui.js)
+ *   - window.TeamRender (from team-render.js)
  *   - window.DataLoader (from loader.js)
  *   - window.DomUtils (from dom-utils.js)
- *   - window.Modal (from modal.js)
  *   - window.NotificationSystem (from notification.js)
+ *   - window.Modal (from modal.js)
  */
 
 (function() {
     'use strict';
 
-    if (window.__socialModuleLoaded) {
+    if (window.__teamsModuleLoaded) {
         return;
     }
-    window.__socialModuleLoaded = true;
+    window.__teamsModuleLoaded = true;
 
     // ============================================================
     // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
@@ -52,14 +52,14 @@
 
     var TabManager = window.TabManager;
     var CharacterQueries = window.CharacterQueries;
-    var SocialCore = window.SocialCore;
-    var SocialEvents = window.SocialEvents;
-    var SocialViews = window.SocialViews;
-    var SocialGraph = window.SocialGraph;
+    var TeamCore = window.TeamCore;
+    var TeamEvents = window.TeamEvents;
+    var TeamUI = window.TeamUI;
+    var TeamRender = window.TeamRender;
     var DataLoader = window.DataLoader;
     var DomUtils = window.DomUtils;
-    var Modal = window.Modal;
     var NotificationSystem = window.NotificationSystem;
+    var Modal = window.Modal;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -76,33 +76,33 @@
             missing.push('CharacterQueries.getCharacterById');
         }
 
-        if (!SocialCore || typeof SocialCore.init !== 'function') {
-            missing.push('SocialCore.init');
+        if (!TeamCore || typeof TeamCore.configure !== 'function') {
+            missing.push('TeamCore.configure');
         }
-        if (!SocialCore || typeof SocialCore.createRelationship !== 'function') {
-            missing.push('SocialCore.createRelationship');
-        }
-
-        if (!SocialEvents || typeof SocialEvents.init !== 'function') {
-            missing.push('SocialEvents.init');
-        }
-        if (!SocialEvents || typeof SocialEvents.destroy !== 'function') {
-            missing.push('SocialEvents.destroy');
+        if (!TeamCore || typeof TeamCore.createTeam !== 'function') {
+            missing.push('TeamCore.createTeam');
         }
 
-        if (!SocialViews || typeof SocialViews.renderSocialView !== 'function') {
-            missing.push('SocialViews.renderSocialView');
+        if (!TeamEvents || typeof TeamEvents.init !== 'function') {
+            missing.push('TeamEvents.init');
+        }
+        if (!TeamEvents || typeof TeamEvents.destroy !== 'function') {
+            missing.push('TeamEvents.destroy');
         }
 
-        if (!SocialGraph || typeof SocialGraph.setGraphVisible !== 'function') {
-            missing.push('SocialGraph.setGraphVisible');
+        if (!TeamUI || typeof TeamUI.init !== 'function') {
+            missing.push('TeamUI.init');
         }
-        if (!SocialGraph || typeof SocialGraph.renderGraph !== 'function') {
-            missing.push('SocialGraph.renderGraph');
+        if (!TeamUI || typeof TeamUI.getCurrentTab !== 'function') {
+            missing.push('TeamUI.getCurrentTab');
+        }
+
+        if (!TeamRender || typeof TeamRender.renderContainer !== 'function') {
+            missing.push('TeamRender.renderContainer');
         }
 
         if (missing.length > 0) {
-            console.warn('[SocialModule] Missing dependencies:', missing.join(', '));
+            console.warn('[TeamsModule] Missing dependencies:', missing.join(', '));
             return false;
         }
 
@@ -122,7 +122,7 @@
     // ============================================================
 
     /**
-     * Initialize providers and inject dependencies into SocialCore.
+     * Initialize providers and inject dependencies into TeamCore.
      * Must be called before mounting.
      */
     function initProviders() {
@@ -131,24 +131,26 @@
         }
 
         if (!CharacterQueries) {
-            console.warn('[SocialModule] CharacterQueries not available for provider.');
+            console.warn('[TeamsModule] CharacterQueries not available for provider.');
             return false;
         }
 
         var characterProvider = {
             /**
              * Check if a character exists by ID.
-             * This is the only Character capability SocialCore needs.
+             * This is the only Character capability TeamCore needs.
              */
             exists: function(id) {
-                if (!id) { return false; }
+                if (!id) {
+                    return false;
+                }
                 var char = CharacterQueries.getCharacterById(id);
                 return char !== null && char !== undefined;
             }
         };
 
-        // Inject into SocialCore
-        var initResult = SocialCore.init({
+        // Inject into TeamCore
+        var initResult = TeamCore.configure({
             characterProvider: characterProvider
         });
 
@@ -164,40 +166,48 @@
     // MOUNT FUNCTION - Single source of truth for rendering
     // ============================================================
 
-    function mountSocial(container) {
+    function mountTeams(container) {
         if (!container) {
-            container = document.getElementById('tab-social');
+            container = document.getElementById('tab-teams');
         }
 
         if (!container) {
-            console.warn('[SocialModule] Container not found');
+            console.warn('[TeamsModule] Container not found');
             return;
         }
 
-        if (!window.data || !window.data.social) {
-            container.innerHTML = '<p class="empty-state">Loading social data...</p>';
+        if (!window.data || !Array.isArray(window.data.teams)) {
+            container.innerHTML = '<p class="empty-state">Loading team data...</p>';
             return;
         }
 
         if (!checkDependencies()) {
-            container.innerHTML = '<p class="empty-state">Social dependencies not loaded. Please refresh the page.</p>';
+            container.innerHTML = '<p class="empty-state">Team dependencies not loaded. Please refresh the page.</p>';
             return;
         }
 
         if (!initProviders()) {
-            container.innerHTML = '<p class="empty-state">Failed to initialize social providers. Please refresh the page.</p>';
+            container.innerHTML = '<p class="empty-state">Failed to initialize team providers. Please refresh the page.</p>';
             return;
         }
 
         if (_mounted) {
-            unmountSocial();
+            unmountTeams();
         }
 
-        SocialViews.renderSocialView(container);
+        // Initialize UI state
+        TeamUI.init();
 
-        SocialEvents.init(container);
+        // Render the container
+        var currentTab = TeamUI.getCurrentTab();
+        var viewModel = TeamAggregator.getTeamPageViewModel({
+            type: currentTab,
+            period: 1
+        });
+        container.innerHTML = TeamRender.renderContainer(currentTab, viewModel);
 
-        SocialGraph.setGraphVisible(false);
+        // Initialize events
+        TeamEvents.init(container);
 
         _mounted = true;
         _initialized = true;
@@ -205,12 +215,12 @@
         dispatchReady();
     }
 
-    function unmountSocial() {
+    function unmountTeams() {
         if (!_mounted) {
             return;
         }
 
-        SocialEvents.destroy();
+        TeamEvents.destroy();
         _mounted = false;
     }
 
@@ -223,21 +233,21 @@
             return;
         }
 
-        SocialEvents.refreshUI();
+        TeamEvents.refreshUI();
     }
 
     function goToTab() {
         if (TabManager && typeof TabManager.switchTo === 'function') {
-            TabManager.switchTo('social', true);
+            TabManager.switchTo('teams', true);
         }
     }
 
-    function getRelationshipCount() {
-        var social = window.data && window.data.social;
-        if (!social || !Array.isArray(social.relationships)) {
+    function getTeamCount() {
+        var data = window.data || {};
+        if (!Array.isArray(data.teams)) {
             return 0;
         }
-        return social.relationships.length;
+        return data.teams.length;
     }
 
     function isMounted() {
@@ -253,7 +263,9 @@
             mounted: _mounted,
             initialized: _initialized,
             providersInitialized: _providersInitialized,
-            relationshipCount: getRelationshipCount()
+            teamCount: getTeamCount(),
+            currentTab: TeamUI.getCurrentTab(),
+            expandedTeamId: TeamUI.getExpandedTeamId()
         };
     }
 
@@ -263,7 +275,7 @@
 
     function dispatchReady() {
         try {
-            var event = new CustomEvent('socialReady', {
+            var event = new CustomEvent('teamsReady', {
                 detail: {
                     mounted: _mounted,
                     initialized: _initialized,
@@ -284,7 +296,7 @@
 
     function registerWithTabManager() {
         if (TabManager && typeof TabManager.register === 'function') {
-            TabManager.register('social', mountSocial);
+            TabManager.register('teams', mountTeams);
             return true;
         }
         return false;
@@ -301,10 +313,10 @@
     // ============================================================
 
     function handleDataReady() {
-        if (TabManager && TabManager.getCurrentTab() === 'social') {
-            var container = document.getElementById('tab-social');
+        if (TabManager && TabManager.getCurrentTab() === 'teams') {
+            var container = document.getElementById('tab-teams');
             if (container && !_mounted) {
-                mountSocial(container);
+                mountTeams(container);
             }
         }
     }
@@ -318,10 +330,10 @@
     }
 
     document.addEventListener('tabChanged', function(e) {
-        if (e.detail && e.detail.tab === 'social') {
-            var container = document.getElementById('tab-social');
+        if (e.detail && e.detail.tab === 'teams') {
+            var container = document.getElementById('tab-teams');
             if (container && !_mounted) {
-                mountSocial(container);
+                mountTeams(container);
             }
         }
     });
@@ -330,13 +342,13 @@
     // EXPOSE - Controlled public API
     // ============================================================
 
-    window.Social = {
+    window.Teams = {
         // Initialization
         initProviders: initProviders,
 
         // Mount
-        mount: mountSocial,
-        unmount: unmountSocial,
+        mount: mountTeams,
+        unmount: unmountTeams,
 
         // Refresh
         refresh: refresh,
@@ -345,7 +357,7 @@
         goToTab: goToTab,
 
         // Queries
-        getRelationshipCount: getRelationshipCount,
+        getTeamCount: getTeamCount,
 
         // State
         isMounted: isMounted,
@@ -353,6 +365,7 @@
         getState: getState
     };
 
-    window.renderSocialView = SocialViews.renderSocialView;
+    // Legacy compatibility
+    window.renderTeamManager = mountTeams;
 
 })();

@@ -1,7 +1,6 @@
 /**
  * modules/social/social-events.js - Social Events
  * Event orchestration for the social/relationship domain
- * Path: js/modules/social/social-events.js
  * 
  * This module provides:
  *   - init - Bind all event listeners
@@ -19,6 +18,7 @@
  *   - Calls SocialCore for mutations
  *   - Calls SocialViews for rendering
  *   - Calls SocialGraph for graph rendering
+ *   - Uses SocialAggregator for character names (display only)
  *   - Uses Modal for modal lifecycle
  *   - Uses NotificationSystem for notifications
  *   - No direct data mutation
@@ -28,8 +28,8 @@
  *   - window.SocialCore (from social-core.js) - MANDATORY
  *   - window.SocialViews (from social-views.js) - MANDATORY
  *   - window.SocialQueries (from social-queries.js) - MANDATORY
+ *   - window.SocialAggregator (from social-aggregator.js) - MANDATORY
  *   - window.SocialGraph (from social-graph.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.Modal (from modal.js) - MANDATORY
  *   - window.NotificationSystem (from notification.js) - MANDATORY
  * 
@@ -43,7 +43,6 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__socialEventsLoaded) {
         return;
     }
@@ -56,8 +55,8 @@
     var SocialCore = window.SocialCore;
     var SocialViews = window.SocialViews;
     var SocialQueries = window.SocialQueries;
+    var SocialAggregator = window.SocialAggregator;
     var SocialGraph = window.SocialGraph;
-    var CharacterQueries = window.CharacterQueries;
     var Modal = window.Modal;
     var NotificationSystem = window.NotificationSystem;
 
@@ -92,15 +91,18 @@
             missing.push('SocialQueries.getRelationshipById');
         }
 
+        if (!SocialAggregator || typeof SocialAggregator.getConnectedCharactersViewModel !== 'function') {
+            missing.push('SocialAggregator.getConnectedCharactersViewModel');
+        }
+        if (!SocialAggregator || typeof SocialAggregator.getCharacterRelationshipsViewModel !== 'function') {
+            missing.push('SocialAggregator.getCharacterRelationshipsViewModel');
+        }
+
         if (!SocialGraph || typeof SocialGraph.setGraphVisible !== 'function') {
             missing.push('SocialGraph.setGraphVisible');
         }
         if (!SocialGraph || typeof SocialGraph.renderGraph !== 'function') {
             missing.push('SocialGraph.renderGraph');
-        }
-
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
         }
 
         if (!Modal || typeof Modal.showModal !== 'function') {
@@ -144,7 +146,9 @@
     // ============================================================
 
     function addEventListener(element, eventName, handler, options) {
-        if (!element) return;
+        if (!element) {
+            return;
+        }
 
         element.addEventListener(eventName, handler, options || false);
 
@@ -168,10 +172,11 @@
     }
 
     function delegate(selector, eventName, handler) {
-        // Use document-level delegation for dynamically created elements
         function wrappedHandler(e) {
             var target = e.target.closest ? e.target.closest(selector) : null;
-            if (!target) return;
+            if (!target) {
+                return;
+            }
             handler(e, target);
         }
 
@@ -209,10 +214,8 @@
             return;
         }
 
-        // Render the view
         SocialViews.renderSocialView(container);
 
-        // Bind events
         bindAddRelationship();
         bindViewModeButtons();
         bindRelationshipForm();
@@ -251,20 +254,18 @@
         var title = document.getElementById('relationship-form-title');
         var form = document.getElementById('relationship-form-inner');
 
-        if (!title || !form) return;
+        if (!title || !form) {
+            return;
+        }
 
-        // Populate selectors
         SocialViews.populateFormSelectors();
         SocialViews.populateTypeSelectors();
 
-        // Reset form
         form.reset();
 
-        // Set mode
         if (_editId) {
             title.textContent = 'Edit Relationship';
 
-            // Load existing data
             var rel = SocialQueries.getRelationshipById(_editId);
             if (rel) {
                 document.getElementById('rel-char1').value = rel.character1 || '';
@@ -282,7 +283,6 @@
             title.textContent = 'Add Relationship';
         }
 
-        // Show modal
         var modal = document.getElementById('relationship-form-modal');
         if (modal) {
             Modal.showModal(modal);
@@ -294,7 +294,6 @@
     // ============================================================
 
     function bindRelationshipForm() {
-        // Form submit
         var form = document.getElementById('relationship-form-inner');
         if (form) {
             addEventListener(form, 'submit', function(e) {
@@ -303,7 +302,6 @@
             });
         }
 
-        // Close button
         var closeBtn = document.getElementById('close-relationship-form');
         if (closeBtn) {
             addEventListener(closeBtn, 'click', function() {
@@ -311,7 +309,6 @@
             });
         }
 
-        // Cancel button
         var cancelBtn = document.getElementById('cancel-relationship-form');
         if (cancelBtn) {
             addEventListener(cancelBtn, 'click', function() {
@@ -319,7 +316,6 @@
             });
         }
 
-        // Outside click
         var modal = document.getElementById('relationship-form-modal');
         if (modal) {
             addEventListener(modal, 'click', function(e) {
@@ -339,7 +335,6 @@
         var endYear = document.getElementById('rel-end-year').value;
         var notes = document.getElementById('rel-notes').value.trim();
 
-        // Basic validation
         if (!char1 || !char2 || !typeId) {
             notify('Please fill in all required fields.', 'error');
             return;
@@ -379,7 +374,6 @@
             }
         }).catch(function(err) {
             notify('An error occurred while saving.', 'error');
-            console.error('[SocialEvents] Save error:', err);
         });
     }
 
@@ -405,7 +399,9 @@
     }
 
     function handleDeleteRelationship(id) {
-        if (!id) return;
+        if (!id) {
+            return;
+        }
 
         var rel = SocialQueries.getRelationshipById(id);
         if (!rel) {
@@ -413,10 +409,10 @@
             return;
         }
 
-        var char1 = CharacterQueries.getCharacterById(rel.character1);
-        var char2 = CharacterQueries.getCharacterById(rel.character2);
-        var name1 = char1 ? CharacterQueries.getDisplayName(char1) : 'Unknown';
-        var name2 = char2 ? CharacterQueries.getDisplayName(char2) : 'Unknown';
+        // Use Aggregator for display names
+        var vm = SocialAggregator.getRelationshipViewModel(rel);
+        var name1 = vm ? vm.name1 : 'Unknown';
+        var name2 = vm ? vm.name2 : 'Unknown';
         var label = SocialQueries.getRelationshipTypeLabel(rel.typeId);
 
         if (!confirm('Delete the ' + label + ' relationship between ' + name1 + ' and ' + name2 + '?')) {
@@ -432,7 +428,6 @@
             }
         }).catch(function(err) {
             notify('An error occurred while deleting.', 'error');
-            console.error('[SocialEvents] Delete error:', err);
         });
     }
 
@@ -450,7 +445,9 @@
     }
 
     function handleEditRelationship(id) {
-        if (!id) return;
+        if (!id) {
+            return;
+        }
 
         var rel = SocialQueries.getRelationshipById(id);
         if (!rel) {
@@ -522,8 +519,12 @@
                 var charFilter = document.getElementById('social-character-filter');
                 var typeFilter = document.getElementById('social-type-filter');
 
-                if (charFilter) charFilter.value = 'all';
-                if (typeFilter) typeFilter.value = 'all';
+                if (charFilter) {
+                    charFilter.value = 'all';
+                }
+                if (typeFilter) {
+                    typeFilter.value = 'all';
+                }
 
                 SocialViews.renderRelationships();
                 if (SocialGraph.isGraphVisible()) {
@@ -565,7 +566,6 @@
     // ============================================================
 
     function bindCharacterDetail() {
-        // Graph node clicks (delegated)
         delegate('.graph-node', 'click', function(e, target) {
             var id = target.dataset.id;
             if (id) {
@@ -573,7 +573,6 @@
             }
         });
 
-        // Close detail
         var closeBtn = document.getElementById('close-char-detail');
         if (closeBtn) {
             addEventListener(closeBtn, 'click', function() {
@@ -581,7 +580,6 @@
             });
         }
 
-        // Outside click
         var modal = document.getElementById('character-detail-modal');
         if (modal) {
             addEventListener(modal, 'click', function(e) {
@@ -591,7 +589,6 @@
             });
         }
 
-        // View all relationships button (delegated)
         delegate('#view-char-relationships', 'click', function(e, target) {
             var id = target.dataset.id;
             if (id) {
@@ -601,24 +598,28 @@
     }
 
     function handleGraphNodeClick(charId) {
-        if (!charId) return;
+        if (!charId) {
+            return;
+        }
 
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
+        // Use Aggregator to check character exists
+        var vm = SocialAggregator.getConnectedCharactersViewModel(charId);
+        if (!vm || !vm.characterName) {
             notify('Character not found.', 'error');
             return;
         }
 
         var modal = document.getElementById('character-detail-modal');
-        if (!modal) return;
+        if (!modal) {
+            return;
+        }
 
         var content = document.getElementById('char-detail-content');
-        if (!content) return;
+        if (!content) {
+            return;
+        }
 
-        // Render content
         SocialViews.renderCharacterDetailContent(charId, content);
-
-        // Show modal
         Modal.showModal(modal);
     }
 
@@ -630,12 +631,12 @@
     }
 
     function handleViewCharacterRelationships(charId) {
-        if (!charId) return;
+        if (!charId) {
+            return;
+        }
 
-        // Close detail
         handleCharacterDetailClose();
 
-        // Set filter to this character
         var filter = document.getElementById('social-character-filter');
         if (filter) {
             filter.value = charId;
@@ -663,13 +664,6 @@
     // ============================================================
 
     function bindResize() {
-        var resizeHandler = function() {
-            if (SocialGraph.isGraphVisible()) {
-                SocialGraph.handleResize();
-            }
-        };
-
-        // Debounced resize handler
         var timeoutId = null;
 
         var debouncedHandler = function() {
@@ -677,7 +671,11 @@
                 clearTimeout(timeoutId);
                 timeoutId = null;
             }
-            timeoutId = setTimeout(resizeHandler, 200);
+            timeoutId = setTimeout(function() {
+                if (SocialGraph.isGraphVisible()) {
+                    SocialGraph.handleResize();
+                }
+            }, 200);
         };
 
         addEventListener(window, 'resize', debouncedHandler);

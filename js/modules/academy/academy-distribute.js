@@ -1,7 +1,6 @@
 /**
- * js/modules/academy/academy-distribute.js - Academy Distribute
+ * modules/academy/academy-distribute.js - Academy Distribute
  * Auto-distribution engine for assigning students to classes and schedules
- * Path: js/modules/academy/academy-distribute.js
  * 
  * This module is responsible for:
  *   - Auto-distributing students across classes
@@ -11,34 +10,31 @@
  *   - Validation and conflict detection
  * 
  * IMPORTANT:
- *   - This module uses ScheduleCore for all scheduling operations
+ *   - This module orchestrates distribution (algorithm + mutation)
  *   - Uses AcademyQueries for read-only data access
  *   - Uses AcademySchedule for academic scheduling operations
- *   - No direct CalendarCore or CalendarScheduleCore dependency
- *   - All mutations are candidate-based: VALIDATE → CLONE → MODIFY → COMMIT
+ *   - Uses CalendarProvider for schedule conflicts
+ *   - No direct CalendarCore or ScheduleCore dependency
+ *   - Distribution algorithm is PURE and testable
+ *   - Mutations are applied through AcademySchedule
+ *   - This module does NOT call saveData() - callers own persistence
+ * 
+ * MUTATION CONTRACT:
+ *   - All operations are candidate-based: VALIDATE → ALGORITHM → APPLY
  *   - Invalid inputs are REJECTED (operation returns null/false)
  *   - Mutations are ATOMIC: if any part is invalid, nothing changes
  *   - This module does NOT call saveData() - callers own persistence
  * 
- * DEPENDENCY GRAPH:
- *   AcademyDistribute
- *        ↓
- *   ┌─────┼─────┐
- *   ↓     ↓     ↓
- * AcademySchedule AcademyQueries ScheduleCore
- *   ↓     ↓     ↓
- *   └─────┼─────┘
- *         ↓
- *   Internal Data Store
- * 
  * DEPENDENCIES:
- *   - window.ScheduleCore (from schedule-core.js) - MANDATORY
  *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.AcademySchedule (from academy-schedule.js) - MANDATORY
+ *   - window.AcademyConstants (from academy-constants.js) - MANDATORY
  *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.DisciplineQueries (from discipline-queries.js) - MANDATORY
+ *   - window.TeamQueries (from team-queries.js) - MANDATORY
+ *   - window.CalendarQueries (from calendar-queries.js) - MANDATORY
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
  * 
  * USAGE:
@@ -61,124 +57,24 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__academyDistributeLoaded) {
         return;
     }
-
-    // ============================================================
-    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
-    // ============================================================
-
-    var missing = [];
-
-    // ScheduleCore - conflict detection
-    if (!window.ScheduleCore || typeof window.ScheduleCore.hasConflict !== 'function') {
-        missing.push('ScheduleCore.hasConflict');
-    }
-    if (!window.ScheduleCore || typeof window.ScheduleCore.setStudentSlot !== 'function') {
-        missing.push('ScheduleCore.setStudentSlot');
-    }
-    if (!window.ScheduleCore || typeof window.ScheduleCore.getStudentSchedule !== 'function') {
-        missing.push('ScheduleCore.getStudentSchedule');
-    }
-
-    // AcademyQueries - data access
-    if (!window.AcademyQueries || typeof window.AcademyQueries.getClassStudents !== 'function') {
-        missing.push('AcademyQueries.getClassStudents');
-    }
-    if (!window.AcademyQueries || typeof window.AcademyQueries.getClass !== 'function') {
-        missing.push('AcademyQueries.getClass');
-    }
-    if (!window.AcademyQueries || typeof window.AcademyQueries.getAvailableStudents !== 'function') {
-        missing.push('AcademyQueries.getAvailableStudents');
-    }
-
-    // AcademySchedule - scheduling operations
-    if (!window.AcademySchedule || typeof window.AcademySchedule.setStudentScheduleClass !== 'function') {
-        missing.push('AcademySchedule.setStudentScheduleClass');
-    }
-    if (!window.AcademySchedule || typeof window.AcademySchedule.removeStudentScheduleClass !== 'function') {
-        missing.push('AcademySchedule.removeStudentScheduleClass');
-    }
-    if (!window.AcademySchedule || typeof window.AcademySchedule.getStudentSchedule !== 'function') {
-        missing.push('AcademySchedule.getStudentSchedule');
-    }
-    if (!window.AcademySchedule || typeof window.AcademySchedule.hasStudentScheduleConflict !== 'function') {
-        missing.push('AcademySchedule.hasStudentScheduleConflict');
-    }
-    if (!window.AcademySchedule || typeof window.AcademySchedule.getClassInstructor !== 'function') {
-        missing.push('AcademySchedule.getClassInstructor');
-    }
-    if (!window.AcademySchedule || typeof window.AcademySchedule.getClassDuration !== 'function') {
-        missing.push('AcademySchedule.getClassDuration');
-    }
-    if (!window.AcademySchedule || typeof window.AcademySchedule.getClassLabel !== 'function') {
-        missing.push('AcademySchedule.getClassLabel');
-    }
-    if (!window.AcademySchedule || typeof window.AcademySchedule.findClassStartHour !== 'function') {
-        missing.push('AcademySchedule.findClassStartHour');
-    }
-    if (!window.AcademySchedule || typeof window.AcademySchedule.getStudentRestDays !== 'function') {
-        missing.push('AcademySchedule.getStudentRestDays');
-    }
-
-    // Constants & Validation
-    if (!window.CalendarConstants) {
-        missing.push('CalendarConstants');
-    }
-
-    if (!window.CalendarValidation || typeof window.CalendarValidation.parseWeek !== 'function') {
-        missing.push('CalendarValidation.parseWeek');
-    }
-    if (!window.CalendarValidation || typeof window.CalendarValidation.parseDay !== 'function') {
-        missing.push('CalendarValidation.parseDay');
-    }
-    if (!window.CalendarValidation || typeof window.CalendarValidation.parseHour !== 'function') {
-        missing.push('CalendarValidation.parseHour');
-    }
-    if (!window.CalendarValidation || typeof window.CalendarValidation.parseDuration !== 'function') {
-        missing.push('CalendarValidation.parseDuration');
-    }
-
-    // CharacterQueries
-    if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
-        missing.push('CharacterQueries.getCharacterById');
-    }
-    if (!window.CharacterQueries || typeof window.CharacterQueries.getDisplayName !== 'function') {
-        missing.push('CharacterQueries.getDisplayName');
-    }
-
-    // DisciplineQueries
-    if (!window.DisciplineQueries || typeof window.DisciplineQueries.getDiscipline !== 'function') {
-        missing.push('DisciplineQueries.getDiscipline');
-    }
-    if (!window.DisciplineQueries || typeof window.DisciplineQueries.getAvailableDisciplines !== 'function') {
-        missing.push('DisciplineQueries.getAvailableDisciplines');
-    }
-
-    // ObjectUtils
-    if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
-        missing.push('ObjectUtils.deepClone');
-    }
-
-    if (missing.length > 0) {
-        throw new Error('[AcademyDistribute] Missing dependencies: ' + missing.join(', '));
-    }
-
     window.__academyDistributeLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
     // ============================================================
 
-    var ScheduleCore = window.ScheduleCore;
     var AcademyQueries = window.AcademyQueries;
     var AcademySchedule = window.AcademySchedule;
+    var AcademyConstants = window.AcademyConstants;
     var CalendarConstants = window.CalendarConstants;
     var CalendarValidation = window.CalendarValidation;
     var CharacterQueries = window.CharacterQueries;
     var DisciplineQueries = window.DisciplineQueries;
+    var TeamQueries = window.TeamQueries;
+    var CalendarQueries = window.CalendarQueries;
     var ObjectUtils = window.ObjectUtils;
 
     // ============================================================
@@ -197,11 +93,9 @@
     var MIN_CLASS_DURATION = CalendarConstants.MIN_CLASS_DURATION;
     var DEFAULT_WEEK = 1;
 
-    // Default distribution settings
-    var DEFAULT_MAX_PER_GROUP = 8;
-    var DEFAULT_MIN_PER_GROUP = 2;
-    var DEFAULT_TARGET_PER_GROUP = 4;
-    var DEFAULT_MAX_DISCIPLINES_PER_WEEK = 8;
+    var DEFAULT_MAX_PER_GROUP = AcademyConstants.MAX_TEAM_SIZE || 8;
+    var DEFAULT_MIN_PER_GROUP = AcademyConstants.MIN_TEAM_SIZE || 2;
+    var DEFAULT_TARGET_PER_GROUP = AcademyConstants.DEFAULT_TEAM_SIZE || 4;
 
     // ============================================================
     // HELPERS
@@ -278,11 +172,12 @@
     }
 
     // ============================================================
-    // CORE DISTRIBUTION ALGORITHMS
+    // DISTRIBUTION ALGORITHM - PURE FUNCTION
     // ============================================================
 
     /**
      * Distribute students into groups.
+     * This is a PURE function - no side effects, no mutations.
      * 
      * @param {array} students - Array of student objects
      * @param {number} numGroups - Number of groups to create
@@ -368,9 +263,8 @@
         } else if (method === 'skill') {
             // Sort by skill (if provided)
             var getSkill = options.getSkill || function(student) {
-                // Default: use stats average
                 var stats = CharacterQueries.getCharacterStats(student);
-                if (!stats) return 50;
+                if (!stats) { return 50; }
                 var total = 0;
                 var count = 0;
                 for (var key in stats) {
@@ -411,7 +305,6 @@
             // Random distribution
             for (var o = 0; o < shuffledStudents.length; o++) {
                 var randomIndex = Math.floor(Math.random() * actualGroups);
-                // Try to balance
                 var attempts = 0;
                 while (groups[randomIndex].count >= maxPerGroup && attempts < actualGroups * 2) {
                     randomIndex = Math.floor(Math.random() * actualGroups);
@@ -446,6 +339,8 @@
      * @param {array} options.availableHours - Available hours for scheduling
      * @param {array} options.availableDays - Available days for scheduling
      * @param {boolean} options.clearExisting - Clear existing schedule before distribution
+     * @param {function} options.getSkill - Function to get student skill level
+     * @param {array} options.teamIds - Specific teams to distribute to (optional)
      * @returns {object} { success: boolean, data?: object, message?: string }
      */
     function autoDistribute(classId, week, options) {
@@ -486,7 +381,7 @@
         var minPerGroup = options.minPerGroup || DEFAULT_MIN_PER_GROUP;
         var targetPerGroup = options.targetPerGroup || DEFAULT_TARGET_PER_GROUP;
 
-        // ---- PHASE 5: DISTRIBUTE STUDENTS ----
+        // ---- PHASE 5: DISTRIBUTE STUDENTS (PURE ALGORITHM) ----
         var groups = distributeStudents(students, numGroups, {
             method: options.method || 'balanced',
             maxPerGroup: maxPerGroup,
@@ -501,6 +396,7 @@
         var disciplineId = options.disciplineId || null;
         var instructorId = options.instructorId || null;
         var duration = options.duration || 1;
+        var teamIds = options.teamIds || null;
 
         var scheduleResult = buildScheduleFromGroups(
             groups,
@@ -510,7 +406,8 @@
             disciplineId,
             instructorId,
             duration,
-            options
+            options,
+            teamIds
         );
 
         if (!scheduleResult.success) {
@@ -568,9 +465,10 @@
      * @param {object} options - Additional options
      * @param {string} options.labelPrefix - Prefix for class labels
      * @param {function} options.getGroupLabel - Function to generate group labels
+     * @param {array} options.teamIds - Specific teams to distribute to
      * @returns {object} { success: boolean, data?: object, message?: string }
      */
-    function buildScheduleFromGroups(groups, week, availableDays, availableHours, disciplineId, instructorId, duration, options) {
+    function buildScheduleFromGroups(groups, week, availableDays, availableHours, disciplineId, instructorId, duration, options, teamIds) {
         // ---- PHASE 1: VALIDATE ----
         if (!Array.isArray(groups) || groups.length === 0) {
             return failure('At least one group is required.');
@@ -593,7 +491,32 @@
 
         options = options || {};
 
-        // ---- PHASE 2: SCHEDULE EACH GROUP ----
+        // ---- PHASE 2: GET TEAMS ----
+        var teams = [];
+        if (teamIds && Array.isArray(teamIds) && teamIds.length > 0) {
+            // Use specific teams
+            for (var i = 0; i < teamIds.length; i++) {
+                var team = TeamQueries.getTeamById(teamIds[i]);
+                if (team) {
+                    teams.push(team);
+                }
+            }
+        }
+
+        // If no teams specified or none found, use all teams
+        if (teams.length === 0) {
+            // We need the classId to get teams - this should be passed in
+            // For now, we'll use the groups themselves
+            teams = groups.map(function(g, idx) {
+                return {
+                    id: g.id || 'team_' + (idx + 1),
+                    name: options.getGroupLabel ? options.getGroupLabel(g.id, idx, groups.length) : ('Group ' + (idx + 1)),
+                    members: g.students || []
+                };
+            });
+        }
+
+        // ---- PHASE 3: SCHEDULE EACH GROUP ----
         var scheduledGroups = [];
         var scheduledStudents = {};
         var errors = [];
@@ -631,7 +554,7 @@
                     var slotAvailable = true;
                     for (var s = 0; s < students.length; s++) {
                         var student = students[s];
-                        if (!student || !student.id) continue;
+                        if (!student || !student.id) { continue; }
 
                         // Check for conflicts using AcademySchedule
                         if (AcademySchedule.hasStudentScheduleConflict(student.id, weekNum, day, hour, duration)) {
@@ -677,7 +600,7 @@
 
             for (var s2 = 0; s2 < students.length; s2++) {
                 var student = students[s2];
-                if (!student || !student.id) continue;
+                if (!student || !student.id) { continue; }
 
                 var result = AcademySchedule.setStudentScheduleClass(
                     student.id,
@@ -828,7 +751,7 @@
             for (var day in schedule) {
                 if (Object.prototype.hasOwnProperty.call(schedule, day)) {
                     var daySchedule = schedule[day];
-                    if (!daySchedule || typeof daySchedule !== 'object') continue;
+                    if (!daySchedule || typeof daySchedule !== 'object') { continue; }
                     for (var hour in daySchedule) {
                         if (Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
                             if (daySchedule[hour]) {
@@ -844,7 +767,7 @@
             for (var day2 in schedule) {
                 if (Object.prototype.hasOwnProperty.call(schedule, day2)) {
                     var daySchedule2 = schedule[day2];
-                    if (!daySchedule2 || typeof daySchedule2 !== 'object') continue;
+                    if (!daySchedule2 || typeof daySchedule2 !== 'object') { continue; }
                     for (var hour2 in daySchedule2) {
                         if (Object.prototype.hasOwnProperty.call(daySchedule2, hour2)) {
                             var label = AcademySchedule.getClassLabel(student.id, weekNum, parseInt(day2, 10), parseInt(hour2, 10));
@@ -854,7 +777,7 @@
                             }
                         }
                     }
-                    if (groupLabel) break;
+                    if (groupLabel) { break; }
                 }
             }
 
@@ -903,6 +826,93 @@
     }
 
     // ============================================================
+    // DISTRIBUTION SUMMARY
+    // ============================================================
+
+    /**
+     * Get a summary of the current distribution for a class.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number|string} week - Week number
+     * @returns {object} Distribution summary
+     */
+    function getDistributionSummary(classId, week) {
+        if (!isNonEmptyString(classId)) {
+            return { error: 'Class ID is required.' };
+        }
+
+        var weekNum = parseWeek(week);
+        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
+            weekNum = getCurrentWeek();
+        }
+
+        var students = AcademyQueries.getClassStudents(classId);
+        if (!students || students.length === 0) {
+            return {
+                classId: classId,
+                week: weekNum,
+                totalStudents: 0,
+                assignedStudents: 0,
+                groups: [],
+                unassigned: []
+            };
+        }
+
+        var groups = {};
+        var unassigned = [];
+
+        for (var i = 0; i < students.length; i++) {
+            var student = students[i];
+            var schedule = AcademySchedule.getStudentSchedule(student.id, weekNum);
+
+            var found = false;
+            for (var day in schedule) {
+                if (Object.prototype.hasOwnProperty.call(schedule, day)) {
+                    var daySchedule = schedule[day];
+                    if (!daySchedule || typeof daySchedule !== 'object') { continue; }
+                    for (var hour in daySchedule) {
+                        if (Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
+                            var label = AcademySchedule.getClassLabel(student.id, weekNum, parseInt(day, 10), parseInt(hour, 10));
+                            if (label) {
+                                if (!groups[label]) {
+                                    groups[label] = [];
+                                }
+                                groups[label].push(student.id);
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (found) { break; }
+                }
+            }
+
+            if (!found) {
+                unassigned.push(student.id);
+            }
+        }
+
+        var groupSummaries = Object.keys(groups).map(function(key) {
+            return {
+                label: key,
+                studentCount: groups[key].length,
+                studentIds: groups[key]
+            };
+        });
+
+        return {
+            classId: classId,
+            week: weekNum,
+            totalStudents: students.length,
+            assignedStudents: students.length - unassigned.length,
+            unassignedCount: unassigned.length,
+            groupCount: Object.keys(groups).length,
+            groups: groupSummaries,
+            unassigned: unassigned
+        };
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -925,6 +935,9 @@
         // ---- Validation ----
         validateDistribution: validateDistribution,
 
+        // ---- Summary ----
+        getDistributionSummary: getDistributionSummary,
+
         // ---- Helpers ----
         getAvailableHours: getAvailableHours,
         getAvailableDays: getAvailableDays,
@@ -933,7 +946,6 @@
         DEFAULT_MAX_PER_GROUP: DEFAULT_MAX_PER_GROUP,
         DEFAULT_MIN_PER_GROUP: DEFAULT_MIN_PER_GROUP,
         DEFAULT_TARGET_PER_GROUP: DEFAULT_TARGET_PER_GROUP,
-        DEFAULT_MAX_DISCIPLINES_PER_WEEK: DEFAULT_MAX_DISCIPLINES_PER_WEEK,
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK,
         MIN_DAY: MIN_DAY,

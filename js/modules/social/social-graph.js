@@ -1,7 +1,6 @@
 /**
  * modules/social/social-graph.js - Social Graph Visualization
  * SVG-based social network graph rendering
- * Path: js/modules/social/social-graph.js
  * 
  * This module provides:
  *   - renderGraph - Main graph render entry
@@ -13,17 +12,17 @@
  * 
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no persistence
- *   - No direct window.data access - uses SocialQueries
+ *   - No direct window.data access - uses SocialQueries + SocialAggregator
  *   - Uses SocialConstants for type definitions
- *   - Uses CharacterQueries for character data
+ *   - Uses SocialAggregator for character data (names, status, etc.)
  *   - Graph is rendered as SVG
  *   - Click events are delegated to SocialEvents
  *   - Zoom state is managed locally
  * 
  * DEPENDENCIES:
  *   - window.SocialQueries (from social-queries.js) - MANDATORY
+ *   - window.SocialAggregator (from social-aggregator.js) - MANDATORY
  *   - window.SocialConstants (from social-constants.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
  * 
  * USAGE:
@@ -37,7 +36,6 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__socialGraphLoaded) {
         return;
     }
@@ -48,8 +46,8 @@
     // ============================================================
 
     var SocialQueries = window.SocialQueries;
+    var SocialAggregator = window.SocialAggregator;
     var SocialConstants = window.SocialConstants;
-    var CharacterQueries = window.CharacterQueries;
     var DomUtils = window.DomUtils;
 
     // ============================================================
@@ -72,18 +70,15 @@
             missing.push('SocialQueries.isRelationshipDirectional');
         }
 
-        if (!SocialConstants || typeof SocialConstants.getRelationshipTypes !== 'function') {
-            missing.push('SocialConstants.getRelationshipTypes');
+        if (!SocialAggregator || typeof SocialAggregator.getConnectedCharactersViewModel !== 'function') {
+            missing.push('SocialAggregator.getConnectedCharactersViewModel');
+        }
+        if (!SocialAggregator || typeof SocialAggregator.getRelationshipViewModel !== 'function') {
+            missing.push('SocialAggregator.getRelationshipViewModel');
         }
 
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
-            missing.push('CharacterQueries.getCurrentStatus');
+        if (!SocialConstants || typeof SocialConstants.getRelationshipTypes !== 'function') {
+            missing.push('SocialConstants.getRelationshipTypes');
         }
 
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
@@ -179,7 +174,9 @@
     // ============================================================
 
     function renderGraph() {
-        if (!_isGraphVisible) return;
+        if (!_isGraphVisible) {
+            return;
+        }
 
         if (!checkDependencies()) {
             showError('Graph dependencies not loaded.');
@@ -187,7 +184,9 @@
         }
 
         var svg = document.getElementById('social-svg');
-        if (!svg) return;
+        if (!svg) {
+            return;
+        }
 
         var transformGroup = svg.querySelector('#social-graph-transform');
         if (!transformGroup) {
@@ -197,12 +196,13 @@
         }
 
         var container = document.getElementById('graph-container');
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         var width = container.clientWidth || 800;
         var height = container.clientHeight || 600;
 
-        // Update SVG dimensions
         svg.setAttribute('width', width);
         svg.setAttribute('height', height);
 
@@ -213,7 +213,6 @@
             return;
         }
 
-        // Build node map
         var nodeMap = buildNodeMap(relationships);
 
         if (Object.keys(nodeMap).length < 2) {
@@ -221,21 +220,40 @@
             return;
         }
 
+        // Use Aggregator to get character data
+        var characterData = {};
+        var nodeIds = Object.keys(nodeMap);
+        for (var i = 0; i < nodeIds.length; i++) {
+            var id = nodeIds[i];
+            var vm = SocialAggregator.getConnectedCharactersViewModel(id);
+            if (vm && vm.characterName) {
+                characterData[id] = {
+                    name: vm.characterName,
+                    status: vm.characterStatus || '',
+                    deceased: vm.characterDeceased || false,
+                    age: vm.characterAge || ''
+                };
+            } else {
+                characterData[id] = {
+                    name: 'Unknown',
+                    status: '',
+                    deceased: false,
+                    age: ''
+                };
+            }
+        }
+
         var nodes = Object.values(nodeMap);
         var positions = calculatePositions(nodes, width, height);
 
-        // Group relationships by pair for parallel edge handling
         var pairGroups = groupRelationshipsByPair(relationships);
 
-        // Build SVG content
-        var content = buildGraphSVG(pairGroups, nodeMap, positions, width, height);
+        var content = buildGraphSVG(pairGroups, nodeMap, positions, width, height, characterData);
 
         transformGroup.innerHTML = content;
 
-        // Apply zoom transform
         applyGraphTransform(transformGroup, width, height);
 
-        // Update legend
         updateLegend();
     }
 
@@ -247,7 +265,7 @@
         var nodeMap = Object.create(null);
 
         relationships.forEach(function(r) {
-            if (!r) return;
+            if (!r) { return; }
 
             var c1 = String(r.character1);
             var c2 = String(r.character2);
@@ -274,7 +292,7 @@
         var pairGroups = Object.create(null);
 
         relationships.forEach(function(r) {
-            if (!r) return;
+            if (!r) { return; }
 
             var key1 = String(r.character1);
             var key2 = String(r.character2);
@@ -307,10 +325,8 @@
             return positions;
         }
 
-        // Calculate radius based on number of nodes
         var radius = Math.min(width, height) * 0.35;
 
-        // Special case: 2 nodes
         if (nodes.length === 2) {
             var spacing = radius * 0.6;
             positions[nodes[0].id] = { x: centerX - spacing, y: centerY };
@@ -318,13 +334,11 @@
             return positions;
         }
 
-        // Circular layout with adaptive radius
         var angleStep = (2 * Math.PI) / nodes.length;
 
         nodes.forEach(function(node, index) {
             var angle = angleStep * index - Math.PI / 2;
 
-            // Adjust radius based on node degree (more connections = closer to center)
             var maxConnections = 1;
             nodes.forEach(function(n) {
                 if (n.connections > maxConnections) {
@@ -348,7 +362,7 @@
     // GRAPH SVG BUILDER
     // ============================================================
 
-    function buildGraphSVG(pairGroups, nodeMap, positions, width, height) {
+    function buildGraphSVG(pairGroups, nodeMap, positions, width, height, characterData) {
         var html = '';
 
         // Draw relationship lines
@@ -358,7 +372,7 @@
             var pos1 = positions[firstRel.character1];
             var pos2 = positions[firstRel.character2];
 
-            if (!pos1 || !pos2) return;
+            if (!pos1 || !pos2) { return; }
 
             var total = rels.length;
 
@@ -366,9 +380,7 @@
                 var color = SocialQueries.getRelationshipTypeColor(r.typeId);
                 var typeLabel = SocialQueries.getRelationshipTypeLabel(r.typeId);
                 var isDirectional = SocialQueries.isRelationshipDirectional(r.typeId);
-                var clarification = r.clarification ? ' (' + r.clarification + ')' : '';
 
-                // Calculate offset for parallel edges
                 var offset = 0;
                 if (total > 1) {
                     var offsetAmount = 8;
@@ -380,7 +392,6 @@
                 var dy = pos2.y - pos1.y;
                 var dist = Math.sqrt(dx * dx + dy * dy) || 1;
 
-                // Perpendicular unit vector for offset
                 var perpX = -dy / dist;
                 var perpY = dx / dist;
 
@@ -389,21 +400,18 @@
                 var x2 = pos2.x + perpX * offset;
                 var y2 = pos2.y + perpY * offset;
 
-                // Relationship line
                 html += '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '" ';
                 html += 'stroke="' + escapeHtml(color) + '" stroke-width="2" opacity="0.6" />';
 
-                // Direction arrow for directional relationships
                 if (isDirectional) {
                     html += buildDirectionArrow(x1, y1, x2, y2, pos1, pos2, color);
                 }
 
-                // Relationship label
                 var midX = (x1 + x2) / 2 + perpX * offset * 1.5;
                 var midY = (y1 + y2) / 2 + perpY * offset * 1.5;
                 var labelY = midY - 5 - (total > 1 ? (index - (total - 1) / 2) * 6 : 0);
 
-                html += '<text x="' + midX + '" y="' + labelY + '" text-anchor="middle" fill="' + escapeHtml(color) + '" font-size="9" opacity="0.7">' + escapeHtml(typeLabel + clarification) + '</text>';
+                html += '<text x="' + midX + '" y="' + labelY + '" text-anchor="middle" fill="' + escapeHtml(color) + '" font-size="9" opacity="0.7">' + escapeHtml(typeLabel) + '</text>';
             });
         });
 
@@ -412,29 +420,26 @@
         nodeIds.forEach(function(nodeId) {
             var node = nodeMap[nodeId];
             var pos = positions[nodeId];
-            if (!pos) return;
+            if (!pos) { return; }
 
-            var char = CharacterQueries.getCharacterById(nodeId);
-            var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
-            var status = char ? CharacterQueries.getCurrentStatus(char) : '';
+            var data = characterData[nodeId] || { name: 'Unknown', status: '', deceased: false, age: '' };
+            var name = data.name || 'Unknown';
+            var status = data.status || '';
+            var deceased = data.deceased || false;
             var radius = Math.max(20, Math.min(35, 20 + node.connections * 3));
-            var color = getNodeColor(char);
+            var color = getNodeColor(deceased, status);
 
-            // Shadow
             html += '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + radius + '" fill="rgba(0,0,0,0.3)" opacity="0.3" />';
 
-            // Node circle
             html += '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + radius + '" fill="' + escapeHtml(color) + '" stroke="var(--border)" stroke-width="2" cursor="pointer" class="graph-node" data-id="' + escapeHtml(nodeId) + '" />';
 
-            // Node label
             var fontSize = Math.max(9, Math.min(13, radius * 0.6));
             var displayName = getGraphLabel(name);
 
             html += '<text x="' + pos.x + '" y="' + (pos.y + 4) + '" text-anchor="middle" fill="var(--text)" font-size="' + fontSize + '" font-weight="600" pointer-events="none" class="graph-label">' + escapeHtml(displayName) + '</text>';
 
-            // Status label
             if (status) {
-                var statusColor = status === 'Deceased' ? 'var(--danger)' : 'var(--text-dim)';
+                var statusColor = deceased ? 'var(--danger)' : 'var(--text-dim)';
                 html += '<text x="' + pos.x + '" y="' + (pos.y + radius + 14) + '" text-anchor="middle" fill="' + statusColor + '" font-size="8" pointer-events="none">' + escapeHtml(status) + '</text>';
             }
         });
@@ -451,13 +456,10 @@
         var dy = y2 - y1;
         var dist = Math.sqrt(dx * dx + dy * dy) || 1;
 
-        // Calculate arrow position (near the target node)
         var angle = Math.atan2(dy, dx);
 
-        // Use pos2 for radius calculation
-        var nodeId = Object.keys({}).find(function(key) { return false; }); // We need to find the target node
-        // Actually we need to calculate based on the target node's degree
-        var radius = 20; // Fallback
+        // Estimate target node radius based on degree (simplified)
+        var radius = 20;
 
         var arrowDist = Math.max(0, dist - radius - 4);
         var ratio = Math.min(1, arrowDist / dist);
@@ -478,11 +480,12 @@
     // NODE COLOR
     // ============================================================
 
-    function getNodeColor(char) {
-        if (!char) return '#7f8c8d';
-        if (char.deceased) return '#666666';
+    function getNodeColor(deceased, status) {
+        if (deceased) {
+            return '#666666';
+        }
 
-        var status = CharacterQueries.getCurrentStatus(char).toLowerCase();
+        var statusLower = String(status).toLowerCase();
 
         var colorMap = {
             'instructor': '#9b59b6',
@@ -497,7 +500,7 @@
             'civilian': '#7f8c8d'
         };
 
-        return colorMap[status] || '#7f8c8d';
+        return colorMap[statusLower] || '#7f8c8d';
     }
 
     // ============================================================
@@ -505,19 +508,19 @@
     // ============================================================
 
     function getGraphLabel(name) {
-        if (!name) return '?';
+        if (!name) {
+            return '?';
+        }
 
         if (name.length <= 12) {
             return name;
         }
 
-        // Try to create a short name with initials
         var parts = name.split(' ');
         if (parts.length >= 2) {
             var first = parts[0];
             var last = parts[parts.length - 1];
 
-            // If first name is long, use initial
             if (first.length > 6) {
                 var initial = first.charAt(0);
                 return initial + '. ' + last;
@@ -526,7 +529,6 @@
             return first + ' ' + last.charAt(0) + '.';
         }
 
-        // Fallback: truncate
         return name.substring(0, 10) + '...';
     }
 
@@ -537,7 +539,9 @@
     function applyGraphTransform(transformGroup, width, height) {
         if (!transformGroup) {
             transformGroup = document.querySelector('#social-graph-transform');
-            if (!transformGroup) return;
+            if (!transformGroup) {
+                return;
+            }
         }
 
         var centerX = (width || 800) / 2;
@@ -557,7 +561,9 @@
 
     function updateLegend() {
         var container = document.getElementById('legend-items');
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         var types = SocialQueries.getRelationshipTypes();
 
@@ -605,10 +611,14 @@
 
     function showError(message) {
         var svg = document.getElementById('social-svg');
-        if (!svg) return;
+        if (!svg) {
+            return;
+        }
 
         var transformGroup = svg.querySelector('#social-graph-transform');
-        if (!transformGroup) return;
+        if (!transformGroup) {
+            return;
+        }
 
         var width = svg.clientWidth || 800;
         var height = svg.clientHeight || 600;
