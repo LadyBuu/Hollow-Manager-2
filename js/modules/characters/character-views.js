@@ -44,6 +44,10 @@
     }
     window.__characterViewsLoaded = true;
 
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
     var CharacterQueries = window.CharacterQueries;
     var AcademyQueries = window.AcademyQueries;
     var TeamQueries = window.TeamQueries;
@@ -54,6 +58,10 @@
     var EliminationQueries = window.EliminationQueries;
     var DomUtils = window.DomUtils;
     var CharacterConstants = window.CharacterConstants;
+
+    // ============================================================
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
+    // ============================================================
 
     function checkDependencies() {
         var missing = [];
@@ -118,6 +126,10 @@
 
     checkDependencies();
 
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
     var CAREER_STATUS_OPTIONS = CharacterConstants ? CharacterConstants.CAREER_STATUS_OPTIONS : [
         { value: '', label: 'Select status...' },
         { value: 'civilian', label: 'Civilian' },
@@ -140,9 +152,17 @@
         '#7f8c8d': true
     };
 
+    // ============================================================
+    // HTML ESCAPING - Delegates to DomUtils
+    // ============================================================
+
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
     }
+
+    // ============================================================
+    // RELATIONSHIP HELPERS
+    // ============================================================
 
     function getSafeRelationshipColor(typeId) {
         var color = SocialQueries.getRelationshipTypeColor(typeId);
@@ -163,6 +183,10 @@
         return SocialQueries.getRelationshipTypeLabel(typeId) || 'Other';
     }
 
+    // ============================================================
+    // FORMAT HELPERS
+    // ============================================================
+
     function formatMembershipPeriod(join, leave, prefix) {
         prefix = prefix || '';
         var joinStr = (join !== undefined && join !== null && join !== '') ? String(join) : '';
@@ -181,6 +205,17 @@
         }
         return 'Invalid';
     }
+
+    function getCurrentWeek() {
+        if (window.data && typeof window.data.currentWeek === 'number') {
+            return window.data.currentWeek;
+        }
+        return 1;
+    }
+
+    // ============================================================
+    // RENDER ACADEMIC VIEW
+    // ============================================================
 
     function renderAcademic(char) {
         var container = document.getElementById('academic-view');
@@ -299,6 +334,10 @@
         elimDiv.textContent = isEliminated ? '\u26a0 This character is eliminated' : '\u2713 Not eliminated';
         container.appendChild(elimDiv);
     }
+
+    // ============================================================
+    // RENDER PROFESSIONAL VIEW
+    // ============================================================
 
     function renderProfessional(char) {
         var container = document.getElementById('professional-view');
@@ -483,6 +522,10 @@
         }
     }
 
+    // ============================================================
+    // RENDER SOCIAL VIEW
+    // ============================================================
+
     function renderSocial(char) {
         var container = document.getElementById('social-view');
         if (!container) return;
@@ -548,6 +591,10 @@
         });
     }
 
+    // ============================================================
+    // CAREER STATUS ENTRY
+    // ============================================================
+
     function addCareerStatusEntry(container, status, startYear, endYear) {
         if (!container) return;
 
@@ -600,12 +647,9 @@
         container.appendChild(entry);
     }
 
-    function getCurrentWeek() {
-        if (window.data && typeof window.data.currentWeek === 'number') {
-            return window.data.currentWeek;
-        }
-        return 1;
-    }
+    // ============================================================
+    // TAB HTML GENERATORS
+    // ============================================================
 
     function getAcademicTabHTML() {
         return `
@@ -682,6 +726,10 @@
         `;
     }
 
+    // ============================================================
+    // EXPOSE
+    // ============================================================
+
     window.CharacterViews = {
         renderAcademic: renderAcademic,
         renderProfessional: renderProfessional,
@@ -695,6 +743,6 @@
         getAcademicTabHTML: getAcademicTabHTML,
         getProfessionalTabHTML: getProfessionalTabHTML,
         getSocialTabHTML: getSocialTabHTML
-    }; 
+    };
 
 })();
