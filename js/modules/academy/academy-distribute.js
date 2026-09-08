@@ -1,127 +1,211 @@
 /**
- * js/modules/academy/academy-distribute.js - Academy Distribution
- * Cross-domain distribution workflow for the Academy
+ * js/modules/academy/academy-distribute.js - Academy Distribute
+ * Auto-distribution engine for assigning students to classes and schedules
  * Path: js/modules/academy/academy-distribute.js
  * 
- * This module handles:
- *   - Auto-distribution of students to academic teams
- *   - Balanced distribution based on team capacity
- *   - Conflict detection with schedules
- *   - Candidate-based planning with atomic execution
+ * This module is responsible for:
+ *   - Auto-distributing students across classes
+ *   - Balancing class sizes
+ *   - Assigning students to disciplines and instructors
+ *   - Building schedules from distribution data
+ *   - Validation and conflict detection
  * 
  * IMPORTANT:
- *   - This is a CROSS-DOMAIN workflow combining:
- *     - Classes (students)
- *     - Teams (capacity)
- *     - Schedules (conflict detection)
- *   - All operations are CANDIDATE-BASED: build plan, then execute
- *   - This module does NOT commit to window.data or call saveData()
- *   - Persistence and logging are owned by MutationPipeline
- *   - All validation uses CalendarValidation from calendar-validation.js
- *   - All deep cloning uses ObjectUtils.deepClone()
+ *   - This module uses ScheduleCore for all scheduling operations
+ *   - Uses AcademyQueries for read-only data access
+ *   - Uses AcademySchedule for academic scheduling operations
+ *   - No direct CalendarCore or CalendarScheduleCore dependency
+ *   - All mutations are candidate-based: VALIDATE → CLONE → MODIFY → COMMIT
+ *   - Invalid inputs are REJECTED (operation returns null/false)
+ *   - Mutations are ATOMIC: if any part is invalid, nothing changes
+ *   - This module does NOT call saveData() - callers own persistence
+ * 
+ * DEPENDENCY GRAPH:
+ *   AcademyDistribute
+ *        ↓
+ *   ┌─────┼─────┐
+ *   ↓     ↓     ↓
+ * AcademySchedule AcademyQueries ScheduleCore
+ *   ↓     ↓     ↓
+ *   └─────┼─────┘
+ *         ↓
+ *   Internal Data Store
  * 
  * DEPENDENCIES:
- *   - window.AcademyQueries (from academy-queries.js)
- *   - window.TeamQueries (from team-queries.js)
- *   - window.TeamCore (from team-core.js)
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.DisciplineQueries (from discipline-queries.js)
- *   - window.CalendarScheduleCore (from calendar/core/schedule-core.js)
- *   - window.CalendarValidation (from calendar-validation.js)
- *   - window.CalendarConstants (from calendar-constants.js)
- *   - window.ObjectUtils (from object-utils.js)
+ *   - window.ScheduleCore (from schedule-core.js) - MANDATORY
+ *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
+ *   - window.AcademySchedule (from academy-schedule.js) - MANDATORY
+ *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
+ *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
+ *   - window.CharacterQueries (from character-queries.js) - MANDATORY
+ *   - window.DisciplineQueries (from discipline-queries.js) - MANDATORY
+ *   - window.ObjectUtils (from object-utils.js) - MANDATORY
  * 
  * USAGE:
  *   var distribute = window.AcademyDistribute;
- *   var plan = distribute.buildPlan(classId, week, maxTeamSize, teamIds, options);
- *   if (plan.success) {
- *     var result = distribute.executePlan(plan);
- *   }
+ *   
+ *   // Auto-distribute students
+ *   var result = distribute.autoDistribute('class_123', 5);
+ *   var result = distribute.autoDistributeWithGroups('class_123', 5, 4);
+ *   
+ *   // Build schedules
+ *   var result = distribute.buildScheduleFromGroups('class_123', 5);
+ *   
+ *   // Advanced distribution
+ *   var result = distribute.distributeBySkill('class_123', 5, {
+ *     maxPerGroup: 6,
+ *     minPerGroup: 3
+ *   });
  */
 
 (function() {
     'use strict';
 
+    // Guard against duplicate loading
     if (window.__academyDistributeLoaded) {
         return;
     }
 
-    var AcademyQueries = window.AcademyQueries;
-    var TeamQueries = window.TeamQueries;
-    var TeamCore = window.TeamCore;
-    var CharacterQueries = window.CharacterQueries;
-    var DisciplineQueries = window.DisciplineQueries;
-    var CalendarScheduleCore = window.CalendarScheduleCore;
-    var CalendarValidation = window.CalendarValidation;
-    var CalendarConstants = window.CalendarConstants;
-    var ObjectUtils = window.ObjectUtils;
+    // ============================================================
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
+    // ============================================================
 
-    function checkDependencies() {
-        var missing = [];
+    var missing = [];
 
-        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
-            missing.push('AcademyQueries.getClass');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getClassStudents !== 'function') {
-            missing.push('AcademyQueries.getClassStudents');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getAvailableStudents !== 'function') {
-            missing.push('AcademyQueries.getAvailableStudents');
-        }
-
-        if (!TeamQueries || typeof TeamQueries.getTeamsByType !== 'function') {
-            missing.push('TeamQueries.getTeamsByType');
-        }
-        if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
-            missing.push('TeamQueries.getTeamById');
-        }
-        if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
-            missing.push('TeamQueries.getActiveTeamMembers');
-        }
-
-        if (!TeamCore || typeof TeamCore.getTeam !== 'function') {
-            missing.push('TeamCore.getTeam');
-        }
-        if (!TeamCore || typeof TeamCore.addMember !== 'function') {
-            missing.push('TeamCore.addMember');
-        }
-
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-
-        if (!CalendarScheduleCore || typeof CalendarScheduleCore.hasConflict !== 'function') {
-            missing.push('CalendarScheduleCore.hasConflict');
-        }
-
-        if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
-            missing.push('CalendarValidation.parseWeek');
-        }
-
-        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
-            missing.push('CalendarConstants.MIN_WEEK');
-        }
-
-        if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
-            missing.push('ObjectUtils.deepClone');
-        }
-
-        if (missing.length > 0) {
-            throw new Error('AcademyDistribute: Missing dependencies: ' + missing.join(', '));
-        }
-
-        return true;
+    if (!window.ScheduleCore || typeof window.ScheduleCore.hasConflict !== 'function') {
+        missing.push('ScheduleCore.hasConflict');
+    }
+    if (!window.ScheduleCore || typeof window.ScheduleCore.setStudentSlot !== 'function') {
+        missing.push('ScheduleCore.setStudentSlot');
+    }
+    if (!window.ScheduleCore || typeof window.ScheduleCore.getStudentSchedule !== 'function') {
+        missing.push('ScheduleCore.getStudentSchedule');
     }
 
-    checkDependencies();
+    if (!window.AcademyQueries || typeof window.AcademyQueries.getClassStudents !== 'function') {
+        missing.push('AcademyQueries.getClassStudents');
+    }
+    if (!window.AcademyQueries || typeof window.AcademyQueries.getClass !== 'function') {
+        missing.push('AcademyQueries.getClass');
+    }
+    if (!window.AcademyQueries || typeof window.AcademyQueries.getAvailableStudents !== 'function') {
+        missing.push('AcademyQueries.getAvailableStudents');
+    }
 
-    var MAX_TEAM_SIZE = 20;
+    if (!window.AcademySchedule || typeof window.AcademySchedule.setStudentScheduleClass !== 'function') {
+        missing.push('AcademySchedule.setStudentScheduleClass');
+    }
+    if (!window.AcademySchedule || typeof window.AcademySchedule.removeStudentScheduleClass !== 'function') {
+        missing.push('AcademySchedule.removeStudentScheduleClass');
+    }
+    if (!window.AcademySchedule || typeof window.AcademySchedule.getStudentSchedule !== 'function') {
+        missing.push('AcademySchedule.getStudentSchedule');
+    }
+    if (!window.AcademySchedule || typeof window.AcademySchedule.hasStudentScheduleConflict !== 'function') {
+        missing.push('AcademySchedule.hasStudentScheduleConflict');
+    }
+    if (!window.AcademySchedule || typeof window.AcademySchedule.getClassInstructor !== 'function') {
+        missing.push('AcademySchedule.getClassInstructor');
+    }
+    if (!window.AcademySchedule || typeof window.AcademySchedule.getClassDuration !== 'function') {
+        missing.push('AcademySchedule.getClassDuration');
+    }
+    if (!window.AcademySchedule || typeof window.AcademySchedule.getClassLabel !== 'function') {
+        missing.push('AcademySchedule.getClassLabel');
+    }
+    if (!window.AcademySchedule || typeof window.AcademySchedule.findClassStartHour !== 'function') {
+        missing.push('AcademySchedule.findClassStartHour');
+    }
+    if (!window.AcademySchedule || typeof window.AcademySchedule.getStudentRestDays !== 'function') {
+        missing.push('AcademySchedule.getStudentRestDays');
+    }
+
+    if (!window.CalendarConstants) {
+        missing.push('CalendarConstants');
+    }
+
+    if (!window.CalendarValidation || typeof window.CalendarValidation.parseWeek !== 'function') {
+        missing.push('CalendarValidation.parseWeek');
+    }
+    if (!window.CalendarValidation || typeof window.CalendarValidation.parseDay !== 'function') {
+        missing.push('CalendarValidation.parseDay');
+    }
+    if (!window.CalendarValidation || typeof window.CalendarValidation.parseHour !== 'function') {
+        missing.push('CalendarValidation.parseHour');
+    }
+    if (!window.CalendarValidation || typeof window.CalendarValidation.parseDuration !== 'function') {
+        missing.push('CalendarValidation.parseDuration');
+    }
+
+    if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
+        missing.push('CharacterQueries.getCharacterById');
+    }
+    if (!window.CharacterQueries || typeof window.CharacterQueries.getDisplayName !== 'function') {
+        missing.push('CharacterQueries.getDisplayName');
+    }
+
+    if (!window.DisciplineQueries || typeof window.DisciplineQueries.getDiscipline !== 'function') {
+        missing.push('DisciplineQueries.getDiscipline');
+    }
+    if (!window.DisciplineQueries || typeof window.DisciplineQueries.getAvailableDisciplines !== 'function') {
+        missing.push('DisciplineQueries.getAvailableDisciplines');
+    }
+
+    if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
+        missing.push('ObjectUtils.deepClone');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[AcademyDistribute] Missing dependencies: ' + missing.join(', '));
+    }
+
+    window.__academyDistributeLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var ScheduleCore = window.ScheduleCore;
+    var AcademyQueries = window.AcademyQueries;
+    var AcademySchedule = window.AcademySchedule;
+    var CalendarConstants = window.CalendarConstants;
+    var CalendarValidation = window.CalendarValidation;
+    var CharacterQueries = window.CharacterQueries;
+    var DisciplineQueries = window.DisciplineQueries;
+    var ObjectUtils = window.ObjectUtils;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var MIN_DAY = CalendarConstants.MIN_DAY;
+    var MAX_DAY = CalendarConstants.MAX_DAY;
+    var MIN_HOUR = CalendarConstants.MIN_HOUR;
+    var MAX_HOUR = CalendarConstants.MAX_HOUR;
+    var CALENDAR_START_HOUR = CalendarConstants.CALENDAR_START_HOUR;
+    var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR;
+    var MAX_DURATION = CalendarConstants.MAX_CLASS_DURATION;
+    var MIN_CLASS_DURATION = CalendarConstants.MIN_CLASS_DURATION;
+    var DEFAULT_WEEK = 1;
+
+    // Default distribution settings
+    var DEFAULT_MAX_PER_GROUP = 8;
+    var DEFAULT_MIN_PER_GROUP = 2;
+    var DEFAULT_TARGET_PER_GROUP = 4;
+    var DEFAULT_MAX_DISCIPLINES_PER_WEEK = 8;
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
 
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
+    }
+
+    function isNumber(value) {
+        return typeof value === 'number' && isFinite(value);
     }
 
     function deepClone(value) {
@@ -136,484 +220,721 @@
         return { success: true, data: data };
     }
 
-    function validateWeek(value) {
-        return CalendarValidation.parseWeek(value);
+    function getCurrentWeek() {
+        if (window.data && typeof window.data.currentWeek === 'number') {
+            return window.data.currentWeek;
+        }
+        return DEFAULT_WEEK;
     }
 
-    function validatePositiveInteger(value, min, max) {
-        if (value === undefined || value === null || value === '') {
-            return null;
-        }
-        var num = Number(value);
-        if (!Number.isInteger(num) || num < min || num > max) {
-            return null;
-        }
-        return num;
+    function parseWeek(week) {
+        return CalendarValidation.parseWeek(week);
     }
 
-    function validateClassId(classId) {
-        if (!isNonEmptyString(classId)) {
-            return { valid: false, message: 'Class ID is required.' };
-        }
-        var cls = AcademyQueries.getClass(classId);
-        if (!cls) {
-            return { valid: false, message: 'Class not found.' };
-        }
-        return { valid: true, class: cls };
+    function parseDay(day) {
+        return CalendarValidation.parseDay(day);
     }
 
-    function validateTeamIds(teamIds, classId, weekNum, maxSize) {
-        if (!Array.isArray(teamIds) || teamIds.length === 0) {
-            return { valid: false, message: 'At least one team is required.' };
+    function parseHour(hour) {
+        return CalendarValidation.parseHour(hour);
+    }
+
+    function parseDuration(duration) {
+        return CalendarValidation.parseDuration(duration);
+    }
+
+    function shuffleArray(array) {
+        var arr = array.slice();
+        for (var i = arr.length - 1; i > 0; i--) {
+            var j = Math.floor(Math.random() * (i + 1));
+            var temp = arr[i];
+            arr[i] = arr[j];
+            arr[j] = temp;
+        }
+        return arr;
+    }
+
+    function getAvailableHours() {
+        var hours = [];
+        for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
+            hours.push(h);
+        }
+        return hours;
+    }
+
+    function getAvailableDays() {
+        var days = [];
+        for (var d = MIN_DAY; d <= MAX_DAY; d++) {
+            days.push(d);
+        }
+        return days;
+    }
+
+    // ============================================================
+    // CORE DISTRIBUTION ALGORITHMS
+    // ============================================================
+
+    /**
+     * Distribute students into groups.
+     * 
+     * @param {array} students - Array of student objects
+     * @param {number} numGroups - Number of groups to create
+     * @param {object} options - Distribution options
+     * @param {number} options.maxPerGroup - Maximum students per group
+     * @param {number} options.minPerGroup - Minimum students per group
+     * @param {number} options.targetPerGroup - Target students per group
+     * @param {string} options.method - Distribution method ('balanced', 'random', 'skill')
+     * @param {function} options.getSkill - Function to get student skill level
+     * @returns {array} Array of groups { id, students, count }
+     */
+    function distributeStudents(students, numGroups, options) {
+        if (!Array.isArray(students) || students.length === 0) {
+            return [];
         }
 
-        var validTeams = [];
-        var errors = [];
+        if (numGroups < 1) {
+            numGroups = 1;
+        }
 
-        for (var i = 0; i < teamIds.length; i++) {
-            var teamId = teamIds[i];
-            if (!isNonEmptyString(teamId)) {
-                errors.push('Invalid team ID: ' + teamId);
-                continue;
-            }
+        options = options || {};
+        var method = options.method || 'balanced';
+        var maxPerGroup = options.maxPerGroup || DEFAULT_MAX_PER_GROUP;
+        var minPerGroup = options.minPerGroup || DEFAULT_MIN_PER_GROUP;
+        var targetPerGroup = options.targetPerGroup || DEFAULT_TARGET_PER_GROUP;
 
-            var team = TeamCore.getTeam(teamId);
-            if (!team) {
-                errors.push('Team not found: ' + teamId);
-                continue;
-            }
+        // Adjust number of groups based on student count
+        var idealGroups = Math.ceil(students.length / targetPerGroup);
+        var actualGroups = Math.max(1, Math.min(numGroups, Math.ceil(students.length / minPerGroup)));
 
-            if (team.type !== 'academic') {
-                errors.push('Team "' + team.name + '" is not an academic team.');
-                continue;
-            }
+        if (actualGroups < 1) {
+            actualGroups = 1;
+        }
 
-            if (String(team.classId) !== String(classId)) {
-                errors.push('Team "' + team.name + '" does not belong to this class.');
-                continue;
-            }
-
-            if (team.status !== 'active') {
-                errors.push('Team "' + team.name + '" is not active.');
-                continue;
-            }
-
-            var activeMembers = TeamQueries.getActiveTeamMembers(team, weekNum);
-            var currentCount = activeMembers.length;
-
-            if (currentCount >= maxSize) {
-                errors.push('Team "' + team.name + '" is already at maximum capacity (' + maxSize + ').');
-                continue;
-            }
-
-            validTeams.push({
-                team: team,
-                id: teamId,
-                name: team.name,
-                currentCount: currentCount,
-                availableSlots: maxSize - currentCount
+        // Create empty groups
+        var groups = [];
+        for (var i = 0; i < actualGroups; i++) {
+            groups.push({
+                id: 'group_' + (i + 1),
+                students: [],
+                count: 0
             });
         }
 
-        if (errors.length > 0) {
-            return { valid: false, message: errors.join('; ') };
+        var shuffledStudents = shuffleArray(students);
+
+        // Distribute based on method
+        if (method === 'balanced') {
+            // Round-robin distribution
+            for (var j = 0; j < shuffledStudents.length; j++) {
+                var groupIndex = j % actualGroups;
+                if (groups[groupIndex].count < maxPerGroup) {
+                    groups[groupIndex].students.push(shuffledStudents[j]);
+                    groups[groupIndex].count++;
+                } else {
+                    // Find the least filled group
+                    var minIndex = 0;
+                    var minCount = groups[0].count;
+                    for (var k = 1; k < groups.length; k++) {
+                        if (groups[k].count < minCount && groups[k].count < maxPerGroup) {
+                            minCount = groups[k].count;
+                            minIndex = k;
+                        }
+                    }
+                    if (groups[minIndex].count < maxPerGroup) {
+                        groups[minIndex].students.push(shuffledStudents[j]);
+                        groups[minIndex].count++;
+                    } else {
+                        // All groups are full - add to the smallest
+                        var smallestIndex = 0;
+                        var smallestCount = groups[0].count;
+                        for (var l = 1; l < groups.length; l++) {
+                            if (groups[l].count < smallestCount) {
+                                smallestCount = groups[l].count;
+                                smallestIndex = l;
+                            }
+                        }
+                        groups[smallestIndex].students.push(shuffledStudents[j]);
+                        groups[smallestIndex].count++;
+                    }
+                }
+            }
+        } else if (method === 'skill') {
+            // Sort by skill (if provided)
+            var getSkill = options.getSkill || function(student) {
+                // Default: use stats average
+                var stats = CharacterQueries.getCharacterStats(student);
+                if (!stats) return 50;
+                var total = 0;
+                var count = 0;
+                for (var key in stats) {
+                    if (Object.prototype.hasOwnProperty.call(stats, key)) {
+                        total += stats[key] || 0;
+                        count++;
+                    }
+                }
+                return count > 0 ? total / count : 50;
+            };
+
+            var sortedStudents = shuffledStudents.sort(function(a, b) {
+                var skillA = getSkill(a) || 0;
+                var skillB = getSkill(b) || 0;
+                return skillA - skillB;
+            });
+
+            // Snake distribution for balanced skill
+            var snake = [];
+            for (var m = 0; m < sortedStudents.length; m++) {
+                var groupIdx = m % actualGroups;
+                if (Math.floor(m / actualGroups) % 2 === 1) {
+                    groupIdx = actualGroups - 1 - groupIdx;
+                }
+                if (!snake[groupIdx]) {
+                    snake[groupIdx] = [];
+                }
+                snake[groupIdx].push(sortedStudents[m]);
+            }
+
+            for (var n = 0; n < snake.length; n++) {
+                if (snake[n]) {
+                    groups[n].students = snake[n];
+                    groups[n].count = snake[n].length;
+                }
+            }
+        } else {
+            // Random distribution
+            for (var o = 0; o < shuffledStudents.length; o++) {
+                var randomIndex = Math.floor(Math.random() * actualGroups);
+                // Try to balance
+                var attempts = 0;
+                while (groups[randomIndex].count >= maxPerGroup && attempts < actualGroups * 2) {
+                    randomIndex = Math.floor(Math.random() * actualGroups);
+                    attempts++;
+                }
+                groups[randomIndex].students.push(shuffledStudents[o]);
+                groups[randomIndex].count++;
+            }
         }
 
-        if (validTeams.length === 0) {
-            return { valid: false, message: 'No valid teams available.' };
-        }
-
-        return { valid: true, teams: validTeams };
+        return groups;
     }
 
-    function buildPlan(classId, week, maxTeamSize, teamIds, options) {
-        options = options || {};
-        var skipConflicts = options.skipConflicts !== false;
-        var balancePolicy = options.balancePolicy || 'least-occupied';
-        var shuffleStudents = options.shuffleStudents !== false;
+    // ============================================================
+    // AUTO-DISTRIBUTE - MAIN ENTRY POINT
+    // ============================================================
 
+    /**
+     * Auto-distribute students in a class for a given week.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number|string} week - Week number
+     * @param {object} options - Distribution options
+     * @param {number} options.numGroups - Number of groups (default: auto-calculated)
+     * @param {number} options.maxPerGroup - Maximum students per group
+     * @param {number} options.minPerGroup - Minimum students per group
+     * @param {number} options.targetPerGroup - Target students per group
+     * @param {string} options.method - Distribution method ('balanced', 'random', 'skill')
+     * @param {string} options.disciplineId - Optional discipline to assign
+     * @param {string} options.instructorId - Optional instructor to assign
+     * @param {number} options.duration - Class duration in hours
+     * @param {array} options.availableHours - Available hours for scheduling
+     * @param {array} options.availableDays - Available days for scheduling
+     * @param {boolean} options.clearExisting - Clear existing schedule before distribution
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function autoDistribute(classId, week, options) {
+        // ---- PHASE 1: VALIDATE ----
         if (!isNonEmptyString(classId)) {
             return failure('Class ID is required.');
         }
 
-        var weekNum = validateWeek(week);
-        if (weekNum === null) {
-            return failure('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').');
+        var weekNum = parseWeek(week);
+        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
+            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
         }
 
-        var maxSize = validatePositiveInteger(maxTeamSize, 1, MAX_TEAM_SIZE);
-        if (maxSize === null) {
-            return failure('Max team size must be between 1 and ' + MAX_TEAM_SIZE + '.');
+        options = options || {};
+
+        // ---- PHASE 2: GET STUDENTS ----
+        var students = AcademyQueries.getClassStudents(classId);
+
+        if (!students || students.length === 0) {
+            return failure('No students found in this class.');
         }
 
-        var classResult = validateClassId(classId);
-        if (!classResult.valid) {
-            return failure(classResult.message);
+        var classRecord = AcademyQueries.getClass(classId);
+        if (!classRecord) {
+            return failure('Class not found.');
         }
 
-        var availableStudents = AcademyQueries.getAvailableStudents(classId, weekNum);
-        if (availableStudents.length === 0) {
-            return failure('No available students for this class at week ' + weekNum + '.');
-        }
-
-        var teamsResult;
-        if (Array.isArray(teamIds) && teamIds.length > 0) {
-            teamsResult = validateTeamIds(teamIds, classId, weekNum, maxSize);
-        } else {
-            var allTeams = TeamQueries.getTeamsByType('academic', 'operational');
-            var allTeamIds = [];
-            for (var i = 0; i < allTeams.length; i++) {
-                if (String(allTeams[i].classId) === String(classId)) {
-                    allTeamIds.push(allTeams[i].id);
-                }
-            }
-            teamsResult = validateTeamIds(allTeamIds, classId, weekNum, maxSize);
-        }
-
-        if (!teamsResult.valid) {
-            return failure(teamsResult.message);
-        }
-
-        var validTeams = teamsResult.teams;
-
-        var totalAvailableSlots = 0;
-        for (var i = 0; i < validTeams.length; i++) {
-            totalAvailableSlots += validTeams[i].availableSlots;
-        }
-
-        if (totalAvailableSlots === 0) {
-            return failure('No available slots in any team.');
-        }
-
-        var studentsToAssign = Math.min(availableStudents.length, totalAvailableSlots);
-
-        var shuffled = availableStudents.slice();
-        if (shuffleStudents) {
-            for (var s = shuffled.length - 1; s > 0; s--) {
-                var j = Math.floor(Math.random() * (s + 1));
-                var temp = shuffled[s];
-                shuffled[s] = shuffled[j];
-                shuffled[j] = temp;
+        // ---- PHASE 3: CLEAR EXISTING SCHEDULES ----
+        if (options.clearExisting) {
+            for (var i = 0; i < students.length; i++) {
+                AcademySchedule.clearStudentSchedule(students[i].id, weekNum);
             }
         }
 
-        var teamSlotsMap = {};
-        for (var i = 0; i < validTeams.length; i++) {
-            var team = validTeams[i];
-            var slots = [];
-            if (team.slots && Array.isArray(team.slots)) {
-                slots = team.slots.filter(function(slot) {
-                    return slot.week === weekNum;
-                });
-            }
-            teamSlotsMap[team.id] = slots;
+        // ---- PHASE 4: DETERMINE DISTRIBUTION SETTINGS ----
+        var numGroups = options.numGroups || Math.ceil(students.length / DEFAULT_TARGET_PER_GROUP);
+        var maxPerGroup = options.maxPerGroup || DEFAULT_MAX_PER_GROUP;
+        var minPerGroup = options.minPerGroup || DEFAULT_MIN_PER_GROUP;
+        var targetPerGroup = options.targetPerGroup || DEFAULT_TARGET_PER_GROUP;
+
+        // ---- PHASE 5: DISTRIBUTE STUDENTS ----
+        var groups = distributeStudents(students, numGroups, {
+            method: options.method || 'balanced',
+            maxPerGroup: maxPerGroup,
+            minPerGroup: minPerGroup,
+            targetPerGroup: targetPerGroup,
+            getSkill: options.getSkill
+        });
+
+        // ---- PHASE 6: BUILD SCHEDULE FROM GROUPS ----
+        var availableHours = options.availableHours || getAvailableHours();
+        var availableDays = options.availableDays || getAvailableDays();
+        var disciplineId = options.disciplineId || null;
+        var instructorId = options.instructorId || null;
+        var duration = options.duration || 1;
+
+        var scheduleResult = buildScheduleFromGroups(
+            groups,
+            weekNum,
+            availableDays,
+            availableHours,
+            disciplineId,
+            instructorId,
+            duration,
+            options
+        );
+
+        if (!scheduleResult.success) {
+            return failure(scheduleResult.message);
         }
-
-        var teamSlots = {};
-        for (var i = 0; i < validTeams.length; i++) {
-            teamSlots[validTeams[i].id] = validTeams[i].availableSlots;
-        }
-
-        var assignments = [];
-        var skippedConflicts = 0;
-        var conflicts = [];
-        var capacityExceeded = 0;
-
-        var remainingCapacity = {};
-        for (var i = 0; i < validTeams.length; i++) {
-            remainingCapacity[validTeams[i].id] = validTeams[i].availableSlots;
-        }
-
-        var currentOccupancy = {};
-        for (var i = 0; i < validTeams.length; i++) {
-            currentOccupancy[validTeams[i].id] = validTeams[i].currentCount;
-        }
-
-        for (var a = 0; a < shuffled.length && a < studentsToAssign; a++) {
-            var student = shuffled[a];
-
-            var candidateTeams = [];
-
-            for (var t = 0; t < validTeams.length; t++) {
-                var team = validTeams[t];
-                var teamId = team.id;
-
-                if (teamSlots[teamId] <= 0) {
-                    continue;
-                }
-
-                var hasConflict = false;
-                var conflictingSlots = [];
-                var teamSlots2 = teamSlotsMap[teamId] || [];
-
-                if (teamSlots2.length > 0) {
-                    for (var s2 = 0; s2 < teamSlots2.length; s2++) {
-                        var slot = teamSlots2[s2];
-                        if (CalendarScheduleCore.hasConflict(
-                            null,
-                            slot.day,
-                            slot.hour,
-                            slot.duration
-                        )) {
-                            hasConflict = true;
-                            conflictingSlots.push({
-                                day: slot.day,
-                                hour: slot.hour,
-                                duration: slot.duration
-                            });
-                        }
-                    }
-                }
-
-                candidateTeams.push({
-                    team: team,
-                    teamId: teamId,
-                    hasConflict: hasConflict,
-                    conflictingSlots: conflictingSlots,
-                    currentOccupancy: currentOccupancy[teamId] || 0,
-                    availableSlots: teamSlots[teamId]
-                });
-            }
-
-            var availableTeams = candidateTeams;
-            if (skipConflicts) {
-                availableTeams = candidateTeams.filter(function(t) {
-                    return !t.hasConflict;
-                });
-            }
-
-            if (availableTeams.length === 0) {
-                if (skipConflicts) {
-                    skippedConflicts++;
-                    conflicts.push({
-                        studentId: student.id,
-                        studentName: CharacterQueries.getDisplayName(student),
-                        candidateTeams: candidateTeams.map(function(t) {
-                            return {
-                                teamId: t.teamId,
-                                teamName: t.team.name,
-                                hasConflict: t.hasConflict
-                            };
-                        })
-                    });
-                }
-                continue;
-            }
-
-            var selectedTeam = null;
-
-            if (balancePolicy === 'round-robin') {
-                for (var i = 0; i < availableTeams.length; i++) {
-                    if (availableTeams[i].availableSlots > 0) {
-                        selectedTeam = availableTeams[i];
-                        break;
-                    }
-                }
-            } else if (balancePolicy === 'least-occupied') {
-                var sortedByOccupancy = availableTeams.slice().sort(function(a, b) {
-                    return a.currentOccupancy - b.currentOccupancy;
-                });
-                for (var i = 0; i < sortedByOccupancy.length; i++) {
-                    if (sortedByOccupancy[i].availableSlots > 0) {
-                        selectedTeam = sortedByOccupancy[i];
-                        break;
-                    }
-                }
-            } else {
-                for (var i = 0; i < availableTeams.length; i++) {
-                    if (availableTeams[i].availableSlots > 0) {
-                        selectedTeam = availableTeams[i];
-                        break;
-                    }
-                }
-            }
-
-            if (!selectedTeam) {
-                capacityExceeded++;
-                continue;
-            }
-
-            assignments.push({
-                studentId: student.id,
-                student: student,
-                teamId: selectedTeam.teamId,
-                team: selectedTeam.team,
-                studentName: CharacterQueries.getDisplayName(student),
-                hasConflict: selectedTeam.hasConflict,
-                conflictingSlots: selectedTeam.conflictingSlots
-            });
-
-            teamSlots[selectedTeam.teamId]--;
-            currentOccupancy[selectedTeam.teamId] = (currentOccupancy[selectedTeam.teamId] || 0) + 1;
-        }
-
-        if (assignments.length === 0) {
-            return failure('No students could be assigned. Check team capacity and conflicts.');
-        }
-
-        function buildMutation() {
-            var mutationData = {
-                assignments: [],
-                assignedCount: 0,
-                failedAssignments: []
-            };
-
-            for (var i = 0; i < assignments.length; i++) {
-                var assignment = assignments[i];
-
-                var team = TeamCore.getTeam(assignment.teamId);
-                if (!team) {
-                    mutationData.failedAssignments.push({
-                        studentId: assignment.studentId,
-                        studentName: assignment.studentName,
-                        teamId: assignment.teamId,
-                        teamName: assignment.team.name,
-                        reason: 'Team not found'
-                    });
-                    continue;
-                }
-
-                var members = TeamQueries.getActiveTeamMembers(team, weekNum);
-                var alreadyInTeam = false;
-                for (var j = 0; j < members.length; j++) {
-                    if (String(members[j].characterId) === String(assignment.studentId)) {
-                        alreadyInTeam = true;
-                        break;
-                    }
-                }
-
-                if (alreadyInTeam) {
-                    mutationData.failedAssignments.push({
-                        studentId: assignment.studentId,
-                        studentName: assignment.studentName,
-                        teamId: assignment.teamId,
-                        teamName: assignment.team.name,
-                        reason: 'Already in team'
-                    });
-                    continue;
-                }
-
-                var result = TeamCore.addMember(assignment.teamId, {
-                    characterId: assignment.studentId,
-                    role: 'Member',
-                    joinPeriod: String(weekNum),
-                    leavePeriod: ''
-                });
-
-                if (result) {
-                    mutationData.assignedCount++;
-                    mutationData.assignments.push(assignment);
-                } else {
-                    mutationData.failedAssignments.push({
-                        studentId: assignment.studentId,
-                        studentName: assignment.studentName,
-                        teamId: assignment.teamId,
-                        teamName: assignment.team.name,
-                        reason: 'Failed to add member'
-                    });
-                }
-            }
-
-            return mutationData;
-        }
-
-        function mutate() {
-            var result = buildMutation();
-            return result;
-        }
-
-        var className = classResult.class.name || 'Unknown';
 
         return success({
             classId: classId,
-            className: className,
             week: weekNum,
-            maxTeamSize: maxSize,
-
-            assignments: assignments,
-            assigned: assignments.length,
-            capacityExceeded: capacityExceeded,
-            skippedConflicts: skippedConflicts,
-            conflictCount: conflicts.length,
-
-            conflicts: conflicts,
-            totalAvailableStudents: availableStudents.length,
-
-            mutate: mutate,
-
-            summary: {
-                totalStudents: availableStudents.length,
-                assignedStudents: assignments.length,
-                skippedStudents: skippedConflicts + capacityExceeded,
-                teamsUsed: function() {
-                    var used = {};
-                    for (var i = 0; i < assignments.length; i++) {
-                        used[assignments[i].teamId] = true;
-                    }
-                    return Object.keys(used).length;
-                }()
-            }
+            groups: groups,
+            schedule: scheduleResult.data,
+            totalStudents: students.length,
+            groupCount: groups.length
         });
     }
 
-    function executePlan(plan) {
-        if (!plan || !plan.success) {
-            return failure('Invalid or failed plan.');
+    /**
+     * Auto-distribute with explicit group count.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number|string} week - Week number
+     * @param {number} numGroups - Number of groups
+     * @param {object} options - Distribution options
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function autoDistributeWithGroups(classId, week, numGroups, options) {
+        if (!isNonEmptyString(classId)) {
+            return failure('Class ID is required.');
         }
 
-        try {
-            var result = plan.data.mutate();
-            return success({
-                executed: true,
-                assigned: result.assignedCount || 0,
-                assignments: result.assignments || [],
-                failedAssignments: result.failedAssignments || [],
-                summary: plan.data.summary
-            });
-        } catch (e) {
-            return failure(e.message || 'Failed to execute distribution plan.');
+        if (!isNumber(numGroups) || numGroups < 1) {
+            return failure('Number of groups must be at least 1.');
         }
-    }
 
-    function autoDistribute(classId, week, maxTeamSize, teamIds, options) {
         options = options || {};
-        var plan = buildPlan(classId, week, maxTeamSize, teamIds, {
-            skipConflicts: options.skipConflicts !== false,
-            balancePolicy: options.balancePolicy || 'least-occupied',
-            shuffleStudents: options.shuffleStudents !== false
-        });
+        options.numGroups = numGroups;
 
-        if (!plan.success) {
-            return failure(plan.message);
-        }
-
-        try {
-            var result = plan.data.mutate();
-            return {
-                success: result.assignedCount > 0,
-                assigned: result.assignedCount || 0,
-                capacityExceeded: plan.data.capacityExceeded || 0,
-                conflictCount: plan.data.conflictCount || 0,
-                failedAssignments: result.failedAssignments || [],
-                assignments: result.assignments || [],
-                conflicts: plan.data.conflicts || [],
-                message: result.assignedCount > 0
-                    ? 'Distributed ' + result.assignedCount + ' students successfully.'
-                    : 'No students could be assigned.'
-            };
-        } catch (e) {
-            return failure(e.message || 'Failed to distribute students.');
-        }
+        return autoDistribute(classId, week, options);
     }
+
+    // ============================================================
+    // SCHEDULE BUILDING
+    // ============================================================
+
+    /**
+     * Build a schedule from student groups.
+     * 
+     * @param {array} groups - Array of group objects { id, students, count }
+     * @param {number|string} week - Week number
+     * @param {array} availableDays - Available days for scheduling
+     * @param {array} availableHours - Available hours for scheduling
+     * @param {string} disciplineId - Discipline ID to assign
+     * @param {string} instructorId - Instructor ID to assign
+     * @param {number} duration - Class duration in hours
+     * @param {object} options - Additional options
+     * @param {string} options.labelPrefix - Prefix for class labels
+     * @param {function} options.getGroupLabel - Function to generate group labels
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function buildScheduleFromGroups(groups, week, availableDays, availableHours, disciplineId, instructorId, duration, options) {
+        // ---- PHASE 1: VALIDATE ----
+        if (!Array.isArray(groups) || groups.length === 0) {
+            return failure('At least one group is required.');
+        }
+
+        var weekNum = parseWeek(week);
+        if (weekNum === null || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
+            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+        }
+
+        if (!Array.isArray(availableDays) || availableDays.length === 0) {
+            availableDays = getAvailableDays();
+        }
+
+        if (!Array.isArray(availableHours) || availableHours.length === 0) {
+            availableHours = getAvailableHours();
+        }
+
+        duration = parseDuration(duration) || 1;
+
+        options = options || {};
+
+        // ---- PHASE 2: SCHEDULE EACH GROUP ----
+        var scheduledGroups = [];
+        var scheduledStudents = {};
+        var errors = [];
+
+        var days = shuffleArray(availableDays);
+        var hours = shuffleArray(availableHours);
+
+        for (var g = 0; g < groups.length; g++) {
+            var group = groups[g];
+            var groupId = group.id || 'group_' + (g + 1);
+            var students = group.students || [];
+
+            if (students.length === 0) {
+                scheduledGroups.push({
+                    groupId: groupId,
+                    students: [],
+                    scheduled: false,
+                    reason: 'No students in group'
+                });
+                continue;
+            }
+
+            // Find an available slot for this group
+            var slotFound = false;
+            var assignedDay = null;
+            var assignedHour = null;
+
+            // Try each day and hour combination
+            for (var d = 0; d < days.length && !slotFound; d++) {
+                var day = days[d];
+                for (var h = 0; h < hours.length && !slotFound; h++) {
+                    var hour = hours[h];
+
+                    // Check if this slot is available for all students in the group
+                    var slotAvailable = true;
+                    for (var s = 0; s < students.length; s++) {
+                        var student = students[s];
+                        if (!student || !student.id) continue;
+
+                        // Check for conflicts
+                        if (AcademySchedule.hasStudentScheduleConflict(student.id, weekNum, day, hour, duration)) {
+                            slotAvailable = false;
+                            break;
+                        }
+                    }
+
+                    if (slotAvailable) {
+                        slotFound = true;
+                        assignedDay = day;
+                        assignedHour = hour;
+                    }
+                }
+            }
+
+            if (!slotFound) {
+                errors.push({
+                    groupId: groupId,
+                    error: 'No available slot found for group with ' + students.length + ' students'
+                });
+                scheduledGroups.push({
+                    groupId: groupId,
+                    students: students,
+                    scheduled: false,
+                    reason: 'No available slot found'
+                });
+                continue;
+            }
+
+            // Assign the slot to all students in the group
+            var label = options.getGroupLabel ?
+                options.getGroupLabel(groupId, g, groups.length) :
+                (options.labelPrefix || 'Group ') + (g + 1);
+
+            var metadata = {
+                groupLabel: label,
+                instructorId: instructorId || null
+            };
+
+            var assignErrors = [];
+            var assignedStudents = [];
+
+            for (var s2 = 0; s2 < students.length; s2++) {
+                var student = students[s2];
+                if (!student || !student.id) continue;
+
+                var result = AcademySchedule.setStudentScheduleClass(
+                    student.id,
+                    weekNum,
+                    assignedDay,
+                    assignedHour,
+                    disciplineId,
+                    duration,
+                    metadata
+                );
+
+                if (result.success) {
+                    assignedStudents.push(student.id);
+                    if (!scheduledStudents[student.id]) {
+                        scheduledStudents[student.id] = [];
+                    }
+                    scheduledStudents[student.id].push({
+                        day: assignedDay,
+                        hour: assignedHour,
+                        disciplineId: disciplineId,
+                        duration: duration,
+                        groupLabel: label
+                    });
+                } else {
+                    assignErrors.push({
+                        studentId: student.id,
+                        studentName: CharacterQueries.getDisplayName(student),
+                        error: result.message
+                    });
+                }
+            }
+
+            scheduledGroups.push({
+                groupId: groupId,
+                students: students.map(function(s) { return s.id; }),
+                scheduled: true,
+                day: assignedDay,
+                hour: assignedHour,
+                disciplineId: disciplineId,
+                duration: duration,
+                label: label,
+                studentCount: assignedStudents.length,
+                errors: assignErrors
+            });
+        }
+
+        return success({
+            scheduledGroups: scheduledGroups,
+            scheduledStudents: scheduledStudents,
+            totalGroups: groups.length,
+            scheduledCount: scheduledGroups.filter(function(g) { return g.scheduled; }).length,
+            errors: errors
+        });
+    }
+
+    // ============================================================
+    // ADVANCED DISTRIBUTION
+    // ============================================================
+
+    /**
+     * Distribute by skill level.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number|string} week - Week number
+     * @param {object} options - Distribution options
+     * @param {number} options.maxPerGroup - Maximum students per group
+     * @param {number} options.minPerGroup - Minimum students per group
+     * @param {number} options.targetPerGroup - Target students per group
+     * @param {string} options.disciplineId - Discipline to assign
+     * @param {string} options.instructorId - Instructor to assign
+     * @param {number} options.duration - Class duration
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function distributeBySkill(classId, week, options) {
+        options = options || {};
+        options.method = 'skill';
+        return autoDistribute(classId, week, options);
+    }
+
+    /**
+     * Distribute evenly (balanced).
+     * 
+     * @param {string} classId - Class ID
+     * @param {number|string} week - Week number
+     * @param {object} options - Distribution options
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function distributeEvenly(classId, week, options) {
+        options = options || {};
+        options.method = 'balanced';
+        return autoDistribute(classId, week, options);
+    }
+
+    /**
+     * Distribute randomly.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number|string} week - Week number
+     * @param {object} options - Distribution options
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function distributeRandom(classId, week, options) {
+        options = options || {};
+        options.method = 'random';
+        return autoDistribute(classId, week, options);
+    }
+
+    // ============================================================
+    // VALIDATION
+    // ============================================================
+
+    /**
+     * Check if a distribution is valid.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number|string} week - Week number
+     * @param {object} options - Check options
+     * @param {number} options.maxPerGroup - Maximum students per group
+     * @param {number} options.minPerGroup - Minimum students per group
+     * @returns {object} { valid: boolean, issues: array }
+     */
+    function validateDistribution(classId, week, options) {
+        var weekNum = parseWeek(week);
+        if (weekNum === null) {
+            return { valid: false, issues: ['Invalid week number.'] };
+        }
+
+        options = options || {};
+        var maxPerGroup = options.maxPerGroup || DEFAULT_MAX_PER_GROUP;
+        var minPerGroup = options.minPerGroup || DEFAULT_MIN_PER_GROUP;
+
+        var students = AcademyQueries.getClassStudents(classId);
+        if (!students || students.length === 0) {
+            return { valid: true, issues: [] };
+        }
+
+        var issues = [];
+        var groupAssignments = {};
+        var studentSchedule = {};
+
+        // Check each student's schedule
+        for (var i = 0; i < students.length; i++) {
+            var student = students[i];
+            var schedule = AcademySchedule.getStudentSchedule(student.id, weekNum);
+
+            // Count how many classes this student has in this week
+            var classCount = 0;
+            for (var day in schedule) {
+                if (Object.prototype.hasOwnProperty.call(schedule, day)) {
+                    var daySchedule = schedule[day];
+                    if (!daySchedule || typeof daySchedule !== 'object') continue;
+                    for (var hour in daySchedule) {
+                        if (Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
+                            if (daySchedule[hour]) {
+                                classCount++;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Group by label (if any)
+            var groupLabel = null;
+            for (var day2 in schedule) {
+                if (Object.prototype.hasOwnProperty.call(schedule, day2)) {
+                    var daySchedule2 = schedule[day2];
+                    if (!daySchedule2 || typeof daySchedule2 !== 'object') continue;
+                    for (var hour2 in daySchedule2) {
+                        if (Object.prototype.hasOwnProperty.call(daySchedule2, hour2)) {
+                            var label = AcademySchedule.getClassLabel(student.id, weekNum, parseInt(day2, 10), parseInt(hour2, 10));
+                            if (label) {
+                                groupLabel = label;
+                                break;
+                            }
+                        }
+                    }
+                    if (groupLabel) break;
+                }
+            }
+
+            if (groupLabel) {
+                if (!groupAssignments[groupLabel]) {
+                    groupAssignments[groupLabel] = [];
+                }
+                groupAssignments[groupLabel].push(student.id);
+                studentSchedule[student.id] = groupLabel;
+            }
+        }
+
+        // Check group sizes
+        for (var label in groupAssignments) {
+            if (Object.prototype.hasOwnProperty.call(groupAssignments, label)) {
+                var size = groupAssignments[label].length;
+                if (size > maxPerGroup) {
+                    issues.push('Group "' + label + '" has ' + size + ' students (max: ' + maxPerGroup + ')');
+                }
+                if (size < minPerGroup && size > 0) {
+                    issues.push('Group "' + label + '" has only ' + size + ' students (min: ' + minPerGroup + ')');
+                }
+            }
+        }
+
+        // Check for students without groups
+        var unassigned = [];
+        for (var s = 0; s < students.length; s++) {
+            if (!studentSchedule[students[s].id]) {
+                unassigned.push(CharacterQueries.getDisplayName(students[s]));
+            }
+        }
+
+        if (unassigned.length > 0) {
+            issues.push('Unassigned students: ' + unassigned.join(', '));
+        }
+
+        return {
+            valid: issues.length === 0,
+            issues: issues,
+            groups: groupAssignments,
+            unassigned: unassigned,
+            totalStudents: students.length,
+            groupCount: Object.keys(groupAssignments).length
+        };
+    }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
 
     window.AcademyDistribute = {
-        buildPlan: buildPlan,
-        executePlan: executePlan,
+        // ---- Main Entry Points ----
         autoDistribute: autoDistribute,
+        autoDistributeWithGroups: autoDistributeWithGroups,
 
-        MAX_TEAM_SIZE: MAX_TEAM_SIZE
+        // ---- Distribution Methods ----
+        distributeBySkill: distributeBySkill,
+        distributeEvenly: distributeEvenly,
+        distributeRandom: distributeRandom,
+
+        // ---- Schedule Building ----
+        buildScheduleFromGroups: buildScheduleFromGroups,
+
+        // ---- Core Algorithms ----
+        distributeStudents: distributeStudents,
+
+        // ---- Validation ----
+        validateDistribution: validateDistribution,
+
+        // ---- Helpers ----
+        getAvailableHours: getAvailableHours,
+        getAvailableDays: getAvailableDays,
+
+        // ---- Constants ----
+        DEFAULT_MAX_PER_GROUP: DEFAULT_MAX_PER_GROUP,
+        DEFAULT_MIN_PER_GROUP: DEFAULT_MIN_PER_GROUP,
+        DEFAULT_TARGET_PER_GROUP: DEFAULT_TARGET_PER_GROUP,
+        DEFAULT_MAX_DISCIPLINES_PER_WEEK: DEFAULT_MAX_DISCIPLINES_PER_WEEK,
+        MIN_WEEK: MIN_WEEK,
+        MAX_WEEK: MAX_WEEK,
+        MIN_DAY: MIN_DAY,
+        MAX_DAY: MAX_DAY,
+        MIN_HOUR: MIN_HOUR,
+        MAX_HOUR: MAX_HOUR,
+        CALENDAR_START_HOUR: CALENDAR_START_HOUR,
+        CALENDAR_END_HOUR: CALENDAR_END_HOUR
     };
-
-    window.__academyDistributeLoaded = true;
 
 })();
