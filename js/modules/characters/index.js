@@ -9,6 +9,7 @@
  *   - Initializing all character sub-modules
  *   - Managing character lifecycle
  *   - Coordinating character state
+ *   - Ensuring CharacterAggregator is available
  * 
  * LIFECYCLE:
  *   TabManager.register('characters') -> mountCharacters() -> 
@@ -21,6 +22,7 @@
  *   - It delegates to sub-modules for all operations
  *   - mountCharacters() is the ONLY function that constructs the full HTML
  *   - TabManager is the single source of truth for lifecycle
+ *   - CharacterAggregator is verified at initialization
  * 
  * STATE SOURCE OF TRUTH:
  *   - _currentEditId is the canonical edit state (PRIVATE)
@@ -29,6 +31,7 @@
  * 
  * DEPENDENCIES:
  *   - window.TabManager (from tab-manager.js) - MANDATORY
+ *   - window.CharacterAggregator (from character-aggregator.js) - MANDATORY
  *   - window.CharacterList (from character-list.js) - MANDATORY
  *   - window.CharacterForm (from character-form.js) - MANDATORY
  *   - window.CharacterEvents (from character-events.js) - MANDATORY
@@ -50,18 +53,35 @@
     }
     window.__charactersModuleLoaded = true;
 
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
     var TabManager = window.TabManager;
+    var CharacterAggregator = window.CharacterAggregator;
     var CharacterList = window.CharacterList;
     var CharacterForm = window.CharacterForm;
     var CharacterEvents = window.CharacterEvents;
     var DataLoader = window.DataLoader;
     var CharacterClassView = window.CharacterClassView;
 
+    // ============================================================
+    // DEPENDENCY CHECK
+    // ============================================================
+
     function checkDependencies() {
         var missing = [];
 
         if (!TabManager || typeof TabManager.register !== 'function') {
             missing.push('TabManager.register');
+        }
+
+        // CharacterAggregator is MANDATORY - verify it's loaded
+        if (!CharacterAggregator || typeof CharacterAggregator.getCharacterDetail !== 'function') {
+            missing.push('CharacterAggregator.getCharacterDetail');
+        }
+        if (!CharacterAggregator || typeof CharacterAggregator.getCharacterListViewModel !== 'function') {
+            missing.push('CharacterAggregator.getCharacterListViewModel');
         }
 
         if (!CharacterList || typeof CharacterList.render !== 'function') {
@@ -83,19 +103,31 @@
         }
 
         if (missing.length > 0) {
-            throw new Error('CharactersModule: Missing dependencies: ' + missing.join(', '));
+            console.warn('[CharactersModule] Missing dependencies:', missing.join(', '));
+            return false;
         }
 
         return true;
     }
 
-    checkDependencies();
+    // ============================================================
+    // STATE
+    // ============================================================
 
     var _currentEditId = null;
     var _initialized = false;
     var _mounted = false;
 
+    // ============================================================
+    // MOUNT / UNMOUNT
+    // ============================================================
+
     function mountCharacters(container) {
+        if (!checkDependencies()) {
+            console.warn('[CharactersModule] Dependencies not met, skipping mount');
+            return;
+        }
+
         if (!container) {
             container = document.getElementById('tab-characters');
         }
@@ -115,32 +147,40 @@
 
         container.innerHTML = getCharactersHTML();
 
+        // Render character list - uses Aggregator internally
         if (CharacterList && typeof CharacterList.render === 'function') {
             try {
                 CharacterList.render();
             } catch (e) {
+                // Ignore render errors
             }
         }
 
+        // Populate class filter - uses AcademyQueries directly
         if (CharacterClassView && typeof CharacterClassView.populateClassFilter === 'function') {
             try {
                 CharacterClassView.populateClassFilter();
             } catch (e) {
+                // Ignore render errors
             }
         }
 
+        // Initialize events - uses Aggregator for projections, Queries for simple reads
         if (CharacterEvents && typeof CharacterEvents.init === 'function') {
             try {
                 CharacterEvents.init(container);
             } catch (e) {
+                // Ignore init errors
             }
         }
 
+        // Show form if there's an edit ID
         var editId = getCurrentEditId();
         if (editId && CharacterForm && typeof CharacterForm.render === 'function') {
             try {
                 CharacterForm.render(editId);
             } catch (e) {
+                // Ignore render errors
             }
         }
 
@@ -151,18 +191,25 @@
     }
 
     function unmountCharacters() {
-        if (!_mounted) return;
+        if (!_mounted) {
+            return;
+        }
 
         if (CharacterEvents && typeof CharacterEvents.destroy === 'function') {
             try {
                 CharacterEvents.destroy();
             } catch (e) {
+                // Ignore destroy errors
             }
         }
 
         _mounted = false;
         _initialized = false;
     }
+
+    // ============================================================
+    // HTML GENERATOR
+    // ============================================================
 
     function getCharactersHTML() {
         return `
@@ -171,7 +218,7 @@
                     <div class="characters-header">
                         <h2>Characters</h2>
                         <div class="characters-header-actions">
-                            <button id="toggle-char-list" class="secondary small" aria-label="Toggle character list">\u2630</button>
+                            <button id="toggle-char-list" class="secondary small" aria-label="Toggle character list">☰</button>
                             <button id="add-character-btn" class="primary small">+ Add</button>
                         </div>
                     </div>
@@ -217,6 +264,10 @@
         `;
     }
 
+    // ============================================================
+    // EDIT ID MANAGEMENT
+    // ============================================================
+
     function getCurrentEditId() {
         return _currentEditId;
     }
@@ -229,6 +280,10 @@
         _currentEditId = String(id);
     }
 
+    // ============================================================
+    // PUBLIC API
+    // ============================================================
+
     function showCharacterForm(id) {
         var normalisedId = (id !== undefined && id !== null && id !== '') ? String(id) : null;
         setCurrentEditId(normalisedId);
@@ -240,7 +295,9 @@
 
     function toggleCharacterList(forceState) {
         var panel = document.getElementById('char-list-panel');
-        if (!panel) return;
+        if (!panel) {
+            return;
+        }
 
         if (forceState !== undefined) {
             panel.classList.toggle('open', forceState);
@@ -256,6 +313,10 @@
         }
     }
 
+    // ============================================================
+    // EVENT DISPATCH
+    // ============================================================
+
     function dispatchReady() {
         try {
             var event = new CustomEvent('charactersReady', {
@@ -269,8 +330,13 @@
             });
             document.dispatchEvent(event);
         } catch (e) {
+            // Ignore event dispatch errors
         }
     }
+
+    // ============================================================
+    // REGISTER WITH TABMANAGER
+    // ============================================================
 
     function registerWithTabManager() {
         if (TabManager && typeof TabManager.register === 'function') {
@@ -286,6 +352,10 @@
         });
     }
 
+    // ============================================================
+    // DATA LOADER INTEGRATION
+    // ============================================================
+
     if (DataLoader && typeof DataLoader.whenReady === 'function') {
         DataLoader.whenReady(function(data) {
             if (data && !_mounted) {
@@ -298,6 +368,10 @@
             }
         });
     }
+
+    // ============================================================
+    // EXPOSE - NAMESPACED API
+    // ============================================================
 
     window.mountCharacters = mountCharacters;
 
