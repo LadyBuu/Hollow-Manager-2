@@ -1,6 +1,6 @@
 /**
  * js/modules/academy/academy-schedule.js - Academy Schedule
- * Academy-specific scheduling operations for students, instructors, and locations
+ * Academy-specific scheduling operations for students
  * Path: js/modules/academy/academy-schedule.js
  * 
  * This module is responsible for:
@@ -62,7 +62,6 @@
  *   var instructor = schedule.getClassInstructor('student_123', 5, 1, 9);
  *   var duration = schedule.getClassDuration('student_123', 5, 1, 9);
  *   var label = schedule.getClassLabel('student_123', 5, 1, 9);
- *   var startHour = schedule.findClassStartHour('student_123', 5, 1, 9);
  *   var hasConflict = schedule.hasStudentScheduleConflict('student_123', 5, 1, 9, 2);
  */
 
@@ -80,6 +79,7 @@
 
     var missing = [];
 
+    // ScheduleCore - writes
     if (!window.ScheduleCore || typeof window.ScheduleCore.getStudentSchedule !== 'function') {
         missing.push('ScheduleCore.getStudentSchedule');
     }
@@ -120,6 +120,7 @@
         missing.push('ScheduleCore.isRestDay');
     }
 
+    // CalendarQueries - reads
     if (!window.CalendarQueries || typeof window.CalendarQueries.getClassDetails !== 'function') {
         missing.push('CalendarQueries.getClassDetails');
     }
@@ -136,6 +137,7 @@
         missing.push('CalendarQueries.isRestDay');
     }
 
+    // Constants & Validation
     if (!window.CalendarConstants) {
         missing.push('CalendarConstants');
     }
@@ -153,6 +155,7 @@
         missing.push('CalendarValidation.parseDuration');
     }
 
+    // CharacterQueries
     if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
         missing.push('CharacterQueries.getCharacterById');
     }
@@ -160,10 +163,12 @@
         missing.push('CharacterQueries.getDisplayName');
     }
 
+    // DisciplineQueries
     if (!window.DisciplineQueries || typeof window.DisciplineQueries.getDiscipline !== 'function') {
         missing.push('DisciplineQueries.getDiscipline');
     }
 
+    // ObjectUtils
     if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
         missing.push('ObjectUtils.deepClone');
     }
@@ -612,7 +617,7 @@
     }
 
     // ============================================================
-    // CLASS METADATA QUERIES - DELEGATES TO SCHEDULECORE + CALENDARQUERIES
+    // CLASS METADATA QUERIES - DELEGATES TO CALENDARQUERIES
     // ============================================================
 
     /**
