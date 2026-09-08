@@ -84,6 +84,12 @@
         if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
             missing.push('AcademyQueries.getClasses');
         }
+        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
+            missing.push('AcademyQueries.getClass');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getClassDisplayName !== 'function') {
+            missing.push('AcademyQueries.getClassDisplayName');
+        }
 
         if (!CalendarCore || typeof CalendarCore.getCurrentYear !== 'function') {
             missing.push('CalendarCore.getCurrentYear');
