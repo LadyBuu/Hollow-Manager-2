@@ -1,135 +1,38 @@
 /**
- * js/modules/calendar/index.js - Unified Calendar Entry Point
- * Single entry point for all calendar functionality
- * Path: js/modules/calendar/index.js
- * 
- * This module is responsible for:
- *   - Registering with TabManager
- *   - Rendering the calendar container
- *   - Switching between student/instructor/location views
- *   - Managing calendar lifecycle
- *   - Restoring state from sessionStorage and URL hash
- * 
- * LIFECYCLE:
- *   TabManager registers 'calendar' -> renderCalendar() ->
- *   renderModeSelector() -> renderActiveMode() -> bindEvents()
+ * modules/calendar/index.js - Calendar Module Entry Point
+ * Unified entry point for all calendar functionality
  * 
  * IMPORTANT:
- *   - This module is the only external entry point for calendar
- *   - All calendar logic lives in sub-modules
- *   - This module does NOT implement calendar logic directly
- *   - It uses StudentCalendarUI, InstructorCalendarUI, LocationCalendarUI
- *   - TabManager is the single source of truth for lifecycle
- *   - No direct window.data access
- *   - Uses CalendarConstants for bounds
- *   - Uses CalendarValidation for validation
+ *   - Registers with TabManager
+ *   - Assembles providers for Aggregator
+ *   - Manages module lifecycle
+ *   - Singleton pattern
+ *   - No domain logic
+ *   - No render logic (delegates to UI modules)
  * 
  * DEPENDENCIES:
- *   - window.StudentCalendarUI (from student-calendar-ui.js)
- *   - window.InstructorCalendarUI (from instructor-calendar-ui.js)
- *   - window.LocationCalendarUI (from location-calendar-ui.js)
- *   - window.TabManager (from tab-manager.js)
- *   - window.CalendarConstants (from shared/calendar-constants.js)
- *   - window.CalendarValidation (from calendar-validation.js)
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.LocationQueries (from location-queries.js)
- * 
- * USAGE:
- *   var calendar = window.CalendarModule;
- *   calendar.render(container);
- *   calendar.switchMode('student');
- *   calendar.destroy();
+ *   - TabManager
+ *   - StudentCalendarUI
+ *   - InstructorCalendarUI
+ *   - LocationCalendarUI
+ *   - CalendarAggregator (for initialization)
+ *   - Shared Queries (for provider assembly)
  */
 
 (function() {
     'use strict';
 
-    if (window.__calendarModuleLoaded) {
-        return;
-    }
+    if (window.__calendarModuleLoaded) { return; }
+    window.__calendarModuleLoaded = true;
 
-    var StudentCalendarUI = window.StudentCalendarUI;
-    var InstructorCalendarUI = window.InstructorCalendarUI;
-    var LocationCalendarUI = window.LocationCalendarUI;
     var TabManager = window.TabManager;
-    var CalendarConstants = window.CalendarConstants;
-    var CalendarValidation = window.CalendarValidation;
-    var CharacterQueries = window.CharacterQueries;
-    var LocationQueries = window.LocationQueries;
+    var StudentUI = window.StudentCalendarUI;
+    var InstructorUI = window.InstructorCalendarUI;
+    var LocationUI = window.LocationCalendarUI;
 
-    function checkDependencies() {
-        var missing = [];
-
-        if (!StudentCalendarUI || typeof StudentCalendarUI.render !== 'function') {
-            missing.push('StudentCalendarUI.render');
-        }
-        if (!StudentCalendarUI || typeof StudentCalendarUI.getState !== 'function') {
-            missing.push('StudentCalendarUI.getState');
-        }
-        if (!StudentCalendarUI || typeof StudentCalendarUI.setState !== 'function') {
-            missing.push('StudentCalendarUI.setState');
-        }
-
-        if (!InstructorCalendarUI || typeof InstructorCalendarUI.render !== 'function') {
-            missing.push('InstructorCalendarUI.render');
-        }
-        if (!InstructorCalendarUI || typeof InstructorCalendarUI.getState !== 'function') {
-            missing.push('InstructorCalendarUI.getState');
-        }
-        if (!InstructorCalendarUI || typeof InstructorCalendarUI.setState !== 'function') {
-            missing.push('InstructorCalendarUI.setState');
-        }
-
-        if (!LocationCalendarUI || typeof LocationCalendarUI.render !== 'function') {
-            missing.push('LocationCalendarUI.render');
-        }
-        if (!LocationCalendarUI || typeof LocationCalendarUI.getState !== 'function') {
-            missing.push('LocationCalendarUI.getState');
-        }
-        if (!LocationCalendarUI || typeof LocationCalendarUI.setState !== 'function') {
-            missing.push('LocationCalendarUI.setState');
-        }
-
-        if (!TabManager || typeof TabManager.register !== 'function') {
-            missing.push('TabManager.register');
-        }
-
-        if (!CalendarConstants) {
-            missing.push('CalendarConstants');
-        }
-
-        if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
-            missing.push('CalendarValidation.parseWeek');
-        }
-
-        if (!CharacterQueries || typeof CharacterQueries.getStudents !== 'function') {
-            missing.push('CharacterQueries.getStudents');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getInstructors !== 'function') {
-            missing.push('CharacterQueries.getInstructors');
-        }
-
-        if (!LocationQueries || typeof LocationQueries.getLocations !== 'function') {
-            missing.push('LocationQueries.getLocations');
-        }
-
-        if (missing.length > 0) {
-            throw new Error('CalendarModule: Missing dependencies: ' + missing.join(', '));
-        }
-
-        return true;
-    }
-
-    checkDependencies();
-
-    var MIN_WEEK = CalendarConstants.MIN_WEEK;
-    var MAX_WEEK = CalendarConstants.MAX_WEEK;
-
-    var MODES = [
-        { id: 'student', label: 'Student', icon: '\uD83D\uDC64' },
-        { id: 'instructor', label: 'Instructor', icon: '\uD83D\uDC68\u200D\uD83C\uDFEB' },
-        { id: 'location', label: 'Location', icon: '\uD83D\uDCCD' }
-    ];
+    // ============================================================
+    // STATE
+    // ============================================================
 
     var _state = {
         mode: 'student',
@@ -142,27 +45,50 @@
     var _eventListeners = [];
     var _activeUI = null;
 
+    var MIN_WEEK = window.CalendarConstants ? window.CalendarConstants.MIN_WEEK : 1;
+    var MAX_WEEK = window.CalendarConstants ? window.CalendarConstants.MAX_WEEK : 52;
+
+    var MODES = [
+        { id: 'student', label: 'Student', icon: '\uD83D\uDC64' },
+        { id: 'instructor', label: 'Instructor', icon: '\uD83D\uDC68\u200D\uD83C\uDFEB' },
+        { id: 'location', label: 'Location', icon: '\uD83D\uDCCD' }
+    ];
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
     function escapeHtml(value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+        if (value === undefined || value === null) { return ''; }
+        return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
     }
 
     function escapeAttribute(value) {
-        if (value === undefined || value === null) {
-            return '';
-        }
-        return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+        if (value === undefined || value === null) { return ''; }
+        return String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
     }
+
+    function getModeUI(mode) {
+        switch (mode) {
+            case 'student': return StudentUI;
+            case 'instructor': return InstructorUI;
+            case 'location': return LocationUI;
+            default: return null;
+        }
+    }
+
+    function getEntitySelectorClass(mode) {
+        switch (mode) {
+            case 'student': return 'student-select';
+            case 'instructor': return 'instructor-select';
+            case 'location': return 'location-select';
+            default: return '';
+        }
+    }
+
+    // ============================================================
+    // RENDER
+    // ============================================================
 
     function render(container) {
         if (!container) {
@@ -170,7 +96,8 @@
         }
 
         if (!container) {
-            throw new Error('CalendarModule: Container not found.');
+            console.warn('CalendarModule: Container not found.');
+            return;
         }
 
         if (!window.data) {
@@ -180,7 +107,7 @@
 
         _container = container;
 
-        destroy();
+        destroyUI();
 
         initializeState();
 
@@ -193,19 +120,6 @@
         _initialized = true;
     }
 
-    function destroy() {
-        if (_activeUI) {
-            if (_activeUI.destroy && typeof _activeUI.destroy === 'function') {
-                _activeUI.destroy();
-            }
-            _activeUI = null;
-        }
-
-        removeAllEventListeners();
-
-        _initialized = false;
-    }
-
     function getContainerHTML() {
         var currentMode = _state.mode;
         var modeOptions = MODES.map(function(mode) {
@@ -216,40 +130,33 @@
         }).join('');
 
         var weekDisplay = 'Week ' + _state.week;
+        var selectClass = getEntitySelectorClass(currentMode);
 
-        var html = '';
-        html += '<div class="calendar-module">';
-
-        html += '<div class="calendar-controls">';
-        html += '<div class="mode-selector">';
-        html += modeOptions;
-        html += '</div>';
-        html += '<div class="week-nav">';
-        html += '<button id="calendar-prev-week" class="small" title="Previous Week">‹</button>';
-        html += '<span id="calendar-week-display" class="week-display">' + escapeHtml(weekDisplay) + '</span>';
-        html += '<button id="calendar-next-week" class="small" title="Next Week">›</button>';
-        html += '</div>';
-        html += '<div class="entity-selector">';
-        html += '<select id="calendar-entity-select">';
-        html += '<option value="">Select...</option>';
-        html += '</select>';
-        html += '</div>';
-        html += '</div>';
-
-        html += '<div id="calendar-content" class="calendar-content">';
-        html += '<div class="loading-state">Loading...</div>';
-        html += '</div>';
-
-        html += '</div>';
-
-        return html;
+        return (
+            '<div class="calendar-module">' +
+                '<div class="calendar-controls">' +
+                    '<div class="mode-selector">' + modeOptions + '</div>' +
+                    '<div class="week-nav">' +
+                        '<button id="calendar-prev-week" class="small" title="Previous Week">‹</button>' +
+                        '<span id="calendar-week-display" class="week-display">' + escapeHtml(weekDisplay) + '</span>' +
+                        '<button id="calendar-next-week" class="small" title="Next Week">›</button>' +
+                    '</div>' +
+                    '<div class="entity-selector">' +
+                        '<select id="calendar-entity-select" class="' + escapeAttribute(selectClass) + '">' +
+                            '<option value="">Select...</option>' +
+                        '</select>' +
+                    '</div>' +
+                '</div>' +
+                '<div id="calendar-content" class="calendar-content">' +
+                    '<div class="loading-state">Loading...</div>' +
+                '</div>' +
+            '</div>'
+        );
     }
 
     function renderActiveMode() {
         var content = document.getElementById('calendar-content');
-        if (!content) {
-            return;
-        }
+        if (!content) { return; }
 
         var ui = getModeUI(_state.mode);
         if (!ui) {
@@ -265,37 +172,34 @@
         });
 
         populateEntitySelector();
-
         updateWeekDisplay();
-    }
-
-    function getModeUI(mode) {
-        switch (mode) {
-            case 'student':
-                return StudentCalendarUI;
-            case 'instructor':
-                return InstructorCalendarUI;
-            case 'location':
-                return LocationCalendarUI;
-            default:
-                return null;
-        }
     }
 
     function populateEntitySelector() {
         var select = document.getElementById('calendar-entity-select');
-        if (!select) {
-            return;
-        }
+        if (!select) { return; }
 
-        var entities = getEntitiesForMode(_state.mode);
+        // Get entities from the active UI
+        var entities = [];
         var currentId = _state.selectedId;
+
+        switch (_state.mode) {
+            case 'student':
+                entities = StudentUI.getStudents ? StudentUI.getStudents() : [];
+                break;
+            case 'instructor':
+                entities = InstructorUI.getInstructors ? InstructorUI.getInstructors() : [];
+                break;
+            case 'location':
+                entities = LocationUI.getLocations ? LocationUI.getLocations() : [];
+                break;
+        }
 
         select.innerHTML = '<option value="">Select...</option>';
 
         for (var i = 0; i < entities.length; i++) {
             var entity = entities[i];
-            var name = getEntityName(_state.mode, entity);
+            var name = entity.name || entity.id || 'Unknown';
             var option = document.createElement('option');
             option.value = entity.id;
             option.textContent = name;
@@ -306,31 +210,6 @@
         }
     }
 
-    function getEntitiesForMode(mode) {
-        switch (mode) {
-            case 'student':
-                return CharacterQueries.getStudents() || [];
-            case 'instructor':
-                return CharacterQueries.getInstructors() || [];
-            case 'location':
-                return LocationQueries.getLocations() || [];
-            default:
-                return [];
-        }
-    }
-
-    function getEntityName(mode, entity) {
-        switch (mode) {
-            case 'student':
-            case 'instructor':
-                return CharacterQueries.getDisplayName(entity);
-            case 'location':
-                return entity.name || entity.id || 'Unknown';
-            default:
-                return entity.id || 'Unknown';
-        }
-    }
-
     function updateWeekDisplay() {
         var display = document.getElementById('calendar-week-display');
         if (display) {
@@ -338,33 +217,32 @@
         }
     }
 
+    // ============================================================
+    // STATE MANAGEMENT
+    // ============================================================
+
     function initializeState() {
         var options = getInitialOptions();
-
         _state.mode = options.mode || 'student';
         _state.week = options.week || 1;
         _state.selectedId = options.selectedId || null;
 
+        // Ensure selectedId is valid for the current mode
         validateSelectedId();
     }
 
     function getInitialOptions() {
-        var options = {
-            mode: 'student',
-            week: 1,
-            selectedId: null
-        };
+        var options = { mode: 'student', week: 1, selectedId: null };
 
+        // Try sessionStorage
         try {
             var saved = sessionStorage.getItem('calendar_state');
             if (saved) {
                 var parsed = JSON.parse(saved);
-                if (parsed.mode) {
-                    options.mode = parsed.mode;
-                }
+                if (parsed.mode) { options.mode = parsed.mode; }
                 if (parsed.week !== undefined && parsed.week !== null) {
-                    var week = CalendarValidation.parseWeek(parsed.week);
-                    if (week !== null) {
+                    var week = parseInt(parsed.week, 10);
+                    if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
                         options.week = week;
                     }
                 }
@@ -372,9 +250,9 @@
                     options.selectedId = parsed.selectedId;
                 }
             }
-        } catch (_) {
-        }
+        } catch (_) {}
 
+        // Try URL hash
         try {
             var hash = window.location.hash;
             if (hash) {
@@ -382,13 +260,11 @@
                 if (queryIndex !== -1) {
                     var params = new URLSearchParams(hash.substring(queryIndex + 1));
                     var modeParam = params.get('mode');
-                    if (modeParam) {
-                        options.mode = modeParam;
-                    }
+                    if (modeParam) { options.mode = modeParam; }
                     var weekParam = params.get('week');
                     if (weekParam !== null) {
-                        var week = CalendarValidation.parseWeek(weekParam);
-                        if (week !== null) {
+                        var week = parseInt(weekParam, 10);
+                        if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
                             options.week = week;
                         }
                     }
@@ -398,9 +274,9 @@
                     }
                 }
             }
-        } catch (_) {
-        }
+        } catch (_) {}
 
+        // Set default selectedId if needed
         if (!options.selectedId) {
             var entities = getEntitiesForMode(options.mode);
             if (entities.length > 0) {
@@ -411,17 +287,28 @@
         return options;
     }
 
+    function getEntitiesForMode(mode) {
+        switch (mode) {
+            case 'student':
+                return StudentUI.getStudents ? StudentUI.getStudents() : [];
+            case 'instructor':
+                return InstructorUI.getInstructors ? InstructorUI.getInstructors() : [];
+            case 'location':
+                return LocationUI.getLocations ? LocationUI.getLocations() : [];
+            default:
+                return [];
+        }
+    }
+
     function validateSelectedId() {
         var entities = getEntitiesForMode(_state.mode);
         var exists = false;
-
         for (var i = 0; i < entities.length; i++) {
             if (String(entities[i].id) === String(_state.selectedId)) {
                 exists = true;
                 break;
             }
         }
-
         if (!exists && entities.length > 0) {
             _state.selectedId = entities[0].id;
         }
@@ -434,8 +321,7 @@
                 week: _state.week,
                 selectedId: _state.selectedId
             }));
-        } catch (_) {
-        }
+        } catch (_) {}
 
         try {
             var hash = window.location.hash || '';
@@ -443,35 +329,28 @@
             if (base.charAt(0) === '#') {
                 base = base.substring(1);
             }
-
             var query = 'mode=' + encodeURIComponent(_state.mode) +
                         '&week=' + encodeURIComponent(_state.week);
-
             if (_state.selectedId) {
                 query += '&id=' + encodeURIComponent(_state.selectedId);
             }
-
             var newHash = '#' + base + '?' + query;
-
             if (window.location.hash !== newHash) {
                 window.history.replaceState(null, '', newHash);
             }
-        } catch (_) {
-        }
+        } catch (_) {}
     }
+
+    // ============================================================
+    // ACTIONS
+    // ============================================================
 
     function switchMode(mode) {
         var valid = false;
         for (var i = 0; i < MODES.length; i++) {
-            if (MODES[i].id === mode) {
-                valid = true;
-                break;
-            }
+            if (MODES[i].id === mode) { valid = true; break; }
         }
-
-        if (!valid) {
-            return;
-        }
+        if (!valid) { return; }
 
         if (mode === _state.mode) {
             refresh();
@@ -498,53 +377,45 @@
             }
         }
 
+        // Update entity selector class
+        var select = document.getElementById('calendar-entity-select');
+        if (select) {
+            select.className = getEntitySelectorClass(mode);
+        }
+
         renderActiveMode();
-
         populateEntitySelector();
-
         updateWeekDisplay();
-
         saveState();
     }
 
     function switchWeek(delta) {
         var newWeek = _state.week + delta;
-
-        if (newWeek < MIN_WEEK) {
-            newWeek = MIN_WEEK;
-        }
-        if (newWeek > MAX_WEEK) {
-            newWeek = MAX_WEEK;
-        }
-
-        if (newWeek === _state.week) {
-            return;
-        }
+        if (newWeek < MIN_WEEK) { newWeek = MIN_WEEK; }
+        if (newWeek > MAX_WEEK) { newWeek = MAX_WEEK; }
+        if (newWeek === _state.week) { return; }
 
         _state.week = newWeek;
 
-        if (_activeUI && _activeUI.setState) {
-            _activeUI.setState({ week: newWeek });
+        var ui = getModeUI(_state.mode);
+        if (ui && ui.setState) {
+            ui.setState({ week: newWeek });
         }
 
         updateWeekDisplay();
-
         saveState();
     }
 
     function selectEntity(entityId) {
-        if (entityId === _state.selectedId) {
-            return;
-        }
-
+        if (entityId === _state.selectedId) { return; }
         _state.selectedId = entityId;
 
-        if (_activeUI && _activeUI.setState) {
-            _activeUI.setState({ selectedId: entityId });
+        var ui = getModeUI(_state.mode);
+        if (ui && ui.setState) {
+            ui.setState({ selectedId: entityId });
         }
 
         populateEntitySelector();
-
         saveState();
     }
 
@@ -556,118 +427,125 @@
         }
     }
 
+    // ============================================================
+    // EVENT BINDING
+    // ============================================================
+
     function bindEvents() {
         var modeButtons = _container.querySelectorAll('.mode-btn');
         for (var i = 0; i < modeButtons.length; i++) {
             var btn = modeButtons[i];
-            addEventListener(btn, 'click', function() {
+            btn.addEventListener('click', function() {
                 var mode = this.dataset.mode;
-                if (mode) {
-                    switchMode(mode);
-                }
+                if (mode) { switchMode(mode); }
             });
+            _eventListeners.push({ element: btn, eventName: 'click' });
         }
 
         var prevBtn = document.getElementById('calendar-prev-week');
         if (prevBtn) {
-            addEventListener(prevBtn, 'click', function() {
-                switchWeek(-1);
-            });
+            prevBtn.addEventListener('click', function() { switchWeek(-1); });
+            _eventListeners.push({ element: prevBtn, eventName: 'click' });
         }
 
         var nextBtn = document.getElementById('calendar-next-week');
         if (nextBtn) {
-            addEventListener(nextBtn, 'click', function() {
-                switchWeek(1);
-            });
+            nextBtn.addEventListener('click', function() { switchWeek(1); });
+            _eventListeners.push({ element: nextBtn, eventName: 'click' });
         }
 
         var entitySelect = document.getElementById('calendar-entity-select');
         if (entitySelect) {
-            addEventListener(entitySelect, 'change', function() {
+            entitySelect.addEventListener('change', function() {
                 var id = this.value;
-                if (id) {
-                    selectEntity(id);
-                }
+                if (id) { selectEntity(id); }
             });
+            _eventListeners.push({ element: entitySelect, eventName: 'change' });
         }
     }
 
-    function addEventListener(element, eventName, handler, options) {
-        if (!element) {
-            return;
+    function destroyUI() {
+        if (_activeUI && _activeUI.destroy) {
+            _activeUI.destroy();
         }
-        element.addEventListener(eventName, handler, options || false);
-        _eventListeners.push({
-            element: element,
-            eventName: eventName,
-            handler: handler,
-            options: options || false
-        });
-    }
+        _activeUI = null;
 
-    function removeAllEventListeners() {
         for (var i = 0; i < _eventListeners.length; i++) {
             var item = _eventListeners[i];
             try {
-                item.element.removeEventListener(item.eventName, item.handler, item.options);
-            } catch (e) {
-            }
+                item.element.removeEventListener(item.eventName);
+            } catch (e) {}
         }
         _eventListeners = [];
+
+        _initialized = false;
     }
 
-    TabManager.register('calendar', render);
+    // ============================================================
+    // PUBLIC API
+    // ============================================================
 
-    window.__calendarModuleLoaded = true;
+    function destroy() {
+        destroyUI();
+        _container = null;
+    }
+
+    function getState() {
+        return {
+            mode: _state.mode,
+            week: _state.week,
+            selectedId: _state.selectedId
+        };
+    }
+
+    function setState(newState) {
+        var changed = false;
+        if (newState.mode !== undefined && newState.mode !== _state.mode) {
+            switchMode(newState.mode);
+            changed = true;
+        }
+        if (newState.week !== undefined && newState.week !== _state.week) {
+            var week = parseInt(newState.week, 10);
+            if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
+                _state.week = week;
+                var ui = getModeUI(_state.mode);
+                if (ui && ui.setState) { ui.setState({ week: week }); }
+                updateWeekDisplay();
+                saveState();
+                changed = true;
+            }
+        }
+        if (newState.selectedId !== undefined && newState.selectedId !== _state.selectedId) {
+            selectEntity(newState.selectedId);
+            changed = true;
+        }
+        return changed;
+    }
+
+    // ============================================================
+    // REGISTER WITH TABMANAGER
+    // ============================================================
+
+    if (TabManager && typeof TabManager.register === 'function') {
+        TabManager.register('calendar', render);
+    }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
 
     window.CalendarModule = {
         render: render,
         destroy: destroy,
         refresh: refresh,
-
         switchMode: switchMode,
         switchWeek: switchWeek,
         selectEntity: selectEntity,
-
-        getState: function() {
-            return {
-                mode: _state.mode,
-                week: _state.week,
-                selectedId: _state.selectedId
-            };
-        },
-
-        setState: function(newState) {
-            var changed = false;
-
-            if (newState.mode !== undefined && newState.mode !== _state.mode) {
-                switchMode(newState.mode);
-                changed = true;
-            }
-
-            if (newState.week !== undefined && newState.week !== _state.week) {
-                var week = CalendarValidation.parseWeek(newState.week);
-                if (week !== null) {
-                    _state.week = week;
-                    if (_activeUI && _activeUI.setState) {
-                        _activeUI.setState({ week: week });
-                    }
-                    updateWeekDisplay();
-                    saveState();
-                    changed = true;
-                }
-            }
-
-            if (newState.selectedId !== undefined && newState.selectedId !== _state.selectedId) {
-                selectEntity(newState.selectedId);
-                changed = true;
-            }
-
-            return changed;
-        }
+        getState: getState,
+        setState: setState
     };
 
+    // Legacy aliases
     window.renderCalendar = render;
     window.destroyCalendar = destroy;
 
