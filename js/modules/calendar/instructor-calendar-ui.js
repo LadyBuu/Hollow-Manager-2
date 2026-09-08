@@ -76,6 +76,9 @@
     if (!window.CalendarQueries || typeof window.CalendarQueries.getAvailableDisciplines !== 'function') {
         missing.push('CalendarQueries.getAvailableDisciplines');
     }
+    if (!window.CalendarQueries || typeof window.CalendarQueries.getInstructorAvailableDisciplines !== 'function') {
+        missing.push('CalendarQueries.getInstructorAvailableDisciplines');
+    }
 
     if (!window.ScheduleCore || typeof window.ScheduleCore.setInstructorTemplate !== 'function') {
         missing.push('ScheduleCore.setInstructorTemplate');
@@ -219,7 +222,7 @@
         var schedule = CalendarQueries.getInstructorSchedule(instructorId, week);
         var templates = CalendarQueries.getInstructorTemplates(instructorId, week);
         var blocks = CalendarQueries.getInstructorBlocks(instructorId, week);
-        var disciplines = CalendarQueries.getAvailableDisciplines(instructorId, week);
+        var disciplines = CalendarQueries.getInstructorAvailableDisciplines(instructorId, week);
 
         return {
             schedule: schedule,
@@ -576,7 +579,7 @@
             return;
         }
 
-        var disciplines = CalendarQueries.getAvailableDisciplines(_state.selectedId, _state.week);
+        var disciplines = CalendarQueries.getInstructorAvailableDisciplines(_state.selectedId, _state.week);
 
         if (disciplines.length === 0) {
             notify('No disciplines available for this instructor this week.', 'error');
@@ -776,11 +779,25 @@
             title: 'Manage Students - ' + (disciplineName.name || 'Unknown'),
             students: students,
             onConfirm: function(selectedStudents, closeModal) {
-                // For now, just show a notification
-                // Full implementation would update template.assignedStudents
-                closeModal();
-                notify('Student assignments updated.', 'success');
-                refresh();
+                // Update template.assignedStudents
+                var updateResult = ScheduleCore.setInstructorTemplate(
+                    _state.selectedId,
+                    _state.week,
+                    day,
+                    hour,
+                    template.disciplineId,
+                    template.duration,
+                    template.label,
+                    selectedStudents
+                );
+
+                if (updateResult && updateResult.success) {
+                    closeModal();
+                    notify('Student assignments updated.', 'success');
+                    refresh();
+                } else {
+                    notify(updateResult ? updateResult.message : 'Failed to update student assignments.', 'error');
+                }
             },
             onCancel: function() {
                 // No-op
