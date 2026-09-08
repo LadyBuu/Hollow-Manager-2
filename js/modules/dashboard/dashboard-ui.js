@@ -223,6 +223,15 @@
                 }
             }
         });
+
+        // Refresh button if present
+        var refreshBtn = container.querySelector('#dashboard-refresh-btn');
+        if (refreshBtn) {
+            addSafeEventListener(refreshBtn, 'click', function() {
+                render(_container);
+                showNotification('Dashboard refreshed.', 'success');
+            });
+        }
     }
 
     // ============================================================
