@@ -114,6 +114,11 @@
     <script src="js/utils/notification.js"></script>
 
     <!-- ============================================================
+         CALENDAR VALIDATION - MUST LOAD EARLY
+         ============================================================ -->
+    <script src="js/utils/calendar-validation.js"></script>
+
+    <!-- ============================================================
          SHARED CONSTANTS - js/modules/shared/
          ============================================================ -->
     <script src="js/modules/shared/constants.js"></script>
@@ -138,19 +143,20 @@
     <script src="js/modules/shared/queries/social-queries.js"></script>
 
     <!-- ============================================================
-         ACADEMY CORE - For AcademyQueries dependency
+         ACADEMY CORE MODULES
          ============================================================ -->
     <script src="js/modules/academy/academy-classes.js"></script>
     <script src="js/modules/academy/academy-grades.js"></script>
     <script src="js/modules/academy/academy-groups.js"></script>
     <script src="js/modules/academy/academy-ranking.js"></script>
+    <script src="js/modules/academy/academy-disciplines.js"></script>
+    <script src="js/modules/academy/academy-locations.js"></script>
     <script src="js/modules/academy/academy-schedule.js"></script>
     <script src="js/modules/academy/academy-distribute.js"></script>
 
     <!-- ============================================================
          CALENDAR MODULE
          ============================================================ -->
-    <script src="js/utils/calendar-validation.js"></script>
     <script src="js/modules/calendar/schedule-core.js"></script>
     <script src="js/modules/calendar/calendar-renderer.js"></script>
     <script src="js/modules/calendar/calendar-aggregator.js"></script>
@@ -181,6 +187,7 @@
     <!-- ============================================================
          TEAM MODULE
          ============================================================ -->
+    <!-- NOTE: team-constants.js MUST exist for TeamQueries to work -->
     <script src="js/modules/teams/team-constants.js"></script>
     <script src="js/modules/teams/team-core.js"></script>
     <script src="js/modules/teams/team-aggregator.js"></script>
@@ -200,9 +207,8 @@
     <script src="js/modules/social/index.js"></script>
 
     <!-- ============================================================
-         ACADEMY MODULE
+         ACADEMY MODULE - Aggregator, UI, Events, Tabs
          ============================================================ -->
-    <script src="js/modules/academy/academy-constants.js"></script>
     <script src="js/modules/academy/academy-aggregator.js"></script>
     <script src="js/modules/academy/academy-ui.js"></script>
     <script src="js/modules/academy/academy-events.js"></script>
@@ -538,10 +544,13 @@
                 testFunctionExists(window.AcademyClasses, 'create');
                 testFunctionExists(window.AcademyClasses, 'update');
                 testFunctionExists(window.AcademyClasses, 'delete');
+                testFunctionExists(window.AcademyClasses, 'addStudent');
+                testFunctionExists(window.AcademyClasses, 'removeStudent');
 
                 testModuleLoaded('AcademyGrades', window.AcademyGrades);
                 testFunctionExists(window.AcademyGrades, 'create');
                 testFunctionExists(window.AcademyGrades, 'saveGrades');
+                testFunctionExists(window.AcademyGrades, 'getStudentGrades');
 
                 testModuleLoaded('AcademyGroups', window.AcademyGroups);
                 testFunctionExists(window.AcademyGroups, 'createGroup');
@@ -550,6 +559,17 @@
                 testModuleLoaded('AcademyRanking', window.AcademyRanking);
                 testFunctionExists(window.AcademyRanking, 'autoGenerate');
                 testFunctionExists(window.AcademyRanking, 'getClassRankings');
+                testFunctionExists(window.AcademyRanking, 'getStudentRank');
+
+                testModuleLoaded('AcademyDisciplines', window.AcademyDisciplines);
+                testFunctionExists(window.AcademyDisciplines, 'create');
+                testFunctionExists(window.AcademyDisciplines, 'update');
+                testFunctionExists(window.AcademyDisciplines, 'delete');
+
+                testModuleLoaded('AcademyLocations', window.AcademyLocations);
+                testFunctionExists(window.AcademyLocations, 'create');
+                testFunctionExists(window.AcademyLocations, 'update');
+                testFunctionExists(window.AcademyLocations, 'delete');
 
                 testModuleLoaded('AcademySchedule', window.AcademySchedule);
                 testFunctionExists(window.AcademySchedule, 'configure');
