@@ -12,31 +12,19 @@
             <h1>Hollow Manager 2</h1>
             <nav id="main-nav">
                 <ul>
-                    <li><a href="#dashboard" data-tab="dashboard">Dashboard</a></li>
                     <li><a href="#characters" data-tab="characters">Characters</a></li>
-                    <li><a href="#classes" data-tab="classes">Classes</a></li>
-                    <li><a href="#teams" data-tab="teams">Teams</a></li>
-                    <li><a href="#curriculum" data-tab="curriculum">Curriculum</a></li>
                     <li><a href="#calendar" data-tab="calendar">Calendar</a></li>
-                    <li><a href="#missions" data-tab="missions">Missions</a></li>
-                    <li><a href="#tournaments" data-tab="tournaments">Tournaments</a></li>
                 </ul>
             </nav>
         </header>
         <main id="main-content">
-            <div id="tab-dashboard" class="tab-content active"></div>
-            <div id="tab-characters" class="tab-content"></div>
-            <div id="tab-classes" class="tab-content"></div>
-            <div id="tab-teams" class="tab-content"></div>
-            <div id="tab-curriculum" class="tab-content"></div>
+            <div id="tab-characters" class="tab-content active"></div>
             <div id="tab-calendar" class="tab-content"></div>
-            <div id="tab-missions" class="tab-content"></div>
-            <div id="tab-tournaments" class="tab-content"></div>
         </main>
     </div>
 
     <!-- ============================================================
-         CORE UTILITIES - MUST LOAD FIRST
+         UTILITIES - MUST LOAD FIRST
          ============================================================ -->
     <script src="js/utils/object-utils.js"></script>
     <script src="js/utils/id-utils.js"></script>
@@ -51,11 +39,7 @@
     <!-- ============================================================
          SHARED CONSTANTS
          ============================================================ -->
-    <script src="js/shared/constants/constants.js"></script>
-    <script src="js/shared/constants/calendar-constants.js"></script>
-    <script src="js/shared/constants/character-constants.js"></script>
-    <script src="js/shared/constants/academy-constants.js"></script>
-    <script src="js/shared/constants/magic-constants.js"></script>
+    <script src="js/constants.js"></script>
 
     <!-- ============================================================
          SHARED QUERIES - READ-ONLY DOMAIN ACCESS
@@ -72,44 +56,14 @@
     <script src="js/shared/queries/social-queries.js"></script>
 
     <!-- ============================================================
-         CALENDAR MODULE
+         SHARED DOMAIN QUERIES (non-query helpers)
          ============================================================ -->
-    <script src="js/modules/calendar/calendar-validation.js"></script>
-    <script src="js/modules/calendar/schedule-core.js"></script>
-    <script src="js/modules/calendar/calendar-renderer.js"></script>
-    <script src="js/modules/calendar/calendar-aggregator.js"></script>
-    <script src="js/modules/calendar/calendar-ui-base.js"></script>
-    <script src="js/modules/calendar/student-calendar-ui.js"></script>
-    <script src="js/modules/calendar/instructor-calendar-ui.js"></script>
-    <script src="js/modules/calendar/location-calendar-ui.js"></script>
-    <script src="js/modules/calendar/index.js"></script>
-
-    <!-- ============================================================
-         CHARACTER MODULE
-         ============================================================ -->
-    <!-- Core -->
-    <script src="js/modules/characters/core/character-stats.js"></script>
-    <script src="js/modules/characters/core/character-eliminations.js"></script>
-    <script src="js/modules/characters/core/character-classes.js"></script>
-    <script src="js/modules/characters/core/character-crud.js"></script>
-
-    <!-- Generators -->
-    <script src="js/modules/characters/generators/character-generator.js"></script>
-
-    <!-- Views -->
-    <script src="js/modules/characters/views/character-list.js"></script>
-    <script src="js/modules/characters/views/character-form.js"></script>
-    <script src="js/modules/characters/views/character-detail.js"></script>
-
-    <!-- UI -->
-    <script src="js/modules/characters/ui/character-class-view.js"></script>
-    <script src="js/modules/characters/ui/character-elimination-view.js"></script>
-    <script src="js/modules/characters/ui/character-stats-view.js"></script>
-    <script src="js/modules/characters/ui/character-events.js"></script>
-
-    <!-- Aggregator & Entry -->
-    <script src="js/modules/characters/character-aggregator.js"></script>
-    <script src="js/modules/characters/index.js"></script>
+    <script src="js/modules/shared/calendar-constants.js"></script>
+    <script src="js/modules/shared/character-constants.js"></script>
+    <script src="js/modules/shared/academy-constants.js"></script>
+    <script src="js/modules/shared/magic-constants.js"></script>
+    <script src="js/modules/shared/discipline-queries.js"></script>
+    <script src="js/modules/shared/location-queries.js"></script>
 
     <!-- ============================================================
          CORE INFRASTRUCTURE
@@ -123,17 +77,49 @@
     <script src="js/core/bootstrap.js"></script>
 
     <!-- ============================================================
-         DASHBOARD - CROSS-DOMAIN READ MODEL
+         CALENDAR MODULE
          ============================================================ -->
-    <script src="js/modules/dashboard/dashboard-queries.js"></script>
-    <script src="js/modules/dashboard/dashboard-render.js"></script>
-    <script src="js/modules/dashboard/dashboard-ui.js"></script>
-    <script src="js/modules/dashboard/index.js"></script>
+    <script src="js/utils/calendar-validation.js"></script>
+    <script src="js/modules/calendar/schedule-core.js"></script>
+    <script src="js/modules/calendar/calendar-renderer.js"></script>
+    <script src="js/modules/calendar/calendar-aggregator.js"></script>
+    <script src="js/modules/calendar/calendar-ui-base.js"></script>
+    <script src="js/modules/calendar/student-calendar-ui.js"></script>
+    <script src="js/modules/calendar/instructor-calendar-ui.js"></script>
+    <script src="js/modules/calendar/location-calendar-ui.js"></script>
+    <script src="js/modules/calendar/index.js"></script>
+
+    <!-- ============================================================
+         CHARACTER MODULE
+         ============================================================ -->
+    <!-- Generators -->
+    <script src="js/modules/characters/character-generator.js"></script>
+
+    <!-- Core -->
+    <script src="js/modules/characters/character-stats.js"></script>
+    <script src="js/modules/characters/character-crud.js"></script>
+    <script src="js/modules/characters/character-classes.js"></script>
+    <script src="js/modules/characters/character-eliminations.js"></script>
+
+    <!-- Views -->
+    <script src="js/modules/characters/character-list.js"></script>
+    <script src="js/modules/characters/character-form.js"></script>
+    <script src="js/modules/characters/character-detail.js"></script>
+
+    <!-- UI -->
+    <script src="js/modules/characters/character-class-view.js"></script>
+    <script src="js/modules/characters/character-elimination-view.js"></script>
+    <script src="js/modules/characters/character-stats-view.js"></script>
+    <script src="js/modules/characters/character-events.js"></script>
+
+    <!-- Aggregator & Entry -->
+    <script src="js/modules/characters/character-aggregator.js"></script>
+    <script src="js/modules/characters/index.js"></script>
 
     <!-- ============================================================
          OTHER MODULES - PLACEHOLDER
          ============================================================ -->
-    <!-- Teams, Academy, Tournaments, Missions, Export modules
+    <!-- Teams, Academy, Tournaments, Missions, Dashboard, Export modules
          are currently placeholders and will be re-implemented
          following the same architectural patterns established by
          Calendar and Character modules. -->
