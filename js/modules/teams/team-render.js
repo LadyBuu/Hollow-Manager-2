@@ -21,7 +21,7 @@
  *   - window.TeamMembers
  *   - window.TeamRankings
  *   - window.CharacterQueries
- *   - window.ClassesQueries
+ *   - window.AcademyQueries (replaces ClassesQueries)
  *   - window.CALENDAR_CONSTANTS
  *   - window.DomUtils
  *   - window.ValidationUtils
@@ -59,8 +59,8 @@
         console.warn('TeamRender: CharacterQueries not available.');
         return;
     }
-    if (!window.ClassesQueries) {
-        console.warn('TeamRender: ClassesQueries not available.');
+    if (!window.AcademyQueries) {
+        console.warn('TeamRender: AcademyQueries not available.');
         return;
     }
     if (!window.CALENDAR_CONSTANTS) {
@@ -87,7 +87,7 @@
     var TeamMembers = window.TeamMembers;
     var TeamRankings = window.TeamRankings;
     var CharacterQueries = window.CharacterQueries;
-    var ClassesQueries = window.ClassesQueries;
+    var AcademyQueries = window.AcademyQueries;
     var CALENDAR = window.CALENDAR_CONSTANTS;
     var DomUtils = window.DomUtils;
     var ValidationUtils = window.ValidationUtils;
@@ -142,11 +142,18 @@
     }
 
     // ============================================================
-    // CLASS HELPERS - Uses ClassesQueries
+    // CLASS HELPERS - Uses AcademyQueries (replaces ClassesQueries)
     // ============================================================
 
     function getClassDisplayName(classId) {
-        return ClassesQueries.getClassDisplayName(classId);
+        if (!classId) {
+            return '';
+        }
+        return AcademyQueries.getClassDisplayName(classId) || 'Unassigned';
+    }
+
+    function getClasses() {
+        return AcademyQueries.getClasses() || [];
     }
 
     // ============================================================
