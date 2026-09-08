@@ -11,7 +11,7 @@
  * 
  * IMPORTANT:
  *   - This module OWNS grade data - it does NOT depend on AcademyQueries
- *   - Uses AcademyClasses for class data (no circular dependency)
+ *   - Uses AcademyClasses internal methods for class data (no circular dependency)
  *   - All mutations are candidate-based: VALIDATE → CLONE → MODIFY → COMMIT
  *   - Invalid inputs are REJECTED (operation returns null/false)
  *   - Mutations are ATOMIC: if any part is invalid, nothing changes
@@ -92,8 +92,11 @@
         missing.push('ValidationUtils.isNonEmptyString');
     }
 
-    if (!window.AcademyClasses || typeof window.AcademyClasses.getClassRecord !== 'function') {
-        missing.push('AcademyClasses.getClassRecord');
+    if (!window.AcademyClasses) {
+        missing.push('AcademyClasses');
+    }
+    if (!window.AcademyClasses || typeof window.AcademyClasses.getClass !== 'function') {
+        missing.push('AcademyClasses.getClass');
     }
 
     if (!window.CalendarConstants) {
@@ -261,6 +264,30 @@
     }
 
     // ============================================================
+    // CLASS VALIDATION - Uses AcademyClasses (no circular dependency)
+    // ============================================================
+
+    /**
+     * Validate that a class exists.
+     * Uses AcademyClasses internal methods.
+     * 
+     * @param {string} classId - Class ID
+     * @returns {object} { valid: boolean, class?: object, message?: string }
+     */
+    function validateClassExists(classId) {
+        if (!isNonEmptyString(classId)) {
+            return { valid: false, message: 'Class ID is required.' };
+        }
+
+        var cls = AcademyClasses.getClass(classId);
+        if (!cls) {
+            return { valid: false, message: 'Class not found.' };
+        }
+
+        return { valid: true, class: cls };
+    }
+
+    // ============================================================
     // GRADE VALIDATION
     // ============================================================
 
@@ -366,10 +393,10 @@
             return failure('Academy data is not available.');
         }
 
-        // ---- PHASE 3: VALIDATE CLASS EXISTS ----
-        var classRecord = AcademyClasses.getClassRecord(data.classId);
-        if (!classRecord) {
-            return failure('Class not found.');
+        // ---- PHASE 3: VALIDATE CLASS EXISTS (uses AcademyClasses) ----
+        var classValidation = validateClassExists(data.classId);
+        if (!classValidation.valid) {
+            return failure(classValidation.message);
         }
 
         // ---- PHASE 4: BUILD GRADE OBJECT ----
@@ -806,6 +833,28 @@
         return result;
     }
 
+    /**
+     * Get a grade by ID (defensive copy).
+     * 
+     * @param {string} gradeId - Grade ID
+     * @returns {object|null} Grade object or null
+     */
+    function getGrade(gradeId) {
+        var grade = getGradeRecord(gradeId);
+        return grade ? deepClone(grade) : null;
+    }
+
+    /**
+     * Get all grades (defensive copies).
+     * 
+     * @returns {array} Array of grade objects
+     */
+    function getAllGrades() {
+        return getGradeRecords().map(function(grade) {
+            return deepClone(grade);
+        });
+    }
+
     // ============================================================
     // CALCULATION FUNCTIONS - Pure
     // ============================================================
@@ -1012,6 +1061,104 @@
     }
 
     // ============================================================
+    // BULK OPERATIONS
+    // ============================================================
+
+    /**
+     * Save multiple grades at once.
+     * 
+     * @param {array} gradesData - Array of grade data objects
+     * @param {object} options - Save options
+     * @param {boolean} options.overwrite - Overwrite existing grades
+     * @returns {object} { success: boolean, data?: object, message?: string }
+     */
+    function saveGrades(gradesData, options) {
+        if (!Array.isArray(gradesData) || gradesData.length === 0) {
+            return failure('Grade data array is required.');
+        }
+
+        options = options || {};
+        var overwrite = options.overwrite !== false;
+
+        var created = 0;
+        var updated = 0;
+        var skipped = 0;
+        var errors = [];
+
+        for (var i = 0; i < gradesData.length; i++) {
+            var data = gradesData[i];
+            if (!isObject(data)) {
+                errors.push({
+                    index: i,
+                    error: 'Invalid grade data.'
+                });
+                continue;
+            }
+
+            // Validate required fields
+            if (!data.studentId || !data.classId || !data.disciplineId || data.week === undefined || data.score === undefined) {
+                errors.push({
+                    index: i,
+                    error: 'Missing required fields: studentId, classId, disciplineId, week, score'
+                });
+                continue;
+            }
+
+            // Check if grade already exists
+            var existing = null;
+            var allGrades = getGradeRecords();
+            for (var j = 0; j < allGrades.length; j++) {
+                var g = allGrades[j];
+                if (String(g.studentId) === String(data.studentId) &&
+                    String(g.classId) === String(data.classId) &&
+                    String(g.disciplineId) === String(data.disciplineId) &&
+                    g.week === parseInt(data.week, 10)) {
+                    existing = g;
+                    break;
+                }
+            }
+
+            if (existing && !overwrite) {
+                skipped++;
+                continue;
+            }
+
+            if (existing) {
+                // Update existing
+                var updateResult = update(existing.id, data);
+                if (updateResult.success) {
+                    updated++;
+                } else {
+                    errors.push({
+                        index: i,
+                        error: updateResult.message
+                    });
+                }
+            } else {
+                // Create new
+                var createResult = create(data);
+                if (createResult.success) {
+                    created++;
+                } else {
+                    errors.push({
+                        index: i,
+                        error: createResult.message
+                    });
+                }
+            }
+        }
+
+        return success({
+            total: gradesData.length,
+            created: created,
+            updated: updated,
+            skipped: skipped,
+            errors: errors,
+            successCount: created + updated
+        });
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -1027,14 +1174,17 @@
         getClassGrades: getClassGrades,
         getDisciplineGrades: getDisciplineGrades,
         getWeekGrades: getWeekGrades,
-        getGradeRecord: getGradeRecord,
-        getGradeRecords: getGradeRecords,
+        getGrade: getGrade,
+        getAllGrades: getAllGrades,
 
         // ---- Calculations ----
         calculateSummary: calculateSummary,
         calculateClassSummary: calculateClassSummary,
         calculateStudentGPA: calculateStudentGPA,
         calculateClassRanking: calculateClassRanking,
+
+        // ---- Bulk ----
+        saveGrades: saveGrades,
 
         // ---- Helpers ----
         isPassing: isPassing,
