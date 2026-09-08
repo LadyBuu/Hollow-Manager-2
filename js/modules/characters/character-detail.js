@@ -16,22 +16,21 @@
  * 
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no persistence
- *   - No direct window.data access - uses CharacterDetailQueries
- *   - Uses CharacterQueries for character data
- *   - Uses CharacterStats for stat calculations
- *   - Uses MagicConstants for magic definitions
+ *   - Uses CharacterAggregator for all cross-domain data
+ *   - Uses CharacterQueries for simple character data
+ *   - Uses CharacterStats for stat calculations (via aggregator)
+ *   - Uses MagicConstants for magic definitions (via aggregator)
  *   - Uses Modal for modal lifecycle
  *   - Uses DomUtils for safe DOM operations
  *   - All callbacks are delegated to CharacterEvents
+ *   - No direct access to AcademyQueries, TeamQueries, SocialQueries, etc.
  * 
  * DEPENDENCIES:
- *   - window.CharacterDetailQueries (from character-detail-queries.js) - MANDATORY
+ *   - window.CharacterAggregator (from character-aggregator.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.CharacterStats (from character-stats.js) - MANDATORY
- *   - window.MagicConstants (from magic-constants.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
  *   - window.Modal (from modal.js) - MANDATORY
- *   - window.SocialQueries (from social-queries.js) - MANDATORY
+ *   - window.CharacterConstants (from character-constants.js) - MANDATORY
  * 
  * USAGE:
  *   var CD = window.CharacterDetail;
@@ -43,7 +42,6 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate script loading
     if (window.__characterDetailLoaded) {
         return;
     }
@@ -53,13 +51,11 @@
     // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
     // ============================================================
 
-    var CharacterDetailQueries = window.CharacterDetailQueries;
+    var CharacterAggregator = window.CharacterAggregator;
     var CharacterQueries = window.CharacterQueries;
-    var CharacterStats = window.CharacterStats;
-    var MagicConstants = window.MagicConstants;
     var DomUtils = window.DomUtils;
     var Modal = window.Modal;
-    var SocialQueries = window.SocialQueries;
+    var CharacterConstants = window.CharacterConstants;
 
     // ============================================================
     // STATE
@@ -82,14 +78,32 @@
     };
 
     // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var STAT_KEYS = CharacterConstants ? CharacterConstants.STAT_KEYS : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    var MAGIC_TYPE_KEYS = CharacterConstants ? CharacterConstants.MAGIC_TYPE_KEYS : [];
+
+    var ALLOWED_COLORS = {
+        '#8cbb3a': true,
+        '#c9a24b': true,
+        '#c1453c': true,
+        '#4a9bc7': true,
+        '#9b59b6': true,
+        '#e67e22': true,
+        '#27ae60': true,
+        '#7f8c8d': true
+    };
+
+    // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
-        if (!CharacterDetailQueries || typeof CharacterDetailQueries.getCharacterDetail !== 'function') {
-            missing.push('CharacterDetailQueries.getCharacterDetail');
+        if (!CharacterAggregator || typeof CharacterAggregator.getCharacterDetail !== 'function') {
+            missing.push('CharacterAggregator.getCharacterDetail');
         }
 
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
@@ -107,12 +121,8 @@
             missing.push('Modal.createModal');
         }
 
-        if (!SocialQueries || typeof SocialQueries.getRelationshipTypes !== 'function') {
-            missing.push('SocialQueries.getRelationshipTypes');
-        }
-
         if (missing.length > 0) {
-            console.warn('CharacterDetail: Missing dependencies:', missing.join(', '));
+            console.warn('[CharacterDetail] Missing dependencies:', missing.join(', '));
             return false;
         }
 
@@ -141,6 +151,21 @@
     }
 
     // ============================================================
+    // RELATIONSHIP HELPERS
+    // ============================================================
+
+    function getSafeColor(color) {
+        if (!color || typeof color !== 'string') {
+            return '#7f8c8d';
+        }
+        var normalized = color.toLowerCase();
+        if (ALLOWED_COLORS[normalized]) {
+            return normalized;
+        }
+        return '#7f8c8d';
+    }
+
+    // ============================================================
     // OPEN / CLOSE
     // ============================================================
 
@@ -150,19 +175,19 @@
         }
 
         if (!charId) {
-            console.warn('CharacterDetail: charId is required');
+            console.warn('[CharacterDetail] charId is required');
             return;
         }
 
-        var detail = CharacterDetailQueries.getCharacterDetail(charId);
+        var detail = CharacterAggregator.getCharacterDetail(charId);
         if (!detail) {
+            console.warn('[CharacterDetail] Character not found:', charId);
             return;
         }
 
         state.characterId = charId;
         state.activeTab = 'name';
 
-        // Create modal if it doesn't exist
         var modal = document.getElementById('character-detail-modal');
         if (!modal) {
             createModal();
@@ -186,7 +211,9 @@
     // ============================================================
 
     function createModal() {
-        if (!checkDependencies()) return;
+        if (!checkDependencies()) {
+            return;
+        }
 
         var modal = Modal.createModal('character-detail-modal');
         modal.id = 'character-detail-modal';
@@ -233,7 +260,9 @@
         };
 
         for (var tab in tabNames) {
-            if (!Object.prototype.hasOwnProperty.call(tabNames, tab)) continue;
+            if (!Object.prototype.hasOwnProperty.call(tabNames, tab)) {
+                continue;
+            }
             var btn = document.createElement('button');
             btn.className = 'detail-tab-btn' + (tab === state.activeTab ? ' active' : '');
             btn.dataset.tab = tab;
@@ -252,7 +281,9 @@
         panels.id = 'detail-tab-panels';
 
         for (var tab in tabNames) {
-            if (!Object.prototype.hasOwnProperty.call(tabNames, tab)) continue;
+            if (!Object.prototype.hasOwnProperty.call(tabNames, tab)) {
+                continue;
+            }
             var panel = document.createElement('div');
             panel.id = 'detail-' + tab;
             panel.className = 'detail-tab-panel' + (tab === state.activeTab ? ' active' : '');
@@ -307,7 +338,6 @@
             var id = state.characterId;
             if (id) {
                 close();
-                // Dispatch event for CharacterEvents to handle
                 var event = new CustomEvent('characterEdit', {
                     detail: { characterId: id },
                     bubbles: true,
@@ -323,8 +353,6 @@
                 close();
             }
         });
-
-        // Escape key handled by Modal
     }
 
     // ============================================================
@@ -332,7 +360,9 @@
     // ============================================================
 
     function render(detail) {
-        if (!detail) return;
+        if (!detail) {
+            return;
+        }
 
         var name = detail.name || 'Character';
         var nameEl = document.getElementById('detail-character-name');
@@ -342,11 +372,13 @@
 
         var tab = state.activeTab;
         var panel = document.getElementById('detail-' + tab);
-        if (!panel) return;
+        if (!panel) {
+            return;
+        }
 
         var html = '';
 
-        switch(tab) {
+        switch (tab) {
             case 'name':
                 html = renderNameTab(detail);
                 break;
@@ -377,9 +409,11 @@
     }
 
     function refresh() {
-        if (!state.characterId) return;
+        if (!state.characterId) {
+            return;
+        }
 
-        var detail = CharacterDetailQueries.getCharacterDetail(state.characterId);
+        var detail = CharacterAggregator.getCharacterDetail(state.characterId);
         if (detail) {
             render(detail);
         }
@@ -390,12 +424,16 @@
     // ============================================================
 
     function switchTab(tab) {
-        if (!tab || !VALID_TABS[tab]) return;
+        if (!tab || !VALID_TABS[tab]) {
+            return;
+        }
 
         state.activeTab = tab;
 
         var modal = document.getElementById('character-detail-modal');
-        if (!modal) return;
+        if (!modal) {
+            return;
+        }
 
         // Update tab buttons
         modal.querySelectorAll('.detail-tab-btn').forEach(function(btn) {
@@ -413,20 +451,36 @@
         });
 
         // Render content if needed
-        var detail = CharacterDetailQueries.getCharacterDetail(state.characterId);
+        var detail = CharacterAggregator.getCharacterDetail(state.characterId);
         if (detail) {
             var panel = document.getElementById('detail-' + tab);
             if (panel) {
                 var html = '';
-                switch(tab) {
-                    case 'name': html = renderNameTab(detail); break;
-                    case 'physical': html = renderPhysicalTab(detail); break;
-                    case 'personality': html = renderPersonalityTab(detail); break;
-                    case 'career': html = renderCareerTab(detail); break;
-                    case 'academic': html = renderAcademicTab(detail); break;
-                    case 'stats': html = renderStatsTab(detail); break;
-                    case 'social': html = renderSocialTab(detail); break;
-                    case 'notes': html = renderNotesTab(detail); break;
+                switch (tab) {
+                    case 'name':
+                        html = renderNameTab(detail);
+                        break;
+                    case 'physical':
+                        html = renderPhysicalTab(detail);
+                        break;
+                    case 'personality':
+                        html = renderPersonalityTab(detail);
+                        break;
+                    case 'career':
+                        html = renderCareerTab(detail);
+                        break;
+                    case 'academic':
+                        html = renderAcademicTab(detail);
+                        break;
+                    case 'stats':
+                        html = renderStatsTab(detail);
+                        break;
+                    case 'social':
+                        html = renderSocialTab(detail);
+                        break;
+                    case 'notes':
+                        html = renderNotesTab(detail);
+                        break;
                 }
                 panel.innerHTML = html;
             }
@@ -448,21 +502,22 @@
             'alias': 'Alias'
         };
 
-        var nameFormat = detail.character.nameFormat || 'firstlast';
+        var char = detail.character || {};
+        var nameFormat = char.nameFormat || 'firstlast';
 
         html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Display Name:</span> <span style="font-weight:600;font-size:1.1rem;color:var(--accent);">' + escapeHtml(detail.name) + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">First Name:</span> <span>' + escapeHtml(detail.character.firstName || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Middle Name:</span> <span>' + escapeHtml(detail.character.middleName || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Last Name:</span> <span>' + escapeHtml(detail.character.lastName || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Nickname:</span> <span>' + escapeHtml(detail.character.nickname || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Alias:</span> <span>' + escapeHtml(detail.character.alias || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Previous Names:</span> <span>' + escapeHtml((Array.isArray(detail.character.previousNames) ? detail.character.previousNames : []).join(', ') || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">First Name:</span> <span>' + escapeHtml(char.firstName || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Middle Name:</span> <span>' + escapeHtml(char.middleName || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Last Name:</span> <span>' + escapeHtml(char.lastName || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Nickname:</span> <span>' + escapeHtml(char.nickname || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Alias:</span> <span>' + escapeHtml(char.alias || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Previous Names:</span> <span>' + escapeHtml((Array.isArray(char.previousNames) ? char.previousNames : []).join(', ') || '-') + '</span></div>';
         html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Display Format:</span> <span>' + escapeHtml(formatLabels[nameFormat] || 'First + Last') + '</span></div>';
         html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Age:</span> <span>' + escapeHtml(detail.age) + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Year of Birth:</span> <span>' + escapeHtml(detail.character.birthYear || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Gender:</span> <span>' + escapeHtml(detail.character.gender || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Attraction:</span> <span>' + escapeHtml(detail.character.attraction || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Sexuality:</span> <span>' + escapeHtml(detail.character.sexuality || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Year of Birth:</span> <span>' + escapeHtml(char.birthYear || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Gender:</span> <span>' + escapeHtml(char.gender || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Attraction:</span> <span>' + escapeHtml(char.attraction || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Sexuality:</span> <span>' + escapeHtml(char.sexuality || '-') + '</span></div>';
         html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Status:</span> <span>' + escapeHtml(detail.status) + '</span></div>';
 
         if (detail.deceased) {
@@ -486,20 +541,21 @@
     }
 
     function renderPhysicalTab(detail) {
+        var char = detail.character || {};
         var html = '<div class="detail-section" style="display:flex;flex-direction:column;gap:4px;">';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Eye Color:</span> <span>' + escapeHtml(detail.character.eyes || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Hair Color:</span> <span>' + escapeHtml(detail.character.hair || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Skin Color/Tone:</span> <span>' + escapeHtml(detail.character.skin || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Height:</span> <span>' + escapeHtml(detail.character.height || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Weight:</span> <span>' + escapeHtml(detail.character.weight || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Build:</span> <span>' + escapeHtml(detail.character.build || '-') + '</span></div>';
-        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Appearance Notes:</span> <span style="white-space:pre-wrap;">' + escapeHtml(detail.character.appearanceNotes || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Eye Color:</span> <span>' + escapeHtml(char.eyes || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Hair Color:</span> <span>' + escapeHtml(char.hair || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Skin Color/Tone:</span> <span>' + escapeHtml(char.skin || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Height:</span> <span>' + escapeHtml(char.height || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Weight:</span> <span>' + escapeHtml(char.weight || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Build:</span> <span>' + escapeHtml(char.build || '-') + '</span></div>';
+        html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Appearance Notes:</span> <span style="white-space:pre-wrap;">' + escapeHtml(char.appearanceNotes || '-') + '</span></div>';
         html += '</div>';
         return html;
     }
 
     function renderPersonalityTab(detail) {
-        var p = detail.character.personality || {};
+        var p = detail.personality || {};
         var html = '<div class="detail-section" style="display:flex;flex-direction:column;gap:4px;">';
         html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Traits:</span> <span>' + escapeHtml(p.traits || '-') + '</span></div>';
         html += '<div class="detail-row" style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-soft);"><span class="label" style="color:var(--text-dim);font-size:0.8rem;">Ideals:</span> <span>' + escapeHtml(p.ideals || '-') + '</span></div>';
@@ -516,13 +572,14 @@
     }
 
     function renderCareerTab(detail) {
+        var char = detail.character || {};
         var html = '<div class="detail-section" style="display:flex;flex-direction:column;gap:4px;">';
 
         // Career Status History
         html += '<h4 style="color:var(--accent);font-size:0.85rem;margin:4px 0 8px 0;">Career Status History</h4>';
 
-        if (detail.career && detail.career.history && detail.career.history.length > 0) {
-            detail.career.history.forEach(function(status) {
+        if (detail.careerHistory && detail.careerHistory.length > 0) {
+            detail.careerHistory.forEach(function(status) {
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);margin-bottom:4px;font-size:0.75rem;">';
                 html += '<span style="font-weight:600;">' + escapeHtml(status.status.charAt(0).toUpperCase() + status.status.slice(1)) + '</span>';
                 html += ' <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(status.period) + ')</span>';
@@ -534,7 +591,7 @@
 
         // Specialty
         html += '<h4 style="color:var(--info);font-size:0.85rem;margin:8px 0 4px 0;">Specialty</h4>';
-        html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;font-size:0.75rem;">' + escapeHtml(detail.character.specialty || 'None specified') + '</div>';
+        html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;font-size:0.75rem;">' + escapeHtml(detail.specialty || 'None specified') + '</div>';
 
         // Professional Teams
         html += '<h4 style="color:var(--info);font-size:0.85rem;margin:8px 0 4px 0;">Professional Teams</h4>';
@@ -542,7 +599,9 @@
             detail.professionalTeams.forEach(function(team) {
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--info);margin-bottom:4px;font-size:0.75rem;">';
                 html += '<span><strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(team.periodDisplay) + ')</span></span>';
-                if (team.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(team.role) + ']</span>';
+                if (team.role) {
+                    html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(team.role) + ']</span>';
+                }
                 html += '</div>';
             });
         } else {
@@ -555,7 +614,9 @@
             detail.temporaryTeams.forEach(function(team) {
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--warning);margin-bottom:4px;font-size:0.75rem;">';
                 html += '<span><strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(team.periodDisplay) + ')</span></span>';
-                if (team.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(team.role) + ']</span>';
+                if (team.role) {
+                    html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(team.role) + ']</span>';
+                }
                 html += '</div>';
             });
         } else {
@@ -568,7 +629,9 @@
             detail.civilianTeams.forEach(function(team) {
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--text-dim);margin-bottom:4px;font-size:0.75rem;">';
                 html += '<span><strong>' + escapeHtml(team.name) + '</strong> <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(team.periodDisplay) + ')</span></span>';
-                if (team.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(team.role) + ']</span>';
+                if (team.role) {
+                    html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(team.role) + ']</span>';
+                }
                 html += '</div>';
             });
         } else {
@@ -579,12 +642,14 @@
         html += '<h4 style="color:var(--warning);font-size:0.85rem;margin:8px 0 4px 0;">Missions</h4>';
         if (detail.missions && detail.missions.length > 0) {
             detail.missions.forEach(function(m) {
-                var statusColor = m.status === 'completed' ? 'var(--accent)' : 
+                var statusColor = m.status === 'completed' ? 'var(--accent)' :
                                  m.status === 'cancelled' ? 'var(--danger)' : 'var(--warning)';
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + statusColor + ';margin-bottom:4px;font-size:0.75rem;">';
                 html += '<span><strong>' + escapeHtml(m.title) + '</strong> <span style="color:' + statusColor + ';font-size:0.65rem;">' + escapeHtml(m.status) + '</span>';
                 html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(m.teamName) + ']</span>';
-                if (m.location) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">(' + escapeHtml(m.location) + ')</span>';
+                if (m.location) {
+                    html += ' <span style="color:var(--text-dim);font-size:0.65rem;">(' + escapeHtml(m.location) + ')</span>';
+                }
                 html += '</div>';
             });
         } else {
@@ -604,7 +669,9 @@
             detail.academicTeams.forEach(function(team) {
                 html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);margin-bottom:4px;font-size:0.75rem;">';
                 html += '<span><strong>' + escapeHtml(team.name) + '</strong>' + escapeHtml(team.classDisplay) + ' <span style="color:var(--text-dim);font-size:0.7rem;">(' + escapeHtml(team.periodDisplay) + ')</span></span>';
-                if (team.role) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(team.role) + ']</span>';
+                if (team.role) {
+                    html += ' <span style="color:var(--text-dim);font-size:0.65rem;">[' + escapeHtml(team.role) + ']</span>';
+                }
                 html += '</div>';
             });
         } else {
@@ -641,7 +708,9 @@
             detail.tournamentEliminations.forEach(function(elim) {
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--danger);margin-bottom:3px;font-size:0.7rem;">';
                 html += '<span><strong>' + escapeHtml(elim.tournamentName) + '</strong> - Week ' + escapeHtml(elim.week);
-                if (elim.reason) html += ' (' + escapeHtml(elim.reason) + ')';
+                if (elim.reason) {
+                    html += ' (' + escapeHtml(elim.reason) + ')';
+                }
                 html += '</span>';
                 html += '</div>';
             });
@@ -655,7 +724,9 @@
             detail.standaloneEliminations.forEach(function(elim) {
                 html += '<div style="padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--warning);margin-bottom:3px;font-size:0.7rem;">';
                 html += '<span>Week ' + escapeHtml(elim.week);
-                if (elim.reason) html += ' - ' + escapeHtml(elim.reason);
+                if (elim.reason) {
+                    html += ' - ' + escapeHtml(elim.reason);
+                }
                 html += '</span>';
                 html += '</div>';
             });
@@ -701,7 +772,9 @@
 
         var stats = detail.stats || {};
         for (var key in statLabels) {
-            if (!Object.prototype.hasOwnProperty.call(statLabels, key)) continue;
+            if (!Object.prototype.hasOwnProperty.call(statLabels, key)) {
+                continue;
+            }
             var s = stats[key] || { value: 10, modifier: 0, modifierDisplay: '+0' };
             var modColor = s.modifier > 0 ? 'var(--accent)' : (s.modifier < 0 ? 'var(--danger)' : 'var(--text-dim)');
             html += '<div style="background:var(--bg);padding:6px 10px;border-radius:4px;border:1px solid var(--border-soft);text-align:center;">';
@@ -718,27 +791,20 @@
         html += '<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin-bottom:12px;">';
 
         var magic = detail.magic || {};
-        var magicKeys = MagicConstants.getTypeKeys ? MagicConstants.getTypeKeys() : Object.keys(magic);
+        var magicKeys = Object.keys(magic);
 
-        magicKeys.forEach(function(key) {
-            var m = magic[key] || { value: 0, label: key, level: 'Untrained', color: 'var(--border)' };
-            html += '<div style="background:var(--bg);padding:2px 4px;border-radius:3px;border:1px solid var(--border-soft);text-align:center;">';
-            html += '<div style="font-size:0.45rem;color:var(--text-dim);">' + escapeHtml(m.label || key) + '</div>';
-            html += '<div style="font-size:0.85rem;font-weight:700;color:' + escapeHtml(m.color) + ';">' + escapeHtml(m.value) + '</div>';
-            html += '</div>';
-        });
-
-        html += '</div>';
-
-        // Magic Power
-        var power = 0;
-        var rank = 'Untrained';
-        if (CharacterStats && typeof CharacterStats.calculateMagicPower === 'function') {
-            power = CharacterStats.calculateMagicPower(detail.character);
-            rank = CharacterStats.getMagicRank(power);
+        if (magicKeys.length === 0) {
+            html += '<p class="empty-state" style="padding:4px;font-size:0.7rem;">No magic data</p>';
+        } else {
+            magicKeys.forEach(function(key) {
+                var m = magic[key] || { value: 0, label: key, level: 'Untrained', color: 'var(--border)' };
+                html += '<div style="background:var(--bg);padding:2px 4px;border-radius:3px;border:1px solid var(--border-soft);text-align:center;">';
+                html += '<div style="font-size:0.45rem;color:var(--text-dim);">' + escapeHtml(m.label || key) + '</div>';
+                html += '<div style="font-size:0.85rem;font-weight:700;color:' + escapeHtml(m.color) + ';">' + escapeHtml(m.value) + '</div>';
+                html += '</div>';
+            });
         }
-        html += '<div style="font-size:0.75rem;color:var(--text-dim);padding:4px 8px;background:var(--bg);border-radius:4px;border:1px solid var(--border-soft);">';
-        html += 'Magic Power: <span style="font-weight:600;color:var(--info);">' + Math.round(power) + '/100</span> - ' + escapeHtml(rank);
+
         html += '</div>';
 
         // Special Moves
@@ -753,7 +819,9 @@
             moves.physical.forEach(function(m) {
                 html += '<div style="padding:2px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;border-left:2px solid var(--accent);font-size:0.7rem;">';
                 html += '<span style="font-weight:600;">' + escapeHtml(m.name) + '</span>';
-                if (m.description) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">- ' + escapeHtml(m.description) + '</span>';
+                if (m.description) {
+                    html += ' <span style="color:var(--text-dim);font-size:0.65rem;">- ' + escapeHtml(m.description) + '</span>';
+                }
                 html += '</div>';
             });
             html += '</div>';
@@ -769,7 +837,9 @@
             moves.magical.forEach(function(m) {
                 html += '<div style="padding:2px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;border-left:2px solid var(--info);font-size:0.7rem;">';
                 html += '<span style="font-weight:600;">' + escapeHtml(m.name) + '</span>';
-                if (m.description) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">- ' + escapeHtml(m.description) + '</span>';
+                if (m.description) {
+                    html += ' <span style="color:var(--text-dim);font-size:0.65rem;">- ' + escapeHtml(m.description) + '</span>';
+                }
                 html += '</div>';
             });
             html += '</div>';
@@ -792,12 +862,19 @@
             html += '<p class="empty-state" style="padding:8px;font-size:0.8rem;">No social connections</p>';
         } else {
             relationships.forEach(function(rel) {
-                html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + escapeHtml(rel.typeColor) + ';margin-bottom:4px;font-size:0.75rem;">';
-                html += '<span><strong>' + escapeHtml(rel.otherName) + '</strong> <span style="color:' + escapeHtml(rel.typeColor) + ';font-size:0.75rem;">' + escapeHtml(rel.typeLabel) + escapeHtml(rel.directionText);
-                if (rel.clarification) html += ' (' + escapeHtml(rel.clarification) + ')';
+                var safeColor = getSafeColor(rel.typeColor);
+                html += '<div style="padding:4px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + escapeHtml(safeColor) + ';margin-bottom:4px;font-size:0.75rem;">';
+                html += '<span><strong>' + escapeHtml(rel.otherName) + '</strong> <span style="color:' + escapeHtml(safeColor) + ';font-size:0.75rem;">' + escapeHtml(rel.typeLabel);
+                if (rel.clarification) {
+                    html += ' (' + escapeHtml(rel.clarification) + ')';
+                }
                 html += '</span></span>';
-                if (rel.period) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">' + escapeHtml(rel.period) + '</span>';
-                if (rel.notes) html += ' <span style="color:var(--text-dim);font-size:0.65rem;">📝</span>';
+                if (rel.period) {
+                    html += ' <span style="color:var(--text-dim);font-size:0.65rem;">' + escapeHtml(rel.period) + '</span>';
+                }
+                if (rel.notes) {
+                    html += ' <span style="color:var(--text-dim);font-size:0.65rem;">📝</span>';
+                }
                 html += '</div>';
             });
         }
@@ -807,9 +884,10 @@
     }
 
     function renderNotesTab(detail) {
+        var char = detail.character || {};
         var html = '<div class="detail-section">';
         html += '<div style="background:var(--bg);padding:12px;border-radius:6px;border:1px solid var(--border-soft);min-height:100px;">';
-        html += '<p style="white-space:pre-wrap;margin:0;font-size:0.8rem;">' + escapeHtml(detail.character.notes || 'No notes') + '</p>';
+        html += '<p style="white-space:pre-wrap;margin:0;font-size:0.8rem;">' + escapeHtml(char.notes || 'No notes') + '</p>';
         html += '</div>';
         html += '</div>';
         return html;
@@ -827,13 +905,6 @@
         refresh: refresh
     };
 
-    // Legacy compatibility
-    window.openCharacterDetail = open;
-    window.closeCharacterDetail = close;
-    window.switchDetailTab = switchTab;
-    window.renderCharacterDetail = render;
-
-    // Mark as loaded
     window.__characterDetailLoaded = true;
 
 })();
