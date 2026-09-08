@@ -695,6 +695,6 @@
         getAcademicTabHTML: getAcademicTabHTML,
         getProfessionalTabHTML: getProfessionalTabHTML,
         getSocialTabHTML: getSocialTabHTML
-    };
+    }; 
 
 })();
