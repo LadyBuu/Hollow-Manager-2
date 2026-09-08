@@ -73,6 +73,9 @@
     if (!window.CalendarQueries || typeof window.CalendarQueries.getLocationUsage !== 'function') {
         missing.push('CalendarQueries.getLocationUsage');
     }
+    if (!window.CalendarQueries || typeof window.CalendarQueries.getLocationDisciplineAvailability !== 'function') {
+        missing.push('CalendarQueries.getLocationDisciplineAvailability');
+    }
 
     if (!window.ScheduleCore || typeof window.ScheduleCore.setLocationClass !== 'function') {
         missing.push('ScheduleCore.setLocationClass');
@@ -217,12 +220,12 @@
 
         var schedule = CalendarQueries.getLocationSchedule(locationId, week);
         var usage = CalendarQueries.getLocationUsage(locationId, week);
-        var disciplines = DisciplineQueries.getAvailableDisciplines(week);
+        var disciplineAvailability = CalendarQueries.getLocationDisciplineAvailability(locationId, week);
 
         return {
             schedule: schedule,
             usage: usage,
-            availableDisciplines: disciplines
+            disciplineAvailability: disciplineAvailability
         };
     }
 
@@ -303,6 +306,21 @@
             }
         }
 
+        // Prepare available items from discipline availability
+        var availableItems = [];
+        if (data.disciplineAvailability && data.disciplineAvailability.length > 0) {
+            for (var i = 0; i < data.disciplineAvailability.length; i++) {
+                var d = data.disciplineAvailability[i];
+                if (d && d.available) {
+                    availableItems.push({
+                        id: d.id,
+                        label: d.name + ' (' + (d.usedCount || 0) + '/' + (d.maxSlots || '∞') + ')',
+                        subtitle: d.canHost ? 'Available' : 'Not available at this location'
+                    });
+                }
+            }
+        }
+
         // Prepare data for renderer
         var renderData = {
             schedule: renderSchedule,
@@ -310,8 +328,14 @@
             entityName: locationName,
             modeLabel: 'Location Schedule',
             getDiscipline: DisciplineQueries.getDiscipline,
-            getDuration: function() { return 1; },
-            getLabel: function() { return ''; },
+            getDuration: function(day, hour) {
+                var details = CalendarQueries.getLocationClassDetails(_state.selectedId, _state.week, day, hour);
+                return details ? details.duration || 1 : 1;
+            },
+            getLabel: function(day, hour) {
+                var details = CalendarQueries.getLocationClassDetails(_state.selectedId, _state.week, day, hour);
+                return details ? details.label || '' : '';
+            },
             getInstructorName: function(day, hour) {
                 var details = CalendarQueries.getLocationClassDetails(_state.selectedId, _state.week, day, hour);
                 if (details && details.instructorId) {
@@ -327,13 +351,7 @@
                 }
                 return '';
             },
-            availableItems: data.availableDisciplines.map(function(d) {
-                return {
-                    id: d.id,
-                    label: d.name,
-                    subtitle: 'Available'
-                };
-            }),
+            availableItems: availableItems,
             availableLabel: 'Available Disciplines',
             showEmptySlots: true,
             showRestDays: false,
@@ -495,10 +513,20 @@
             return;
         }
 
-        var disciplines = DisciplineQueries.getAvailableDisciplines(_state.week);
+        var disciplineAvailability = CalendarQueries.getLocationDisciplineAvailability(_state.selectedId, _state.week);
 
-        if (disciplines.length === 0) {
-            notify('No disciplines available for this week.', 'error');
+        if (!disciplineAvailability || disciplineAvailability.length === 0) {
+            notify('No disciplines available for this location this week.', 'error');
+            return;
+        }
+
+        // Filter to only available disciplines
+        var availableDisciplines = disciplineAvailability.filter(function(d) {
+            return d && d.available && d.canHost;
+        });
+
+        if (availableDisciplines.length === 0) {
+            notify('No disciplines currently available at this location.', 'error');
             return;
         }
 
@@ -507,14 +535,15 @@
 
         showAddClassModal({
             title: 'Assign Class to Location - ' + dayName + ' at ' + hourDisplay,
-            disciplines: disciplines,
+            disciplines: availableDisciplines,
             onConfirm: function(disciplineId, closeModal) {
                 var result = ScheduleCore.setLocationClass(
                     _state.selectedId,
                     _state.week,
                     day,
                     hour,
-                    disciplineId
+                    disciplineId,
+                    1
                 );
 
                 if (result && result.success) {
@@ -578,7 +607,7 @@
         var studentList = studentNames.length > 0 ? studentNames.join(', ') : 'None';
 
         showDetailsModal({
-            title: disciplineName + ' at ' + locationName(),
+            title: disciplineName + ' at ' + getLocationName(_state.selectedId),
             details: [
                 { label: 'Day/Time', value: dayName + ' at ' + hourDisplay },
                 { label: 'Instructor', value: instructorName },
@@ -671,7 +700,8 @@
                         _state.week,
                         day,
                         hour,
-                        disciplineId
+                        disciplineId,
+                        1
                     );
 
                     if (result && result.success) {
@@ -693,15 +723,6 @@
     }
 
     // ============================================================
-    // HELPERS
-    // ============================================================
-
-    function locationName() {
-        var location = LocationQueries.getLocation(_state.selectedId);
-        return location ? location.name : 'Location';
-    }
-
-    // ============================================================
     // MODALS - Add Class
     // ============================================================
 
@@ -714,7 +735,9 @@
         var optionsHTML = '';
         for (var i = 0; i < disciplines.length; i++) {
             var d = disciplines[i];
-            optionsHTML += '<option value="' + escapeAttribute(d.id) + '">' + escapeHtml(d.name) + '</option>';
+            var label = d.label || d.name || d.id;
+            var subtitle = d.subtitle ? ' (' + d.subtitle + ')' : '';
+            optionsHTML += '<option value="' + escapeAttribute(d.id) + '">' + escapeHtml(label) + subtitle + '</option>';
         }
 
         modal.innerHTML = (
