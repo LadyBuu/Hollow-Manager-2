@@ -36,39 +36,131 @@
     </div>
 
     <!-- ============================================================
-         CORE UTILITIES - MUST LOAD FIRST (Self-contained, no dependencies)
+         CORE UTILITIES - MUST LOAD FIRST
          ============================================================ -->
     <script src="js/utils/object-utils.js"></script>
     <script src="js/utils/id-utils.js"></script>
     <script src="js/utils/validation-utils.js"></script>
-
-    <!-- Calendar Constants -->
     <script src="js/modules/shared/calendar-constants.js"></script>
     <script src="js/utils/calendar-validation.js"></script>
-
-    <!-- Character Constants -->
     <script src="js/modules/shared/character-constants.js"></script>
-
-    <!-- Social Constants - Try different possible paths -->
-    <script src="js/modules/socials/social-constants.js"></script>
-    <script src="js/modules/shared/social-constants.js"></script>
-    <script src="js/utils/social-constants.js"></script>
-
-    <!-- Magic Constants -->
+    <script src="js/modules/social/social-constants.js"></script>
     <script src="js/modules/shared/magic-constants.js"></script>
-
-    <!-- Format, DOM, Form, Timing utilities -->
     <script src="js/utils/format-utils.js"></script>
     <script src="js/utils/dom-utils.js"></script>
     <script src="js/utils/form-utils.js"></script>
     <script src="js/utils/timing-utils.js"></script>
-
-    <!-- UI Helpers -->
     <script src="js/utils/modal.js"></script>
     <script src="js/utils/notification.js"></script>
 
     <!-- ============================================================
-         EXPORT UTILITIES
+         SHARED QUERIES - ONE ARCHITECTURAL TIER
+         ============================================================ -->
+    <script src="js/shared/queries/character-queries.js"></script>
+    <script src="js/shared/queries/team-queries.js"></script>
+    <script src="js/shared/queries/academy-queries.js"></script>
+    <script src="js/shared/queries/tournament-queries.js"></script>
+    <script src="js/shared/queries/mission-queries.js"></script>
+    <script src="js/shared/queries/calendar-queries.js"></script>
+
+    <!-- ============================================================
+         SHARED DOMAIN QUERIES (non-query helpers)
+         ============================================================ -->
+    <script src="js/modules/shared/discipline-queries.js"></script>
+    <script src="js/modules/shared/location-queries.js"></script>
+    <script src="js/modules/shared/academy-constants.js"></script>
+
+    <!-- ============================================================
+         DOMAIN CORES - WRITE OPERATIONS
+         ============================================================ -->
+    <!-- Characters -->
+    <script src="js/modules/characters/character-generator.js"></script>
+    <script src="js/modules/characters/character-stats.js"></script>
+    <script src="js/modules/characters/character-crud.js"></script>
+    <script src="js/modules/characters/character-classes.js"></script>
+    <script src="js/modules/characters/character-eliminations.js"></script>
+    <script src="js/modules/characters/character-detail-queries.js"></script>
+    <script src="js/modules/characters/character-detail.js"></script>
+    <script src="js/modules/characters/character-views.js"></script>
+    <script src="js/modules/characters/character-list.js"></script>
+    <script src="js/modules/characters/character-form.js"></script>
+    <script src="js/modules/characters/character-class-view.js"></script>
+    <script src="js/modules/characters/character-elimination-view.js"></script>
+    <script src="js/modules/characters/character-stats-view.js"></script>
+    <script src="js/modules/characters/character-events.js"></script>
+    <script src="js/modules/characters/index.js"></script>
+
+    <!-- Teams -->
+    <script src="js/modules/teams/team-core.js"></script>
+    <script src="js/modules/teams/team-members.js"></script>
+    <script src="js/modules/teams/team-rankings.js"></script>
+    <script src="js/modules/teams/team-filters.js"></script>
+    <script src="js/modules/teams/team-render.js"></script>
+    <script src="js/modules/teams/team-manager.js"></script>
+
+    <!-- Academy -->
+    <script src="js/modules/academy/academy-data.js"></script>
+    <script src="js/modules/academy/academy-classes.js"></script>
+    <script src="js/modules/academy/academy-grades.js"></script>
+    <script src="js/modules/academy/academy-groups.js"></script>
+    <script src="js/modules/academy/academy-ranking.js"></script>
+    <script src="js/modules/academy/academy-schedule.js"></script>
+    <script src="js/modules/academy/academy-distribute.js"></script>
+    <script src="js/modules/academy/tabs/class-tab.js"></script>
+    <script src="js/modules/academy/tabs/student-tab.js"></script>
+    <script src="js/modules/academy/tabs/faculty-tab.js"></script>
+    <script src="js/modules/academy/index.js"></script>
+
+    <!-- Calendar -->
+    <script src="js/modules/calendar/schedule-core.js"></script>
+    <script src="js/modules/calendar/calendar-renderer.js"></script>
+    <script src="js/modules/calendar/student-calendar-ui.js"></script>
+    <script src="js/modules/calendar/instructor-calendar-ui.js"></script>
+    <script src="js/modules/calendar/location-calendar-ui.js"></script>
+    <script src="js/modules/calendar/index.js"></script>
+
+    <!-- Tournaments -->
+    <script src="js/modules/tournaments/tournaments-schema.js"></script>
+    <script src="js/modules/tournaments/tournament-lifecycle.js"></script>
+    <script src="js/modules/tournaments/tournaments-core.js"></script>
+    <script src="js/modules/tournaments/tournaments-matches.js"></script>
+    <script src="js/modules/tournaments/tournament-elimination-workflow.js"></script>
+    <script src="js/modules/tournaments/tournaments-render.js"></script>
+    <script src="js/modules/tournaments/tournaments-repair.js"></script>
+    <script src="js/modules/tournaments/tournaments-ui.js"></script>
+    <script src="js/modules/tournaments/index.js"></script>
+
+    <!-- Missions -->
+    <script src="js/modules/missions/missions-schema.js"></script>
+    <script src="js/modules/missions/mission-rules.js"></script>
+    <script src="js/modules/missions/mission-views.js"></script>
+    <script src="js/modules/missions/mission-id.js"></script>
+    <script src="js/modules/missions/missions-core.js"></script>
+    <script src="js/modules/missions/missions-render.js"></script>
+    <script src="js/modules/missions/missions-ui.js"></script>
+    <script src="js/modules/missions/index.js"></script>
+
+    <!-- ============================================================
+         CORE INFRASTRUCTURE
+         ============================================================ -->
+    <script src="js/core/activity-log.js"></script>
+    <script src="js/core/database.js"></script>
+    <script src="js/core/loader.js"></script>
+    <script src="js/core/state.js"></script>
+    <script src="js/core/tab-manager.js"></script>
+    <script src="js/core/mutation-pipeline.js"></script>
+    <script src="js/core/bootstrap.js"></script>
+
+    <!-- ============================================================
+         CROSS-DOMAIN READ MODELS (Dashboard - LAST)
+         ============================================================ -->
+    <script src="js/modules/dashboard/dashboard-queries.js"></script>
+    <script src="js/modules/dashboard/dashboard-render.js"></script>
+    <script src="js/modules/dashboard/dashboard-ui.js"></script>
+    <script src="js/modules/dashboard/index.js"></script>
+
+    <!-- ============================================================
+         EXPORT/IMPORT
          ============================================================ -->
     <script src="js/export/csv-parser.js"></script>
     <script src="js/export/export-utils.js"></script>
@@ -83,35 +175,6 @@
     <script src="js/export/mission-import.js"></script>
     <script src="js/export/mission-template.js"></script>
     <script src="js/export/index.js"></script>
-
-    <!-- ============================================================
-         CALENDAR MODULE
-         ============================================================ -->
-    <script src="js/modules/calendar/schedule-core.js"></script>
-    <script src="js/modules/calendar/calendar-queries.js"></script>
-    <script src="js/modules/calendar/calendar-renderer.js"></script>
-    <script src="js/modules/calendar/student-calendar-ui.js"></script>
-    <script src="js/modules/calendar/instructor-calendar-ui.js"></script>
-    <script src="js/modules/calendar/location-calendar-ui.js"></script>
-    <script src="js/modules/calendar/index.js"></script>
-
-    <!-- ============================================================
-         CORE INFRASTRUCTURE
-         ============================================================ -->
-    <script src="js/core/activity-log.js"></script>
-    <script src="js/core/database.js"></script>
-    <script src="js/core/loader.js"></script>
-    <script src="js/core/state.js"></script>
-    <script src="js/core/tab-manager.js"></script>
-    <script src="js/core/mutation-pipeline.js"></script>
-    <script src="js/core/bootstrap.js"></script>
-
-    <!-- ============================================================
-         SHARED DOMAIN QUERIES
-         ============================================================ -->
-    <script src="js/modules/shared/academy-constants.js"></script>
-    <script src="js/modules/shared/discipline-queries.js"></script>
-    <script src="js/modules/shared/location-queries.js"></script>
 
     <!-- ============================================================
          APP BOOTSTRAP
