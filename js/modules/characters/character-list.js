@@ -62,6 +62,9 @@
         if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
             missing.push('AcademyQueries.getClasses');
         }
+        if (!AcademyQueries || typeof AcademyQueries.isCharacterInClass !== 'function') {
+            missing.push('AcademyQueries.isCharacterInClass');
+        }
 
         if (!Elimination || typeof Elimination.isCharacterEliminated !== 'function') {
             missing.push('Elimination.isCharacterEliminated');
@@ -115,15 +118,9 @@
         }
 
         if (filters.classId !== 'all' && filters.classId !== '') {
-            if (AcademyQueries && typeof AcademyQueries.isCharacterInClass === 'function') {
-                if (!AcademyQueries.isCharacterInClass(char, filters.classId)) {
-                    return false;
-                }
-            } else {
-                var classIds = Array.isArray(char.classIds) ? char.classIds : [];
-                if (!classIds.some(function(cid) { return String(cid) === String(filters.classId); })) {
-                    return false;
-                }
+            // Use AcademyQueries for class membership check
+            if (!AcademyQueries.isCharacterInClass(char, filters.classId)) {
+                return false;
             }
         }
 
@@ -198,10 +195,8 @@
                 isEliminated = Elimination.isCharacterEliminated(char.id, currentWeek);
             }
 
-            var classNames = [];
-            if (AcademyQueries && typeof AcademyQueries.getCharacterClassNames === 'function') {
-                classNames = AcademyQueries.getCharacterClassNames(char);
-            }
+            // Use AcademyQueries for class names
+            var classNames = AcademyQueries.getCharacterClassNames(char) || [];
 
             var safeId = escapeHtml(char.id);
             var safeName = escapeHtml(displayName);
@@ -246,10 +241,8 @@
 
         var previousValue = select.value;
 
-        var classes = [];
-        if (AcademyQueries && typeof AcademyQueries.getClasses === 'function') {
-            classes = AcademyQueries.getClasses();
-        }
+        // Use AcademyQueries for classes
+        var classes = AcademyQueries.getClasses() || [];
 
         select.innerHTML = '<option value="all">All Classes</option>';
 
