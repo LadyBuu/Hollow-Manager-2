@@ -1,697 +1,1126 @@
 /**
  * js/modules/academy/academy-queries.js - Academy Queries
- * Academy-specific composite read models
+ * PURE READ FACADE for all academy data
  * Path: js/modules/academy/academy-queries.js
  * 
- * This module provides:
- *   - Academy-specific composite queries combining multiple domains
- *   - Read-only projections for Academy UI needs
- *   - Thin facade over domain query modules
+ * This module is responsible for:
+ *   - Read-only access to academy data
+ *   - Composing data from multiple academy domains
+ *   - Providing view-ready data for UI components
+ *   - Defensive cloning of all returned data
  * 
  * IMPORTANT:
- *   - READ-ONLY queries - no mutations
- *   - PURE functions - no side effects (except reading window.data)
- *   - No DOM manipulation
- *   - No direct window.data mutation
- *   - Delegates to domain-specific query modules
- *   - Returns clones of data where appropriate
+ *   - This is a PURE READ FACADE - NO MUTATIONS
+ *   - All mutations go through domain modules (AcademyClasses, AcademyGrades, etc.)
+ *   - This module DEPENDS ON domain modules, NOT the other way around
+ *   - Returns DEFENSIVE COPIES of all data (deep clones)
+ *   - No direct data store mutation
+ *   - No saveData() calls
+ *   - No circular dependencies
+ *   - USES AcademyClasses for class data (delegates)
+ *   - USES AcademyGrades for grade data (delegates)
+ *   - USES AcademyGroups for group data (delegates)
+ *   - USES CharacterQueries for character data
+ *   - USES TeamQueries for team data
+ *   - USES TournamentQueries for tournament data
+ * 
+ * DEPENDENCY GRAPH:
+ *   AcademyQueries (read facade)
+ *        ↓
+ *   ┌─────┼─────┐
+ *   ↓     ↓     ↓
+ * AcademyClasses AcademyGrades AcademyGroups
+ *   ↓     ↓     ↓
+ *   └─────┼─────┘
+ *         ↓
+ *   Internal Data Store
  * 
  * DEPENDENCIES:
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.TeamQueries (from team-queries.js)
- *   - window.TournamentQueries (from tournament-queries.js)
- *   - window.DisciplineQueries (from discipline-queries.js)
- *   - window.LocationQueries (from location-queries.js)
- *   - window.AcademyGroups (from academy-groups.js)
- *   - window.CalendarConstants (from calendar-constants.js)
- *   - window.CalendarValidation (from calendar-validation.js)
+ *   - window.AcademyClasses (from academy-classes.js) - MANDATORY
+ *   - window.AcademyGrades (from academy-grades.js) - MANDATORY
+ *   - window.AcademyGroups (from academy-groups.js) - MANDATORY
+ *   - window.CharacterQueries (from character-queries.js) - MANDATORY
+ *   - window.TeamQueries (from team-queries.js) - MANDATORY
+ *   - window.TournamentQueries (from tournament-queries.js) - MANDATORY
+ *   - window.ObjectUtils (from object-utils.js) - MANDATORY
+ *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
  * 
  * USAGE:
  *   var queries = window.AcademyQueries;
+ *   
+ *   // Class queries
  *   var classes = queries.getClasses();
+ *   var cls = queries.getClass('class_123');
+ *   var name = queries.getClassDisplayName('class_123');
+ *   
+ *   // Student queries
  *   var students = queries.getClassStudents('class_123');
- *   var teams = queries.getClassTeams('class_123');
+ *   var available = queries.getAvailableStudents('class_123', 5);
+ *   
+ *   // Grade queries
+ *   var grades = queries.getStudentGrades('char_456');
+ *   var summary = queries.getStudentGradeSummary('char_456');
+ *   
+ *   // Team queries
+ *   var teams = queries.getAcademicTeams();
+ *   var teamMembers = queries.getAcademicTeamMembers('team_789');
+ *   
+ *   // Tournament queries
+ *   var tournaments = queries.getTournamentsByClass('class_123');
  */
 
 (function() {
     'use strict';
 
+    // Guard against duplicate loading
     if (window.__academyQueriesLoaded) {
         return;
     }
 
+    // ============================================================
+    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
+    // ============================================================
+
+    var missing = [];
+
+    if (!window.AcademyClasses || typeof window.AcademyClasses.getClassRecords !== 'function') {
+        missing.push('AcademyClasses.getClassRecords');
+    }
+    if (!window.AcademyClasses || typeof window.AcademyClasses.getClassRecord !== 'function') {
+        missing.push('AcademyClasses.getClassRecord');
+    }
+    if (!window.AcademyClasses || typeof window.AcademyClasses.getClassRecordByName !== 'function') {
+        missing.push('AcademyClasses.getClassRecordByName');
+    }
+    if (!window.AcademyClasses || typeof window.AcademyClasses.getClassStudentsInternal !== 'function') {
+        missing.push('AcademyClasses.getClassStudentsInternal');
+    }
+    if (!window.AcademyClasses || typeof window.AcademyClasses.isStudentInClassInternal !== 'function') {
+        missing.push('AcademyClasses.isStudentInClassInternal');
+    }
+    if (!window.AcademyClasses || typeof window.AcademyClasses.getClassDisplayNameInternal !== 'function') {
+        missing.push('AcademyClasses.getClassDisplayNameInternal');
+    }
+    if (!window.AcademyClasses || typeof window.AcademyClasses.getCharacterClassNamesInternal !== 'function') {
+        missing.push('AcademyClasses.getCharacterClassNamesInternal');
+    }
+
+    if (!window.AcademyGrades || typeof window.AcademyGrades.getStudentGrades !== 'function') {
+        missing.push('AcademyGrades.getStudentGrades');
+    }
+    if (!window.AcademyGrades || typeof window.AcademyGrades.getClassGrades !== 'function') {
+        missing.push('AcademyGrades.getClassGrades');
+    }
+    if (!window.AcademyGrades || typeof window.AcademyGrades.calculateSummary !== 'function') {
+        missing.push('AcademyGrades.calculateSummary');
+    }
+    if (!window.AcademyGrades || typeof window.AcademyGrades.calculateClassRanking !== 'function') {
+        missing.push('AcademyGrades.calculateClassRanking');
+    }
+    if (!window.AcademyGrades || typeof window.AcademyGrades.calculateStudentGPA !== 'function') {
+        missing.push('AcademyGrades.calculateStudentGPA');
+    }
+
+    if (!window.AcademyGroups || typeof window.AcademyGroups.getGroups !== 'function') {
+        missing.push('AcademyGroups.getGroups');
+    }
+    if (!window.AcademyGroups || typeof window.AcademyGroups.getGroup !== 'function') {
+        missing.push('AcademyGroups.getGroup');
+    }
+    if (!window.AcademyGroups || typeof window.AcademyGroups.getGroupsByDiscipline !== 'function') {
+        missing.push('AcademyGroups.getGroupsByDiscipline');
+    }
+    if (!window.AcademyGroups || typeof window.AcademyGroups.getGroupsByInstructor !== 'function') {
+        missing.push('AcademyGroups.getGroupsByInstructor');
+    }
+    if (!window.AcademyGroups || typeof window.AcademyGroups.getAllAutoGroups !== 'function') {
+        missing.push('AcademyGroups.getAllAutoGroups');
+    }
+    if (!window.AcademyGroups || typeof window.AcademyGroups.getAutoGroup !== 'function') {
+        missing.push('AcademyGroups.getAutoGroup');
+    }
+
+    if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
+        missing.push('CharacterQueries.getCharacterById');
+    }
+    if (!window.CharacterQueries || typeof window.CharacterQueries.getDisplayName !== 'function') {
+        missing.push('CharacterQueries.getDisplayName');
+    }
+    if (!window.CharacterQueries || typeof window.CharacterQueries.getStudents !== 'function') {
+        missing.push('CharacterQueries.getStudents');
+    }
+    if (!window.CharacterQueries || typeof window.CharacterQueries.getInstructors !== 'function') {
+        missing.push('CharacterQueries.getInstructors');
+    }
+
+    if (!window.TeamQueries || typeof window.TeamQueries.getTeamsByClass !== 'function') {
+        missing.push('TeamQueries.getTeamsByClass');
+    }
+    if (!window.TeamQueries || typeof window.TeamQueries.getTeamById !== 'function') {
+        missing.push('TeamQueries.getTeamById');
+    }
+    if (!window.TeamQueries || typeof window.TeamQueries.getTeamName !== 'function') {
+        missing.push('TeamQueries.getTeamName');
+    }
+    if (!window.TeamQueries || typeof window.TeamQueries.getActiveTeamMembers !== 'function') {
+        missing.push('TeamQueries.getActiveTeamMembers');
+    }
+    if (!window.TeamQueries || typeof window.TeamQueries.getActiveTeamMemberCount !== 'function') {
+        missing.push('TeamQueries.getActiveTeamMemberCount');
+    }
+
+    if (!window.TournamentQueries || typeof window.TournamentQueries.getTournamentsByClass !== 'function') {
+        missing.push('TournamentQueries.getTournamentsByClass');
+    }
+    if (!window.TournamentQueries || typeof window.TournamentQueries.getTournament !== 'function') {
+        missing.push('TournamentQueries.getTournament');
+    }
+    if (!window.TournamentQueries || typeof window.TournamentQueries.getTournamentTeams !== 'function') {
+        missing.push('TournamentQueries.getTournamentTeams');
+    }
+    if (!window.TournamentQueries || typeof window.TournamentQueries.getTournamentsForTeam !== 'function') {
+        missing.push('TournamentQueries.getTournamentsForTeam');
+    }
+
+    if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
+        missing.push('ObjectUtils.deepClone');
+    }
+
+    if (!window.CalendarConstants) {
+        missing.push('CalendarConstants');
+    }
+
+    if (missing.length > 0) {
+        throw new Error('[AcademyQueries] Missing dependencies: ' + missing.join(', '));
+    }
+
+    window.__academyQueriesLoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
+
+    var AcademyClasses = window.AcademyClasses;
+    var AcademyGrades = window.AcademyGrades;
+    var AcademyGroups = window.AcademyGroups;
     var CharacterQueries = window.CharacterQueries;
     var TeamQueries = window.TeamQueries;
     var TournamentQueries = window.TournamentQueries;
-    var DisciplineQueries = window.DisciplineQueries;
-    var LocationQueries = window.LocationQueries;
-    var AcademyGroups = window.AcademyGroups;
+    var ObjectUtils = window.ObjectUtils;
     var CalendarConstants = window.CalendarConstants;
-    var CalendarValidation = window.CalendarValidation;
 
-    function checkDependencies() {
-        var missing = [];
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
 
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getFullName !== 'function') {
-            missing.push('CharacterQueries.getFullName');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.calculateAge !== 'function') {
-            missing.push('CharacterQueries.calculateAge');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCurrentStatus !== 'function') {
-            missing.push('CharacterQueries.getCurrentStatus');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.isStudent !== 'function') {
-            missing.push('CharacterQueries.isStudent');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.isInstructor !== 'function') {
-            missing.push('CharacterQueries.isInstructor');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.isCivilian !== 'function') {
-            missing.push('CharacterQueries.isCivilian');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getStudents !== 'function') {
-            missing.push('CharacterQueries.getStudents');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getInstructors !== 'function') {
-            missing.push('CharacterQueries.getInstructors');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getNonCivilianCharacters !== 'function') {
-            missing.push('CharacterQueries.getNonCivilianCharacters');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterStats !== 'function') {
-            missing.push('CharacterQueries.getCharacterStats');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterMagic !== 'function') {
-            missing.push('CharacterQueries.getCharacterMagic');
-        }
+    var MIN_WEEK = CalendarConstants.MIN_WEEK;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK;
+    var DEFAULT_WEEK = 1;
 
-        if (!TeamQueries || typeof TeamQueries.getTeamsByType !== 'function') {
-            missing.push('TeamQueries.getTeamsByType');
-        }
-        if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
-            missing.push('TeamQueries.getTeamById');
-        }
-        if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
-            missing.push('TeamQueries.getTeamName');
-        }
-        if (!TeamQueries || typeof TeamQueries.getActiveTeamMembers !== 'function') {
-            missing.push('TeamQueries.getActiveTeamMembers');
-        }
-        if (!TeamQueries || typeof TeamQueries.getActiveTeamMemberCount !== 'function') {
-            missing.push('TeamQueries.getActiveTeamMemberCount');
-        }
-
-        if (!TournamentQueries || typeof TournamentQueries.getTournamentsByClass !== 'function') {
-            missing.push('TournamentQueries.getTournamentsByClass');
-        }
-        if (!TournamentQueries || typeof TournamentQueries.getTournament !== 'function') {
-            missing.push('TournamentQueries.getTournament');
-        }
-        if (!TournamentQueries || typeof TournamentQueries.getTournamentTeams !== 'function') {
-            missing.push('TournamentQueries.getTournamentTeams');
-        }
-        if (!TournamentQueries || typeof TournamentQueries.getTournamentsForTeam !== 'function') {
-            missing.push('TournamentQueries.getTournamentsForTeam');
-        }
-
-        if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
-            missing.push('DisciplineQueries.getDiscipline');
-        }
-        if (!DisciplineQueries || typeof DisciplineQueries.getDisciplines !== 'function') {
-            missing.push('DisciplineQueries.getDisciplines');
-        }
-        if (!DisciplineQueries || typeof DisciplineQueries.getAvailableDisciplines !== 'function') {
-            missing.push('DisciplineQueries.getAvailableDisciplines');
-        }
-
-        if (!LocationQueries || typeof LocationQueries.getLocation !== 'function') {
-            missing.push('LocationQueries.getLocation');
-        }
-        if (!LocationQueries || typeof LocationQueries.getLocations !== 'function') {
-            missing.push('LocationQueries.getLocations');
-        }
-        if (!LocationQueries || typeof LocationQueries.getLocationSchedule !== 'function') {
-            missing.push('LocationQueries.getLocationSchedule');
-        }
-
-        if (!AcademyGroups || typeof AcademyGroups.getAllAutoGroups !== 'function') {
-            missing.push('AcademyGroups.getAllAutoGroups');
-        }
-        if (!AcademyGroups || typeof AcademyGroups.getAutoGroup !== 'function') {
-            missing.push('AcademyGroups.getAutoGroup');
-        }
-        if (!AcademyGroups || typeof AcademyGroups.getGroupsByDiscipline !== 'function') {
-            missing.push('AcademyGroups.getGroupsByDiscipline');
-        }
-        if (!AcademyGroups || typeof AcademyGroups.getGroupsByInstructor !== 'function') {
-            missing.push('AcademyGroups.getGroupsByInstructor');
-        }
-
-        if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
-            missing.push('CalendarConstants.MIN_WEEK');
-        }
-        if (!CalendarConstants || typeof CalendarConstants.MAX_WEEK !== 'number') {
-            missing.push('CalendarConstants.MAX_WEEK');
-        }
-
-        if (!CalendarValidation || typeof CalendarValidation.parseWeek !== 'function') {
-            missing.push('CalendarValidation.parseWeek');
-        }
-
-        if (missing.length > 0) {
-            throw new Error('AcademyQueries: Missing dependencies: ' + missing.join(', '));
-        }
-
-        return true;
-    }
-
-    checkDependencies();
+    // ============================================================
+    // HELPERS
+    // ============================================================
 
     function isNonEmptyString(value) {
         return typeof value === 'string' && value.trim() !== '';
     }
 
-    function getClassData() {
-        var data = window.data;
-        return data && Array.isArray(data.classes) ? data.classes : [];
+    function deepClone(value) {
+        return ObjectUtils.deepClone(value);
     }
 
-    function getCharacterData() {
-        var data = window.data;
-        return data && Array.isArray(data.characters) ? data.characters : [];
+    function getCharacterById(charId) {
+        return CharacterQueries.getCharacterById(charId);
     }
 
-    function getTeamData() {
-        var data = window.data;
-        return data && Array.isArray(data.teams) ? data.teams : [];
-    }
-
-    function normalizeClassName(name) {
-        return String(name).trim();
-    }
-
-    function getClasses() {
-        var classes = getClassData();
-        return classes.slice().filter(function(cls) {
-            return cls && typeof cls === 'object';
-        }).sort(function(a, b) {
-            return String(a.name || '').localeCompare(String(b.name || ''));
-        });
-    }
-
-    function getClass(id) {
-        if (!id) return null;
-        var target = String(id);
-        var classes = getClassData();
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            if (cls && typeof cls === 'object' && String(cls.id) === target) {
-                return cls;
-            }
-        }
-        return null;
-    }
-
-    function getClassByName(name) {
-        if (!name) return null;
-        var target = String(name).toLowerCase().trim();
-        var classes = getClassData();
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            if (cls && typeof cls === 'object') {
-                if (String(cls.name || '').toLowerCase().trim() === target) {
-                    return cls;
-                }
-            }
-        }
-        return null;
-    }
-
-    function getClassDisplayName(classId) {
-        var cls = getClass(classId);
-        return cls ? cls.name : 'Unassigned';
-    }
-
-    function getClassOptions() {
-        var classes = getClasses();
-        var options = [];
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            var count = getClassStudents(cls.id).length;
-            options.push({
-                id: cls.id,
-                name: cls.name,
-                count: count
-            });
-        }
-        return options;
-    }
-
-    function classExists(id) {
-        return getClass(id) !== null;
-    }
-
-    function getClassStudents(classId) {
-        if (!classId) return [];
-        var target = String(classId);
-        var chars = getCharacterData();
-        var result = [];
-        for (var i = 0; i < chars.length; i++) {
-            var character = chars[i];
-            if (character && typeof character === 'object' && Array.isArray(character.classIds)) {
-                for (var j = 0; j < character.classIds.length; j++) {
-                    if (String(character.classIds[j]) === target) {
-                        result.push(character);
-                        break;
-                    }
-                }
-            }
-        }
-        return result;
-    }
-
-    function getClassStudentCount(classId) {
-        return getClassStudents(classId).length;
-    }
-
-    function getCharacterClasses(character) {
-        if (!character) return [];
-        var classIds = Array.isArray(character.classIds) ? character.classIds : [];
-        if (classIds.length === 0) return [];
-
-        var classes = getClasses();
-        var result = [];
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            if (!cls) continue;
-            for (var j = 0; j < classIds.length; j++) {
-                if (String(classIds[j]) === String(cls.id)) {
-                    result.push(cls);
-                    break;
-                }
-            }
-        }
-        return result;
-    }
-
-    function getCharacterClassNames(character) {
-        var classes = getCharacterClasses(character);
-        var names = [];
-        for (var i = 0; i < classes.length; i++) {
-            names.push(classes[i].name);
-        }
-        return names;
-    }
-
-    function isCharacterInClass(character, classId) {
-        if (!character || !classId) return false;
-        var classIds = Array.isArray(character.classIds) ? character.classIds : [];
-        var target = String(classId);
-        for (var i = 0; i < classIds.length; i++) {
-            if (String(classIds[i]) === target) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    function getClassTeams(classId) {
-        if (!classId) return [];
-        var target = String(classId);
-        var teams = getTeamData();
-        var result = [];
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (team && typeof team === 'object' && team.type === 'academic' && String(team.classId) === target) {
-                if (team.status === 'active' || team.status === 'operational') {
-                    result.push(team);
-                }
-            }
-        }
-        return result;
-    }
-
-    function getClassTeamCount(classId) {
-        return getClassTeams(classId).length;
-    }
-
-    function getClassForTeam(team) {
-        if (!team || team.type !== 'academic' || !team.classId) return null;
-        return getClass(team.classId);
-    }
-
-    function getAvailableStudents(classId, week) {
-        if (!classId) return [];
-
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null || weekNum < CalendarConstants.MIN_WEEK || weekNum > CalendarConstants.MAX_WEEK) {
-            return [];
-        }
-
-        var classChars = getClassStudents(classId);
-        var teams = getClassTeams(classId);
-
-        var occupiedIds = {};
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team) continue;
-            var members = TeamQueries.getActiveTeamMembers(team, weekNum);
-            for (var j = 0; j < members.length; j++) {
-                var member = members[j];
-                if (member && member.characterId) {
-                    occupiedIds[String(member.characterId)] = true;
-                }
-            }
-        }
-
-        var result = [];
-        for (var k = 0; k < classChars.length; k++) {
-            var character = classChars[k];
-            if (!character) continue;
-            if (character.deceased) continue;
-            if (occupiedIds[String(character.id)]) continue;
-            result.push(character);
-        }
-
-        return result;
-    }
-
-    function getAvailableStudentCount(classId, week) {
-        return getAvailableStudents(classId, week).length;
-    }
-
-    function isStudentAvailable(classId, studentId, week) {
-        if (!classId || !studentId) return false;
-
-        var weekNum = CalendarValidation.parseWeek(week);
-        if (weekNum === null || weekNum < CalendarConstants.MIN_WEEK || weekNum > CalendarConstants.MAX_WEEK) {
-            return false;
-        }
-
-        var character = CharacterQueries.getCharacterById(studentId);
-        if (!character) return false;
-        if (!isCharacterInClass(character, classId)) return false;
-        if (character.deceased) return false;
-
-        var teams = getClassTeams(classId);
-        for (var i = 0; i < teams.length; i++) {
-            var team = teams[i];
-            if (!team) continue;
-            var members = TeamQueries.getActiveTeamMembers(team, weekNum);
-            for (var j = 0; j < members.length; j++) {
-                var member = members[j];
-                if (member && String(member.characterId) === String(studentId)) {
-                    return false;
-                }
-            }
-        }
-
-        return true;
-    }
-
-    function getClassStats(classId, week) {
-        if (!classId) {
-            return { totalStudents: 0, totalTeams: 0, availableStudents: null, classExists: false, className: null };
-        }
-
-        var cls = getClass(classId);
-        if (!cls) {
-            return { totalStudents: 0, totalTeams: 0, availableStudents: null, classExists: false, className: null };
-        }
-
-        var totalStudents = getClassStudentCount(classId);
-        var totalTeams = getClassTeamCount(classId);
-        var availableStudents = null;
-
-        if (week !== undefined && week !== null) {
-            availableStudents = getAvailableStudentCount(classId, week);
-        }
-
-        return {
-            totalStudents: totalStudents,
-            totalTeams: totalTeams,
-            availableStudents: availableStudents,
-            classExists: true,
-            className: cls.name
-        };
-    }
-
-    function getClassesWithStats(week) {
-        var classes = getClasses();
-        var result = [];
-
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            var stats = getClassStats(cls.id, week);
-            result.push({
-                id: cls.id,
-                name: cls.name,
-                totalStudents: stats.totalStudents,
-                totalTeams: stats.totalTeams,
-                availableStudents: stats.availableStudents
-            });
-        }
-
-        return result;
-    }
-
-    function getCharacterById(id) {
-        return CharacterQueries.getCharacterById(id);
-    }
-
-    function getCharacterNameById(id) {
-        return CharacterQueries.getCharacterNameById(id);
-    }
-
-    function getDisplayName(char) {
+    function getCharacterDisplayName(char) {
         return CharacterQueries.getDisplayName(char);
     }
 
-    function getFullName(char) {
-        return CharacterQueries.getFullName(char);
+    function getCurrentWeek() {
+        if (window.data && typeof window.data.currentWeek === 'number') {
+            return window.data.currentWeek;
+        }
+        return DEFAULT_WEEK;
     }
 
-    function getCharacterAge(char) {
-        return CharacterQueries.calculateAge(char);
+    // ============================================================
+    // CLASS QUERIES - Delegates to AcademyClasses
+    // ============================================================
+
+    /**
+     * Get all classes (defensive copy).
+     * 
+     * @param {string} status - Optional status filter ('active', 'archived', 'graduated')
+     * @returns {array} Array of class objects
+     */
+    function getClasses(status) {
+        var records = status 
+            ? AcademyClasses.getClassRecordsByStatus(status) 
+            : AcademyClasses.getClassRecords();
+        
+        // Return defensive copies
+        return records.map(function(cls) {
+            return deepClone(cls);
+        }).filter(function(cls) {
+            return cls !== null;
+        });
     }
 
-    function getCurrentStatus(char) {
-        return CharacterQueries.getCurrentStatus(char);
+    /**
+     * Get a class by ID (defensive copy).
+     * 
+     * @param {string} classId - Class ID
+     * @returns {object|null} Class object or null
+     */
+    function getClass(classId) {
+        var cls = AcademyClasses.getClassRecord(classId);
+        return cls ? deepClone(cls) : null;
     }
 
-    function isStudent(char) {
-        return CharacterQueries.isStudent(char);
+    /**
+     * Get a class by name (defensive copy).
+     * 
+     * @param {string} name - Class name
+     * @returns {object|null} Class object or null
+     */
+    function getClassByName(name) {
+        var cls = AcademyClasses.getClassRecordByName(name);
+        return cls ? deepClone(cls) : null;
     }
 
-    function isInstructor(char) {
-        return CharacterQueries.isInstructor(char);
+    /**
+     * Get a class display name.
+     * 
+     * @param {string} classId - Class ID
+     * @returns {string} Class display name or 'Unknown Class'
+     */
+    function getClassDisplayName(classId) {
+        return AcademyClasses.getClassDisplayNameInternal(classId);
     }
 
-    function isCivilian(char) {
-        return CharacterQueries.isCivilian(char);
+    /**
+     * Get character class names.
+     * 
+     * @param {object} character - Character object
+     * @returns {array} Array of class names
+     */
+    function getCharacterClassNames(character) {
+        return AcademyClasses.getCharacterClassNamesInternal(character);
     }
 
-    function getStudents() {
-        return CharacterQueries.getStudents();
-    }
-
-    function getInstructors() {
-        return CharacterQueries.getInstructors();
-    }
-
-    function getNonCivilianCharacters() {
-        return CharacterQueries.getNonCivilianCharacters();
-    }
-
-    function getCharacterStats(char) {
-        return CharacterQueries.getCharacterStats(char);
-    }
-
-    function getCharacterMagic(char) {
-        return CharacterQueries.getCharacterMagic(char);
-    }
-
-    function getAcademicTeams(classId) {
-        if (!classId) {
+    /**
+     * Get classes for a character.
+     * 
+     * @param {object} character - Character object
+     * @returns {array} Array of class objects (defensive copies)
+     */
+    function getCharacterClasses(character) {
+        if (!character || typeof character !== 'object') {
             return [];
         }
-        return getClassTeams(classId);
+
+        var classIds = character.classIds;
+        if (!Array.isArray(classIds) || classIds.length === 0) {
+            return [];
+        }
+
+        var result = [];
+        for (var i = 0; i < classIds.length; i++) {
+            var cls = AcademyClasses.getClassRecord(classIds[i]);
+            if (cls) {
+                result.push(deepClone(cls));
+            }
+        }
+
+        return result;
     }
 
+    /**
+     * Check if a character is in a class.
+     * 
+     * @param {object} character - Character object
+     * @param {string} classId - Class ID
+     * @returns {boolean} True if character is in class
+     */
+    function isCharacterInClass(character, classId) {
+        if (!character || typeof character !== 'object') {
+            return false;
+        }
+
+        return AcademyClasses.isStudentInClassInternal(classId, character.id);
+    }
+
+    // ============================================================
+    // STUDENT QUERIES - Composes from AcademyClasses + CharacterQueries
+    // ============================================================
+
+    /**
+     * Get students for a class (defensive copies).
+     * 
+     * @param {string} classId - Class ID
+     * @param {string} statusFilter - Optional character status filter
+     * @returns {array} Array of character objects
+     */
+    function getClassStudents(classId, statusFilter) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var studentIds = AcademyClasses.getClassStudentsInternal(classId);
+        var result = [];
+
+        for (var i = 0; i < studentIds.length; i++) {
+            var char = CharacterQueries.getCharacterById(studentIds[i]);
+            if (!char) {
+                continue;
+            }
+
+            // Apply status filter if provided
+            if (statusFilter) {
+                var status = CharacterQueries.getCurrentStatus(char);
+                if (status.toLowerCase() !== statusFilter.toLowerCase()) {
+                    continue;
+                }
+            }
+
+            result.push(deepClone(char));
+        }
+
+        // Sort by display name
+        result.sort(function(a, b) {
+            var nameA = CharacterQueries.getDisplayName(a);
+            var nameB = CharacterQueries.getDisplayName(b);
+            return nameA.localeCompare(nameB);
+        });
+
+        return result;
+    }
+
+    /**
+     * Get students for a class with their grades.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number} week - Optional week filter
+     * @returns {array} Array of { student, grades, summary }
+     */
+    function getClassStudentsWithGrades(classId, week) {
+        var students = getClassStudents(classId);
+        var result = [];
+
+        for (var i = 0; i < students.length; i++) {
+            var student = students[i];
+            var grades = AcademyGrades.getStudentGrades(student.id, week);
+            var summary = AcademyGrades.calculateSummary(grades);
+
+            result.push({
+                student: student,
+                grades: grades,
+                summary: summary
+            });
+        }
+
+        return result;
+    }
+
+    /**
+     * Get available students for a class (not already in the class).
+     * 
+     * @param {string} classId - Class ID
+     * @param {number} week - Week to check availability
+     * @param {string} statusFilter - Optional character status filter
+     * @returns {array} Array of available character objects
+     */
+    function getAvailableStudents(classId, week, statusFilter) {
+        if (!isNonEmptyString(classId)) {
+            return [];
+        }
+
+        var allStudents = CharacterQueries.getStudents() || [];
+        var classStudents = AcademyClasses.getClassStudentsInternal(classId);
+        var classStudentSet = {};
+
+        for (var i = 0; i < classStudents.length; i++) {
+            classStudentSet[String(classStudents[i])] = true;
+        }
+
+        var result = [];
+
+        for (var j = 0; j < allStudents.length; j++) {
+            var student = allStudents[j];
+            if (!student) {
+                continue;
+            }
+
+            // Skip if already in class
+            if (classStudentSet[String(student.id)]) {
+                continue;
+            }
+
+            // Apply status filter if provided
+            if (statusFilter) {
+                var status = CharacterQueries.getCurrentStatus(student);
+                if (status.toLowerCase() !== statusFilter.toLowerCase()) {
+                    continue;
+                }
+            }
+
+            result.push(deepClone(student));
+        }
+
+        // Sort by display name
+        result.sort(function(a, b) {
+            var nameA = CharacterQueries.getDisplayName(a);
+            var nameB = CharacterQueries.getDisplayName(b);
+            return nameA.localeCompare(nameB);
+        });
+
+        return result;
+    }
+
+    /**
+     * Get students for a discipline.
+     * 
+     * @param {string} disciplineId - Discipline ID
+     * @param {number} week - Week to check
+     * @returns {array} Array of character objects
+     */
+    function getStudentsByDiscipline(disciplineId, week) {
+        if (!isNonEmptyString(disciplineId)) {
+            return [];
+        }
+
+        var weekNum = week || getCurrentWeek();
+        var allStudents = CharacterQueries.getStudents() || [];
+        var result = [];
+
+        for (var i = 0; i < allStudents.length; i++) {
+            var student = allStudents[i];
+            if (!student) {
+                continue;
+            }
+
+            // Check if student has grades in this discipline
+            var grades = AcademyGrades.getStudentGrades(student.id, weekNum);
+            var hasDiscipline = false;
+
+            for (var j = 0; j < grades.length; j++) {
+                if (String(grades[j].disciplineId) === String(disciplineId)) {
+                    hasDiscipline = true;
+                    break;
+                }
+            }
+
+            if (hasDiscipline) {
+                result.push(deepClone(student));
+            }
+        }
+
+        result.sort(function(a, b) {
+            var nameA = CharacterQueries.getDisplayName(a);
+            var nameB = CharacterQueries.getDisplayName(b);
+            return nameA.localeCompare(nameB);
+        });
+
+        return result;
+    }
+
+    // ============================================================
+    // GRADE QUERIES - Delegates to AcademyGrades
+    // ============================================================
+
+    /**
+     * Get grades for a student.
+     * 
+     * @param {string} studentId - Student ID
+     * @param {number} week - Optional week filter
+     * @returns {array} Array of grade objects
+     */
+    function getStudentGrades(studentId, week) {
+        return AcademyGrades.getStudentGrades(studentId, week);
+    }
+
+    /**
+     * Get grades for a class.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number} week - Optional week filter
+     * @returns {array} Array of grade objects
+     */
+    function getClassGrades(classId, week) {
+        return AcademyGrades.getClassGrades(classId, week);
+    }
+
+    /**
+     * Get grades for a discipline.
+     * 
+     * @param {string} disciplineId - Discipline ID
+     * @param {number} week - Optional week filter
+     * @returns {array} Array of grade objects
+     */
+    function getDisciplineGrades(disciplineId, week) {
+        return AcademyGrades.getDisciplineGrades(disciplineId, week);
+    }
+
+    /**
+     * Calculate a grade summary.
+     * 
+     * @param {array} grades - Array of grade objects
+     * @param {number} weightThreshold - Minimum weight to include
+     * @returns {object} Summary statistics
+     */
+    function calculateGradeSummary(grades, weightThreshold) {
+        return AcademyGrades.calculateSummary(grades, weightThreshold);
+    }
+
+    /**
+     * Calculate student GPA.
+     * 
+     * @param {string} studentId - Student ID
+     * @param {number} week - Optional week filter
+     * @returns {object} GPA statistics
+     */
+    function calculateStudentGPA(studentId, week) {
+        return AcademyGrades.calculateStudentGPA(studentId, week);
+    }
+
+    /**
+     * Calculate class ranking.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number} week - Week number
+     * @returns {array} Array of { studentId, name, average, rank }
+     */
+    function calculateClassRanking(classId, week) {
+        return AcademyGrades.calculateClassRanking(classId, week, CharacterQueries.getCharacterById);
+    }
+
+    // ============================================================
+    // GROUP QUERIES - Delegates to AcademyGroups
+    // ============================================================
+
+    /**
+     * Get all groups.
+     * 
+     * @param {string} type - Optional group type filter
+     * @returns {array} Array of group objects
+     */
+    function getGroups(type) {
+        return AcademyGroups.getGroups(type);
+    }
+
+    /**
+     * Get a group by ID.
+     * 
+     * @param {string} groupId - Group ID
+     * @returns {object|null} Group object or null
+     */
+    function getGroup(groupId) {
+        return AcademyGroups.getGroup(groupId);
+    }
+
+    /**
+     * Get groups by discipline.
+     * 
+     * @param {string} disciplineId - Discipline ID
+     * @param {number} week - Week number
+     * @returns {array} Array of group objects
+     */
+    function getGroupsByDiscipline(disciplineId, week) {
+        return AcademyGroups.getGroupsByDiscipline(disciplineId, week);
+    }
+
+    /**
+     * Get groups by instructor.
+     * 
+     * @param {string} instructorId - Instructor ID
+     * @param {number} week - Week number
+     * @returns {array} Array of group objects
+     */
+    function getGroupsByInstructor(instructorId, week) {
+        return AcademyGroups.getGroupsByInstructor(instructorId, week);
+    }
+
+    /**
+     * Get all auto-groups.
+     * 
+     * @param {number} week - Week number
+     * @returns {array} Array of auto-group objects
+     */
+    function getAllAutoGroups(week) {
+        return AcademyGroups.getAllAutoGroups(week);
+    }
+
+    /**
+     * Get an auto-group.
+     * 
+     * @param {string} disciplineId - Discipline ID
+     * @param {number} week - Week number
+     * @param {string} groupIndex - Group index
+     * @returns {object|null} Auto-group object or null
+     */
+    function getAutoGroup(disciplineId, week, groupIndex) {
+        return AcademyGroups.getAutoGroup(disciplineId, week, groupIndex);
+    }
+
+    // ============================================================
+    // TEAM QUERIES - Delegates to TeamQueries
+    // ============================================================
+
+    /**
+     * Get academic teams for a class.
+     * 
+     * @param {string} classId - Class ID
+     * @param {string} status - Optional status filter
+     * @returns {array} Array of team objects
+     */
+    function getAcademicTeams(classId, status) {
+        var teams = TeamQueries.getTeamsByClass(classId, status);
+        return teams.map(function(team) {
+            return deepClone(team);
+        });
+    }
+
+    /**
+     * Get academic team members.
+     * 
+     * @param {string} teamId - Team ID
+     * @param {number} week - Week to check membership
+     * @returns {array} Array of member objects
+     */
     function getAcademicTeamMembers(teamId, week) {
         var team = TeamQueries.getTeamById(teamId);
         if (!team) {
             return [];
         }
-        return TeamQueries.getActiveTeamMembers(team, week);
+
+        var weekNum = week || getCurrentWeek();
+        return TeamQueries.getActiveTeamMembers(team, weekNum);
     }
 
+    /**
+     * Get academic team member count.
+     * 
+     * @param {string} teamId - Team ID
+     * @param {number} week - Week to check membership
+     * @returns {number} Member count
+     */
     function getAcademicTeamMemberCount(teamId, week) {
         var team = TeamQueries.getTeamById(teamId);
         if (!team) {
             return 0;
         }
-        return TeamQueries.getActiveTeamMemberCount(team, week);
+
+        var weekNum = week || getCurrentWeek();
+        return TeamQueries.getActiveTeamMemberCount(team, weekNum);
     }
 
-    function getTournaments(classId) {
-        if (!classId) {
-            return [];
-        }
-        return TournamentQueries.getTournamentsByClass(classId);
+    // ============================================================
+    // TOURNAMENT QUERIES - Delegates to TournamentQueries
+    // ============================================================
+
+    /**
+     * Get tournaments for a class.
+     * 
+     * @param {string} classId - Class ID
+     * @param {string} status - Optional status filter
+     * @returns {array} Array of tournament objects
+     */
+    function getTournamentsByClass(classId, status) {
+        return TournamentQueries.getTournamentsByClass(classId, status);
     }
 
-    function getTournament(id) {
-        if (!id) {
-            return null;
-        }
-        return TournamentQueries.getTournament(id);
+    /**
+     * Get a tournament by ID.
+     * 
+     * @param {string} tournamentId - Tournament ID
+     * @returns {object|null} Tournament object or null
+     */
+    function getTournament(tournamentId) {
+        return TournamentQueries.getTournament(tournamentId);
     }
 
+    /**
+     * Get tournament teams.
+     * 
+     * @param {string} tournamentId - Tournament ID
+     * @returns {array} Array of team objects
+     */
     function getTournamentTeams(tournamentId) {
         return TournamentQueries.getTournamentTeams(tournamentId);
     }
 
-    function getTournamentsForTeam(teamId) {
-        if (!teamId) {
-            return [];
-        }
-        return TournamentQueries.getTournamentsForTeam(teamId);
+    /**
+     * Get tournaments for a team.
+     * 
+     * @param {string} teamId - Team ID
+     * @param {string} status - Optional status filter
+     * @returns {array} Array of tournament objects
+     */
+    function getTournamentsForTeam(teamId, status) {
+        return TournamentQueries.getTournamentsForTeam(teamId, status);
     }
 
-    function getDiscipline(id) {
-        return DisciplineQueries.getDiscipline(id);
-    }
+    // ============================================================
+    // DISCIPLINE QUERIES - Composes from various sources
+    // ============================================================
 
-    function getDisciplines() {
-        return DisciplineQueries.getDisciplines();
-    }
-
+    /**
+     * Get available disciplines for a week.
+     * 
+     * @param {number} week - Week number
+     * @returns {array} Array of discipline objects
+     */
     function getAvailableDisciplines(week) {
-        return DisciplineQueries.getAvailableDisciplines(week);
-    }
+        // This would typically come from a discipline store
+        // For now, use the window.data.curriculum.disciplines
+        var weekNum = week || getCurrentWeek();
+        var data = window.data || {};
+        var curriculum = data.curriculum || {};
+        var disciplines = curriculum.disciplines || [];
 
-    function getLocation(id) {
-        return LocationQueries.getLocation(id);
-    }
-
-    function getLocations() {
-        return LocationQueries.getLocations();
-    }
-
-    function getLocationSchedule(locationId, week) {
-        return LocationQueries.getLocationSchedule(locationId, week);
-    }
-
-    function getClassInstructors(classId) {
-        if (!classId) {
+        if (!Array.isArray(disciplines)) {
             return [];
         }
-        var students = getClassStudents(classId);
-        var instructors = [];
 
-        for (var i = 0; i < students.length; i++) {
-            var student = students[i];
-            var status = CharacterQueries.getCurrentStatus(student);
-            if (status === 'instructor' || status === 'teacher' || status === 'professor' || status === 'senior') {
-                instructors.push(student);
+        return disciplines.filter(function(d) {
+            if (!d) return false;
+            // Check if discipline is available for this week
+            if (d.availableWeeks && Array.isArray(d.availableWeeks)) {
+                return d.availableWeeks.indexOf(weekNum) !== -1;
+            }
+            return true;
+        }).map(function(d) {
+            return deepClone(d);
+        });
+    }
+
+    /**
+     * Get a discipline by ID.
+     * 
+     * @param {string} disciplineId - Discipline ID
+     * @returns {object|null} Discipline object or null
+     */
+    function getDiscipline(disciplineId) {
+        if (!isNonEmptyString(disciplineId)) {
+            return null;
+        }
+
+        var data = window.data || {};
+        var curriculum = data.curriculum || {};
+        var disciplines = curriculum.disciplines || [];
+
+        if (!Array.isArray(disciplines)) {
+            return null;
+        }
+
+        for (var i = 0; i < disciplines.length; i++) {
+            if (disciplines[i] && String(disciplines[i].id) === String(disciplineId)) {
+                return deepClone(disciplines[i]);
             }
         }
 
-        return instructors;
+        return null;
     }
 
-    function getAllAutoGroups() {
-        return AcademyGroups.getAllAutoGroups();
+    /**
+     * Get instructors for a discipline.
+     * 
+     * @param {string} disciplineId - Discipline ID
+     * @param {number} week - Week number
+     * @returns {array} Array of instructor objects
+     */
+    function getDisciplineInstructors(disciplineId, week) {
+        var discipline = getDiscipline(disciplineId);
+        if (!discipline) {
+            return [];
+        }
+
+        var instructorIds = discipline.instructorIds || [];
+        var result = [];
+
+        for (var i = 0; i < instructorIds.length; i++) {
+            var instructor = CharacterQueries.getCharacterById(instructorIds[i]);
+            if (instructor) {
+                result.push(deepClone(instructor));
+            }
+        }
+
+        return result;
     }
 
-    function getAutoGroup(key) {
-        return AcademyGroups.getAutoGroup(key);
+    /**
+     * Get locations for a discipline.
+     * 
+     * @param {string} disciplineId - Discipline ID
+     * @param {number} week - Week number
+     * @returns {array} Array of location objects
+     */
+    function getDisciplineLocations(disciplineId, week) {
+        var discipline = getDiscipline(disciplineId);
+        if (!discipline) {
+            return [];
+        }
+
+        var locationIds = discipline.locationIds || [];
+        var result = [];
+
+        for (var i = 0; i < locationIds.length; i++) {
+            var data = window.data || {};
+            var curriculum = data.curriculum || {};
+            var locations = curriculum.locations || [];
+
+            for (var j = 0; j < locations.length; j++) {
+                if (locations[j] && String(locations[j].id) === String(locationIds[i])) {
+                    result.push(deepClone(locations[j]));
+                    break;
+                }
+            }
+        }
+
+        return result;
     }
 
-    function getGroupsByDiscipline(disciplineId) {
-        return AcademyGroups.getGroupsByDiscipline(disciplineId);
+    // ============================================================
+    // INSTRUCTOR QUERIES - Composes from CharacterQueries
+    // ============================================================
+
+    /**
+     * Get instructors for a class.
+     * 
+     * @param {string} classId - Class ID
+     * @returns {array} Array of instructor objects
+     */
+    function getClassInstructors(classId) {
+        var cls = AcademyClasses.getClassRecord(classId);
+        if (!cls) {
+            return [];
+        }
+
+        var instructorId = cls.instructorId;
+        if (!instructorId) {
+            return [];
+        }
+
+        var instructor = CharacterQueries.getCharacterById(instructorId);
+        return instructor ? [deepClone(instructor)] : [];
     }
 
-    function getGroupsByInstructor(instructorId) {
-        return AcademyGroups.getGroupsByInstructor(instructorId);
+    /**
+     * Get all instructors.
+     * 
+     * @returns {array} Array of instructor objects
+     */
+    function getInstructors() {
+        return CharacterQueries.getInstructors().map(function(instructor) {
+            return deepClone(instructor);
+        });
     }
+
+    /**
+     * Get instructor by ID.
+     * 
+     * @param {string} instructorId - Instructor ID
+     * @returns {object|null} Instructor object or null
+     */
+    function getInstructor(instructorId) {
+        var instructor = CharacterQueries.getCharacterById(instructorId);
+        return instructor ? deepClone(instructor) : null;
+    }
+
+    // ============================================================
+    // LOCATION QUERIES - Composes from curriculum data
+    // ============================================================
+
+    /**
+     * Get all locations.
+     * 
+     * @returns {array} Array of location objects
+     */
+    function getLocations() {
+        var data = window.data || {};
+        var curriculum = data.curriculum || {};
+        var locations = curriculum.locations || [];
+
+        if (!Array.isArray(locations)) {
+            return [];
+        }
+
+        return locations.map(function(location) {
+            return deepClone(location);
+        }).filter(function(location) {
+            return location !== null;
+        });
+    }
+
+    /**
+     * Get a location by ID.
+     * 
+     * @param {string} locationId - Location ID
+     * @returns {object|null} Location object or null
+     */
+    function getLocation(locationId) {
+        if (!isNonEmptyString(locationId)) {
+            return null;
+        }
+
+        var data = window.data || {};
+        var curriculum = data.curriculum || {};
+        var locations = curriculum.locations || [];
+
+        for (var i = 0; i < locations.length; i++) {
+            if (locations[i] && String(locations[i].id) === String(locationId)) {
+                return deepClone(locations[i]);
+            }
+        }
+
+        return null;
+    }
+
+    // ============================================================
+    // AGGREGATE QUERIES - Cross-domain compositions
+    // ============================================================
+
+    /**
+     * Get comprehensive class details.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number} week - Week number
+     * @returns {object} Comprehensive class details
+     */
+    function getClassDetails(classId, week) {
+        var cls = AcademyClasses.getClassRecord(classId);
+        if (!cls) {
+            return null;
+        }
+
+        var weekNum = week || getCurrentWeek();
+        var students = getClassStudents(classId);
+        var grades = AcademyGrades.getClassGrades(classId, weekNum);
+        var teams = TeamQueries.getTeamsByClass(classId);
+        var tournaments = TournamentQueries.getTournamentsByClass(classId);
+        var instructors = getClassInstructors(classId);
+
+        var gradeSummary = AcademyGrades.calculateSummary(grades);
+        var ranking = AcademyGrades.calculateClassRanking(classId, weekNum, CharacterQueries.getCharacterById);
+
+        return {
+            class: deepClone(cls),
+            studentCount: students.length,
+            students: students,
+            grades: grades,
+            gradeSummary: gradeSummary,
+            ranking: ranking,
+            teams: teams.map(function(team) { return deepClone(team); }),
+            tournamentCount: tournaments.length,
+            tournaments: tournaments,
+            instructors: instructors,
+            week: weekNum
+        };
+    }
+
+    /**
+     * Get comprehensive student details.
+     * 
+     * @param {string} studentId - Student ID
+     * @param {number} week - Week number
+     * @returns {object} Comprehensive student details
+     */
+    function getStudentDetails(studentId, week) {
+        var student = CharacterQueries.getCharacterById(studentId);
+        if (!student) {
+            return null;
+        }
+
+        var weekNum = week || getCurrentWeek();
+        var grades = AcademyGrades.getStudentGrades(studentId, weekNum);
+        var gpa = AcademyGrades.calculateStudentGPA(studentId, weekNum);
+        var classes = getCharacterClasses(student);
+        var gradeSummary = AcademyGrades.calculateSummary(grades);
+
+        return {
+            student: deepClone(student),
+            classes: classes,
+            grades: grades,
+            gradeSummary: gradeSummary,
+            gpa: gpa,
+            week: weekNum,
+            displayName: CharacterQueries.getDisplayName(student)
+        };
+    }
+
+    // ============================================================
+    // EXPOSE
+    // ============================================================
 
     window.AcademyQueries = {
+        // ---- Class Queries ----
         getClasses: getClasses,
         getClass: getClass,
         getClassByName: getClassByName,
         getClassDisplayName: getClassDisplayName,
-        classExists: classExists,
-        getClassOptions: getClassOptions,
-
-        getClassStudents: getClassStudents,
-        getClassStudentCount: getClassStudentCount,
         getCharacterClasses: getCharacterClasses,
         getCharacterClassNames: getCharacterClassNames,
         isCharacterInClass: isCharacterInClass,
 
-        getClassTeams: getClassTeams,
-        getClassTeamCount: getClassTeamCount,
-        getClassForTeam: getClassForTeam,
-
+        // ---- Student Queries ----
+        getClassStudents: getClassStudents,
+        getClassStudentsWithGrades: getClassStudentsWithGrades,
         getAvailableStudents: getAvailableStudents,
-        getAvailableStudentCount: getAvailableStudentCount,
-        isStudentAvailable: isStudentAvailable,
+        getStudentsByDiscipline: getStudentsByDiscipline,
 
-        getClassStats: getClassStats,
-        getClassesWithStats: getClassesWithStats,
+        // ---- Grade Queries ----
+        getStudentGrades: getStudentGrades,
+        getClassGrades: getClassGrades,
+        getDisciplineGrades: getDisciplineGrades,
+        calculateGradeSummary: calculateGradeSummary,
+        calculateStudentGPA: calculateStudentGPA,
+        calculateClassRanking: calculateClassRanking,
 
-        getCharacterById: getCharacterById,
-        getCharacterNameById: getCharacterNameById,
-        getDisplayName: getDisplayName,
-        getFullName: getFullName,
-        getCharacterAge: getCharacterAge,
-        getCurrentStatus: getCurrentStatus,
-        isStudent: isStudent,
-        isInstructor: isInstructor,
-        isCivilian: isCivilian,
-        getStudents: getStudents,
-        getInstructors: getInstructors,
-        getNonCivilianCharacters: getNonCivilianCharacters,
-        getCharacterStats: getCharacterStats,
-        getCharacterMagic: getCharacterMagic,
+        // ---- Group Queries ----
+        getGroups: getGroups,
+        getGroup: getGroup,
+        getGroupsByDiscipline: getGroupsByDiscipline,
+        getGroupsByInstructor: getGroupsByInstructor,
+        getAllAutoGroups: getAllAutoGroups,
+        getAutoGroup: getAutoGroup,
 
+        // ---- Team Queries ----
         getAcademicTeams: getAcademicTeams,
         getAcademicTeamMembers: getAcademicTeamMembers,
         getAcademicTeamMemberCount: getAcademicTeamMemberCount,
 
-        getTournaments: getTournaments,
+        // ---- Tournament Queries ----
+        getTournamentsByClass: getTournamentsByClass,
         getTournament: getTournament,
         getTournamentTeams: getTournamentTeams,
         getTournamentsForTeam: getTournamentsForTeam,
 
-        getDiscipline: getDiscipline,
-        getDisciplines: getDisciplines,
+        // ---- Discipline Queries ----
         getAvailableDisciplines: getAvailableDisciplines,
+        getDiscipline: getDiscipline,
+        getDisciplineInstructors: getDisciplineInstructors,
+        getDisciplineLocations: getDisciplineLocations,
 
-        getLocation: getLocation,
-        getLocations: getLocations,
-        getLocationSchedule: getLocationSchedule,
-
+        // ---- Instructor Queries ----
         getClassInstructors: getClassInstructors,
+        getInstructors: getInstructors,
+        getInstructor: getInstructor,
 
-        getAllAutoGroups: getAllAutoGroups,
-        getAutoGroup: getAutoGroup,
-        getGroupsByDiscipline: getGroupsByDiscipline,
-        getGroupsByInstructor: getGroupsByInstructor,
+        // ---- Location Queries ----
+        getLocations: getLocations,
+        getLocation: getLocation,
 
-        MIN_WEEK: CalendarConstants.MIN_WEEK,
-        MAX_WEEK: CalendarConstants.MAX_WEEK
+        // ---- Aggregate Queries ----
+        getClassDetails: getClassDetails,
+        getStudentDetails: getStudentDetails,
+
+        // ---- Helpers ----
+        getCurrentWeek: getCurrentWeek,
+
+        // ---- Constants ----
+        MIN_WEEK: MIN_WEEK,
+        MAX_WEEK: MAX_WEEK
     };
-
-    window.__academyQueriesLoaded = true;
 
 })();
