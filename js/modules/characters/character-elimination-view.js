@@ -11,8 +11,8 @@
  * 
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no persistence
- *   - No direct window.data access - uses CharacterQueries
- *   - Uses TournamentQueries for tournament lookup
+ *   - No direct window.data access - uses CharacterQueries for character data
+ *   - Uses TournamentQueries for tournament lookup (simple read)
  *   - Uses DomUtils for safe DOM operations
  *   - All user-controlled content uses textContent
  *   - No event binding here (delegated to CharacterEvents)
@@ -33,7 +33,6 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__characterEliminationViewLoaded) {
         return;
     }
@@ -69,6 +68,10 @@
             missing.push('CharacterQueries.getDisplayName');
         }
 
+        if (!TournamentQueries || typeof TournamentQueries.getTournamentById !== 'function') {
+            missing.push('TournamentQueries.getTournamentById');
+        }
+
         if (!DomUtils || typeof DomUtils.createElement !== 'function') {
             missing.push('DomUtils.createElement');
         }
@@ -85,61 +88,47 @@
     // ELIMINATION HELPERS
     // ============================================================
 
-    /**
-     * Get tournament eliminations from a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {Array} Array of tournament eliminations
-     */
     function getTournamentEliminations(char) {
         if (!char || !Array.isArray(char.eliminations)) {
             return [];
         }
 
-        return char.eliminations.filter(function(e) {
-            return e && !e.standalone;
-        });
+        var result = [];
+        for (var i = 0; i < char.eliminations.length; i++) {
+            var e = char.eliminations[i];
+            if (e && !e.standalone) {
+                result.push(e);
+            }
+        }
+        return result;
     }
 
-    /**
-     * Get standalone eliminations from a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {Array} Array of standalone eliminations
-     */
     function getStandaloneEliminations(char) {
         if (!char || !Array.isArray(char.eliminations)) {
             return [];
         }
 
-        return char.eliminations.filter(function(e) {
-            return e && e.standalone;
-        });
+        var result = [];
+        for (var i = 0; i < char.eliminations.length; i++) {
+            var e = char.eliminations[i];
+            if (e && e.standalone) {
+                result.push(e);
+            }
+        }
+        return result;
     }
 
-    /**
-     * Get all eliminations from a character.
-     * 
-     * @param {object} char - Character object
-     * @returns {Array} Array of all eliminations
-     */
     function getAllEliminations(char) {
         if (!char || !Array.isArray(char.eliminations)) {
             return [];
         }
-
         return char.eliminations.slice();
     }
 
-    /**
-     * Check if a character is eliminated by a given week.
-     * 
-     * @param {object} char - Character object
-     * @param {number} week - Week number
-     * @returns {boolean} True if eliminated
-     */
     function isEliminatedByWeek(char, week) {
-        if (!char) return false;
+        if (!char) {
+            return false;
+        }
 
         var weekNum = Number(week);
         if (!Number.isInteger(weekNum) || weekNum < MIN_WEEK) {
@@ -181,15 +170,10 @@
         return false;
     }
 
-    /**
-     * Get the week when a character was eliminated.
-     * Returns the earliest elimination week or death week.
-     * 
-     * @param {object} char - Character object
-     * @returns {number|null} Elimination week or null
-     */
     function getEliminationWeek(char) {
-        if (!char) return null;
+        if (!char) {
+            return null;
+        }
 
         var eliminations = Array.isArray(char.eliminations) ? char.eliminations : [];
         var earliestWeek = null;
@@ -230,15 +214,10 @@
         return earliestWeek;
     }
 
-    /**
-     * Get the reason for elimination.
-     * Returns the first elimination reason or death cause.
-     * 
-     * @param {object} char - Character object
-     * @returns {string} Elimination reason
-     */
     function getEliminationReason(char) {
-        if (!char) return 'Unknown';
+        if (!char) {
+            return 'Unknown';
+        }
 
         var eliminations = Array.isArray(char.eliminations) ? char.eliminations : [];
 
@@ -259,23 +238,32 @@
         return 'Unknown';
     }
 
+    function getTournamentName(tournamentId) {
+        if (!tournamentId) {
+            return 'Unknown Tournament';
+        }
+
+        // Simple read: TournamentQueries.getTournamentById() directly
+        var tourn = TournamentQueries.getTournamentById(tournamentId);
+        if (tourn) {
+            return tourn.name || 'Unknown Tournament';
+        }
+
+        return 'Unknown Tournament';
+    }
+
     // ============================================================
     // RENDER TOURNAMENT ELIMINATIONS
     // ============================================================
 
-    /**
-     * Render tournament eliminations for a character.
-     * 
-     * @param {object} char - Character object
-     * @param {HTMLElement} container - Container element (optional)
-     */
     function renderTournamentEliminations(char, container) {
         if (!container) {
             container = document.getElementById('tournament-eliminations-view');
         }
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
-        // Clear container
         container.textContent = '';
 
         if (!char) {
@@ -293,6 +281,7 @@
         }
 
         tournElims.forEach(function(elim) {
+            // Simple read: TournamentQueries.getTournamentById() directly
             var tournName = getTournamentName(elim.tournamentId);
 
             var div = document.createElement('div');
@@ -324,19 +313,14 @@
     // RENDER STANDALONE ELIMINATIONS
     // ============================================================
 
-    /**
-     * Render standalone eliminations for a character.
-     * 
-     * @param {object} char - Character object
-     * @param {HTMLElement} container - Container element (optional)
-     */
     function renderStandaloneEliminations(char, container) {
         if (!container) {
             container = document.getElementById('standalone-eliminations-container');
         }
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
-        // Clear container
         container.textContent = '';
 
         if (!char) {
@@ -379,7 +363,7 @@
             button.className = 'remove-standalone-elim small';
             button.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.6rem;padding:0 4px;';
             button.dataset.id = elim.id;
-            button.textContent = '✕';
+            button.textContent = '\u2715';
             button.setAttribute('aria-label', 'Remove elimination');
 
             div.appendChild(span);
@@ -392,20 +376,14 @@
     // RENDER ELIMINATION STATUS
     // ============================================================
 
-    /**
-     * Render elimination status for a character.
-     * 
-     * @param {object} char - Character object
-     * @param {number} week - Current week
-     * @param {HTMLElement} container - Container element (optional)
-     */
     function renderEliminationStatus(char, week, container) {
         if (!container) {
             container = document.getElementById('elimination-status-view');
         }
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
-        // Clear container
         container.textContent = '';
 
         if (!char) {
@@ -425,7 +403,7 @@
 
         if (isEliminated) {
             var icon = document.createElement('span');
-            icon.textContent = '⚠ ';
+            icon.textContent = '\u26a0 ';
             icon.style.cssText = 'color:var(--danger);';
             div.appendChild(icon);
 
@@ -447,7 +425,7 @@
             }
         } else {
             var icon = document.createElement('span');
-            icon.textContent = '✓ ';
+            icon.textContent = '\u2713 ';
             icon.style.cssText = 'color:var(--accent);';
             div.appendChild(icon);
 
@@ -467,20 +445,13 @@
     // RENDER ELIMINATION FORM HELPERS
     // ============================================================
 
-    /**
-     * Render elimination form controls.
-     * Creates the week input and reason input.
-     * 
-     * @param {HTMLElement} container - Container element (optional)
-     * @param {object} options - Options
-     * @param {number} options.defaultWeek - Default week value
-     * @param {string} options.defaultReason - Default reason value
-     */
     function renderEliminationForm(container, options) {
         if (!container) {
             container = document.getElementById('elimination-form-container');
         }
-        if (!container) return;
+        if (!container) {
+            return;
+        }
 
         options = options || {};
         var defaultWeek = options.defaultWeek || 1;
@@ -546,29 +517,6 @@
     // HELPERS
     // ============================================================
 
-    /**
-     * Get tournament name by ID.
-     * 
-     * @param {string} tournamentId - Tournament ID
-     * @returns {string} Tournament name
-     */
-    function getTournamentName(tournamentId) {
-        if (!tournamentId) return 'Unknown Tournament';
-
-        if (TournamentQueries && typeof TournamentQueries.getTournamentById === 'function') {
-            var tourn = TournamentQueries.getTournamentById(tournamentId);
-            if (tourn) return tourn.name || 'Unknown Tournament';
-        }
-
-        return 'Unknown Tournament';
-    }
-
-    /**
-     * Create an empty state element.
-     * 
-     * @param {string} message - Empty state message
-     * @returns {HTMLElement} Empty state element
-     */
     function createEmptyState(message) {
         var el = document.createElement('p');
         el.className = 'empty-state';
@@ -577,22 +525,11 @@
         return el;
     }
 
-    /**
-     * Validate a week value.
-     * 
-     * @param {*} value - Week value to validate
-     * @returns {boolean} True if valid
-     */
     function validateWeek(value) {
         var num = Number(value);
         return Number.isInteger(num) && num >= MIN_WEEK && num <= MAX_WEEK;
     }
 
-    /**
-     * Get the current week from application state.
-     * 
-     * @returns {number} Current week
-     */
     function getCurrentWeek() {
         if (window.data && typeof window.data.currentWeek === 'number') {
             return window.data.currentWeek;
@@ -600,13 +537,6 @@
         return 1;
     }
 
-    /**
-     * Get eliminated characters for a given week.
-     * 
-     * @param {number} week - Week number
-     * @param {Array} characters - Array of characters
-     * @returns {Array} Array of eliminated character IDs
-     */
     function getEliminatedCharacters(week, characters) {
         var weekNum = Number(week);
         if (!Number.isInteger(weekNum) || weekNum < MIN_WEEK) {
