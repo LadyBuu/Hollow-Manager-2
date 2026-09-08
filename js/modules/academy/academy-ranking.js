@@ -12,8 +12,8 @@
  * 
  * IMPORTANT:
  *   - This module OWNS ranking data - it does NOT depend on AcademyQueries
- *   - Uses AcademyGrades for grade data (no circular dependency)
  *   - Uses AcademyClasses for class data (no circular dependency)
+ *   - Uses AcademyGrades for grade data (legitimate dependency)
  *   - All mutations are candidate-based: VALIDATE → CLONE → MODIFY → COMMIT
  *   - Invalid inputs are REJECTED (operation returns null/false)
  *   - Mutations are ATOMIC: if any part is invalid, nothing changes
@@ -98,8 +98,8 @@
         missing.push('AcademyGrades.calculateClassRanking');
     }
 
-    if (!window.AcademyClasses || typeof window.AcademyClasses.getClassRecord !== 'function') {
-        missing.push('AcademyClasses.getClassRecord');
+    if (!window.AcademyClasses || typeof window.AcademyClasses.getClass !== 'function') {
+        missing.push('AcademyClasses.getClass');
     }
 
     if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
@@ -339,6 +339,30 @@
     }
 
     // ============================================================
+    // CLASS VALIDATION - Uses AcademyClasses (no circular dependency)
+    // ============================================================
+
+    /**
+     * Validate that a class exists.
+     * Uses AcademyClasses internal methods.
+     * 
+     * @param {string} classId - Class ID
+     * @returns {object} { valid: boolean, class?: object, message?: string }
+     */
+    function validateClassExists(classId) {
+        if (!isNonEmptyString(classId)) {
+            return { valid: false, message: 'Class ID is required.' };
+        }
+
+        var cls = AcademyClasses.getClass(classId);
+        if (!cls) {
+            return { valid: false, message: 'Class not found.' };
+        }
+
+        return { valid: true, class: cls };
+    }
+
+    // ============================================================
     // RANKING VALIDATION
     // ============================================================
 
@@ -436,10 +460,10 @@
             return failure('Academy data is not available.');
         }
 
-        // ---- PHASE 3: VALIDATE CLASS EXISTS ----
-        var classRecord = AcademyClasses.getClassRecord(data.classId);
-        if (!classRecord) {
-            return failure('Class not found.');
+        // ---- PHASE 3: VALIDATE CLASS EXISTS (uses AcademyClasses) ----
+        var classValidation = validateClassExists(data.classId);
+        if (!classValidation.valid) {
+            return failure(classValidation.message);
         }
 
         // ---- PHASE 4: CHECK FOR DUPLICATE ----
@@ -962,20 +986,20 @@
         var overwrite = options.overwrite !== false;
         var weightThreshold = options.weightThreshold || 0.5;
 
-        // ---- PHASE 1: VALIDATE CLASS EXISTS ----
-        var classRecord = AcademyClasses.getClassRecord(classId);
-        if (!classRecord) {
-            return failure('Class not found.');
+        // ---- PHASE 1: VALIDATE CLASS EXISTS (uses AcademyClasses) ----
+        var classValidation = validateClassExists(classId);
+        if (!classValidation.valid) {
+            return failure(classValidation.message);
         }
 
-        // ---- PHASE 2: GET GRADES ----
+        // ---- PHASE 2: GET GRADES (uses AcademyGrades) ----
         var grades = AcademyGrades.getClassGrades(classId, weekNum);
 
         if (grades.length === 0) {
             return failure('No grades found for this class and week.');
         }
 
-        // ---- PHASE 3: CALCULATE RANKINGS ----
+        // ---- PHASE 3: CALCULATE RANKINGS (uses AcademyGrades) ----
         var rankingData = AcademyGrades.calculateClassRanking(
             classId,
             weekNum,
