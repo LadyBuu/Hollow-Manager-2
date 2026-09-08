@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Character Module - Test Harness</title>
+    <link rel="stylesheet" href="style.css" />
+    <style>
+        body {
+            padding: 20px;
+            font-family: system-ui, sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+        }
+        .test-container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .test-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #333;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        .test-status {
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+        .test-status.pass {
+            background: #2e7d32;
+            color: #a5d6a7;
+        }
+        .test-status.fail {
+            background: #7d2e2e;
+            color: #ef9a9a;
+        }
+        .test-status.loading {
+            background: #7d6e2e;
+            color: #f0e68c;
+        }
+        .test-section {
+            background: #2d2d44;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+            border: 1px solid #444;
+        }
+        .test-section h3 {
+            margin: 0 0 8px 0;
+            font-size: 0.9rem;
+            color: #8cbb3a;
+        }
+        .test-section .test-row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            padding: 4px 0;
+            border-bottom: 1px solid #333;
+            font-size: 0.8rem;
+        }
+        .test-section .test-row:last-child {
+            border-bottom: none;
+        }
+        .test-section .test-label {
+            color: #888;
+            min-width: 120px;
+        }
+        .test-section .test-value {
+            color: #e0e0e0;
+        }
+        .test-section .test-value.success {
+            color: #66bb6a;
+        }
+        .test-section .test-value.error {
+            color: #ef5350;
+        }
+        #character-form-container {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .btn {
+            padding: 4px 12px;
+            border: 1px solid #555;
+            border-radius: 4px;
+            background: #3d3d5c;
+            color: #e0e0e0;
+            cursor: pointer;
+            font-size: 0.75rem;
+        }
+        .btn:hover {
+            background: #4d4d6c;
+        }
+        .btn.primary {
+            background: #4a7a3a;
+            border-color: #5a8a4a;
+        }
+        .btn.primary:hover {
+            background: #5a8a4a;
+        }
+        .btn.danger {
+            background: #7a3a3a;
+            border-color: #8a4a4a;
+        }
+        .btn.danger:hover {
+            background: #8a4a4a;
+        }
+        .mock-indicator {
+            background: #3d2e2e;
+            color: #ef9a9a;
+            font-size: 0.7rem;
+            padding: 2px 8px;
+            border-radius: 4px;
+            margin-left: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <div class="test-header">
+            <h1>Character Module - Test Harness</h1>
+            <div>
+                <span id="test-status" class="test-status loading">Loading...</span>
+                <button class="btn" onclick="window.location.reload()">Reload</button>
+            </div>
+        </div>
+
+        <div id="test-output">
+            <div class="test-section">
+                <h3>Status</h3>
+                <div id="status-messages"></div>
+            </div>
+
+            <div class="test-section">
+                <h3>Character List</h3>
+                <div id="characters-container" style="max-height:200px;overflow-y:auto;"></div>
+            </div>
+
+            <div class="test-section">
+                <h3>Character Form</h3>
+                <div id="character-form-container"></div>
+            </div>
+
+            <div class="test-section">
+                <h3>Actions</h3>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                    <button class="btn primary" id="test-add-char">Add Test Character</button>
+                    <button class="btn" id="test-list-char">Refresh List</button>
+                    <button class="btn danger" id="test-clear-char">Clear Test Characters</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================
+         UTILITIES
+         ============================================================ -->
+    <script src="js/utils/object-utils.js"></script>
+    <script src="js/utils/id-utils.js"></script>
+    <script src="js/utils/validation-utils.js"></script>
+    <script src="js/utils/format-utils.js"></script>
+    <script src="js/utils/dom-utils.js"></script>
+    <script src="js/utils/form-utils.js"></script>
+    <script src="js/utils/timing-utils.js"></script>
+    <script src="js/utils/modal.js"></script>
+    <script src="js/utils/notification.js"></script>
+
+    <!-- ============================================================
+         SHARED CONSTANTS
+         ============================================================ -->
+    <script src="js/modules/shared/constants.js"></script>
+    <script src="js/modules/shared/calendar-constants.js"></script>
+    <script src="js/modules/shared/character-constants.js"></script>
+    <script src="js/modules/shared/magic-constants.js"></script>
+
+    <!-- ============================================================
+         CHARACTER QUERIES (REAL)
+         ============================================================ -->
+    <script src="js/modules/shared/queries/character-queries.js"></script>
+
+    <!-- ============================================================
+         CORE INFRASTRUCTURE (MINIMAL)
+         ============================================================ -->
+    <script src="js/core/activity-log.js"></script>
+    <script src="js/core/database.js"></script>
+    <script src="js/core/loader.js"></script>
+    <script src="js/core/state.js"></script>
+    <script src="js/core/tab-manager.js"></script>
+    <script src="js/core/mutation-pipeline.js"></script>
+    <script src="js/core/bootstrap.js"></script>
+
+    <!-- ============================================================
+         CHARACTER MODULE
+         ============================================================ -->
+    <script src="js/modules/characters/character-generator.js"></script>
+    <script src="js/modules/characters/character-stats.js"></script>
+    <script src="js/modules/characters/character-crud.js"></script>
+    <script src="js/modules/characters/character-classes.js"></script>
+    <script src="js/modules/characters/character-eliminations.js"></script>
+    <script src="js/modules/characters/character-list.js"></script>
+    <script src="js/modules/characters/character-form.js"></script>
+    <script src="js/modules/characters/character-detail.js"></script>
+    <script src="js/modules/characters/character-class-view.js"></script>
+    <script src="js/modules/characters/character-elimination-view.js"></script>
+    <script src="js/modules/characters/character-stats-view.js"></script>
+    <script src="js/modules/characters/character-events.js"></script>
+    <script src="js/modules/characters/character-aggregator.js"></script>
+    <script src="js/modules/characters/index.js"></script>
+
+    <!-- ============================================================
+         MOCK DEPENDENCIES - REPLACE MISSING MODULES
+         ============================================================ -->
+    <script>
+        (function() {
+            'use strict';
+
+            // ---- MOCK: AcademyQueries ----
+            if (!window.AcademyQueries) {
+                window.AcademyQueries = {
+                    getClasses: function() { return []; },
+                    getClass: function(id) { return null; },
+                    getClassByName: function(name) { return null; },
+                    getClassDisplayName: function(id) { return 'Class ' + id; },
+                    getCharacterClasses: function(char) { return []; },
+                    getCharacterClassNames: function(char) { return []; },
+                    isCharacterInClass: function(char, classId) { return false; },
+                    getClassStudents: function(classId) { return []; },
+                    getAvailableStudents: function(classId, week) { return []; },
+                    getCharacterGrades: function(charId) { return []; },
+                    getClassGrades: function(classId, week) { return []; }
+                };
+                console.log('[Mock] AcademyQueries installed');
+            }
+
+            // ---- MOCK: AcademyClasses ----
+            if (!window.AcademyClasses) {
+                window.AcademyClasses = {
+                    create: function(name) {
+                        var id = 'class_' + Date.now();
+                        return {
+                            success: true,
+                            data: { class: { id: id, name: name } }
+                        };
+                    },
+                    getClass: function(id) { return null; },
+                    getClasses: function() { return []; },
+                    getClassesByStatus: function(status) { return []; },
+                    getAllClasses: function() { return []; },
+                    getClassByName: function(name) { return null; },
+                    getDisplayName: function(id) { return 'Class ' + id; },
+                    getCharacterClasses: function(char) { return []; },
+                    getCharacterClassNames: function(char) { return []; },
+                    isCharacterInClass: function(char, classId) { return false; },
+                    getClassStudents: function(classId) { return []; }
+                };
+                console.log('[Mock] AcademyClasses installed');
+            }
+
+            // ---- MOCK: TeamQueries ----
+            if (!window.TeamQueries) {
+                window.TeamQueries = {
+                    getTeamById: function(id) { return null; },
+                    getTeamName: function(id) { return 'Team ' + id; },
+                    getTeams: function() { return []; },
+                    getTeamsForCharacter: function(charId, types) { return []; },
+                    getTeamsByType: function(type) { return []; },
+                    getTeamsByClass: function(classId) { return []; },
+                    getCharacterTeamMembership: function(teamId, charId) { return null; },
+                    getActiveTeamMembers: function(team, period) { return []; },
+                    getAllOperationalTeams: function() { return []; },
+                    getAllActiveTeams: function() { return []; },
+                    isTeamOperational: function(team) { return true; },
+                    isTeamActive: function(team) { return true; }
+                };
+                console.log('[Mock] TeamQueries installed');
+            }
+
+            // ---- MOCK: SocialQueries ----
+            if (!window.SocialQueries) {
+                window.SocialQueries = {
+                    getCharacterRelationships: function(charId) { return []; },
+                    getRelationshipTypes: function() { return []; },
+                    getRelationshipTypeById: function(typeId) { return null; },
+                    getRelationshipTypeLabel: function(typeId) { return 'Unknown'; },
+                    getRelationshipTypeColor: function(typeId) { return '#7f8c8d'; },
+                    isRelationshipDirectional: function(typeId) { return false; },
+                    getRelationshipBetween: function(id1, id2) { return null; }
+                };
+                console.log('[Mock] SocialQueries installed');
+            }
+
+            // ---- MOCK: MissionQueries ----
+            if (!window.MissionQueries) {
+                window.MissionQueries = {
+                    getMissions: function() { return []; },
+                    getMission: function(id) { return null; },
+                    getActiveMissions: function() { return []; },
+                    getCompletedMissions: function() { return []; },
+                    getCancelledMissions: function() { return []; },
+                    getMissionsForCharacter: function(charId) { return []; },
+                    getMissionsForTeam: function(teamId) { return []; },
+                    getActiveCount: function() { return 0; },
+                    getCompletedCount: function() { return 0; },
+                    getCancelledCount: function() { return 0; }
+                };
+                console.log('[Mock] MissionQueries installed');
+            }
+
+            // ---- MOCK: EliminationQueries ----
+            if (!window.EliminationQueries) {
+                window.EliminationQueries = {
+                    isCharacterEliminated: function(charId, week) { return false; },
+                    getEliminationWeek: function(charId) { return null; },
+                    getEliminationReason: function(charId) { return 'Unknown'; }
+                };
+                console.log('[Mock] EliminationQueries installed');
+            }
+
+            // ---- MOCK: TournamentQueries ----
+            if (!window.TournamentQueries) {
+                window.TournamentQueries = {
+                    getTournamentById: function(id) { return null; },
+                    getTournaments: function() { return []; },
+                    getActiveTournaments: function() { return []; },
+                    getCompletedTournaments: function() { return []; },
+                    getDraftTournaments: function() { return []; },
+                    getParticipants: function(id) { return []; }
+                };
+                console.log('[Mock] TournamentQueries installed');
+            }
+
+            // ---- MOCK: CalendarQueries ----
+            if (!window.CalendarQueries) {
+                window.CalendarQueries = {
+                    getStudentSchedule: function(studentId, week) { return {}; },
+                    getStudentRestDays: function(studentId, week) { return []; },
+                    getInstructorTemplates: function(instructorId, week) { return {}; },
+                    getInstructorBlocks: function(instructorId, week) { return {}; },
+                    getLocationSchedule: function(locationId, week) { return {}; },
+                    hasConflict: function(schedule, day, hour, duration) { return false; },
+                    isRestDay: function(restDays, day) { return false; },
+                    getSlotMetadata: function(studentId, week, day, hour) { return null; },
+                    findClassStart: function(schedule, metadata, studentId, week, day, hour) { return null; }
+                };
+                console.log('[Mock] CalendarQueries installed');
+            }
+
+            // ---- MOCK: DisciplineQueries ----
+            if (!window.DisciplineQueries) {
+                window.DisciplineQueries = {
+                    getDisciplines: function() { return []; },
+                    getDiscipline: function(id) { return null; },
+                    getAvailableDisciplines: function(week) { return []; }
+                };
+                console.log('[Mock] DisciplineQueries installed');
+            }
+
+            // ---- MOCK: LocationQueries ----
+            if (!window.LocationQueries) {
+                window.LocationQueries = {
+                    getLocations: function() { return []; },
+                    getLocation: function(id) { return null; },
+                    getLocationName: function(id) { return 'Location ' + id; }
+                };
+                console.log('[Mock] LocationQueries installed');
+            }
+
+            // ---- MOCK: CALENDAR_CONSTANTS ----
+            if (!window.CALENDAR_CONSTANTS) {
+                window.CALENDAR_CONSTANTS = {
+                    MIN_WEEK: 1,
+                    MAX_WEEK: 52,
+                    DEBOUNCE_DELAY: 300,
+                    MIN_DAY: 1,
+                    MAX_DAY: 7,
+                    MIN_HOUR: 0,
+                    MAX_HOUR: 23,
+                    CALENDAR_START_HOUR: 5,
+                    CALENDAR_END_HOUR: 23,
+                    MIN_CLASS_DURATION: 1,
+                    MAX_CLASS_DURATION: 4,
+                    MIN_YEAR: 1900,
+                    MAX_YEAR: 2100
+                };
+                console.log('[Mock] CALENDAR_CONSTANTS installed');
+            }
+
+            // ---- MOCK: getCurrentEditId / setCurrentEditId ----
+            if (typeof window.getCurrentEditId !== 'function') {
+                var _editId = null;
+                window.getCurrentEditId = function() { return _editId; };
+                window.setCurrentEditId = function(id) { _editId = id; };
+                console.log('[Mock] getCurrentEditId/setCurrentEditId installed');
+            }
+
+            // ---- MOCK: toggleCharacterList ----
+            if (typeof window.toggleCharacterList !== 'function') {
+                window.toggleCharacterList = function(forceState) {
+                    var panel = document.getElementById('char-list-panel');
+                    if (panel) {
+                        if (forceState !== undefined) {
+                            panel.classList.toggle('open', forceState);
+                        } else {
+                            panel.classList.toggle('open');
+                        }
+                    }
+                };
+                console.log('[Mock] toggleCharacterList installed');
+            }
+
+            // ---- MOCK: TabManager for Character registration ----
+            if (!window.TabManager) {
+                window.TabManager = {
+                    register: function(tab, fn) {
+                        console.log('[Mock] TabManager.register:', tab);
+                        return true;
+                    },
+                    getCurrentTab: function() { return 'characters'; },
+                    onDataReady: function() {}
+                };
+                console.log('[Mock] TabManager installed');
+            }
+
+            // ---- MOCK: DataLoader ----
+            if (!window.DataLoader) {
+                window.DataLoader = {
+                    whenReady: function(cb) {
+                        var data = window.data || {};
+                        setTimeout(function() { cb(data); }, 10);
+                    },
+                    getData: function() { return window.data || {}; },
+                    getStatus: function() { return 'ready'; },
+                    isReady: true,
+                    hasFailed: false
+                };
+                console.log('[Mock] DataLoader installed');
+            }
+
+            // ---- Ensure window.data exists ----
+            if (!window.data) {
+                window.data = {
+                    characters: [],
+                    teams: [],
+                    classes: [],
+                    locations: [],
+                    tournaments: [],
+                    missions: [],
+                    activities: [],
+                    curriculum: {
+                        disciplines: [],
+                        schedules: {},
+                        restDays: {},
+                        metadata: {},
+                        instructorTemplates: {},
+                        instructorBlocks: {},
+                        locationSchedules: {}
+                    },
+                    social: {
+                        relationships: [],
+                        relationshipTypes: [],
+                        nextId: 1
+                    },
+                    currentYear: 2026,
+                    currentWeek: 1,
+                    _dataVersion: 13
+                };
+                console.log('[Mock] window.data initialized');
+            }
+
+            console.log('[Test] All mocks installed');
+            console.log('[Test] Character module ready for testing');
+
+        })();
+    </script>
+
+    <!-- ============================================================
+         TEST RUNNER
+         ============================================================ -->
+    <script>
+        (function() {
+            'use strict';
+
+            var CharacterList = window.CharacterList;
+            var CharacterForm = window.CharacterForm;
+            var CharacterEvents = window.CharacterEvents;
+            var CharacterCRUD = window.CharacterCRUD;
+            var CharacterQueries = window.CharacterQueries;
+
+            var statusEl = document.getElementById('test-status');
+            var messagesEl = document.getElementById('status-messages');
+            var container = document.getElementById('characters-container');
+            var formContainer = document.getElementById('character-form-container');
+
+            function logMessage(msg, type) {
+                var div = document.createElement('div');
+                div.className = 'test-row';
+                var label = document.createElement('span');
+                label.className = 'test-label';
+                label.textContent = '[' + (type || 'INFO') + ']';
+                var value = document.createElement('span');
+                value.className = 'test-value';
+                value.textContent = msg;
+                div.appendChild(label);
+                div.appendChild(value);
+                messagesEl.appendChild(div);
+                messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+
+            function updateStatus(status, text) {
+                statusEl.className = 'test-status ' + status;
+                statusEl.textContent = text;
+            }
+
+            function init() {
+                logMessage('Initializing Character Module...', 'INIT');
+
+                // Render character list
+                if (CharacterList && typeof CharacterList.render === 'function') {
+                    try {
+                        CharacterList.render();
+                        logMessage('CharacterList rendered', 'OK');
+                    } catch (e) {
+                        logMessage('CharacterList error: ' + e.message, 'ERROR');
+                    }
+                } else {
+                    logMessage('CharacterList not available', 'ERROR');
+                }
+
+                // Render character form
+                if (CharacterForm && typeof CharacterForm.render === 'function') {
+                    try {
+                        CharacterForm.render(null);
+                        logMessage('CharacterForm rendered', 'OK');
+                    } catch (e) {
+                        logMessage('CharacterForm error: ' + e.message, 'ERROR');
+                    }
+                } else {
+                    logMessage('CharacterForm not available', 'ERROR');
+                }
+
+                // Initialize events
+                if (CharacterEvents && typeof CharacterEvents.init === 'function') {
+                    try {
+                        CharacterEvents.init(document.getElementById('tab-characters') || document.body);
+                        logMessage('CharacterEvents initialized', 'OK');
+                    } catch (e) {
+                        logMessage('CharacterEvents error: ' + e.message, 'ERROR');
+                    }
+                } else {
+                    logMessage('CharacterEvents not available', 'ERROR');
+                }
+
+                // Check what's available
+                var available = [];
+                if (CharacterQueries) {
+                    available.push('CharacterQueries');
+                    if (typeof CharacterQueries.getCharacters === 'function') {
+                        var count = CharacterQueries.getCharacters().length;
+                        logMessage('Characters loaded: ' + count, 'INFO');
+                    }
+                }
+                if (CharacterCRUD) { available.push('CharacterCRUD'); }
+                if (CharacterList) { available.push('CharacterList'); }
+                if (CharacterForm) { available.push('CharacterForm'); }
+
+                updateStatus('pass', 'Ready - ' + available.join(', '));
+                logMessage('Ready. Available: ' + available.join(', '), 'OK');
+            }
+
+            // ---- Test Actions ----
+            function addTestCharacter() {
+                logMessage('Adding test character...', 'ACTION');
+                var char = {
+                    firstName: 'Test',
+                    lastName: 'Character ' + Date.now().toString().slice(-4),
+                    birthYear: '1990',
+                    gender: 'Other',
+                    stats: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
+                    magic: {},
+                    personality: { traits: 'Test character' },
+                    deceased: false
+                };
+
+                if (CharacterCRUD && typeof CharacterCRUD.save === 'function') {
+                    CharacterCRUD.save(char).then(function(result) {
+                        if (result && result.success) {
+                            logMessage('Character created: ' + char.firstName + ' ' + char.lastName, 'OK');
+                            refreshList();
+                            if (typeof window.setCurrentEditId === 'function') {
+                                window.setCurrentEditId(result.data.id);
+                            }
+                            if (CharacterForm && typeof CharacterForm.render === 'function') {
+                                CharacterForm.render(result.data.id);
+                            }
+                        } else {
+                            logMessage('Failed to create character: ' + (result ? result.message : 'unknown error'), 'ERROR');
+                        }
+                    }).catch(function(err) {
+                        logMessage('Error creating character: ' + err.message, 'ERROR');
+                    });
+                } else {
+                    logMessage('CharacterCRUD.save not available', 'ERROR');
+                }
+            }
+
+            function refreshList() {
+                if (CharacterList && typeof CharacterList.render === 'function') {
+                    try {
+                        CharacterList.render();
+                        logMessage('List refreshed', 'OK');
+                    } catch (e) {
+                        logMessage('Refresh error: ' + e.message, 'ERROR');
+                    }
+                }
+            }
+
+            function clearTestCharacters() {
+                if (!confirm('Remove all test characters?')) { return; }
+                if (CharacterQueries && typeof CharacterQueries.getCharacters === 'function') {
+                    var chars = CharacterQueries.getCharacters();
+                    var testChars = chars.filter(function(c) {
+                        return c.firstName === 'Test';
+                    });
+                    if (testChars.length === 0) {
+                        logMessage('No test characters found', 'INFO');
+                        return;
+                    }
+                    var count = testChars.length;
+                    logMessage('Deleting ' + count + ' test characters...', 'ACTION');
+                    testChars.forEach(function(c) {
+                        if (CharacterCRUD && typeof CharacterCRUD.delete === 'function') {
+                            CharacterCRUD.delete(c.id).then(function() {
+                                logMessage('Deleted: ' + c.firstName + ' ' + c.lastName, 'OK');
+                            }).catch(function(err) {
+                                logMessage('Delete error: ' + err.message, 'ERROR');
+                            });
+                        }
+                    });
+                    setTimeout(refreshList, 500);
+                }
+            }
+
+            // ---- Bind UI ----
+            document.getElementById('test-add-char').addEventListener('click', addTestCharacter);
+            document.getElementById('test-list-char').addEventListener('click', refreshList);
+            document.getElementById('test-clear-char').addEventListener('click', clearTestCharacters);
+
+            // ---- Override render to use test container ----
+            if (CharacterList && typeof CharacterList.render === 'function') {
+                var originalRender = CharacterList.render;
+                CharacterList.render = function() {
+                    var c = document.getElementById('characters-container');
+                    if (c) {
+                        var oldContainer = document.getElementById('characters-container');
+                        var tempContainer = c.cloneNode(false);
+                        c.parentNode.replaceChild(tempContainer, c);
+                        tempContainer.id = 'characters-container';
+                        // Use the original render with the temp container
+                        var result = originalRender.call(CharacterList);
+                        // Move content back
+                        var newContainer = document.getElementById('characters-container');
+                        if (newContainer && newContainer.innerHTML) {
+                            // Already rendered
+                        }
+                        return result;
+                    }
+                    return originalRender.call(CharacterList);
+                };
+            }
+
+            // ---- Start ----
+            setTimeout(init, 100);
+
+        })();
+    </script>
+</body>
+</html>
