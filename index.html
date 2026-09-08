@@ -41,11 +41,6 @@
     <script src="js/utils/object-utils.js"></script>
     <script src="js/utils/id-utils.js"></script>
     <script src="js/utils/validation-utils.js"></script>
-    <script src="js/modules/shared/calendar-constants.js"></script>
-    <script src="js/utils/calendar-validation.js"></script>
-    <script src="js/modules/shared/character-constants.js"></script>
-    <script src="js/modules/social/social-constants.js"></script>
-    <script src="js/modules/shared/magic-constants.js"></script>
     <script src="js/utils/format-utils.js"></script>
     <script src="js/utils/dom-utils.js"></script>
     <script src="js/utils/form-utils.js"></script>
@@ -54,7 +49,16 @@
     <script src="js/utils/notification.js"></script>
 
     <!-- ============================================================
-         SHARED QUERIES - ONE ARCHITECTURAL TIER
+         SHARED CONSTANTS
+         ============================================================ -->
+    <script src="js/shared/constants/constants.js"></script>
+    <script src="js/shared/constants/calendar-constants.js"></script>
+    <script src="js/shared/constants/character-constants.js"></script>
+    <script src="js/shared/constants/academy-constants.js"></script>
+    <script src="js/shared/constants/magic-constants.js"></script>
+
+    <!-- ============================================================
+         SHARED QUERIES - READ-ONLY DOMAIN ACCESS
          ============================================================ -->
     <script src="js/shared/queries/character-queries.js"></script>
     <script src="js/shared/queries/team-queries.js"></script>
@@ -62,83 +66,50 @@
     <script src="js/shared/queries/tournament-queries.js"></script>
     <script src="js/shared/queries/mission-queries.js"></script>
     <script src="js/shared/queries/calendar-queries.js"></script>
+    <script src="js/shared/queries/discipline-queries.js"></script>
+    <script src="js/shared/queries/location-queries.js"></script>
+    <script src="js/shared/queries/elimination-queries.js"></script>
+    <script src="js/shared/queries/social-queries.js"></script>
 
     <!-- ============================================================
-         SHARED DOMAIN QUERIES (non-query helpers)
+         CALENDAR MODULE
          ============================================================ -->
-    <script src="js/modules/shared/discipline-queries.js"></script>
-    <script src="js/modules/shared/location-queries.js"></script>
-    <script src="js/modules/shared/academy-constants.js"></script>
-
-    <!-- ============================================================
-         DOMAIN CORES - WRITE OPERATIONS
-         ============================================================ -->
-    <!-- Characters -->
-    <script src="js/modules/characters/character-generator.js"></script>
-    <script src="js/modules/characters/character-stats.js"></script>
-    <script src="js/modules/characters/character-crud.js"></script>
-    <script src="js/modules/characters/character-classes.js"></script>
-    <script src="js/modules/characters/character-eliminations.js"></script>
-    <script src="js/modules/characters/character-detail-queries.js"></script>
-    <script src="js/modules/characters/character-detail.js"></script>
-    <script src="js/modules/characters/character-views.js"></script>
-    <script src="js/modules/characters/character-list.js"></script>
-    <script src="js/modules/characters/character-form.js"></script>
-    <script src="js/modules/characters/character-class-view.js"></script>
-    <script src="js/modules/characters/character-elimination-view.js"></script>
-    <script src="js/modules/characters/character-stats-view.js"></script>
-    <script src="js/modules/characters/character-events.js"></script>
-    <script src="js/modules/characters/index.js"></script>
-
-    <!-- Teams -->
-    <script src="js/modules/teams/team-core.js"></script>
-    <script src="js/modules/teams/team-members.js"></script>
-    <script src="js/modules/teams/team-rankings.js"></script>
-    <script src="js/modules/teams/team-filters.js"></script>
-    <script src="js/modules/teams/team-render.js"></script>
-    <script src="js/modules/teams/team-manager.js"></script>
-
-    <!-- Academy -->
-    <script src="js/modules/academy/academy-data.js"></script>
-    <script src="js/modules/academy/academy-classes.js"></script>
-    <script src="js/modules/academy/academy-grades.js"></script>
-    <script src="js/modules/academy/academy-groups.js"></script>
-    <script src="js/modules/academy/academy-ranking.js"></script>
-    <script src="js/modules/academy/academy-schedule.js"></script>
-    <script src="js/modules/academy/academy-distribute.js"></script>
-    <script src="js/modules/academy/tabs/class-tab.js"></script>
-    <script src="js/modules/academy/tabs/student-tab.js"></script>
-    <script src="js/modules/academy/tabs/faculty-tab.js"></script>
-    <script src="js/modules/academy/index.js"></script>
-
-    <!-- Calendar -->
+    <script src="js/modules/calendar/calendar-validation.js"></script>
     <script src="js/modules/calendar/schedule-core.js"></script>
     <script src="js/modules/calendar/calendar-renderer.js"></script>
+    <script src="js/modules/calendar/calendar-aggregator.js"></script>
+    <script src="js/modules/calendar/calendar-ui-base.js"></script>
     <script src="js/modules/calendar/student-calendar-ui.js"></script>
     <script src="js/modules/calendar/instructor-calendar-ui.js"></script>
     <script src="js/modules/calendar/location-calendar-ui.js"></script>
     <script src="js/modules/calendar/index.js"></script>
 
-    <!-- Tournaments -->
-    <script src="js/modules/tournaments/tournaments-schema.js"></script>
-    <script src="js/modules/tournaments/tournament-lifecycle.js"></script>
-    <script src="js/modules/tournaments/tournaments-core.js"></script>
-    <script src="js/modules/tournaments/tournaments-matches.js"></script>
-    <script src="js/modules/tournaments/tournament-elimination-workflow.js"></script>
-    <script src="js/modules/tournaments/tournaments-render.js"></script>
-    <script src="js/modules/tournaments/tournaments-repair.js"></script>
-    <script src="js/modules/tournaments/tournaments-ui.js"></script>
-    <script src="js/modules/tournaments/index.js"></script>
+    <!-- ============================================================
+         CHARACTER MODULE
+         ============================================================ -->
+    <!-- Core -->
+    <script src="js/modules/characters/core/character-stats.js"></script>
+    <script src="js/modules/characters/core/character-eliminations.js"></script>
+    <script src="js/modules/characters/core/character-classes.js"></script>
+    <script src="js/modules/characters/core/character-crud.js"></script>
 
-    <!-- Missions -->
-    <script src="js/modules/missions/missions-schema.js"></script>
-    <script src="js/modules/missions/mission-rules.js"></script>
-    <script src="js/modules/missions/mission-views.js"></script>
-    <script src="js/modules/missions/mission-id.js"></script>
-    <script src="js/modules/missions/missions-core.js"></script>
-    <script src="js/modules/missions/missions-render.js"></script>
-    <script src="js/modules/missions/missions-ui.js"></script>
-    <script src="js/modules/missions/index.js"></script>
+    <!-- Generators -->
+    <script src="js/modules/characters/generators/character-generator.js"></script>
+
+    <!-- Views -->
+    <script src="js/modules/characters/views/character-list.js"></script>
+    <script src="js/modules/characters/views/character-form.js"></script>
+    <script src="js/modules/characters/views/character-detail.js"></script>
+
+    <!-- UI -->
+    <script src="js/modules/characters/ui/character-class-view.js"></script>
+    <script src="js/modules/characters/ui/character-elimination-view.js"></script>
+    <script src="js/modules/characters/ui/character-stats-view.js"></script>
+    <script src="js/modules/characters/ui/character-events.js"></script>
+
+    <!-- Aggregator & Entry -->
+    <script src="js/modules/characters/character-aggregator.js"></script>
+    <script src="js/modules/characters/index.js"></script>
 
     <!-- ============================================================
          CORE INFRASTRUCTURE
@@ -152,7 +123,7 @@
     <script src="js/core/bootstrap.js"></script>
 
     <!-- ============================================================
-         CROSS-DOMAIN READ MODELS (Dashboard - LAST)
+         DASHBOARD - CROSS-DOMAIN READ MODEL
          ============================================================ -->
     <script src="js/modules/dashboard/dashboard-queries.js"></script>
     <script src="js/modules/dashboard/dashboard-render.js"></script>
@@ -160,21 +131,12 @@
     <script src="js/modules/dashboard/index.js"></script>
 
     <!-- ============================================================
-         EXPORT/IMPORT
+         OTHER MODULES - PLACEHOLDER
          ============================================================ -->
-    <script src="js/export/csv-parser.js"></script>
-    <script src="js/export/export-utils.js"></script>
-    <script src="js/export/import-result.js"></script>
-    <script src="js/export/json-io.js"></script>
-    <script src="js/export/character-csv-schema.js"></script>
-    <script src="js/export/character-export.js"></script>
-    <script src="js/export/character-import.js"></script>
-    <script src="js/export/character-template.js"></script>
-    <script src="js/export/mission-csv-schema.js"></script>
-    <script src="js/export/mission-export.js"></script>
-    <script src="js/export/mission-import.js"></script>
-    <script src="js/export/mission-template.js"></script>
-    <script src="js/export/index.js"></script>
+    <!-- Teams, Academy, Tournaments, Missions, Export modules
+         are currently placeholders and will be re-implemented
+         following the same architectural patterns established by
+         Calendar and Character modules. -->
 
     <!-- ============================================================
          APP BOOTSTRAP
