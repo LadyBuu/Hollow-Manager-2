@@ -18,6 +18,7 @@
                     <li><a href="#social" data-tab="social">Social</a></li>
                     <li><a href="#tournaments" data-tab="tournaments">Tournaments</a></li>
                     <li><a href="#academy" data-tab="academy">Academy</a></li>
+                    <li><a href="#missions" data-tab="missions">Missions</a></li>
                 </ul>
             </nav>
         </header>
@@ -28,6 +29,7 @@
             <div id="tab-social" class="tab-content"></div>
             <div id="tab-tournaments" class="tab-content"></div>
             <div id="tab-academy" class="tab-content"></div>
+            <div id="tab-missions" class="tab-content"></div>
         </main>
     </div>
 
@@ -73,7 +75,6 @@
     <script src="js/modules/shared/queries/location-queries.js"></script>
     <script src="js/modules/shared/queries/elimination-queries.js"></script>
     <script src="js/modules/shared/queries/calendar-queries.js"></script>
-    <script src="js/modules/shared/queries/academy-queries.js"></script>
 
     <!-- ============================================================
          ACADEMY CORE MODULES (dependencies for AcademyQueries)
@@ -84,6 +85,11 @@
     <script src="js/modules/academy/academy-ranking.js"></script>
     <script src="js/modules/academy/academy-disciplines.js"></script>
     <script src="js/modules/academy/academy-locations.js"></script>
+
+    <!-- ============================================================
+         ACADEMY QUERIES - LOADS AFTER ITS DEPENDENCIES
+         ============================================================ -->
+    <script src="js/modules/shared/queries/academy-queries.js"></script>
 
     <!-- ============================================================
          ACADEMY ADDITIONAL - Schedule & Distribute
@@ -181,6 +187,19 @@
     <script src="js/modules/academy/tabs/student-tab.js"></script>
     <script src="js/modules/academy/tabs/faculty-tab.js"></script>
     <script src="js/modules/academy/index.js"></script>
+
+    <!-- ============================================================
+         MISSIONS MODULE - Refactored with new file names
+         Load order: Schema → Queries → Core → Aggregator → Views → Render → UI → Index
+         ============================================================ -->
+    <script src="js/modules/missions/mission-schema.js"></script>
+    <script src="js/modules/missions/mission-id.js"></script>
+    <script src="js/modules/missions/mission-views.js"></script>
+    <script src="js/modules/missions/mission-core.js"></script>
+    <script src="js/modules/missions/mission-aggregator.js"></script>
+    <script src="js/modules/missions/mission-render.js"></script>
+    <script src="js/modules/missions/mission-ui.js"></script>
+    <script src="js/modules/missions/index.js"></script>
 
     <!-- ============================================================
          APP BOOTSTRAP
