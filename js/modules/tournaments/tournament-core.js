@@ -11,8 +11,8 @@
  * 
  * IMPORTANT:
  *   - This module owns tournament and round mutations
- *   - Match-level mutations are delegated to TournamentMatches
- *   - TournamentCore → TournamentMatches uses INTERNAL PURE builders
+ *   - Match-level mutations are delegated to TournamentsMatches
+ *   - TournamentCore → TournamentsMatches uses INTERNAL PURE builders
  *   - Does NOT call saveData() - caller owns persistence via MutationPipeline
  *   - Does NOT log activity - MutationPipeline owns activity logging
  *   - Does NOT render or notify - UI layer owns that
@@ -32,15 +32,15 @@
  *   - Getters return DEFENSIVE COPIES to prevent external mutation
  * 
  * MATCH DELEGATION:
- *   - addRound() uses TournamentMatches.buildRound() (internal pure builder)
- *   - addRound() does NOT call TournamentMatches.createMatch() (public command)
+ *   - addRound() uses TournamentsMatches.buildRound() (internal pure builder)
+ *   - addRound() does NOT call TournamentsMatches.createMatch() (public command)
  *   - This prevents nested mutation transactions
  * 
  * DEPENDENCIES:
  *   - window.TournamentSchema (from tournament-schema.js) - MANDATORY
  *   - window.TournamentLifecycle (from tournament-lifecycle.js) - MANDATORY
  *   - window.TournamentRules (from tournament-rules.js) - MANDATORY
- *   - window.TournamentMatches (from tournament-matches.js) - MANDATORY
+ *   - window.TournamentsMatches (from tournament-matches.js) - MANDATORY
  *   - window.TournamentQueries (from tournament-queries.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.TeamQueries (from team-queries.js) - MANDATORY
@@ -81,7 +81,7 @@
     }
 
     function getMatches() {
-        return window.TournamentMatches || null;
+        return window.TournamentsMatches || null;
     }
 
     function getQueries() {
@@ -125,7 +125,7 @@
             missing.push('TournamentRules (lazy)');
         }
         if (!getMatches()) {
-            missing.push('TournamentMatches (lazy)');
+            missing.push('TournamentsMatches (lazy)');
         }
         if (!getQueries()) {
             missing.push('TournamentQueries (lazy)');
@@ -828,13 +828,13 @@
     }
 
     // ============================================================
-    // ROUND OPERATIONS - Uses TournamentMatches internal builders
+    // ROUND OPERATIONS - Uses TournamentsMatches internal builders
     // ============================================================
 
     /**
      * Add a round to a tournament.
-     * Uses TournamentMatches.buildRound() (internal pure builder).
-     * Does NOT call TournamentMatches.createMatch() (public command).
+     * Uses TournamentsMatches.buildRound() (internal pure builder).
+     * Does NOT call TournamentsMatches.createMatch() (public command).
      * 
      * @param {string} tournamentId - Tournament ID
      * @param {object} roundData - { matchSize, matchType }
