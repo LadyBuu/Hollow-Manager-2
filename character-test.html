@@ -112,7 +112,7 @@
 <body>
     <div id="app">
         <h1>Complete Module Test</h1>
-        <p>Testing all modules: <span class="warning">Characters</span>, <span class="warning">Calendar</span>, <span class="warning">Social</span>, <span class="warning">Teams</span>, <span class="warning">Academy</span>, <span class="warning">Tournaments</span></p>
+        <p>Testing all modules: <span class="warning">Characters</span>, <span class="warning">Calendar</span>, <span class="warning">Social</span>, <span class="warning">Teams</span>, <span class="warning">Academy</span>, <span class="warning">Tournaments</span>, <span class="warning">Missions</span></p>
 
         <div id="test-results">
             <div class="test-section">
@@ -289,6 +289,18 @@
     <script src="js/modules/academy/index.js"></script>
 
     <!-- ============================================================
+         MISSIONS MODULE - Refactored with new file names
+         ============================================================ -->
+    <script src="js/modules/missions/mission-schema.js"></script>
+    <script src="js/modules/missions/mission-id.js"></script>
+    <script src="js/modules/missions/mission-views.js"></script>
+    <script src="js/modules/missions/mission-core.js"></script>
+    <script src="js/modules/missions/mission-aggregator.js"></script>
+    <script src="js/modules/missions/mission-render.js"></script>
+    <script src="js/modules/missions/mission-ui.js"></script>
+    <script src="js/modules/missions/index.js"></script>
+
+    <!-- ============================================================
          APP BOOTSTRAP
          ============================================================ -->
     <script src="js/app.js"></script>
@@ -398,7 +410,13 @@
                     { name: 'CalendarQueries', value: window.CalendarQueries },
                     { name: 'TournamentQueries', value: window.TournamentQueries },
                     { name: 'MutationPipeline', value: window.MutationPipeline },
-                    { name: 'AcademyClasses', value: window.AcademyClasses }
+                    { name: 'AcademyClasses', value: window.AcademyClasses },
+                    { name: 'MissionQueries', value: window.MissionQueries },
+                    { name: 'MissionSchema', value: window.MissionSchema },
+                    { name: 'MissionCore', value: window.MissionCore },
+                    { name: 'MissionAggregator', value: window.MissionAggregator },
+                    { name: 'MissionRender', value: window.MissionRender },
+                    { name: 'MissionUI', value: window.MissionUI }
                 ];
 
                 for (var i = 0; i < deps.length; i++) {
@@ -429,7 +447,7 @@
                 renderDependencyCheck();
 
                 log('========== TEST SUITE START ==========', 'info');
-                log('Testing all modules: Characters, Calendar, Social, Teams, Academy, Tournaments', 'info');
+                log('Testing all modules: Characters, Calendar, Social, Teams, Academy, Tournaments, Missions', 'info');
 
                 // ---- CORE UTILITIES ----
                 log('', 'info');
@@ -600,7 +618,15 @@
                 if (window.MissionQueries) {
                     testFunctionExists(window.MissionQueries, 'getMission');
                     testFunctionExists(window.MissionQueries, 'getMissions');
+                    testFunctionExists(window.MissionQueries, 'getMissionsByTeam');
+                    testFunctionExists(window.MissionQueries, 'getMissionsForCharacter');
                     testFunctionExists(window.MissionQueries, 'getStatistics');
+                    testFunctionExists(window.MissionQueries, 'getSupportPersonnel');
+                    testFunctionExists(window.MissionQueries, 'getSupportPersonnelNames');
+                    test('MissionQueries.getMissions returns array', function() {
+                        var result = window.MissionQueries.getMissions();
+                        return Array.isArray(result);
+                    });
                 }
 
                 testModuleLoaded('SocialQueries', window.SocialQueries);
@@ -1040,7 +1066,6 @@
                 log('', 'info');
                 log('--- ACADEMY MODULE ---', 'info');
 
-                // Note: AcademyCore does not exist - using AcademyClasses directly
                 test('AcademyClasses.create exists for class creation', function() {
                     return window.AcademyClasses && typeof window.AcademyClasses.create === 'function';
                 });
@@ -1105,6 +1130,137 @@
                 testModuleLoaded('Academy', window.Academy);
                 test('window.Academy.mount exists', function() {
                     return window.Academy && typeof window.Academy.mount === 'function';
+                });
+
+                // ---- MISSIONS MODULE - REFACTORED ----
+                log('', 'info');
+                log('--- MISSIONS MODULE (Refactored) ---', 'info');
+
+                testModuleLoaded('MissionSchema', window.MissionSchema);
+                if (window.MissionSchema) {
+                    testFunctionExists(window.MissionSchema, 'validateMission');
+                    testFunctionExists(window.MissionSchema, 'canonicaliseMissionShape');
+                    testFunctionExists(window.MissionSchema, 'getMissionTypes');
+                    testFunctionExists(window.MissionSchema, 'getValidStatuses');
+                    testFunctionExists(window.MissionSchema, 'getValidPriorities');
+                    testFunctionExists(window.MissionSchema, 'getValidDifficulties');
+                    test('MissionSchema.VALID_STATUSES exists', function() {
+                        return Array.isArray(window.MissionSchema.VALID_STATUSES);
+                    });
+                    test('MissionSchema.VALID_PRIORITIES exists', function() {
+                        return Array.isArray(window.MissionSchema.VALID_PRIORITIES);
+                    });
+                    test('MissionSchema.VALID_DIFFICULTIES exists', function() {
+                        return Array.isArray(window.MissionSchema.VALID_DIFFICULTIES);
+                    });
+                }
+
+                testModuleLoaded('MissionId', window.MissionId);
+                if (window.MissionId) {
+                    testFunctionExists(window.MissionId, 'generate');
+                    testFunctionExists(window.MissionId, 'parse');
+                    testFunctionExists(window.MissionId, 'validate');
+                }
+
+                testModuleLoaded('MissionViews', window.MissionViews);
+                if (window.MissionViews) {
+                    testFunctionExists(window.MissionViews, 'getPriorityLabel');
+                    testFunctionExists(window.MissionViews, 'getStatusLabel');
+                    testFunctionExists(window.MissionViews, 'getDifficultyLabel');
+                    testFunctionExists(window.MissionViews, 'getMissionTypeIcon');
+                    testFunctionExists(window.MissionViews, 'getPriorityInfo');
+                    testFunctionExists(window.MissionViews, 'getStatusInfo');
+                }
+
+                testModuleLoaded('MissionCore', window.MissionCore);
+                if (window.MissionCore) {
+                    testFunctionExists(window.MissionCore, 'createMission');
+                    testFunctionExists(window.MissionCore, 'updateMission');
+                    testFunctionExists(window.MissionCore, 'deleteMission');
+                    testFunctionExists(window.MissionCore, 'completeMission');
+                    testFunctionExists(window.MissionCore, 'cancelMission');
+                    testFunctionExists(window.MissionCore, 'reactivateMission');
+                    testFunctionExists(window.MissionCore, 'toggleObjective');
+                    testFunctionExists(window.MissionCore, 'addObjective');
+                    testFunctionExists(window.MissionCore, 'removeObjective');
+                    testFunctionExists(window.MissionCore, 'addSupportPersonnel');
+                    testFunctionExists(window.MissionCore, 'removeSupportPersonnel');
+                    testFunctionExists(window.MissionCore, 'addLog');
+                    testFunctionExists(window.MissionCore, 'getMission');
+                    testFunctionExists(window.MissionCore, 'getMissions');
+                    testFunctionExists(window.MissionCore, 'calculateProgress');
+                    testFunctionExists(window.MissionCore, 'calculatePay');
+                    testFunctionExists(window.MissionCore, 'isReadyForCompletion');
+                    testFunctionExists(window.MissionCore, 'canModifyObjectives');
+                    testFunctionExists(window.MissionCore, 'recalculateMission');
+
+                    // Test domain rules
+                    test('MissionCore.calculateProgress works', function() {
+                        var objectives = [
+                            { text: 'Task 1', done: true },
+                            { text: 'Task 2', done: false },
+                            { text: 'Task 3', done: true }
+                        ];
+                        return window.MissionCore.calculateProgress(objectives) === 67;
+                    });
+
+                    test('MissionCore.isReadyForCompletion works', function() {
+                        var mission = {
+                            status: 'active',
+                            progress: 100,
+                            objectives: [{ text: 'Task 1', done: true }]
+                        };
+                        return window.MissionCore.isReadyForCompletion(mission) === true;
+                    });
+
+                    test('MissionCore.calculatePay works', function() {
+                        var pay = window.MissionCore.calculatePay('1000', '500');
+                        return pay === '1500.00 credits';
+                    });
+                }
+
+                testModuleLoaded('MissionAggregator', window.MissionAggregator);
+                if (window.MissionAggregator) {
+                    testFunctionExists(window.MissionAggregator, 'getMissionListViewModel');
+                    testFunctionExists(window.MissionAggregator, 'getMissionDetailViewModel');
+                    testFunctionExists(window.MissionAggregator, 'getMissionFormViewModel');
+                    testFunctionExists(window.MissionAggregator, 'getMissionPageViewModel');
+                    testFunctionExists(window.MissionAggregator, 'getMissionStatisticsViewModel');
+                    testFunctionExists(window.MissionAggregator, 'resolveTeamName');
+                    testFunctionExists(window.MissionAggregator, 'resolveSupportNames');
+                    testFunctionExists(window.MissionAggregator, 'canEditMission');
+                    testFunctionExists(window.MissionAggregator, 'canCompleteMission');
+                }
+
+                testModuleLoaded('MissionRender', window.MissionRender);
+                if (window.MissionRender) {
+                    testFunctionExists(window.MissionRender, 'renderList');
+                    testFunctionExists(window.MissionRender, 'renderDetail');
+                    testFunctionExists(window.MissionRender, 'renderForm');
+                    testFunctionExists(window.MissionRender, 'renderContainer');
+                    testFunctionExists(window.MissionRender, 'renderEmpty');
+                    testFunctionExists(window.MissionRender, 'renderLoading');
+                }
+
+                testModuleLoaded('MissionUI', window.MissionUI);
+                if (window.MissionUI) {
+                    testFunctionExists(window.MissionUI, 'render');
+                    testFunctionExists(window.MissionUI, 'destroy');
+                    testFunctionExists(window.MissionUI, 'viewMission');
+                    testFunctionExists(window.MissionUI, 'closeMissionDetail');
+                    testFunctionExists(window.MissionUI, 'showMissionForm');
+                    testFunctionExists(window.MissionUI, 'renderMissionList');
+                }
+
+                testModuleLoaded('Missions', window.MissionsModule);
+                test('window.renderMissions exists', function() {
+                    return typeof window.renderMissions === 'function';
+                });
+                test('window.viewMission exists', function() {
+                    return typeof window.viewMission === 'function';
+                });
+                test('window.destroyMissions exists', function() {
+                    return typeof window.destroyMissions === 'function';
                 });
 
                 // ---- CORE INFRASTRUCTURE ----
@@ -1180,6 +1336,9 @@
                     test('window.data.tournaments is array', function() {
                         return Array.isArray(window.data.tournaments);
                     });
+                    test('window.data.missions is array', function() {
+                        return Array.isArray(window.data.missions);
+                    });
                 }
 
                 // ---- SUMMARY ----
@@ -1194,7 +1353,8 @@
                     'Social': window.SocialConstants && window.SocialQueries && window.SocialCore,
                     'Teams': window.TeamConstants && window.TeamQueries && window.TeamCore,
                     'Academy': window.AcademyConstants && window.AcademyQueries && window.AcademyClasses,
-                    'Tournaments': window.TournamentConstants && window.TournamentQueries && window.TournamentCore
+                    'Tournaments': window.TournamentConstants && window.TournamentQueries && window.TournamentCore,
+                    'Missions': window.MissionSchema && window.MissionCore && window.MissionUI && window.MissionQueries
                 };
 
                 var moduleHtml = '<div style="margin-top:12px;font-size:12px;color:var(--text-dim);">';
@@ -1244,7 +1404,8 @@
                         'ObjectUtils', 'ValidationUtils', 'CalendarConstants',
                         'CharacterConstants', 'AcademyConstants', 'TeamConstants',
                         'TournamentConstants', 'CalendarQueries', 'TournamentQueries',
-                        'MutationPipeline', 'AcademyClasses'
+                        'MutationPipeline', 'AcademyClasses', 'MissionQueries',
+                        'MissionSchema', 'MissionCore', 'MissionUI'
                     ];
 
                     var allLoaded = true;
