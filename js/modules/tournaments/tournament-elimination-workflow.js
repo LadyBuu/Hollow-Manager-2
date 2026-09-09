@@ -8,24 +8,33 @@
  *   - Restoring a character from tournament elimination
  *   - Cross-domain atomic validation (tournament + character)
  *   - Coordinating tournament and character state changes
+ *   - Using TournamentCore + TournamentMatches for tournament mutations
+ *   - Using CharacterEliminations for character mutations
  * 
  * IMPORTANT:
  *   - This is a CROSS-DOMAIN WORKFLOW combining:
  *     - TournamentCore (tournament eliminations)
- *     - CharacterCore (character eliminations, eliminatedWeeks)
+ *     - TournamentMatches (match state updates)
+ *     - CharacterEliminations (character eliminations, eliminatedWeeks)
  *   - All operations are CANDIDATE-BASED: validate, build candidates, commit
  *   - This module does NOT call saveData()
  *   - This module does NOT log activity
- *   - MutationUtils owns persistence and activity logging
+ *   - MutationPipeline owns persistence and activity logging
  *   - All validation uses CalendarValidation from calendar-validation.js
+ *   - Cross-domain consistency: tournament and character states must remain in sync
  * 
- * DEPENDENCIES:
- *   - window.TournamentsCore - Tournament operations
- *   - window.TournamentsSchema - Structural validation
+ * DEPENDENCIES (lazily loaded):
+ *   - window.TournamentCore - Tournament operations
+ *   - window.TournamentMatches - Match operations
+ *   - window.TournamentSchema - Structural validation
  *   - window.TournamentLifecycle - Lifecycle permissions
+ *   - window.TournamentRules - Domain conditions
+ *   - window.TournamentQueries - Read operations
  *   - window.CharacterQueries - Character queries
+ *   - window.CharacterEliminations - Character elimination mutations
  *   - window.CalendarValidation - Week validation
  *   - window.IdUtils - ID normalisation
+ *   - window.MutationPipeline - Persistence
  * 
  * USAGE:
  *   var workflow = window.TournamentEliminationWorkflow;
@@ -36,76 +45,132 @@
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__tournamentEliminationWorkflowLoaded) {
         return;
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // LAZY LOADING HELPERS
     // ============================================================
 
-    var missing = [];
-
-    if (!window.TournamentsCore) {
-        missing.push('TournamentsCore');
+    function getTournamentCore() {
+        return window.TournamentCore || null;
     }
 
-    if (!window.TournamentsSchema) {
-        missing.push('TournamentsSchema');
+    function getTournamentMatches() {
+        return window.TournamentMatches || null;
     }
 
-    if (!window.TournamentLifecycle) {
-        missing.push('TournamentLifecycle');
+    function getTournamentSchema() {
+        return window.TournamentSchema || null;
     }
 
-    if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
-        missing.push('CharacterQueries.getCharacterById');
+    function getTournamentLifecycle() {
+        return window.TournamentLifecycle || null;
     }
 
-    if (!window.CalendarValidation || typeof window.CalendarValidation.parseWeek !== 'function') {
-        missing.push('CalendarValidation.parseWeek');
+    function getTournamentRules() {
+        return window.TournamentRules || null;
     }
 
-    if (!window.IdUtils || typeof window.IdUtils.normaliseId !== 'function') {
-        missing.push('IdUtils.normaliseId');
+    function getTournamentQueries() {
+        return window.TournamentQueries || null;
     }
 
-    if (missing.length > 0) {
-        throw new Error('[TournamentEliminationWorkflow] Missing dependencies: ' + missing.join(', '));
+    function getCharacterQueries() {
+        return window.CharacterQueries || null;
     }
 
-    window.__tournamentEliminationWorkflowLoaded = true;
+    function getCharacterEliminations() {
+        return window.CharacterEliminations || null;
+    }
+
+    function getCalendarValidation() {
+        return window.CalendarValidation || null;
+    }
+
+    function getIdUtils() {
+        return window.IdUtils || null;
+    }
+
+    function getMutationPipeline() {
+        return window.MutationPipeline || null;
+    }
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY CHECK - Warns but doesn't fail
     // ============================================================
 
-    var Core = window.TournamentsCore;
-    var Schema = window.TournamentsSchema;
-    var Lifecycle = window.TournamentLifecycle;
-    var CharacterQueries = window.CharacterQueries;
-    var CalendarValidation = window.CalendarValidation;
-    var IdUtils = window.IdUtils;
+    function checkDependencies() {
+        var missing = [];
 
-    // ============================================================
-    // CONSTANTS
-    // ============================================================
+        if (!getTournamentCore()) {
+            missing.push('TournamentCore (lazy)');
+        }
+        if (!getTournamentMatches()) {
+            missing.push('TournamentMatches (lazy)');
+        }
+        if (!getTournamentSchema()) {
+            missing.push('TournamentSchema (lazy)');
+        }
+        if (!getTournamentLifecycle()) {
+            missing.push('TournamentLifecycle (lazy)');
+        }
+        if (!getTournamentRules()) {
+            missing.push('TournamentRules (lazy)');
+        }
+        if (!getTournamentQueries()) {
+            missing.push('TournamentQueries (lazy)');
+        }
+        if (!getCharacterQueries()) {
+            missing.push('CharacterQueries (lazy)');
+        }
+        if (!getCharacterEliminations()) {
+            missing.push('CharacterEliminations (lazy)');
+        }
+        if (!getCalendarValidation()) {
+            missing.push('CalendarValidation (lazy)');
+        }
+        if (!getIdUtils()) {
+            missing.push('IdUtils (lazy)');
+        }
+        if (!getMutationPipeline()) {
+            missing.push('MutationPipeline (lazy)');
+        }
 
-    var MIN_WEEK = Schema.MIN_WEEK;
-    var MAX_WEEK = Schema.MAX_WEEK;
-    var VALID_PARTICIPANT_TYPES = Schema.VALID_PARTICIPANT_TYPES;
+        if (missing.length > 0) {
+            console.warn('[TournamentEliminationWorkflow] Some dependencies not yet loaded:', missing.join(', '));
+            return false;
+        }
+
+        return true;
+    }
+
+    checkDependencies();
 
     // ============================================================
     // HELPERS
     // ============================================================
 
     function normaliseId(value) {
-        return IdUtils.normaliseId(value);
+        var IdUtils = getIdUtils();
+        if (IdUtils && typeof IdUtils.normaliseId === 'function') {
+            return IdUtils.normaliseId(value);
+        }
+        if (value === null || value === undefined) {
+            return null;
+        }
+        var str = String(value).trim();
+        return str !== '' ? str : null;
     }
 
     function isValidWeek(value) {
-        return CalendarValidation.parseWeek(value) !== null;
+        var CalendarValidation = getCalendarValidation();
+        if (CalendarValidation && typeof CalendarValidation.parseWeek === 'function') {
+            return CalendarValidation.parseWeek(value) !== null;
+        }
+        var num = parseInt(value, 10);
+        return !isNaN(num) && num >= 1 && num <= 52;
     }
 
     function isObject(value) {
@@ -113,10 +178,7 @@
     }
 
     function getDataStore() {
-        if (!window.data || typeof window.data !== 'object') {
-            return null;
-        }
-        return window.data;
+        return window.data || {};
     }
 
     function failure(message) {
@@ -140,6 +202,8 @@
      * @returns {array} Array of eliminated week numbers
      */
     function rebuildEliminatedWeeks(char) {
+        var CalendarValidation = getCalendarValidation();
+
         if (!char || typeof char !== 'object') {
             return [];
         }
@@ -157,7 +221,7 @@
                 continue;
             }
 
-            var week = CalendarValidation.parseWeek(elim.week);
+            var week = CalendarValidation ? CalendarValidation.parseWeek(elim.week) : null;
             if (week === null) {
                 continue;
             }
@@ -216,6 +280,96 @@
         return proposedChar;
     }
 
+    /**
+     * Validate a proposed character state.
+     * 
+     * @param {object} proposedChar - Proposed character state
+     * @param {string} tournamentId - Tournament ID
+     * @returns {object} { valid: boolean, message?: string }
+     */
+    function validateProposedCharacter(proposedChar, tournamentId) {
+        if (!proposedChar || typeof proposedChar !== 'object') {
+            return { valid: false, message: 'Invalid character state.' };
+        }
+
+        if (!Array.isArray(proposedChar.eliminations)) {
+            return { valid: false, message: 'Character eliminations must be an array.' };
+        }
+
+        var tournamentIdNormalised = normaliseId(tournamentId);
+        if (tournamentIdNormalised === null) {
+            return { valid: false, message: 'Invalid tournament ID.' };
+        }
+
+        // Check for duplicate tournament eliminations
+        var count = 0;
+        for (var i = 0; i < proposedChar.eliminations.length; i++) {
+            var e = proposedChar.eliminations[i];
+            if (e && !e.standalone && normaliseId(e.tournamentId) === tournamentIdNormalised) {
+                count++;
+            }
+        }
+
+        if (count > 1) {
+            return { valid: false, message: 'Duplicate tournament elimination found.' };
+        }
+
+        // Check that eliminatedWeeks is consistent with eliminations
+        var expectedWeeks = rebuildEliminatedWeeks(proposedChar);
+        var actualWeeks = proposedChar.eliminatedWeeks || [];
+
+        if (expectedWeeks.length !== actualWeeks.length) {
+            return { valid: false, message: 'Eliminated weeks are inconsistent with eliminations.' };
+        }
+
+        for (var i = 0; i < expectedWeeks.length; i++) {
+            if (actualWeeks.indexOf(expectedWeeks[i]) === -1) {
+                return { valid: false, message: 'Eliminated weeks are inconsistent with eliminations.' };
+            }
+        }
+
+        return { valid: true };
+    }
+
+    // ============================================================
+    // MUTATION PIPELINE WRAPPER
+    // ============================================================
+
+    /**
+     * Execute a mutation through MutationPipeline.
+     * 
+     * @param {object} config - Mutation configuration
+     * @param {string} config.logMessage - Activity log message
+     * @param {string} config.successMessage - Success notification message
+     * @param {string} config.failureMessage - Failure notification message
+     * @param {function} config.validate - Validation function
+     * @param {function} config.mutate - Mutation function
+     * @param {function} config.onSuccess - Success callback
+     * @param {function} config.onFailure - Failure callback
+     * @returns {Promise<object>} { success: boolean, data?: any, message?: string }
+     */
+    function executeMutation(config) {
+        var Pipeline = getMutationPipeline();
+        if (!Pipeline || typeof Pipeline.performMutation !== 'function') {
+            return Promise.resolve({
+                success: false,
+                message: 'MutationPipeline not available.'
+            });
+        }
+
+        return Pipeline.performMutation({
+            validate: config.validate || function(data) {
+                return { valid: true };
+            },
+            mutate: config.mutate,
+            logMessage: config.logMessage || 'Elimination operation performed.',
+            successMessage: config.successMessage || 'Operation completed.',
+            failureMessage: config.failureMessage || 'Operation failed.',
+            onSuccess: config.onSuccess || null,
+            onFailure: config.onFailure || null
+        });
+    }
+
     // ============================================================
     // MARK CHARACTER ELIMINATED
     // ============================================================
@@ -231,13 +385,18 @@
      * @param {string} characterId - Character ID
      * @param {number|string} week - Week of elimination
      * @param {string} reason - Reason for elimination (optional)
-     * @returns {object} { success: boolean, message?: string }
+     * @returns {Promise<object>} { success: boolean, message?: string, data?: object }
      */
     function markCharacterEliminated(tournamentId, characterId, week, reason) {
         // ---- PHASE 1: VALIDATE INPUTS ----
-        var weekNum = CalendarValidation.parseWeek(week);
+        var CalendarValidation = getCalendarValidation();
+
+        var weekNum = CalendarValidation ? CalendarValidation.parseWeek(week) : null;
         if (weekNum === null) {
-            return failure('Invalid week: must be between ' + MIN_WEEK + ' and ' + MAX_WEEK);
+            var Schema = getTournamentSchema();
+            var minWeek = Schema ? Schema.MIN_WEEK || 1 : 1;
+            var maxWeek = Schema ? Schema.MAX_WEEK || 52 : 52;
+            return Promise.resolve(failure('Invalid week: must be between ' + minWeek + ' and ' + maxWeek));
         }
 
         var eliminationReason = typeof reason === 'string' && reason.trim() !== ''
@@ -246,59 +405,81 @@
 
         var characterIdNormalised = normaliseId(characterId);
         if (characterIdNormalised === null) {
-            return failure('Invalid character ID.');
+            return Promise.resolve(failure('Invalid character ID.'));
         }
 
         var tournamentIdNormalised = normaliseId(tournamentId);
         if (tournamentIdNormalised === null) {
-            return failure('Invalid tournament ID.');
+            return Promise.resolve(failure('Invalid tournament ID.'));
         }
 
         // ---- PHASE 2: RETRIEVE AND VALIDATE TOURNAMENT ----
-        var tournament = Core.getTournament(tournamentIdNormalised);
+        var Queries = getTournamentQueries();
+        if (!Queries) {
+            return Promise.resolve(failure('TournamentQueries not available.'));
+        }
+
+        var tournament = Queries.getTournament(tournamentIdNormalised);
         if (!tournament) {
-            return failure('Tournament not found.');
+            return Promise.resolve(failure('Tournament not found.'));
         }
 
         // Validate tournament structure
-        var structValidation = Schema.validateTournament(tournament, { strict: false });
-        if (!structValidation.valid) {
-            return failure('Tournament data is malformed.');
+        var Schema = getTournamentSchema();
+        if (Schema) {
+            var structValidation = Schema.validateTournament(tournament, { strict: false });
+            if (!structValidation.valid) {
+                return Promise.resolve(failure('Tournament data is malformed.'));
+            }
         }
 
         // ---- PHASE 3: LIFECYCLE CHECK ----
-        if (!Lifecycle.canModifyEliminations(tournament)) {
-            return failure('Eliminations cannot be modified in tournament status "' + tournament.status + '".');
+        var Lifecycle = getTournamentLifecycle();
+        if (Lifecycle && !Lifecycle.canModifyEliminations(tournament)) {
+            return Promise.resolve(failure('Eliminations cannot be modified in tournament status "' + tournament.status + '".'));
         }
 
         // OPERATION RULE: Elimination week must be within tournament bounds
         if (weekNum < tournament.startWeek || weekNum > tournament.endWeek) {
-            return failure('Elimination week ' + weekNum + ' is outside tournament week range ' +
-                tournament.startWeek + '-' + tournament.endWeek);
+            return Promise.resolve(failure('Elimination week ' + weekNum + ' is outside tournament week range ' +
+                tournament.startWeek + '-' + tournament.endWeek));
         }
 
         // ---- PHASE 4: CHECK PARTICIPANT ----
-        if (!Schema.isParticipantInTournament(tournament, characterIdNormalised)) {
-            return failure('Character is not a participant in this tournament.');
+        if (!Schema || !Schema.isParticipantInTournament(tournament, characterIdNormalised)) {
+            return Promise.resolve(failure('Character is not a participant in this tournament.'));
         }
 
-        var participantType = Schema.getParticipantTypeFromRecord(tournament, characterIdNormalised);
+        var participantType = Schema ? Schema.getParticipantTypeFromRecord(tournament, characterIdNormalised) : null;
         if (participantType !== 'character') {
-            return failure('Participant is not a character (type: ' + participantType + ').');
+            return Promise.resolve(failure('Participant is not a character (type: ' + participantType + ').'));
         }
 
         // Check if already eliminated
-        if (Schema.isParticipantEliminated(tournament, characterIdNormalised)) {
-            return failure('Character is already eliminated from this tournament.');
+        if (Schema && Schema.isParticipantEliminated(tournament, characterIdNormalised)) {
+            return Promise.resolve(failure('Character is already eliminated from this tournament.'));
         }
 
         // ---- PHASE 5: RETRIEVE AND VALIDATE CHARACTER ----
-        var char = CharacterQueries.getCharacterById(characterIdNormalised);
-        if (!char) {
-            return failure('Character not found.');
+        var CharacterQueries = getCharacterQueries();
+        if (!CharacterQueries) {
+            return Promise.resolve(failure('CharacterQueries not available.'));
         }
 
-        // ---- PHASE 6: BUILD PROPOSED CHARACTER STATE ----
+        var char = CharacterQueries.getCharacterById(characterIdNormalised);
+        if (!char) {
+            return Promise.resolve(failure('Character not found.'));
+        }
+
+        // ---- PHASE 6: CHECK IF CHARACTER IS ELIMINATED BY OTHER MEANS ----
+        var CharacterEliminations = getCharacterEliminations();
+        if (CharacterEliminations && typeof CharacterEliminations.isCharacterEliminatedByWeek === 'function') {
+            if (CharacterEliminations.isCharacterEliminatedByWeek(char, weekNum)) {
+                return Promise.resolve(failure('Character is already eliminated at or before week ' + weekNum + '.'));
+            }
+        }
+
+        // ---- PHASE 7: BUILD PROPOSED CHARACTER STATE ----
         var charElimination = {
             week: weekNum,
             reason: eliminationReason
@@ -306,13 +487,12 @@
 
         var proposedChar = buildProposedCharacterState(char, tournamentIdNormalised, charElimination);
 
-        // Validate proposed character state
         var charValidation = validateProposedCharacter(proposedChar, tournamentIdNormalised);
         if (!charValidation.valid) {
-            return failure('Character state validation failed: ' + charValidation.message);
+            return Promise.resolve(failure('Character state validation failed: ' + charValidation.message));
         }
 
-        // ---- PHASE 7: BUILD PROPOSED TOURNAMENT STATE ----
+        // ---- PHASE 8: BUILD PROPOSED TOURNAMENT STATE ----
         var tournamentElimination = {
             participantId: characterIdNormalised,
             participantType: 'character',
@@ -327,59 +507,106 @@
         proposedTournament.eliminations.push(tournamentElimination);
 
         // Validate proposed tournament against schema
-        var tournValidation = Schema.validateTournament(proposedTournament, { strict: false });
-        if (!tournValidation.valid) {
-            var errors = tournValidation.errors.join('; ');
-            return failure('Tournament validation failed: ' + errors);
-        }
-
-        // ---- PHASE 8: APPLY MUTATIONS (ALL VALIDATION COMPLETE) ----
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
-        }
-
-        // Find and update tournament in data store
-        var tournIndex = -1;
-        for (var i = 0; i < data.tournaments.length; i++) {
-            if (data.tournaments[i] && normaliseId(data.tournaments[i].id) === tournamentIdNormalised) {
-                tournIndex = i;
-                break;
+        if (Schema) {
+            var tournValidation = Schema.validateTournament(proposedTournament, { strict: false });
+            if (!tournValidation.valid) {
+                var errors = tournValidation.errors.join('; ');
+                return Promise.resolve(failure('Tournament validation failed: ' + errors));
             }
         }
 
-        if (tournIndex === -1) {
-            return failure('Tournament not found in data store.');
-        }
+        // ---- PHASE 9: EXECUTE MUTATION ----
+        var targetTournamentId = tournamentIdNormalised;
+        var targetCharacterId = characterIdNormalised;
+        var targetWeek = weekNum;
+        var targetReason = eliminationReason;
+        var proposedCharCopy = JSON.parse(JSON.stringify(proposedChar));
+        var proposedTournamentCopy = JSON.parse(JSON.stringify(proposedTournament));
 
-        // Find and update character in data store
-        var charIndex = -1;
-        if (Array.isArray(data.characters)) {
-            for (var i = 0; i < data.characters.length; i++) {
-                if (data.characters[i] && normaliseId(data.characters[i].id) === characterIdNormalised) {
-                    charIndex = i;
-                    break;
+        return executeMutation({
+            validate: function(data) {
+                // Re-validate within transaction
+                var currentTournament = null;
+                if (Array.isArray(data.tournaments)) {
+                    for (var i = 0; i < data.tournaments.length; i++) {
+                        if (data.tournaments[i] && normaliseId(data.tournaments[i].id) === targetTournamentId) {
+                            currentTournament = data.tournaments[i];
+                            break;
+                        }
+                    }
                 }
-            }
-        }
 
-        if (charIndex === -1) {
-            return failure('Character not found in data store.');
-        }
+                if (!currentTournament) {
+                    return { valid: false, message: 'Tournament no longer exists.' };
+                }
 
-        // Apply tournament mutation
-        data.tournaments[tournIndex].eliminations = proposedTournament.eliminations;
+                var currentChar = null;
+                if (Array.isArray(data.characters)) {
+                    for (var i = 0; i < data.characters.length; i++) {
+                        if (data.characters[i] && normaliseId(data.characters[i].id) === targetCharacterId) {
+                            currentChar = data.characters[i];
+                            break;
+                        }
+                    }
+                }
 
-        // Apply character mutation
-        var targetChar = data.characters[charIndex];
-        targetChar.eliminations = proposedChar.eliminations;
-        targetChar.eliminatedWeeks = proposedChar.eliminatedWeeks;
+                if (!currentChar) {
+                    return { valid: false, message: 'Character no longer exists.' };
+                }
 
-        return success({
-            tournamentId: tournamentIdNormalised,
-            characterId: characterIdNormalised,
-            week: weekNum,
-            reason: eliminationReason
+                return { valid: true };
+            },
+            mutate: function(data) {
+                // Find and update tournament
+                var tournIndex = -1;
+                for (var i = 0; i < data.tournaments.length; i++) {
+                    if (data.tournaments[i] && normaliseId(data.tournaments[i].id) === targetTournamentId) {
+                        tournIndex = i;
+                        break;
+                    }
+                }
+
+                if (tournIndex === -1) {
+                    throw new Error('Tournament not found in data store.');
+                }
+
+                // Find and update character
+                var charIndex = -1;
+                if (Array.isArray(data.characters)) {
+                    for (var i = 0; i < data.characters.length; i++) {
+                        if (data.characters[i] && normaliseId(data.characters[i].id) === targetCharacterId) {
+                            charIndex = i;
+                            break;
+                        }
+                    }
+                }
+
+                if (charIndex === -1) {
+                    throw new Error('Character not found in data store.');
+                }
+
+                // Apply tournament mutation
+                data.tournaments[tournIndex].eliminations = proposedTournamentCopy.eliminations;
+
+                // Apply character mutation
+                var targetChar = data.characters[charIndex];
+                targetChar.eliminations = proposedCharCopy.eliminations;
+                targetChar.eliminatedWeeks = proposedCharCopy.eliminatedWeeks;
+
+                return {
+                    tournamentId: targetTournamentId,
+                    characterId: targetCharacterId,
+                    week: targetWeek,
+                    reason: targetReason
+                };
+            },
+            logMessage: function(result) {
+                var CharacterQueries = getCharacterQueries();
+                var name = CharacterQueries ? CharacterQueries.getCharacterNameById(targetCharacterId) : targetCharacterId;
+                return 'Eliminated ' + name + ' from tournament (week ' + targetWeek + '): ' + targetReason;
+            },
+            successMessage: 'Character eliminated from tournament.',
+            failureMessage: 'Failed to eliminate character from tournament.'
         });
     }
 
@@ -395,46 +622,60 @@
      * 
      * @param {string} tournamentId - Tournament ID
      * @param {string} characterId - Character ID
-     * @returns {object} { success: boolean, message?: string }
+     * @returns {Promise<object>} { success: boolean, message?: string, data?: object }
      */
     function unmarkCharacterEliminated(tournamentId, characterId) {
         // ---- PHASE 1: VALIDATE INPUTS ----
         var characterIdNormalised = normaliseId(characterId);
         if (characterIdNormalised === null) {
-            return failure('Invalid character ID.');
+            return Promise.resolve(failure('Invalid character ID.'));
         }
 
         var tournamentIdNormalised = normaliseId(tournamentId);
         if (tournamentIdNormalised === null) {
-            return failure('Invalid tournament ID.');
+            return Promise.resolve(failure('Invalid tournament ID.'));
         }
 
         // ---- PHASE 2: RETRIEVE AND VALIDATE TOURNAMENT ----
-        var tournament = Core.getTournament(tournamentIdNormalised);
+        var Queries = getTournamentQueries();
+        if (!Queries) {
+            return Promise.resolve(failure('TournamentQueries not available.'));
+        }
+
+        var tournament = Queries.getTournament(tournamentIdNormalised);
         if (!tournament) {
-            return failure('Tournament not found.');
+            return Promise.resolve(failure('Tournament not found.'));
         }
 
         // Validate tournament structure
-        var structValidation = Schema.validateTournament(tournament, { strict: false });
-        if (!structValidation.valid) {
-            return failure('Tournament data is malformed.');
+        var Schema = getTournamentSchema();
+        if (Schema) {
+            var structValidation = Schema.validateTournament(tournament, { strict: false });
+            if (!structValidation.valid) {
+                return Promise.resolve(failure('Tournament data is malformed.'));
+            }
         }
 
         // ---- PHASE 3: LIFECYCLE CHECK ----
-        if (!Lifecycle.canModifyEliminations(tournament)) {
-            return failure('Eliminations cannot be modified in tournament status "' + tournament.status + '".');
+        var Lifecycle = getTournamentLifecycle();
+        if (Lifecycle && !Lifecycle.canModifyEliminations(tournament)) {
+            return Promise.resolve(failure('Eliminations cannot be modified in tournament status "' + tournament.status + '".'));
         }
 
         // ---- PHASE 4: CHECK ELIMINATION EXISTS ----
-        if (!Schema.isParticipantEliminated(tournament, characterIdNormalised)) {
-            return failure('Character is not eliminated from this tournament.');
+        if (!Schema || !Schema.isParticipantEliminated(tournament, characterIdNormalised)) {
+            return Promise.resolve(failure('Character is not eliminated from this tournament.'));
         }
 
         // ---- PHASE 5: RETRIEVE CHARACTER ----
+        var CharacterQueries = getCharacterQueries();
+        if (!CharacterQueries) {
+            return Promise.resolve(failure('CharacterQueries not available.'));
+        }
+
         var char = CharacterQueries.getCharacterById(characterIdNormalised);
         if (!char) {
-            return failure('Character not found.');
+            return Promise.resolve(failure('Character not found.'));
         }
 
         // Check that the character-side elimination exists
@@ -450,7 +691,7 @@
         }
 
         if (!charElimExists) {
-            return failure('Character elimination record not found.');
+            return Promise.resolve(failure('Character elimination record not found.'));
         }
 
         // ---- PHASE 6: BUILD PROPOSED CHARACTER STATE ----
@@ -482,7 +723,7 @@
         // Validate proposed character state
         var charValidation = validateProposedCharacter(proposedChar, tournamentIdNormalised);
         if (!charValidation.valid) {
-            return failure('Character state validation failed: ' + charValidation.message);
+            return Promise.resolve(failure('Character state validation failed: ' + charValidation.message));
         }
 
         // ---- PHASE 7: BUILD PROPOSED TOURNAMENT STATE ----
@@ -498,113 +739,103 @@
         });
 
         // Validate proposed tournament against schema
-        var tournValidation = Schema.validateTournament(proposedTournament, { strict: false });
-        if (!tournValidation.valid) {
-            var errors = tournValidation.errors.join('; ');
-            return failure('Tournament validation failed: ' + errors);
-        }
-
-        // ---- PHASE 8: APPLY MUTATIONS (ALL VALIDATION COMPLETE) ----
-        var data = getDataStore();
-        if (!data) {
-            return failure('Data store is not available.');
-        }
-
-        // Find and update tournament in data store
-        var tournIndex = -1;
-        for (var i = 0; i < data.tournaments.length; i++) {
-            if (data.tournaments[i] && normaliseId(data.tournaments[i].id) === tournamentIdNormalised) {
-                tournIndex = i;
-                break;
+        if (Schema) {
+            var tournValidation = Schema.validateTournament(proposedTournament, { strict: false });
+            if (!tournValidation.valid) {
+                var errors = tournValidation.errors.join('; ');
+                return Promise.resolve(failure('Tournament validation failed: ' + errors));
             }
         }
 
-        if (tournIndex === -1) {
-            return failure('Tournament not found in data store.');
-        }
+        // ---- PHASE 8: EXECUTE MUTATION ----
+        var targetTournamentId = tournamentIdNormalised;
+        var targetCharacterId = characterIdNormalised;
+        var proposedCharCopy = JSON.parse(JSON.stringify(proposedChar));
+        var proposedTournamentCopy = JSON.parse(JSON.stringify(proposedTournament));
 
-        // Find and update character in data store
-        var charIndex = -1;
-        if (Array.isArray(data.characters)) {
-            for (var i = 0; i < data.characters.length; i++) {
-                if (data.characters[i] && normaliseId(data.characters[i].id) === characterIdNormalised) {
-                    charIndex = i;
-                    break;
+        return executeMutation({
+            validate: function(data) {
+                // Re-validate within transaction
+                var currentTournament = null;
+                if (Array.isArray(data.tournaments)) {
+                    for (var i = 0; i < data.tournaments.length; i++) {
+                        if (data.tournaments[i] && normaliseId(data.tournaments[i].id) === targetTournamentId) {
+                            currentTournament = data.tournaments[i];
+                            break;
+                        }
+                    }
                 }
-            }
-        }
 
-        if (charIndex === -1) {
-            return failure('Character not found in data store.');
-        }
+                if (!currentTournament) {
+                    return { valid: false, message: 'Tournament no longer exists.' };
+                }
 
-        // Apply tournament mutation
-        data.tournaments[tournIndex].eliminations = proposedTournament.eliminations;
+                var currentChar = null;
+                if (Array.isArray(data.characters)) {
+                    for (var i = 0; i < data.characters.length; i++) {
+                        if (data.characters[i] && normaliseId(data.characters[i].id) === targetCharacterId) {
+                            currentChar = data.characters[i];
+                            break;
+                        }
+                    }
+                }
 
-        // Apply character mutation
-        var targetChar = data.characters[charIndex];
-        targetChar.eliminations = proposedChar.eliminations;
-        targetChar.eliminatedWeeks = proposedChar.eliminatedWeeks;
+                if (!currentChar) {
+                    return { valid: false, message: 'Character no longer exists.' };
+                }
 
-        return success({
-            tournamentId: tournamentIdNormalised,
-            characterId: characterIdNormalised
+                return { valid: true };
+            },
+            mutate: function(data) {
+                // Find and update tournament
+                var tournIndex = -1;
+                for (var i = 0; i < data.tournaments.length; i++) {
+                    if (data.tournaments[i] && normaliseId(data.tournaments[i].id) === targetTournamentId) {
+                        tournIndex = i;
+                        break;
+                    }
+                }
+
+                if (tournIndex === -1) {
+                    throw new Error('Tournament not found in data store.');
+                }
+
+                // Find and update character
+                var charIndex = -1;
+                if (Array.isArray(data.characters)) {
+                    for (var i = 0; i < data.characters.length; i++) {
+                        if (data.characters[i] && normaliseId(data.characters[i].id) === targetCharacterId) {
+                            charIndex = i;
+                            break;
+                        }
+                    }
+                }
+
+                if (charIndex === -1) {
+                    throw new Error('Character not found in data store.');
+                }
+
+                // Apply tournament mutation
+                data.tournaments[tournIndex].eliminations = proposedTournamentCopy.eliminations;
+
+                // Apply character mutation
+                var targetChar = data.characters[charIndex];
+                targetChar.eliminations = proposedCharCopy.eliminations;
+                targetChar.eliminatedWeeks = proposedCharCopy.eliminatedWeeks;
+
+                return {
+                    tournamentId: targetTournamentId,
+                    characterId: targetCharacterId
+                };
+            },
+            logMessage: function(result) {
+                var CharacterQueries = getCharacterQueries();
+                var name = CharacterQueries ? CharacterQueries.getCharacterNameById(targetCharacterId) : targetCharacterId;
+                return 'Restored ' + name + ' from tournament elimination.';
+            },
+            successMessage: 'Character restored from tournament.',
+            failureMessage: 'Failed to restore character from tournament.'
         });
-    }
-
-    // ============================================================
-    // PROPOSED CHARACTER VALIDATION
-    // ============================================================
-
-    /**
-     * Validate a proposed character state.
-     * 
-     * @param {object} proposedChar - Proposed character state
-     * @param {string} tournamentId - Tournament ID
-     * @returns {object} { valid: boolean, message?: string }
-     */
-    function validateProposedCharacter(proposedChar, tournamentId) {
-        if (!proposedChar || typeof proposedChar !== 'object') {
-            return { valid: false, message: 'Invalid character state.' };
-        }
-
-        if (!Array.isArray(proposedChar.eliminations)) {
-            return { valid: false, message: 'Character eliminations must be an array.' };
-        }
-
-        // Check for duplicate tournament eliminations
-        var tournamentIdNormalised = normaliseId(tournamentId);
-        if (tournamentIdNormalised === null) {
-            return { valid: false, message: 'Invalid tournament ID.' };
-        }
-
-        var count = 0;
-        for (var i = 0; i < proposedChar.eliminations.length; i++) {
-            var e = proposedChar.eliminations[i];
-            if (e && !e.standalone && normaliseId(e.tournamentId) === tournamentIdNormalised) {
-                count++;
-            }
-        }
-
-        if (count > 1) {
-            return { valid: false, message: 'Duplicate tournament elimination found.' };
-        }
-
-        // Check that eliminatedWeeks is consistent with eliminations
-        var expectedWeeks = rebuildEliminatedWeeks(proposedChar);
-        var actualWeeks = proposedChar.eliminatedWeeks || [];
-
-        if (expectedWeeks.length !== actualWeeks.length) {
-            return { valid: false, message: 'Eliminated weeks are inconsistent with eliminations.' };
-        }
-
-        for (var i = 0; i < expectedWeeks.length; i++) {
-            if (actualWeeks.indexOf(expectedWeeks[i]) === -1) {
-                return { valid: false, message: 'Eliminated weeks are inconsistent with eliminations.' };
-            }
-        }
-
-        return { valid: true };
     }
 
     // ============================================================
@@ -613,22 +844,34 @@
 
     /**
      * Check if a character is eliminated in a tournament.
-     * Delegates to Schema.
+     * Delegates to TournamentSchema.
      * 
      * @param {string} tournamentId - Tournament ID
      * @param {string} characterId - Character ID
      * @returns {boolean} True if eliminated
      */
     function isCharacterEliminated(tournamentId, characterId) {
-        var tournament = Core.getTournament(tournamentId);
+        var Queries = getTournamentQueries();
+        if (!Queries) {
+            return false;
+        }
+
+        var tournament = Queries.getTournament(tournamentId);
         if (!tournament) {
             return false;
         }
+
         var id = normaliseId(characterId);
         if (id === null) {
             return false;
         }
-        return Schema.isParticipantEliminated(tournament, id);
+
+        var Schema = getTournamentSchema();
+        if (Schema && typeof Schema.isParticipantEliminated === 'function') {
+            return Schema.isParticipantEliminated(tournament, id);
+        }
+
+        return false;
     }
 
     /**
@@ -638,15 +881,41 @@
      * @returns {array} Array of elimination records
      */
     function getCharacterEliminations(tournamentId) {
-        var tournament = Core.getTournament(tournamentId);
+        var Queries = getTournamentQueries();
+        if (!Queries) {
+            return [];
+        }
+
+        var tournament = Queries.getTournament(tournamentId);
         if (!tournament || !Array.isArray(tournament.eliminations)) {
             return [];
         }
+
         return tournament.eliminations
             .filter(function(e) {
                 return e && e.participantType === 'character';
             })
             .slice();
+    }
+
+    /**
+     * Get eliminated weeks for a character from tournament data only.
+     * 
+     * @param {string} characterId - Character ID
+     * @returns {array} Array of eliminated week numbers
+     */
+    function getCharacterEliminatedWeeks(characterId) {
+        var CharacterQueries = getCharacterQueries();
+        if (!CharacterQueries) {
+            return [];
+        }
+
+        var char = CharacterQueries.getCharacterById(characterId);
+        if (!char) {
+            return [];
+        }
+
+        return rebuildEliminatedWeeks(char);
     }
 
     // ============================================================
@@ -661,11 +930,41 @@
         // Query helpers
         isCharacterEliminated: isCharacterEliminated,
         getCharacterEliminations: getCharacterEliminations,
+        getCharacterEliminatedWeeks: getCharacterEliminatedWeeks,
 
         // Internal helpers (exposed for testing)
         rebuildEliminatedWeeks: rebuildEliminatedWeeks,
         buildProposedCharacterState: buildProposedCharacterState,
         validateProposedCharacter: validateProposedCharacter
     };
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.TournamentEliminationWorkflow;
+        var missing = [];
+
+        var required = [
+            'markCharacterEliminated', 'unmarkCharacterEliminated',
+            'isCharacterEliminated', 'getCharacterEliminations',
+            'getCharacterEliminatedWeeks',
+            'rebuildEliminatedWeeks', 'buildProposedCharacterState',
+            'validateProposedCharacter'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn('[TournamentEliminationWorkflow] Verification - some exports may be missing:', missing.join(', '));
+        } else {
+            console.log('[TournamentEliminationWorkflow] All exports verified successfully.');
+        }
+    })();
 
 })();
