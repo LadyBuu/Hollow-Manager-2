@@ -7,18 +7,18 @@
  *   - This module is the ONLY external entry point for missions
  *   - All mission logic lives in the sub-modules
  *   - This module does NOT implement mission logic directly
- *   - It delegates to MissionsUI for all operations
+ *   - It delegates to MissionUI for all operations
  *   - TabManager is the single source of truth for lifecycle
  *   - Missing dependencies fail visibly (no silent returns)
  * 
  * DEPENDENCIES:
- *   - MissionsUI (from missions-ui.js)
- *   - MissionsCore (from missions-core.js)
- *   - MissionsQueries (from missions-queries.js)
- *   - MissionsRender (from missions-render.js)
- *   - MissionsSchema (from missions-schema.js)
+ *   - MissionUI (from mission-ui.js)
+ *   - MissionCore (from mission-core.js)
+ *   - MissionQueries (from mission-queries.js)
+ *   - MissionRender (from mission-render.js)
+ *   - MissionSchema (from mission-schema.js)
  *   - MissionViews (from mission-views.js)
- *   - MissionRules (from mission-rules.js)
+ *   - MissionAggregator (from mission-aggregator.js)
  *   - MissionId (from mission-id.js)
  * 
  * USAGE:
@@ -46,11 +46,11 @@
 
     var missing = [];
 
-    // Primary dependency - MissionsUI is the only required dependency
+    // Primary dependency - MissionUI is the only required dependency
     // for the entry point to function. All other dependencies are
-    // validated by MissionsUI itself.
-    if (!window.MissionsUI || typeof window.MissionsUI.render !== 'function') {
-        missing.push('MissionsUI');
+    // validated by MissionUI itself.
+    if (!window.MissionUI || typeof window.MissionUI.render !== 'function') {
+        missing.push('MissionUI');
     }
 
     if (missing.length > 0) {
@@ -63,24 +63,24 @@
     // DEPENDENCY IMPORTS
     // ============================================================
 
-    var MissionsUI = window.MissionsUI;
+    var MissionUI = window.MissionUI;
 
     // Internal module access for debugging/development only.
     // These are not part of the public API and should not be used
     // by application code. They are exposed for diagnostic purposes.
     var _debugModules = {
-        Core: window.MissionsCore || null,
-        Queries: window.MissionsQueries || null,
-        Render: window.MissionsRender || null,
-        Schema: window.MissionsSchema || null,
+        Core: window.MissionCore || null,
+        Queries: window.MissionQueries || null,
+        Render: window.MissionRender || null,
+        Schema: window.MissionSchema || null,
         Views: window.MissionViews || null,
-        Rules: window.MissionRules || null,
+        Aggregator: window.MissionAggregator || null,
         Id: window.MissionId || null,
-        UI: window.MissionsUI || null
+        UI: window.MissionUI || null
     };
 
     // ============================================================
-    // PUBLIC API - Delegate to MissionsUI
+    // PUBLIC API - Delegate to MissionUI
     // ============================================================
 
     /**
@@ -90,7 +90,7 @@
      * @returns {void}
      */
     function renderMissions(container) {
-        MissionsUI.render(container);
+        MissionUI.render(container);
     }
 
     /**
@@ -100,7 +100,7 @@
      * @returns {void}
      */
     function viewMission(id) {
-        MissionsUI.view(id);
+        MissionUI.viewMission(id);
     }
 
     /**
@@ -109,7 +109,7 @@
      * @returns {void}
      */
     function closeMissionDetail() {
-        MissionsUI.closeDetail();
+        MissionUI.closeMissionDetail();
     }
 
     /**
@@ -119,7 +119,7 @@
      * @returns {void}
      */
     function showMissionForm(editId) {
-        MissionsUI.showForm(editId);
+        MissionUI.showMissionForm(editId);
     }
 
     /**
@@ -128,7 +128,7 @@
      * @returns {void}
      */
     function destroyMissions() {
-        MissionsUI.destroy();
+        MissionUI.destroy();
     }
 
     // ============================================================
