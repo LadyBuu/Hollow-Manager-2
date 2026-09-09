@@ -38,7 +38,7 @@
  *   - Missing fields are represented as null/empty per schema canonicalisation
  * 
  * DEPENDENCIES:
- *   - window.TournamentsSchema - Structural validation - MANDATORY
+ *   - window.TournamentSchema (from tournament-schema.js) - MANDATORY (singular)
  *   - window.IdUtils - ID normalisation - MANDATORY
  *   - window.CalendarValidation - Week validation - MANDATORY
  *   - window.ObjectUtils - Deep cloning - MANDATORY
@@ -53,50 +53,99 @@
     window.__tournamentsRepairLoaded = true;
 
     // ============================================================
+    // LAZY LOADING HELPERS
+    // ============================================================
+
+    /**
+     * Get TournamentSchema (singular) - this is the correct name.
+     * The old name TournamentsSchema (plural) is also checked for backward compatibility.
+     */
+    function getTournamentSchema() {
+        return window.TournamentSchema || window.TournamentsSchema || null;
+    }
+
+    function getIdUtils() {
+        return window.IdUtils || null;
+    }
+
+    function getCalendarValidation() {
+        return window.CalendarValidation || null;
+    }
+
+    function getObjectUtils() {
+        return window.ObjectUtils || null;
+    }
+
+    // ============================================================
     // DEPENDENCY CHECK - MANDATORY
     // ============================================================
 
-    var missing = [];
+    function checkDependencies() {
+        var missing = [];
 
-    if (!window.TournamentsSchema) {
-        missing.push('TournamentsSchema');
+        var Schema = getTournamentSchema();
+        if (!Schema) {
+            missing.push('TournamentSchema (lazy)');
+        }
+
+        if (!getIdUtils() || typeof getIdUtils().normaliseId !== 'function') {
+            missing.push('IdUtils.normaliseId (lazy)');
+        }
+
+        if (!getCalendarValidation() || typeof getCalendarValidation().parseWeek !== 'function') {
+            missing.push('CalendarValidation.parseWeek (lazy)');
+        }
+
+        if (!getObjectUtils() || typeof getObjectUtils().deepClone !== 'function') {
+            missing.push('ObjectUtils.deepClone (lazy)');
+        }
+
+        if (missing.length > 0) {
+            console.warn('[TournamentsRepair] Some dependencies not yet loaded:', missing.join(', '));
+            return false;
+        }
+
+        return true;
     }
 
-    if (!window.IdUtils || typeof window.IdUtils.normaliseId !== 'function') {
-        missing.push('IdUtils.normaliseId');
-    }
-
-    if (!window.CalendarValidation || typeof window.CalendarValidation.parseWeek !== 'function') {
-        missing.push('CalendarValidation.parseWeek');
-    }
-
-    if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
-        missing.push('ObjectUtils.deepClone');
-    }
-
-    if (missing.length > 0) {
-        throw new Error('[TournamentsRepair] Missing dependencies: ' + missing.join(', '));
-    }
+    // Run check but don't fail - will check again on each repair
+    checkDependencies();
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // DEPENDENCY IMPORTS (resolved at runtime via lazy helpers)
     // ============================================================
 
-    var Schema = window.TournamentsSchema;
-    var IdUtils = window.IdUtils;
-    var CalendarValidation = window.CalendarValidation;
-    var ObjectUtils = window.ObjectUtils;
+    // All dependencies are accessed through the lazy helpers above
+    // to ensure they work even if loaded after this module
 
     // ============================================================
     // HELPERS
     // ============================================================
 
     function normaliseId(value) {
-        return IdUtils.normaliseId(value);
+        var IdUtils = getIdUtils();
+        if (IdUtils && typeof IdUtils.normaliseId === 'function') {
+            return IdUtils.normaliseId(value);
+        }
+        if (value === null || value === undefined) {
+            return null;
+        }
+        var str = String(value).trim();
+        return str !== '' ? str : null;
     }
 
     function deepClone(value) {
-        return ObjectUtils.deepClone(value);
+        var ObjectUtils = getObjectUtils();
+        if (ObjectUtils && typeof ObjectUtils.deepClone === 'function') {
+            return ObjectUtils.deepClone(value);
+        }
+        if (value === null || typeof value !== 'object') {
+            return value;
+        }
+        if (typeof structuredClone === 'function') {
+            try { return structuredClone(value); } catch (_) {}
+        }
+        try { return JSON.parse(JSON.stringify(value)); } catch (_) { return value; }
     }
 
     function parsePositiveInteger(value) {
@@ -126,6 +175,10 @@
         return !isNaN(date.getTime()) && date.toISOString() === value;
     }
 
+    function getSchema() {
+        return getTournamentSchema();
+    }
+
     function participantExists(participants, id) {
         var normalised = normaliseId(id);
         if (normalised === null) {
@@ -153,7 +206,53 @@
     }
 
     function deriveLoser(participants, winner) {
-        return Schema.deriveLoser(participants, winner);
+        var Schema = getSchema();
+        if (Schema && typeof Schema.deriveLoser === 'function') {
+            return Schema.deriveLoser(participants, winner);
+        }
+        if (!Array.isArray(participants) || participants.length !== 2) {
+            return null;
+        }
+        if (!winner) {
+            return null;
+        }
+        var winnerId = normaliseId(winner);
+        if (winnerId === null) {
+            return null;
+        }
+        for (var i = 0; i < participants.length; i++) {
+            var id = normaliseId(participants[i]);
+            if (id !== null && id !== winnerId) {
+                return id;
+            }
+        }
+        return null;
+    }
+
+    function deriveAdvancing(match) {
+        var Schema = getSchema();
+        if (Schema && typeof Schema.deriveAdvancing === 'function') {
+            return Schema.deriveAdvancing(match);
+        }
+        if (match.type === 'standard') {
+            if (match.winner) {
+                var winnerId = normaliseId(match.winner);
+                return winnerId !== null ? [winnerId] : [];
+            }
+            return [];
+        }
+        if (match.type === 'group_exam') {
+            var advancing = [];
+            var participants = Array.isArray(match.participants) ? match.participants : [];
+            for (var i = 0; i < participants.length; i++) {
+                var id = normaliseId(participants[i]);
+                if (id !== null && match.results && match.results[id] === 'pass') {
+                    advancing.push(id);
+                }
+            }
+            return advancing;
+        }
+        return [];
     }
 
     function getDataStore() {
@@ -161,6 +260,62 @@
             return null;
         }
         return window.data;
+    }
+
+    function getCanonicalParticipantType(mode) {
+        var Schema = getSchema();
+        if (Schema && typeof Schema.getCanonicalParticipantType === 'function') {
+            return Schema.getCanonicalParticipantType(mode);
+        }
+        return mode === 'teams' ? 'team' : 'character';
+    }
+
+    function isValidParticipantType(type) {
+        var Schema = getSchema();
+        if (Schema && typeof Schema.isValidParticipantType === 'function') {
+            return Schema.isValidParticipantType(type);
+        }
+        return type === 'character' || type === 'team';
+    }
+
+    function isValidMode(mode) {
+        var Schema = getSchema();
+        if (Schema && typeof Schema.isValidMode === 'function') {
+            return Schema.isValidMode(mode);
+        }
+        return mode === 'teams' || mode === 'individuals';
+    }
+
+    function isValidStatus(status) {
+        var Schema = getSchema();
+        if (Schema && typeof Schema.isValidStatus === 'function') {
+            return Schema.isValidStatus(status);
+        }
+        return status === 'draft' || status === 'active' || status === 'completed';
+    }
+
+    function isValidMatchType(type) {
+        var Schema = getSchema();
+        if (Schema && typeof Schema.isValidMatchType === 'function') {
+            return Schema.isValidMatchType(type);
+        }
+        return type === 'standard' || type === 'group_exam';
+    }
+
+    function isValidMatchStatus(status) {
+        var Schema = getSchema();
+        if (Schema && typeof Schema.isValidMatchStatus === 'function') {
+            return Schema.isValidMatchStatus(status);
+        }
+        return status === 'pending' || status === 'in_progress' || status === 'completed';
+    }
+
+    function isValidGroupExamResult(value) {
+        var Schema = getSchema();
+        if (Schema && typeof Schema.isValidGroupExamResult === 'function') {
+            return Schema.isValidGroupExamResult(value);
+        }
+        return value === 'pass' || value === 'fail';
     }
 
     // ============================================================
@@ -183,7 +338,7 @@
             return null;
         }
 
-        var canonicalType = Schema.getCanonicalParticipantType(mode);
+        var canonicalType = getCanonicalParticipantType(mode);
         if (canonicalType === null) {
             if (report) {
                 report.discarded.push('Cannot determine canonical type for mode: ' + mode);
@@ -192,7 +347,7 @@
         }
 
         var type = participant.type;
-        if (!Schema.isValidParticipantType(type)) {
+        if (!isValidParticipantType(type)) {
             if (report) {
                 report.discarded.push('Participant "' + id + '" has invalid type: "' + type + '"');
             }
@@ -244,7 +399,7 @@
             return null;
         }
         var type = match.type;
-        if (!Schema.isValidMatchType(type)) {
+        if (!isValidMatchType(type)) {
             if (report) {
                 report.discarded.push('Match has invalid type: "' + type + '"');
             }
@@ -268,7 +423,7 @@
             return null;
         }
         var status = match.status;
-        if (!Schema.isValidMatchStatus(status)) {
+        if (!isValidMatchStatus(status)) {
             if (report) {
                 report.discarded.push('Match has invalid status: "' + status + '"');
             }
@@ -449,7 +604,7 @@
                 resultSeen[id] = true;
 
                 var value = match.results[key];
-                if (!Schema.isValidGroupExamResult(value)) {
+                if (!isValidGroupExamResult(value)) {
                     if (report) {
                         report.discarded.push('Match result for "' + key + '" is invalid: "' + value + '"');
                     }
@@ -516,7 +671,7 @@
             return null;
         }
         var status = round.status;
-        if (!Schema.isValidMatchStatus(status)) {
+        if (!isValidMatchStatus(status)) {
             if (report) {
                 report.discarded.push('Round ' + (index + 1) + ' has invalid status: "' + status + '"');
             }
@@ -546,7 +701,7 @@
             return null;
         }
         var matchType = round.matchType;
-        if (!Schema.isValidMatchType(matchType)) {
+        if (!isValidMatchType(matchType)) {
             if (report) {
                 report.discarded.push('Round ' + (index + 1) + ' has invalid match type: "' + matchType + '"');
             }
@@ -640,7 +795,7 @@
             return null;
         }
         var participantType = elimination.participantType;
-        if (!Schema.isValidParticipantType(participantType)) {
+        if (!isValidParticipantType(participantType)) {
             if (report) {
                 report.discarded.push('Elimination has invalid participant type: "' + participantType + '"');
             }
@@ -661,7 +816,9 @@
             }
             return null;
         }
-        var week = CalendarValidation.parseWeek(elimination.week);
+
+        var CalendarValidation = getCalendarValidation();
+        var week = CalendarValidation ? CalendarValidation.parseWeek(elimination.week) : null;
         if (week === null) {
             if (report) {
                 report.discarded.push('Elimination has invalid week: "' + String(elimination.week) + '"');
@@ -725,6 +882,8 @@
          * @returns {object|null} { tournament: object, report: object } or null if unrecoverable
          */
         repairTournament: function(tourn, options) {
+            var Schema = getSchema();
+
             var report = {
                 warnings: [],
                 discarded: [],
@@ -751,21 +910,22 @@
             var name = String(tourn.name).trim();
 
             // ---- MODE: REQUIRED ----
-            if (!Schema.isValidMode(tourn.mode)) {
+            if (!isValidMode(tourn.mode)) {
                 report.discarded.push('Tournament has no valid mode');
                 return null;
             }
             var mode = tourn.mode;
 
             // ---- START WEEK: REQUIRED ----
-            var startWeek = CalendarValidation.parseWeek(tourn.startWeek);
+            var CalendarValidation = getCalendarValidation();
+            var startWeek = CalendarValidation ? CalendarValidation.parseWeek(tourn.startWeek) : null;
             if (startWeek === null) {
                 report.discarded.push('Tournament has no valid start week');
                 return null;
             }
 
             // ---- END WEEK: REQUIRED ----
-            var endWeek = CalendarValidation.parseWeek(tourn.endWeek);
+            var endWeek = CalendarValidation ? CalendarValidation.parseWeek(tourn.endWeek) : null;
             if (endWeek === null) {
                 report.discarded.push('Tournament has no valid end week');
                 return null;
@@ -784,7 +944,7 @@
             }
 
             // ---- STATUS: REQUIRED ----
-            if (!Schema.isValidStatus(tourn.status)) {
+            if (!isValidStatus(tourn.status)) {
                 report.discarded.push('Tournament has no valid status');
                 return null;
             }
@@ -940,7 +1100,7 @@
                     var winnerId = normaliseId(tourn.winner.id);
                     var winnerType = tourn.winner.type;
 
-                    if (winnerId !== null && Schema.isValidParticipantType(winnerType)) {
+                    if (winnerId !== null && isValidParticipantType(winnerType)) {
                         var participant = getParticipant(tournamentParticipants, winnerId);
                         if (!participant) {
                             report.discarded.push('Winner "' + winnerId + '" is not a tournament participant');
@@ -1017,11 +1177,16 @@
             });
 
             // ---- FINAL VALIDATION ----
-            var finalValidation = Schema.validateTournament(repaired, { strict: true });
-            if (!finalValidation.valid) {
-                finalValidation.errors.forEach(function(error) {
-                    report.discarded.push('Repaired tournament failed strict validation: ' + error);
-                });
+            if (Schema && typeof Schema.validateTournament === 'function') {
+                var finalValidation = Schema.validateTournament(repaired, { strict: true });
+                if (!finalValidation.valid) {
+                    finalValidation.errors.forEach(function(error) {
+                        report.discarded.push('Repaired tournament failed strict validation: ' + error);
+                    });
+                    return null;
+                }
+            } else {
+                report.discarded.push('Schema not available for final validation');
                 return null;
             }
 
@@ -1088,11 +1253,6 @@
                         status: 'failed',
                         message: 'Tournament could not be repaired'
                     });
-                    // The detailed discarded reasons were logged inside repairTournament
-                    // But we also need to preserve them in the aggregate report
-                    // Note: This is a limitation of the current implementation
-                    // The detailed reasons are not preserved because repairTournament returns null
-                    // To fix, we would need to capture the report before returning null
                     continue;
                 }
 
@@ -1149,7 +1309,11 @@
          * @returns {object} Validation result
          */
         validateTournament: function(tourn) {
-            return Schema.validateTournament(tourn, { strict: false });
+            var Schema = getSchema();
+            if (Schema && typeof Schema.validateTournament === 'function') {
+                return Schema.validateTournament(tourn, { strict: false });
+            }
+            return { valid: false, errors: ['Schema not available'] };
         },
 
         /**
