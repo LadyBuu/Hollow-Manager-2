@@ -8,6 +8,7 @@
  * IMPORTANT:
  *   - Projection builder, not a query registry
  *   - Composes canonical shared Queries
+ *   - Uses LAZY LOADING to break circular dependencies
  *   - Never accesses window.data directly
  *   - Never mutates application/domain data
  *   - Never calls MutationUtils, saveData(), or UI APIs
@@ -15,7 +16,7 @@
  *   - No passthrough methods
  *   - List projections avoid per-character N+1 aggregation
  * 
- * DEPENDENCIES:
+ * DEPENDENCIES (lazily loaded):
  *   - window.CharacterQueries (from shared/queries)
  *   - window.AcademyQueries (from shared/queries)
  *   - window.TeamQueries (from shared/queries)
@@ -39,106 +40,107 @@
     window.__characterAggregatorLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // LAZY LOADING HELPERS - Breaks circular dependencies
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries;
-    var AcademyQueries = window.AcademyQueries;
-    var TeamQueries = window.TeamQueries;
-    var SocialQueries = window.SocialQueries;
-    var MissionQueries = window.MissionQueries;
-    var DisciplineQueries = window.DisciplineQueries;
-    var EliminationQueries = window.EliminationQueries;
-    var TournamentQueries = window.TournamentQueries;
-    var CalendarQueries = window.CalendarQueries;
-    var CharacterStats = window.CharacterStats;
-    var CharacterConstants = window.CharacterConstants;
-    var CalendarConstants = window.CALENDAR_CONSTANTS;
+    function getCharacterQueries() {
+        return window.CharacterQueries || null;
+    }
+
+    function getAcademyQueries() {
+        return window.AcademyQueries || null;
+    }
+
+    function getTeamQueries() {
+        return window.TeamQueries || null;
+    }
+
+    function getSocialQueries() {
+        return window.SocialQueries || null;
+    }
+
+    function getMissionQueries() {
+        return window.MissionQueries || null;
+    }
+
+    function getDisciplineQueries() {
+        return window.DisciplineQueries || null;
+    }
+
+    function getEliminationQueries() {
+        return window.EliminationQueries || null;
+    }
+
+    function getTournamentQueries() {
+        return window.TournamentQueries || null;
+    }
+
+    function getCalendarQueries() {
+        return window.CalendarQueries || null;
+    }
+
+    function getCharacterStats() {
+        return window.CharacterStats || null;
+    }
+
+    function getCharacterConstants() {
+        return window.CharacterConstants || null;
+    }
+
+    function getCalendarConstants() {
+        return window.CalendarConstants || null;
+    }
+
+    function getObjectUtils() {
+        return window.ObjectUtils || null;
+    }
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // DEPENDENCY CHECK - Warns but doesn't fail
     // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
+        if (!getCharacterQueries()) {
+            missing.push('CharacterQueries');
         }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
+        if (!getAcademyQueries()) {
+            missing.push('AcademyQueries');
         }
-
-        if (!AcademyQueries || typeof AcademyQueries.getCharacterClasses !== 'function') {
-            missing.push('AcademyQueries.getCharacterClasses');
+        if (!getTeamQueries()) {
+            missing.push('TeamQueries');
         }
-        if (!AcademyQueries || typeof AcademyQueries.getClassDisplayName !== 'function') {
-            missing.push('AcademyQueries.getClassDisplayName');
+        if (!getSocialQueries()) {
+            missing.push('SocialQueries');
         }
-
-        if (!TeamQueries || typeof TeamQueries.getTeamsForCharacter !== 'function') {
-            missing.push('TeamQueries.getTeamsForCharacter');
+        if (!getMissionQueries()) {
+            missing.push('MissionQueries');
         }
-        if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
-            missing.push('TeamQueries.getTeamName');
+        if (!getDisciplineQueries()) {
+            missing.push('DisciplineQueries');
         }
-        if (!TeamQueries || typeof TeamQueries.getCharacterTeamMembership !== 'function') {
-            missing.push('TeamQueries.getCharacterTeamMembership');
+        if (!getEliminationQueries()) {
+            missing.push('EliminationQueries');
         }
-
-        if (!SocialQueries || typeof SocialQueries.getCharacterRelationships !== 'function') {
-            missing.push('SocialQueries.getCharacterRelationships');
+        if (!getTournamentQueries()) {
+            missing.push('TournamentQueries');
         }
-        if (!SocialQueries || typeof SocialQueries.getRelationshipTypeLabel !== 'function') {
-            missing.push('SocialQueries.getRelationshipTypeLabel');
+        if (!getCalendarQueries()) {
+            missing.push('CalendarQueries');
         }
-        if (!SocialQueries || typeof SocialQueries.getRelationshipTypeColor !== 'function') {
-            missing.push('SocialQueries.getRelationshipTypeColor');
+        if (!getCharacterStats()) {
+            missing.push('CharacterStats');
         }
-
-        if (!MissionQueries || typeof MissionQueries.getMissionsForCharacter !== 'function') {
-            missing.push('MissionQueries.getMissionsForCharacter');
-        }
-
-        if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
-            missing.push('DisciplineQueries.getDiscipline');
-        }
-
-        if (!EliminationQueries || typeof EliminationQueries.isCharacterEliminated !== 'function') {
-            missing.push('EliminationQueries.isCharacterEliminated');
-        }
-        if (!EliminationQueries || typeof EliminationQueries.getEliminationWeek !== 'function') {
-            missing.push('EliminationQueries.getEliminationWeek');
-        }
-        if (!EliminationQueries || typeof EliminationQueries.getEliminationReason !== 'function') {
-            missing.push('EliminationQueries.getEliminationReason');
-        }
-
-        if (!TournamentQueries || typeof TournamentQueries.getTournamentById !== 'function') {
-            missing.push('TournamentQueries.getTournamentById');
-        }
-
-        if (!CalendarQueries || typeof CalendarQueries.getStudentSchedule !== 'function') {
-            missing.push('CalendarQueries.getStudentSchedule');
-        }
-
-        if (!CharacterStats || typeof CharacterStats.getCharacterStats !== 'function') {
-            missing.push('CharacterStats.getCharacterStats');
-        }
-        if (!CharacterStats || typeof CharacterStats.getCharacterMagic !== 'function') {
-            missing.push('CharacterStats.getCharacterMagic');
-        }
-
-        if (!CharacterConstants) {
+        if (!getCharacterConstants()) {
             missing.push('CharacterConstants');
         }
-
-        if (!CalendarConstants) {
-            missing.push('CALENDAR_CONSTANTS');
+        if (!getCalendarConstants()) {
+            missing.push('CalendarConstants');
         }
 
         if (missing.length > 0) {
-            console.warn('[CharacterAggregator] Missing dependencies:', missing.join(', '));
+            console.warn('[CharacterAggregator] Some dependencies not yet loaded:', missing.join(', '));
             return false;
         }
 
@@ -148,15 +150,18 @@
     checkDependencies();
 
     // ============================================================
-    // CONSTANTS
+    // CONSTANTS - Lazy loaded from CharacterConstants
     // ============================================================
 
-    var STAT_KEYS = CharacterConstants.STAT_KEYS;
-    var STAT_DEFAULT = CharacterConstants.STAT_DEFAULT;
+    function getStatKeys() {
+        var CC = getCharacterConstants();
+        return CC ? CC.STAT_KEYS || ['str', 'dex', 'con', 'int', 'wis', 'cha'] : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    }
 
-    var MIN_WEEK = CalendarConstants ? CalendarConstants.MIN_WEEK : 1;
-    var MAX_WEEK = CalendarConstants ? CalendarConstants.MAX_WEEK : 52;
-    var DEFAULT_WEEK = 1;
+    function getStatDefault() {
+        var CC = getCharacterConstants();
+        return CC ? CC.STAT_DEFAULT || 10 : 10;
+    }
 
     // ============================================================
     // HELPERS
@@ -164,11 +169,14 @@
 
     function getCurrentWeek() {
         var data = window.data || {};
+        var CC = getCalendarConstants();
         var week = data.currentWeek;
-        if (typeof week === 'number' && week >= MIN_WEEK && week <= MAX_WEEK) {
+        var minWeek = CC ? CC.MIN_WEEK || 1 : 1;
+        var maxWeek = CC ? CC.MAX_WEEK || 52 : 52;
+        if (typeof week === 'number' && week >= minWeek && week <= maxWeek) {
             return week;
         }
-        return DEFAULT_WEEK;
+        return 1;
     }
 
     function getModifier(value) {
@@ -224,11 +232,31 @@
 
     function formatTeams(teams, charId, prefix) {
         prefix = prefix || '';
+        var TeamQueries = getTeamQueries();
+        var AcademyQueries = getAcademyQueries();
+        var CharacterQueries = getCharacterQueries();
+
+        if (!TeamQueries || !CharacterQueries) {
+            return teams.map(function(team) {
+                return {
+                    id: team.id,
+                    name: team.name || 'Unknown',
+                    type: team.type,
+                    classId: team.classId,
+                    classDisplay: '',
+                    role: '',
+                    joinPeriod: '',
+                    leavePeriod: '',
+                    periodDisplay: '',
+                    status: team.status || 'active'
+                };
+            });
+        }
 
         return teams.map(function(team) {
             var member = TeamQueries.getCharacterTeamMembership(team.id, charId);
             var classDisplay = '';
-            if (team.classId) {
+            if (team.classId && AcademyQueries) {
                 var className = AcademyQueries.getClassDisplayName(team.classId);
                 if (className) {
                     classDisplay = ' [' + className + ']';
@@ -256,7 +284,8 @@
 
     function formatGrade(grade) {
         var scoreNum = Number(grade.score);
-        var discipline = DisciplineQueries.getDiscipline(grade.disciplineId);
+        var DisciplineQueries = getDisciplineQueries();
+        var discipline = DisciplineQueries ? DisciplineQueries.getDiscipline(grade.disciplineId) : null;
 
         return {
             week: grade.week,
@@ -271,6 +300,8 @@
     function formatElimination(elim, charId) {
         if (!elim) { return null; }
 
+        var TournamentQueries = getTournamentQueries();
+
         // Check if this elimination is for this character or stands alone
         if (elim.standalone) {
             return {
@@ -283,7 +314,7 @@
 
         // Tournament elimination
         var tournamentName = 'Unknown Tournament';
-        if (elim.tournamentId) {
+        if (elim.tournamentId && TournamentQueries) {
             var tourn = TournamentQueries.getTournamentById(elim.tournamentId);
             if (tourn) { tournamentName = tourn.name || 'Unknown Tournament'; }
         }
@@ -300,7 +331,10 @@
     }
 
     function formatMission(mission) {
-        var teamName = TeamQueries.getTeamName(mission.assignedTeamId) || 'Unknown Team';
+        var TeamQueries = getTeamQueries();
+        var teamName = (TeamQueries && TeamQueries.getTeamName) 
+            ? TeamQueries.getTeamName(mission.assignedTeamId) 
+            : 'Unknown Team';
 
         return {
             id: mission.id,
@@ -315,6 +349,25 @@
     }
 
     function formatRelationship(rel, charId) {
+        var CharacterQueries = getCharacterQueries();
+        var SocialQueries = getSocialQueries();
+
+        if (!CharacterQueries || !SocialQueries) {
+            return {
+                id: rel.id,
+                otherId: '',
+                otherName: 'Unknown',
+                typeId: rel.typeId || '',
+                typeLabel: '',
+                typeColor: '#7f8c8d',
+                clarification: rel.clarification || '',
+                startYear: rel.startYear || '',
+                endYear: rel.endYear || '',
+                period: '',
+                notes: rel.notes || ''
+            };
+        }
+
         var otherId = String(rel.character1) === String(charId) ? rel.character2 : rel.character1;
         var other = CharacterQueries.getCharacterById(otherId);
         var otherName = other ? CharacterQueries.getDisplayName(other) : 'Unknown';
@@ -368,6 +421,23 @@
             return null;
         }
 
+        var CharacterQueries = getCharacterQueries();
+        var AcademyQueries = getAcademyQueries();
+        var TeamQueries = getTeamQueries();
+        var SocialQueries = getSocialQueries();
+        var MissionQueries = getMissionQueries();
+        var DisciplineQueries = getDisciplineQueries();
+        var EliminationQueries = getEliminationQueries();
+        var TournamentQueries = getTournamentQueries();
+        var CalendarQueries = getCalendarQueries();
+        var CharacterStats = getCharacterStats();
+        var CharacterConstants = getCharacterConstants();
+
+        if (!CharacterQueries) {
+            console.warn('[CharacterAggregator] CharacterQueries not available for getCharacterDetail');
+            return null;
+        }
+
         options = options || {};
         var weekNum = options.week || getCurrentWeek();
 
@@ -393,33 +463,52 @@
         var isCivilian = CharacterQueries.isCivilian(char);
 
         // ---- Stats ----
-        var stats = CharacterStats.getCharacterStats(char);
         var statsWithModifiers = {};
-        STAT_KEYS.forEach(function(key) {
-            var value = stats[key] !== undefined ? stats[key] : STAT_DEFAULT;
-            statsWithModifiers[key] = {
-                value: value,
-                modifier: getModifier(value),
-                modifierDisplay: getModifierDisplay(value)
-            };
-        });
+        var statKeys = getStatKeys();
+        var statDefault = getStatDefault();
+
+        if (CharacterStats) {
+            var stats = CharacterStats.getCharacterStats(char);
+            statKeys.forEach(function(key) {
+                var value = stats[key] !== undefined ? stats[key] : statDefault;
+                statsWithModifiers[key] = {
+                    value: value,
+                    modifier: getModifier(value),
+                    modifierDisplay: getModifierDisplay(value)
+                };
+            });
+        } else {
+            statKeys.forEach(function(key) {
+                var value = (char.stats && char.stats[key] !== undefined) ? char.stats[key] : statDefault;
+                statsWithModifiers[key] = {
+                    value: value,
+                    modifier: getModifier(value),
+                    modifierDisplay: getModifierDisplay(value)
+                };
+            });
+        }
 
         // ---- Magic ----
-        var magicRaw = CharacterStats.getCharacterMagic(char);
         var magic = {};
-        var magicTypeKeys = window.MagicConstants ? window.MagicConstants.getTypeKeys() : Object.keys(magicRaw);
-        magicTypeKeys.forEach(function(key) {
-            var value = magicRaw[key] || 0;
-            magic[key] = {
-                value: value,
-                label: getMagicTypeLabel(key),
-                level: getMagicLevelLabel(value),
-                color: getMagicLevelColor(value)
-            };
-        });
+        if (CharacterStats) {
+            var magicRaw = CharacterStats.getCharacterMagic(char);
+            var magicTypeKeys = window.MagicConstants ? window.MagicConstants.getTypeKeys() : Object.keys(magicRaw);
+            magicTypeKeys.forEach(function(key) {
+                var value = magicRaw[key] || 0;
+                magic[key] = {
+                    value: value,
+                    label: getMagicTypeLabel(key),
+                    level: getMagicLevelLabel(value),
+                    color: getMagicLevelColor(value)
+                };
+            });
+        }
 
         // ---- Class Names ----
-        var classNames = AcademyQueries.getCharacterClassNames(char) || [];
+        var classNames = [];
+        if (AcademyQueries) {
+            classNames = AcademyQueries.getCharacterClassNames(char) || [];
+        }
 
         // ---- Teams ----
         var academicTeams = [];
@@ -427,31 +516,33 @@
         var temporaryTeams = [];
         var civilianTeams = [];
 
-        if (includeTeams) {
+        if (includeTeams && TeamQueries) {
             var allTeams = TeamQueries.getTeamsForCharacter(characterId);
-            academicTeams = formatTeams(
-                allTeams.filter(function(t) { return t.type === 'academic'; }),
-                characterId,
-                'Wk '
-            );
-            professionalTeams = formatTeams(
-                allTeams.filter(function(t) { return t.type === 'professional'; }),
-                characterId
-            );
-            temporaryTeams = formatTeams(
-                allTeams.filter(function(t) { return t.type === 'temporary'; }),
-                characterId
-            );
-            civilianTeams = formatTeams(
-                allTeams.filter(function(t) { return t.type === 'civilian'; }),
-                characterId
-            );
+            if (allTeams) {
+                academicTeams = formatTeams(
+                    allTeams.filter(function(t) { return t.type === 'academic'; }),
+                    characterId,
+                    'Wk '
+                );
+                professionalTeams = formatTeams(
+                    allTeams.filter(function(t) { return t.type === 'professional'; }),
+                    characterId
+                );
+                temporaryTeams = formatTeams(
+                    allTeams.filter(function(t) { return t.type === 'temporary'; }),
+                    characterId
+                );
+                civilianTeams = formatTeams(
+                    allTeams.filter(function(t) { return t.type === 'civilian'; }),
+                    characterId
+                );
+            }
         }
 
         // ---- Grades ----
         var grades = [];
-        if (includeGrades) {
-            var rawGrades = AcademyQueries.getCharacterGrades ? AcademyQueries.getCharacterGrades(characterId) : [];
+        if (includeGrades && AcademyQueries) {
+            var rawGrades = AcademyQueries.getStudentGrades ? AcademyQueries.getStudentGrades(characterId) : [];
             grades = rawGrades.map(formatGrade);
             grades.sort(function(a, b) {
                 return parseInt(a.week, 10) - parseInt(b.week, 10);
@@ -460,14 +551,14 @@
 
         // ---- Missions ----
         var missions = [];
-        if (includeMissions) {
+        if (includeMissions && MissionQueries) {
             var rawMissions = MissionQueries.getMissionsForCharacter(characterId) || [];
             missions = rawMissions.map(formatMission);
         }
 
         // ---- Relationships ----
         var relationships = [];
-        if (includeRelationships) {
+        if (includeRelationships && SocialQueries) {
             var rawRelationships = SocialQueries.getCharacterRelationships(characterId) || [];
             relationships = rawRelationships.map(function(rel) {
                 return formatRelationship(rel, characterId);
@@ -481,7 +572,7 @@
         var eliminationWeek = null;
         var eliminationReason = 'Unknown';
 
-        if (includeEliminations) {
+        if (includeEliminations && EliminationQueries) {
             // Check elimination status
             isEliminated = EliminationQueries.isCharacterEliminated(characterId, weekNum);
             eliminationWeek = EliminationQueries.getEliminationWeek(characterId);
@@ -503,22 +594,24 @@
 
         // ---- Schedule ----
         var scheduleCount = 0;
-        if (includeSchedule && CalendarQueries.getStudentSchedule) {
+        if (includeSchedule && CalendarQueries && CalendarQueries.getStudentSchedule) {
             var schedule = CalendarQueries.getStudentSchedule(characterId, weekNum);
-            var count = 0;
-            for (var day in schedule) {
-                if (Object.prototype.hasOwnProperty.call(schedule, day)) {
-                    var daySchedule = schedule[day];
-                    if (daySchedule && typeof daySchedule === 'object') {
-                        for (var hour in daySchedule) {
-                            if (Object.prototype.hasOwnProperty.call(daySchedule, hour) && daySchedule[hour]) {
-                                count++;
+            if (schedule) {
+                var count = 0;
+                for (var day in schedule) {
+                    if (Object.prototype.hasOwnProperty.call(schedule, day)) {
+                        var daySchedule = schedule[day];
+                        if (daySchedule && typeof daySchedule === 'object') {
+                            for (var hour in daySchedule) {
+                                if (Object.prototype.hasOwnProperty.call(daySchedule, hour) && daySchedule[hour]) {
+                                    count++;
+                                }
                             }
                         }
                     }
                 }
+                scheduleCount = count;
             }
-            scheduleCount = count;
         }
 
         // ---- Career Status ----
@@ -560,7 +653,10 @@
         var personality = char.personality || {};
 
         // ---- Classes (actual class objects) ----
-        var classes = AcademyQueries.getCharacterClasses(char) || [];
+        var classes = [];
+        if (AcademyQueries) {
+            classes = AcademyQueries.getCharacterClasses(char) || [];
+        }
 
         // ---- Result ----
         return {
@@ -651,6 +747,15 @@
      * @returns {Array} Array of character list items
      */
     function getCharacterListViewModel(options) {
+        var CharacterQueries = getCharacterQueries();
+        var AcademyQueries = getAcademyQueries();
+        var EliminationQueries = getEliminationQueries();
+
+        if (!CharacterQueries) {
+            console.warn('[CharacterAggregator] CharacterQueries not available for getCharacterListViewModel');
+            return [];
+        }
+
         options = options || {};
         var weekNum = options.week || getCurrentWeek();
         var classFilter = options.classFilter || 'all';
@@ -662,23 +767,25 @@
 
         // ---- Pre-compute class membership for all characters ----
         var classMembership = {};
-        var allClasses = AcademyQueries.getClasses() || [];
         var classMap = {};
-        allClasses.forEach(function(cls) {
-            if (cls && cls.id) {
-                classMap[cls.id] = cls.name;
-            }
-        });
+        if (AcademyQueries) {
+            var allClasses = AcademyQueries.getClasses() || [];
+            allClasses.forEach(function(cls) {
+                if (cls && cls.id) {
+                    classMap[cls.id] = cls.name;
+                }
+            });
 
-        characters.forEach(function(char) {
-            if (!char || !char.id) { return; }
-            var classIds = char.classIds || [];
-            classMembership[char.id] = classIds;
-        });
+            characters.forEach(function(char) {
+                if (!char || !char.id) { return; }
+                var classIds = char.classIds || [];
+                classMembership[char.id] = classIds;
+            });
+        }
 
         // ---- Pre-compute elimination status for all characters ----
         var eliminationStatus = {};
-        if (EliminationQueries.isCharacterEliminated) {
+        if (EliminationQueries) {
             characters.forEach(function(char) {
                 if (!char || !char.id) { return; }
                 eliminationStatus[char.id] = {
@@ -722,11 +829,8 @@
             }
 
             // Hide eliminated
-            if (hideEliminated) {
-                var elimStatus = eliminationStatus[char.id];
-                if (elimStatus && elimStatus.eliminated) {
-                    return false;
-                }
+            if (hideEliminated && eliminationStatus[char.id] && eliminationStatus[char.id].eliminated) {
+                return false;
             }
 
             return true;
@@ -781,44 +885,69 @@
     function getCharacterAcademicData(characterId, week) {
         if (!characterId) { return null; }
 
+        var CharacterQueries = getCharacterQueries();
+        var AcademyQueries = getAcademyQueries();
+        var TeamQueries = getTeamQueries();
+        var EliminationQueries = getEliminationQueries();
+
+        if (!CharacterQueries) {
+            return null;
+        }
+
         var weekNum = week || getCurrentWeek();
 
         var char = CharacterQueries.getCharacterById(characterId);
         if (!char) { return null; }
 
         // Academic teams
-        var allTeams = TeamQueries.getTeamsForCharacter(characterId);
-        var academicTeams = formatTeams(
-            allTeams.filter(function(t) { return t.type === 'academic'; }),
-            characterId,
-            'Wk '
-        );
+        var academicTeams = [];
+        if (TeamQueries) {
+            var allTeams = TeamQueries.getTeamsForCharacter(characterId);
+            if (allTeams) {
+                academicTeams = formatTeams(
+                    allTeams.filter(function(t) { return t.type === 'academic'; }),
+                    characterId,
+                    'Wk '
+                );
+            }
+        }
 
         // Grades
-        var rawGrades = AcademyQueries.getCharacterGrades ? AcademyQueries.getCharacterGrades(characterId) : [];
-        var grades = rawGrades.map(formatGrade);
-        grades.sort(function(a, b) {
-            return parseInt(a.week, 10) - parseInt(b.week, 10);
-        });
+        var grades = [];
+        if (AcademyQueries) {
+            var rawGrades = AcademyQueries.getStudentGrades ? AcademyQueries.getStudentGrades(characterId) : [];
+            grades = rawGrades.map(formatGrade);
+            grades.sort(function(a, b) {
+                return parseInt(a.week, 10) - parseInt(b.week, 10);
+            });
+        }
 
         // Class names
-        var classNames = AcademyQueries.getCharacterClassNames(char) || [];
+        var classNames = [];
+        if (AcademyQueries) {
+            classNames = AcademyQueries.getCharacterClassNames(char) || [];
+        }
 
         // Elimination status
-        var isEliminated = EliminationQueries.isCharacterEliminated(characterId, weekNum);
-        var eliminationWeek = EliminationQueries.getEliminationWeek(characterId);
-        var eliminationReason = EliminationQueries.getEliminationReason(characterId) || 'Unknown';
-
-        // Tournament eliminations
+        var isEliminated = false;
+        var eliminationWeek = null;
+        var eliminationReason = 'Unknown';
         var tournamentEliminations = [];
-        var rawEliminations = char.eliminations || [];
-        rawEliminations.forEach(function(elim) {
-            if (!elim || elim.standalone) { return; }
-            var formatted = formatElimination(elim, characterId);
-            if (formatted) {
-                tournamentEliminations.push(formatted);
-            }
-        });
+
+        if (EliminationQueries) {
+            isEliminated = EliminationQueries.isCharacterEliminated(characterId, weekNum);
+            eliminationWeek = EliminationQueries.getEliminationWeek(characterId);
+            eliminationReason = EliminationQueries.getEliminationReason(characterId) || 'Unknown';
+
+            var rawEliminations = char.eliminations || [];
+            rawEliminations.forEach(function(elim) {
+                if (!elim || elim.standalone) { return; }
+                var formatted = formatElimination(elim, characterId);
+                if (formatted) {
+                    tournamentEliminations.push(formatted);
+                }
+            });
+        }
 
         return {
             characterId: characterId,
@@ -848,27 +977,46 @@
     function getCharacterProfessionalData(characterId) {
         if (!characterId) { return null; }
 
+        var CharacterQueries = getCharacterQueries();
+        var TeamQueries = getTeamQueries();
+        var MissionQueries = getMissionQueries();
+
+        if (!CharacterQueries) {
+            return null;
+        }
+
         var char = CharacterQueries.getCharacterById(characterId);
         if (!char) { return null; }
 
         // Teams
-        var allTeams = TeamQueries.getTeamsForCharacter(characterId);
-        var professionalTeams = formatTeams(
-            allTeams.filter(function(t) { return t.type === 'professional'; }),
-            characterId
-        );
-        var temporaryTeams = formatTeams(
-            allTeams.filter(function(t) { return t.type === 'temporary'; }),
-            characterId
-        );
-        var civilianTeams = formatTeams(
-            allTeams.filter(function(t) { return t.type === 'civilian'; }),
-            characterId
-        );
+        var professionalTeams = [];
+        var temporaryTeams = [];
+        var civilianTeams = [];
+
+        if (TeamQueries) {
+            var allTeams = TeamQueries.getTeamsForCharacter(characterId);
+            if (allTeams) {
+                professionalTeams = formatTeams(
+                    allTeams.filter(function(t) { return t.type === 'professional'; }),
+                    characterId
+                );
+                temporaryTeams = formatTeams(
+                    allTeams.filter(function(t) { return t.type === 'temporary'; }),
+                    characterId
+                );
+                civilianTeams = formatTeams(
+                    allTeams.filter(function(t) { return t.type === 'civilian'; }),
+                    characterId
+                );
+            }
+        }
 
         // Missions
-        var rawMissions = MissionQueries.getMissionsForCharacter(characterId) || [];
-        var missions = rawMissions.map(formatMission);
+        var missions = [];
+        if (MissionQueries) {
+            var rawMissions = MissionQueries.getMissionsForCharacter(characterId) || [];
+            missions = rawMissions.map(formatMission);
+        }
 
         // Career status
         var careerStatus = char.careerStatus || [];
@@ -908,13 +1056,23 @@
     function getCharacterSocialData(characterId) {
         if (!characterId) { return null; }
 
+        var CharacterQueries = getCharacterQueries();
+        var SocialQueries = getSocialQueries();
+
+        if (!CharacterQueries) {
+            return null;
+        }
+
         var char = CharacterQueries.getCharacterById(characterId);
         if (!char) { return null; }
 
-        var rawRelationships = SocialQueries.getCharacterRelationships(characterId) || [];
-        var relationships = rawRelationships.map(function(rel) {
-            return formatRelationship(rel, characterId);
-        });
+        var relationships = [];
+        if (SocialQueries) {
+            var rawRelationships = SocialQueries.getCharacterRelationships(characterId) || [];
+            relationships = rawRelationships.map(function(rel) {
+                return formatRelationship(rel, characterId);
+            });
+        }
 
         return {
             characterId: characterId,
@@ -946,8 +1104,43 @@
         getCurrentWeek: getCurrentWeek,
 
         // Constants
-        MIN_WEEK: MIN_WEEK,
-        MAX_WEEK: MAX_WEEK
+        get MIN_WEEK() {
+            var CC = getCalendarConstants();
+            return CC ? CC.MIN_WEEK || 1 : 1;
+        },
+        get MAX_WEEK() {
+            var CC = getCalendarConstants();
+            return CC ? CC.MAX_WEEK || 52 : 52;
+        }
     };
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.CharacterAggregator;
+        var missing = [];
+
+        var required = [
+            'getCharacterDetail',
+            'getCharacterListViewModel',
+            'getCharacterAcademicData',
+            'getCharacterProfessionalData',
+            'getCharacterSocialData'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn('[CharacterAggregator] Verification - some exports may be missing:', missing.join(', '));
+        } else {
+            console.log('[CharacterAggregator] All exports verified successfully.');
+        }
+    })();
 
 })();
