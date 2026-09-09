@@ -26,7 +26,7 @@
  * 
  * DEPENDENCIES:
  *   - window.TournamentConstants (from tournament-constants.js) - MANDATORY
- *   - window.TournamentsSchema (from tournaments-schema.js) - MANDATORY
+ *   - window.TournamentSchema (from tournaments-schema.js) - MANDATORY
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.TeamQueries (from team-queries.js) - MANDATORY
@@ -56,7 +56,7 @@
     }
 
     function getSchema() {
-        return window.TournamentsSchema || null;
+        return window.TournamentSchema || null;
     }
 
     function getCalendarValidation() {
@@ -90,7 +90,7 @@
             missing.push('TournamentConstants (lazy)');
         }
         if (!getSchema()) {
-            missing.push('TournamentsSchema (lazy)');
+            missing.push('TournamentSchema (lazy)');
         }
         if (!getCalendarValidation()) {
             missing.push('CalendarValidation (lazy)');
