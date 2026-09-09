@@ -112,7 +112,7 @@
 <body>
     <div id="app">
         <h1>Complete Module Test</h1>
-        <p>Testing all modules: <span class="warning">Characters</span>, <span class="warning">Calendar</span>, <span class="warning">Social</span>, <span class="warning">Teams</span>, <span class="warning">Academy</span></p>
+        <p>Testing all modules: <span class="warning">Characters</span>, <span class="warning">Calendar</span>, <span class="warning">Social</span>, <span class="warning">Teams</span>, <span class="warning">Academy</span>, <span class="warning">Tournaments</span></p>
 
         <div id="test-results">
             <div class="test-section">
@@ -156,6 +156,7 @@
     <script src="js/modules/shared/magic-constants.js"></script>
     <script src="js/modules/shared/social-constants.js"></script>
     <script src="js/modules/shared/team-constants.js"></script>
+    <script src="js/modules/shared/tournament-constants.js"></script>
 
     <!-- ============================================================
          CALENDAR VALIDATION - LOADS AFTER CALENDAR CONSTANTS
@@ -191,6 +192,12 @@
     <script src="js/modules/shared/queries/academy-queries.js"></script>
 
     <!-- ============================================================
+         ACADEMY ADDITIONAL - Schedule & Distribute
+         ============================================================ -->
+    <script src="js/modules/academy/academy-schedule.js"></script>
+    <script src="js/modules/academy/academy-distribute.js"></script>
+
+    <!-- ============================================================
          CORE INFRASTRUCTURE - LOADS BEFORE MODULES THAT USE IT
          ============================================================ -->
     <script src="js/core/activity-log.js"></script>
@@ -200,12 +207,6 @@
     <script src="js/core/tab-manager.js"></script>
     <script src="js/core/mutation-pipeline.js"></script>
     <script src="js/core/bootstrap.js"></script>
-
-    <!-- ============================================================
-         ACADEMY ADDITIONAL - Schedule & Distribute
-         ============================================================ -->
-    <script src="js/modules/academy/academy-schedule.js"></script>
-    <script src="js/modules/academy/academy-distribute.js"></script>
 
     <!-- ============================================================
          CALENDAR MODULE
@@ -238,6 +239,24 @@
     <script src="js/modules/characters/index.js"></script>
 
     <!-- ============================================================
+         TOURNAMENT MODULE - Core, Matches, Schema, Lifecycle, Rules, UI
+         Note: tournament-constants.js is in js/modules/shared/
+         Note: tournament-queries.js is in js/modules/shared/queries/
+         ============================================================ -->
+    <script src="js/modules/tournaments/tournament-schema.js"></script>
+    <script src="js/modules/tournaments/tournament-lifecycle.js"></script>
+    <script src="js/modules/tournaments/tournament-rules.js"></script>
+    <script src="js/modules/tournaments/tournament-core.js"></script>
+    <script src="js/modules/tournaments/tournament-matches.js"></script>
+    <script src="js/modules/tournaments/tournament-aggregator.js"></script>
+    <script src="js/modules/tournaments/tournament-render.js"></script>
+    <script src="js/modules/tournaments/tournament-ui.js"></script>
+    <script src="js/modules/tournaments/tournament-events.js"></script>
+    <script src="js/modules/tournaments/tournament-elimination-workflow.js"></script>
+    <script src="js/modules/tournaments/tournament-repair.js"></script>
+    <script src="js/modules/tournaments/index.js"></script>
+
+    <!-- ============================================================
          TEAM MODULE
          ============================================================ -->
     <script src="js/modules/teams/team-core.js"></script>
@@ -259,7 +278,7 @@
 
     <!-- ============================================================
          ACADEMY MODULE - Aggregator, UI, Events, Tabs
-         NOTE: academy-core.js does not exist - using AcademyClasses directly
+         NOTE: AcademyCore does not exist - using direct modules
          ============================================================ -->
     <script src="js/modules/academy/academy-aggregator.js"></script>
     <script src="js/modules/academy/academy-ui.js"></script>
@@ -375,7 +394,9 @@
                     { name: 'MagicConstants', value: window.MagicConstants },
                     { name: 'SocialConstants', value: window.SocialConstants },
                     { name: 'TeamConstants', value: window.TeamConstants },
+                    { name: 'TournamentConstants', value: window.TournamentConstants },
                     { name: 'CalendarQueries', value: window.CalendarQueries },
+                    { name: 'TournamentQueries', value: window.TournamentQueries },
                     { name: 'MutationPipeline', value: window.MutationPipeline },
                     { name: 'AcademyClasses', value: window.AcademyClasses }
                 ];
@@ -408,7 +429,7 @@
                 renderDependencyCheck();
 
                 log('========== TEST SUITE START ==========', 'info');
-                log('Testing all modules: Characters, Calendar, Social, Teams, Academy', 'info');
+                log('Testing all modules: Characters, Calendar, Social, Teams, Academy, Tournaments', 'info');
 
                 // ---- CORE UTILITIES ----
                 log('', 'info');
@@ -531,6 +552,19 @@
                     });
                 }
 
+                testModuleLoaded('TournamentConstants', window.TournamentConstants);
+                if (window.TournamentConstants) {
+                    test('TournamentConstants.VALID_STATUSES exists', function() {
+                        return Array.isArray(window.TournamentConstants.VALID_STATUSES);
+                    });
+                    test('TournamentConstants.VALID_MODES exists', function() {
+                        return Array.isArray(window.TournamentConstants.VALID_MODES);
+                    });
+                    test('TournamentConstants.getCanonicalParticipantType exists', function() {
+                        return typeof window.TournamentConstants.getCanonicalParticipantType === 'function';
+                    });
+                }
+
                 // ---- SHARED QUERIES ----
                 log('', 'info');
                 log('--- SHARED QUERIES ---', 'info');
@@ -558,6 +592,8 @@
                     testFunctionExists(window.TournamentQueries, 'getTournament');
                     testFunctionExists(window.TournamentQueries, 'getTournaments');
                     testFunctionExists(window.TournamentQueries, 'getParticipants');
+                    testFunctionExists(window.TournamentQueries, 'getRounds');
+                    testFunctionExists(window.TournamentQueries, 'getMatches');
                 }
 
                 testModuleLoaded('MissionQueries', window.MissionQueries);
@@ -804,6 +840,100 @@
                     return typeof window.renderCalendar === 'function';
                 });
 
+                // ---- TOURNAMENT MODULE ----
+                log('', 'info');
+                log('--- TOURNAMENT MODULE ---', 'info');
+
+                testModuleLoaded('TournamentSchema', window.TournamentSchema);
+                if (window.TournamentSchema) {
+                    testFunctionExists(window.TournamentSchema, 'validateTournament');
+                    testFunctionExists(window.TournamentSchema, 'normaliseTournament');
+                    testFunctionExists(window.TournamentSchema, 'deriveAdvancing');
+                }
+
+                testModuleLoaded('TournamentLifecycle', window.TournamentLifecycle);
+                if (window.TournamentLifecycle) {
+                    testFunctionExists(window.TournamentLifecycle, 'canEditMetadata');
+                    testFunctionExists(window.TournamentLifecycle, 'canModifyParticipants');
+                    testFunctionExists(window.TournamentLifecycle, 'canAddRounds');
+                    testFunctionExists(window.TournamentLifecycle, 'canCompleteTournament');
+                    testFunctionExists(window.TournamentLifecycle, 'getLifecycleStatus');
+                }
+
+                testModuleLoaded('TournamentRules', window.TournamentRules);
+                if (window.TournamentRules) {
+                    testFunctionExists(window.TournamentRules, 'validateWeekRange');
+                    testFunctionExists(window.TournamentRules, 'canAddParticipant');
+                    testFunctionExists(window.TournamentRules, 'validateMatchResult');
+                    testFunctionExists(window.TournamentRules, 'isReadyForCompletion');
+                }
+
+                testModuleLoaded('TournamentCore', window.TournamentCore);
+                if (window.TournamentCore) {
+                    testFunctionExists(window.TournamentCore, 'createTournament');
+                    testFunctionExists(window.TournamentCore, 'updateTournament');
+                    testFunctionExists(window.TournamentCore, 'deleteTournament');
+                    testFunctionExists(window.TournamentCore, 'addParticipant');
+                    testFunctionExists(window.TournamentCore, 'removeParticipant');
+                    testFunctionExists(window.TournamentCore, 'addRound');
+                    testFunctionExists(window.TournamentCore, 'removeRound');
+                    testFunctionExists(window.TournamentCore, 'completeTournament');
+                    testFunctionExists(window.TournamentCore, 'getTournament');
+                }
+
+                testModuleLoaded('TournamentMatches', window.TournamentMatches);
+                if (window.TournamentMatches) {
+                    testFunctionExists(window.TournamentMatches, 'createMatch');
+                    testFunctionExists(window.TournamentMatches, 'removeMatch');
+                    testFunctionExists(window.TournamentMatches, 'updateMatch');
+                    testFunctionExists(window.TournamentMatches, 'completeMatch');
+                    testFunctionExists(window.TournamentMatches, 'buildRound');
+                    testFunctionExists(window.TournamentMatches, 'buildProposedMatch');
+                }
+
+                testModuleLoaded('TournamentAggregator', window.TournamentAggregator);
+                if (window.TournamentAggregator) {
+                    testFunctionExists(window.TournamentAggregator, 'getTournamentViewModel');
+                    testFunctionExists(window.TournamentAggregator, 'getTournamentListViewModel');
+                    testFunctionExists(window.TournamentAggregator, 'getParticipantName');
+                    testFunctionExists(window.TournamentAggregator, 'getWinnerName');
+                }
+
+                testModuleLoaded('TournamentRender', window.TournamentRender);
+                if (window.TournamentRender) {
+                    testFunctionExists(window.TournamentRender, 'renderList');
+                    testFunctionExists(window.TournamentRender, 'renderDetail');
+                    testFunctionExists(window.TournamentRender, 'renderForm');
+                }
+
+                testModuleLoaded('TournamentUI', window.TournamentUI);
+                if (window.TournamentUI) {
+                    testFunctionExists(window.TournamentUI, 'init');
+                    testFunctionExists(window.TournamentUI, 'getSelectedTournamentId');
+                    testFunctionExists(window.TournamentUI, 'setSelectedTournamentId');
+                    testFunctionExists(window.TournamentUI, 'getFilters');
+                    testFunctionExists(window.TournamentUI, 'setFilter');
+                }
+
+                testModuleLoaded('TournamentEvents', window.TournamentEvents);
+                if (window.TournamentEvents) {
+                    testFunctionExists(window.TournamentEvents, 'init');
+                    testFunctionExists(window.TournamentEvents, 'destroy');
+                    testFunctionExists(window.TournamentEvents, 'refreshUI');
+                }
+
+                testModuleLoaded('TournamentEliminationWorkflow', window.TournamentEliminationWorkflow);
+                if (window.TournamentEliminationWorkflow) {
+                    testFunctionExists(window.TournamentEliminationWorkflow, 'markCharacterEliminated');
+                    testFunctionExists(window.TournamentEliminationWorkflow, 'unmarkCharacterEliminated');
+                    testFunctionExists(window.TournamentEliminationWorkflow, 'isCharacterEliminated');
+                }
+
+                testModuleLoaded('Tournaments', window.Tournaments);
+                test('window.Tournaments.mount exists', function() {
+                    return window.Tournaments && typeof window.Tournaments.mount === 'function';
+                });
+
                 // ---- SOCIAL MODULE ----
                 log('', 'info');
                 log('--- SOCIAL MODULE ---', 'info');
@@ -867,6 +997,7 @@
                     testFunctionExists(window.TeamCore, 'updateMember');
                     testFunctionExists(window.TeamCore, 'addRanking');
                     testFunctionExists(window.TeamCore, 'removeRanking');
+                    testFunctionExists(window.TeamCore, 'getTeam');
                 }
 
                 testModuleLoaded('TeamAggregator', window.TeamAggregator);
@@ -1046,6 +1177,9 @@
                     test('window.data.academy.rankings exists', function() {
                         return window.data.academy && typeof window.data.academy.rankings === 'object';
                     });
+                    test('window.data.tournaments is array', function() {
+                        return Array.isArray(window.data.tournaments);
+                    });
                 }
 
                 // ---- SUMMARY ----
@@ -1059,7 +1193,8 @@
                     'Calendar': window.CalendarConstants && window.ScheduleCore && window.CalendarQueries,
                     'Social': window.SocialConstants && window.SocialQueries && window.SocialCore,
                     'Teams': window.TeamConstants && window.TeamQueries && window.TeamCore,
-                    'Academy': window.AcademyConstants && window.AcademyQueries && window.AcademyClasses
+                    'Academy': window.AcademyConstants && window.AcademyQueries && window.AcademyClasses,
+                    'Tournaments': window.TournamentConstants && window.TournamentQueries && window.TournamentCore
                 };
 
                 var moduleHtml = '<div style="margin-top:12px;font-size:12px;color:var(--text-dim);">';
@@ -1108,7 +1243,8 @@
                     var criticalModules = [
                         'ObjectUtils', 'ValidationUtils', 'CalendarConstants',
                         'CharacterConstants', 'AcademyConstants', 'TeamConstants',
-                        'CalendarQueries', 'MutationPipeline', 'AcademyClasses'
+                        'TournamentConstants', 'CalendarQueries', 'TournamentQueries',
+                        'MutationPipeline', 'AcademyClasses'
                     ];
 
                     var allLoaded = true;
