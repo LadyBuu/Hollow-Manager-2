@@ -16,6 +16,7 @@
                     <li><a href="#teams" data-tab="teams">Teams</a></li>
                     <li><a href="#calendar" data-tab="calendar">Calendar</a></li>
                     <li><a href="#social" data-tab="social">Social</a></li>
+                    <li><a href="#tournaments" data-tab="tournaments">Tournaments</a></li>
                     <li><a href="#academy" data-tab="academy">Academy</a></li>
                 </ul>
             </nav>
@@ -25,6 +26,7 @@
             <div id="tab-teams" class="tab-content"></div>
             <div id="tab-calendar" class="tab-content"></div>
             <div id="tab-social" class="tab-content"></div>
+            <div id="tab-tournaments" class="tab-content"></div>
             <div id="tab-academy" class="tab-content"></div>
         </main>
     </div>
@@ -52,6 +54,7 @@
     <script src="js/modules/shared/magic-constants.js"></script>
     <script src="js/modules/shared/social-constants.js"></script>
     <script src="js/modules/shared/team-constants.js"></script>
+    <script src="js/modules/shared/tournament-constants.js"></script>
 
     <!-- ============================================================
          CALENDAR VALIDATION - LOADS AFTER CALENDAR CONSTANTS
@@ -70,6 +73,7 @@
     <script src="js/modules/shared/queries/location-queries.js"></script>
     <script src="js/modules/shared/queries/elimination-queries.js"></script>
     <script src="js/modules/shared/queries/calendar-queries.js"></script>
+    <script src="js/modules/shared/queries/academy-queries.js"></script>
 
     <!-- ============================================================
          ACADEMY CORE MODULES (dependencies for AcademyQueries)
@@ -80,11 +84,6 @@
     <script src="js/modules/academy/academy-ranking.js"></script>
     <script src="js/modules/academy/academy-disciplines.js"></script>
     <script src="js/modules/academy/academy-locations.js"></script>
-
-    <!-- ============================================================
-         ACADEMY QUERIES - LOADS AFTER ITS DEPENDENCIES
-         ============================================================ -->
-    <script src="js/modules/shared/queries/academy-queries.js"></script>
 
     <!-- ============================================================
          ACADEMY ADDITIONAL - Schedule & Distribute
@@ -134,6 +133,24 @@
     <script src="js/modules/characters/index.js"></script>
 
     <!-- ============================================================
+         TOURNAMENT MODULE
+         Note: tournament-constants.js is in js/modules/shared/
+         Note: tournament-queries.js is in js/modules/shared/queries/
+         ============================================================ -->
+    <script src="js/modules/tournaments/tournament-schema.js"></script>
+    <script src="js/modules/tournaments/tournament-lifecycle.js"></script>
+    <script src="js/modules/tournaments/tournament-rules.js"></script>
+    <script src="js/modules/tournaments/tournament-core.js"></script>
+    <script src="js/modules/tournaments/tournament-matches.js"></script>
+    <script src="js/modules/tournaments/tournament-aggregator.js"></script>
+    <script src="js/modules/tournaments/tournament-render.js"></script>
+    <script src="js/modules/tournaments/tournament-ui.js"></script>
+    <script src="js/modules/tournaments/tournament-events.js"></script>
+    <script src="js/modules/tournaments/tournament-elimination-workflow.js"></script>
+    <script src="js/modules/tournaments/tournament-repair.js"></script>
+    <script src="js/modules/tournaments/index.js"></script>
+
+    <!-- ============================================================
          TEAM MODULE
          ============================================================ -->
     <script src="js/modules/teams/team-core.js"></script>
@@ -169,5 +186,6 @@
          APP BOOTSTRAP
          ============================================================ -->
     <script src="js/app.js"></script>
+
 </body>
 </html>
