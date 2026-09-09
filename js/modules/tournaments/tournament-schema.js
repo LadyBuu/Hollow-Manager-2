@@ -1,33 +1,38 @@
 /**
- * modules/tournaments/tournaments-schema.js - Tournament Schema
+ * modules/tournaments/tournament-schema.js - Tournament Schema
  * Single source of truth for tournament structure and validation
- * Path: js/modules/tournaments/tournaments-schema.js
+ * Path: js/modules/tournaments/tournament-schema.js
  * 
  * This module is responsible for:
  *   - Structural validation of tournaments
  *   - Canonical representation rules
  *   - Participant identity management
- *   - Tournament lifecycle constants
  *   - Domain derivations (when purely structural)
  * 
  * IMPORTANT:
  *   - Schema is the CONSTITUTIONAL AUTHORITY for tournament structure
  *   - Does NOT know about characters/teams in the wider application
  *   - Does NOT call saveData()
- *   - Does NOT perform business-rule validation (that belongs in Core/Lifecycle)
+ *   - Does NOT perform business-rule validation (that belongs in Rules)
+ *   - Does NOT perform lifecycle validation (that belongs in Lifecycle)
  *   - strict=true: reports unknown fields as warnings, validates canonical structure
  *   - strict=false: minimal structural validation, ignores unknown fields
  *   - Exported constants are FROZEN to prevent mutation
  *   - cloneTournament() preserves ALL properties (exact defensive copy)
  *   - normaliseTournament() produces canonical structural representation
  * 
+ * SCHEMA vs LIFECYCLE vs RULES DISTINCTION:
+ *   - Schema: "Is this tournament structurally valid?"
+ *   - Lifecycle: "Is this operation allowed for this status?"
+ *   - Rules: "Are the domain conditions satisfied?"
+ * 
  * DEPENDENCIES:
- *   - window.CALENDAR_CONSTANTS (from constants.js) - MANDATORY
+ *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  * 
  * USAGE:
- *   var Schema = window.TournamentsSchema;
+ *   var Schema = window.TournamentSchema;
  *   var validation = Schema.validateTournament(tournament, { strict: true });
  *   if (!validation.valid) { console.log(validation.errors); }
  *   var canonical = Schema.normaliseTournament(tournament);
@@ -37,44 +42,83 @@
     'use strict';
 
     // Guard against duplicate loading
-    if (window.__tournamentsSchemaLoaded) {
+    if (window.__tournamentSchemaLoaded) {
         return;
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - Hard failure if missing
+    // LAZY LOADING HELPERS
     // ============================================================
 
-    var missing = [];
-
-    if (!window.CALENDAR_CONSTANTS) {
-        missing.push('CALENDAR_CONSTANTS');
+    function getCalendarConstants() {
+        return window.CalendarConstants || window.CALENDAR_CONSTANTS || null;
     }
 
-    if (!window.ObjectUtils || typeof window.ObjectUtils.deepClone !== 'function') {
-        missing.push('ObjectUtils.deepClone');
+    function getObjectUtils() {
+        return window.ObjectUtils || null;
     }
 
-    if (!window.IdUtils || typeof window.IdUtils.normaliseId !== 'function') {
-        missing.push('IdUtils.normaliseId');
+    function getIdUtils() {
+        return window.IdUtils || null;
     }
 
-    if (missing.length > 0) {
-        throw new Error('[TournamentsSchema] Missing dependencies: ' + missing.join(', '));
+    // ============================================================
+    // GET BOUNDS - Lazy load from CalendarConstants
+    // ============================================================
+
+    function getBounds() {
+        var CC = getCalendarConstants();
+        if (!CC) {
+            // Default bounds if CalendarConstants not loaded yet
+            return {
+                MIN_WEEK: 1,
+                MAX_WEEK: 52,
+                MIN_YEAR: 1900,
+                MAX_YEAR: 2100
+            };
+        }
+        return {
+            MIN_WEEK: CC.MIN_WEEK || 1,
+            MAX_WEEK: CC.MAX_WEEK || 52,
+            MIN_YEAR: CC.MIN_YEAR || 1900,
+            MAX_YEAR: CC.MAX_YEAR || 2100
+        };
     }
 
-    var CALENDAR = window.CALENDAR_CONSTANTS;
-    var ObjectUtils = window.ObjectUtils;
-    var IdUtils = window.IdUtils;
+    // ============================================================
+    // DEPENDENCY CHECK - Warns but doesn't fail
+    // ============================================================
 
-    window.__tournamentsSchemaLoaded = true;
+    function checkDependencies() {
+        var missing = [];
+
+        if (!getCalendarConstants()) {
+            missing.push('CalendarConstants (lazy)');
+        }
+        if (!getObjectUtils()) {
+            missing.push('ObjectUtils (lazy)');
+        }
+        if (!getIdUtils()) {
+            missing.push('IdUtils (lazy)');
+        }
+
+        if (missing.length > 0) {
+            console.warn('[TournamentSchema] Some dependencies not yet loaded:', missing.join(', '));
+            return false;
+        }
+
+        return true;
+    }
+
+    checkDependencies();
 
     // ============================================================
     // CONSTANTS - DEEP FROZEN
     // ============================================================
 
-    var MIN_WEEK = CALENDAR.MIN_WEEK || 1;
-    var MAX_WEEK = CALENDAR.MAX_WEEK || 52;
+    var bounds = getBounds();
+    var MIN_WEEK = bounds.MIN_WEEK;
+    var MAX_WEEK = bounds.MAX_WEEK;
 
     var VALID_STATUSES = Object.freeze(['draft', 'active', 'completed']);
     var VALID_MODES = Object.freeze(['teams', 'individuals']);
@@ -82,31 +126,6 @@
     var VALID_MATCH_STATUSES = Object.freeze(['pending', 'in_progress', 'completed']);
     var VALID_PARTICIPANT_TYPES = Object.freeze(['character', 'team']);
     var VALID_GROUP_EXAM_RESULTS = Object.freeze(['pass', 'fail']);
-
-    // Lifecycle rules - declarative, immutable
-    var LIFECYCLE_RULES = Object.freeze({
-        draft: Object.freeze({
-            edit: true,
-            participants: true,
-            rounds: true,
-            eliminations: false,
-            complete: false
-        }),
-        active: Object.freeze({
-            edit: true,
-            participants: false,
-            rounds: true,
-            eliminations: true,
-            complete: true
-        }),
-        completed: Object.freeze({
-            edit: false,
-            participants: false,
-            rounds: false,
-            eliminations: false,
-            complete: false
-        })
-    });
 
     // ============================================================
     // ID NORMALISATION - Delegates to IdUtils
@@ -121,7 +140,15 @@
      * @returns {string|null} Normalised ID or null
      */
     function normaliseId(value) {
-        return IdUtils.normaliseId(value);
+        var IdUtils = getIdUtils();
+        if (IdUtils && typeof IdUtils.normaliseId === 'function') {
+            return IdUtils.normaliseId(value);
+        }
+        if (value === null || value === undefined) {
+            return null;
+        }
+        var str = String(value).trim();
+        return str !== '' ? str : null;
     }
 
     // ============================================================
@@ -136,7 +163,17 @@
      * @returns {*} Deep clone of value
      */
     function deepClone(value) {
-        return ObjectUtils.deepClone(value);
+        var ObjectUtils = getObjectUtils();
+        if (ObjectUtils && typeof ObjectUtils.deepClone === 'function') {
+            return ObjectUtils.deepClone(value);
+        }
+        if (value === null || typeof value !== 'object') {
+            return value;
+        }
+        if (typeof structuredClone === 'function') {
+            try { return structuredClone(value); } catch (_) {}
+        }
+        try { return JSON.parse(JSON.stringify(value)); } catch (_) { return value; }
     }
 
     /**
@@ -908,7 +945,7 @@
     }
 
     // ============================================================
-    // VALIDATION
+    // STRUCTURAL VALIDATION - ONLY
     // ============================================================
 
     function validateParticipant(participant, mode) {
@@ -1221,6 +1258,7 @@
 
     /**
      * Validate a tournament against the schema.
+     * STRUCTURAL ONLY - no lifecycle or business rules.
      * 
      * @param {object} tournament - Tournament to validate
      * @param {object} options - Validation options
@@ -1345,7 +1383,7 @@
             }
         }
 
-        // Winner must be a participant
+        // Winner must be a participant (structural check only)
         if (tournament.winner && tournament.winner !== null) {
             var winner = tournament.winner;
             var winnerId = normaliseId(winner.id);
@@ -1356,12 +1394,8 @@
             }
         }
 
-        // Status-specific rules
-        if (tournament.status === 'completed') {
-            if (!tournament.winner) {
-                errors.push('Completed tournament has no winner.');
-            }
-        }
+        // NOTE: Status-specific rules (e.g., completed tournament must have winner)
+        // have been REMOVED - these belong in Lifecycle/Rules, not Schema
 
         var valid = errors.length === 0;
 
@@ -1414,7 +1448,7 @@
     // EXPOSE
     // ============================================================
 
-    window.TournamentsSchema = {
+    window.TournamentSchema = {
         // Constants (frozen)
         VALID_STATUSES: VALID_STATUSES,
         VALID_MODES: VALID_MODES,
@@ -1424,7 +1458,6 @@
         VALID_GROUP_EXAM_RESULTS: VALID_GROUP_EXAM_RESULTS,
         MIN_WEEK: MIN_WEEK,
         MAX_WEEK: MAX_WEEK,
-        LIFECYCLE_RULES: LIFECYCLE_RULES,
 
         // ID Normalisation
         normaliseId: normaliseId,
@@ -1463,7 +1496,7 @@
         deriveAdvancing: deriveAdvancing,
         deriveLoser: deriveLoser,
 
-        // Validation
+        // Structural Validation (ONLY - no lifecycle/business rules)
         isValidMode: isValidMode,
         isValidStatus: isValidStatus,
         isValidMatchType: isValidMatchType,
@@ -1480,5 +1513,42 @@
         validateRound: validateRound,
         validateElimination: validateElimination
     };
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.TournamentSchema;
+        var missing = [];
+
+        var required = [
+            'normaliseId', 'deepClone',
+            'cloneTournament', 'cloneParticipant', 'cloneMatch', 'cloneRound', 'cloneElimination',
+            'normaliseTournament', 'normaliseParticipant', 'normaliseMatch', 'normaliseRound', 'normaliseElimination',
+            'getCanonicalParticipantType', 'isParticipantTypeCanonical',
+            'getParticipantTypeFromRecord', 'isParticipantInTournament',
+            'getParticipantIdKey', 'getParticipantIdKeyFromParts', 'participantMatches',
+            'getParticipants', 'getRounds', 'getEliminations', 'getWinner',
+            'deriveAdvancing', 'deriveLoser',
+            'isValidMode', 'isValidStatus', 'isValidMatchType', 'isValidMatchStatus',
+            'isValidParticipantType', 'isValidGroupExamResult', 'isValidGraduatingClassId',
+            'isParticipantEliminated',
+            'validateTournament', 'getValidationReport',
+            'validateMatch', 'validateParticipant', 'validateRound', 'validateElimination'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn('[TournamentSchema] Verification - some exports may be missing:', missing.join(', '));
+        } else {
+            console.log('[TournamentSchema] All exports verified successfully.');
+        }
+    })();
 
 })();
