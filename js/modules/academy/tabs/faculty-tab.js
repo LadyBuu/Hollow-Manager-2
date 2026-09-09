@@ -11,11 +11,12 @@
  * 
  * IMPORTANT:
  *   - UI-ONLY - all mutations delegate to domain cores
+ *   - Uses AcademyDisciplines DIRECTLY (AcademyCore does not exist)
+ *   - Uses AcademyLocations DIRECTLY (AcademyCore does not exist)
  *   - Uses AcademyUI for state management
  *   - Uses AcademyAggregator for projections
- *   - Uses AcademyCore for discipline/location mutations
  *   - Uses AcademySchedule for schedule operations
- *   - Uses CalendarProvider for schedule operations
+ *   - Uses CalendarQueries for schedule reads
  *   - Uses AcademyQueries for read-only access
  *   - All HTML escaping uses DomUtils.escapeHtml()
  *   - All notifications use NotificationSystem.notify()
@@ -23,7 +24,8 @@
  * DEPENDENCIES:
  *   - window.AcademyUI (from academy-ui.js) - MANDATORY
  *   - window.AcademyAggregator (from academy-aggregator.js) - MANDATORY
- *   - window.AcademyCore (from academy-core.js) - MANDATORY
+ *   - window.AcademyDisciplines (from academy-disciplines.js) - MANDATORY (replaces AcademyCore)
+ *   - window.AcademyLocations (from academy-locations.js) - MANDATORY (replaces AcademyCore)
  *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.AcademySchedule (from academy-schedule.js) - MANDATORY
  *   - window.AcademyGroups (from academy-groups.js) - MANDATORY
@@ -48,12 +50,13 @@
     }
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // DEPENDENCY IMPORTS - DIRECT (no lazy loading for critical deps)
     // ============================================================
 
     var AcademyUI = window.AcademyUI;
     var AcademyAggregator = window.AcademyAggregator;
-    var AcademyCore = window.AcademyCore;
+    var AcademyDisciplines = window.AcademyDisciplines;  // Direct - replaces AcademyCore
+    var AcademyLocations = window.AcademyLocations;      // Direct - replaces AcademyCore
     var AcademyQueries = window.AcademyQueries;
     var AcademySchedule = window.AcademySchedule;
     var AcademyGroups = window.AcademyGroups;
@@ -88,23 +91,26 @@
             missing.push('AcademyAggregator.getInstructorViewModel');
         }
 
-        if (!AcademyCore || typeof AcademyCore.createDiscipline !== 'function') {
-            missing.push('AcademyCore.createDiscipline');
+        // AcademyDisciplines replaces AcademyCore.createDiscipline etc.
+        if (!AcademyDisciplines || typeof AcademyDisciplines.create !== 'function') {
+            missing.push('AcademyDisciplines.create');
         }
-        if (!AcademyCore || typeof AcademyCore.updateDiscipline !== 'function') {
-            missing.push('AcademyCore.updateDiscipline');
+        if (!AcademyDisciplines || typeof AcademyDisciplines.update !== 'function') {
+            missing.push('AcademyDisciplines.update');
         }
-        if (!AcademyCore || typeof AcademyCore.deleteDiscipline !== 'function') {
-            missing.push('AcademyCore.deleteDiscipline');
+        if (!AcademyDisciplines || typeof AcademyDisciplines.delete !== 'function') {
+            missing.push('AcademyDisciplines.delete');
         }
-        if (!AcademyCore || typeof AcademyCore.createLocation !== 'function') {
-            missing.push('AcademyCore.createLocation');
+
+        // AcademyLocations replaces AcademyCore.createLocation etc.
+        if (!AcademyLocations || typeof AcademyLocations.create !== 'function') {
+            missing.push('AcademyLocations.create');
         }
-        if (!AcademyCore || typeof AcademyCore.updateLocation !== 'function') {
-            missing.push('AcademyCore.updateLocation');
+        if (!AcademyLocations || typeof AcademyLocations.update !== 'function') {
+            missing.push('AcademyLocations.update');
         }
-        if (!AcademyCore || typeof AcademyCore.deleteLocation !== 'function') {
-            missing.push('AcademyCore.deleteLocation');
+        if (!AcademyLocations || typeof AcademyLocations.delete !== 'function') {
+            missing.push('AcademyLocations.delete');
         }
 
         if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
@@ -127,6 +133,12 @@
         }
         if (!AcademyQueries || typeof AcademyQueries.getClassInstructors !== 'function') {
             missing.push('AcademyQueries.getClassInstructors');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getDiscipline !== 'function') {
+            missing.push('AcademyQueries.getDiscipline');
+        }
+        if (!AcademyQueries || typeof AcademyQueries.getLocation !== 'function') {
+            missing.push('AcademyQueries.getLocation');
         }
 
         if (!AcademySchedule || typeof AcademySchedule.getStudentSchedule !== 'function') {
@@ -241,6 +253,18 @@
     }
 
     // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK || 1;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK || 52;
+    var DAY_NAMES_SHORT = CalendarConstants.DAY_NAMES_SHORT || ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    var CALENDAR_START_HOUR = CalendarConstants.CALENDAR_START_HOUR || 8;
+    var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR || 18;
+    var MIN_CLASS_DURATION = CalendarConstants.MIN_CLASS_DURATION || 1;
+    var MAX_CLASS_DURATION = CalendarConstants.MAX_CLASS_DURATION || 4;
+
+    // ============================================================
     // RENDER - Main entry point
     // ============================================================
 
@@ -277,7 +301,7 @@
         html += '<div class="faculty-tab-controls">';
         html += '<div class="week-selector">';
         html += '<label>Week:</label>';
-        html += '<input type="number" id="faculty-week-input" value="' + week + '" min="' + CalendarConstants.MIN_WEEK + '" max="' + CalendarConstants.MAX_WEEK + '" class="small">';
+        html += '<input type="number" id="faculty-week-input" value="' + week + '" min="' + MIN_WEEK + '" max="' + MAX_WEEK + '" class="small">';
         html += '<button id="faculty-week-apply" class="small secondary">Apply</button>';
         html += '</div>';
         html += '</div>';
@@ -418,9 +442,9 @@
     // ============================================================
 
     function renderInstructorSchedule(instructorVM, schedule, week) {
-        var startHour = CalendarConstants.CALENDAR_START_HOUR || 8;
-        var endHour = CalendarConstants.CALENDAR_END_HOUR || 18;
-        var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
+        var startHour = CALENDAR_START_HOUR;
+        var endHour = CALENDAR_END_HOUR;
+        var dayNames = DAY_NAMES_SHORT.slice(1);
 
         var html = '';
 
@@ -445,7 +469,7 @@
         }
         html += '</select>';
         html += '<select id="schedule-duration-select" class="small">';
-        for (var dur = CalendarConstants.MIN_CLASS_DURATION; dur <= CalendarConstants.MAX_CLASS_DURATION; dur++) {
+        for (var dur = MIN_CLASS_DURATION; dur <= MAX_CLASS_DURATION; dur++) {
             html += '<option value="' + dur + '">' + dur + ' hour' + (dur > 1 ? 's' : '') + '</option>';
         }
         html += '</select>';
@@ -521,13 +545,12 @@
     // ============================================================
 
     function renderInstructorBlocks(instructorVM, week) {
-        // Blocks are currently not in the view model - use CalendarQueries directly
         var blocks = {};
         if (CalendarQueries && typeof CalendarQueries.getInstructorBlocks === 'function') {
             blocks = CalendarQueries.getInstructorBlocks(instructorVM.id, week) || {};
         }
 
-        var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
+        var dayNames = DAY_NAMES_SHORT.slice(1);
 
         var html = '';
 
@@ -538,12 +561,12 @@
         }
         html += '</select>';
         html += '<select id="block-hour-select" class="small">';
-        for (var h = CalendarConstants.CALENDAR_START_HOUR; h <= CalendarConstants.CALENDAR_END_HOUR; h++) {
+        for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
             html += '<option value="' + h + '">' + h + ':00</option>';
         }
         html += '</select>';
         html += '<select id="block-duration-select" class="small">';
-        for (var dur = CalendarConstants.MIN_CLASS_DURATION; dur <= CalendarConstants.MAX_CLASS_DURATION; dur++) {
+        for (var dur = MIN_CLASS_DURATION; dur <= MAX_CLASS_DURATION; dur++) {
             html += '<option value="' + dur + '">' + dur + ' hour' + (dur > 1 ? 's' : '') + '</option>';
         }
         html += '</select>';
@@ -599,7 +622,7 @@
 
     function renderLocationsView(week) {
         var locations = AcademyQueries.getLocations();
-        var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
+        var dayNames = DAY_NAMES_SHORT.slice(1);
 
         var html = '';
 
@@ -688,7 +711,7 @@
 
     function renderAutoGroupsView(week) {
         var groups = AcademyGroups.getAllAutoGroups() || {};
-        var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
+        var dayNames = DAY_NAMES_SHORT.slice(1);
 
         var html = '';
 
@@ -784,12 +807,12 @@
                 }
                 html += '</select>';
                 html += '<select class="autogroup-slot-hour small">';
-                for (var h2 = CalendarConstants.CALENDAR_START_HOUR; h2 <= CalendarConstants.CALENDAR_END_HOUR; h2++) {
+                for (var h2 = CALENDAR_START_HOUR; h2 <= CALENDAR_END_HOUR; h2++) {
                     html += '<option value="' + h2 + '">' + h2 + ':00</option>';
                 }
                 html += '</select>';
                 html += '<select class="autogroup-slot-duration small">';
-                for (var dur = CalendarConstants.MIN_CLASS_DURATION; dur <= CalendarConstants.MAX_CLASS_DURATION; dur++) {
+                for (var dur = MIN_CLASS_DURATION; dur <= MAX_CLASS_DURATION; dur++) {
                     html += '<option value="' + dur + '">' + dur + 'h</option>';
                 }
                 html += '</select>';
@@ -864,10 +887,10 @@
     // ============================================================
 
     function getModalsHTML() {
-        var startHour = CalendarConstants.CALENDAR_START_HOUR;
-        var endHour = CalendarConstants.CALENDAR_END_HOUR;
-        var minDur = CalendarConstants.MIN_CLASS_DURATION;
-        var maxDur = CalendarConstants.MAX_CLASS_DURATION;
+        var startHour = CALENDAR_START_HOUR;
+        var endHour = CALENDAR_END_HOUR;
+        var minDur = MIN_CLASS_DURATION;
+        var maxDur = MAX_CLASS_DURATION;
 
         return [
             '<!-- Location Manage Modal -->',
@@ -948,11 +971,11 @@
                             '</div>',
                             '<div class="form-group">',
                                 '<label>Start Week</label>',
-                                '<input type="number" id="discipline-start-week" min="' + CalendarConstants.MIN_WEEK + '" max="' + CalendarConstants.MAX_WEEK + '" value="' + CalendarConstants.MIN_WEEK + '">',
+                                '<input type="number" id="discipline-start-week" min="' + MIN_WEEK + '" max="' + MAX_WEEK + '" value="' + MIN_WEEK + '">',
                             '</div>',
                             '<div class="form-group">',
                                 '<label>End Week</label>',
-                                '<input type="number" id="discipline-end-week" min="' + CalendarConstants.MIN_WEEK + '" max="' + CalendarConstants.MAX_WEEK + '">',
+                                '<input type="number" id="discipline-end-week" min="' + MIN_WEEK + '" max="' + MAX_WEEK + '">',
                             '</div>',
                             '<div class="form-group">',
                                 '<label>Weekly Hours</label>',
@@ -989,14 +1012,14 @@
                 var input = container.querySelector('#faculty-week-input');
                 if (input) {
                     var week = parseInt(input.value, 10);
-                    if (!isNaN(week) && week >= CalendarConstants.MIN_WEEK && week <= CalendarConstants.MAX_WEEK) {
+                    if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
                         AcademyUI.setDisplayWeek(week);
                         if (typeof window.AcademyEvents !== 'undefined' &&
                             window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
                             window.AcademyEvents.refreshUI();
                         }
                     } else {
-                        notify('Please enter a valid week (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').', 'error');
+                        notify('Please enter a valid week (' + MIN_WEEK + '-' + MAX_WEEK + ').', 'error');
                     }
                 }
             });
@@ -1060,7 +1083,6 @@
                 var tab = this.dataset.tab || 'faculty';
                 var key = this.dataset.key || 'search';
                 AcademyUI.setFilter(tab, key, this.value);
-                // Re-render the instructor list
                 if (typeof window.AcademyEvents !== 'undefined' &&
                     window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
                     window.AcademyEvents.refreshUI();
@@ -1295,7 +1317,7 @@
 
         var disciplineId = discSelect ? discSelect.value : '';
         var day = daySelect ? parseInt(daySelect.value, 10) : 1;
-        var hour = hourSelect ? parseInt(hourSelect.value, 10) : CalendarConstants.CALENDAR_START_HOUR;
+        var hour = hourSelect ? parseInt(hourSelect.value, 10) : CALENDAR_START_HOUR;
         var duration = durationSelect ? parseInt(durationSelect.value, 10) : 1;
 
         if (!disciplineId) {
@@ -1304,11 +1326,7 @@
         }
 
         // Use AcademySchedule to set the slot via CalendarProvider
-        // First, find students for this instructor's auto-groups or use the schedule directly
-        // For now, we'll use a placeholder approach - the actual implementation depends on your CalendarProvider
-
-        // This is a simplified placeholder - the actual implementation would need to handle instructor template creation
-        // through the CalendarProvider/CalendarCore
+        // This is a placeholder - actual implementation depends on your CalendarProvider
         notify('Schedule operation: ' + disciplineId + ' at ' + day + ':' + hour + ' for ' + duration + 'h', 'info');
     }
 
@@ -1344,7 +1362,7 @@
         var labelInput = container.querySelector('#block-label-input');
 
         var day = daySelect ? parseInt(daySelect.value, 10) : 1;
-        var hour = hourSelect ? parseInt(hourSelect.value, 10) : CalendarConstants.CALENDAR_START_HOUR;
+        var hour = hourSelect ? parseInt(hourSelect.value, 10) : CALENDAR_START_HOUR;
         var duration = durationSelect ? parseInt(durationSelect.value, 10) : 1;
         var label = labelInput ? labelInput.value.trim() : 'Blocked';
 
@@ -1366,7 +1384,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Location
+    // HANDLERS - Location - Using AcademyLocations directly
     // ============================================================
 
     function bindLocationModalEvents(container) {
@@ -1487,7 +1505,7 @@
         var week = AcademyUI.getDisplayWeek();
         var schedule = CalendarQueries.getLocationSchedule(locationId, week) || {};
         var disciplines = AcademyQueries.getAvailableDisciplines(week);
-        var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
+        var dayNames = DAY_NAMES_SHORT.slice(1);
 
         var html = '';
         html += '<div class="location-modal-info">';
@@ -1501,7 +1519,7 @@
             html += '<span class="location-modal-day-name">' + dayNames[d - 1] + '</span>';
             var daySchedule = schedule[d] || {};
 
-            for (var h = CalendarConstants.CALENDAR_START_HOUR; h <= CalendarConstants.CALENDAR_END_HOUR; h++) {
+            for (var h = CALENDAR_START_HOUR; h <= CALENDAR_END_HOUR; h++) {
                 var classId = daySchedule[h] || null;
                 var display = '';
                 var className = 'location-modal-slot empty';
@@ -1615,9 +1633,11 @@
         var result;
 
         if (editId) {
-            result = AcademyCore.updateLocation(editId, data);
+            // Use AcademyLocations.update directly
+            result = AcademyLocations.update(editId, data);
         } else {
-            result = AcademyCore.createLocation(data);
+            // Use AcademyLocations.create directly
+            result = AcademyLocations.create(data);
         }
 
         if (result && result.success) {
@@ -1711,7 +1731,7 @@
     }
 
     // ============================================================
-    // HANDLERS - Disciplines
+    // HANDLERS - Disciplines - Using AcademyDisciplines directly
     // ============================================================
 
     function bindDisciplineFormEvents(container) {
@@ -1794,7 +1814,7 @@
                     opt.selected = disc.instructorIds.indexOf(opt.value) !== -1;
                 }
             }
-            if (startWeek) { startWeek.value = disc.startWeek || CalendarConstants.MIN_WEEK; }
+            if (startWeek) { startWeek.value = disc.startWeek || MIN_WEEK; }
             if (endWeek) { endWeek.value = disc.endWeek || ''; }
             if (weeklyHours) { weeklyHours.value = disc.weeklyHours || 1; }
             if (weightInput) { weightInput.value = disc.weight || 1; }
@@ -1808,7 +1828,7 @@
                     instSelect.options[k].selected = false;
                 }
             }
-            if (startWeek) { startWeek.value = CalendarConstants.MIN_WEEK; }
+            if (startWeek) { startWeek.value = MIN_WEEK; }
             if (endWeek) { endWeek.value = ''; }
             if (weeklyHours) { weeklyHours.value = 1; }
             if (weightInput) { weightInput.value = 1; }
@@ -1841,7 +1861,7 @@
             name: name,
             type: typeSelect ? typeSelect.value : 'mandatory',
             instructorIds: instSelect ? Array.from(instSelect.selectedOptions).map(function(o) { return o.value; }) : [],
-            startWeek: startWeek ? parseInt(startWeek.value, 10) || CalendarConstants.MIN_WEEK : CalendarConstants.MIN_WEEK,
+            startWeek: startWeek ? parseInt(startWeek.value, 10) || MIN_WEEK : MIN_WEEK,
             endWeek: endWeek ? parseInt(endWeek.value, 10) || '' : '',
             weeklyHours: weeklyHours ? parseFloat(weeklyHours.value) || 1 : 1,
             weight: weightInput ? parseFloat(weightInput.value) || 1 : 1
@@ -1851,9 +1871,11 @@
         var result;
 
         if (editId) {
-            result = AcademyCore.updateDiscipline(editId, data);
+            // Use AcademyDisciplines.update directly
+            result = AcademyDisciplines.update(editId, data);
         } else {
-            result = AcademyCore.createDiscipline(data);
+            // Use AcademyDisciplines.create directly
+            result = AcademyDisciplines.create(data);
         }
 
         if (result && result.success) {
@@ -1870,7 +1892,8 @@
     }
 
     function handleDeleteDiscipline(id) {
-        var result = AcademyCore.deleteDiscipline(id);
+        // Use AcademyDisciplines.delete directly
+        var result = AcademyDisciplines.delete(id);
 
         if (result && result.success) {
             notify('Discipline deleted successfully.', 'success');
