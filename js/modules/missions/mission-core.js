@@ -344,9 +344,9 @@
         }
 
         // Allowed transitions:
-        // active → completed, cancelled
-        // completed → active
-        // cancelled → active
+        // active -> completed, cancelled
+        // completed -> active
+        // cancelled -> active
         if (fromStatus === 'active' && (toStatus === 'completed' || toStatus === 'cancelled')) {
             return true;
         }
@@ -1319,4 +1319,4 @@
         DEFAULT_DIFFICULTY: DEFAULT_DIFFICULTY
     };
 
-})();♥
+})();
