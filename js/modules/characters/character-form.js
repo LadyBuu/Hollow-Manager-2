@@ -14,7 +14,7 @@
  *   - RENDER ONLY - no event binding (handled by CharacterEvents)
  *   - USES CharacterQueries for character data and display names
  *   - USES CharacterCRUD for save operations
- *   - USES CharacterGenerator for random generation
+ *   - USES CharacterGenerator for random generation (LAZY LOADED)
  *   - USES CharacterConstants for canonical constants
  *   - USES AcademyQueries directly for class queries (simple read)
  *   - USES FormUtils for form field operations
@@ -22,17 +22,18 @@
  *   - No direct data mutation
  *   - No direct persistence calls
  *   - All user-controlled data is escaped using DomUtils.escapeHtml()
+ *   - getCurrentEditId and setCurrentEditId are LAZY LOADED from index.js
  * 
- * DEPENDENCIES:
+ * DEPENDENCIES (lazily loaded):
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.CharacterCRUD (from character-crud.js) - MANDATORY
- *   - window.CharacterGenerator (from character-generator.js) - MANDATORY
+ *   - window.CharacterGenerator (from character-generator.js) - LAZY LOADED
  *   - window.CharacterConstants (from character-constants.js) - MANDATORY
  *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.FormUtils (from form-utils.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
- *   - window.getCurrentEditId (from index.js) - MANDATORY
- *   - window.setCurrentEditId (from index.js) - MANDATORY
+ *   - window.getCurrentEditId (from index.js) - LAZY LOADED
+ *   - window.setCurrentEditId (from index.js) - LAZY LOADED
  */
 
 (function() {
@@ -44,108 +45,195 @@
     window.__characterFormLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // LAZY LOADING HELPERS - Breaks circular dependencies
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries;
-    var CharacterCRUD = window.CharacterCRUD;
-    var CharacterGenerator = window.CharacterGenerator;
-    var CharacterConstants = window.CharacterConstants;
-    var AcademyQueries = window.AcademyQueries;
-    var FormUtils = window.FormUtils;
-    var DomUtils = window.DomUtils;
+    function getCharacterQueries() {
+        return window.CharacterQueries || null;
+    }
+
+    function getCharacterCRUD() {
+        return window.CharacterCRUD || null;
+    }
+
+    function getCharacterGenerator() {
+        return window.CharacterGenerator || null;
+    }
+
+    function getCharacterConstants() {
+        return window.CharacterConstants || null;
+    }
+
+    function getAcademyQueries() {
+        return window.AcademyQueries || null;
+    }
+
+    function getFormUtils() {
+        return window.FormUtils || null;
+    }
+
+    function getDomUtils() {
+        return window.DomUtils || null;
+    }
+
+    function getCalendarConstants() {
+        return window.CALENDAR_CONSTANTS || window.CalendarConstants || null;
+    }
+
+    /**
+     * Get the current edit ID from the global state.
+     * This is lazily loaded from characters/index.js
+     * 
+     * @returns {string|null} Current edit ID or null
+     */
+    function getCurrentEditId() {
+        if (typeof window.getCurrentEditId === 'function') {
+            return window.getCurrentEditId();
+        }
+        // Try to get from global state
+        if (window._currentEditId !== undefined) {
+            return window._currentEditId;
+        }
+        return null;
+    }
+
+    /**
+     * Set the current edit ID in the global state.
+     * This is lazily loaded from characters/index.js
+     * 
+     * @param {string|null} id - Edit ID to set
+     */
+    function setCurrentEditId(id) {
+        if (typeof window.setCurrentEditId === 'function') {
+            window.setCurrentEditId(id);
+        } else {
+            // Fallback to global state
+            window._currentEditId = id;
+        }
+    }
 
     // ============================================================
-    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
+    // DEPENDENCY CHECK - Warns but doesn't fail
     // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
+        // Critical dependencies - must exist
+        if (!getCharacterQueries()) {
+            missing.push('CharacterQueries');
         }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
+        if (!getCharacterCRUD()) {
+            missing.push('CharacterCRUD');
         }
-
-        if (!CharacterCRUD || typeof CharacterCRUD.save !== 'function') {
-            missing.push('CharacterCRUD.save');
+        if (!getCharacterConstants()) {
+            missing.push('CharacterConstants');
         }
-
-        if (!CharacterGenerator || typeof CharacterGenerator.generatePhysical !== 'function') {
-            missing.push('CharacterGenerator.generatePhysical');
+        if (!getAcademyQueries()) {
+            missing.push('AcademyQueries');
         }
-        if (!CharacterGenerator || typeof CharacterGenerator.generatePersonality !== 'function') {
-            missing.push('CharacterGenerator.generatePersonality');
+        if (!getFormUtils()) {
+            missing.push('FormUtils');
         }
-        if (!CharacterGenerator || typeof CharacterGenerator.generateStats !== 'function') {
-            missing.push('CharacterGenerator.generateStats');
-        }
-
-        if (!CharacterConstants || typeof CharacterConstants.STAT_KEYS === 'undefined') {
-            missing.push('CharacterConstants.STAT_KEYS');
+        if (!getDomUtils()) {
+            missing.push('DomUtils');
         }
 
-        // AcademyQueries is a simple read - used directly for class options
-        if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
-            missing.push('AcademyQueries.getClasses');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
-            missing.push('AcademyQueries.getClass');
-        }
-        if (!AcademyQueries || typeof AcademyQueries.getClassDisplayName !== 'function') {
-            missing.push('AcademyQueries.getClassDisplayName');
+        // Lazy dependencies - warn but don't fail
+        if (!getCharacterGenerator()) {
+            missing.push('CharacterGenerator (lazy)');
         }
 
-        if (!FormUtils || typeof FormUtils.getField !== 'function') {
-            missing.push('FormUtils.getField');
+        // getCurrentEditId and setCurrentEditId are lazily loaded from index.js
+        if (typeof window.getCurrentEditId !== 'function' && window._currentEditId === undefined) {
+            missing.push('getCurrentEditId (lazy)');
         }
-        if (!FormUtils || typeof FormUtils.setField !== 'function') {
-            missing.push('FormUtils.setField');
-        }
-        if (!FormUtils || typeof FormUtils.getFormData !== 'function') {
-            missing.push('FormUtils.getFormData');
-        }
-        if (!FormUtils || typeof FormUtils.setFormData !== 'function') {
-            missing.push('FormUtils.setFormData');
-        }
-        if (!FormUtils || typeof FormUtils.resetForm !== 'function') {
-            missing.push('FormUtils.resetForm');
-        }
-
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
-        }
-
-        if (typeof window.getCurrentEditId !== 'function') {
-            missing.push('getCurrentEditId');
-        }
-        if (typeof window.setCurrentEditId !== 'function') {
-            missing.push('setCurrentEditId');
+        if (typeof window.setCurrentEditId !== 'function' && window._currentEditId === undefined) {
+            missing.push('setCurrentEditId (lazy)');
         }
 
         if (missing.length > 0) {
-            throw new Error('[CharacterForm] Missing dependencies: ' + missing.join(', '));
+            var criticalMissing = missing.filter(function(m) { return m.indexOf('(lazy)') === -1; });
+            if (criticalMissing.length > 0) {
+                console.warn('[CharacterForm] Critical dependencies missing:', criticalMissing.join(', '));
+                return false;
+            }
+            console.warn('[CharacterForm] Some lazy dependencies not yet loaded:', missing.join(', '));
         }
 
         return true;
     }
 
+    // Run check but don't fail - will check again on each render
     checkDependencies();
 
     // ============================================================
-    // CONSTANTS
+    // HTML ESCAPING - Delegates to DomUtils
     // ============================================================
 
-    var STAT_KEYS = CharacterConstants.STAT_KEYS;
-    var STAT_MIN = CharacterConstants.STAT_MIN;
-    var STAT_MAX = CharacterConstants.STAT_MAX;
-    var STAT_DEFAULT = CharacterConstants.STAT_DEFAULT;
-    var STAT_DEFINITIONS = CharacterConstants.STAT_DEFINITIONS;
+    function escapeHtml(value) {
+        var DomUtils = getDomUtils();
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
+        }
+        // Fallback
+        if (value === undefined || value === null) {
+            return '';
+        }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
 
-    var MIN_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MIN_WEEK : 1;
-    var MAX_WEEK = window.CALENDAR_CONSTANTS ? window.CALENDAR_CONSTANTS.MAX_WEEK : 52;
+    // ============================================================
+    // CONSTANTS - Lazy loaded from CharacterConstants
+    // ============================================================
+
+    function getStatKeys() {
+        var CC = getCharacterConstants();
+        return CC ? CC.STAT_KEYS || ['str', 'dex', 'con', 'int', 'wis', 'cha'] : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    }
+
+    function getStatDefinitions() {
+        var CC = getCharacterConstants();
+        return CC ? CC.STAT_DEFINITIONS || {} : {};
+    }
+
+    function getStatMin() {
+        var CC = getCharacterConstants();
+        return CC ? CC.STAT_MIN || 1 : 1;
+    }
+
+    function getStatMax() {
+        var CC = getCharacterConstants();
+        return CC ? CC.STAT_MAX || 50 : 50;
+    }
+
+    function getStatDefault() {
+        var CC = getCharacterConstants();
+        return CC ? CC.STAT_DEFAULT || 10 : 10;
+    }
+
+    function getCalendarBounds() {
+        var CC = getCalendarConstants();
+        if (CC) {
+            return {
+                MIN_WEEK: CC.MIN_WEEK || 1,
+                MAX_WEEK: CC.MAX_WEEK || 52
+            };
+        }
+        return {
+            MIN_WEEK: 1,
+            MAX_WEEK: 52
+        };
+    }
+
+    // ============================================================
+    // STATE
+    // ============================================================
 
     var state = {
         currentTab: 'name'
@@ -153,14 +241,6 @@
 
     var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'stats', 'social', 'notes'];
     var _initialized = false;
-
-    // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils
-    // ============================================================
-
-    function escapeHtml(value) {
-        return DomUtils.escapeHtml(value);
-    }
 
     // ============================================================
     // GET CURRENT YEAR
@@ -174,15 +254,28 @@
     }
 
     // ============================================================
-    // EDIT ID HELPERS
+    // GET CLASS OPTIONS HTML - Uses AcademyQueries
     // ============================================================
 
-    function getCurrentEditId() {
-        return window.getCurrentEditId();
-    }
+    function getClassOptionsHTML(selectedId) {
+        var AcademyQueries = getAcademyQueries();
+        if (!AcademyQueries) {
+            return '<option value="">None</option>';
+        }
 
-    function setCurrentEditId(id) {
-        window.setCurrentEditId(id);
+        var classes = AcademyQueries.getClasses() || [];
+        var html = '<option value="">None</option>';
+
+        for (var i = 0; i < classes.length; i++) {
+            var cls = classes[i];
+            if (!cls || typeof cls !== 'object') {
+                continue;
+            }
+            var isSelected = String(cls.id) === String(selectedId);
+            html += '<option value="' + escapeHtml(cls.id) + '" ' + (isSelected ? 'selected' : '') + '>' + escapeHtml(cls.name) + '</option>';
+        }
+
+        return html;
     }
 
     // ============================================================
@@ -190,6 +283,19 @@
     // ============================================================
 
     function render(editId) {
+        if (!checkDependencies()) {
+            var container = document.getElementById('character-form-content');
+            if (container) {
+                container.innerHTML = '<p class="empty-state">Form dependencies not loaded. Please refresh the page.</p>';
+            }
+            return;
+        }
+
+        var CharacterQueries = getCharacterQueries();
+        if (!CharacterQueries) {
+            return;
+        }
+
         var char = null;
         if (editId) {
             char = CharacterQueries.getCharacterById(editId);
@@ -262,6 +368,7 @@
 
     function getCharacterFormHTML(char, editId, currentYear) {
         var tabs = getTabsHTML();
+        var c = char || {};
 
         return `
             <div class="character-form-container">
@@ -269,14 +376,14 @@
                     ${tabs}
                 </div>
                 <div class="form-tab-content" id="form-tab-content">
-                    ${getNameTabHTML(char, editId)}
-                    ${getPhysicalTabHTML(char)}
-                    ${getPersonalityTabHTML(char)}
-                    ${getAcademicTabHTML(char)}
-                    ${getProfessionalTabHTML(char)}
-                    ${getStatsTabHTML(char)}
-                    ${getSocialTabHTML(char)}
-                    ${getNotesTabHTML(char)}
+                    ${getNameTabHTML(c, editId)}
+                    ${getPhysicalTabHTML(c)}
+                    ${getPersonalityTabHTML(c)}
+                    ${getAcademicTabHTML(c)}
+                    ${getProfessionalTabHTML(c)}
+                    ${getStatsTabHTML(c)}
+                    ${getSocialTabHTML(c)}
+                    ${getNotesTabHTML(c)}
                 </div>
                 <div class="form-actions" style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
                     <button type="button" id="cancel-character-form" class="secondary" style="font-size:0.75rem;padding:6px 12px;">Cancel</button>
@@ -372,23 +479,6 @@
                 <div style="font-size:0.6rem;color:var(--text-dim);margin-top:4px;">* Required fields</div>
             </div>
         `;
-    }
-
-    function getClassOptionsHTML(selectedId) {
-        // Simple read: AcademyQueries.getClasses() directly
-        var classes = AcademyQueries.getClasses();
-        var html = '<option value="">None</option>';
-
-        for (var i = 0; i < classes.length; i++) {
-            var cls = classes[i];
-            if (!cls || typeof cls !== 'object') {
-                continue;
-            }
-            var isSelected = String(cls.id) === String(selectedId);
-            html += '<option value="' + escapeHtml(cls.id) + '" ' + (isSelected ? 'selected' : '') + '>' + escapeHtml(cls.name) + '</option>';
-        }
-
-        return html;
     }
 
     function getPhysicalTabHTML(char) {
@@ -534,21 +624,23 @@
     function getStatsTabHTML(char) {
         var active = state.currentTab === 'stats' ? 'block' : 'none';
         var stats = char && char.stats ? char.stats : {};
+        var statKeys = getStatKeys();
+        var statDefinitions = getStatDefinitions();
 
         var html = `
             <div class="tab-panel" data-tab="stats" style="display:${active};">
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
         `;
 
-        STAT_KEYS.forEach(function(key) {
-            var definition = STAT_DEFINITIONS[key] || {};
+        statKeys.forEach(function(key) {
+            var definition = statDefinitions[key] || {};
             var label = definition.label || key.toUpperCase();
-            var value = stats[key] !== undefined ? stats[key] : STAT_DEFAULT;
+            var value = stats[key] !== undefined ? stats[key] : getStatDefault();
 
             html += `
                 <div class="form-group">
                     <label style="font-size:0.7rem;color:var(--text-dim);">${label}</label>
-                    <input type="number" id="char-stat-${key}" value="${value}" min="${STAT_MIN}" max="${STAT_MAX}" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;text-align:center;">
+                    <input type="number" id="char-stat-${key}" value="${value}" min="${getStatMin()}" max="${getStatMax()}" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;text-align:center;">
                 </div>
             `;
         });
@@ -598,11 +690,17 @@
     }
 
     // ============================================================
-    // FORM FIELD POPULATION
+    // FORM FIELD POPULATION - Uses FormUtils
     // ============================================================
 
     function populateFormFields(char) {
         if (!char) {
+            return;
+        }
+
+        var FormUtils = getFormUtils();
+        if (!FormUtils) {
+            console.warn('[CharacterForm] FormUtils not available for populateFormFields');
             return;
         }
 
@@ -647,25 +745,36 @@
             checkbox.checked = char.graduatingClassInstructor || false;
         }
 
+        var statKeys = getStatKeys();
         if (char.stats) {
-            STAT_KEYS.forEach(function(key) {
-                var value = char.stats[key] !== undefined ? char.stats[key] : STAT_DEFAULT;
+            statKeys.forEach(function(key) {
+                var value = char.stats[key] !== undefined ? char.stats[key] : getStatDefault();
                 FormUtils.setField('char-stat-' + key, value);
             });
         }
     }
 
     // ============================================================
-    // FORM DATA COLLECTION
+    // FORM DATA COLLECTION - Uses FormUtils
     // ============================================================
 
     function collect() {
+        var FormUtils = getFormUtils();
+        if (!FormUtils) {
+            console.warn('[CharacterForm] FormUtils not available for collect');
+            return null;
+        }
+
         var form = document.getElementById('character-form');
         if (!form) {
             return null;
         }
 
         var data = FormUtils.getFormData(form);
+        var statKeys = getStatKeys();
+        var statMin = getStatMin();
+        var statMax = getStatMax();
+        var statDefault = getStatDefault();
 
         var dto = {
             firstName: data['char-firstName'] || '',
@@ -706,9 +815,9 @@
             stats: {}
         };
 
-        STAT_KEYS.forEach(function(key) {
+        statKeys.forEach(function(key) {
             var value = parseInt(data['char-stat-' + key], 10);
-            dto.stats[key] = !isNaN(value) ? Math.max(STAT_MIN, Math.min(STAT_MAX, value)) : STAT_DEFAULT;
+            dto.stats[key] = !isNaN(value) ? Math.max(statMin, Math.min(statMax, value)) : statDefault;
         });
 
         var careerStatusRaw = data['char-careerStatus'] || '';
@@ -765,6 +874,37 @@
     }
 
     // ============================================================
+    // RANDOM GENERATION - Uses CharacterGenerator (lazy loaded)
+    // ============================================================
+
+    function generateRandomPhysical() {
+        var CharacterGenerator = getCharacterGenerator();
+        if (!CharacterGenerator) {
+            console.warn('[CharacterForm] CharacterGenerator not available for random generation');
+            return null;
+        }
+        return CharacterGenerator.generatePhysical ? CharacterGenerator.generatePhysical() : null;
+    }
+
+    function generateRandomPersonality() {
+        var CharacterGenerator = getCharacterGenerator();
+        if (!CharacterGenerator) {
+            console.warn('[CharacterForm] CharacterGenerator not available for random generation');
+            return null;
+        }
+        return CharacterGenerator.generatePersonality ? CharacterGenerator.generatePersonality() : null;
+    }
+
+    function generateRandomStats() {
+        var CharacterGenerator = getCharacterGenerator();
+        if (!CharacterGenerator) {
+            console.warn('[CharacterForm] CharacterGenerator not available for random generation');
+            return null;
+        }
+        return CharacterGenerator.generateStats3d6 ? CharacterGenerator.generateStats3d6() : null;
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -774,7 +914,17 @@
         collect: collect,
         switchTab: switchTab,
         getCurrentTab: function() { return state.currentTab; },
-        isInitialized: function() { return _initialized; }
+        isInitialized: function() { return _initialized; },
+
+        // Random generation (lazy loaded)
+        generateRandomPhysical: generateRandomPhysical,
+        generateRandomPersonality: generateRandomPersonality,
+        generateRandomStats: generateRandomStats,
+
+        // Lazy getters (exposed for debugging)
+        getCharacterGenerator: getCharacterGenerator,
+        getCurrentEditId: getCurrentEditId,
+        setCurrentEditId: setCurrentEditId
     };
 
     window.showCharacterForm = function(editId) {
@@ -782,5 +932,31 @@
     };
 
     window.hideCharacterForm = hide;
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.CharacterForm;
+        var missing = [];
+
+        var required = [
+            'render', 'hide', 'collect', 'switchTab',
+            'getCurrentTab', 'isInitialized'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn('[CharacterForm] Verification - some exports may be missing:', missing.join(', '));
+        } else {
+            console.log('[CharacterForm] All exports verified successfully.');
+        }
+    })();
 
 })();
