@@ -11,9 +11,9 @@
  * 
  * IMPORTANT:
  *   - UI-ONLY - all mutations delegate to domain cores
+ *   - Uses AcademyClasses DIRECTLY (AcademyCore does not exist)
  *   - Uses AcademyUI for state management
  *   - Uses AcademyAggregator for projections
- *   - Uses AcademyCore for student mutations
  *   - Uses AcademyGrades for grade operations
  *   - Uses AcademyRanking for ranking operations
  *   - Uses AcademySchedule for schedule operations
@@ -25,7 +25,7 @@
  * DEPENDENCIES:
  *   - window.AcademyUI (from academy-ui.js) - MANDATORY
  *   - window.AcademyAggregator (from academy-aggregator.js) - MANDATORY
- *   - window.AcademyCore (from academy-core.js) - MANDATORY
+ *   - window.AcademyClasses (from academy-classes.js) - MANDATORY (replaces AcademyCore)
  *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.AcademyGrades (from academy-grades.js) - MANDATORY
  *   - window.AcademyRanking (from academy-ranking.js) - MANDATORY
@@ -50,12 +50,12 @@
     }
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // DEPENDENCY IMPORTS - DIRECT (no lazy loading for critical deps)
     // ============================================================
 
     var AcademyUI = window.AcademyUI;
     var AcademyAggregator = window.AcademyAggregator;
-    var AcademyCore = window.AcademyCore;
+    var AcademyClasses = window.AcademyClasses;  // Direct - replaces AcademyCore
     var AcademyQueries = window.AcademyQueries;
     var AcademyGrades = window.AcademyGrades;
     var AcademyRanking = window.AcademyRanking;
@@ -93,11 +93,12 @@
             missing.push('AcademyAggregator.getClassViewModel');
         }
 
-        if (!AcademyCore || typeof AcademyCore.addStudentToClass !== 'function') {
-            missing.push('AcademyCore.addStudentToClass');
+        // AcademyClasses replaces AcademyCore
+        if (!AcademyClasses || typeof AcademyClasses.addStudent !== 'function') {
+            missing.push('AcademyClasses.addStudent');
         }
-        if (!AcademyCore || typeof AcademyCore.removeStudentFromClass !== 'function') {
-            missing.push('AcademyCore.removeStudentFromClass');
+        if (!AcademyClasses || typeof AcademyClasses.removeStudent !== 'function') {
+            missing.push('AcademyClasses.removeStudent');
         }
 
         if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
@@ -213,6 +214,16 @@
     }
 
     // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK || 1;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK || 52;
+    var DAY_NAMES_SHORT = CalendarConstants.DAY_NAMES_SHORT || ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    var CALENDAR_START_HOUR = CalendarConstants.CALENDAR_START_HOUR || 8;
+    var CALENDAR_END_HOUR = CalendarConstants.CALENDAR_END_HOUR || 18;
+
+    // ============================================================
     // RENDER - Main entry point
     // ============================================================
 
@@ -250,7 +261,7 @@
         html += '<div class="student-tab-controls">';
         html += '<div class="week-selector">';
         html += '<label>Week:</label>';
-        html += '<input type="number" id="student-week-input" value="' + week + '" min="' + CalendarConstants.MIN_WEEK + '" max="' + CalendarConstants.MAX_WEEK + '" class="small">';
+        html += '<input type="number" id="student-week-input" value="' + week + '" min="' + MIN_WEEK + '" max="' + MAX_WEEK + '" class="small">';
         html += '<button id="student-week-apply" class="small secondary">Apply</button>';
         html += '</div>';
         html += '</div>';
@@ -451,9 +462,9 @@
         var schedule = studentVM.schedule || [];
         var restDays = AcademySchedule.getStudentRestDays(studentVM.id, week);
 
-        var dayNames = CalendarConstants.DAY_NAMES_SHORT.slice(1);
-        var startHour = CalendarConstants.CALENDAR_START_HOUR || 8;
-        var endHour = CalendarConstants.CALENDAR_END_HOUR || 18;
+        var dayNames = DAY_NAMES_SHORT.slice(1);
+        var startHour = CALENDAR_START_HOUR;
+        var endHour = CALENDAR_END_HOUR;
 
         var hours = [];
         for (var h = startHour; h <= endHour; h++) {
@@ -597,14 +608,14 @@
                 var input = container.querySelector('#student-week-input');
                 if (input) {
                     var week = parseInt(input.value, 10);
-                    if (!isNaN(week) && week >= CalendarConstants.MIN_WEEK && week <= CalendarConstants.MAX_WEEK) {
+                    if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
                         AcademyUI.setDisplayWeek(week);
                         if (typeof window.AcademyEvents !== 'undefined' &&
                             window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
                             window.AcademyEvents.refreshUI();
                         }
                     } else {
-                        notify('Please enter a valid week (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').', 'error');
+                        notify('Please enter a valid week (' + MIN_WEEK + '-' + MAX_WEEK + ').', 'error');
                     }
                 }
             });
@@ -827,6 +838,7 @@
             return;
         }
 
+        // Use AcademyGrades.saveGrades directly
         var result = AcademyGrades.saveGrades(studentId, week, grades);
 
         if (result && result.success) {
@@ -890,6 +902,42 @@
     }
 
     // ============================================================
+    // MUTATION HANDLERS - Using AcademyClasses directly
+    // ============================================================
+
+    function handleAddStudentToClass(studentId) {
+        var classId = AcademyUI.getSelectedClassId();
+        if (!classId) {
+            notify('No class selected.', 'error');
+            return;
+        }
+
+        var result = AcademyClasses.addStudent(classId, studentId);
+        if (result && result.success) {
+            notify('Student added to class.', 'success');
+            if (typeof window.AcademyEvents !== 'undefined' &&
+                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
+                window.AcademyEvents.refreshUI();
+            }
+        } else {
+            notify(result ? result.message : 'Failed to add student.', 'error');
+        }
+    }
+
+    function handleRemoveStudentFromClass(classId, studentId) {
+        var result = AcademyClasses.removeStudent(classId, studentId);
+        if (result && result.success) {
+            notify('Student removed from class.', 'success');
+            if (typeof window.AcademyEvents !== 'undefined' &&
+                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
+                window.AcademyEvents.refreshUI();
+            }
+        } else {
+            notify(result ? result.message : 'Failed to remove student.', 'error');
+        }
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -900,7 +948,9 @@
         refreshCharacterList: refreshCharacterList,
         handleSaveGrades: handleSaveGrades,
         handleAutoGenerateRankings: handleAutoGenerateRankings,
-        handleSaveRestDays: handleSaveRestDays
+        handleSaveRestDays: handleSaveRestDays,
+        handleAddStudentToClass: handleAddStudentToClass,
+        handleRemoveStudentFromClass: handleRemoveStudentFromClass
     };
 
     window.__studentTabLoaded = true;
