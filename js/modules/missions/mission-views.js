@@ -15,13 +15,13 @@
  * IMPORTANT:
  *   - PURE presentation functions - no business logic
  *   - No persistence, no DOM, no state
- *   - Consumes MissionsSchema for canonical values
+ *   - Consumes MissionSchema for canonical values
  *   - Maps domain values to presentation values
  *   - All functions return strings (never objects that could be mutated)
  *   - No fallbacks - uses canonical schema values
  * 
  * DEPENDENCIES:
- *   - window.MissionsSchema (required)
+ *   - window.MissionSchema (required)
  * 
  * USAGE:
  *   var Views = window.MissionViews;
@@ -41,13 +41,13 @@
     // DEPENDENCY CHECK - NO FALLBACKS
     // ============================================================
 
-    if (!window.MissionsSchema) {
-        throw new Error('[MissionViews] MissionsSchema is required.');
+    if (!window.MissionSchema) {
+        throw new Error('[MissionViews] MissionSchema is required.');
     }
 
     window.__missionViewsLoaded = true;
 
-    var Schema = window.MissionsSchema;
+    var Schema = window.MissionSchema;
 
     // ============================================================
     // CONSTANTS - Derived from Schema, frozen
