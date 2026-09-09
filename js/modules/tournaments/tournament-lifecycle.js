@@ -22,7 +22,7 @@
  * 
  * DEPENDENCIES:
  *   - window.TournamentConstants (from tournament-constants.js) - MANDATORY
- *   - window.TournamentsSchema (from tournaments-schema.js) - MANDATORY (for isValidStatus)
+ *   - window.TournamentSchema (from tournaments-schema.js) - MANDATORY (for isValidStatus)
  * 
  * USAGE:
  *   var Lifecycle = window.TournamentLifecycle;
@@ -50,8 +50,8 @@
         missing.push('TournamentConstants');
     }
 
-    if (!window.TournamentsSchema) {
-        missing.push('TournamentsSchema');
+    if (!window.TournamentSchema) {
+        missing.push('TournamentSchema');
     }
 
     if (missing.length > 0) {
@@ -64,7 +64,7 @@
     // ============================================================
 
     var Constants = window.TournamentConstants || {};
-    var Schema = window.TournamentsSchema || {};
+    var Schema = window.TournamentSchema || {};
 
     // Get lifecycle rules from Constants (if available)
     var LIFECYCLE_RULES = Constants.LIFECYCLE_RULES || {
