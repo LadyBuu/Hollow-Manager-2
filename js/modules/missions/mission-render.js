@@ -1,5 +1,5 @@
 /**
- * js/modules/missions/missions-render.js - Mission Rendering
+ * js/modules/missions/mission-render.js - Mission Rendering
  * PURE rendering functions. Takes data, returns HTML.
  * Does NOT mutate data or attach event handlers.
  * 
@@ -24,7 +24,7 @@
  *   - Dates are validated before display
  * 
  * DEPENDENCIES:
- *   - window.MissionsQueries (required)
+ *   - window.MissionQueries (required)
  *   - window.MissionViews (required)
  *   - window.DomUtils (required - for HTML escaping)
  */
@@ -32,7 +32,7 @@
 (function() {
     'use strict';
 
-    if (window.__missionsRenderLoaded) {
+    if (window.__missionRenderLoaded) {
         return;
     }
 
@@ -42,8 +42,8 @@
 
     var missing = [];
 
-    if (!window.MissionsQueries) {
-        missing.push('MissionsQueries');
+    if (!window.MissionQueries) {
+        missing.push('MissionQueries');
     }
 
     if (!window.MissionViews) {
@@ -55,16 +55,16 @@
     }
 
     if (missing.length > 0) {
-        throw new Error('[MissionsRender] Missing dependencies: ' + missing.join(', '));
+        throw new Error('[MissionRender] Missing dependencies: ' + missing.join(', '));
     }
 
-    window.__missionsRenderLoaded = true;
+    window.__missionRenderLoaded = true;
 
     // ============================================================
     // DEPENDENCY IMPORTS
     // ============================================================
 
-    var Queries = window.MissionsQueries;
+    var Queries = window.MissionQueries;
     var Views = window.MissionViews;
     var DomUtils = window.DomUtils;
 
@@ -147,11 +147,26 @@
         }
     }
 
+    function getTeamName(teamId) {
+        if (!teamId) {
+            return 'Unassigned';
+        }
+        // Use MissionQueries.getTeamName if available
+        if (Queries && typeof Queries.getTeamName === 'function') {
+            return Queries.getTeamName(teamId);
+        }
+        // Fallback: try TeamQueries
+        if (window.TeamQueries && typeof window.TeamQueries.getTeamName === 'function') {
+            return window.TeamQueries.getTeamName(teamId);
+        }
+        return 'Unknown Team';
+    }
+
     // ============================================================
     // RENDER API
     // ============================================================
 
-    var MissionsRender = {
+    var MissionRender = {
         /**
          * Render the mission list.
          * 
@@ -173,7 +188,7 @@
 
                 var priorityInfo = Views.getPriorityInfo(mission.priority);
                 var statusInfo = Views.getStatusInfo(mission.status);
-                var teamName = Queries.getTeamName ? Queries.getTeamName(mission.assignedTeamId) : 'Unassigned';
+                var teamName = getTeamName(mission.assignedTeamId);
                 var difficultyLabel = Views.getDifficultyLabel(mission.difficulty);
                 var supportCount = mission.supportPersonnel ? mission.supportPersonnel.length : 0;
 
@@ -571,7 +586,7 @@
 
             var priorityInfo = Views.getPriorityInfo(mission.priority);
             var statusInfo = Views.getStatusInfo(mission.status);
-            var teamName = Queries.getTeamName ? Queries.getTeamName(mission.assignedTeamId) : 'Unassigned';
+            var teamName = getTeamName(mission.assignedTeamId);
             var difficultyLabel = Views.getDifficultyLabel(mission.difficulty);
             var supportNames = Queries.getSupportPersonnelNames ? Queries.getSupportPersonnelNames(mission) : [];
 
@@ -801,6 +816,6 @@
     // EXPOSE
     // ============================================================
 
-    window.MissionsRender = MissionsRender;
+    window.MissionRender = MissionRender;
 
 })();
