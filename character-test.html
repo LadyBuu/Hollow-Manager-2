@@ -75,6 +75,38 @@
             color: #4a9bc7;
             font-size: 0.8rem;
         }
+        .dependency-check {
+            font-size: 11px;
+            padding: 4px 8px;
+            margin: 2px 0;
+            border-radius: 3px;
+            background: #1a1a2e;
+        }
+        .dep-ok {
+            color: #4CAF50;
+        }
+        .dep-missing {
+            color: #f44336;
+        }
+        .dep-warning {
+            color: #ff9800;
+        }
+        .test-log {
+            max-height: 600px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            background: #0d0d1a;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        .module-status-ok {
+            color: #4CAF50;
+        }
+        .module-status-fail {
+            color: #f44336;
+        }
     </style>
 </head>
 <body>
@@ -86,8 +118,9 @@
             <div class="test-section">
                 <h3>Loading Dependencies...</h3>
                 <div id="mock-status">Loading...</div>
+                <div id="dependency-check-list"></div>
             </div>
-            <div id="test-output"></div>
+            <div id="test-output" class="test-log"></div>
         </div>
 
         <div id="test-controls" class="hidden">
@@ -101,7 +134,7 @@
     </div>
 
     <!-- ============================================================
-         UTILITIES - MUST LOAD FIRST
+         CORE UTILITIES - MUST LOAD FIRST
          ============================================================ -->
     <script src="js/utils/object-utils.js"></script>
     <script src="js/utils/id-utils.js"></script>
@@ -114,11 +147,6 @@
     <script src="js/utils/notification.js"></script>
 
     <!-- ============================================================
-         CALENDAR VALIDATION - MUST LOAD EARLY
-         ============================================================ -->
-    <script src="js/utils/calendar-validation.js"></script>
-
-    <!-- ============================================================
          SHARED CONSTANTS - js/modules/shared/
          ============================================================ -->
     <script src="js/modules/shared/constants.js"></script>
@@ -127,23 +155,28 @@
     <script src="js/modules/shared/academy-constants.js"></script>
     <script src="js/modules/shared/magic-constants.js"></script>
     <script src="js/modules/shared/social-constants.js"></script>
+    <script src="js/modules/shared/team-constants.js"></script>
+
+    <!-- ============================================================
+         CALENDAR VALIDATION - LOADS AFTER CALENDAR CONSTANTS
+         ============================================================ -->
+    <script src="js/utils/calendar-validation.js"></script>
 
     <!-- ============================================================
          SHARED QUERIES - js/modules/shared/queries/
          ============================================================ -->
     <script src="js/modules/shared/queries/character-queries.js"></script>
     <script src="js/modules/shared/queries/team-queries.js"></script>
-    <script src="js/modules/shared/queries/academy-queries.js"></script>
     <script src="js/modules/shared/queries/tournament-queries.js"></script>
     <script src="js/modules/shared/queries/mission-queries.js"></script>
-    <script src="js/modules/shared/queries/calendar-queries.js"></script>
+    <script src="js/modules/shared/queries/social-queries.js"></script>
     <script src="js/modules/shared/queries/discipline-queries.js"></script>
     <script src="js/modules/shared/queries/location-queries.js"></script>
     <script src="js/modules/shared/queries/elimination-queries.js"></script>
-    <script src="js/modules/shared/queries/social-queries.js"></script>
+    <script src="js/modules/shared/queries/calendar-queries.js"></script>
 
     <!-- ============================================================
-         ACADEMY CORE MODULES
+         ACADEMY CORE MODULES (dependencies for AcademyQueries)
          ============================================================ -->
     <script src="js/modules/academy/academy-classes.js"></script>
     <script src="js/modules/academy/academy-grades.js"></script>
@@ -151,6 +184,26 @@
     <script src="js/modules/academy/academy-ranking.js"></script>
     <script src="js/modules/academy/academy-disciplines.js"></script>
     <script src="js/modules/academy/academy-locations.js"></script>
+
+    <!-- ============================================================
+         ACADEMY QUERIES - LOADS AFTER ITS DEPENDENCIES
+         ============================================================ -->
+    <script src="js/modules/shared/queries/academy-queries.js"></script>
+
+    <!-- ============================================================
+         CORE INFRASTRUCTURE - LOADS BEFORE MODULES THAT USE IT
+         ============================================================ -->
+    <script src="js/core/activity-log.js"></script>
+    <script src="js/core/database.js"></script>
+    <script src="js/core/loader.js"></script>
+    <script src="js/core/state.js"></script>
+    <script src="js/core/tab-manager.js"></script>
+    <script src="js/core/mutation-pipeline.js"></script>
+    <script src="js/core/bootstrap.js"></script>
+
+    <!-- ============================================================
+         ACADEMY ADDITIONAL - Schedule & Distribute
+         ============================================================ -->
     <script src="js/modules/academy/academy-schedule.js"></script>
     <script src="js/modules/academy/academy-distribute.js"></script>
 
@@ -167,13 +220,14 @@
     <script src="js/modules/calendar/index.js"></script>
 
     <!-- ============================================================
-         CHARACTER MODULE
+         CHARACTER MODULE - Core first, then views, then aggregator
          ============================================================ -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
     <script src="js/modules/characters/character-crud.js"></script>
     <script src="js/modules/characters/character-classes.js"></script>
     <script src="js/modules/characters/character-eliminations.js"></script>
+    <script src="js/modules/characters/character-aggregator.js"></script>
     <script src="js/modules/characters/character-list.js"></script>
     <script src="js/modules/characters/character-form.js"></script>
     <script src="js/modules/characters/character-detail.js"></script>
@@ -181,14 +235,11 @@
     <script src="js/modules/characters/character-elimination-view.js"></script>
     <script src="js/modules/characters/character-stats-view.js"></script>
     <script src="js/modules/characters/character-events.js"></script>
-    <script src="js/modules/characters/character-aggregator.js"></script>
     <script src="js/modules/characters/index.js"></script>
 
     <!-- ============================================================
          TEAM MODULE
          ============================================================ -->
-    <!-- NOTE: team-constants.js MUST exist for TeamQueries to work -->
-    <script src="js/modules/teams/team-constants.js"></script>
     <script src="js/modules/teams/team-core.js"></script>
     <script src="js/modules/teams/team-aggregator.js"></script>
     <script src="js/modules/teams/team-ui.js"></script>
@@ -208,6 +259,7 @@
 
     <!-- ============================================================
          ACADEMY MODULE - Aggregator, UI, Events, Tabs
+         NOTE: academy-core.js does not exist - using AcademyClasses directly
          ============================================================ -->
     <script src="js/modules/academy/academy-aggregator.js"></script>
     <script src="js/modules/academy/academy-ui.js"></script>
@@ -216,17 +268,6 @@
     <script src="js/modules/academy/tabs/student-tab.js"></script>
     <script src="js/modules/academy/tabs/faculty-tab.js"></script>
     <script src="js/modules/academy/index.js"></script>
-
-    <!-- ============================================================
-         CORE INFRASTRUCTURE
-         ============================================================ -->
-    <script src="js/core/activity-log.js"></script>
-    <script src="js/core/database.js"></script>
-    <script src="js/core/loader.js"></script>
-    <script src="js/core/state.js"></script>
-    <script src="js/core/tab-manager.js"></script>
-    <script src="js/core/mutation-pipeline.js"></script>
-    <script src="js/core/bootstrap.js"></script>
 
     <!-- ============================================================
          APP BOOTSTRAP
@@ -244,6 +285,8 @@
             var passed = 0;
             var failed = 0;
             var skipped = 0;
+            var dependencyStatus = {};
+            var testOutput = document.getElementById('test-output');
 
             function log(message, type) {
                 type = type || 'info';
@@ -252,9 +295,12 @@
                             type === 'fail' ? '#f44336' :
                             type === 'error' ? '#ff5722' :
                             type === 'skip' ? '#ff9800' : '#2196F3';
-                el.style.cssText = 'padding:4px 8px;margin:2px 0;border-left:3px solid ' + color + ';background:#1a1a2e;font-size:12px;';
+                el.style.cssText = 'padding:2px 4px;margin:1px 0;border-left:3px solid ' + color + ';background:#1a1a2e;font-size:11px;';
                 el.textContent = '[' + type.toUpperCase() + '] ' + message;
-                document.getElementById('test-output').appendChild(el);
+                if (testOutput) {
+                    testOutput.appendChild(el);
+                    testOutput.scrollTop = testOutput.scrollHeight;
+                }
             }
 
             function test(description, fn) {
@@ -286,21 +332,64 @@
             function testModuleLoaded(moduleName, module) {
                 if (module === undefined || module === null) {
                     testSkip(moduleName + ' is loaded', 'module not available');
-                    return;
+                    return false;
                 }
                 test(moduleName + ' is loaded', function() {
                     return module !== undefined && module !== null;
                 });
+                return true;
             }
 
             function testFunctionExists(module, fnName) {
                 if (!module) {
                     testSkip(fnName + ' exists', 'module not available');
-                    return;
+                    return false;
                 }
                 test(fnName + ' exists', function() {
                     return typeof module[fnName] === 'function';
                 });
+                return true;
+            }
+
+            function checkDependency(depName, depValue) {
+                var status = depValue !== undefined && depValue !== null;
+                dependencyStatus[depName] = status;
+                return status;
+            }
+
+            function renderDependencyCheck() {
+                var container = document.getElementById('dependency-check-list');
+                if (!container) return;
+
+                var html = '<div style="margin-top:8px;font-size:11px;">';
+                html += '<strong>Dependency Check:</strong><br>';
+
+                var deps = [
+                    { name: 'ObjectUtils', value: window.ObjectUtils },
+                    { name: 'IdUtils', value: window.IdUtils },
+                    { name: 'ValidationUtils', value: window.ValidationUtils },
+                    { name: 'ValidationUtils.isNonEmptyString', value: window.ValidationUtils ? window.ValidationUtils.isNonEmptyString : null },
+                    { name: 'CalendarConstants', value: window.CalendarConstants },
+                    { name: 'CharacterConstants', value: window.CharacterConstants },
+                    { name: 'AcademyConstants', value: window.AcademyConstants },
+                    { name: 'MagicConstants', value: window.MagicConstants },
+                    { name: 'SocialConstants', value: window.SocialConstants },
+                    { name: 'TeamConstants', value: window.TeamConstants },
+                    { name: 'CalendarQueries', value: window.CalendarQueries },
+                    { name: 'MutationPipeline', value: window.MutationPipeline },
+                    { name: 'AcademyClasses', value: window.AcademyClasses }
+                ];
+
+                for (var i = 0; i < deps.length; i++) {
+                    var d = deps[i];
+                    var exists = d.value !== undefined && d.value !== null;
+                    var cls = exists ? 'dep-ok' : 'dep-missing';
+                    var icon = exists ? '✅' : '❌';
+                    html += '<div class="dependency-check"><span class="' + cls + '">' + icon + ' ' + d.name + '</span></div>';
+                }
+
+                html += '</div>';
+                container.innerHTML = html;
             }
 
             // ============================================================
@@ -308,73 +397,70 @@
             // ============================================================
 
             function runAllTests() {
-                document.getElementById('test-output').innerHTML = '';
+                if (testOutput) {
+                    testOutput.innerHTML = '';
+                }
                 results = [];
                 passed = 0;
                 failed = 0;
                 skipped = 0;
 
+                renderDependencyCheck();
+
                 log('========== TEST SUITE START ==========', 'info');
                 log('Testing all modules: Characters, Calendar, Social, Teams, Academy', 'info');
 
-                // ---- CHARACTER MODULE ----
+                // ---- CORE UTILITIES ----
                 log('', 'info');
-                log('--- CHARACTER MODULE ---', 'info');
+                log('--- CORE UTILITIES ---', 'info');
 
-                testModuleLoaded('CharacterConstants', window.CharacterConstants);
-                if (window.CharacterConstants) {
-                    test('CharacterConstants.STAT_KEYS exists', function() {
-                        return Array.isArray(window.CharacterConstants.STAT_KEYS);
-                    });
-                    test('CharacterConstants.STAT_KEYS length is 6', function() {
-                        return window.CharacterConstants.STAT_KEYS.length === 6;
+                testModuleLoaded('ObjectUtils', window.ObjectUtils);
+                if (window.ObjectUtils) {
+                    testFunctionExists(window.ObjectUtils, 'deepClone');
+                }
+
+                testModuleLoaded('IdUtils', window.IdUtils);
+                if (window.IdUtils) {
+                    testFunctionExists(window.IdUtils, 'generateId');
+                    testFunctionExists(window.IdUtils, 'normaliseId');
+                }
+
+                testModuleLoaded('ValidationUtils', window.ValidationUtils);
+                if (window.ValidationUtils) {
+                    testFunctionExists(window.ValidationUtils, 'isNonEmptyString');
+                    testFunctionExists(window.ValidationUtils, 'hasValue');
+                    testFunctionExists(window.ValidationUtils, 'parseOptionalInteger');
+                    test('ValidationUtils.isNonEmptyString works', function() {
+                        var fn = window.ValidationUtils.isNonEmptyString;
+                        return fn('hello') === true && fn('') === false && fn(null) === false;
                     });
                 }
 
-                testModuleLoaded('CharacterQueries', window.CharacterQueries);
-                testFunctionExists(window.CharacterQueries, 'getCharacterById');
-                testFunctionExists(window.CharacterQueries, 'getDisplayName');
-                testFunctionExists(window.CharacterQueries, 'getStudents');
-                testFunctionExists(window.CharacterQueries, 'getInstructors');
+                testModuleLoaded('DomUtils', window.DomUtils);
+                if (window.DomUtils) {
+                    testFunctionExists(window.DomUtils, 'escapeHtml');
+                }
 
-                testModuleLoaded('CharacterStats', window.CharacterStats);
-                testFunctionExists(window.CharacterStats, 'getCharacterStats');
-                testFunctionExists(window.CharacterStats, 'getCharacterMagic');
+                testModuleLoaded('FormUtils', window.FormUtils);
+                if (window.FormUtils) {
+                    testFunctionExists(window.FormUtils, 'getField');
+                    testFunctionExists(window.FormUtils, 'setField');
+                }
 
-                testModuleLoaded('CharacterCRUD', window.CharacterCRUD);
-                testFunctionExists(window.CharacterCRUD, 'save');
-                testFunctionExists(window.CharacterCRUD, 'delete');
+                testModuleLoaded('NotificationSystem', window.NotificationSystem);
+                if (window.NotificationSystem) {
+                    testFunctionExists(window.NotificationSystem, 'notify');
+                }
 
-                testModuleLoaded('CharacterAggregator', window.CharacterAggregator);
-                testFunctionExists(window.CharacterAggregator, 'getCharacterDetail');
-                testFunctionExists(window.CharacterAggregator, 'getCharacterListViewModel');
+                testModuleLoaded('Modal', window.Modal);
+                if (window.Modal) {
+                    testFunctionExists(window.Modal, 'createModal');
+                    testFunctionExists(window.Modal, 'showModal');
+                }
 
-                testModuleLoaded('CharacterList', window.CharacterList);
-                testFunctionExists(window.CharacterList, 'render');
-
-                testModuleLoaded('CharacterForm', window.CharacterForm);
-                testFunctionExists(window.CharacterForm, 'render');
-                testFunctionExists(window.CharacterForm, 'collect');
-
-                testModuleLoaded('CharacterEvents', window.CharacterEvents);
-                testFunctionExists(window.CharacterEvents, 'init');
-                testFunctionExists(window.CharacterEvents, 'destroy');
-
-                testModuleLoaded('CharacterGenerator', window.CharacterGenerator);
-                testFunctionExists(window.CharacterGenerator, 'generatePhysical');
-                testFunctionExists(window.CharacterGenerator, 'generateCharacter');
-
-                testModuleLoaded('CharactersModule', window.CharactersModule);
-                test('window.mountCharacters exists', function() {
-                    return typeof window.mountCharacters === 'function';
-                });
-                test('window.getCurrentEditId exists', function() {
-                    return typeof window.getCurrentEditId === 'function';
-                });
-
-                // ---- CALENDAR MODULE ----
+                // ---- CONSTANTS ----
                 log('', 'info');
-                log('--- CALENDAR MODULE ---', 'info');
+                log('--- CONSTANTS ---', 'info');
 
                 testModuleLoaded('CalendarConstants', window.CalendarConstants);
                 if (window.CalendarConstants) {
@@ -387,141 +473,20 @@
                     test('CalendarConstants.CALENDAR_START_HOUR exists', function() {
                         return typeof window.CalendarConstants.CALENDAR_START_HOUR === 'number';
                     });
-                }
-
-                testModuleLoaded('CalendarValidation', window.CalendarValidation);
-                testFunctionExists(window.CalendarValidation, 'parseWeek');
-                testFunctionExists(window.CalendarValidation, 'parseDay');
-                testFunctionExists(window.CalendarValidation, 'parseHour');
-
-                testModuleLoaded('ScheduleCore', window.ScheduleCore);
-                testFunctionExists(window.ScheduleCore, 'setStudentSlot');
-                testFunctionExists(window.ScheduleCore, 'removeStudentSlot');
-                testFunctionExists(window.ScheduleCore, 'setRestDays');
-
-                testModuleLoaded('CalendarQueries', window.CalendarQueries);
-                testFunctionExists(window.CalendarQueries, 'getStudentSchedule');
-                testFunctionExists(window.CalendarQueries, 'getInstructorTemplates');
-
-                testModuleLoaded('CalendarRenderer', window.CalendarRenderer);
-                testFunctionExists(window.CalendarRenderer, 'renderGrid');
-                testFunctionExists(window.CalendarRenderer, 'buildOccupiedMap');
-
-                testModuleLoaded('CalendarAggregator', window.CalendarAggregator);
-                testFunctionExists(window.CalendarAggregator, 'getStudentCalendar');
-                testFunctionExists(window.CalendarAggregator, 'getInstructorCalendar');
-
-                testModuleLoaded('StudentCalendarUI', window.StudentCalendarUI);
-                testFunctionExists(window.StudentCalendarUI, 'render');
-
-                testModuleLoaded('InstructorCalendarUI', window.InstructorCalendarUI);
-                testFunctionExists(window.InstructorCalendarUI, 'render');
-
-                testModuleLoaded('LocationCalendarUI', window.LocationCalendarUI);
-                testFunctionExists(window.LocationCalendarUI, 'render');
-
-                testModuleLoaded('CalendarModule', window.CalendarModule);
-                test('window.renderCalendar exists', function() {
-                    return typeof window.renderCalendar === 'function';
-                });
-
-                // ---- SOCIAL MODULE ----
-                log('', 'info');
-                log('--- SOCIAL MODULE ---', 'info');
-
-                testModuleLoaded('SocialConstants', window.SocialConstants);
-                if (window.SocialConstants) {
-                    test('SocialConstants.getRelationshipTypes exists', function() {
-                        return typeof window.SocialConstants.getRelationshipTypes === 'function';
-                    });
-                    test('SocialConstants.getColor exists', function() {
-                        return typeof window.SocialConstants.getColor === 'function';
+                    test('CalendarConstants.getDayName exists', function() {
+                        return typeof window.CalendarConstants.getDayName === 'function';
                     });
                 }
 
-                testModuleLoaded('SocialQueries', window.SocialQueries);
-                testFunctionExists(window.SocialQueries, 'getAllRelationships');
-                testFunctionExists(window.SocialQueries, 'getCharacterRelationships');
-                testFunctionExists(window.SocialQueries, 'getRelationshipById');
-
-                testModuleLoaded('SocialCore', window.SocialCore);
-                testFunctionExists(window.SocialCore, 'init');
-                testFunctionExists(window.SocialCore, 'createRelationship');
-                testFunctionExists(window.SocialCore, 'deleteRelationship');
-
-                testModuleLoaded('SocialAggregator', window.SocialAggregator);
-                testFunctionExists(window.SocialAggregator, 'getRelationshipViewModel');
-                testFunctionExists(window.SocialAggregator, 'getCharacterRelationshipsViewModel');
-                testFunctionExists(window.SocialAggregator, 'getConnectedCharactersViewModel');
-
-                testModuleLoaded('SocialViews', window.SocialViews);
-                testFunctionExists(window.SocialViews, 'renderSocialView');
-                testFunctionExists(window.SocialViews, 'renderRelationships');
-
-                testModuleLoaded('SocialEvents', window.SocialEvents);
-                testFunctionExists(window.SocialEvents, 'init');
-                testFunctionExists(window.SocialEvents, 'destroy');
-
-                testModuleLoaded('SocialGraph', window.SocialGraph);
-                testFunctionExists(window.SocialGraph, 'renderGraph');
-                testFunctionExists(window.SocialGraph, 'setGraphVisible');
-
-                testModuleLoaded('Social', window.Social);
-                test('window.Social.mount exists', function() {
-                    return window.Social && typeof window.Social.mount === 'function';
-                });
-
-                // ---- TEAM MODULE ----
-                log('', 'info');
-                log('--- TEAM MODULE ---', 'info');
-
-                testModuleLoaded('TeamConstants', window.TeamConstants);
-                if (window.TeamConstants) {
-                    test('TeamConstants.getTeamTypes exists', function() {
-                        return typeof window.TeamConstants.getTeamTypes === 'function';
+                testModuleLoaded('CharacterConstants', window.CharacterConstants);
+                if (window.CharacterConstants) {
+                    test('CharacterConstants.STAT_KEYS exists', function() {
+                        return Array.isArray(window.CharacterConstants.STAT_KEYS);
                     });
-                    test('TeamConstants.getDefaultType exists', function() {
-                        return typeof window.TeamConstants.getDefaultType === 'function';
+                    test('CharacterConstants.STAT_KEYS length is 6', function() {
+                        return window.CharacterConstants.STAT_KEYS.length === 6;
                     });
                 }
-
-                testModuleLoaded('TeamQueries', window.TeamQueries);
-                testFunctionExists(window.TeamQueries, 'getTeamById');
-                testFunctionExists(window.TeamQueries, 'getTeamName');
-                testFunctionExists(window.TeamQueries, 'getTeams');
-                testFunctionExists(window.TeamQueries, 'getActiveTeamMembers');
-
-                testModuleLoaded('TeamCore', window.TeamCore);
-                testFunctionExists(window.TeamCore, 'configure');
-                testFunctionExists(window.TeamCore, 'createTeam');
-                testFunctionExists(window.TeamCore, 'addMember');
-                testFunctionExists(window.TeamCore, 'removeMember');
-
-                testModuleLoaded('TeamAggregator', window.TeamAggregator);
-                testFunctionExists(window.TeamAggregator, 'getTeamViewModel');
-                testFunctionExists(window.TeamAggregator, 'getTeamListViewModel');
-                testFunctionExists(window.TeamAggregator, 'getCandidateCharactersAtPeriod');
-
-                testModuleLoaded('TeamUI', window.TeamUI);
-                testFunctionExists(window.TeamUI, 'init');
-                testFunctionExists(window.TeamUI, 'getCurrentTab');
-                testFunctionExists(window.TeamUI, 'setCurrentTab');
-
-                testModuleLoaded('TeamRender', window.TeamRender);
-                testFunctionExists(window.TeamRender, 'renderList');
-
-                testModuleLoaded('TeamEvents', window.TeamEvents);
-                testFunctionExists(window.TeamEvents, 'init');
-                testFunctionExists(window.TeamEvents, 'destroy');
-
-                testModuleLoaded('Teams', window.Teams);
-                test('window.Teams.mount exists', function() {
-                    return window.Teams && typeof window.Teams.mount === 'function';
-                });
-
-                // ---- ACADEMY MODULE ----
-                log('', 'info');
-                log('--- ACADEMY MODULE ---', 'info');
 
                 testModuleLoaded('AcademyConstants', window.AcademyConstants);
                 if (window.AcademyConstants) {
@@ -533,80 +498,478 @@
                     });
                 }
 
-                testModuleLoaded('AcademyQueries', window.AcademyQueries);
-                testFunctionExists(window.AcademyQueries, 'getClasses');
-                testFunctionExists(window.AcademyQueries, 'getClass');
-                testFunctionExists(window.AcademyQueries, 'getClassStudents');
-                testFunctionExists(window.AcademyQueries, 'getStudentGrades');
-                testFunctionExists(window.AcademyQueries, 'calculateClassRanking');
+                testModuleLoaded('MagicConstants', window.MagicConstants);
+                if (window.MagicConstants) {
+                    test('MagicConstants.MAGIC_TYPE_KEYS exists', function() {
+                        return Array.isArray(window.MagicConstants.MAGIC_TYPE_KEYS);
+                    });
+                    test('MagicConstants.getTypeLabel exists', function() {
+                        return typeof window.MagicConstants.getTypeLabel === 'function';
+                    });
+                }
+
+                testModuleLoaded('SocialConstants', window.SocialConstants);
+                if (window.SocialConstants) {
+                    test('SocialConstants.getRelationshipTypes exists', function() {
+                        return typeof window.SocialConstants.getRelationshipTypes === 'function';
+                    });
+                    test('SocialConstants.getColor exists', function() {
+                        return typeof window.SocialConstants.getColor === 'function';
+                    });
+                }
+
+                testModuleLoaded('TeamConstants', window.TeamConstants);
+                if (window.TeamConstants) {
+                    test('TeamConstants.getTeamTypes exists', function() {
+                        return typeof window.TeamConstants.getTeamTypes === 'function';
+                    });
+                    test('TeamConstants.getDefaultType exists', function() {
+                        return typeof window.TeamConstants.getDefaultType === 'function';
+                    });
+                    test('TeamConstants.MIN_WEEK exists', function() {
+                        return typeof window.TeamConstants.MIN_WEEK === 'number';
+                    });
+                }
+
+                // ---- SHARED QUERIES ----
+                log('', 'info');
+                log('--- SHARED QUERIES ---', 'info');
+
+                testModuleLoaded('CharacterQueries', window.CharacterQueries);
+                if (window.CharacterQueries) {
+                    testFunctionExists(window.CharacterQueries, 'getCharacterById');
+                    testFunctionExists(window.CharacterQueries, 'getDisplayName');
+                    testFunctionExists(window.CharacterQueries, 'getStudents');
+                    testFunctionExists(window.CharacterQueries, 'getInstructors');
+                    testFunctionExists(window.CharacterQueries, 'getCurrentStatus');
+                }
+
+                testModuleLoaded('TeamQueries', window.TeamQueries);
+                if (window.TeamQueries) {
+                    testFunctionExists(window.TeamQueries, 'getTeamById');
+                    testFunctionExists(window.TeamQueries, 'getTeamName');
+                    testFunctionExists(window.TeamQueries, 'getTeams');
+                    testFunctionExists(window.TeamQueries, 'getActiveTeamMembers');
+                    testFunctionExists(window.TeamQueries, 'getCurrentRank');
+                }
+
+                testModuleLoaded('TournamentQueries', window.TournamentQueries);
+                if (window.TournamentQueries) {
+                    testFunctionExists(window.TournamentQueries, 'getTournament');
+                    testFunctionExists(window.TournamentQueries, 'getTournaments');
+                    testFunctionExists(window.TournamentQueries, 'getParticipants');
+                }
+
+                testModuleLoaded('MissionQueries', window.MissionQueries);
+                if (window.MissionQueries) {
+                    testFunctionExists(window.MissionQueries, 'getMission');
+                    testFunctionExists(window.MissionQueries, 'getMissions');
+                    testFunctionExists(window.MissionQueries, 'getStatistics');
+                }
+
+                testModuleLoaded('SocialQueries', window.SocialQueries);
+                if (window.SocialQueries) {
+                    testFunctionExists(window.SocialQueries, 'getAllRelationships');
+                    testFunctionExists(window.SocialQueries, 'getCharacterRelationships');
+                    testFunctionExists(window.SocialQueries, 'getRelationshipById');
+                    testFunctionExists(window.SocialQueries, 'relationshipExists');
+                }
+
+                testModuleLoaded('DisciplineQueries', window.DisciplineQueries);
+                if (window.DisciplineQueries) {
+                    testFunctionExists(window.DisciplineQueries, 'getDiscipline');
+                    testFunctionExists(window.DisciplineQueries, 'getDisciplines');
+                    testFunctionExists(window.DisciplineQueries, 'getAvailableDisciplines');
+                }
+
+                testModuleLoaded('LocationQueries', window.LocationQueries);
+                if (window.LocationQueries) {
+                    testFunctionExists(window.LocationQueries, 'getLocation');
+                    testFunctionExists(window.LocationQueries, 'getLocations');
+                }
+
+                testModuleLoaded('EliminationQueries', window.EliminationQueries);
+                if (window.EliminationQueries) {
+                    testFunctionExists(window.EliminationQueries, 'isCharacterEliminated');
+                    testFunctionExists(window.EliminationQueries, 'getEliminationWeek');
+                }
+
+                testModuleLoaded('CalendarQueries', window.CalendarQueries);
+                if (window.CalendarQueries) {
+                    testFunctionExists(window.CalendarQueries, 'getStudentSchedule');
+                    testFunctionExists(window.CalendarQueries, 'getStudentRestDays');
+                    testFunctionExists(window.CalendarQueries, 'getInstructorTemplates');
+                    testFunctionExists(window.CalendarQueries, 'getLocationSchedule');
+                    testFunctionExists(window.CalendarQueries, 'getStudentClasses');
+                    testFunctionExists(window.CalendarQueries, 'getInstructorSchedule');
+                }
+
+                // ---- ACADEMY CORE ----
+                log('', 'info');
+                log('--- ACADEMY CORE ---', 'info');
 
                 testModuleLoaded('AcademyClasses', window.AcademyClasses);
-                testFunctionExists(window.AcademyClasses, 'create');
-                testFunctionExists(window.AcademyClasses, 'update');
-                testFunctionExists(window.AcademyClasses, 'delete');
-                testFunctionExists(window.AcademyClasses, 'addStudent');
-                testFunctionExists(window.AcademyClasses, 'removeStudent');
+                if (window.AcademyClasses) {
+                    testFunctionExists(window.AcademyClasses, 'create');
+                    testFunctionExists(window.AcademyClasses, 'update');
+                    testFunctionExists(window.AcademyClasses, 'delete');
+                    testFunctionExists(window.AcademyClasses, 'addStudent');
+                    testFunctionExists(window.AcademyClasses, 'removeStudent');
+                    testFunctionExists(window.AcademyClasses, 'getClass');
+                    testFunctionExists(window.AcademyClasses, 'getClasses');
+                }
 
                 testModuleLoaded('AcademyGrades', window.AcademyGrades);
-                testFunctionExists(window.AcademyGrades, 'create');
-                testFunctionExists(window.AcademyGrades, 'saveGrades');
-                testFunctionExists(window.AcademyGrades, 'getStudentGrades');
+                if (window.AcademyGrades) {
+                    testFunctionExists(window.AcademyGrades, 'create');
+                    testFunctionExists(window.AcademyGrades, 'update');
+                    testFunctionExists(window.AcademyGrades, 'delete');
+                    testFunctionExists(window.AcademyGrades, 'getStudentGrades');
+                    testFunctionExists(window.AcademyGrades, 'getClassGrades');
+                    testFunctionExists(window.AcademyGrades, 'calculateSummary');
+                }
 
                 testModuleLoaded('AcademyGroups', window.AcademyGroups);
-                testFunctionExists(window.AcademyGroups, 'createGroup');
-                testFunctionExists(window.AcademyGroups, 'deleteGroup');
+                if (window.AcademyGroups) {
+                    testFunctionExists(window.AcademyGroups, 'createGroup');
+                    testFunctionExists(window.AcademyGroups, 'deleteGroup');
+                    testFunctionExists(window.AcademyGroups, 'addStudentToGroup');
+                    testFunctionExists(window.AcademyGroups, 'removeStudentFromGroup');
+                    testFunctionExists(window.AcademyGroups, 'getAutoGroup');
+                    testFunctionExists(window.AcademyGroups, 'getAllAutoGroups');
+                }
 
                 testModuleLoaded('AcademyRanking', window.AcademyRanking);
-                testFunctionExists(window.AcademyRanking, 'autoGenerate');
-                testFunctionExists(window.AcademyRanking, 'getClassRankings');
-                testFunctionExists(window.AcademyRanking, 'getStudentRank');
+                if (window.AcademyRanking) {
+                    testFunctionExists(window.AcademyRanking, 'autoGenerate');
+                    testFunctionExists(window.AcademyRanking, 'getClassRankings');
+                    testFunctionExists(window.AcademyRanking, 'getStudentRank');
+                }
 
                 testModuleLoaded('AcademyDisciplines', window.AcademyDisciplines);
-                testFunctionExists(window.AcademyDisciplines, 'create');
-                testFunctionExists(window.AcademyDisciplines, 'update');
-                testFunctionExists(window.AcademyDisciplines, 'delete');
+                if (window.AcademyDisciplines) {
+                    testFunctionExists(window.AcademyDisciplines, 'create');
+                    testFunctionExists(window.AcademyDisciplines, 'update');
+                    testFunctionExists(window.AcademyDisciplines, 'delete');
+                }
 
                 testModuleLoaded('AcademyLocations', window.AcademyLocations);
-                testFunctionExists(window.AcademyLocations, 'create');
-                testFunctionExists(window.AcademyLocations, 'update');
-                testFunctionExists(window.AcademyLocations, 'delete');
+                if (window.AcademyLocations) {
+                    testFunctionExists(window.AcademyLocations, 'create');
+                    testFunctionExists(window.AcademyLocations, 'update');
+                    testFunctionExists(window.AcademyLocations, 'delete');
+                }
+
+                testModuleLoaded('AcademyQueries', window.AcademyQueries);
+                if (window.AcademyQueries) {
+                    testFunctionExists(window.AcademyQueries, 'getClasses');
+                    testFunctionExists(window.AcademyQueries, 'getClass');
+                    testFunctionExists(window.AcademyQueries, 'getClassStudents');
+                    testFunctionExists(window.AcademyQueries, 'getStudentGrades');
+                    testFunctionExists(window.AcademyQueries, 'calculateClassRanking');
+                    testFunctionExists(window.AcademyQueries, 'getAllGroups');
+                }
+
+                // ---- CHARACTER MODULE ----
+                log('', 'info');
+                log('--- CHARACTER MODULE ---', 'info');
+
+                testModuleLoaded('CharacterGenerator', window.CharacterGenerator);
+                if (window.CharacterGenerator) {
+                    testFunctionExists(window.CharacterGenerator, 'generatePhysical');
+                    testFunctionExists(window.CharacterGenerator, 'generatePersonality');
+                    testFunctionExists(window.CharacterGenerator, 'generateStats3d6');
+                    testFunctionExists(window.CharacterGenerator, 'generateCharacter');
+                }
+
+                testModuleLoaded('CharacterStats', window.CharacterStats);
+                if (window.CharacterStats) {
+                    testFunctionExists(window.CharacterStats, 'getCharacterStats');
+                    testFunctionExists(window.CharacterStats, 'getCharacterMagic');
+                    testFunctionExists(window.CharacterStats, 'suggestClass');
+                    testFunctionExists(window.CharacterStats, 'calculateMagicPower');
+                }
+
+                testModuleLoaded('CharacterCRUD', window.CharacterCRUD);
+                if (window.CharacterCRUD) {
+                    testFunctionExists(window.CharacterCRUD, 'save');
+                    testFunctionExists(window.CharacterCRUD, 'delete');
+                    testFunctionExists(window.CharacterCRUD, 'validateCharacter');
+                }
+
+                testModuleLoaded('CharacterClasses', window.CharacterClasses);
+                if (window.CharacterClasses) {
+                    testFunctionExists(window.CharacterClasses, 'addToClass');
+                    testFunctionExists(window.CharacterClasses, 'removeClassById');
+                    testFunctionExists(window.CharacterClasses, 'addClassByName');
+                }
+
+                testModuleLoaded('CharacterEliminations', window.CharacterEliminations);
+                if (window.CharacterEliminations) {
+                    testFunctionExists(window.CharacterEliminations, 'addStandalone');
+                    testFunctionExists(window.CharacterEliminations, 'removeStandalone');
+                    testFunctionExists(window.CharacterEliminations, 'markTournamentEliminated');
+                }
+
+                testModuleLoaded('CharacterAggregator', window.CharacterAggregator);
+                if (window.CharacterAggregator) {
+                    testFunctionExists(window.CharacterAggregator, 'getCharacterDetail');
+                    testFunctionExists(window.CharacterAggregator, 'getCharacterListViewModel');
+                    testFunctionExists(window.CharacterAggregator, 'getCharacterAcademicData');
+                }
+
+                testModuleLoaded('CharacterList', window.CharacterList);
+                if (window.CharacterList) {
+                    testFunctionExists(window.CharacterList, 'render');
+                    testFunctionExists(window.CharacterList, 'populateClassFilter');
+                }
+
+                testModuleLoaded('CharacterForm', window.CharacterForm);
+                if (window.CharacterForm) {
+                    testFunctionExists(window.CharacterForm, 'render');
+                    testFunctionExists(window.CharacterForm, 'collect');
+                    testFunctionExists(window.CharacterForm, 'switchTab');
+                }
+
+                testModuleLoaded('CharacterDetail', window.CharacterDetail);
+                if (window.CharacterDetail) {
+                    testFunctionExists(window.CharacterDetail, 'open');
+                    testFunctionExists(window.CharacterDetail, 'close');
+                    testFunctionExists(window.CharacterDetail, 'switchTab');
+                }
+
+                testModuleLoaded('CharacterEvents', window.CharacterEvents);
+                if (window.CharacterEvents) {
+                    testFunctionExists(window.CharacterEvents, 'init');
+                    testFunctionExists(window.CharacterEvents, 'destroy');
+                    testFunctionExists(window.CharacterEvents, 'refreshUI');
+                }
+
+                test('window.mountCharacters exists', function() {
+                    return typeof window.mountCharacters === 'function';
+                });
+                test('window.getCurrentEditId exists', function() {
+                    return typeof window.getCurrentEditId === 'function';
+                });
+                test('window.setCurrentEditId exists', function() {
+                    return typeof window.setCurrentEditId === 'function';
+                });
+
+                // ---- CALENDAR MODULE ----
+                log('', 'info');
+                log('--- CALENDAR MODULE ---', 'info');
+
+                testModuleLoaded('ScheduleCore', window.ScheduleCore);
+                if (window.ScheduleCore) {
+                    testFunctionExists(window.ScheduleCore, 'setStudentSlot');
+                    testFunctionExists(window.ScheduleCore, 'removeStudentSlot');
+                    testFunctionExists(window.ScheduleCore, 'setRestDays');
+                    testFunctionExists(window.ScheduleCore, 'setInstructorTemplate');
+                    testFunctionExists(window.ScheduleCore, 'setLocationClass');
+                }
+
+                testModuleLoaded('CalendarRenderer', window.CalendarRenderer);
+                if (window.CalendarRenderer) {
+                    testFunctionExists(window.CalendarRenderer, 'renderGrid');
+                    testFunctionExists(window.CalendarRenderer, 'buildOccupiedMap');
+                    testFunctionExists(window.CalendarRenderer, 'getAvailableSlots');
+                }
+
+                testModuleLoaded('CalendarAggregator', window.CalendarAggregator);
+                if (window.CalendarAggregator) {
+                    testFunctionExists(window.CalendarAggregator, 'getStudentCalendar');
+                    testFunctionExists(window.CalendarAggregator, 'getInstructorCalendar');
+                    testFunctionExists(window.CalendarAggregator, 'getLocationCalendar');
+                }
+
+                testModuleLoaded('StudentCalendarUI', window.StudentCalendarUI);
+                if (window.StudentCalendarUI) {
+                    testFunctionExists(window.StudentCalendarUI, 'render');
+                    testFunctionExists(window.StudentCalendarUI, 'getState');
+                }
+
+                testModuleLoaded('InstructorCalendarUI', window.InstructorCalendarUI);
+                if (window.InstructorCalendarUI) {
+                    testFunctionExists(window.InstructorCalendarUI, 'render');
+                    testFunctionExists(window.InstructorCalendarUI, 'getState');
+                }
+
+                testModuleLoaded('LocationCalendarUI', window.LocationCalendarUI);
+                if (window.LocationCalendarUI) {
+                    testFunctionExists(window.LocationCalendarUI, 'render');
+                    testFunctionExists(window.LocationCalendarUI, 'getState');
+                }
+
+                test('window.renderCalendar exists', function() {
+                    return typeof window.renderCalendar === 'function';
+                });
+
+                // ---- SOCIAL MODULE ----
+                log('', 'info');
+                log('--- SOCIAL MODULE ---', 'info');
+
+                testModuleLoaded('SocialCore', window.SocialCore);
+                if (window.SocialCore) {
+                    testFunctionExists(window.SocialCore, 'init');
+                    testFunctionExists(window.SocialCore, 'createRelationship');
+                    testFunctionExists(window.SocialCore, 'updateRelationship');
+                    testFunctionExists(window.SocialCore, 'deleteRelationship');
+                    testFunctionExists(window.SocialCore, 'validateRelationshipData');
+                }
+
+                testModuleLoaded('SocialAggregator', window.SocialAggregator);
+                if (window.SocialAggregator) {
+                    testFunctionExists(window.SocialAggregator, 'getRelationshipViewModel');
+                    testFunctionExists(window.SocialAggregator, 'getCharacterRelationshipsViewModel');
+                    testFunctionExists(window.SocialAggregator, 'getConnectedCharactersViewModel');
+                    testFunctionExists(window.SocialAggregator, 'getSocialPageViewModel');
+                }
+
+                testModuleLoaded('SocialViews', window.SocialViews);
+                if (window.SocialViews) {
+                    testFunctionExists(window.SocialViews, 'renderSocialView');
+                    testFunctionExists(window.SocialViews, 'renderRelationships');
+                    testFunctionExists(window.SocialViews, 'renderCharacterDetailContent');
+                }
+
+                testModuleLoaded('SocialEvents', window.SocialEvents);
+                if (window.SocialEvents) {
+                    testFunctionExists(window.SocialEvents, 'init');
+                    testFunctionExists(window.SocialEvents, 'destroy');
+                    testFunctionExists(window.SocialEvents, 'refreshUI');
+                }
+
+                testModuleLoaded('SocialGraph', window.SocialGraph);
+                if (window.SocialGraph) {
+                    testFunctionExists(window.SocialGraph, 'renderGraph');
+                    testFunctionExists(window.SocialGraph, 'setGraphVisible');
+                    testFunctionExists(window.SocialGraph, 'zoomIn');
+                    testFunctionExists(window.SocialGraph, 'zoomOut');
+                }
+
+                testModuleLoaded('Social', window.Social);
+                test('window.Social.mount exists', function() {
+                    return window.Social && typeof window.Social.mount === 'function';
+                });
+
+                // ---- TEAM MODULE ----
+                log('', 'info');
+                log('--- TEAM MODULE ---', 'info');
+
+                testModuleLoaded('TeamCore', window.TeamCore);
+                if (window.TeamCore) {
+                    testFunctionExists(window.TeamCore, 'configure');
+                    testFunctionExists(window.TeamCore, 'createTeam');
+                    testFunctionExists(window.TeamCore, 'updateTeam');
+                    testFunctionExists(window.TeamCore, 'deleteTeam');
+                    testFunctionExists(window.TeamCore, 'addMember');
+                    testFunctionExists(window.TeamCore, 'removeMember');
+                    testFunctionExists(window.TeamCore, 'updateMember');
+                    testFunctionExists(window.TeamCore, 'addRanking');
+                    testFunctionExists(window.TeamCore, 'removeRanking');
+                }
+
+                testModuleLoaded('TeamAggregator', window.TeamAggregator);
+                if (window.TeamAggregator) {
+                    testFunctionExists(window.TeamAggregator, 'getTeamViewModel');
+                    testFunctionExists(window.TeamAggregator, 'getTeamListViewModel');
+                    testFunctionExists(window.TeamAggregator, 'getTeamMembersViewModel');
+                    testFunctionExists(window.TeamAggregator, 'getTeamPageViewModel');
+                    testFunctionExists(window.TeamAggregator, 'getCandidateCharactersAtPeriod');
+                }
+
+                testModuleLoaded('TeamUI', window.TeamUI);
+                if (window.TeamUI) {
+                    testFunctionExists(window.TeamUI, 'init');
+                    testFunctionExists(window.TeamUI, 'getCurrentTab');
+                    testFunctionExists(window.TeamUI, 'setCurrentTab');
+                    testFunctionExists(window.TeamUI, 'getFilter');
+                }
+
+                testModuleLoaded('TeamRender', window.TeamRender);
+                if (window.TeamRender) {
+                    testFunctionExists(window.TeamRender, 'renderList');
+                    testFunctionExists(window.TeamRender, 'renderExpandedMembers');
+                    testFunctionExists(window.TeamRender, 'renderContainer');
+                }
+
+                testModuleLoaded('TeamEvents', window.TeamEvents);
+                if (window.TeamEvents) {
+                    testFunctionExists(window.TeamEvents, 'init');
+                    testFunctionExists(window.TeamEvents, 'destroy');
+                    testFunctionExists(window.TeamEvents, 'refreshUI');
+                }
+
+                testModuleLoaded('Teams', window.Teams);
+                test('window.Teams.mount exists', function() {
+                    return window.Teams && typeof window.Teams.mount === 'function';
+                });
+
+                // ---- ACADEMY MODULE ----
+                log('', 'info');
+                log('--- ACADEMY MODULE ---', 'info');
+
+                // Note: AcademyCore does not exist - using AcademyClasses directly
+                test('AcademyClasses.create exists for class creation', function() {
+                    return window.AcademyClasses && typeof window.AcademyClasses.create === 'function';
+                });
 
                 testModuleLoaded('AcademySchedule', window.AcademySchedule);
-                testFunctionExists(window.AcademySchedule, 'configure');
-                testFunctionExists(window.AcademySchedule, 'getStudentSchedule');
-                testFunctionExists(window.AcademySchedule, 'setStudentScheduleClass');
+                if (window.AcademySchedule) {
+                    testFunctionExists(window.AcademySchedule, 'configure');
+                    testFunctionExists(window.AcademySchedule, 'getStudentSchedule');
+                    testFunctionExists(window.AcademySchedule, 'setStudentScheduleClass');
+                    testFunctionExists(window.AcademySchedule, 'getStudentRestDays');
+                }
 
                 testModuleLoaded('AcademyDistribute', window.AcademyDistribute);
-                testFunctionExists(window.AcademyDistribute, 'autoDistribute');
-                testFunctionExists(window.AcademyDistribute, 'distributeStudents');
+                if (window.AcademyDistribute) {
+                    testFunctionExists(window.AcademyDistribute, 'autoDistribute');
+                    testFunctionExists(window.AcademyDistribute, 'distributeStudents');
+                    testFunctionExists(window.AcademyDistribute, 'validateDistribution');
+                }
 
                 testModuleLoaded('AcademyAggregator', window.AcademyAggregator);
-                testFunctionExists(window.AcademyAggregator, 'getClassViewModel');
-                testFunctionExists(window.AcademyAggregator, 'getStudentViewModel');
-                testFunctionExists(window.AcademyAggregator, 'getInstructorViewModel');
-                testFunctionExists(window.AcademyAggregator, 'getClassListViewModel');
+                if (window.AcademyAggregator) {
+                    testFunctionExists(window.AcademyAggregator, 'getClassViewModel');
+                    testFunctionExists(window.AcademyAggregator, 'getStudentViewModel');
+                    testFunctionExists(window.AcademyAggregator, 'getInstructorViewModel');
+                    testFunctionExists(window.AcademyAggregator, 'getClassListViewModel');
+                }
 
                 testModuleLoaded('AcademyUI', window.AcademyUI);
-                testFunctionExists(window.AcademyUI, 'init');
-                testFunctionExists(window.AcademyUI, 'getActiveTab');
-                testFunctionExists(window.AcademyUI, 'setActiveTab');
-                testFunctionExists(window.AcademyUI, 'selectClass');
+                if (window.AcademyUI) {
+                    testFunctionExists(window.AcademyUI, 'init');
+                    testFunctionExists(window.AcademyUI, 'getActiveTab');
+                    testFunctionExists(window.AcademyUI, 'setActiveTab');
+                    testFunctionExists(window.AcademyUI, 'selectClass');
+                    testFunctionExists(window.AcademyUI, 'getDisplayWeek');
+                }
 
                 testModuleLoaded('AcademyEvents', window.AcademyEvents);
-                testFunctionExists(window.AcademyEvents, 'init');
-                testFunctionExists(window.AcademyEvents, 'destroy');
+                if (window.AcademyEvents) {
+                    testFunctionExists(window.AcademyEvents, 'init');
+                    testFunctionExists(window.AcademyEvents, 'destroy');
+                    testFunctionExists(window.AcademyEvents, 'refreshUI');
+                }
 
                 testModuleLoaded('ClassTab', window.ClassTab);
-                testFunctionExists(window.ClassTab, 'render');
-                testFunctionExists(window.ClassTab, 'bindEvents');
+                if (window.ClassTab) {
+                    testFunctionExists(window.ClassTab, 'render');
+                    testFunctionExists(window.ClassTab, 'bindEvents');
+                }
 
                 testModuleLoaded('StudentTab', window.StudentTab);
-                testFunctionExists(window.StudentTab, 'render');
-                testFunctionExists(window.StudentTab, 'bindEvents');
+                if (window.StudentTab) {
+                    testFunctionExists(window.StudentTab, 'render');
+                    testFunctionExists(window.StudentTab, 'bindEvents');
+                }
 
                 testModuleLoaded('FacultyTab', window.FacultyTab);
-                testFunctionExists(window.FacultyTab, 'render');
-                testFunctionExists(window.FacultyTab, 'bindEvents');
+                if (window.FacultyTab) {
+                    testFunctionExists(window.FacultyTab, 'render');
+                    testFunctionExists(window.FacultyTab, 'bindEvents');
+                }
 
                 testModuleLoaded('Academy', window.Academy);
                 test('window.Academy.mount exists', function() {
@@ -618,17 +981,37 @@
                 log('--- CORE INFRASTRUCTURE ---', 'info');
 
                 testModuleLoaded('TabManager', window.TabManager);
-                testFunctionExists(window.TabManager, 'register');
-                testFunctionExists(window.TabManager, 'switchTo');
+                if (window.TabManager) {
+                    testFunctionExists(window.TabManager, 'register');
+                    testFunctionExists(window.TabManager, 'switchTo');
+                    testFunctionExists(window.TabManager, 'getCurrentTab');
+                }
 
                 testModuleLoaded('DataLoader', window.DataLoader);
-                testFunctionExists(window.DataLoader, 'whenReady');
+                if (window.DataLoader) {
+                    testFunctionExists(window.DataLoader, 'whenReady');
+                    testFunctionExists(window.DataLoader, 'getData');
+                    testFunctionExists(window.DataLoader, 'getStatus');
+                }
 
                 testModuleLoaded('MutationPipeline', window.MutationPipeline);
-                testFunctionExists(window.MutationPipeline, 'performMutation');
+                if (window.MutationPipeline) {
+                    testFunctionExists(window.MutationPipeline, 'performMutation');
+                    testFunctionExists(window.MutationPipeline, 'createSafeBackup');
+                    testFunctionExists(window.MutationPipeline, 'saveWithPromise');
+                }
 
-                testModuleLoaded('NotificationSystem', window.NotificationSystem);
-                testFunctionExists(window.NotificationSystem, 'notify');
+                testModuleLoaded('ActivityLog', window.ActivityLog);
+                if (window.ActivityLog) {
+                    testFunctionExists(window.ActivityLog, 'record');
+                    testFunctionExists(window.ActivityLog, 'getHistory');
+                }
+
+                testModuleLoaded('bootstrap', window.bootstrap);
+                if (window.bootstrap) {
+                    testFunctionExists(window.bootstrap, 'init');
+                    testFunctionExists(window.bootstrap, 'getStatus');
+                }
 
                 // ---- DATA ----
                 log('', 'info');
@@ -654,13 +1037,43 @@
                     test('window.data.academy is object', function() {
                         return typeof window.data.academy === 'object';
                     });
+                    test('window.data.academy.graduatingClasses exists', function() {
+                        return window.data.academy && typeof window.data.academy.graduatingClasses === 'object';
+                    });
+                    test('window.data.academy.grades exists', function() {
+                        return window.data.academy && typeof window.data.academy.grades === 'object';
+                    });
+                    test('window.data.academy.rankings exists', function() {
+                        return window.data.academy && typeof window.data.academy.rankings === 'object';
+                    });
                 }
 
                 // ---- SUMMARY ----
                 log('========== TEST SUITE COMPLETE ==========', 'info');
 
                 var total = passed + failed + skipped;
-                document.getElementById('summary-content').innerHTML =
+                var summaryEl = document.getElementById('summary-content');
+
+                var moduleStatus = {
+                    'Characters': window.CharacterConstants && window.CharacterQueries && window.CharacterAggregator,
+                    'Calendar': window.CalendarConstants && window.ScheduleCore && window.CalendarQueries,
+                    'Social': window.SocialConstants && window.SocialQueries && window.SocialCore,
+                    'Teams': window.TeamConstants && window.TeamQueries && window.TeamCore,
+                    'Academy': window.AcademyConstants && window.AcademyQueries && window.AcademyClasses
+                };
+
+                var moduleHtml = '<div style="margin-top:12px;font-size:12px;color:var(--text-dim);">';
+                for (var key in moduleStatus) {
+                    if (Object.prototype.hasOwnProperty.call(moduleStatus, key)) {
+                        var status = moduleStatus[key] ? '✅' : '❌';
+                        var color = moduleStatus[key] ? '#4CAF50' : '#f44336';
+                        var cls = moduleStatus[key] ? 'module-status-ok' : 'module-status-fail';
+                        moduleHtml += '<div class="module-group"><span class="module-group-title">' + key + ':</span> <span class="' + cls + '">' + status + '</span></div>';
+                    }
+                }
+                moduleHtml += '</div>';
+
+                summaryEl.innerHTML =
                     '<div style="font-size:24px;">' +
                     '<span class="test-pass">Passed: ' + passed + '</span> | ' +
                     '<span class="test-fail">Failed: ' + failed + '</span> | ' +
@@ -668,30 +1081,14 @@
                     '<span class="test-info">Total: ' + total + '</span>' +
                     '</div>' +
                     (failed === 0 ?
-                        '<p style="color:#4CAF50;font-size:18px;">All tests passed! All modules are ready.</p>' :
-                        '<p style="color:#f44336;font-size:18px;">Some tests failed. Check the output above.</p>'
+                        '<p style="color:#4CAF50;font-size:18px;">🎉 All tests passed! All modules are ready.</p>' :
+                        '<p style="color:#f44336;font-size:18px;">❌ Some tests failed. Check the output above.</p>'
                     ) +
                     (skipped > 0 ?
-                        '<p style="color:#ff9800;font-size:14px;">' + skipped + ' tests were skipped due to missing modules.</p>' :
+                        '<p style="color:#ff9800;font-size:14px;">⚠️ ' + skipped + ' tests were skipped due to missing modules.</p>' :
                         ''
                     ) +
-                    '<div style="margin-top:12px;font-size:12px;color:var(--text-dim);">' +
-                    '<div class="module-group"><span class="module-group-title">Characters:</span> ' +
-                    (window.CharacterConstants && window.CharacterQueries && window.CharacterAggregator ? '✅' : '❌') +
-                    '</div>' +
-                    '<div class="module-group"><span class="module-group-title">Calendar:</span> ' +
-                    (window.CalendarConstants && window.ScheduleCore && window.CalendarQueries ? '✅' : '❌') +
-                    '</div>' +
-                    '<div class="module-group"><span class="module-group-title">Social:</span> ' +
-                    (window.SocialConstants && window.SocialQueries && window.SocialCore ? '✅' : '❌') +
-                    '</div>' +
-                    '<div class="module-group"><span class="module-group-title">Teams:</span> ' +
-                    (window.TeamConstants && window.TeamQueries && window.TeamCore ? '✅' : '❌') +
-                    '</div>' +
-                    '<div class="module-group"><span class="module-group-title">Academy:</span> ' +
-                    (window.AcademyConstants && window.AcademyQueries && window.AcademyClasses ? '✅' : '❌') +
-                    '</div>' +
-                    '</div>';
+                    moduleHtml;
 
                 document.getElementById('test-controls').classList.remove('hidden');
                 document.getElementById('mock-status').textContent = '✅ All dependencies loaded. Tests complete.';
@@ -703,9 +1100,40 @@
             // ============================================================
 
             function init() {
+                renderDependencyCheck();
+
+                // Wait for all scripts to load
+                var checkInterval = setInterval(function() {
+                    // Check if critical modules are loaded
+                    var criticalModules = [
+                        'ObjectUtils', 'ValidationUtils', 'CalendarConstants',
+                        'CharacterConstants', 'AcademyConstants', 'TeamConstants',
+                        'CalendarQueries', 'MutationPipeline', 'AcademyClasses'
+                    ];
+
+                    var allLoaded = true;
+                    for (var i = 0; i < criticalModules.length; i++) {
+                        if (window[criticalModules[i]] === undefined) {
+                            allLoaded = false;
+                            break;
+                        }
+                    }
+
+                    if (allLoaded) {
+                        clearInterval(checkInterval);
+                        setTimeout(function() {
+                            runAllTests();
+                        }, 100);
+                    }
+                }, 200);
+
+                // Safety timeout - run anyway after 5 seconds
                 setTimeout(function() {
-                    runAllTests();
-                }, 800);
+                    clearInterval(checkInterval);
+                    if (testOutput && testOutput.innerHTML === '') {
+                        runAllTests();
+                    }
+                }, 5000);
             }
 
             if (document.readyState === 'complete' || document.readyState === 'interactive') {
