@@ -1,5 +1,5 @@
 /**
- * modules/teams/team-constants.js - Team Constants
+ * modules/shared/team-constants.js - Team Constants
  * Single source of truth for all team-related constants
  * 
  * This module provides:
@@ -14,12 +14,11 @@
  *   - This is the SINGLE SOURCE OF TRUTH for team constants
  *   - All modules MUST use these constants - do NOT duplicate
  *   - Constants are DEEP FROZEN to prevent mutation
- *   - Validation runs BEFORE publishing to ensure integrity
+ *   - Uses LAZY LOADING for CalendarConstants to break circular deps
  *   - No DOM, no state, no persistence - pure constants only
  * 
  * DEPENDENCIES:
- *   - window.CALENDAR_CONSTANTS (for week/year bounds) - MANDATORY
- *   - None (self-contained otherwise)
+ *   - window.CalendarConstants (for week/year bounds) - LAZY LOADED
  * 
  * USAGE:
  *   var TC = window.TeamConstants;
@@ -38,31 +37,62 @@
     window.__teamConstantsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // LAZY LOADING HELPERS - Breaks circular dependencies
     // ============================================================
 
-    var CalendarConstants = window.CALENDAR_CONSTANTS;
+    function getCalendarConstants() {
+        return window.CalendarConstants || null;
+    }
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // GET BOUNDS - Lazy load from CalendarConstants
+    // ============================================================
+
+    function getBounds() {
+        var CC = getCalendarConstants();
+        if (!CC) {
+            // Default bounds if CalendarConstants not loaded yet
+            return {
+                MIN_WEEK: 1,
+                MAX_WEEK: 52,
+                MIN_YEAR: 1900,
+                MAX_YEAR: 2100
+            };
+        }
+        return {
+            MIN_WEEK: CC.MIN_WEEK || 1,
+            MAX_WEEK: CC.MAX_WEEK || 52,
+            MIN_YEAR: CC.MIN_YEAR || 1900,
+            MAX_YEAR: CC.MAX_YEAR || 2100
+        };
+    }
+
+    // ============================================================
+    // DEPENDENCY CHECK - Warns but doesn't fail
     // ============================================================
 
     function checkDependencies() {
         var missing = [];
+        var CC = getCalendarConstants();
 
-        if (!CalendarConstants) {
-            missing.push('CALENDAR_CONSTANTS');
+        if (!CC) {
+            missing.push('CalendarConstants (lazy)');
+            console.warn('[TeamConstants] CalendarConstants not yet loaded (will use lazy loading).');
+        } else {
+            // Verify required properties exist
+            var required = ['MIN_WEEK', 'MAX_WEEK', 'MIN_YEAR', 'MAX_YEAR'];
+            for (var i = 0; i < required.length; i++) {
+                if (typeof CC[required[i]] !== 'number') {
+                    missing.push('CalendarConstants.' + required[i]);
+                }
+            }
+            if (missing.length > 0) {
+                console.warn('[TeamConstants] Missing CalendarConstants properties:', missing.join(', '));
+            }
         }
 
-        if (missing.length > 0) {
-            console.warn('[TeamConstants] Missing dependencies:', missing.join(', '));
-            return false;
-        }
-
-        return true;
+        return missing.length === 0;
     }
-
-    checkDependencies();
 
     // ============================================================
     // DEEP FREEZE UTILITY
@@ -211,15 +241,6 @@
     var DEFAULT_TEAM_TYPE = 'professional';
     var DEFAULT_TEAM_STATUS = 'active';
     var DEFAULT_ROLE = 'Member';
-
-    // ============================================================
-    // VALIDATION CONSTANTS
-    // ============================================================
-
-    var MIN_WEEK = CalendarConstants ? CalendarConstants.MIN_WEEK : 1;
-    var MAX_WEEK = CalendarConstants ? CalendarConstants.MAX_WEEK : 52;
-    var MIN_YEAR = CalendarConstants ? CalendarConstants.MIN_YEAR : 1900;
-    var MAX_YEAR = CalendarConstants ? CalendarConstants.MAX_YEAR : 2100;
 
     // ============================================================
     // LOOKUP FUNCTIONS
@@ -426,17 +447,18 @@
      * @returns {object} { min: number, max: number, label: string }
      */
     function getPeriodRange(typeId) {
+        var bounds = getBounds();
         var type = getTeamType(typeId);
         if (!type || type.isAcademic) {
             return {
-                min: MIN_WEEK,
-                max: MAX_WEEK,
+                min: bounds.MIN_WEEK,
+                max: bounds.MAX_WEEK,
                 label: 'Week'
             };
         }
         return {
-            min: MIN_YEAR,
-            max: MAX_YEAR,
+            min: bounds.MIN_YEAR,
+            max: bounds.MAX_YEAR,
             label: 'Year'
         };
     }
@@ -470,6 +492,29 @@
 
         var range = getPeriodRange(typeId);
         return num >= range.min && num <= range.max;
+    }
+
+    // ============================================================
+    // COMPUTED PROPERTIES (lazy loaded)
+    // ============================================================
+
+    // These are computed properties that use lazy-loaded CalendarConstants
+    // They are exposed as getters so they resolve at runtime
+
+    var _computedBounds = null;
+
+    function getComputedBounds() {
+        if (!_computedBounds) {
+            var bounds = getBounds();
+            _computedBounds = {
+                MIN_WEEK: bounds.MIN_WEEK,
+                MAX_WEEK: bounds.MAX_WEEK,
+                MIN_YEAR: bounds.MIN_YEAR,
+                MAX_YEAR: bounds.MAX_YEAR
+            };
+            Object.freeze(_computedBounds);
+        }
+        return _computedBounds;
     }
 
     // ============================================================
@@ -539,8 +584,6 @@
         return errors.length === 0;
     }
 
-    validateConstants();
-
     // ============================================================
     // DEEP FREEZE
     // ============================================================
@@ -554,6 +597,12 @@
     deepFreeze(_statusMap);
     deepFreeze(VALID_STATUS_IDS);
     deepFreeze(LEGACY_TYPE_MAP);
+
+    // ============================================================
+    // RUN VALIDATION
+    // ============================================================
+
+    validateConstants();
 
     // ============================================================
     // EXPOSE
@@ -570,11 +619,11 @@
         DEFAULT_TEAM_STATUS: DEFAULT_TEAM_STATUS,
         DEFAULT_ROLE: DEFAULT_ROLE,
 
-        // Bounds
-        MIN_WEEK: MIN_WEEK,
-        MAX_WEEK: MAX_WEEK,
-        MIN_YEAR: MIN_YEAR,
-        MAX_YEAR: MAX_YEAR,
+        // Bounds (computed from CalendarConstants at runtime)
+        get MIN_WEEK() { return getComputedBounds().MIN_WEEK; },
+        get MAX_WEEK() { return getComputedBounds().MAX_WEEK; },
+        get MIN_YEAR() { return getComputedBounds().MIN_YEAR; },
+        get MAX_YEAR() { return getComputedBounds().MAX_YEAR; },
 
         // Type lookup
         getTeamTypes: getTeamTypes,
@@ -601,7 +650,61 @@
         // Period helpers
         getPeriodRange: getPeriodRange,
         getPeriodBounds: getPeriodBounds,
-        isValidPeriod: isValidPeriod
+        isValidPeriod: isValidPeriod,
+
+        // Re-check dependencies
+        checkDependencies: checkDependencies,
+        validateConstants: validateConstants
     });
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.TeamConstants;
+        var missing = [];
+
+        var required = [
+            'getTeamTypes', 'getTeamType', 'getTypeLabel', 'getPeriodLabel',
+            'isAcademicType', 'isValidTeamType', 'normalizeTeamType',
+            'getValidTypeIds', 'getDefaultType',
+            'getTeamStatuses', 'getTeamStatus', 'getStatusLabel',
+            'isValidTeamStatus', 'getValidStatusIds', 'getDefaultStatus',
+            'getDefaultRole',
+            'getPeriodRange', 'getPeriodBounds', 'isValidPeriod'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        // Check computed properties
+        try {
+            var bounds = exports.MIN_WEEK;
+            if (typeof bounds !== 'number') {
+                missing.push('MIN_WEEK (computed)');
+            }
+        } catch (e) {
+            missing.push('MIN_WEEK (computed property error)');
+        }
+
+        if (missing.length > 0) {
+            console.warn('[TeamConstants] Verification failed - missing exports:', missing.join(', '));
+        } else {
+            console.log('[TeamConstants] All exports verified successfully.');
+            console.log('[TeamConstants] Bounds:', {
+                MIN_WEEK: exports.MIN_WEEK,
+                MAX_WEEK: exports.MAX_WEEK,
+                MIN_YEAR: exports.MIN_YEAR,
+                MAX_YEAR: exports.MAX_YEAR
+            });
+        }
+    })();
+
+    // Run dependency check after loading
+    checkDependencies();
 
 })();
