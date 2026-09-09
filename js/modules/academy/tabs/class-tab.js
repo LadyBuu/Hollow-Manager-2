@@ -3,18 +3,19 @@
  * Handles class management, rosters, academic teams, and tournaments
  * 
  * This module is responsible for:
- *   - Class CRUD (list, create, edit, delete)
- *   - Class roster management (add/remove students)
- *   - Academic team management for a class
+ *   - Class CRUD (list, create, edit, delete) - uses AcademyClasses directly
+ *   - Class roster management (add/remove students) - uses AcademyClasses directly
+ *   - Academic team management for a class - uses TeamCore for mutations, TeamQueries for reads
  *   - Tournament management for a class
- *   - Auto-distribute students to teams
+ *   - Auto-distribute students to teams - uses AcademyDistribute
  * 
  * IMPORTANT:
  *   - UI-ONLY - all mutations delegate to domain cores
+ *   - Uses AcademyClasses DIRECTLY (AcademyCore does not exist)
+ *   - Uses TeamQueries for READ operations (get team by ID)
+ *   - Uses TeamCore for WRITE operations (create, delete, add/remove members)
  *   - Uses AcademyUI for state management
  *   - Uses AcademyAggregator for projections
- *   - Uses AcademyCore for class mutations
- *   - Uses TeamCore for academic team operations
  *   - Uses AcademyDistribute for student distribution
  *   - Uses AcademyQueries for read-only access
  *   - All HTML escaping uses DomUtils.escapeHtml()
@@ -24,10 +25,11 @@
  * DEPENDENCIES:
  *   - window.AcademyUI (from academy-ui.js) - MANDATORY
  *   - window.AcademyAggregator (from academy-aggregator.js) - MANDATORY
- *   - window.AcademyCore (from academy-core.js) - MANDATORY
+ *   - window.AcademyClasses (from academy-classes.js) - MANDATORY (replaces AcademyCore)
  *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.AcademyDistribute (from academy-distribute.js) - MANDATORY
- *   - window.TeamCore (from team-core.js) - MANDATORY
+ *   - window.TeamCore (from team-core.js) - MANDATORY (mutations)
+ *   - window.TeamQueries (from team-queries.js) - MANDATORY (reads)
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
  *   - window.NotificationSystem (from notification.js) - MANDATORY
@@ -48,15 +50,16 @@
     }
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // DEPENDENCY IMPORTS - DIRECT (no lazy loading for critical deps)
     // ============================================================
 
     var AcademyUI = window.AcademyUI;
     var AcademyAggregator = window.AcademyAggregator;
-    var AcademyCore = window.AcademyCore;
+    var AcademyClasses = window.AcademyClasses;  // Direct - replaces AcademyCore
     var AcademyQueries = window.AcademyQueries;
     var AcademyDistribute = window.AcademyDistribute;
-    var TeamCore = window.TeamCore;
+    var TeamCore = window.TeamCore;              // Mutations
+    var TeamQueries = window.TeamQueries;        // Reads
     var CharacterQueries = window.CharacterQueries;
     var CalendarConstants = window.CalendarConstants;
     var NotificationSystem = window.NotificationSystem;
@@ -84,20 +87,21 @@
             missing.push('AcademyAggregator.getClassListViewModel');
         }
 
-        if (!AcademyCore || typeof AcademyCore.createClass !== 'function') {
-            missing.push('AcademyCore.createClass');
+        // AcademyClasses replaces AcademyCore
+        if (!AcademyClasses || typeof AcademyClasses.create !== 'function') {
+            missing.push('AcademyClasses.create');
         }
-        if (!AcademyCore || typeof AcademyCore.updateClass !== 'function') {
-            missing.push('AcademyCore.updateClass');
+        if (!AcademyClasses || typeof AcademyClasses.update !== 'function') {
+            missing.push('AcademyClasses.update');
         }
-        if (!AcademyCore || typeof AcademyCore.deleteClass !== 'function') {
-            missing.push('AcademyCore.deleteClass');
+        if (!AcademyClasses || typeof AcademyClasses.delete !== 'function') {
+            missing.push('AcademyClasses.delete');
         }
-        if (!AcademyCore || typeof AcademyCore.addStudentToClass !== 'function') {
-            missing.push('AcademyCore.addStudentToClass');
+        if (!AcademyClasses || typeof AcademyClasses.addStudent !== 'function') {
+            missing.push('AcademyClasses.addStudent');
         }
-        if (!AcademyCore || typeof AcademyCore.removeStudentFromClass !== 'function') {
-            missing.push('AcademyCore.removeStudentFromClass');
+        if (!AcademyClasses || typeof AcademyClasses.removeStudent !== 'function') {
+            missing.push('AcademyClasses.removeStudent');
         }
 
         if (!AcademyQueries || typeof AcademyQueries.getClass !== 'function') {
@@ -112,11 +116,15 @@
         if (!AcademyQueries || typeof AcademyQueries.getAvailableStudents !== 'function') {
             missing.push('AcademyQueries.getAvailableStudents');
         }
+        if (!AcademyQueries || typeof AcademyQueries.getClassTeams !== 'function') {
+            missing.push('AcademyQueries.getClassTeams');
+        }
 
         if (!AcademyDistribute || typeof AcademyDistribute.autoDistribute !== 'function') {
             missing.push('AcademyDistribute.autoDistribute');
         }
 
+        // TeamCore for mutations
         if (!TeamCore || typeof TeamCore.createTeam !== 'function') {
             missing.push('TeamCore.createTeam');
         }
@@ -128,6 +136,11 @@
         }
         if (!TeamCore || typeof TeamCore.removeMember !== 'function') {
             missing.push('TeamCore.removeMember');
+        }
+
+        // TeamQueries for reads - THIS IS WHAT WE NEED FOR getTeamById
+        if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
+            missing.push('TeamQueries.getTeamById');
         }
 
         if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
@@ -161,6 +174,7 @@
         return true;
     }
 
+    // Run check but don't fail
     checkDependencies();
 
     // ============================================================
@@ -188,6 +202,36 @@
     function notify(message, type) {
         type = type || 'info';
         NotificationSystem.notify(message, type);
+    }
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    var MIN_WEEK = CalendarConstants.MIN_WEEK || 1;
+    var MAX_WEEK = CalendarConstants.MAX_WEEK || 52;
+
+    // ============================================================
+    // SAFE TEAM GETTER - Uses TeamQueries (read) and TeamCore (write)
+    // ============================================================
+
+    function getTeamById(teamId) {
+        // First try TeamQueries (read operations)
+        if (TeamQueries && typeof TeamQueries.getTeamById === 'function') {
+            return TeamQueries.getTeamById(teamId);
+        }
+        // Fallback: try to find team in AcademyQueries
+        if (AcademyQueries && typeof AcademyQueries.getClassTeams === 'function') {
+            var teams = AcademyQueries.getClassTeams();
+            if (Array.isArray(teams)) {
+                for (var i = 0; i < teams.length; i++) {
+                    if (teams[i] && String(teams[i].id) === String(teamId)) {
+                        return teams[i];
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     // ============================================================
@@ -494,9 +538,6 @@
     // ============================================================
 
     function getModalsHTML() {
-        var minWeek = CalendarConstants.MIN_WEEK || 1;
-        var maxWeek = CalendarConstants.MAX_WEEK || 52;
-
         return [
             '<!-- Class Form Modal -->',
             '<div id="academy-class-modal" class="modal hidden">',
@@ -794,9 +835,11 @@
                 var result;
 
                 if (editId) {
-                    result = AcademyCore.updateClass(editId, { name: name });
+                    // Use AcademyClasses.update directly
+                    result = AcademyClasses.update(editId, { name: name });
                 } else {
-                    result = AcademyCore.createClass(name);
+                    // Use AcademyClasses.create directly
+                    result = AcademyClasses.create(name);
                 }
 
                 if (result && result.success) {
@@ -857,8 +900,8 @@
                 var week = weekInput ? parseInt(weekInput.value, 10) : 1;
                 var maxSize = maxSizeInput ? parseInt(maxSizeInput.value, 10) : 4;
 
-                if (isNaN(week) || week < CalendarConstants.MIN_WEEK || week > CalendarConstants.MAX_WEEK) {
-                    notify('Valid week is required (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').', 'error');
+                if (isNaN(week) || week < MIN_WEEK || week > MAX_WEEK) {
+                    notify('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').', 'error');
                     return;
                 }
 
@@ -880,8 +923,7 @@
 
                 var result = AcademyDistribute.autoDistribute(classId, week, {
                     maxPerGroup: maxSize,
-                    teamIds: teamIds
-                });
+                    teamIds: teamIds                });
 
                 if (result && result.success) {
                     var data = result.data || {};
@@ -920,10 +962,11 @@
             });
         }
 
-        modal.addEventListener('click', function(e) {
+        // Delegate for add member
+        container.addEventListener('click', function(e) {
             var btn = e.target.closest('#team-member-add-btn');
             if (btn) {
-                var teamId = modal.dataset.teamId;
+                var teamId = modal ? modal.dataset.teamId : null;
                 var select = document.getElementById('team-member-select');
                 var roleInput = document.getElementById('team-member-role');
                 var joinInput = document.getElementById('team-member-join');
@@ -958,7 +1001,8 @@
             }
         });
 
-        modal.addEventListener('click', function(e) {
+        // Delegate for remove member
+        container.addEventListener('click', function(e) {
             var btn = e.target.closest('.team-member-remove-btn');
             if (btn) {
                 var teamId = btn.dataset.team;
@@ -1048,12 +1092,12 @@
 
         html += '<div class="form-group">';
         html += '<label>Week</label>';
-        html += '<input type="number" id="distribute-week" value="' + week + '" min="' + CalendarConstants.MIN_WEEK + '" max="' + CalendarConstants.MAX_WEEK + '">';
+        html += '<input type="number" id="distribute-week" value="' + week + '" min="' + MIN_WEEK + '" max="' + MAX_WEEK + '">';
         html += '</div>';
 
         html += '<div class="form-group">';
         html += '<label>Max Students Per Team</label>';
-        html += '<input type="number" id="distribute-max-size" value="4" min="1" max="' + (AcademyConstants.MAX_TEAM_SIZE || 20) + '">';
+        html += '<input type="number" id="distribute-max-size" value="4" min="1" max="20">';
         html += '</div>';
 
         html += '<div class="distribute-teams-section">';
@@ -1100,7 +1144,8 @@
 
         if (!content) { return; }
 
-        var team = TeamCore.getTeam(teamId);
+        // Use TeamQueries for READ operations
+        var team = getTeamById(teamId);
         if (!team) {
             content.innerHTML = '<p class="empty-state">Team not found.</p>';
             return;
@@ -1158,11 +1203,11 @@
     }
 
     // ============================================================
-    // MUTATION HANDLERS
+    // MUTATION HANDLERS - Using AcademyClasses directly
     // ============================================================
 
     function handleDeleteClass(classId) {
-        var result = AcademyCore.deleteClass(classId);
+        var result = AcademyClasses.delete(classId);
         if (result && result.success) {
             notify('Class deleted successfully.', 'success');
             AcademyUI.clearSelection('class');
@@ -1182,7 +1227,7 @@
             return;
         }
 
-        var result = AcademyCore.addStudentToClass(classId, studentId);
+        var result = AcademyClasses.addStudent(classId, studentId);
         if (result && result.success) {
             notify('Student added to class.', 'success');
             if (typeof window.AcademyEvents !== 'undefined' &&
@@ -1195,7 +1240,7 @@
     }
 
     function handleRemoveStudentFromClass(classId, studentId) {
-        var result = AcademyCore.removeStudentFromClass(classId, studentId);
+        var result = AcademyClasses.removeStudent(classId, studentId);
         if (result && result.success) {
             notify('Student removed from class.', 'success');
             if (typeof window.AcademyEvents !== 'undefined' &&
@@ -1235,6 +1280,7 @@
             status: 'active'
         };
 
+        // TeamCore for WRITE operations
         var result = TeamCore.createTeam(teamData);
         if (result) {
             notify('Team created successfully.', 'success');
@@ -1250,6 +1296,7 @@
     }
 
     function handleDeleteTeam(teamId) {
+        // TeamCore for WRITE operations
         var result = TeamCore.deleteTeam(teamId);
         if (result) {
             notify('Team deleted successfully.', 'success');
@@ -1263,6 +1310,7 @@
     }
 
     function handleRemoveTeamMember(teamId, studentId) {
+        // TeamCore for WRITE operations
         var result = TeamCore.removeMember(teamId, studentId);
         if (result) {
             notify('Member removed.', 'success');
