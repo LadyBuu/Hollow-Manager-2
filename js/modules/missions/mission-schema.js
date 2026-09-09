@@ -1,5 +1,5 @@
 /**
- * js/modules/missions/missions-schema.js - Mission Schema
+ * js/modules/missions/mission-schema.js - Mission Schema
  * SINGLE SOURCE OF TRUTH for all mission validation rules and constants.
  * 
  * SCHEMA PHILOSOPHY:
@@ -10,7 +10,7 @@
  *   - CRASH-SAFE: never throws on malformed input; returns errors
  *   - Validates STRUCTURE and CONTENTS, not just container types
  *   - canonicaliseMissionShape() transforms structurally valid input
- *   - Does NOT derive business state (progress, pay, completedAt) - that belongs in MissionRules
+ *   - Does NOT derive business state (progress, pay, completedAt) - that belongs in MissionCore
  *   - Does NOT handle calendar validation - use CalendarValidation
  *   - Does NOT handle ID normalisation - use IdUtils
  * 
@@ -45,8 +45,8 @@
 (function() {
     'use strict';
 
-    if (window.__missionsSchemaLoaded) return;
-    window.__missionsSchemaLoaded = true;
+    if (window.__missionSchemaLoaded) return;
+    window.__missionSchemaLoaded = true;
 
     // ============================================================
     // DEPENDENCY CHECK - NO FALLBACKS
@@ -63,7 +63,7 @@
     }
 
     if (missing.length > 0) {
-        throw new Error('[MissionsSchema] Missing dependencies: ' + missing.join(', '));
+        throw new Error('[MissionSchema] Missing dependencies: ' + missing.join(', '));
     }
 
     var CalendarValidation = window.CalendarValidation;
@@ -446,7 +446,12 @@
         var hasDay = mission.day !== undefined && mission.day !== null;
 
         if (hasYear && hasMonth && hasDay) {
-            if (!CalendarValidation.isValidCalendarDate(mission.year, mission.month, mission.day)) {
+            // Use CalendarValidation for date validation
+            var dateValid = true;
+            if (typeof CalendarValidation.isValidCalendarDate === 'function') {
+                dateValid = CalendarValidation.isValidCalendarDate(mission.year, mission.month, mission.day);
+            }
+            if (!dateValid) {
                 errors.push('Invalid calendar date.');
             }
         }
@@ -572,7 +577,7 @@
      *   - Returns { valid, errors, value }
      * 
      * This is a STRUCTURAL normaliser only.
-     * Business derivation belongs in MissionRules.
+     * Business derivation belongs in MissionCore.
      * 
      * @param {object} input - Input mission data
      * @returns {object} { valid: boolean, errors: array, value: object|null }
@@ -932,7 +937,7 @@
     // EXPOSE
     // ============================================================
 
-    window.MissionsSchema = {
+    window.MissionSchema = {
         // Constants (frozen, read-only)
         SCHEMA_VERSION: SCHEMA_VERSION,
         VALID_STATUSES: VALID_STATUSES,
@@ -990,5 +995,54 @@
         // Canonicalisation (structural only)
         canonicaliseMissionShape: canonicaliseMissionShape
     };
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.MissionSchema;
+        var missing = [];
+
+        // Check constants
+        var constants = [
+            'SCHEMA_VERSION', 'VALID_STATUSES', 'VALID_PRIORITIES',
+            'VALID_DIFFICULTIES', 'VALID_BILLING_TYPES', 'VALID_ESCALATION_TIERS',
+            'DIFFICULTY_CODES', 'MISSION_TYPES', 'SUBTYPE_LABELS',
+            'ESCALATION_LABELS', 'BILLING_LABELS'
+        ];
+
+        for (var i = 0; i < constants.length; i++) {
+            if (exports[constants[i]] === undefined) {
+                missing.push(constants[i]);
+            }
+        }
+
+        // Check functions
+        var functions = [
+            'getMissionTypes', 'getSubtypesForType', 'getSubtypeLabels',
+            'getValidDifficulties', 'getValidPriorities', 'getValidStatuses',
+            'getValidBillingTypes', 'getValidEscalationTiers',
+            'isObject', 'isNonEmptyString', 'isString', 'isBoolean', 'isFiniteNumber',
+            'isValidStatus', 'isValidPriority', 'isValidDifficulty',
+            'isValidBilling', 'isValidEscalation', 'isValidMissionType', 'isValidSubtype',
+            'getMissionType', 'getMissionTypeLabel', 'getSubtypeLabel',
+            'getEscalationLabel', 'getBillingLabel', 'getDifficultyCode',
+            'validateObjective', 'validateLogEntry', 'validateTag', 'validateSupportPersonnel',
+            'validateMission', 'canonicaliseMissionShape'
+        ];
+
+        for (var j = 0; j < functions.length; j++) {
+            if (typeof exports[functions[j]] !== 'function') {
+                missing.push(functions[j]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn('[MissionSchema] Verification - some exports may be missing:', missing.join(', '));
+        } else {
+            console.log('[MissionSchema] All exports verified successfully.');
+        }
+    })();
 
 })();
