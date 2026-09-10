@@ -436,7 +436,7 @@
     }
 
     // ============================================================
-    // NAME TAB (with Life Events)
+    // NAME TAB (with Life Events + Birth Year + Display Checkboxes)
     // ============================================================
 
     function getNameTabHTML(char, editId) {
@@ -458,6 +458,15 @@
         var deathFieldDisabled = isDeceased ? '' : 'disabled';
         var deathFieldOpacity = isDeceased ? '1' : '0.5';
         var deathFieldCursor = isDeceased ? 'text' : 'not-allowed';
+
+        var currentYear = getCurrentYear();
+        var computedAge = '';
+        if (c.birthYear) {
+            var by = parseInt(c.birthYear, 10);
+            if (!isNaN(by)) {
+                computedAge = String(currentYear - by);
+            }
+        }
 
         return `
             <div class="tab-panel" data-tab="name" style="display:${active};">
@@ -522,6 +531,33 @@
                     <div style="font-size:0.6rem;color:var(--text-dim);margin-top:6px;">Display order: First Nickname Middle Last (Alias)</div>
                 </div>
 
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Birth Year</label>
+                        <input type="number" id="char-birthYear" value="${escapeHtml(c.birthYear || '')}" placeholder="e.g., 1900" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Age</label>
+                        <input type="text" id="char-age" value="${escapeHtml(computedAge)}" readonly style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Gender</label>
+                        <input type="text" id="char-gender" value="${escapeHtml(c.gender || '')}" placeholder="Gender" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Attraction</label>
+                        <input type="text" id="char-attraction" value="${escapeHtml(c.attraction || '')}" placeholder="e.g., Men, Women, All, None" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label style="font-size:0.7rem;color:var(--text-dim);">Sexuality</label>
+                    <input type="text" id="char-sexuality" value="${escapeHtml(c.sexuality || '')}" placeholder="e.g., Heterosexual, Bisexual, Asexual" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                </div>
+
                 <div class="form-group" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border-soft);">
                     <label style="font-size:0.75rem;color:var(--danger);font-weight:600;display:block;margin-bottom:6px;">Life Events</label>
 
@@ -571,23 +607,7 @@
         return `
             <div class="tab-panel" data-tab="physical" style="display:${active};">
                 <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
-                    <button type="button" id="random-physical-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">🎲 Random</button>
-                </div>
-
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Gender</label>
-                        <input type="text" id="char-gender" value="${escapeHtml(c.gender || '')}" placeholder="Gender" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                    </div>
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Birth Year</label>
-                        <input type="number" id="char-birthYear" value="${escapeHtml(c.birthYear || '')}" placeholder="Birth year" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label style="font-size:0.7rem;color:var(--text-dim);">Age</label>
-                    <input type="text" id="char-age" value="${c.birthYear ? getCurrentYear() - parseInt(c.birthYear, 10) : ''}" readonly style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;font-size:0.75rem;">
+                    <button type="button" id="random-physical-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">⟳ Random</button>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
@@ -642,7 +662,7 @@
         return `
             <div class="tab-panel" data-tab="personality" style="display:${active};">
                 <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
-                    <button type="button" id="random-personality-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">🎲 Random</button>
+                    <button type="button" id="random-personality-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">⟳ Random</button>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
@@ -709,20 +729,9 @@
 
     function getAcademicTabHTML(char) {
         var active = state.currentTab === 'academic' ? 'block' : 'none';
-        var c = char || {};
 
         return `
             <div class="tab-panel" data-tab="academic" style="display:${active};">
-                <div class="form-group">
-                    <label style="font-size:0.7rem;color:var(--text-dim);">Graduating Class</label>
-                    <select id="char-graduatingClass" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                        ${getClassOptionsHTML(c.graduatingClassId)}
-                    </select>
-                    <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
-                        <input type="checkbox" id="char-isInstructor" ${c.graduatingClassInstructor ? 'checked' : ''} style="accent-color:var(--accent);">
-                        <label for="char-isInstructor" style="font-size:0.65rem;color:var(--text-dim);">Is an instructor (not a student)</label>
-                    </div>
-                </div>
                 <div id="academic-class-view" style="margin-top:8px;"></div>
             </div>
         `;
@@ -760,7 +769,7 @@
         var html = `
             <div class="tab-panel" data-tab="stats" style="display:${active};">
                 <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
-                    <button type="button" id="random-stats-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">🎲 Random</button>
+                    <button type="button" id="random-stats-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">⟳ Random</button>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
         `;
@@ -793,20 +802,9 @@
 
     function getSocialTabHTML(char) {
         var active = state.currentTab === 'social' ? 'block' : 'none';
-        var c = char || {};
 
         return `
             <div class="tab-panel" data-tab="social" style="display:${active};">
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Attraction</label>
-                        <input type="text" id="char-attraction" value="${escapeHtml(c.attraction || '')}" placeholder="e.g., Men, Women, All, None" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                    </div>
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Sexuality</label>
-                        <input type="text" id="char-sexuality" value="${escapeHtml(c.sexuality || '')}" placeholder="e.g., Heterosexual, Bisexual, Asexual" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                    </div>
-                </div>
                 <div id="social-view" style="margin-top:8px;"></div>
             </div>
         `;
@@ -872,6 +870,20 @@
         FormUtils.setField('char-displayLast',     dp.last     !== false);
         FormUtils.setField('char-displayAlias',    dp.alias    === true);
 
+        // Birth year + Age (Name tab)
+        FormUtils.setField('char-birthYear', char.birthYear || '');
+        var currentYear = getCurrentYear();
+        var ageField = document.getElementById('char-age');
+        if (ageField) {
+            var by = parseInt(char.birthYear, 10);
+            ageField.value = !isNaN(by) ? String(currentYear - by) : '';
+        }
+
+        // Gender / Attraction / Sexuality (Name tab)
+        FormUtils.setField('char-gender', char.gender);
+        FormUtils.setField('char-attraction', char.attraction);
+        FormUtils.setField('char-sexuality', char.sexuality);
+
         // Life Events (deceased)
         var isDeceased = char.deceased === true;
         FormUtils.setField('char-deceased', isDeceased);
@@ -887,9 +899,6 @@
         applyDeceasedState(isDeceased);
 
         // ---- Physical Tab ----
-        FormUtils.setField('char-gender', char.gender);
-        FormUtils.setField('char-birthYear', char.birthYear);
-
         FormUtils.setField('char-eyes', char.eyes);
         FormUtils.setField('char-hair', char.hair);
         FormUtils.setField('char-skin', char.skin);
@@ -915,18 +924,8 @@
         // ---- Professional Tab ----
         FormUtils.setField('char-specialty', char.specialty);
 
-        // ---- Social Tab ----
-        FormUtils.setField('char-attraction', char.attraction);
-        FormUtils.setField('char-sexuality', char.sexuality);
-
         // ---- Notes Tab ----
         FormUtils.setField('char-notes', char.notes);
-
-        // ---- Academic Tab ----
-        var instructorCheckbox = document.getElementById('char-isInstructor');
-        if (instructorCheckbox) {
-            instructorCheckbox.checked = char.graduatingClassInstructor || false;
-        }
 
         // ---- Stats Tab ----
         var statKeys = getStatKeys();
@@ -986,11 +985,6 @@
             deathYear = FormUtils.getField('char-deathYear') || '';
             deathAge = FormUtils.getField('char-deathAge') || '';
             deathCause = FormUtils.getField('char-deathCause') || '';
-        } else {
-            // Character is alive - clear all death data
-            deathYear = '';
-            deathAge = '';
-            deathCause = '';
         }
 
         // Auto-fill death age from birth year if empty
@@ -1013,6 +1007,14 @@
             previousNames: previousNames,
             displayParts: displayParts,
 
+            // Birth year / age (Name tab)
+            birthYear: data['char-birthYear'] || '',
+
+            // Gender / Attraction / Sexuality (Name tab)
+            gender: data['char-gender'] || '',
+            attraction: data['char-attraction'] || '',
+            sexuality: data['char-sexuality'] || '',
+
             // Life events (Name tab)
             deceased: isDeceased,
             deathYear: deathYear,
@@ -1020,8 +1022,6 @@
             deathCause: deathCause,
 
             // Physical tab
-            gender: data['char-gender'] || '',
-            birthYear: data['char-birthYear'] || '',
             eyes: data['char-eyes'] || '',
             hair: data['char-hair'] || '',
             skin: data['char-skin'] || '',
@@ -1033,16 +1033,8 @@
             // Professional tab
             specialty: data['char-specialty'] || '',
 
-            // Social tab
-            attraction: data['char-attraction'] || '',
-            sexuality: data['char-sexuality'] || '',
-
             // Notes tab
             notes: data['char-notes'] || '',
-
-            // Academic tab
-            graduatingClassId: data['char-graduatingClass'] || null,
-            graduatingClassInstructor: data['char-isInstructor'] || false,
 
             // Personality tab
             personality: {

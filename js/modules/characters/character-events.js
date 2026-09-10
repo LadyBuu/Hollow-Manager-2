@@ -315,6 +315,7 @@
         bindTabSwitching(container);
         bindFilters(container);
         bindDeceasedToggle(container);
+        bindBirthYearListener(container);
         bindClassTagInput(container);
         bindClassTagRemoval(container);
         bindClickOutside(container);
@@ -579,6 +580,37 @@
     }
 
     // ============================================================
+    // BIRTH YEAR → AGE LIVE UPDATE
+    // ============================================================
+
+    /**
+     * Live-update the read-only Age field when Birth Year changes.
+     * Age is derived: currentYear - birthYear.
+     * Cleared when birth year is empty or invalid.
+     */
+    function bindBirthYearListener(container) {
+        var birthYearInput = document.getElementById('char-birthYear');
+        if (birthYearInput) {
+            addSafeEventListener(birthYearInput, 'input', function() {
+                var ageField = document.getElementById('char-age');
+                if (!ageField) { return; }
+
+                var by = parseInt(this.value, 10);
+                if (isNaN(by)) {
+                    ageField.value = '';
+                    return;
+                }
+
+                var currentYear = (window.data && typeof window.data.currentYear === 'number')
+                    ? window.data.currentYear
+                    : new Date().getFullYear();
+
+                ageField.value = String(currentYear - by);
+            });
+        }
+    }
+
+    // ============================================================
     // CLASS TAG INPUT
     // ============================================================
 
@@ -749,7 +781,6 @@
 
     function fillRandomPhysical() {
         var physical = CharacterGenerator.generatePhysical();
-        FormUtils.setField('char-gender', physical.gender);
         FormUtils.setField('char-eyes', physical.eyes);
         FormUtils.setField('char-hair', physical.hair);
         FormUtils.setField('char-skin', physical.skin);
