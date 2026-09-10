@@ -1,31 +1,33 @@
 /**
  * js/modules/dashboard/index.js - Dashboard Module Entry Point
- * Single entry point for all dashboard functionality
+ * Single entry point for the Dashboard module
+ * 
  * Path: js/modules/dashboard/index.js
  * 
- * This module is responsible for:
- *   - Registering with TabManager
- *   - Rendering the dashboard container
- *   - Managing dashboard lifecycle
+ * This module provides:
+ *   - TabManager registration
+ *   - Public API for dashboard mounting/refresh
  * 
  * IMPORTANT:
- *   - This module is the only external entry point for dashboard
- *   - All dashboard logic lives in the sub-modules
- *   - This module does NOT implement dashboard logic directly
- *   - It delegates to DashboardUI for all operations
+ *   - This is the only external entry point for the Dashboard
+ *   - It delegates all logic to DashboardUI
+ *   - It does NOT implement dashboard logic directly
  *   - TabManager is the single source of truth for lifecycle
- *   - Dashboard is the LAST module to load - all upstream domains must be available
+ * 
+ * LIFECYCLE:
+ *   - On load, this module registers the 'dashboard' tab with TabManager
+ *   - TabManager calls DashboardUI.render(container) when the tab is shown
+ *   - TabManager does not automatically call DashboardUI.destroy();
+ *     the UI cleans up its own listeners on every render
  * 
  * DEPENDENCIES:
  *   - window.DashboardUI (from dashboard-ui.js)
  *   - window.TabManager (from tab-manager.js)
  * 
- * USAGE:
- *   // Mount the dashboard module
- *   window.renderDashboard(container);
- * 
- *   // Destroy the module (clean up event listeners)
- *   window.destroyDashboard();
+ * PUBLIC API:
+ *   window.renderDashboard(container) - Render the dashboard
+ *   window.destroyDashboard() - Tear down the dashboard
+ *   window.DashboardModule - Module namespace with the same operations
  */
 
 (function() {
@@ -36,15 +38,17 @@
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // DEPENDENCY CHECK - FAIL LOUDLY
     // ============================================================
 
     var missing = [];
 
     if (!window.DashboardUI || typeof window.DashboardUI.render !== 'function') {
-        missing.push('DashboardUI');
+        missing.push('DashboardUI.render');
     }
-
+    if (!window.DashboardUI || typeof window.DashboardUI.destroy !== 'function') {
+        missing.push('DashboardUI.destroy');
+    }
     if (!window.TabManager || typeof window.TabManager.register !== 'function') {
         missing.push('TabManager.register');
     }
@@ -67,33 +71,40 @@
     // ============================================================
 
     /**
-     * Render the dashboard module in the given container.
+     * Render the dashboard into the given container.
+     * If no container is provided, DashboardUI will look up
+     * the canonical '#tab-dashboard' element.
      * 
-     * @param {HTMLElement} container - Container element
-     * @returns {void}
+     * @param {HTMLElement} [container] - Container element
      */
     function renderDashboard(container) {
         DashboardUI.render(container);
     }
 
     /**
-     * Destroy the dashboard module (clean up event listeners).
-     * 
-     * @returns {void}
+     * Tear down the dashboard.
+     * Removes event listeners and clears state.
      */
     function destroyDashboard() {
         DashboardUI.destroy();
     }
 
     /**
-     * Update the dashboard statistics.
+     * Check whether the dashboard is currently mounted.
      * 
-     * @returns {void}
+     * @returns {boolean} True if mounted
      */
-    function updateDashboardStats() {
-        if (DashboardUI.isMounted && DashboardUI.isMounted()) {
-            renderDashboard(DashboardUI.getContainer());
-        }
+    function isDashboardMounted() {
+        return DashboardUI.isMounted();
+    }
+
+    /**
+     * Get the current dashboard container.
+     * 
+     * @returns {HTMLElement|null} Container or null
+     */
+    function getDashboardContainer() {
+        return DashboardUI.getContainer();
     }
 
     // ============================================================
@@ -108,13 +119,12 @@
 
     window.renderDashboard = renderDashboard;
     window.destroyDashboard = destroyDashboard;
-    window.updateDashboardStats = updateDashboardStats;
 
-    // Module access
     window.DashboardModule = {
         render: renderDashboard,
         destroy: destroyDashboard,
-        updateStats: updateDashboardStats
+        isMounted: isDashboardMounted,
+        getContainer: getDashboardContainer
     };
 
 })();
