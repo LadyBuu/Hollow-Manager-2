@@ -14,6 +14,7 @@
                 <h1>Hollow Manager 2</h1>
                 <button id="nav-toggle" class="nav-toggle" aria-label="Toggle navigation">☰</button>
             </div>
+
             <nav id="main-nav">
                 <ul>
                     <li><a href="#dashboard" data-tab="dashboard">Dashboard</a></li>
@@ -26,6 +27,31 @@
                     <li><a href="#missions" data-tab="missions">Missions</a></li>
                 </ul>
             </nav>
+
+            <div id="header-actions" class="header-actions">
+                <div class="header-actions-row">
+                    <span class="header-actions-label">JSON:</span>
+                    <button id="export-json-btn" class="small">Export</button>
+                    <button id="import-json-btn" class="small">Import</button>
+                    <input type="file" id="json-file-input" accept=".json" style="display:none;">
+                </div>
+
+                <div class="header-actions-row">
+                    <span class="header-actions-label">Characters:</span>
+                    <button id="export-characters-csv-btn" class="small">Export</button>
+                    <button id="import-characters-csv-btn" class="small">Import</button>
+                    <button id="template-characters-csv-btn" class="small secondary">Template</button>
+                    <input type="file" id="characters-csv-file-input" accept=".csv" style="display:none;">
+                </div>
+
+                <div class="header-actions-row">
+                    <span class="header-actions-label">Missions:</span>
+                    <button id="export-missions-csv-btn" class="small">Export</button>
+                    <button id="import-missions-csv-btn" class="small">Import</button>
+                    <button id="template-missions-csv-btn" class="small secondary">Template</button>
+                    <input type="file" id="missions-csv-file-input" accept=".csv" style="display:none;">
+                </div>
+            </div>
         </header>
 
         <main id="main-content">
@@ -38,41 +64,6 @@
             <div id="tab-academy" class="tab-content"></div>
             <div id="tab-missions" class="tab-content"></div>
         </main>
-
-        <!-- ============================================================
-             IMPORT / EXPORT FOOTER
-             Bound by js/import-export/ui.js.
-             IDs must match exactly what ImportExportUI expects.
-             These must be present in the HTML at DOMContentLoaded.
-             ============================================================ -->
-        <footer id="import-export-footer">
-            <div class="import-export-section">
-                <h3>Import / Export</h3>
-
-                <div class="import-export-row">
-                    <span class="import-export-label">JSON Backup:</span>
-                    <button id="export-json-btn" class="small">Export JSON</button>
-                    <button id="import-json-btn" class="small">Import JSON</button>
-                    <input type="file" id="json-file-input" accept=".json" style="display:none;">
-                </div>
-
-                <div class="import-export-row">
-                    <span class="import-export-label">Characters (CSV):</span>
-                    <button id="export-characters-csv-btn" class="small">Export</button>
-                    <button id="import-characters-csv-btn" class="small">Import</button>
-                    <button id="template-characters-csv-btn" class="small secondary">Template</button>
-                    <input type="file" id="characters-csv-file-input" accept=".csv" style="display:none;">
-                </div>
-
-                <div class="import-export-row">
-                    <span class="import-export-label">Missions (CSV):</span>
-                    <button id="export-missions-csv-btn" class="small">Export</button>
-                    <button id="import-missions-csv-btn" class="small">Import</button>
-                    <button id="template-missions-csv-btn" class="small secondary">Template</button>
-                    <input type="file" id="missions-csv-file-input" accept=".csv" style="display:none;">
-                </div>
-            </div>
-        </footer>
     </div>
 
     <!-- ============================================================
@@ -118,8 +109,6 @@
 
     <!-- ============================================================
          CORE INFRASTRUCTURE
-         Note: bootstrap.js is deferred to the end so that all feature
-         modules can register with TabManager before data readiness fires.
          ============================================================ -->
     <script src="js/core/activity-log.js"></script>
     <script src="js/core/database.js"></script>
@@ -130,7 +119,6 @@
 
     <!-- ============================================================
          CALENDAR DOMAIN
-         Must load before Academy Additional.
          ============================================================ -->
     <script src="js/modules/calendar/schedule-core.js"></script>
     <script src="js/modules/calendar/calendar-renderer.js"></script>
@@ -210,7 +198,6 @@
 
     <!-- ============================================================
          SOCIAL DOMAIN
-         Note: social-graph.js loads BEFORE social-events.js.
          ============================================================ -->
     <script src="js/modules/social/social-core.js"></script>
     <script src="js/modules/social/social-aggregator.js"></script>
@@ -264,8 +251,6 @@
 
     <!-- ============================================================
          BOOTSTRAP + APPLICATION SHELL
-         bootstrap.js coordinates DataLoader readiness → TabManager.
-         app.js listens for bootstrapFailed and manages the mobile nav.
          ============================================================ -->
     <script src="js/core/bootstrap.js"></script>
     <script src="js/app.js"></script>
