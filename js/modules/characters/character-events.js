@@ -41,7 +41,6 @@
  *   - window.setCurrentEditId (from index.js)
  *   - window.toggleCharacterList (from index.js)
  *   - window.UI_CONSTANTS (from constants.js)
- *   - window.CALENDAR_CONSTANTS (from constants.js)
  */
 
 (function() {
@@ -67,7 +66,6 @@
     var FormUtils = window.FormUtils;
     var NotificationSystem = window.NotificationSystem;
     var UI_CONSTANTS = window.UI_CONSTANTS;
-    var CALENDAR_CONSTANTS = window.CALENDAR_CONSTANTS;
 
     // ============================================================
     // STATE
@@ -146,8 +144,9 @@
         if (!CharacterGenerator || typeof CharacterGenerator.generatePersonality !== 'function') {
             missing.push('CharacterGenerator.generatePersonality');
         }
-        if (!CharacterGenerator || typeof CharacterGenerator.generateStats !== 'function') {
-            missing.push('CharacterGenerator.generateStats');
+        // FIXED: was generateStats, module exports generateStats3d6
+        if (!CharacterGenerator || typeof CharacterGenerator.generateStats3d6 !== 'function') {
+            missing.push('CharacterGenerator.generateStats3d6');
         }
 
         if (!CharacterClasses || typeof CharacterClasses.addClassByName !== 'function') {
@@ -169,8 +168,9 @@
             missing.push('UI_CONSTANTS.MOBILE_BREAKPOINT');
         }
 
-        if (!CALENDAR_CONSTANTS || typeof CALENDAR_CONSTANTS.DEBOUNCE_DELAY !== 'number') {
-            missing.push('CALENDAR_CONSTANTS.DEBOUNCE_DELAY');
+        // FIXED: was CALENDAR_CONSTANTS.DEBOUNCE_DELAY, use UI_CONSTANTS.DEBOUNCE_DELAY
+        if (!UI_CONSTANTS || typeof UI_CONSTANTS.DEBOUNCE_DELAY !== 'number') {
+            missing.push('UI_CONSTANTS.DEBOUNCE_DELAY');
         }
 
         if (missing.length > 0) {
@@ -233,9 +233,6 @@
         if (standaloneElimContainer) {
             CharacterEliminationView.renderStandaloneEliminations(char, standaloneElimContainer);
         }
-
-        // Refresh detail tab panels - uses CharacterDetail (Aggregator)
-        // This is handled by CharacterDetail.refresh() if the modal is open
 
         // Update dashboard stats
         if (typeof window.updateDashboardStats === 'function') {
@@ -500,7 +497,7 @@
                     if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                         window.CharacterList.render();
                     }
-                }, CALENDAR_CONSTANTS.DEBOUNCE_DELAY);
+                }, UI_CONSTANTS.DEBOUNCE_DELAY);
             });
         }
 
@@ -776,7 +773,8 @@
     }
 
     function fillRandomStats() {
-        var stats = CharacterGenerator.generateStats();
+        // FIXED: was generateStats, module exports generateStats3d6
+        var stats = CharacterGenerator.generateStats3d6();
         var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
         statKeys.forEach(function(key) {
             var value = stats[key] !== undefined ? stats[key] : 10;
