@@ -2,12 +2,11 @@
  * style.css - Hollow Blades Manager Theme
  * Dark grey-green with saturated accents
  * Mobile-first with burger menu, collapsible containers
- * No backdrop blurs or glass overlays - MONOCHROME UNICODE ICONS ONLY
+ * No blurs or overlays - MONOCHROME UNICODE ICONS ONLY
  * Path: style.css
  */
 
 :root {
-    /* Colors */
     --bg: #0a1505;
     --panel: #0f1f08;
     --panel-alt: #142a0c;
@@ -17,54 +16,19 @@
     --text-dim: #7a9a6a;
     --accent: #8cbb3a;
     --accent-soft: rgba(140, 187, 58, 0.12);
-    --accent-hover: rgba(140, 187, 58, 0.20);
     --info: #4a9bc7;
     --info-soft: rgba(74, 155, 199, 0.12);
-    --info-hover: rgba(74, 155, 199, 0.20);
     --danger: #c1453c;
     --danger-soft: rgba(193, 69, 60, 0.12);
-    --danger-hover: rgba(193, 69, 60, 0.20);
     --warning: #c9a24b;
     --warning-soft: rgba(201, 162, 75, 0.12);
-    --warning-hover: rgba(201, 162, 75, 0.20);
-
-    /* Layout */
     --radius: 10px;
     --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-    --header-height-mobile: 36px;
-    --header-height-desktop: 48px;
-
-    /* Grid column templates - used for consistent list layouts */
-    --team-columns: 1.2fr 0.8fr 0.6fr 0.6fr 1fr;
-    --team-columns-mobile: 0.8fr 0.5fr 0.4fr 0.4fr 0.8fr;
-    --tourn-columns: 1.2fr 0.6fr 0.6fr 0.8fr 0.6fr 1.2fr;
-    --tourn-columns-mobile: 0.8fr 0.4fr 0.4fr 0.5fr 0.4fr 0.8fr;
 }
 
 * {
     box-sizing: border-box;
-}
-
-/* Scrollbar */
-::-webkit-scrollbar {
-    height: 10px;
-    width: 10px;
-}
-::-webkit-scrollbar-track {
-    background: var(--bg);
-    border-radius: 6px;
-}
-::-webkit-scrollbar-thumb {
-    background: var(--border);
-    border-radius: 6px;
-    border: 2px solid var(--bg);
-}
-::-webkit-scrollbar-thumb:hover {
-    background: var(--accent);
-}
-* {
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) var(--bg);
+    min-width: 0;
 }
 
 html,
@@ -94,22 +58,28 @@ a:hover {
     text-decoration: underline;
 }
 
-/* Reduced motion */
-@media (prefers-reduced-motion: reduce) {
-    *,
-    *::before,
-    *::after {
-        transition-duration: 0.01ms !important;
-        animation-duration: 0.01ms !important;
-        animation-iteration-count: 1 !important;
-        scroll-behavior: auto !important;
-    }
+/* ============================================================
+   SCROLLBAR
+   ============================================================ */
+::-webkit-scrollbar {
+    height: 10px;
+    width: 10px;
 }
-
-/* Focus-visible for accessibility */
-:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
+::-webkit-scrollbar-track {
+    background: var(--bg);
+    border-radius: 6px;
+}
+::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 6px;
+    border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover {
+    background: var(--accent);
+}
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) var(--bg);
 }
 
 /* ============================================================
@@ -130,20 +100,14 @@ button {
 button:hover {
     border-color: var(--accent);
 }
-button:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-}
-
 button.primary {
     background: var(--accent-soft);
     border-color: var(--accent);
     color: var(--accent);
 }
 button.primary:hover {
-    background: var(--accent-hover);
+    background: rgba(140, 187, 58, 0.2);
 }
-
 button.danger {
     color: var(--danger);
 }
@@ -151,7 +115,6 @@ button.danger:hover {
     border-color: var(--danger);
     background: var(--danger-soft);
 }
-
 button.secondary {
     background: transparent;
     border-color: transparent;
@@ -161,26 +124,23 @@ button.secondary:hover {
     border-color: var(--border);
     background: var(--panel-alt);
 }
-
-button.warning {
-    color: var(--warning);
-    border-color: var(--warning);
-}
-button.warning:hover {
-    background: var(--warning-soft);
-}
-
-button.info {
-    color: var(--info);
-    border-color: var(--info);
-}
-button.info:hover {
-    background: var(--info-soft);
-}
-
 button.small {
     padding: 4px 10px;
     font-size: 0.72rem;
+}
+button.warning-btn {
+    color: var(--warning);
+    border-color: var(--warning);
+}
+button.warning-btn:hover {
+    background: var(--warning-soft);
+}
+button.info-btn {
+    color: var(--info);
+    border-color: var(--info);
+}
+button.info-btn:hover {
+    background: var(--info-soft);
 }
 
 /* ============================================================
@@ -205,7 +165,7 @@ header {
     align-items: center;
     justify-content: space-between;
     width: 100%;
-    min-height: var(--header-height-mobile);
+    min-height: 36px;
     gap: 8px;
     flex-shrink: 0;
 }
@@ -249,7 +209,7 @@ header h1 span {
 }
 
 .header-actions {
-    display: flex;
+    display: flex !important;
     flex-wrap: wrap;
     gap: 3px;
     align-items: center;
@@ -298,7 +258,6 @@ header nav a.active {
     background: var(--accent-soft);
 }
 
-/* Tablet/Desktop header */
 @media (min-width: 768px) {
     header {
         flex-direction: row;
@@ -306,7 +265,6 @@ header nav a.active {
         align-items: center;
         padding: 6px 16px;
         gap: 8px;
-        min-height: var(--header-height-desktop);
     }
     .header-top {
         width: auto;
@@ -324,6 +282,7 @@ header nav a.active {
         display: none;
     }
     .header-actions {
+        display: flex !important;
         width: auto;
         order: 3;
         flex: 0 1 auto;
@@ -562,7 +521,7 @@ main {
     transition: 0.2s;
 }
 .quick-link:hover {
-    background: var(--accent-hover);
+    background: rgba(140, 187, 58, 0.2);
 }
 
 /* ============================================================
@@ -752,6 +711,16 @@ main {
 .char-list-item .char-status {
     font-size: 0.55rem;
     color: var(--text-dim);
+}
+
+.eliminated-badge {
+    color: var(--danger);
+    font-size: 0.5rem;
+    font-weight: 600;
+    background: var(--danger-soft);
+    padding: 1px 4px;
+    border-radius: 4px;
+    margin-left: 2px;
 }
 
 /* Character Form Container */
@@ -1221,14 +1190,10 @@ main {
    TEAM MODULE STYLES
    ============================================================ */
 
-.team-list {
-    --team-columns: 1.2fr 0.8fr 0.6fr 0.6fr 1fr;
-}
-
 /* Team List Headers */
 .list-header.team-header {
     display: grid;
-    grid-template-columns: var(--team-columns);
+    grid-template-columns: 1.2fr 0.8fr 0.6fr 0.6fr 1fr;
     gap: 8px;
     padding: 8px 12px;
     background: var(--panel-alt);
@@ -1242,7 +1207,7 @@ main {
 
 .list-item.team-item {
     display: grid;
-    grid-template-columns: var(--team-columns);
+    grid-template-columns: 1.2fr 0.8fr 0.6fr 0.6fr 1fr;
     padding: 6px 12px;
     background: var(--panel);
     border: 1px solid var(--border);
@@ -1423,39 +1388,14 @@ main {
     font-size: 0.7rem;
 }
 
-/* Mobile team list */
-@media (max-width: 480px) {
-    .team-list {
-        --team-columns: var(--team-columns-mobile);
-    }
-    .list-header.team-header {
-        font-size: 0.45rem;
-        gap: 2px;
-        padding: 3px 4px;
-    }
-    .list-item.team-item {
-        gap: 2px;
-        padding: 3px 4px;
-        font-size: 0.55rem;
-    }
-    .list-item.team-item .actions button {
-        font-size: 0.45rem;
-        padding: 1px 3px;
-    }
-}
-
 /* ============================================================
    TOURNAMENT MODULE STYLES
    ============================================================ */
 
-.tourn-list {
-    --tourn-columns: 1.2fr 0.6fr 0.6fr 0.8fr 0.6fr 1.2fr;
-}
-
 /* Tournament List */
 .list-header.tourn-header {
     display: grid;
-    grid-template-columns: var(--tourn-columns);
+    grid-template-columns: 1.2fr 0.6fr 0.6fr 0.8fr 0.6fr 1.2fr;
     gap: 8px;
     padding: 8px 12px;
     background: var(--panel-alt);
@@ -1468,7 +1408,7 @@ main {
 }
 .list-item.tourn-item {
     display: grid;
-    grid-template-columns: var(--tourn-columns);
+    grid-template-columns: 1.2fr 0.6fr 0.6fr 0.8fr 0.6fr 1.2fr;
     padding: 6px 12px;
     background: var(--panel);
     border: 1px solid var(--border);
@@ -1791,37 +1731,6 @@ main {
     margin-top: 4px;
 }
 
-/* Mobile tournament list */
-@media (max-width: 480px) {
-    .tourn-list {
-        --tourn-columns: var(--tourn-columns-mobile);
-    }
-    .list-header.tourn-header {
-        font-size: 0.45rem;
-        gap: 2px;
-        padding: 3px 4px;
-    }
-    .list-item.tourn-item {
-        gap: 2px;
-        padding: 3px 4px;
-        font-size: 0.55rem;
-    }
-    .list-item.tourn-item .actions button {
-        font-size: 0.45rem;
-        padding: 1px 3px;
-    }
-    .tourn-info {
-        flex-direction: column;
-        gap: 4px;
-        padding: 6px 8px;
-    }
-    .match-item {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 4px;
-    }
-}
-
 /* Eliminations */
 .elimination-list {
     display: flex;
@@ -1934,56 +1843,63 @@ main {
    MISSION MODULE STYLES
    ============================================================ */
 
-/* Mission List - using semantic table structure */
-.mission-list {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.7rem;
-}
-.mission-list thead th {
-    text-align: left;
-    padding: 8px 10px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    border-bottom: none;
-    font-weight: 600;
-    color: var(--text-dim);
-    font-size: 0.65rem;
-    white-space: nowrap;
-}
-.mission-list tbody td {
-    padding: 6px 10px;
+/* Mission List */
+.mission-item {
+    display: grid;
+    grid-template-columns: 0.8fr 0.8fr 1.2fr 0.8fr 0.5fr 0.5fr 0.5fr 0.5fr 0.6fr 0.5fr;
+    padding: 6px 12px;
+    background: var(--panel);
     border: 1px solid var(--border);
     border-top: none;
-    vertical-align: middle;
-}
-.mission-list tbody tr {
+    align-items: center;
     cursor: pointer;
     transition: 0.15s;
-    background: var(--panel);
+    gap: 8px;
 }
-.mission-list tbody tr:hover {
+.mission-item:hover {
     background: var(--panel-alt);
 }
-.mission-list tbody tr:last-child td {
+.mission-item:last-child {
     border-radius: 0 0 var(--radius) var(--radius);
 }
 
 .mission-id {
-    font-family: monospace;
+    font-size: 0.7rem;
     color: var(--text-dim);
+    font-family: monospace;
+}
+.mission-date {
     font-size: 0.65rem;
+    color: var(--text-dim);
 }
 .mission-title {
-    font-weight: 500;
+    font-size: 0.8rem;
+}
+.mission-title strong {
+    font-weight: 600;
+}
+.mission-type {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+.mission-escalation {
+    font-size: 0.65rem;
+    color: var(--text-dim);
 }
 .mission-priority {
+    font-size: 0.75rem;
     font-weight: 600;
+}
+.mission-difficulty {
+    font-size: 0.75rem;
 }
 .mission-status {
+    font-size: 0.75rem;
     font-weight: 600;
 }
-
+.mission-team {
+    font-size: 0.75rem;
+}
 .mission-progress {
     display: flex;
     align-items: center;
@@ -1991,7 +1907,6 @@ main {
 }
 .mission-progress .progress-bar {
     flex: 1;
-    min-width: 60px;
     height: 6px;
     background: var(--bg);
     border-radius: 3px;
@@ -2004,7 +1919,7 @@ main {
     transition: width 0.3s;
 }
 .mission-progress .progress-label {
-    font-size: 0.65rem;
+    font-size: 0.7rem;
     color: var(--text-dim);
     min-width: 35px;
 }
@@ -2016,48 +1931,6 @@ main {
 .mission-support-badge {
     color: var(--accent);
     font-size: 0.6rem;
-}
-
-/* Responsive mission table - convert to cards on small screens */
-@media (max-width: 768px) {
-    .mission-list thead {
-        display: none;
-    }
-    .mission-list tbody tr {
-        display: block;
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        margin-bottom: 8px;
-        padding: 8px 10px;
-    }
-    .mission-list tbody td {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 3px 0;
-        border: none;
-        border-bottom: 1px solid var(--border-soft);
-        gap: 8px;
-    }
-    .mission-list tbody td:last-child {
-        border-bottom: none;
-    }
-    .mission-list tbody td::before {
-        content: attr(data-label);
-        font-weight: 600;
-        color: var(--text-dim);
-        font-size: 0.6rem;
-        flex-shrink: 0;
-    }
-    .mission-list tbody td:first-child {
-        padding-top: 0;
-    }
-    .mission-list tbody td:last-child {
-        padding-bottom: 0;
-    }
-    .mission-progress .progress-bar {
-        min-width: 80px;
-    }
 }
 
 /* Mission Detail */
@@ -2303,6 +2176,61 @@ main {
     max-width: 700px;
 }
 
+/* Responsive Mission List */
+@media (max-width: 768px) {
+    .mission-item {
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+        padding: 8px;
+    }
+    .mission-item .mission-id {
+        grid-column: 1 / -1;
+        font-size: 0.6rem;
+    }
+    .mission-item .mission-title {
+        grid-column: 1 / -1;
+        font-size: 0.85rem;
+    }
+    .mission-item .mission-progress {
+        grid-column: 1 / -1;
+    }
+    .mission-item .mission-date,
+    .mission-item .mission-type,
+    .mission-item .mission-escalation,
+    .mission-item .mission-priority,
+    .mission-item .mission-difficulty,
+    .mission-item .mission-status,
+    .mission-item .mission-team {
+        font-size: 0.65rem;
+    }
+}
+
+@media (max-width: 480px) {
+    .mission-item {
+        grid-template-columns: 1fr;
+        gap: 2px;
+    }
+    .mission-item .mission-id {
+        font-size: 0.55rem;
+    }
+    .mission-item .mission-title {
+        font-size: 0.8rem;
+    }
+    .mission-item .mission-date,
+    .mission-item .mission-type,
+    .mission-item .mission-escalation,
+    .mission-item .mission-priority,
+    .mission-item .mission-difficulty,
+    .mission-item .mission-status,
+    .mission-item .mission-team {
+        font-size: 0.6rem;
+    }
+    .mission-item .mission-progress .progress-label {
+        font-size: 0.6rem;
+        min-width: 30px;
+    }
+}
+
 /* ============================================================
    MODAL
    ============================================================ */
@@ -2401,40 +2329,8 @@ main {
 }
 
 /* ============================================================
-   BADGES - Generic UI state badges
+   BADGES
    ============================================================ */
-.badge {
-    display: inline-block;
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-size: 0.5rem;
-    font-weight: 600;
-}
-.badge.deceased {
-    color: var(--danger);
-}
-.badge.eliminated {
-    color: var(--danger);
-    background: var(--danger-soft);
-}
-.badge.warning {
-    color: var(--warning);
-    background: var(--warning-soft);
-}
-.badge.info {
-    color: var(--info);
-    background: var(--info-soft);
-}
-.badge.success {
-    color: var(--accent);
-    background: var(--accent-soft);
-}
-.badge.inactive {
-    color: var(--text-dim);
-    background: var(--panel-alt);
-}
-
-/* Legacy badge classes - kept for backward compatibility */
 .deceased-badge {
     color: var(--danger);
     font-size: 0.5rem;
@@ -2461,9 +2357,15 @@ main {
 }
 
 /* ============================================================
-   RESPONSIVE FIXES - Consolidated mobile overrides
+   RESPONSIVE FIXES
    ============================================================ */
 @media (max-width: 480px) {
+    .header-actions button.small {
+        font-size: 0.4rem;
+        padding: 1px 2px;
+        min-width: 20px;
+        max-width: 40px;
+    }
     .page-header h2 {
         font-size: 0.9rem;
     }
@@ -2501,5 +2403,51 @@ main {
     }
     .characters-form-container {
         max-height: 500px;
+    }
+
+    /* Team responsive */
+    .list-header.team-header {
+        grid-template-columns: 0.8fr 0.5fr 0.4fr 0.4fr 0.8fr;
+        font-size: 0.45rem;
+        gap: 2px;
+        padding: 3px 4px;
+    }
+    .list-item.team-item {
+        grid-template-columns: 0.8fr 0.5fr 0.4fr 0.4fr 0.8fr;
+        gap: 2px;
+        padding: 3px 4px;
+        font-size: 0.55rem;
+    }
+    .list-item.team-item .actions button {
+        font-size: 0.45rem;
+        padding: 1px 3px;
+    }
+
+    /* Tournament responsive */
+    .list-header.tourn-header {
+        grid-template-columns: 0.8fr 0.4fr 0.4fr 0.5fr 0.4fr 0.8fr;
+        font-size: 0.45rem;
+        gap: 2px;
+        padding: 3px 4px;
+    }
+    .list-item.tourn-item {
+        grid-template-columns: 0.8fr 0.4fr 0.4fr 0.5fr 0.4fr 0.8fr;
+        gap: 2px;
+        padding: 3px 4px;
+        font-size: 0.55rem;
+    }
+    .list-item.tourn-item .actions button {
+        font-size: 0.45rem;
+        padding: 1px 3px;
+    }
+    .tourn-info {
+        flex-direction: column;
+        gap: 4px;
+        padding: 6px 8px;
+    }
+    .match-item {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
     }
 }
