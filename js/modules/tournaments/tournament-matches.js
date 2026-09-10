@@ -53,7 +53,7 @@
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  * 
  * USAGE:
- *   var Matches = window.TournamentsMatches;
+ *   var Matches = window.TournamentMatches;
  * 
  *   // Public commands (via MutationPipeline)
  *   var match = Matches.createMatch('tourn_123', 0, { participants: ['char_1', 'char_2'] });
@@ -67,7 +67,7 @@
 (function() {
     'use strict';
 
-    if (window.__tournamentsMatchesLoaded) {
+    if (window.__TournamentMatchesLoaded) {
         return;
     }
 
@@ -140,7 +140,7 @@
         }
 
         if (missing.length > 0) {
-            console.warn('[TournamentsMatches] Some dependencies not yet loaded:', missing.join(', '));
+            console.warn('[TournamentMatches] Some dependencies not yet loaded:', missing.join(', '));
             return false;
         }
 
@@ -1930,7 +1930,7 @@
     // EXPOSE
     // ============================================================
 
-    window.TournamentsMatches = {
+    window.TournamentMatches = {
         // ---- Public Mutation Commands (via MutationPipeline) ----
         createMatch: createMatch,
         removeMatch: removeMatch,
@@ -1961,7 +1961,7 @@
     // ============================================================
 
     (function verify() {
-        var exports = window.TournamentsMatches;
+        var exports = window.TournamentMatches;
         var missing = [];
 
         var required = [
@@ -1980,9 +1980,9 @@
         }
 
         if (missing.length > 0) {
-            console.warn('[TournamentsMatches] Verification - some exports may be missing:', missing.join(', '));
+            console.warn('[TournamentMatches] Verification - some exports may be missing:', missing.join(', '));
         } else {
-            console.log('[TournamentsMatches] All exports verified successfully.');
+            console.log('[TournamentMatches] All exports verified successfully.');
         }
     })();
 
