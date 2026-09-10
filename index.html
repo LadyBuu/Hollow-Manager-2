@@ -4,12 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hollow Manager 2</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="style.css" />
 </head>
 <body>
     <div id="app">
         <header>
-            <h1>Hollow Manager 2</h1>
+            <div class="header-top">
+                <h1>Hollow Manager 2</h1>
+                <button id="nav-toggle" class="nav-toggle" aria-label="Toggle navigation">☰</button>
+            </div>
             <nav id="main-nav">
                 <ul>
                     <li><a href="#dashboard" data-tab="dashboard">Dashboard</a></li>
@@ -23,6 +27,7 @@
                 </ul>
             </nav>
         </header>
+
         <main id="main-content">
             <div id="tab-dashboard" class="tab-content active"></div>
             <div id="tab-characters" class="tab-content"></div>
@@ -33,6 +38,41 @@
             <div id="tab-academy" class="tab-content"></div>
             <div id="tab-missions" class="tab-content"></div>
         </main>
+
+        <!-- ============================================================
+             IMPORT / EXPORT FOOTER
+             Bound by js/import-export/ui.js.
+             IDs must match exactly what ImportExportUI expects.
+             These must be present in the HTML at DOMContentLoaded.
+             ============================================================ -->
+        <footer id="import-export-footer">
+            <div class="import-export-section">
+                <h3>Import / Export</h3>
+
+                <div class="import-export-row">
+                    <span class="import-export-label">JSON Backup:</span>
+                    <button id="export-json-btn" class="small">Export JSON</button>
+                    <button id="import-json-btn" class="small">Import JSON</button>
+                    <input type="file" id="json-file-input" accept=".json" style="display:none;">
+                </div>
+
+                <div class="import-export-row">
+                    <span class="import-export-label">Characters (CSV):</span>
+                    <button id="export-characters-csv-btn" class="small">Export</button>
+                    <button id="import-characters-csv-btn" class="small">Import</button>
+                    <button id="template-characters-csv-btn" class="small secondary">Template</button>
+                    <input type="file" id="characters-csv-file-input" accept=".csv" style="display:none;">
+                </div>
+
+                <div class="import-export-row">
+                    <span class="import-export-label">Missions (CSV):</span>
+                    <button id="export-missions-csv-btn" class="small">Export</button>
+                    <button id="import-missions-csv-btn" class="small">Import</button>
+                    <button id="template-missions-csv-btn" class="small secondary">Template</button>
+                    <input type="file" id="missions-csv-file-input" accept=".csv" style="display:none;">
+                </div>
+            </div>
+        </footer>
     </div>
 
     <!-- ============================================================
@@ -49,7 +89,7 @@
     <script src="js/utils/notification.js"></script>
 
     <!-- ============================================================
-         SHARED CONSTANTS - js/modules/shared/
+         SHARED CONSTANTS
          ============================================================ -->
     <script src="js/modules/shared/constants.js"></script>
     <script src="js/modules/shared/calendar-constants.js"></script>
@@ -60,13 +100,11 @@
     <script src="js/modules/shared/team-constants.js"></script>
     <script src="js/modules/shared/tournament-constants.js"></script>
 
-    <!-- ============================================================
-         CALENDAR VALIDATION - LOADS AFTER CALENDAR CONSTANTS
-         ============================================================ -->
+    <!-- CALENDAR VALIDATION -->
     <script src="js/utils/calendar-validation.js"></script>
 
     <!-- ============================================================
-         SHARED QUERIES - js/modules/shared/queries/
+         SHARED QUERIES
          ============================================================ -->
     <script src="js/modules/shared/queries/character-queries.js"></script>
     <script src="js/modules/shared/queries/team-queries.js"></script>
@@ -79,7 +117,7 @@
     <script src="js/modules/shared/queries/calendar-queries.js"></script>
 
     <!-- ============================================================
-         CORE INFRASTRUCTURE - LOADS BEFORE MODULES THAT USE IT
+         CORE INFRASTRUCTURE
          Note: bootstrap.js is deferred to the end so that all feature
          modules can register with TabManager before data readiness fires.
          ============================================================ -->
@@ -92,8 +130,7 @@
 
     <!-- ============================================================
          CALENDAR DOMAIN
-         Must load before Academy Additional (academy-schedule.js
-         depends on ScheduleCore at runtime via the injected provider).
+         Must load before Academy Additional.
          ============================================================ -->
     <script src="js/modules/calendar/schedule-core.js"></script>
     <script src="js/modules/calendar/calendar-renderer.js"></script>
@@ -114,14 +151,11 @@
     <script src="js/modules/academy/academy-disciplines.js"></script>
     <script src="js/modules/academy/academy-locations.js"></script>
 
-    <!-- Academy Queries (loads after Academy core) -->
     <script src="js/modules/shared/queries/academy-queries.js"></script>
 
-    <!-- Academy Additional (depends on ScheduleCore + AcademyQueries) -->
     <script src="js/modules/academy/academy-schedule.js"></script>
     <script src="js/modules/academy/academy-distribute.js"></script>
 
-    <!-- Academy Aggregator / UI / Events / Tabs -->
     <script src="js/modules/academy/academy-aggregator.js"></script>
     <script src="js/modules/academy/academy-ui.js"></script>
     <script src="js/modules/academy/academy-events.js"></script>
@@ -176,9 +210,7 @@
 
     <!-- ============================================================
          SOCIAL DOMAIN
-         Note: social-graph.js loads BEFORE social-events.js because
-         social-events.js requires SocialGraph at load time for its
-         dependency check.
+         Note: social-graph.js loads BEFORE social-events.js.
          ============================================================ -->
     <script src="js/modules/social/social-core.js"></script>
     <script src="js/modules/social/social-aggregator.js"></script>
@@ -189,7 +221,6 @@
 
     <!-- ============================================================
          MISSIONS DOMAIN
-         Load order: Schema → Id → Views → Core → Aggregator → Render → UI → Index
          ============================================================ -->
     <script src="js/modules/missions/mission-schema.js"></script>
     <script src="js/modules/missions/mission-id.js"></script>
@@ -219,16 +250,12 @@
 
     <!-- ============================================================
          APPLICATION SETTINGS
-         Owns currentYear. Must load before Dashboard.
          ============================================================ -->
     <script src="js/modules/application/application-settings-core.js"></script>
     <script src="js/modules/application/application-settings-queries.js"></script>
 
     <!-- ============================================================
          DASHBOARD
-         Aggregator reads ApplicationSettingsQueries + domain queries.
-         Render consumes view model. UI binds events. Index registers
-         with TabManager.
          ============================================================ -->
     <script src="js/modules/dashboard/dashboard-aggregator.js"></script>
     <script src="js/modules/dashboard/dashboard-render.js"></script>
@@ -239,7 +266,6 @@
          BOOTSTRAP + APPLICATION SHELL
          bootstrap.js coordinates DataLoader readiness → TabManager.
          app.js listens for bootstrapFailed and manages the mobile nav.
-         Both must load after every feature module has registered.
          ============================================================ -->
     <script src="js/core/bootstrap.js"></script>
     <script src="js/app.js"></script>
