@@ -23,6 +23,12 @@
  *   - All notifications use NotificationSystem.notify()
  *   - Assembles and injects external providers
  * 
+ * NOTE ON ACADEMYCORE:
+ *   - AcademyCore does not exist. The Academy domain was refactored
+ *   - to use AcademyDisciplines and AcademyLocations directly.
+ *   - Earlier versions of this file referenced AcademyCore; those
+ *   - references have been removed.
+ * 
  * EXTERNAL PROVIDERS:
  *   - CharacterQueries (for character data)
  *   - TeamQueries (for team data)
@@ -38,7 +44,6 @@
  *   - window.AcademyEvents (from academy-events.js)
  *   - window.AcademyClasses (from academy-classes.js)
  *   - window.AcademyQueries (from academy-queries.js)
- *   - window.AcademyCore (from academy-core.js)
  *   - window.AcademyGrades (from academy-grades.js)
  *   - window.AcademyGroups (from academy-groups.js)
  *   - window.AcademyRanking (from academy-ranking.js)
@@ -72,7 +77,6 @@
     var AcademyEvents = window.AcademyEvents;
     var AcademyClasses = window.AcademyClasses;
     var AcademyQueries = window.AcademyQueries;
-    var AcademyCore = window.AcademyCore;
     var AcademyGrades = window.AcademyGrades;
     var AcademyGroups = window.AcademyGroups;
     var AcademyRanking = window.AcademyRanking;
@@ -157,11 +161,13 @@
             missing.push('AcademyClasses.create');
         }
 
-        if (!AcademyCore || typeof AcademyCore.createDiscipline !== 'function') {
-            missing.push('AcademyCore.createDiscipline');
+        // AcademyCore does not exist. Discipline and location operations
+        // live in AcademyDisciplines and AcademyLocations respectively.
+        if (!AcademyDisciplines || typeof AcademyDisciplines.create !== 'function') {
+            missing.push('AcademyDisciplines.create');
         }
-        if (!AcademyCore || typeof AcademyCore.createLocation !== 'function') {
-            missing.push('AcademyCore.createLocation');
+        if (!AcademyLocations || typeof AcademyLocations.create !== 'function') {
+            missing.push('AcademyLocations.create');
         }
 
         if (!AcademySchedule || typeof AcademySchedule.configure !== 'function') {
@@ -763,7 +769,6 @@
         // Module references (for advanced use)
         AcademyClasses: AcademyClasses,
         AcademyQueries: AcademyQueries,
-        AcademyCore: AcademyCore,
         AcademyGrades: AcademyGrades,
         AcademyGroups: AcademyGroups,
         AcademyRanking: AcademyRanking,
