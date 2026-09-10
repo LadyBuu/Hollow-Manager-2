@@ -14,7 +14,7 @@
  * IMPORTANT:
  *   - This is a CROSS-DOMAIN WORKFLOW combining:
  *     - TournamentCore (tournament eliminations)
- *     - TournamentsMatches (match state updates)
+ *     - TournamentMatches (match state updates)
  *     - CharacterEliminations (character eliminations, eliminatedWeeks)
  *   - All operations are CANDIDATE-BASED: validate, build candidates, commit
  *   - This module does NOT call saveData()
@@ -25,7 +25,7 @@
  * 
  * DEPENDENCIES (lazily loaded):
  *   - window.TournamentCore - Tournament operations
- *   - window.TournamentsMatches - Match operations
+ *   - window.TournamentMatches - Match operations
  *   - window.TournamentSchema - Structural validation
  *   - window.TournamentLifecycle - Lifecycle permissions
  *   - window.TournamentRules - Domain conditions
@@ -57,8 +57,8 @@
         return window.TournamentCore || null;
     }
 
-    function getTournamentsMatches() {
-        return window.TournamentsMatches || null;
+    function getTournamentMatches() {
+        return window.TournamentMatches || null;
     }
 
     function getTournamentSchema() {
@@ -107,8 +107,8 @@
         if (!getTournamentCore()) {
             missing.push('TournamentCore (lazy)');
         }
-        if (!getTournamentsMatches()) {
-            missing.push('TournamentsMatches (lazy)');
+        if (!getTournamentMatches()) {
+            missing.push('TournamentMatches (lazy)');
         }
         if (!getTournamentSchema()) {
             missing.push('TournamentSchema (lazy)');
