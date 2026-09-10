@@ -6,11 +6,16 @@
  * This module provides:
  *   - formatDate - Date formatting with timezone awareness
  *   - truncateString - String truncation with validation
+ *   - truncateWithSuffix - String truncation with custom suffix
+ *   - formatNumber - Number formatting with locale
+ *   - formatCurrency - Currency formatting
+ *   - formatPercentage - Percentage formatting
  *   - getDayName - Day name lookup (1-indexed, Monday=1)
  *   - getDayName0 - Day name lookup (0-indexed, Sunday=0)
  *   - getDayNumber - Day number from day name
  *   - formatHour - Hour formatting (12-hour with AM/PM)
  *   - parseHour - Hour parsing from time string
+ *   - formatRelativeTime - Relative time formatting ("2h ago")
  * 
  * IMPORTANT:
  *   - PURE functions - no side effects
@@ -25,10 +30,12 @@
  *   - For precise date handling, use a dedicated date library
  *   - If your data stores date-only values, be aware of timezone conversion
  * 
- * TRUNCATION SEMANTICS:
- *   - length must be a non-negative finite integer
- *   - Invalid length values return the original string (does not throw)
- *   - This is intentionally forgiving for UI presentation
+ * RELATIVE TIME SEMANTICS:
+ *   - formatRelativeTime expects an ISO 8601 timestamp
+ *   - Returns '' (or the provided fallback) for invalid/missing timestamps
+ *   - Past-only: assumes the timestamp is in the past
+ *   - Boundaries: <1m → "Just now", <60m → "Xm ago", <24h → "Xh ago",
+ *     <7d → "Xd ago", otherwise → localized date string
  * 
  * USAGE:
  *   var FU = window.FormatUtils;
@@ -36,6 +43,7 @@
  *   var truncated = FU.truncateString('Hello world', 5);
  *   var dayName = FU.getDayName(3); // 'Wednesday'
  *   var hour = FU.formatHour(14); // '2:00 PM'
+ *   var relative = FU.formatRelativeTime('2026-09-10T08:00:00Z'); // '2h ago'
  */
 
 (function() {
@@ -84,32 +92,82 @@
      * @param {string} dateString - ISO date string
      * @param {string} fallback - Fallback value if date is invalid (default: 'N/A')
      * @returns {string} Formatted date or fallback
-     * 
-     * USAGE:
-     *   FormatUtils.formatDate('2026-09-05'); // "9/5/2026" (in US locale)
-     *   FormatUtils.formatDate('2026-09-05', 'Unknown'); // "9/5/2026"
-     *   FormatUtils.formatDate(null, 'Never'); // "Never"
      */
     function formatDate(dateString, fallback) {
         fallback = fallback || 'N/A';
 
-        // Defensive: reject empty values
         if (dateString === undefined || dateString === null || dateString === '') {
             return fallback;
         }
 
-        // Defensive: ensure we have a string
         var str = String(dateString);
-
-        // Parse the date
         var date = new Date(str);
 
-        // Check if the date is valid
         if (isNaN(date.getTime())) {
             return fallback;
         }
 
-        // Format in the user's locale
+        return date.toLocaleDateString();
+    }
+
+    /**
+     * Format a timestamp as a relative time string.
+     * 
+     * Produces human-friendly strings for recent timestamps:
+     *   - < 1 minute:   "Just now"
+     *   - < 1 hour:     "Xm ago"
+     *   - < 1 day:      "Xh ago"
+     *   - < 1 week:     "Xd ago"
+     *   - Otherwise:    localized date string (e.g., "9/10/2026")
+     * 
+     * SEMANTICS:
+     *   - Assumes past timestamps. Future timestamps produce "Just now"
+     *     because the diff is negative and the first branch matches.
+     *   - Invalid or missing timestamps return the fallback.
+     *   - Uses Date diffing; not timezone-aware beyond what the
+     *     browser provides for the current locale.
+     * 
+     * @param {string} timestamp - ISO 8601 timestamp
+     * @param {string} fallback - Fallback for invalid timestamps (default: '')
+     * @returns {string} Relative time string or fallback
+     * 
+     * USAGE:
+     *   formatRelativeTime('2026-09-10T10:30:00Z'); // '5m ago'
+     *   formatRelativeTime('2026-09-08T10:30:00Z'); // '2d ago'
+     *   formatRelativeTime('invalid', 'unknown');   // 'unknown'
+     *   formatRelativeTime(null);                   // ''
+     */
+    function formatRelativeTime(timestamp, fallback) {
+        fallback = fallback !== undefined ? fallback : '';
+
+        if (!timestamp) {
+            return fallback;
+        }
+
+        var date = new Date(timestamp);
+        if (isNaN(date.getTime())) {
+            return fallback;
+        }
+
+        var now = new Date();
+        var diffMs = now - date;
+        var diffMins = Math.floor(diffMs / 60000);
+        var diffHours = Math.floor(diffMs / 3600000);
+        var diffDays = Math.floor(diffMs / 86400000);
+
+        if (diffMins < 1) {
+            return 'Just now';
+        }
+        if (diffMins < 60) {
+            return diffMins + 'm ago';
+        }
+        if (diffHours < 24) {
+            return diffHours + 'h ago';
+        }
+        if (diffDays < 7) {
+            return diffDays + 'd ago';
+        }
+
         return date.toLocaleDateString();
     }
 
@@ -124,34 +182,22 @@
      * @param {*} value - Value to truncate
      * @param {number} length - Maximum length (must be a non-negative finite integer)
      * @returns {string} Truncated string or original string if invalid length
-     * 
-     * USAGE:
-     *   FormatUtils.truncateString('Hello world', 5); // "Hello..."
-     *   FormatUtils.truncateString('Hello world', 20); // "Hello world"
-     *   FormatUtils.truncateString(null, 5); // ""
-     *   FormatUtils.truncateString('Hello', -1); // "Hello" (invalid length)
      */
     function truncateString(value, length) {
-        // Defensive: handle null/undefined
         if (value === undefined || value === null) {
             return '';
         }
 
-        // Normalize to string
         var str = String(value);
 
-        // Validate length: must be a non-negative finite integer
         if (!Number.isFinite(length) || length < 0 || !Number.isInteger(length)) {
-            // Forgiving: return original string
             return str;
         }
 
-        // If string is short enough, return as-is
         if (str.length <= length) {
             return str;
         }
 
-        // Truncate and add ellipsis
         return str.substring(0, length) + '...';
     }
 
@@ -162,31 +208,24 @@
      * @param {number} length - Maximum length
      * @param {string} suffix - Suffix to append (default: '...')
      * @returns {string} Truncated string
-     * 
-     * USAGE:
-     *   FormatUtils.truncateWithSuffix('Hello world', 5, '…'); // "Hello…"
      */
     function truncateWithSuffix(value, length, suffix) {
         suffix = suffix || '...';
 
-        // Defensive: handle null/undefined
         if (value === undefined || value === null) {
             return '';
         }
 
         var str = String(value);
 
-        // Validate length
         if (!Number.isFinite(length) || length < 0 || !Number.isInteger(length)) {
             return str;
         }
 
-        // If string is short enough, return as-is
         if (str.length <= length) {
             return str;
         }
 
-        // Truncate and add custom suffix
         return str.substring(0, length) + suffix;
     }
 
@@ -196,11 +235,6 @@
      * @param {*} value - Value to format
      * @param {string} fallback - Fallback if value is not a number (default: '0')
      * @returns {string} Formatted number
-     * 
-     * USAGE:
-     *   FormatUtils.formatNumber(1234567); // "1,234,567"
-     *   FormatUtils.formatNumber('1234567'); // "1,234,567"
-     *   FormatUtils.formatNumber(null); // "0"
      */
     function formatNumber(value, fallback) {
         fallback = fallback || '0';
@@ -224,10 +258,6 @@
      * @param {string} currency - Currency code (default: 'USD')
      * @param {string} fallback - Fallback if value is not a number (default: '$0')
      * @returns {string} Formatted currency
-     * 
-     * USAGE:
-     *   FormatUtils.formatCurrency(1234.56); // "$1,234.56"
-     *   FormatUtils.formatCurrency(1234.56, 'EUR'); // "€1,234.56"
      */
     function formatCurrency(value, currency, fallback) {
         currency = currency || 'USD';
@@ -248,7 +278,6 @@
                 currency: currency
             });
         } catch (e) {
-            // Fallback if currency formatting fails
             return currency + ' ' + num.toLocaleString();
         }
     }
@@ -260,10 +289,6 @@
      * @param {number} decimals - Number of decimal places (default: 0)
      * @param {string} fallback - Fallback if value is not a number (default: '0%')
      * @returns {string} Formatted percentage
-     * 
-     * USAGE:
-     *   FormatUtils.formatPercentage(0.1234); // "12%"
-     *   FormatUtils.formatPercentage(0.1234, 1); // "12.3%"
      */
     function formatPercentage(value, decimals, fallback) {
         decimals = decimals || 0;
@@ -282,7 +307,7 @@
     }
 
     // ============================================================
-    // DAY NAME FUNCTIONS (moved from CalendarUtils)
+    // DAY NAME FUNCTIONS
     // ============================================================
 
     /**
@@ -291,18 +316,12 @@
      * @param {number} day - Day number (1-7, Monday=1)
      * @param {string} format - 'long', 'short', or 'min' (default: 'long')
      * @returns {string} Day name
-     * 
-     * USAGE:
-     *   FormatUtils.getDayName(3); // 'Wednesday'
-     *   FormatUtils.getDayName(3, 'short'); // 'Wed'
-     *   FormatUtils.getDayName(3, 'min'); // 'We'
      */
     function getDayName(day, format) {
         if (CalendarConstants && typeof CalendarConstants.getDayName === 'function') {
             return CalendarConstants.getDayName(day, format);
         }
 
-        // Emergency fallback (should never be reached)
         format = format || 'long';
         var num = parseInteger(day);
         if (num === null || num < 1 || num > 7) {
@@ -325,17 +344,12 @@
      * @param {number} day - Day number (0-6, Sunday=0)
      * @param {string} format - 'long', 'short', or 'min' (default: 'long')
      * @returns {string} Day name
-     * 
-     * USAGE:
-     *   FormatUtils.getDayName0(2); // 'Tuesday' (0-indexed)
-     *   FormatUtils.getDayName0(0); // 'Sunday'
      */
     function getDayName0(day, format) {
         if (CalendarConstants && typeof CalendarConstants.getDayName0 === 'function') {
             return CalendarConstants.getDayName0(day, format);
         }
 
-        // Emergency fallback (should never be reached)
         format = format || 'long';
         var num = parseInteger(day);
         if (num === null || num < 0 || num > 6) {
@@ -357,17 +371,12 @@
      * 
      * @param {string} dayName - Day name (e.g., 'Monday', 'Mon', 'Mo')
      * @returns {number|null} Day number (1-7, Monday=1) or null
-     * 
-     * USAGE:
-     *   FormatUtils.getDayNumber('Mon'); // 2
-     *   FormatUtils.getDayNumber('Tuesday'); // 3
      */
     function getDayNumber(dayName) {
         if (CalendarConstants && typeof CalendarConstants.getDayNumber === 'function') {
             return CalendarConstants.getDayNumber(dayName);
         }
 
-        // Emergency fallback (should never be reached)
         if (!dayName || typeof dayName !== 'string') {
             return null;
         }
@@ -387,7 +396,7 @@
     }
 
     // ============================================================
-    // HOUR FORMATTING FUNCTIONS (moved from CalendarUtils)
+    // HOUR FORMATTING FUNCTIONS
     // ============================================================
 
     /**
@@ -396,17 +405,12 @@
      * @param {number} hour - Hour number (0-23)
      * @param {boolean} includeMinutes - Whether to include ":00" (default: true)
      * @returns {string} Formatted hour string
-     * 
-     * USAGE:
-     *   FormatUtils.formatHour(14); // "2:00 PM"
-     *   FormatUtils.formatHour(9, false); // "9 AM"
      */
     function formatHour(hour, includeMinutes) {
         if (CalendarConstants && typeof CalendarConstants.formatHour === 'function') {
             return CalendarConstants.formatHour(hour, includeMinutes);
         }
 
-        // Emergency fallback (should never be reached)
         includeMinutes = includeMinutes !== false;
 
         var num = parseInteger(hour);
@@ -426,24 +430,18 @@
      * 
      * @param {string} timeStr - Time string (e.g., "9:00 AM", "14:00")
      * @returns {number|null} Hour number (0-23) or null if invalid
-     * 
-     * USAGE:
-     *   FormatUtils.parseHour('2:30 PM'); // 14
-     *   FormatUtils.parseHour('14:00'); // 14
      */
     function parseHour(timeStr) {
         if (CalendarConstants && typeof CalendarConstants.parseHour === 'function') {
             return CalendarConstants.parseHour(timeStr);
         }
 
-        // Emergency fallback (should never be reached)
         if (!timeStr || typeof timeStr !== 'string') {
             return null;
         }
 
         var trimmed = timeStr.trim().toUpperCase();
 
-        // Try 24-hour format
         var match24 = trimmed.match(/^(\d{1,2}):(\d{2})$/);
         if (match24) {
             var hour = parseInt(match24[1], 10);
@@ -453,7 +451,6 @@
             }
         }
 
-        // Try 12-hour format
         var match12 = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
         if (match12) {
             var hour = parseInt(match12[1], 10);
@@ -466,7 +463,6 @@
             }
         }
 
-        // Try without minutes
         var matchSimple = trimmed.match(/^(\d{1,2})\s*(AM|PM)?$/);
         if (matchSimple) {
             var hour = parseInt(matchSimple[1], 10);
@@ -478,7 +474,6 @@
                     return hour;
                 }
             } else {
-                // 24-hour without AM/PM
                 if (hour >= 0 && hour <= 23) {
                     return hour;
                 }
@@ -495,6 +490,7 @@
     window.FormatUtils = {
         // Core formatting
         formatDate: formatDate,
+        formatRelativeTime: formatRelativeTime,
         truncateString: truncateString,
         truncateWithSuffix: truncateWithSuffix,
 
@@ -503,12 +499,12 @@
         formatCurrency: formatCurrency,
         formatPercentage: formatPercentage,
 
-        // Day name functions (from CalendarUtils)
+        // Day name functions
         getDayName: getDayName,
         getDayName0: getDayName0,
         getDayNumber: getDayNumber,
 
-        // Hour functions (from CalendarUtils)
+        // Hour functions
         formatHour: formatHour,
         parseHour: parseHour
     };
