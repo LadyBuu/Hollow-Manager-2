@@ -41,13 +41,62 @@
         return char ? getDisplayName(char) : 'Unknown';
     }
 
+    /**
+     * Get the display name for a character.
+     * 
+     * Uses displayParts if present on the character:
+     *   First Nickname Middle Last (Alias)
+     * 
+     * Falls back to the legacy nameFormat switch if displayParts is
+     * missing entirely, so existing characters keep displaying as before.
+     * 
+     * If all displayParts are false, falls back to firstName + lastName
+     * so we never render a blank name.
+     * 
+     * @param {object} char - Character object
+     * @returns {string} Display name
+     */
     function getDisplayName(char) {
         if (!char || typeof char !== 'object') { return 'Unknown'; }
-        var firstName = String(char.firstName || '').trim();
-        var lastName = String(char.lastName || '').trim();
+
+        var firstName  = String(char.firstName  || '').trim();
         var middleName = String(char.middleName || '').trim();
-        var nickname = String(char.nickname || '').trim();
-        var alias = String(char.alias || '').trim();
+        var lastName   = String(char.lastName   || '').trim();
+        var nickname   = String(char.nickname   || '').trim();
+        var alias      = String(char.alias      || '').trim();
+
+        // ---- If displayParts exists, use it ----
+        if (char.displayParts && typeof char.displayParts === 'object') {
+            var parts = [];
+
+            if (char.displayParts.first !== false && firstName) {
+                parts.push(firstName);
+            }
+            if (char.displayParts.nickname === true && nickname) {
+                parts.push(nickname);
+            }
+            if (char.displayParts.middle !== false && middleName) {
+                parts.push(middleName);
+            }
+            if (char.displayParts.last !== false && lastName) {
+                parts.push(lastName);
+            }
+
+            var name = parts.join(' ');
+
+            if (char.displayParts.alias === true && alias) {
+                name = name ? name + ' (' + alias + ')' : '(' + alias + ')';
+            }
+
+            // Fallback: nothing checked or nothing populated
+            if (!name) {
+                name = [firstName, lastName].filter(Boolean).join(' ');
+            }
+
+            return name || 'Unknown';
+        }
+
+        // ---- Legacy path: nameFormat ----
         var format = char.nameFormat || 'firstlast';
 
         switch (format) {
@@ -59,7 +108,9 @@
             case 'firstnick':
                 if (!firstName && !nickname) { return lastName || 'Unknown'; }
                 if (!nickname) { return [firstName, lastName].filter(Boolean).join(' '); }
-                return firstName ? firstName + ' "' + nickname + '"' + (lastName ? ' ' + lastName : '') : '"' + nickname + '"' + (lastName ? ' ' + lastName : '');
+                return firstName
+                    ? firstName + ' "' + nickname + '"' + (lastName ? ' ' + lastName : '')
+                    : '"' + nickname + '"' + (lastName ? ' ' + lastName : '');
             case 'alias':
                 return alias || [firstName, lastName].filter(Boolean).join(' ') || 'Unknown';
             case 'firstlast':
