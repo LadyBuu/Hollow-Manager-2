@@ -18,7 +18,7 @@
  *   - All academy logic lives in the sub-modules
  *   - TabManager is the single source of truth for lifecycle
  *   - No data mutations - all mutations delegate to domain cores
- *   - No direct window.data access - rely on bootstrap
+ *   - No direct window.data access except for the defensive academy structure guard
  *   - All HTML escaping uses DomUtils.escapeHtml()
  *   - All notifications use NotificationSystem.notify()
  *   - Assembles and injects external providers
@@ -28,6 +28,13 @@
  *   - to use AcademyDisciplines and AcademyLocations directly.
  *   - Earlier versions of this file referenced AcademyCore; those
  *   - references have been removed.
+ * 
+ * NOTE ON ACADEMY DATA STRUCTURE:
+ *   - window.data.academy is the canonical home for:
+ *       graduatingClasses, classStudents, grades, rankings
+ *   - The structure is created lazily by Academy mutation modules on first use.
+ *   - mountAcademy() defensively ensures the structure exists so the tab
+ *     can render on a fresh database that has never seen an academy mutation.
  * 
  * EXTERNAL PROVIDERS:
  *   - CharacterQueries (for character data)
@@ -87,6 +94,7 @@
     var DomUtils = window.DomUtils;
     var NotificationSystem = window.NotificationSystem;
     var DataLoader = window.DataLoader;
+    var CalendarConstants = window.CalendarConstants;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -185,9 +193,56 @@
             missing.push('NotificationSystem.notify');
         }
 
+        if (!CalendarConstants) {
+            missing.push('CalendarConstants');
+        }
+
         if (missing.length > 0) {
             console.warn('[AcademyModule] Missing dependencies:', missing.join(', '));
             return false;
+        }
+
+        return true;
+    }
+
+    // ============================================================
+    // ACADEMY DATA STRUCTURE GUARD
+    // ============================================================
+
+    /**
+     * Ensure the academy data structure exists in window.data.
+     * 
+     * Academy mutation modules create these structures lazily on first use,
+     * but the tab cannot render without them. This defensive initialisation
+     * makes the tab usable on a fresh database that has never seen an
+     * academy mutation, without requiring the user to create a class first.
+     * 
+     * Idempotent: safe to call multiple times.
+     * 
+     * @returns {boolean} True if the structure is present and usable
+     */
+    function ensureAcademyStructure() {
+        if (!window.data || typeof window.data !== 'object') {
+            return false;
+        }
+
+        if (!window.data.academy || typeof window.data.academy !== 'object') {
+            window.data.academy = {};
+        }
+
+        var academy = window.data.academy;
+
+        if (!academy.graduatingClasses || typeof academy.graduatingClasses !== 'object') {
+            academy.graduatingClasses = {};
+        }
+        if (!academy.classStudents || typeof academy.classStudents !== 'object') {
+            academy.classStudents = {};
+        }
+        if (!academy.grades || typeof academy.grades !== 'object') {
+            academy.grades = {};
+        }
+        if (!academy.rankings || typeof academy.rankings !== 'object') {
+            academy.rankings = {};
         }
 
         return true;
@@ -557,7 +612,13 @@
             return;
         }
 
-        if (!window.data || !window.data.academy) {
+        if (!window.data) {
+            container.innerHTML = '<p class="empty-state">Loading academy data...</p>';
+            return;
+        }
+
+        // Defensive: ensure the academy data structure exists
+        if (!ensureAcademyStructure()) {
             container.innerHTML = '<p class="empty-state">Loading academy data...</p>';
             return;
         }
