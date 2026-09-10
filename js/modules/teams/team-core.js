@@ -6,6 +6,7 @@
  *   - Team CRUD operations (create, update, delete)
  *   - Member management (add, remove, update)
  *   - Ranking management (add, remove)
+ *   - Team read access (getTeam, getTeamIndex)
  * 
  * IMPORTANT:
  *   - This is the CANONICAL mutation API for teams
@@ -58,6 +59,9 @@
  * 
  *   // Add member
  *   var member = TeamCore.addMember(teamId, { characterId: 'char_123' });
+ * 
+ *   // Read team (live reference — do not mutate)
+ *   var team = TeamCore.getTeam(teamId);
  */
 
 (function() {
@@ -996,7 +1000,7 @@
      * @param {object} team - Team object
      * @returns {array} Sorted ranking history
      */
-    function getSortedRankings(team) {
+    function getSortedRankingsPublic(team) {
         return getSortedRankings(team);
     }
 
@@ -1027,6 +1031,12 @@
         updateTeam: updateTeam,
         deleteTeam: deleteTeam,
 
+        // Team reads (LIVE REFERENCES — do not mutate directly)
+        // These are provided for read-only consumption by events/rendering.
+        // All mutations must go through createTeam/updateTeam/deleteTeam.
+        getTeam: getTeam,
+        getTeamIndex: getTeamIndex,
+
         // Members
         addMember: addMember,
         removeMember: removeMember,
@@ -1035,7 +1045,7 @@
         // Rankings
         addRanking: addRanking,
         removeRanking: removeRanking,
-        getSortedRankings: getSortedRankings,
+        getSortedRankings: getSortedRankingsPublic,
         getCurrentRank: getCurrentRank,
 
         // Utilities (exposed for testing)
