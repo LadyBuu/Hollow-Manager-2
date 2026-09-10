@@ -13,7 +13,7 @@
  * 
  * IMPORTANT:
  *   - Orchestrates UI interactions
- *   - Calls TeamCore for mutations
+ *   - Calls TeamCore for mutations AND direct reads
  *   - Calls TeamAggregator for data projections
  *   - Calls TeamUI for state management
  *   - Calls TeamRender for rendering
@@ -76,6 +76,9 @@
         if (!TeamCore || typeof TeamCore.deleteTeam !== 'function') {
             missing.push('TeamCore.deleteTeam');
         }
+        if (!TeamCore || typeof TeamCore.getTeam !== 'function') {
+            missing.push('TeamCore.getTeam');
+        }
         if (!TeamCore || typeof TeamCore.addMember !== 'function') {
             missing.push('TeamCore.addMember');
         }
@@ -90,6 +93,12 @@
         }
         if (!TeamCore || typeof TeamCore.removeRanking !== 'function') {
             missing.push('TeamCore.removeRanking');
+        }
+        if (!TeamCore || typeof TeamCore.getSortedRankings !== 'function') {
+            missing.push('TeamCore.getSortedRankings');
+        }
+        if (!TeamCore || typeof TeamCore.getCurrentRank !== 'function') {
+            missing.push('TeamCore.getCurrentRank');
         }
 
         if (!TeamAggregator || typeof TeamAggregator.getTeamPageViewModel !== 'function') {
@@ -679,7 +688,7 @@
 
                 var rankingInput = document.getElementById('team-ranking');
                 if (rankingInput) {
-                    var currentRank = TeamQueries.getCurrentRank(team);
+                    var currentRank = TeamCore.getCurrentRank(team);
                     rankingInput.value = currentRank || '';
                     rankingInput.disabled = true;
                 }
@@ -1060,7 +1069,7 @@
         delegate('.toggle-members', 'click', function(e, target) {
             var teamId = target.dataset.id;
             if (teamId) {
-                var expanded = TeamUI.toggleExpandedTeam(teamId);
+                TeamUI.toggleExpandedTeam(teamId);
                 refreshUI();
             }
         });
@@ -1700,8 +1709,6 @@
     }
 
     function applyFilters(tab) {
-        var filter = TeamUI.getFilter(tab);
-
         if (tab === 'professional' || tab === 'temporary') {
             var yearInput = document.getElementById('team-filter-year');
             if (yearInput) {
