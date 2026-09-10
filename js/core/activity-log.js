@@ -18,6 +18,56 @@
  *   - Uses IdUtils for ID generation (SINGLE SOURCE OF TRUTH)
  *   - Non-fatal: logging failures do not propagate
  * 
+ * ACTIVITY LOG CONTRACT:
+ * 
+ *   Ordering:
+ *     - Entries are stored NEWEST-FIRST (unshift on write).
+ *     - Consumers may rely on this invariant: history[0] is always
+ *       the most recent entry. If you slice the history, you are
+ *       taking the most recent N entries.
+ * 
+ *   Entry shape:
+ *     {
+ *       id: string,          // unique, generated via IdUtils.generateId('act')
+ *       message: string,     // complete human-readable text
+ *       type: string,        // 'info' | 'success' | 'warning' | 'error'
+ *       timestamp: string,   // ISO 8601
+ *       metadata: object|null // optional, opaque to ActivityLog
+ *     }
+ * 
+ *   Message semantics:
+ *     - `message` is the COMPLETE human-readable text of the event.
+ *       It is NOT a template waiting to be resolved.
+ *     - ActivityLog does NOT resolve referenced entities. If a producer
+ *       wants a character name in the message, the producer includes it.
+ *     - Consumers should display `message` as-is.
+ * 
+ *   Type semantics:
+ *     - 'info'    - default, neutral events
+ *     - 'success' - completed successfully
+ *     - 'warning' - completed with a caveat
+ *     - 'error'   - failed
+ *     - Producers should pass a type when the log entry implies one.
+ *       MutationPipeline passes the pipeline's outcome type.
+ * 
+ *   Metadata semantics:
+ *     - `metadata` is an optional object for caller use.
+ *     - Its shape is NOT part of the contract.
+ *     - ActivityLog does not inspect, validate, or transform it.
+ *     - Consumers that rely on specific metadata fields must
+ *       coordinate with producers. Do not assume a field exists.
+ *     - Currently no producer in the codebase populates metadata.
+ *       It is a hook for future structured logging.
+ * 
+ *   Capacity:
+ *     - History is capped at 100 entries. Older entries are dropped
+ *       on write. This is intentional and not configurable at runtime.
+ * 
+ *   Failure behaviour:
+ *     - Logging failures are non-fatal. If window.data is missing or
+ *       malformed, record() silently returns. The caller's operation
+ *       should not fail because logging failed.
+ * 
  * DEPENDENCIES:
  *   - window.IdUtils (for ID generation)
  *   - window.data (must exist before logging)
@@ -25,6 +75,9 @@
  * USAGE:
  *   ActivityLog.record('Character graduated', 'success');
  *   ActivityLog.record('Tournament completed', 'info', { tournamentId: 't_123' });
+ * 
+ *   var history = ActivityLog.getHistory(); // newest-first
+ *   var recent = history.slice(0, 10);      // 10 most recent
  */
 
 (function() {
