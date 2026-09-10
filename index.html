@@ -12,45 +12,34 @@
         <header>
             <div class="header-top">
                 <h1>Hollow Manager 2</h1>
-                <button id="nav-toggle" class="nav-toggle" aria-label="Toggle navigation">☰</button>
+                <button class="burger-btn" id="nav-toggle" aria-label="Toggle navigation">☰</button>
             </div>
 
             <nav id="main-nav">
-                <ul>
-                    <li><a href="#dashboard" data-tab="dashboard">Dashboard</a></li>
-                    <li><a href="#characters" data-tab="characters">Characters</a></li>
-                    <li><a href="#teams" data-tab="teams">Teams</a></li>
-                    <li><a href="#calendar" data-tab="calendar">Calendar</a></li>
-                    <li><a href="#social" data-tab="social">Social</a></li>
-                    <li><a href="#tournaments" data-tab="tournaments">Tournaments</a></li>
-                    <li><a href="#academy" data-tab="academy">Academy</a></li>
-                    <li><a href="#missions" data-tab="missions">Missions</a></li>
-                </ul>
+                <a href="#dashboard" data-tab="dashboard">Dashboard</a>
+                <a href="#characters" data-tab="characters">Characters</a>
+                <a href="#teams" data-tab="teams">Teams</a>
+                <a href="#calendar" data-tab="calendar">Calendar</a>
+                <a href="#social" data-tab="social">Social</a>
+                <a href="#tournaments" data-tab="tournaments">Tournaments</a>
+                <a href="#academy" data-tab="academy">Academy</a>
+                <a href="#missions" data-tab="missions">Missions</a>
             </nav>
 
-            <div id="header-actions" class="header-actions">
-                <div class="header-actions-row">
-                    <span class="header-actions-label">JSON:</span>
-                    <button id="export-json-btn" class="small">Export</button>
-                    <button id="import-json-btn" class="small">Import</button>
-                    <input type="file" id="json-file-input" accept=".json" style="display:none;">
-                </div>
+            <div class="header-actions">
+                <button id="export-json-btn" class="small">Export JSON</button>
+                <button id="import-json-btn" class="small">Import JSON</button>
+                <input type="file" id="json-file-input" accept=".json" style="display:none;">
 
-                <div class="header-actions-row">
-                    <span class="header-actions-label">Characters:</span>
-                    <button id="export-characters-csv-btn" class="small">Export</button>
-                    <button id="import-characters-csv-btn" class="small">Import</button>
-                    <button id="template-characters-csv-btn" class="small secondary">Template</button>
-                    <input type="file" id="characters-csv-file-input" accept=".csv" style="display:none;">
-                </div>
+                <button id="export-characters-csv-btn" class="small">Export Characters</button>
+                <button id="import-characters-csv-btn" class="small">Import Characters</button>
+                <button id="template-characters-csv-btn" class="small secondary">Character Template</button>
+                <input type="file" id="characters-csv-file-input" accept=".csv" style="display:none;">
 
-                <div class="header-actions-row">
-                    <span class="header-actions-label">Missions:</span>
-                    <button id="export-missions-csv-btn" class="small">Export</button>
-                    <button id="import-missions-csv-btn" class="small">Import</button>
-                    <button id="template-missions-csv-btn" class="small secondary">Template</button>
-                    <input type="file" id="missions-csv-file-input" accept=".csv" style="display:none;">
-                </div>
+                <button id="export-missions-csv-btn" class="small">Export Missions</button>
+                <button id="import-missions-csv-btn" class="small">Import Missions</button>
+                <button id="template-missions-csv-btn" class="small secondary">Mission Template</button>
+                <input type="file" id="missions-csv-file-input" accept=".csv" style="display:none;">
             </div>
         </header>
 
@@ -79,9 +68,7 @@
     <script src="js/utils/modal.js"></script>
     <script src="js/utils/notification.js"></script>
 
-    <!-- ============================================================
-         SHARED CONSTANTS
-         ============================================================ -->
+    <!-- SHARED CONSTANTS -->
     <script src="js/modules/shared/constants.js"></script>
     <script src="js/modules/shared/calendar-constants.js"></script>
     <script src="js/modules/shared/character-constants.js"></script>
@@ -91,12 +78,9 @@
     <script src="js/modules/shared/team-constants.js"></script>
     <script src="js/modules/shared/tournament-constants.js"></script>
 
-    <!-- CALENDAR VALIDATION -->
     <script src="js/utils/calendar-validation.js"></script>
 
-    <!-- ============================================================
-         SHARED QUERIES
-         ============================================================ -->
+    <!-- SHARED QUERIES -->
     <script src="js/modules/shared/queries/character-queries.js"></script>
     <script src="js/modules/shared/queries/team-queries.js"></script>
     <script src="js/modules/shared/queries/tournament-queries.js"></script>
@@ -107,9 +91,7 @@
     <script src="js/modules/shared/queries/elimination-queries.js"></script>
     <script src="js/modules/shared/queries/calendar-queries.js"></script>
 
-    <!-- ============================================================
-         CORE INFRASTRUCTURE
-         ============================================================ -->
+    <!-- CORE INFRASTRUCTURE -->
     <script src="js/core/activity-log.js"></script>
     <script src="js/core/database.js"></script>
     <script src="js/core/loader.js"></script>
@@ -117,9 +99,7 @@
     <script src="js/core/tab-manager.js"></script>
     <script src="js/core/mutation-pipeline.js"></script>
 
-    <!-- ============================================================
-         CALENDAR DOMAIN
-         ============================================================ -->
+    <!-- CALENDAR DOMAIN -->
     <script src="js/modules/calendar/schedule-core.js"></script>
     <script src="js/modules/calendar/calendar-renderer.js"></script>
     <script src="js/modules/calendar/calendar-aggregator.js"></script>
@@ -129,21 +109,16 @@
     <script src="js/modules/calendar/location-calendar-ui.js"></script>
     <script src="js/modules/calendar/index.js"></script>
 
-    <!-- ============================================================
-         ACADEMY DOMAIN
-         ============================================================ -->
+    <!-- ACADEMY DOMAIN -->
     <script src="js/modules/academy/academy-classes.js"></script>
     <script src="js/modules/academy/academy-grades.js"></script>
     <script src="js/modules/academy/academy-groups.js"></script>
     <script src="js/modules/academy/academy-ranking.js"></script>
     <script src="js/modules/academy/academy-disciplines.js"></script>
     <script src="js/modules/academy/academy-locations.js"></script>
-
     <script src="js/modules/shared/queries/academy-queries.js"></script>
-
     <script src="js/modules/academy/academy-schedule.js"></script>
     <script src="js/modules/academy/academy-distribute.js"></script>
-
     <script src="js/modules/academy/academy-aggregator.js"></script>
     <script src="js/modules/academy/academy-ui.js"></script>
     <script src="js/modules/academy/academy-events.js"></script>
@@ -152,9 +127,7 @@
     <script src="js/modules/academy/tabs/faculty-tab.js"></script>
     <script src="js/modules/academy/index.js"></script>
 
-    <!-- ============================================================
-         CHARACTER DOMAIN
-         ============================================================ -->
+    <!-- CHARACTER DOMAIN -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
     <script src="js/modules/characters/character-crud.js"></script>
@@ -170,9 +143,7 @@
     <script src="js/modules/characters/character-events.js"></script>
     <script src="js/modules/characters/index.js"></script>
 
-    <!-- ============================================================
-         TOURNAMENT DOMAIN
-         ============================================================ -->
+    <!-- TOURNAMENT DOMAIN -->
     <script src="js/modules/tournaments/tournament-schema.js"></script>
     <script src="js/modules/tournaments/tournament-lifecycle.js"></script>
     <script src="js/modules/tournaments/tournament-rules.js"></script>
@@ -186,9 +157,7 @@
     <script src="js/modules/tournaments/tournament-repair.js"></script>
     <script src="js/modules/tournaments/index.js"></script>
 
-    <!-- ============================================================
-         TEAM DOMAIN
-         ============================================================ -->
+    <!-- TEAM DOMAIN -->
     <script src="js/modules/teams/team-core.js"></script>
     <script src="js/modules/teams/team-aggregator.js"></script>
     <script src="js/modules/teams/team-ui.js"></script>
@@ -196,9 +165,7 @@
     <script src="js/modules/teams/team-events.js"></script>
     <script src="js/modules/teams/index.js"></script>
 
-    <!-- ============================================================
-         SOCIAL DOMAIN
-         ============================================================ -->
+    <!-- SOCIAL DOMAIN -->
     <script src="js/modules/social/social-core.js"></script>
     <script src="js/modules/social/social-aggregator.js"></script>
     <script src="js/modules/social/social-views.js"></script>
@@ -206,9 +173,7 @@
     <script src="js/modules/social/social-events.js"></script>
     <script src="js/modules/social/index.js"></script>
 
-    <!-- ============================================================
-         MISSIONS DOMAIN
-         ============================================================ -->
+    <!-- MISSIONS DOMAIN -->
     <script src="js/modules/missions/mission-schema.js"></script>
     <script src="js/modules/missions/mission-id.js"></script>
     <script src="js/modules/missions/mission-views.js"></script>
@@ -218,9 +183,7 @@
     <script src="js/modules/missions/mission-ui.js"></script>
     <script src="js/modules/missions/index.js"></script>
 
-    <!-- ============================================================
-         IMPORT/EXPORT DOMAIN
-         ============================================================ -->
+    <!-- IMPORT/EXPORT DOMAIN -->
     <script src="js/import-export/export-utils.js"></script>
     <script src="js/import-export/import-result.js"></script>
     <script src="js/import-export/csv-parser.js"></script>
@@ -235,23 +198,17 @@
     <script src="js/import-export/ui.js"></script>
     <script src="js/import-export/index.js"></script>
 
-    <!-- ============================================================
-         APPLICATION SETTINGS
-         ============================================================ -->
+    <!-- APPLICATION SETTINGS -->
     <script src="js/modules/application/application-settings-core.js"></script>
     <script src="js/modules/application/application-settings-queries.js"></script>
 
-    <!-- ============================================================
-         DASHBOARD
-         ============================================================ -->
+    <!-- DASHBOARD -->
     <script src="js/modules/dashboard/dashboard-aggregator.js"></script>
     <script src="js/modules/dashboard/dashboard-render.js"></script>
     <script src="js/modules/dashboard/dashboard-ui.js"></script>
     <script src="js/modules/dashboard/index.js"></script>
 
-    <!-- ============================================================
-         BOOTSTRAP + APPLICATION SHELL
-         ============================================================ -->
+    <!-- BOOTSTRAP + APP SHELL -->
     <script src="js/core/bootstrap.js"></script>
     <script src="js/app.js"></script>
 
