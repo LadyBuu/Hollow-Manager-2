@@ -22,19 +22,30 @@
  *   - All HTML escaping uses DomUtils.escapeHtml()
  *   - All notifications use NotificationSystem.notify()
  * 
- * DEPENDENCIES:
- *   - window.AcademyUI (from academy-ui.js) - MANDATORY
- *   - window.AcademyAggregator (from academy-aggregator.js) - MANDATORY
- *   - window.AcademyClasses (from academy-classes.js) - MANDATORY (replaces AcademyCore)
- *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
- *   - window.AcademyGrades (from academy-grades.js) - MANDATORY
- *   - window.AcademyRanking (from academy-ranking.js) - MANDATORY
- *   - window.AcademySchedule (from academy-schedule.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.CharacterList (from character-list.js) - MANDATORY
- *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
- *   - window.NotificationSystem (from notification.js) - MANDATORY
- *   - window.DomUtils (from dom-utils.js) - MANDATORY
+ * DEPENDENCY RESOLUTION:
+ *   - Modules that are guaranteed to be loaded before this file are
+ *     captured at module load.
+ *   - CharacterList loads AFTER this file in the current script order
+ *     (Character domain is loaded after Academy domain). It is therefore
+ *     resolved lazily at call time via getCharacterList().
+ *   - This avoids load-order warnings and makes the module robust to
+ *     future script reordering.
+ * 
+ * DEPENDENCIES (loaded before this file - captured at load):
+ *   - window.AcademyUI
+ *   - window.AcademyAggregator
+ *   - window.AcademyClasses
+ *   - window.AcademyQueries
+ *   - window.AcademyGrades
+ *   - window.AcademyRanking
+ *   - window.AcademySchedule
+ *   - window.CharacterQueries
+ *   - window.CalendarConstants
+ *   - window.NotificationSystem
+ *   - window.DomUtils
+ * 
+ * DEPENDENCIES (lazy - resolved at call time):
+ *   - window.CharacterList
  * 
  * USAGE:
  *   var tab = window.StudentTab;
@@ -50,24 +61,39 @@
     }
 
     // ============================================================
-    // DEPENDENCY IMPORTS - DIRECT (no lazy loading for critical deps)
+    // DEPENDENCY IMPORTS - LOAD-TIME (guaranteed available)
     // ============================================================
 
     var AcademyUI = window.AcademyUI;
     var AcademyAggregator = window.AcademyAggregator;
-    var AcademyClasses = window.AcademyClasses;  // Direct - replaces AcademyCore
+    var AcademyClasses = window.AcademyClasses;
     var AcademyQueries = window.AcademyQueries;
     var AcademyGrades = window.AcademyGrades;
     var AcademyRanking = window.AcademyRanking;
     var AcademySchedule = window.AcademySchedule;
     var CharacterQueries = window.CharacterQueries;
-    var CharacterList = window.CharacterList;
     var CalendarConstants = window.CalendarConstants;
     var NotificationSystem = window.NotificationSystem;
     var DomUtils = window.DomUtils;
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // DEPENDENCY RESOLUTION - LAZY (not guaranteed at load time)
+    // ============================================================
+
+    /**
+     * Get CharacterList, resolved at call time.
+     * CharacterList loads after this module in the current script order
+     * (Character domain loads after Academy domain), so it cannot be
+     * captured at load time.
+     * 
+     * @returns {object|null} CharacterList or null if not yet loaded
+     */
+    function getCharacterList() {
+        return window.CharacterList || null;
+    }
+
+    // ============================================================
+    // DEPENDENCY CHECK - LOAD-TIME ONLY
     // ============================================================
 
     function checkDependencies() {
@@ -93,7 +119,6 @@
             missing.push('AcademyAggregator.getClassViewModel');
         }
 
-        // AcademyClasses replaces AcademyCore
         if (!AcademyClasses || typeof AcademyClasses.addStudent !== 'function') {
             missing.push('AcademyClasses.addStudent');
         }
@@ -154,10 +179,6 @@
             missing.push('CharacterQueries.getCurrentStatus');
         }
 
-        if (!CharacterList || typeof CharacterList.render !== 'function') {
-            missing.push('CharacterList.render');
-        }
-
         if (!CalendarConstants || typeof CalendarConstants.MIN_WEEK !== 'number') {
             missing.push('CalendarConstants.MIN_WEEK');
         }
@@ -176,8 +197,11 @@
             missing.push('DomUtils.escapeHtml');
         }
 
+        // CharacterList is deliberately NOT checked here.
+        // It is resolved lazily at call time via getCharacterList().
+
         if (missing.length > 0) {
-            console.warn('[StudentTab] Missing dependencies:', missing.join(', '));
+            console.warn('[StudentTab] Missing load-time dependencies:', missing.join(', '));
             return false;
         }
 
@@ -187,7 +211,7 @@
     checkDependencies();
 
     // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils
+    // HTML ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
@@ -205,7 +229,7 @@
     }
 
     // ============================================================
-    // NOTIFICATION - Delegates to NotificationSystem
+    // NOTIFICATION
     // ============================================================
 
     function notify(message, type) {
@@ -260,7 +284,7 @@
         html += '</div>';
         html += '<div class="student-tab-controls">';
         html += '<div class="week-selector">';
-        html += '<label>Week:</label>';
+        html += '<label for="student-week-input">Week:</label>';
         html += '<input type="number" id="student-week-input" value="' + week + '" min="' + MIN_WEEK + '" max="' + MAX_WEEK + '" class="small">';
         html += '<button id="student-week-apply" class="small secondary">Apply</button>';
         html += '</div>';
@@ -582,18 +606,23 @@
         var container = document.getElementById('student-character-list');
         if (!container) { return; }
 
-        if (CharacterList && typeof CharacterList.render === 'function') {
-            var classId = AcademyUI.getSelectedClassId();
-            var classFilter = document.getElementById('char-class-filter');
-            if (classFilter && classId) {
-                classFilter.value = classId;
-            }
-            CharacterList.render();
+        // ---- RESOLVE CHARACTERLIST AT CALL TIME ----
+        var CharacterList = getCharacterList();
+        if (!CharacterList || typeof CharacterList.render !== 'function') {
+            container.innerHTML = '<p class="empty-state small">Character list not available.</p>';
+            return;
         }
+
+        var classId = AcademyUI.getSelectedClassId();
+        var classFilter = document.getElementById('char-class-filter');
+        if (classFilter && classId) {
+            classFilter.value = classId;
+        }
+        CharacterList.render();
     }
 
     // ============================================================
-    // BIND EVENTS - Main entry point for event binding
+    // BIND EVENTS
     // ============================================================
 
     function bindEvents(container) {
@@ -706,7 +735,6 @@
         }, true);
 
         // ---- Student selection via CharacterList ----
-        // CharacterList handles its own click events, but we need to listen for selection changes
         document.addEventListener('characterSelected', function(e) {
             if (e.detail && e.detail.characterId) {
                 AcademyUI.selectStudent(e.detail.characterId);
@@ -762,8 +790,6 @@
                 var letter = getLetterGrade(numericScore);
                 if (letterEl) { letterEl.textContent = letter.label; }
                 if (weightedEl) {
-                    // Weighted score calculation needs discipline data
-                    // This will be handled on save
                     weightedEl.textContent = '--';
                 }
             }
@@ -838,7 +864,6 @@
             return;
         }
 
-        // Use AcademyGrades.saveGrades directly
         var result = AcademyGrades.saveGrades(studentId, week, grades);
 
         if (result && result.success) {
