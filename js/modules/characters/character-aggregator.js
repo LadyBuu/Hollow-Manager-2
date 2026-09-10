@@ -16,6 +16,15 @@
  *   - No passthrough methods
  *   - List projections avoid per-character N+1 aggregation
  * 
+ * DEATH TIMELINE SEMANTICS:
+ *   - "Deceased" is TIME-DEPENDENT. A character with deathYear = 1920
+ *     is alive in 1918 and dead in 1922.
+ *   - `char.deceased` is a CACHED boolean maintained by CharacterCRUD.
+ *     It reflects "dead as of window.data.currentYear".
+ *   - All projections in this module compute `deceased` via
+ *     CharacterQueries.isDeceased(char) so year changes are respected
+ *     even if the cache is stale.
+ * 
  * DEPENDENCIES (lazily loaded):
  *   - window.CharacterQueries (from shared/queries)
  *   - window.AcademyQueries (from shared/queries)
@@ -179,6 +188,27 @@
         return 1;
     }
 
+    /**
+     * Check whether a character is deceased as of the current year.
+     * 
+     * Prefers CharacterQueries.isDeceased (the canonical query), which
+     * computes from deathYear + current year. Falls back to the cached
+     * char.deceased boolean if the query isn't available.
+     * 
+     * @param {object} char - Character object
+     * @returns {boolean} True if deceased as of the current year
+     */
+    function isDeceased(char) {
+        var CharacterQueries = getCharacterQueries();
+
+        if (CharacterQueries && typeof CharacterQueries.isDeceased === 'function') {
+            return CharacterQueries.isDeceased(char);
+        }
+
+        // Fallback: use the cached flag
+        return char && char.deceased === true;
+    }
+
     function getModifier(value) {
         var num = Number(value);
         if (isNaN(num) || !isFinite(num)) { return 0; }
@@ -302,7 +332,6 @@
 
         var TournamentQueries = getTournamentQueries();
 
-        // Check if this elimination is for this character or stands alone
         if (elim.standalone) {
             return {
                 id: elim.id,
@@ -312,7 +341,6 @@
             };
         }
 
-        // Tournament elimination
         var tournamentName = 'Unknown Tournament';
         if (elim.tournamentId && TournamentQueries) {
             var tourn = TournamentQueries.getTournamentById(elim.tournamentId);
@@ -332,8 +360,8 @@
 
     function formatMission(mission) {
         var TeamQueries = getTeamQueries();
-        var teamName = (TeamQueries && TeamQueries.getTeamName) 
-            ? TeamQueries.getTeamName(mission.assignedTeamId) 
+        var teamName = (TeamQueries && TeamQueries.getTeamName)
+            ? TeamQueries.getTeamName(mission.assignedTeamId)
             : 'Unknown Team';
 
         return {
@@ -403,7 +431,6 @@
 
     /**
      * Get complete character detail projection.
-     * Returns everything CharacterDetail.render() needs.
      * 
      * @param {string} characterId - Character ID
      * @param {object} options - Options
@@ -462,6 +489,15 @@
         var isInstructor = CharacterQueries.isInstructor(char);
         var isCivilian = CharacterQueries.isCivilian(char);
 
+        // ---- Death Timeline ----
+        // Computed via the query so it reflects the current year, not a
+        // potentially stale cached char.deceased flag.
+        var deceasedNow = isDeceased(char);
+        var deathYear = char.deathYear ? String(char.deathYear).trim() : '';
+        var deathCause = char.deathCause ? String(char.deathCause).trim() : '';
+        var deathAge = char.deathAge ? String(char.deathAge).trim() : '';
+        var deathWeek = char.deathWeek ? String(char.deathWeek).trim() : '';
+
         // ---- Stats ----
         var statsWithModifiers = {};
         var statKeys = getStatKeys();
@@ -492,7 +528,9 @@
         var magic = {};
         if (CharacterStats) {
             var magicRaw = CharacterStats.getCharacterMagic(char);
-            var magicTypeKeys = window.MagicConstants ? window.MagicConstants.getTypeKeys() : Object.keys(magicRaw);
+            var magicTypeKeys = window.MagicConstants
+                ? window.MagicConstants.getTypeKeys()
+                : Object.keys(magicRaw);
             magicTypeKeys.forEach(function(key) {
                 var value = magicRaw[key] || 0;
                 magic[key] = {
@@ -542,7 +580,9 @@
         // ---- Grades ----
         var grades = [];
         if (includeGrades && AcademyQueries) {
-            var rawGrades = AcademyQueries.getStudentGrades ? AcademyQueries.getStudentGrades(characterId) : [];
+            var rawGrades = AcademyQueries.getStudentGrades
+                ? AcademyQueries.getStudentGrades(characterId)
+                : [];
             grades = rawGrades.map(formatGrade);
             grades.sort(function(a, b) {
                 return parseInt(a.week, 10) - parseInt(b.week, 10);
@@ -573,12 +613,10 @@
         var eliminationReason = 'Unknown';
 
         if (includeEliminations && EliminationQueries) {
-            // Check elimination status
             isEliminated = EliminationQueries.isCharacterEliminated(characterId, weekNum);
             eliminationWeek = EliminationQueries.getEliminationWeek(characterId);
             eliminationReason = EliminationQueries.getEliminationReason(characterId) || 'Unknown';
 
-            // Format eliminations
             var rawEliminations = char.eliminations || [];
             rawEliminations.forEach(function(elim) {
                 var formatted = formatElimination(elim, characterId);
@@ -670,11 +708,13 @@
             isStudent: isStudent,
             isInstructor: isInstructor,
             isCivilian: isCivilian,
-            deceased: char.deceased || false,
-            deathYear: char.deathYear || '',
-            deathCause: char.deathCause || '',
-            deathAge: char.deathAge || '',
-            deathWeek: char.deathWeek || '',
+
+            // Death timeline (computed)
+            deceased: deceasedNow,
+            deathYear: deathYear,
+            deathCause: deathCause,
+            deathAge: deathAge,
+            deathWeek: deathWeek,
 
             // Stats
             stats: statsWithModifiers,
@@ -790,17 +830,28 @@
                 if (!char || !char.id) { return; }
                 eliminationStatus[char.id] = {
                     eliminated: EliminationQueries.isCharacterEliminated(char.id, weekNum),
-                    week: EliminationQueries.getEliminationWeek ? EliminationQueries.getEliminationWeek(char.id) : null,
-                    reason: EliminationQueries.getEliminationReason ? EliminationQueries.getEliminationReason(char.id) : 'Unknown'
+                    week: EliminationQueries.getEliminationWeek
+                        ? EliminationQueries.getEliminationWeek(char.id)
+                        : null,
+                    reason: EliminationQueries.getEliminationReason
+                        ? EliminationQueries.getEliminationReason(char.id)
+                        : 'Unknown'
                 };
             });
         }
+
+        // ---- Pre-compute deceased status for all characters ----
+        // Uses the year-aware query, not the cached flag.
+        var deceasedStatus = {};
+        characters.forEach(function(char) {
+            if (!char || !char.id) { return; }
+            deceasedStatus[char.id] = isDeceased(char);
+        });
 
         // ---- Filter ----
         var filtered = characters.filter(function(char) {
             if (!char || typeof char !== 'object') { return false; }
 
-            // Name filter
             if (nameFilter) {
                 var displayName = CharacterQueries.getDisplayName(char).toLowerCase();
                 if (displayName.indexOf(nameFilter.toLowerCase()) === -1) {
@@ -808,7 +859,6 @@
                 }
             }
 
-            // Class filter
             if (classFilter !== 'all' && classFilter !== '') {
                 var charClasses = classMembership[char.id] || [];
                 var found = false;
@@ -823,12 +873,10 @@
                 }
             }
 
-            // Hide deceased
-            if (hideDeceased && char.deceased) {
+            if (hideDeceased && deceasedStatus[char.id]) {
                 return false;
             }
 
-            // Hide eliminated
             if (hideEliminated && eliminationStatus[char.id] && eliminationStatus[char.id].eliminated) {
                 return false;
             }
@@ -860,7 +908,7 @@
                 id: char.id,
                 name: CharacterQueries.getDisplayName(char),
                 status: CharacterQueries.getCurrentStatus(char),
-                deceased: char.deceased || false,
+                deceased: deceasedStatus[char.id] === true,
                 eliminated: elimStatus.eliminated,
                 eliminationWeek: elimStatus.week,
                 eliminationReason: elimStatus.reason,
@@ -874,14 +922,6 @@
     // ACADEMIC DATA PROJECTION
     // ============================================================
 
-    /**
-     * Get character academic data projection.
-     * Teams, grades, elimination status for academic view.
-     * 
-     * @param {string} characterId - Character ID
-     * @param {number} week - Week number (default: current)
-     * @returns {object|null} Academic data projection or null
-     */
     function getCharacterAcademicData(characterId, week) {
         if (!characterId) { return null; }
 
@@ -890,16 +930,12 @@
         var TeamQueries = getTeamQueries();
         var EliminationQueries = getEliminationQueries();
 
-        if (!CharacterQueries) {
-            return null;
-        }
+        if (!CharacterQueries) { return null; }
 
         var weekNum = week || getCurrentWeek();
-
         var char = CharacterQueries.getCharacterById(characterId);
         if (!char) { return null; }
 
-        // Academic teams
         var academicTeams = [];
         if (TeamQueries) {
             var allTeams = TeamQueries.getTeamsForCharacter(characterId);
@@ -912,23 +948,22 @@
             }
         }
 
-        // Grades
         var grades = [];
         if (AcademyQueries) {
-            var rawGrades = AcademyQueries.getStudentGrades ? AcademyQueries.getStudentGrades(characterId) : [];
+            var rawGrades = AcademyQueries.getStudentGrades
+                ? AcademyQueries.getStudentGrades(characterId)
+                : [];
             grades = rawGrades.map(formatGrade);
             grades.sort(function(a, b) {
                 return parseInt(a.week, 10) - parseInt(b.week, 10);
             });
         }
 
-        // Class names
         var classNames = [];
         if (AcademyQueries) {
             classNames = AcademyQueries.getCharacterClassNames(char) || [];
         }
 
-        // Elimination status
         var isEliminated = false;
         var eliminationWeek = null;
         var eliminationReason = 'Unknown';
@@ -967,13 +1002,6 @@
     // PROFESSIONAL DATA PROJECTION
     // ============================================================
 
-    /**
-     * Get character professional data projection.
-     * Teams, missions, career for professional view.
-     * 
-     * @param {string} characterId - Character ID
-     * @returns {object|null} Professional data projection or null
-     */
     function getCharacterProfessionalData(characterId) {
         if (!characterId) { return null; }
 
@@ -981,14 +1009,11 @@
         var TeamQueries = getTeamQueries();
         var MissionQueries = getMissionQueries();
 
-        if (!CharacterQueries) {
-            return null;
-        }
+        if (!CharacterQueries) { return null; }
 
         var char = CharacterQueries.getCharacterById(characterId);
         if (!char) { return null; }
 
-        // Teams
         var professionalTeams = [];
         var temporaryTeams = [];
         var civilianTeams = [];
@@ -1011,14 +1036,12 @@
             }
         }
 
-        // Missions
         var missions = [];
         if (MissionQueries) {
             var rawMissions = MissionQueries.getMissionsForCharacter(characterId) || [];
             missions = rawMissions.map(formatMission);
         }
 
-        // Career status
         var careerStatus = char.careerStatus || [];
         var careerHistory = careerStatus.map(function(status) {
             return {
@@ -1046,22 +1069,13 @@
     // SOCIAL DATA PROJECTION
     // ============================================================
 
-    /**
-     * Get character social data projection.
-     * Relationships only.
-     * 
-     * @param {string} characterId - Character ID
-     * @returns {object|null} Social data projection or null
-     */
     function getCharacterSocialData(characterId) {
         if (!characterId) { return null; }
 
         var CharacterQueries = getCharacterQueries();
         var SocialQueries = getSocialQueries();
 
-        if (!CharacterQueries) {
-            return null;
-        }
+        if (!CharacterQueries) { return null; }
 
         var char = CharacterQueries.getCharacterById(characterId);
         if (!char) { return null; }
@@ -1087,14 +1101,12 @@
     // ============================================================
 
     window.CharacterAggregator = {
-        // Projections
         getCharacterDetail: getCharacterDetail,
         getCharacterListViewModel: getCharacterListViewModel,
         getCharacterAcademicData: getCharacterAcademicData,
         getCharacterProfessionalData: getCharacterProfessionalData,
         getCharacterSocialData: getCharacterSocialData,
 
-        // Helpers (exposed for views that need formatting)
         formatPeriod: formatPeriod,
         formatTeams: formatTeams,
         formatGrade: formatGrade,
@@ -1102,8 +1114,8 @@
         formatMission: formatMission,
         formatRelationship: formatRelationship,
         getCurrentWeek: getCurrentWeek,
+        isDeceased: isDeceased,
 
-        // Constants
         get MIN_WEEK() {
             var CC = getCalendarConstants();
             return CC ? CC.MIN_WEEK || 1 : 1;

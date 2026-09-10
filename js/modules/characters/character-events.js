@@ -82,7 +82,6 @@
     function checkDependencies() {
         var missing = [];
 
-        // Required functions from index.js
         var required = [
             'getCurrentEditId',
             'setCurrentEditId',
@@ -95,7 +94,6 @@
             }
         });
 
-        // Mandatory modules
         if (!CharacterAggregator || typeof CharacterAggregator.getCharacterDetail !== 'function') {
             missing.push('CharacterAggregator.getCharacterDetail');
         }
@@ -192,7 +190,6 @@
     // ============================================================
 
     function refreshUI(char) {
-        // Refresh character list - uses Aggregator internally
         if (window.CharacterList && typeof window.CharacterList.render === 'function') {
             try {
                 window.CharacterList.render();
@@ -201,37 +198,31 @@
             }
         }
 
-        // Refresh class tags - uses CharacterClassView (direct AcademyQueries)
         var classTagContainer = document.getElementById('class-tag-container');
         if (classTagContainer) {
             CharacterClassView.renderClassTags(char, classTagContainer);
         }
 
-        // Refresh current classes display - uses CharacterClassView
         var currentClassesDisplay = document.getElementById('current-classes-list');
         if (currentClassesDisplay) {
             CharacterClassView.updateCurrentClassesDisplay(char, currentClassesDisplay);
         }
 
-        // Refresh class selector - uses CharacterClassView
         var classSelect = document.getElementById('academic-class-select');
         if (classSelect) {
             CharacterClassView.populateClassSelector(char, classSelect);
         }
 
-        // Refresh tournament eliminations - uses CharacterEliminationView
         var tournElimContainer = document.getElementById('tournament-eliminations-view');
         if (tournElimContainer) {
             CharacterEliminationView.renderTournamentEliminations(char, tournElimContainer);
         }
 
-        // Refresh standalone eliminations - uses CharacterEliminationView
         var standaloneElimContainer = document.getElementById('standalone-eliminations-container');
         if (standaloneElimContainer) {
             CharacterEliminationView.renderStandaloneEliminations(char, standaloneElimContainer);
         }
 
-        // Update dashboard stats
         if (typeof window.updateDashboardStats === 'function') {
             try {
                 window.updateDashboardStats();
@@ -314,10 +305,8 @@
             return;
         }
 
-        // Remove existing listeners before binding new ones
         removeAllEventListeners();
 
-        // Bind all events
         bindToggleList(container);
         bindAddCharacter(container);
         bindFormSubmit(container);
@@ -331,7 +320,7 @@
         bindClickOutside(container);
         bindCharacterList(container);
         bindRandomButtons(container);
-        bindSpecialMoveButtons(container);
+        bindPreviousNameButtons(container);
 
         _initialized = true;
     }
@@ -397,7 +386,6 @@
             return;
         }
 
-        // Add the current edit ID to the DTO
         var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
         dto._editId = editId;
 
@@ -409,7 +397,6 @@
                         if (typeof window.setCurrentEditId === 'function') {
                             window.setCurrentEditId(savedId);
                         }
-                        // Use CharacterQueries for simple read after save
                         var char = CharacterQueries.getCharacterById(savedId);
                         CharacterForm.render(savedId);
                         refreshUI(char);
@@ -431,7 +418,6 @@
             addSafeEventListener(cancelBtn, 'click', function() {
                 var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
                 if (editId) {
-                    // Re-render with saved data to discard unsaved changes
                     CharacterForm.render(editId);
                 } else {
                     CharacterForm.hide();
@@ -464,7 +450,6 @@
             return;
         }
 
-        // Use CharacterQueries for simple read
         var char = CharacterQueries.getCharacterById(id);
         if (!char) {
             notify('Character not found.', 'error');
@@ -557,18 +542,10 @@
                 var hideDeadEl = document.getElementById('hide-deceased');
                 var hideElimEl = document.getElementById('hide-eliminated');
 
-                if (nameEl) {
-                    nameEl.value = '';
-                }
-                if (classEl) {
-                    classEl.value = 'all';
-                }
-                if (hideDeadEl) {
-                    hideDeadEl.checked = true;
-                }
-                if (hideElimEl) {
-                    hideElimEl.checked = true;
-                }
+                if (nameEl) { nameEl.value = ''; }
+                if (classEl) { classEl.value = 'all'; }
+                if (hideDeadEl) { hideDeadEl.checked = true; }
+                if (hideElimEl) { hideElimEl.checked = true; }
 
                 if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                     window.CharacterList.render();
@@ -581,6 +558,14 @@
     // DECEASED TOGGLE
     // ============================================================
 
+    /**
+     * Toggle the visibility of the death-details field group.
+     * The checkbox is on the Name tab's Life Events section.
+     * When checked, the deathYear / deathWeek / deathCause /
+     * deathAge fields become visible.
+     * When unchecked, they're hidden and left alone - the values
+     * are preserved so re-checking the box restores them.
+     */
     function bindDeceasedToggle(container) {
         var deceasedCheck = document.getElementById('char-deceased');
         if (deceasedCheck) {
@@ -619,7 +604,6 @@
             return;
         }
 
-        // Use CharacterQueries for simple read
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
             notify('Character not found.', 'error');
@@ -630,9 +614,7 @@
             .then(function(result) {
                 if (result && result.success) {
                     var input = document.getElementById('class-tag-input');
-                    if (input) {
-                        input.value = '';
-                    }
+                    if (input) { input.value = ''; }
                     refreshUI(char);
                 }
             })
@@ -713,7 +695,6 @@
             return;
         }
 
-        // Use CharacterQueries for simple read
         var char = CharacterQueries.getCharacterById(id);
         if (!char) {
             notify('Character not found.', 'error');
@@ -727,7 +708,6 @@
         CharacterForm.render(id);
         refreshUI(char);
 
-        // Scroll the form into view
         var formContainer = document.getElementById('character-form-container');
         if (formContainer) {
             setTimeout(function() {
@@ -745,7 +725,6 @@
     // ============================================================
 
     function bindRandomButtons(container) {
-        // Physical
         var randomPhysicalBtn = document.getElementById('random-physical-btn');
         if (randomPhysicalBtn) {
             addSafeEventListener(randomPhysicalBtn, 'click', function() {
@@ -753,7 +732,6 @@
             });
         }
 
-        // Personality
         var randomPersonalityBtn = document.getElementById('random-personality-btn');
         if (randomPersonalityBtn) {
             addSafeEventListener(randomPersonalityBtn, 'click', function() {
@@ -761,30 +739,10 @@
             });
         }
 
-        // Physical stats
         var randomStatsBtn = document.getElementById('random-stats-btn');
         if (randomStatsBtn) {
             addSafeEventListener(randomStatsBtn, 'click', function() {
                 fillRandomStats();
-            });
-        }
-
-        // Magic per-category
-        var categories = ['elemental', 'body', 'aether'];
-        categories.forEach(function(cat) {
-            var btn = document.getElementById('random-' + cat + '-btn');
-            if (btn) {
-                addSafeEventListener(btn, 'click', function() {
-                    fillRandomMagicCategory(cat);
-                });
-            }
-        });
-
-        // All magic
-        var randomMagicBtn = document.getElementById('random-magic-btn');
-        if (randomMagicBtn) {
-            addSafeEventListener(randomMagicBtn, 'click', function() {
-                fillRandomMagic();
             });
         }
     }
@@ -823,245 +781,71 @@
             var value = stats[key] !== undefined ? stats[key] : 10;
             FormUtils.setField('char-stat-' + key, value);
         });
-
-        // Refresh class suggestion if the view exposes it
-        if (window.CharacterStatsView && typeof window.CharacterStatsView.updateClassSuggestion === 'function') {
-            try {
-                window.CharacterStatsView.updateClassSuggestion();
-            } catch (e) {
-                // Ignore suggestion errors
-            }
-        }
-
-        notify('Random physical stats generated!', 'info');
-    }
-
-    function fillRandomMagic() {
-        var magic = CharacterGenerator.generateMagic();
-        applyMagicToForm(magic);
-        notify('Random magic proficiencies generated!', 'info');
-    }
-
-    function fillRandomMagicCategory(category) {
-        var magic = CharacterGenerator.generateMagicCategory(category);
-        applyMagicToForm(magic);
-
-        // Refresh magic class suggestion
-        if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicClassSuggestion === 'function') {
-            try {
-                window.CharacterStatsView.updateMagicClassSuggestion();
-            } catch (e) {
-                // Ignore suggestion errors
-            }
-        }
-        if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicPowerDisplay === 'function') {
-            try {
-                window.CharacterStatsView.updateMagicPowerDisplay();
-            } catch (e) {
-                // Ignore suggestion errors
-            }
-        }
-
-        notify('Random ' + category + ' magic generated!', 'info');
-    }
-
-    function applyMagicToForm(magic) {
-        if (!magic || typeof magic !== 'object') {
-            return;
-        }
-        Object.keys(magic).forEach(function(key) {
-            var inputId = 'magic-' + key;
-            if (document.getElementById(inputId)) {
-                FormUtils.setField(inputId, magic[key]);
-            }
-        });
+        notify('Random stats generated!', 'info');
     }
 
     // ============================================================
-    // SPECIAL MOVE BUTTONS
+    // PREVIOUS NAME LIST EDITOR
     // ============================================================
 
-    function bindSpecialMoveButtons(container) {
-        // Add physical move
-        var addPhysicalBtn = document.getElementById('add-physical-move-btn');
-        if (addPhysicalBtn) {
-            addSafeEventListener(addPhysicalBtn, 'click', function() {
-                var nameInput = document.getElementById('physical-move-name');
-                var descInput = document.getElementById('physical-move-desc');
-                var name = nameInput ? nameInput.value.trim() : '';
-                var desc = descInput ? descInput.value.trim() : '';
-                if (!name) {
-                    notify('Move name is required.', 'error');
-                    return;
+    function bindPreviousNameButtons(container) {
+        var addBtn = document.getElementById('add-previous-name-btn');
+        if (addBtn) {
+            addSafeEventListener(addBtn, 'click', function() {
+                var containerEl = document.getElementById('previous-names-container');
+                if (!containerEl) { return; }
+
+                if (CharacterForm && typeof CharacterForm.addPreviousNameRow === 'function') {
+                    CharacterForm.addPreviousNameRow(containerEl, '');
                 }
-                handleAddSpecialMove('physical', name, desc);
+
+                var lastRow = containerEl.querySelector('.previous-name-row:last-child');
+                if (lastRow) {
+                    var input = lastRow.querySelector('.previous-name-input');
+                    if (input) { input.focus(); }
+                }
             });
         }
 
-        // Add magical move
-        var addMagicalBtn = document.getElementById('add-magical-move-btn');
-        if (addMagicalBtn) {
-            addSafeEventListener(addMagicalBtn, 'click', function() {
-                var nameInput = document.getElementById('magical-move-name');
-                var descInput = document.getElementById('magical-move-desc');
-                var name = nameInput ? nameInput.value.trim() : '';
-                var desc = descInput ? descInput.value.trim() : '';
-                if (!name) {
-                    notify('Move name is required.', 'error');
-                    return;
-                }
-                handleAddSpecialMove('magical', name, desc);
-            });
-        }
+        addSafeDelegatedListener('.remove-previous-name', 'click', function(e, target) {
+            e.preventDefault();
+            var row = target.closest('.previous-name-row');
+            if (!row) { return; }
 
-        // Remove special move (delegated)
-        addSafeDelegatedListener('.remove-special-move', 'click', function(e, target) {
-            e.stopPropagation();
-            var type = target.dataset.type;
-            var moveId = target.dataset.moveId;
-            if (type && moveId) {
-                handleRemoveSpecialMove(type, moveId);
-            }
-        });
+            var parent = row.parentElement;
+            if (!parent) { return; }
 
-        // Edit special move (delegated)
-        addSafeDelegatedListener('.edit-special-move', 'click', function(e, target) {
-            e.stopPropagation();
-            var type = target.dataset.type;
-            var moveId = target.dataset.moveId;
-            if (type && moveId) {
-                handleEditSpecialMove(type, moveId);
-            }
-        });
-
-        // Listen for edit modal save event
-        document.addEventListener('specialMoveEdit', function(e) {
-            if (!e.detail) {
+            if (parent.querySelectorAll('.previous-name-row').length <= 1) {
+                var input = row.querySelector('.previous-name-input');
+                if (input) { input.value = ''; }
                 return;
             }
-            var d = e.detail;
-            if (d.charId && d.type && d.moveId) {
-                handleUpdateSpecialMove(d.charId, d.type, d.moveId, d.name, d.description);
+
+            row.remove();
+        });
+
+        addSafeDelegatedListener('.previous-name-input', 'keydown', function(e, target) {
+            if (e.key !== 'Enter') { return; }
+            e.preventDefault();
+
+            var parent = target.closest('#previous-names-container');
+            if (!parent) { return; }
+
+            if (CharacterForm && typeof CharacterForm.addPreviousNameRow === 'function') {
+                CharacterForm.addPreviousNameRow(parent, '');
+            }
+
+            var newRow = parent.querySelector('.previous-name-row:last-child');
+            var currentRow = target.closest('.previous-name-row');
+            if (newRow && currentRow && currentRow.parentElement === parent) {
+                currentRow.parentElement.insertBefore(newRow, currentRow.nextSibling);
+            }
+
+            if (newRow) {
+                var input = newRow.querySelector('.previous-name-input');
+                if (input) { input.focus(); }
             }
         });
-    }
-
-    function handleAddSpecialMove(type, name, description) {
-        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        if (!charId) {
-            notify('Please save the character first.', 'error');
-            return;
-        }
-
-        if (!window.CharacterStats || typeof window.CharacterStats.addSpecialMove !== 'function') {
-            notify('Character stats module not available.', 'error');
-            return;
-        }
-
-        window.CharacterStats.addSpecialMove(charId, type, name, description)
-            .then(function(result) {
-                if (result && result.success) {
-                    // Clear inputs
-                    var nameInput = document.getElementById(type + '-move-name');
-                    var descInput = document.getElementById(type + '-move-desc');
-                    if (nameInput) {
-                        nameInput.value = '';
-                    }
-                    if (descInput) {
-                        descInput.value = '';
-                    }
-                    refreshSpecialMoves(charId);
-                }
-            })
-            .catch(function(err) {
-                notify('Failed to add move.', 'error');
-            });
-    }
-
-    function handleRemoveSpecialMove(type, moveId) {
-        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        if (!charId) {
-            notify('No character selected.', 'error');
-            return;
-        }
-
-        if (!window.CharacterStats || typeof window.CharacterStats.removeSpecialMove !== 'function') {
-            notify('Character stats module not available.', 'error');
-            return;
-        }
-
-        window.CharacterStats.removeSpecialMove(charId, type, moveId)
-            .then(function(result) {
-                if (result && result.success) {
-                    refreshSpecialMoves(charId);
-                }
-            })
-            .catch(function(err) {
-                notify('Failed to remove move.', 'error');
-            });
-    }
-
-    function handleUpdateSpecialMove(charId, type, moveId, name, description) {
-        if (!window.CharacterStats || typeof window.CharacterStats.updateSpecialMove !== 'function') {
-            notify('Character stats module not available.', 'error');
-            return;
-        }
-
-        window.CharacterStats.updateSpecialMove(charId, type, moveId, name, description)
-            .then(function(result) {
-                if (result && result.success) {
-                    refreshSpecialMoves(charId);
-                }
-            })
-            .catch(function(err) {
-                notify('Failed to update move.', 'error');
-            });
-    }
-
-    function handleEditSpecialMove(type, moveId) {
-        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        if (!charId) {
-            notify('No character selected.', 'error');
-            return;
-        }
-
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char || !char.specialMoves) {
-            return;
-        }
-
-        var moves = char.specialMoves[type] || [];
-        var move = null;
-        for (var i = 0; i < moves.length; i++) {
-            if (moves[i] && String(moves[i].id) === String(moveId)) {
-                move = moves[i];
-                break;
-            }
-        }
-
-        if (!move) {
-            notify('Move not found.', 'error');
-            return;
-        }
-
-        if (window.CharacterStatsView && typeof window.CharacterStatsView.openEditModal === 'function') {
-            window.CharacterStatsView.openEditModal(charId, type, moveId, move.name, move.description);
-        }
-    }
-
-    function refreshSpecialMoves(charId) {
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            return;
-        }
-
-        if (!window.CharacterStatsView || typeof window.CharacterStatsView.renderSpecialMoves !== 'function') {
-            return;
-        }
-
-        var moves = window.CharacterStats.getSpecialMoves(char);
-        window.CharacterStatsView.renderSpecialMoves('physical-moves-list', moves.physical, 'physical');
-        window.CharacterStatsView.renderSpecialMoves('magical-moves-list', moves.magical, 'magical');
     }
 
     // ============================================================

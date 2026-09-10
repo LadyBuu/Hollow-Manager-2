@@ -77,20 +77,17 @@
     }
 
     function getCalendarConstants() {
-        return window.CalendarConstants || window.CalendarConstants || null;
+        return window.CalendarConstants || null;
     }
 
     /**
      * Get the current edit ID from the global state.
      * This is lazily loaded from characters/index.js
-     * 
-     * @returns {string|null} Current edit ID or null
      */
     function getCurrentEditId() {
         if (typeof window.getCurrentEditId === 'function') {
             return window.getCurrentEditId();
         }
-        // Try to get from global state
         if (window._currentEditId !== undefined) {
             return window._currentEditId;
         }
@@ -100,14 +97,11 @@
     /**
      * Set the current edit ID in the global state.
      * This is lazily loaded from characters/index.js
-     * 
-     * @param {string|null} id - Edit ID to set
      */
     function setCurrentEditId(id) {
         if (typeof window.setCurrentEditId === 'function') {
             window.setCurrentEditId(id);
         } else {
-            // Fallback to global state
             window._currentEditId = id;
         }
     }
@@ -119,32 +113,15 @@
     function checkDependencies() {
         var missing = [];
 
-        // Critical dependencies - must exist
-        if (!getCharacterQueries()) {
-            missing.push('CharacterQueries');
-        }
-        if (!getCharacterCRUD()) {
-            missing.push('CharacterCRUD');
-        }
-        if (!getCharacterConstants()) {
-            missing.push('CharacterConstants');
-        }
-        if (!getAcademyQueries()) {
-            missing.push('AcademyQueries');
-        }
-        if (!getFormUtils()) {
-            missing.push('FormUtils');
-        }
-        if (!getDomUtils()) {
-            missing.push('DomUtils');
-        }
+        if (!getCharacterQueries()) { missing.push('CharacterQueries'); }
+        if (!getCharacterCRUD()) { missing.push('CharacterCRUD'); }
+        if (!getCharacterConstants()) { missing.push('CharacterConstants'); }
+        if (!getAcademyQueries()) { missing.push('AcademyQueries'); }
+        if (!getFormUtils()) { missing.push('FormUtils'); }
+        if (!getDomUtils()) { missing.push('DomUtils'); }
 
-        // Lazy dependencies - warn but don't fail
-        if (!getCharacterGenerator()) {
-            missing.push('CharacterGenerator (lazy)');
-        }
+        if (!getCharacterGenerator()) { missing.push('CharacterGenerator (lazy)'); }
 
-        // getCurrentEditId and setCurrentEditId are lazily loaded from index.js
         if (typeof window.getCurrentEditId !== 'function' && window._currentEditId === undefined) {
             missing.push('getCurrentEditId (lazy)');
         }
@@ -164,7 +141,6 @@
         return true;
     }
 
-    // Run check but don't fail - will check again on each render
     checkDependencies();
 
     // ============================================================
@@ -176,7 +152,6 @@
         if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
             return DomUtils.escapeHtml(value);
         }
-        // Fallback
         if (value === undefined || value === null) {
             return '';
         }
@@ -225,10 +200,7 @@
                 MAX_WEEK: CC.MAX_WEEK || 52
             };
         }
-        return {
-            MIN_WEEK: 1,
-            MAX_WEEK: 52
-        };
+        return { MIN_WEEK: 1, MAX_WEEK: 52 };
     }
 
     // ============================================================
@@ -268,14 +240,46 @@
 
         for (var i = 0; i < classes.length; i++) {
             var cls = classes[i];
-            if (!cls || typeof cls !== 'object') {
-                continue;
-            }
+            if (!cls || typeof cls !== 'object') { continue; }
             var isSelected = String(cls.id) === String(selectedId);
             html += '<option value="' + escapeHtml(cls.id) + '" ' + (isSelected ? 'selected' : '') + '>' + escapeHtml(cls.name) + '</option>';
         }
 
         return html;
+    }
+
+    // ============================================================
+    // PREVIOUS NAME ROW HELPER
+    // ============================================================
+
+    /**
+     * Append a previous-name row to the given container.
+     * Used by populateFormFields and re-used by CharacterEvents.
+     */
+    function addPreviousNameRow(container, value) {
+        if (!container) { return; }
+
+        var row = document.createElement('div');
+        row.className = 'previous-name-row';
+        row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'previous-name-input';
+        input.placeholder = 'Previous name...';
+        input.value = value || '';
+        input.style.cssText = 'flex:1;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;';
+
+        var removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'remove-previous-name small danger';
+        removeBtn.textContent = '✕';
+        removeBtn.setAttribute('aria-label', 'Remove previous name');
+        removeBtn.style.cssText = 'padding:4px 8px;font-size:0.65rem;';
+
+        row.appendChild(input);
+        row.appendChild(removeBtn);
+        container.appendChild(row);
     }
 
     // ============================================================
@@ -292,16 +296,12 @@
         }
 
         var CharacterQueries = getCharacterQueries();
-        if (!CharacterQueries) {
-            return;
-        }
+        if (!CharacterQueries) { return; }
 
         var char = null;
         if (editId) {
             char = CharacterQueries.getCharacterById(editId);
-            if (!char) {
-                return;
-            }
+            if (!char) { return; }
         }
 
         var title = document.getElementById('form-title');
@@ -321,36 +321,36 @@
         }
 
         var currentYear = getCurrentYear();
-
         var content = document.getElementById('character-form-content');
-        if (!content) {
-            return;
-        }
+        if (!content) { return; }
 
         var html = getCharacterFormHTML(char, editId, currentYear);
         content.innerHTML = html;
 
         if (char) {
             populateFormFields(char);
+        } else {
+            // Initialize previous-names container for new characters
+            var prevContainer = document.getElementById('previous-names-container');
+            if (prevContainer) {
+                prevContainer.textContent = '';
+                addPreviousNameRow(prevContainer, '');
+            }
+            // Initialize death fields as disabled
+            applyDeceasedState(false);
         }
 
         var form = document.getElementById('character-form');
-        if (form) {
-            form.style.display = 'block';
-        }
+        if (form) { form.style.display = 'block'; }
 
         _initialized = true;
     }
 
     function hide() {
         var form = document.getElementById('character-form');
-        if (form) {
-            form.style.display = 'none';
-        }
+        if (form) { form.style.display = 'none'; }
         var title = document.getElementById('form-title');
-        if (title) {
-            title.textContent = 'No Character Selected';
-        }
+        if (title) { title.textContent = 'No Character Selected'; }
         var nameDisplay = document.getElementById('current-char-name');
         if (nameDisplay) {
             nameDisplay.textContent = '';
@@ -360,6 +360,27 @@
         if (content) {
             content.innerHTML = '<p class="empty-state">Select a character from the list to view and edit details.</p>';
         }
+    }
+
+    // ============================================================
+    // DECEASED FIELD STATE HELPER
+    // ============================================================
+
+    /**
+     * Enable or disable the death detail fields based on whether
+     * the deceased checkbox is checked.
+     * 
+     * @param {boolean} isDeceased
+     */
+    function applyDeceasedState(isDeceased) {
+        var fields = ['char-deathYear', 'char-deathAge', 'char-deathCause'];
+        fields.forEach(function(id) {
+            var el = document.getElementById(id);
+            if (!el) { return; }
+            el.disabled = !isDeceased;
+            el.style.opacity = isDeceased ? '1' : '0.5';
+            el.style.cursor = isDeceased ? 'text' : 'not-allowed';
+        });
     }
 
     // ============================================================
@@ -415,42 +436,145 @@
     }
 
     // ============================================================
-    // TAB HTML GENERATORS
+    // NAME TAB (with Life Events)
     // ============================================================
 
     function getNameTabHTML(char, editId) {
         var active = state.currentTab === 'name' ? 'block' : 'none';
         var c = char || {};
 
-        var classOptions = getClassOptionsHTML(c.graduatingClassId);
+        var dp = c.displayParts || {};
+        var dpFirst    = dp.first    !== false;
+        var dpMiddle   = dp.middle   !== false;
+        var dpLast     = dp.last     !== false;
+        var dpNickname = dp.nickname === true;
+        var dpAlias    = dp.alias    === true;
+
+        var isDeceased = c.deceased === true;
+        var deathYear = c.deathYear || '';
+        var deathAge = c.deathAge || '';
+        var deathCause = c.deathCause || '';
+
+        var deathFieldDisabled = isDeceased ? '' : 'disabled';
+        var deathFieldOpacity = isDeceased ? '1' : '0.5';
+        var deathFieldCursor = isDeceased ? 'text' : 'not-allowed';
 
         return `
             <div class="tab-panel" data-tab="name" style="display:${active};">
+
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">First Name *</label>
                         <input type="text" id="char-firstName" value="${escapeHtml(c.firstName || '')}" placeholder="First name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Last Name *</label>
-                        <input type="text" id="char-lastName" value="${escapeHtml(c.lastName || '')}" placeholder="Last name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                    </div>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
-                    <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">Middle Name</label>
                         <input type="text" id="char-middleName" value="${escapeHtml(c.middleName || '')}" placeholder="Middle name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Last Name *</label>
+                        <input type="text" id="char-lastName" value="${escapeHtml(c.lastName || '')}" placeholder="Last name" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">Nickname</label>
                         <input type="text" id="char-nickname" value="${escapeHtml(c.nickname || '')}" placeholder="Nickname" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Alias</label>
-                        <input type="text" id="char-alias" value="${escapeHtml(c.alias || '')}" placeholder="Alias" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                </div>
+
+                <div class="form-group">
+                    <label style="font-size:0.7rem;color:var(--text-dim);">Alias</label>
+                    <input type="text" id="char-alias" value="${escapeHtml(c.alias || '')}" placeholder="Alias" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                </div>
+
+                <div class="form-group" style="margin-top:8px;">
+                    <label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Previous Names</label>
+                    <div id="previous-names-container" style="display:flex;flex-direction:column;gap:4px;"></div>
+                    <button type="button" id="add-previous-name-btn" class="small secondary" style="margin-top:6px;font-size:0.65rem;padding:3px 10px;">+ Add Previous Name</button>
+                </div>
+
+                <div class="form-group" style="margin-top:12px;">
+                    <label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:6px;">Display in List</label>
+                    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:0.7rem;">
+                        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                            <input type="checkbox" id="char-displayFirst" ${dpFirst ? 'checked' : ''} style="accent-color:var(--accent);">
+                            First
+                        </label>
+                        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                            <input type="checkbox" id="char-displayNickname" ${dpNickname ? 'checked' : ''} style="accent-color:var(--accent);">
+                            Nickname
+                        </label>
+                        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                            <input type="checkbox" id="char-displayMiddle" ${dpMiddle ? 'checked' : ''} style="accent-color:var(--accent);">
+                            Middle
+                        </label>
+                        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                            <input type="checkbox" id="char-displayLast" ${dpLast ? 'checked' : ''} style="accent-color:var(--accent);">
+                            Last
+                        </label>
+                        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                            <input type="checkbox" id="char-displayAlias" ${dpAlias ? 'checked' : ''} style="accent-color:var(--accent);">
+                            Alias
+                        </label>
+                    </div>
+                    <div style="font-size:0.6rem;color:var(--text-dim);margin-top:6px;">Display order: First Nickname Middle Last (Alias)</div>
+                </div>
+
+                <div class="form-group" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border-soft);">
+                    <label style="font-size:0.75rem;color:var(--danger);font-weight:600;display:block;margin-bottom:6px;">Life Events</label>
+
+                    <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+                        <input type="checkbox" id="char-deceased" ${isDeceased ? 'checked' : ''} style="accent-color:var(--danger);">
+                        <label for="char-deceased" style="font-size:0.7rem;color:var(--text);cursor:pointer;">This character is deceased</label>
+                    </div>
+
+                    <div id="death-fields" style="display:${isDeceased ? 'block' : 'none'};padding-left:20px;border-left:2px solid var(--danger);">
+
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                            <div class="form-group">
+                                <label style="font-size:0.7rem;color:var(--text-dim);">Year of Death</label>
+                                <input type="number" id="char-deathYear" value="${escapeHtml(deathYear)}" placeholder="e.g., 1920" ${deathFieldDisabled} style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;opacity:${deathFieldOpacity};cursor:${deathFieldCursor};">
+                            </div>
+                            <div class="form-group">
+                                <label style="font-size:0.7rem;color:var(--text-dim);">Age at Death</label>
+                                <input type="number" id="char-deathAge" value="${escapeHtml(deathAge)}" placeholder="Auto-filled from birth year" ${deathFieldDisabled} style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;opacity:${deathFieldOpacity};cursor:${deathFieldCursor};">
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label style="font-size:0.7rem;color:var(--text-dim);">Cause of Death</label>
+                            <input type="text" id="char-deathCause" value="${escapeHtml(deathCause)}" placeholder="e.g., Fell in battle" ${deathFieldDisabled} style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;opacity:${deathFieldOpacity};cursor:${deathFieldCursor};">
+                        </div>
+
+                        <div style="font-size:0.6rem;color:var(--text-dim);margin-top:4px;">
+                            The character will appear as alive in any year before their year of death, and deceased from that year onward.
+                        </div>
+
                     </div>
                 </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+
+                <div style="font-size:0.6rem;color:var(--text-dim);margin-top:8px;">* Required fields</div>
+            </div>
+        `;
+    }
+
+    // ============================================================
+    // PHYSICAL TAB
+    // ============================================================
+
+    function getPhysicalTabHTML(char) {
+        var active = state.currentTab === 'physical' ? 'block' : 'none';
+        var c = char || {};
+
+        return `
+            <div class="tab-panel" data-tab="physical" style="display:${active};">
+                <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
+                    <button type="button" id="random-physical-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">🎲 Random</button>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">Gender</label>
                         <input type="text" id="char-gender" value="${escapeHtml(c.gender || '')}" placeholder="Gender" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
@@ -459,34 +583,13 @@
                         <label style="font-size:0.7rem;color:var(--text-dim);">Birth Year</label>
                         <input type="number" id="char-birthYear" value="${escapeHtml(c.birthYear || '')}" placeholder="Birth year" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
-                    <div class="form-group">
-                        <label style="font-size:0.7rem;color:var(--text-dim);">Age</label>
-                        <input type="text" id="char-age" value="${c.birthYear ? getCurrentYear() - parseInt(c.birthYear, 10) : ''}" readonly style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;font-size:0.75rem;">
-                    </div>
                 </div>
 
-                <div class="form-group" style="margin-top:8px;">
-                    <label style="font-size:0.7rem;color:var(--text-dim);">Graduating Class</label>
-                    <select id="char-graduatingClass" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                        ${classOptions}
-                    </select>
-                    <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
-                        <input type="checkbox" id="char-isInstructor" ${c.graduatingClassInstructor ? 'checked' : ''} style="accent-color:var(--accent);">
-                        <label for="char-isInstructor" style="font-size:0.65rem;color:var(--text-dim);">Is an instructor (not a student)</label>
-                    </div>
+                <div class="form-group">
+                    <label style="font-size:0.7rem;color:var(--text-dim);">Age</label>
+                    <input type="text" id="char-age" value="${c.birthYear ? getCurrentYear() - parseInt(c.birthYear, 10) : ''}" readonly style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;font-size:0.75rem;">
                 </div>
 
-                <div style="font-size:0.6rem;color:var(--text-dim);margin-top:4px;">* Required fields</div>
-            </div>
-        `;
-    }
-
-    function getPhysicalTabHTML(char) {
-        var active = state.currentTab === 'physical' ? 'block' : 'none';
-        var c = char || {};
-
-        return `
-            <div class="tab-panel" data-tab="physical" style="display:${active};">
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">Eyes</label>
@@ -497,6 +600,7 @@
                         <input type="text" id="char-hair" value="${escapeHtml(c.hair || '')}" placeholder="Hair color/style" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
+
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">Skin</label>
@@ -507,6 +611,7 @@
                         <input type="text" id="char-height" value="${escapeHtml(c.height || '')}" placeholder="Height" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
+
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">Weight</label>
@@ -517,6 +622,7 @@
                         <input type="text" id="char-build" value="${escapeHtml(c.build || '')}" placeholder="Body type" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
+
                 <div class="form-group">
                     <label style="font-size:0.7rem;color:var(--text-dim);">Appearance Notes</label>
                     <textarea id="char-appearanceNotes" rows="2" placeholder="Distinguishing features, scars, tattoos..." style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;resize:vertical;">${escapeHtml(c.appearanceNotes || '')}</textarea>
@@ -525,12 +631,20 @@
         `;
     }
 
+    // ============================================================
+    // PERSONALITY TAB
+    // ============================================================
+
     function getPersonalityTabHTML(char) {
         var active = state.currentTab === 'personality' ? 'block' : 'none';
         var p = char && char.personality ? char.personality : {};
 
         return `
             <div class="tab-panel" data-tab="personality" style="display:${active};">
+                <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
+                    <button type="button" id="random-personality-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">🎲 Random</button>
+                </div>
+
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">Traits</label>
@@ -541,6 +655,7 @@
                         <input type="text" id="char-personality-ideals" value="${escapeHtml(p.ideals || '')}" placeholder="What they believe in" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
+
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">Bonds</label>
@@ -551,6 +666,7 @@
                         <input type="text" id="char-personality-flaws" value="${escapeHtml(p.flaws || '')}" placeholder="Weaknesses, vices" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
+
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">Alignment</label>
@@ -561,6 +677,7 @@
                         <input type="text" id="char-personality-likes" value="${escapeHtml(p.likes || '')}" placeholder="Things they enjoy" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
+
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">Dislikes</label>
@@ -571,6 +688,7 @@
                         <input type="text" id="char-personality-fears" value="${escapeHtml(p.fears || '')}" placeholder="What they're afraid of" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                     </div>
                 </div>
+
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">Habits</label>
@@ -584,6 +702,10 @@
             </div>
         `;
     }
+
+    // ============================================================
+    // ACADEMIC TAB
+    // ============================================================
 
     function getAcademicTabHTML(char) {
         var active = state.currentTab === 'academic' ? 'block' : 'none';
@@ -606,6 +728,10 @@
         `;
     }
 
+    // ============================================================
+    // PROFESSIONAL TAB
+    // ============================================================
+
     function getProfessionalTabHTML(char) {
         var active = state.currentTab === 'professional' ? 'block' : 'none';
         var c = char || {};
@@ -621,6 +747,10 @@
         `;
     }
 
+    // ============================================================
+    // STATS TAB
+    // ============================================================
+
     function getStatsTabHTML(char) {
         var active = state.currentTab === 'stats' ? 'block' : 'none';
         var stats = char && char.stats ? char.stats : {};
@@ -629,6 +759,9 @@
 
         var html = `
             <div class="tab-panel" data-tab="stats" style="display:${active};">
+                <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
+                    <button type="button" id="random-stats-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">🎲 Random</button>
+                </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
         `;
 
@@ -654,6 +787,10 @@
         return html;
     }
 
+    // ============================================================
+    // SOCIAL TAB
+    // ============================================================
+
     function getSocialTabHTML(char) {
         var active = state.currentTab === 'social' ? 'block' : 'none';
         var c = char || {};
@@ -675,6 +812,10 @@
         `;
     }
 
+    // ============================================================
+    // NOTES TAB
+    // ============================================================
+
     function getNotesTabHTML(char) {
         var active = state.currentTab === 'notes' ? 'block' : 'none';
         var c = char || {};
@@ -690,13 +831,11 @@
     }
 
     // ============================================================
-    // FORM FIELD POPULATION - Uses FormUtils
+    // FORM FIELD POPULATION
     // ============================================================
 
     function populateFormFields(char) {
-        if (!char) {
-            return;
-        }
+        if (!char) { return; }
 
         var FormUtils = getFormUtils();
         if (!FormUtils) {
@@ -704,11 +843,50 @@
             return;
         }
 
+        // ---- Name Tab ----
         FormUtils.setField('char-firstName', char.firstName);
-        FormUtils.setField('char-lastName', char.lastName);
         FormUtils.setField('char-middleName', char.middleName);
+        FormUtils.setField('char-lastName', char.lastName);
         FormUtils.setField('char-nickname', char.nickname);
         FormUtils.setField('char-alias', char.alias);
+
+        // Previous names
+        var prevNamesContainer = document.getElementById('previous-names-container');
+        if (prevNamesContainer) {
+            prevNamesContainer.textContent = '';
+            var prevNames = Array.isArray(char.previousNames) ? char.previousNames : [];
+            if (prevNames.length === 0) {
+                addPreviousNameRow(prevNamesContainer, '');
+            } else {
+                prevNames.forEach(function(name) {
+                    addPreviousNameRow(prevNamesContainer, name);
+                });
+            }
+        }
+
+        // Display parts
+        var dp = char.displayParts || {};
+        FormUtils.setField('char-displayFirst',    dp.first    !== false);
+        FormUtils.setField('char-displayNickname', dp.nickname === true);
+        FormUtils.setField('char-displayMiddle',   dp.middle   !== false);
+        FormUtils.setField('char-displayLast',     dp.last     !== false);
+        FormUtils.setField('char-displayAlias',    dp.alias    === true);
+
+        // Life Events (deceased)
+        var isDeceased = char.deceased === true;
+        FormUtils.setField('char-deceased', isDeceased);
+        FormUtils.setField('char-deathYear', char.deathYear || '');
+        FormUtils.setField('char-deathAge', char.deathAge || '');
+        FormUtils.setField('char-deathCause', char.deathCause || '');
+
+        // Sync UI state for the death field group
+        var deathFields = document.getElementById('death-fields');
+        if (deathFields) {
+            deathFields.style.display = isDeceased ? 'block' : 'none';
+        }
+        applyDeceasedState(isDeceased);
+
+        // ---- Physical Tab ----
         FormUtils.setField('char-gender', char.gender);
         FormUtils.setField('char-birthYear', char.birthYear);
 
@@ -720,6 +898,7 @@
         FormUtils.setField('char-build', char.build);
         FormUtils.setField('char-appearanceNotes', char.appearanceNotes);
 
+        // ---- Personality Tab ----
         if (char.personality) {
             FormUtils.setField('char-personality-traits', char.personality.traits);
             FormUtils.setField('char-personality-ideals', char.personality.ideals);
@@ -733,18 +912,23 @@
             FormUtils.setField('char-personality-goals', char.personality.goals);
         }
 
+        // ---- Professional Tab ----
         FormUtils.setField('char-specialty', char.specialty);
 
+        // ---- Social Tab ----
         FormUtils.setField('char-attraction', char.attraction);
         FormUtils.setField('char-sexuality', char.sexuality);
 
+        // ---- Notes Tab ----
         FormUtils.setField('char-notes', char.notes);
 
-        var checkbox = document.getElementById('char-isInstructor');
-        if (checkbox) {
-            checkbox.checked = char.graduatingClassInstructor || false;
+        // ---- Academic Tab ----
+        var instructorCheckbox = document.getElementById('char-isInstructor');
+        if (instructorCheckbox) {
+            instructorCheckbox.checked = char.graduatingClassInstructor || false;
         }
 
+        // ---- Stats Tab ----
         var statKeys = getStatKeys();
         if (char.stats) {
             statKeys.forEach(function(key) {
@@ -755,7 +939,7 @@
     }
 
     // ============================================================
-    // FORM DATA COLLECTION - Uses FormUtils
+    // FORM DATA COLLECTION
     // ============================================================
 
     function collect() {
@@ -766,9 +950,7 @@
         }
 
         var form = document.getElementById('character-form');
-        if (!form) {
-            return null;
-        }
+        if (!form) { return null; }
 
         var data = FormUtils.getFormData(form);
         var statKeys = getStatKeys();
@@ -776,12 +958,68 @@
         var statMax = getStatMax();
         var statDefault = getStatDefault();
 
+        // ---- Previous Names ----
+        var previousNames = [];
+        var prevInputs = form.querySelectorAll('.previous-name-input');
+        for (var i = 0; i < prevInputs.length; i++) {
+            var val = prevInputs[i].value.trim();
+            if (val) { previousNames.push(val); }
+        }
+
+        // ---- Display Parts ----
+        var displayParts = {
+            first:    FormUtils.getField('char-displayFirst') === true,
+            nickname: FormUtils.getField('char-displayNickname') === true,
+            middle:   FormUtils.getField('char-displayMiddle') === true,
+            last:     FormUtils.getField('char-displayLast') === true,
+            alias:    FormUtils.getField('char-displayAlias') === true
+        };
+
+        // ---- Deceased / Life Events ----
+        var isDeceased = FormUtils.getField('char-deceased') === true;
+
+        var deathYear = '';
+        var deathAge = '';
+        var deathCause = '';
+
+        if (isDeceased) {
+            deathYear = FormUtils.getField('char-deathYear') || '';
+            deathAge = FormUtils.getField('char-deathAge') || '';
+            deathCause = FormUtils.getField('char-deathCause') || '';
+        } else {
+            // Character is alive - clear all death data
+            deathYear = '';
+            deathAge = '';
+            deathCause = '';
+        }
+
+        // Auto-fill death age from birth year if empty
+        var birthYearRaw = data['char-birthYear'] || '';
+        if (isDeceased && !deathAge && birthYearRaw && deathYear) {
+            var by = parseInt(birthYearRaw, 10);
+            var dy = parseInt(deathYear, 10);
+            if (!isNaN(by) && !isNaN(dy) && dy >= by) {
+                deathAge = String(dy - by);
+            }
+        }
+
         var dto = {
+            // Name tab
             firstName: data['char-firstName'] || '',
-            lastName: data['char-lastName'] || '',
             middleName: data['char-middleName'] || '',
+            lastName: data['char-lastName'] || '',
             nickname: data['char-nickname'] || '',
             alias: data['char-alias'] || '',
+            previousNames: previousNames,
+            displayParts: displayParts,
+
+            // Life events (Name tab)
+            deceased: isDeceased,
+            deathYear: deathYear,
+            deathAge: deathAge,
+            deathCause: deathCause,
+
+            // Physical tab
             gender: data['char-gender'] || '',
             birthYear: data['char-birthYear'] || '',
             eyes: data['char-eyes'] || '',
@@ -791,14 +1029,22 @@
             weight: data['char-weight'] || '',
             build: data['char-build'] || '',
             appearanceNotes: data['char-appearanceNotes'] || '',
+
+            // Professional tab
             specialty: data['char-specialty'] || '',
+
+            // Social tab
             attraction: data['char-attraction'] || '',
             sexuality: data['char-sexuality'] || '',
+
+            // Notes tab
             notes: data['char-notes'] || '',
 
+            // Academic tab
             graduatingClassId: data['char-graduatingClass'] || null,
             graduatingClassInstructor: data['char-isInstructor'] || false,
 
+            // Personality tab
             personality: {
                 traits: data['char-personality-traits'] || '',
                 ideals: data['char-personality-ideals'] || '',
@@ -812,6 +1058,7 @@
                 goals: data['char-personality-goals'] || ''
             },
 
+            // Stats tab
             stats: {}
         };
 
@@ -852,9 +1099,7 @@
     // ============================================================
 
     function switchTab(tab) {
-        if (!tab || VALID_TABS.indexOf(tab) === -1) {
-            return;
-        }
+        if (!tab || VALID_TABS.indexOf(tab) === -1) { return; }
 
         state.currentTab = tab;
 
@@ -874,13 +1119,13 @@
     }
 
     // ============================================================
-    // RANDOM GENERATION - Uses CharacterGenerator (lazy loaded)
+    // RANDOM GENERATION
     // ============================================================
 
     function generateRandomPhysical() {
         var CharacterGenerator = getCharacterGenerator();
         if (!CharacterGenerator) {
-            console.warn('[CharacterForm] CharacterGenerator not available for random generation');
+            console.warn('[CharacterForm] CharacterGenerator not available');
             return null;
         }
         return CharacterGenerator.generatePhysical ? CharacterGenerator.generatePhysical() : null;
@@ -889,7 +1134,7 @@
     function generateRandomPersonality() {
         var CharacterGenerator = getCharacterGenerator();
         if (!CharacterGenerator) {
-            console.warn('[CharacterForm] CharacterGenerator not available for random generation');
+            console.warn('[CharacterForm] CharacterGenerator not available');
             return null;
         }
         return CharacterGenerator.generatePersonality ? CharacterGenerator.generatePersonality() : null;
@@ -898,7 +1143,7 @@
     function generateRandomStats() {
         var CharacterGenerator = getCharacterGenerator();
         if (!CharacterGenerator) {
-            console.warn('[CharacterForm] CharacterGenerator not available for random generation');
+            console.warn('[CharacterForm] CharacterGenerator not available');
             return null;
         }
         return CharacterGenerator.generateStats3d6 ? CharacterGenerator.generateStats3d6() : null;
@@ -916,12 +1161,13 @@
         getCurrentTab: function() { return state.currentTab; },
         isInitialized: function() { return _initialized; },
 
-        // Random generation (lazy loaded)
         generateRandomPhysical: generateRandomPhysical,
         generateRandomPersonality: generateRandomPersonality,
         generateRandomStats: generateRandomStats,
 
-        // Lazy getters (exposed for debugging)
+        addPreviousNameRow: addPreviousNameRow,
+        applyDeceasedState: applyDeceasedState,
+
         getCharacterGenerator: getCharacterGenerator,
         getCurrentEditId: getCurrentEditId,
         setCurrentEditId: setCurrentEditId
