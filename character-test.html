@@ -112,7 +112,7 @@
 <body>
     <div id="app">
         <h1>Complete Module Test</h1>
-        <p>Testing all modules: <span class="warning">Characters</span>, <span class="warning">Calendar</span>, <span class="warning">Social</span>, <span class="warning">Teams</span>, <span class="warning">Academy</span>, <span class="warning">Tournaments</span>, <span class="warning">Missions</span></p>
+        <p>Testing all modules: <span class="warning">Characters</span>, <span class="warning">Calendar</span>, <span class="warning">Social</span>, <span class="warning">Teams</span>, <span class="warning">Academy</span>, <span class="warning">Tournaments</span>, <span class="warning">Missions</span>, <span class="warning">Import/Export</span></p>
 
         <div id="test-results">
             <div class="test-section">
@@ -130,6 +130,26 @@
         <div class="test-summary" id="test-summary">
             <h3>Test Summary</h3>
             <div id="summary-content">Waiting for tests to complete...</div>
+        </div>
+
+        <!-- ============================================================
+             IMPORT/EXPORT TEST BUTTONS (for UI wiring tests)
+             These are hidden and only used to verify that ui.js can bind.
+             ============================================================ -->
+        <div style="display:none;">
+            <button id="export-json-btn"></button>
+            <button id="import-json-btn"></button>
+            <input type="file" id="json-file-input" accept=".json" />
+
+            <button id="export-characters-csv-btn"></button>
+            <button id="import-characters-csv-btn"></button>
+            <button id="template-characters-csv-btn"></button>
+            <input type="file" id="characters-csv-file-input" accept=".csv" />
+
+            <button id="export-missions-csv-btn"></button>
+            <button id="import-missions-csv-btn"></button>
+            <button id="template-missions-csv-btn"></button>
+            <input type="file" id="missions-csv-file-input" accept=".csv" />
         </div>
     </div>
 
@@ -207,6 +227,35 @@
     <script src="js/core/tab-manager.js"></script>
     <script src="js/core/mutation-pipeline.js"></script>
     <script src="js/core/bootstrap.js"></script>
+
+    <!-- ============================================================
+         IMPORT/EXPORT MODULES - All files in js/import-export/
+         Flat structure - no csv/ subfolder
+         ============================================================ -->
+    <!-- 1. Utilities (no deps) -->
+    <script src="js/import-export/export-utils.js"></script>
+    <script src="js/import-export/import-result.js"></script>
+    <script src="js/import-export/csv-parser.js"></script>
+
+    <!-- 2. Core (depend on utilities + constants) -->
+    <script src="js/import-export/export-schema.js"></script>
+    <script src="js/import-export/export-envelope.js"></script>
+    <script src="js/import-export/format-migrations.js"></script>
+    <script src="js/import-export/cross-domain-validator.js"></script>
+    <script src="js/import-export/import-pipeline.js"></script>
+
+    <!-- 3. JSON I/O (depends on envelope + schema) -->
+    <script src="js/import-export/json-io.js"></script>
+
+    <!-- 4. CSV modules (depend on csv-parser + schema) -->
+    <script src="js/import-export/character-csv.js"></script>
+    <script src="js/import-export/mission-csv.js"></script>
+
+    <!-- 5. UI (depends on all above) -->
+    <script src="js/import-export/ui.js"></script>
+
+    <!-- 6. Public API (depends on all above) -->
+    <script src="js/import-export/index.js"></script>
 
     <!-- ============================================================
          CALENDAR MODULE
@@ -416,7 +465,20 @@
                     { name: 'MissionCore', value: window.MissionCore },
                     { name: 'MissionAggregator', value: window.MissionAggregator },
                     { name: 'MissionRender', value: window.MissionRender },
-                    { name: 'MissionUI', value: window.MissionUI }
+                    { name: 'MissionUI', value: window.MissionUI },
+                    { name: 'ExportUtils', value: window.ExportUtils },
+                    { name: 'ImportResult', value: window.ImportResult },
+                    { name: 'CSV', value: window.CSV },
+                    { name: 'ExportSchema', value: window.ExportSchema },
+                    { name: 'ExportEnvelope', value: window.ExportEnvelope },
+                    { name: 'FormatMigrations', value: window.FormatMigrations },
+                    { name: 'CrossDomainValidator', value: window.CrossDomainValidator },
+                    { name: 'ImportPipeline', value: window.ImportPipeline },
+                    { name: 'JSONIO', value: window.JSONIO },
+                    { name: 'CharacterCSV', value: window.CharacterCSV },
+                    { name: 'MissionCSV', value: window.MissionCSV },
+                    { name: 'ImportExportUI', value: window.ImportExportUI },
+                    { name: 'ImportExport', value: window.ImportExport }
                 ];
 
                 for (var i = 0; i < deps.length; i++) {
@@ -447,7 +509,7 @@
                 renderDependencyCheck();
 
                 log('========== TEST SUITE START ==========', 'info');
-                log('Testing all modules: Characters, Calendar, Social, Teams, Academy, Tournaments, Missions', 'info');
+                log('Testing all modules: Characters, Calendar, Social, Teams, Academy, Tournaments, Missions, Import/Export', 'info');
 
                 // ---- CORE UTILITIES ----
                 log('', 'info');
@@ -1194,7 +1256,6 @@
                     testFunctionExists(window.MissionCore, 'canModifyObjectives');
                     testFunctionExists(window.MissionCore, 'recalculateMission');
 
-                    // Test domain rules
                     test('MissionCore.calculateProgress works', function() {
                         var objectives = [
                             { text: 'Task 1', done: true },
@@ -1262,6 +1323,335 @@
                 test('window.destroyMissions exists', function() {
                     return typeof window.destroyMissions === 'function';
                 });
+
+                // ---- IMPORT/EXPORT MODULE ----
+                log('', 'info');
+                log('--- IMPORT/EXPORT MODULE ---', 'info');
+
+                // Utilities
+                testModuleLoaded('ExportUtils', window.ExportUtils);
+                if (window.ExportUtils) {
+                    testFunctionExists(window.ExportUtils, 'downloadBlob');
+                    testFunctionExists(window.ExportUtils, 'readFileAsText');
+                    testFunctionExists(window.ExportUtils, 'stripBOM');
+                }
+
+                testModuleLoaded('ImportResult', window.ImportResult);
+                if (window.ImportResult) {
+                    test('ImportResult is constructor', function() {
+                        return typeof window.ImportResult === 'function';
+                    });
+                    test('ImportResult instance has required methods', function() {
+                        var r = new window.ImportResult();
+                        return typeof r.addValid === 'function' &&
+                               typeof r.addError === 'function' &&
+                               typeof r.addWarning === 'function' &&
+                               typeof r.getValid === 'function' &&
+                               typeof r.getErrors === 'function' &&
+                               typeof r.hasErrors === 'function' &&
+                               typeof r.getSummary === 'function';
+                    });
+                    test('ImportResult.addValid works', function() {
+                        var r = new window.ImportResult();
+                        r.addValid({ id: 'test_1', name: 'Test' });
+                        return r.getValid().length === 1;
+                    });
+                    test('ImportResult.addError works', function() {
+                        var r = new window.ImportResult();
+                        r.addError('Test error');
+                        return r.hasErrors() === true && r.getErrors().length === 1;
+                    });
+                }
+
+                testModuleLoaded('CSV', window.CSV);
+                if (window.CSV) {
+                    testFunctionExists(window.CSV, 'parse');
+                    testFunctionExists(window.CSV, 'escape');
+                    testFunctionExists(window.CSV, 'arrayToCSV');
+                    test('CSV.parse works', function() {
+                        var rows = window.CSV.parse('a,b,c\n1,2,3');
+                        return rows.length === 2 && rows[0][0] === 'a' && rows[1][2] === '3';
+                    });
+                    test('CSV.parse handles quoted fields', function() {
+                        var rows = window.CSV.parse('"Hello, World","Second"\n"Line1\nLine2",x');
+                        return rows[0][0] === 'Hello, World' &&
+                               rows[1][0] === 'Line1\nLine2' &&
+                               rows[1][1] === 'x';
+                    });
+                    test('CSV.escape quotes when needed', function() {
+                        return window.CSV.escape('Hello, World') === '"Hello, World"' &&
+                               window.CSV.escape('Hello') === 'Hello';
+                    });
+                    test('CSV.arrayToCSV round-trips', function() {
+                        var original = [['a', 'b,c', 'd"e'], ['1', '2', '3']];
+                        var csvText = window.CSV.arrayToCSV(original);
+                        var parsed = window.CSV.parse(csvText);
+                        return parsed.length === 2 &&
+                               parsed[0][1] === 'b,c' &&
+                               parsed[0][2] === 'd"e';
+                    });
+                }
+
+                // Core
+                testModuleLoaded('ExportSchema', window.ExportSchema);
+                if (window.ExportSchema) {
+                    testFunctionExists(window.ExportSchema, 'getSections');
+                    testFunctionExists(window.ExportSchema, 'getRequiredSections');
+                    testFunctionExists(window.ExportSchema, 'getOptionalSections');
+                    testFunctionExists(window.ExportSchema, 'validateEnvelope');
+                    testFunctionExists(window.ExportSchema, 'createEnvelope');
+                    testFunctionExists(window.ExportSchema, 'getDefaultSection');
+                    test('ExportSchema.FORMAT_NAME is defined', function() {
+                        return typeof window.ExportSchema.FORMAT_NAME === 'string' &&
+                               window.ExportSchema.FORMAT_NAME.length > 0;
+                    });
+                    test('ExportSchema.FORMAT_VERSION is number', function() {
+                        return typeof window.ExportSchema.FORMAT_VERSION === 'number' &&
+                               window.ExportSchema.FORMAT_VERSION >= 1;
+                    });
+                    test('ExportSchema.getSections returns array', function() {
+                        var sections = window.ExportSchema.getSections();
+                        return Array.isArray(sections) && sections.length > 0;
+                    });
+                    test('ExportSchema sections include characters and teams', function() {
+                        var sections = window.ExportSchema.getSections();
+                        return sections.indexOf('characters') !== -1 &&
+                               sections.indexOf('teams') !== -1;
+                    });
+                }
+
+                testModuleLoaded('ExportEnvelope', window.ExportEnvelope);
+                if (window.ExportEnvelope) {
+                    testFunctionExists(window.ExportEnvelope, 'create');
+                    testFunctionExists(window.ExportEnvelope, 'createEmpty');
+                    testFunctionExists(window.ExportEnvelope, 'validate');
+                    testFunctionExists(window.ExportEnvelope, 'isValid');
+                    testFunctionExists(window.ExportEnvelope, 'extract');
+                    testFunctionExists(window.ExportEnvelope, 'extractMetadata');
+                    testFunctionExists(window.ExportEnvelope, 'needsMigration');
+                    testFunctionExists(window.ExportEnvelope, 'migrate');
+                    test('ExportEnvelope.create works', function() {
+                        var env = window.ExportEnvelope.create({
+                            characters: [],
+                            teams: [],
+                            tournaments: [],
+                            missions: []
+                        }, { applicationName: 'Test' });
+                        return env.format === window.ExportSchema.FORMAT_NAME &&
+                               env.formatVersion === window.ExportSchema.FORMAT_VERSION &&
+                               typeof env.data === 'object';
+                    });
+                    test('ExportEnvelope.validate accepts valid envelope', function() {
+                        var env = window.ExportEnvelope.create({
+                            characters: [],
+                            teams: [],
+                            tournaments: [],
+                            missions: []
+                        });
+                        var result = window.ExportEnvelope.validate(env);
+                        return result.valid === true;
+                    });
+                    test('ExportEnvelope.validate rejects invalid envelope', function() {
+                        var result = window.ExportEnvelope.validate({ format: 'wrong' });
+                        return result.valid === false && result.errors.length > 0;
+                    });
+                    test('ExportEnvelope.extract returns data', function() {
+                        var env = window.ExportEnvelope.create({
+                            characters: [{ id: 'c1' }],
+                            teams: [],
+                            tournaments: [],
+                            missions: []
+                        });
+                        var data = window.ExportEnvelope.extract(env);
+                        return Array.isArray(data.characters) && data.characters.length === 1;
+                    });
+                }
+
+                testModuleLoaded('FormatMigrations', window.FormatMigrations);
+                if (window.FormatMigrations) {
+                    testFunctionExists(window.FormatMigrations, 'apply');
+                    testFunctionExists(window.FormatMigrations, 'needsMigration');
+                    testFunctionExists(window.FormatMigrations, 'getCurrentVersion');
+                    testFunctionExists(window.FormatMigrations, 'getMinSupportedVersion');
+                    test('FormatMigrations.getCurrentVersion returns number', function() {
+                        return typeof window.FormatMigrations.getCurrentVersion() === 'number';
+                    });
+                }
+
+                testModuleLoaded('CrossDomainValidator', window.CrossDomainValidator);
+                if (window.CrossDomainValidator) {
+                    testFunctionExists(window.CrossDomainValidator, 'validate');
+                    testFunctionExists(window.CrossDomainValidator, 'validateUniqueIds');
+                    testFunctionExists(window.CrossDomainValidator, 'validateMissions');
+                    testFunctionExists(window.CrossDomainValidator, 'validateTeams');
+                    testFunctionExists(window.CrossDomainValidator, 'validateTournaments');
+                    test('CrossDomainValidator.validate on empty state is valid', function() {
+                        var result = window.CrossDomainValidator.validate({
+                            characters: [], teams: [], tournaments: [], missions: []
+                        });
+                        return result.valid === true;
+                    });
+                    test('CrossDomainValidator.validate catches broken reference', function() {
+                        var result = window.CrossDomainValidator.validate({
+                            characters: [],
+                            teams: [],
+                            tournaments: [],
+                            missions: [{ id: 'm1', title: 'Test', assignedTeamId: 'nonexistent-team' }]
+                        });
+                        return result.valid === false && result.errors.length > 0;
+                    });
+                }
+
+                testModuleLoaded('ImportPipeline', window.ImportPipeline);
+                if (window.ImportPipeline) {
+                    testFunctionExists(window.ImportPipeline, 'importFromFile');
+                    testFunctionExists(window.ImportPipeline, 'importFromJSON');
+                    testFunctionExists(window.ImportPipeline, 'importFromEnvelope');
+                    testFunctionExists(window.ImportPipeline, 'buildCandidateState');
+                    testFunctionExists(window.ImportPipeline, 'ensureUniqueIds');
+                    testFunctionExists(window.ImportPipeline, 'updateReferences');
+                    testFunctionExists(window.ImportPipeline, 'getImportSummary');
+                    test('ImportPipeline.buildCandidateState fills sections', function() {
+                        var candidate = window.ImportPipeline.buildCandidateState({
+                            characters: []
+                        });
+                        return Array.isArray(candidate.characters) &&
+                               Array.isArray(candidate.teams) &&
+                               Array.isArray(candidate.tournaments) &&
+                               Array.isArray(candidate.missions);
+                    });
+                    test('ImportPipeline.ensureUniqueIds generates IDs', function() {
+                        var result = window.ImportPipeline.ensureUniqueIds({
+                            characters: [{ firstName: 'Test' }]
+                        });
+                        return result.candidate.characters[0].id !== null &&
+                               result.candidate.characters[0].id !== undefined;
+                    });
+                }
+
+                testModuleLoaded('JSONIO', window.JSONIO);
+                if (window.JSONIO) {
+                    testFunctionExists(window.JSONIO, 'exportJSON');
+                    testFunctionExists(window.JSONIO, 'serializeJSON');
+                    testFunctionExists(window.JSONIO, 'parseJSON');
+                    testFunctionExists(window.JSONIO, 'importJSONFromFile');
+                    testFunctionExists(window.JSONIO, 'isEnvelope');
+                    testFunctionExists(window.JSONIO, 'isRawData');
+                    testFunctionExists(window.JSONIO, 'hasData');
+                    testFunctionExists(window.JSONIO, 'getDataSummary');
+                    test('JSONIO.parseJSON handles empty string', function() {
+                        var result = window.JSONIO.parseJSON('');
+                        return result.valid === false && result.error !== null;
+                    });
+                    test('JSONIO.parseJSON handles valid JSON', function() {
+                        var result = window.JSONIO.parseJSON('{"a":1}');
+                        return result.valid === true && result.data.a === 1;
+                    });
+                    test('JSONIO.parseJSON handles invalid JSON', function() {
+                        var result = window.JSONIO.parseJSON('{not valid}');
+                        return result.valid === false && result.error !== null;
+                    });
+                    test('JSONIO.isEnvelope detects envelope', function() {
+                        var env = window.ExportEnvelope.create({
+                            characters: [], teams: [], tournaments: [], missions: []
+                        });
+                        return window.JSONIO.isEnvelope(env) === true;
+                    });
+                    test('JSONIO.isRawData detects raw data', function() {
+                        return window.JSONIO.isRawData({ characters: [] }) === true;
+                    });
+                }
+
+                // CSV
+                testModuleLoaded('CharacterCSV', window.CharacterCSV);
+                if (window.CharacterCSV) {
+                    testFunctionExists(window.CharacterCSV, 'export');
+                    testFunctionExists(window.CharacterCSV, 'exportFromData');
+                    testFunctionExists(window.CharacterCSV, 'import');
+                    testFunctionExists(window.CharacterCSV, 'importFromFile');
+                    testFunctionExists(window.CharacterCSV, 'exportTemplate');
+                    testFunctionExists(window.CharacterCSV, 'getTemplateContent');
+                    testFunctionExists(window.CharacterCSV, 'parseRow');
+                    testFunctionExists(window.CharacterCSV, 'toRow');
+                    test('CharacterCSV.SECTION is defined', function() {
+                        return typeof window.CharacterCSV.SECTION === 'string';
+                    });
+                    test('CharacterCSV.COLUMNS is array', function() {
+                        return Array.isArray(window.CharacterCSV.COLUMNS);
+                    });
+                    test('CharacterCSV.getTemplateContent returns CSV string', function() {
+                        var content = window.CharacterCSV.getTemplateContent();
+                        return typeof content === 'string' && content.length > 0;
+                    });
+                    test('CharacterCSV.import parses template CSV', function() {
+                        var content = window.CharacterCSV.getTemplateContent();
+                        var result = window.CharacterCSV.import(content);
+                        return result.hasValid() === true;
+                    });
+                }
+
+                testModuleLoaded('MissionCSV', window.MissionCSV);
+                if (window.MissionCSV) {
+                    testFunctionExists(window.MissionCSV, 'export');
+                    testFunctionExists(window.MissionCSV, 'exportFromData');
+                    testFunctionExists(window.MissionCSV, 'import');
+                    testFunctionExists(window.MissionCSV, 'importFromFile');
+                    testFunctionExists(window.MissionCSV, 'exportTemplate');
+                    testFunctionExists(window.MissionCSV, 'getTemplateContent');
+                    testFunctionExists(window.MissionCSV, 'parseRow');
+                    testFunctionExists(window.MissionCSV, 'toRow');
+                    test('MissionCSV.SECTION is defined', function() {
+                        return typeof window.MissionCSV.SECTION === 'string';
+                    });
+                    test('MissionCSV.COLUMNS is array', function() {
+                        return Array.isArray(window.MissionCSV.COLUMNS);
+                    });
+                    test('MissionCSV.getTemplateContent returns CSV string', function() {
+                        var content = window.MissionCSV.getTemplateContent();
+                        return typeof content === 'string' && content.length > 0;
+                    });
+                    test('MissionCSV.import parses template CSV', function() {
+                        var content = window.MissionCSV.getTemplateContent();
+                        var result = window.MissionCSV.import(content);
+                        return result.hasValid() === true;
+                    });
+                }
+
+                // UI
+                testModuleLoaded('ImportExportUI', window.ImportExportUI);
+                if (window.ImportExportUI) {
+                    testFunctionExists(window.ImportExportUI, 'init');
+                    testFunctionExists(window.ImportExportUI, 'destroy');
+                    testFunctionExists(window.ImportExportUI, 'handleJSONExport');
+                    testFunctionExists(window.ImportExportUI, 'handleCharacterExport');
+                    testFunctionExists(window.ImportExportUI, 'handleMissionExport');
+                }
+
+                // Public API
+                testModuleLoaded('ImportExport', window.ImportExport);
+                if (window.ImportExport) {
+                    test('ImportExport.ready is true', function() {
+                        return window.ImportExport.ready === true;
+                    });
+                    test('ImportExport.VERSION is defined', function() {
+                        return typeof window.ImportExport.VERSION === 'string';
+                    });
+                    test('ImportExport.FORMAT_NAME is defined', function() {
+                        return typeof window.ImportExport.FORMAT_NAME === 'string';
+                    });
+                    test('ImportExport aggregates all modules', function() {
+                        return window.ImportExport.Schema !== null &&
+                               window.ImportExport.Envelope !== null &&
+                               window.ImportExport.Pipeline !== null &&
+                               window.ImportExport.CharacterCSV !== null &&
+                               window.ImportExport.MissionCSV !== null &&
+                               window.ImportExport.JSONIO !== null;
+                    });
+                    testFunctionExists(window.ImportExport, 'getStatus');
+                    testFunctionExists(window.ImportExport, 'hasModule');
+                    testFunctionExists(window.ImportExport, 'exportJSON');
+                    testFunctionExists(window.ImportExport, 'importJSON');
+                }
 
                 // ---- CORE INFRASTRUCTURE ----
                 log('', 'info');
@@ -1354,14 +1744,14 @@
                     'Teams': window.TeamConstants && window.TeamQueries && window.TeamCore,
                     'Academy': window.AcademyConstants && window.AcademyQueries && window.AcademyClasses,
                     'Tournaments': window.TournamentConstants && window.TournamentQueries && window.TournamentCore,
-                    'Missions': window.MissionSchema && window.MissionCore && window.MissionUI && window.MissionQueries
+                    'Missions': window.MissionSchema && window.MissionCore && window.MissionUI && window.MissionQueries,
+                    'Import/Export': window.ImportExport && window.ImportExport.ready
                 };
 
                 var moduleHtml = '<div style="margin-top:12px;font-size:12px;color:var(--text-dim);">';
                 for (var key in moduleStatus) {
                     if (Object.prototype.hasOwnProperty.call(moduleStatus, key)) {
                         var status = moduleStatus[key] ? '✅' : '❌';
-                        var color = moduleStatus[key] ? '#4CAF50' : '#f44336';
                         var cls = moduleStatus[key] ? 'module-status-ok' : 'module-status-fail';
                         moduleHtml += '<div class="module-group"><span class="module-group-title">' + key + ':</span> <span class="' + cls + '">' + status + '</span></div>';
                     }
@@ -1397,15 +1787,17 @@
             function init() {
                 renderDependencyCheck();
 
-                // Wait for all scripts to load
                 var checkInterval = setInterval(function() {
-                    // Check if critical modules are loaded
                     var criticalModules = [
                         'ObjectUtils', 'ValidationUtils', 'CalendarConstants',
                         'CharacterConstants', 'AcademyConstants', 'TeamConstants',
                         'TournamentConstants', 'CalendarQueries', 'TournamentQueries',
                         'MutationPipeline', 'AcademyClasses', 'MissionQueries',
-                        'MissionSchema', 'MissionCore', 'MissionUI'
+                        'MissionSchema', 'MissionCore', 'MissionUI',
+                        'ExportUtils', 'ImportResult', 'CSV', 'ExportSchema',
+                        'ExportEnvelope', 'FormatMigrations', 'CrossDomainValidator',
+                        'ImportPipeline', 'JSONIO', 'CharacterCSV', 'MissionCSV',
+                        'ImportExport'
                     ];
 
                     var allLoaded = true;
@@ -1424,7 +1816,6 @@
                     }
                 }, 200);
 
-                // Safety timeout - run anyway after 5 seconds
                 setTimeout(function() {
                     clearInterval(checkInterval);
                     if (testOutput && testOutput.innerHTML === '') {
