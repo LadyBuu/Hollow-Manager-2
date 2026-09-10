@@ -22,19 +22,30 @@
  *   - All notifications use NotificationSystem.notify()
  *   - All modals use Modal system
  * 
- * DEPENDENCIES:
- *   - window.AcademyUI (from academy-ui.js) - MANDATORY
- *   - window.AcademyAggregator (from academy-aggregator.js) - MANDATORY
- *   - window.AcademyClasses (from academy-classes.js) - MANDATORY (replaces AcademyCore)
- *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
- *   - window.AcademyDistribute (from academy-distribute.js) - MANDATORY
- *   - window.TeamCore (from team-core.js) - MANDATORY (mutations)
- *   - window.TeamQueries (from team-queries.js) - MANDATORY (reads)
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
- *   - window.NotificationSystem (from notification.js) - MANDATORY
- *   - window.DomUtils (from dom-utils.js) - MANDATORY
- *   - window.Modal (from modal.js) - MANDATORY
+ * DEPENDENCY RESOLUTION:
+ *   - Modules that are guaranteed to be loaded before this file are
+ *     captured at module load (e.g. AcademyUI, AcademyQueries).
+ *   - Modules that are NOT guaranteed to be loaded before this file
+ *     (TeamCore, which loads later in the script order) are resolved
+ *     lazily at call time via accessor functions.
+ *   - This avoids load-order warnings and makes the module robust to
+ *     future script reordering.
+ * 
+ * DEPENDENCIES (loaded before this file - captured at load):
+ *   - window.AcademyUI
+ *   - window.AcademyAggregator
+ *   - window.AcademyClasses
+ *   - window.AcademyQueries
+ *   - window.AcademyDistribute
+ *   - window.TeamQueries
+ *   - window.CharacterQueries
+ *   - window.CalendarConstants
+ *   - window.NotificationSystem
+ *   - window.DomUtils
+ *   - window.Modal
+ * 
+ * DEPENDENCIES (lazy - resolved at call time):
+ *   - window.TeamCore
  * 
  * USAGE:
  *   var tab = window.ClassTab;
@@ -50,16 +61,15 @@
     }
 
     // ============================================================
-    // DEPENDENCY IMPORTS - DIRECT (no lazy loading for critical deps)
+    // DEPENDENCY IMPORTS - LOAD-TIME (guaranteed available)
     // ============================================================
 
     var AcademyUI = window.AcademyUI;
     var AcademyAggregator = window.AcademyAggregator;
-    var AcademyClasses = window.AcademyClasses;  // Direct - replaces AcademyCore
+    var AcademyClasses = window.AcademyClasses;
     var AcademyQueries = window.AcademyQueries;
     var AcademyDistribute = window.AcademyDistribute;
-    var TeamCore = window.TeamCore;              // Mutations
-    var TeamQueries = window.TeamQueries;        // Reads
+    var TeamQueries = window.TeamQueries;
     var CharacterQueries = window.CharacterQueries;
     var CalendarConstants = window.CalendarConstants;
     var NotificationSystem = window.NotificationSystem;
@@ -67,7 +77,22 @@
     var Modal = window.Modal;
 
     // ============================================================
-    // DEPENDENCY CHECK
+    // DEPENDENCY RESOLUTION - LAZY (not guaranteed at load time)
+    // ============================================================
+
+    /**
+     * Get TeamCore, resolved at call time.
+     * TeamCore loads after this module in the current script order,
+     * so it cannot be captured at load time.
+     * 
+     * @returns {object|null} TeamCore or null if not yet loaded
+     */
+    function getTeamCore() {
+        return window.TeamCore || null;
+    }
+
+    // ============================================================
+    // DEPENDENCY CHECK - LOAD-TIME ONLY
     // ============================================================
 
     function checkDependencies() {
@@ -87,7 +112,6 @@
             missing.push('AcademyAggregator.getClassListViewModel');
         }
 
-        // AcademyClasses replaces AcademyCore
         if (!AcademyClasses || typeof AcademyClasses.create !== 'function') {
             missing.push('AcademyClasses.create');
         }
@@ -124,21 +148,7 @@
             missing.push('AcademyDistribute.autoDistribute');
         }
 
-        // TeamCore for mutations
-        if (!TeamCore || typeof TeamCore.createTeam !== 'function') {
-            missing.push('TeamCore.createTeam');
-        }
-        if (!TeamCore || typeof TeamCore.deleteTeam !== 'function') {
-            missing.push('TeamCore.deleteTeam');
-        }
-        if (!TeamCore || typeof TeamCore.addMember !== 'function') {
-            missing.push('TeamCore.addMember');
-        }
-        if (!TeamCore || typeof TeamCore.removeMember !== 'function') {
-            missing.push('TeamCore.removeMember');
-        }
-
-        // TeamQueries for reads - THIS IS WHAT WE NEED FOR getTeamById
+        // TeamQueries is a load-time dependency (loaded before Academy tabs)
         if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
             missing.push('TeamQueries.getTeamById');
         }
@@ -166,19 +176,21 @@
             missing.push('Modal.createModal');
         }
 
+        // TeamCore is deliberately NOT checked here.
+        // It is resolved lazily at call time via getTeamCore().
+
         if (missing.length > 0) {
-            console.warn('[ClassTab] Missing dependencies:', missing.join(', '));
+            console.warn('[ClassTab] Missing load-time dependencies:', missing.join(', '));
             return false;
         }
 
         return true;
     }
 
-    // Run check but don't fail
     checkDependencies();
 
     // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils
+    // HTML ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
@@ -196,7 +208,7 @@
     }
 
     // ============================================================
-    // NOTIFICATION - Delegates to NotificationSystem
+    // NOTIFICATION
     // ============================================================
 
     function notify(message, type) {
@@ -212,15 +224,13 @@
     var MAX_WEEK = CalendarConstants.MAX_WEEK || 52;
 
     // ============================================================
-    // SAFE TEAM GETTER - Uses TeamQueries (read) and TeamCore (write)
+    // TEAM LOOKUP - READ via TeamQueries
     // ============================================================
 
     function getTeamById(teamId) {
-        // First try TeamQueries (read operations)
         if (TeamQueries && typeof TeamQueries.getTeamById === 'function') {
             return TeamQueries.getTeamById(teamId);
         }
-        // Fallback: try to find team in AcademyQueries
         if (AcademyQueries && typeof AcademyQueries.getClassTeams === 'function') {
             var teams = AcademyQueries.getClassTeams();
             if (Array.isArray(teams)) {
@@ -594,7 +604,7 @@
     }
 
     // ============================================================
-    // BIND EVENTS - Main entry point for event binding
+    // BIND EVENTS
     // ============================================================
 
     function bindEvents(container) {
@@ -800,7 +810,6 @@
         var closeBtn = document.getElementById('academy-class-modal-close');
         var cancelBtn = document.getElementById('academy-class-modal-cancel');
         var nameInput = document.getElementById('academy-class-name');
-        var titleEl = document.getElementById('academy-class-modal-title');
 
         if (closeBtn) {
             closeBtn.addEventListener('click', function() {
@@ -835,10 +844,8 @@
                 var result;
 
                 if (editId) {
-                    // Use AcademyClasses.update directly
                     result = AcademyClasses.update(editId, { name: name });
                 } else {
-                    // Use AcademyClasses.create directly
                     result = AcademyClasses.create(name);
                 }
 
@@ -923,7 +930,8 @@
 
                 var result = AcademyDistribute.autoDistribute(classId, week, {
                     maxPerGroup: maxSize,
-                    teamIds: teamIds                });
+                    teamIds: teamIds
+                });
 
                 if (result && result.success) {
                     var data = result.data || {};
@@ -962,7 +970,7 @@
             });
         }
 
-        // Delegate for add member
+        // Add member button
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('#team-member-add-btn');
             if (btn) {
@@ -979,6 +987,13 @@
                 var studentId = select ? select.value : '';
                 if (!studentId) {
                     notify('Please select a student.', 'error');
+                    return;
+                }
+
+                // ---- RESOLVE TEAMCORE AT CALL TIME ----
+                var TeamCore = getTeamCore();
+                if (!TeamCore || typeof TeamCore.addMember !== 'function') {
+                    notify('TeamCore is not available.', 'error');
                     return;
                 }
 
@@ -1001,20 +1016,34 @@
             }
         });
 
-        // Delegate for remove member
+        // Remove member button
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.team-member-remove-btn');
             if (btn) {
                 var teamId = btn.dataset.team;
                 var studentId = btn.dataset.student;
-                if (teamId && studentId && confirm('Remove this member?')) {
-                    var result = TeamCore.removeMember(teamId, studentId);
-                    if (result) {
-                        notify('Member removed.', 'success');
-                        refreshTeamMembersModal(teamId);
-                    } else {
-                        notify('Failed to remove member.', 'error');
-                    }
+
+                if (!teamId || !studentId) {
+                    return;
+                }
+
+                if (!confirm('Remove this member?')) {
+                    return;
+                }
+
+                // ---- RESOLVE TEAMCORE AT CALL TIME ----
+                var TeamCore = getTeamCore();
+                if (!TeamCore || typeof TeamCore.removeMember !== 'function') {
+                    notify('TeamCore is not available.', 'error');
+                    return;
+                }
+
+                var result = TeamCore.removeMember(teamId, studentId);
+                if (result) {
+                    notify('Member removed.', 'success');
+                    refreshTeamMembersModal(teamId);
+                } else {
+                    notify('Failed to remove member.', 'error');
                 }
             }
         });
@@ -1081,7 +1110,6 @@
 
         modal.dataset.classId = classId;
 
-        var cls = AcademyQueries.getClass(classId);
         var teams = AcademyQueries.getClassTeams(classId);
         var week = AcademyUI.getDisplayWeek();
 
@@ -1144,7 +1172,6 @@
 
         if (!content) { return; }
 
-        // Use TeamQueries for READ operations
         var team = getTeamById(teamId);
         if (!team) {
             content.innerHTML = '<p class="empty-state">Team not found.</p>';
@@ -1203,7 +1230,7 @@
     }
 
     // ============================================================
-    // MUTATION HANDLERS - Using AcademyClasses directly
+    // MUTATION HANDLERS
     // ============================================================
 
     function handleDeleteClass(classId) {
@@ -1259,6 +1286,13 @@
             return;
         }
 
+        // ---- RESOLVE TEAMCORE AT CALL TIME ----
+        var TeamCore = getTeamCore();
+        if (!TeamCore || typeof TeamCore.createTeam !== 'function') {
+            notify('TeamCore is not available.', 'error');
+            return;
+        }
+
         var nameInput = container.querySelector('#team-add-name');
         var numberInput = container.querySelector('#team-add-number');
 
@@ -1280,7 +1314,6 @@
             status: 'active'
         };
 
-        // TeamCore for WRITE operations
         var result = TeamCore.createTeam(teamData);
         if (result) {
             notify('Team created successfully.', 'success');
@@ -1296,7 +1329,13 @@
     }
 
     function handleDeleteTeam(teamId) {
-        // TeamCore for WRITE operations
+        // ---- RESOLVE TEAMCORE AT CALL TIME ----
+        var TeamCore = getTeamCore();
+        if (!TeamCore || typeof TeamCore.deleteTeam !== 'function') {
+            notify('TeamCore is not available.', 'error');
+            return;
+        }
+
         var result = TeamCore.deleteTeam(teamId);
         if (result) {
             notify('Team deleted successfully.', 'success');
@@ -1310,7 +1349,13 @@
     }
 
     function handleRemoveTeamMember(teamId, studentId) {
-        // TeamCore for WRITE operations
+        // ---- RESOLVE TEAMCORE AT CALL TIME ----
+        var TeamCore = getTeamCore();
+        if (!TeamCore || typeof TeamCore.removeMember !== 'function') {
+            notify('TeamCore is not available.', 'error');
+            return;
+        }
+
         var result = TeamCore.removeMember(teamId, studentId);
         if (result) {
             notify('Member removed.', 'success');
