@@ -62,6 +62,7 @@
 
     var MOBILE_BREAKPOINT = 768;
     var TABLET_BREAKPOINT = 1024;
+    var DEBOUNCE_DELAY = 300;
 
     // ============================================================
     // HELPER FUNCTIONS
@@ -85,7 +86,8 @@
     });
     window.UI_CONSTANTS = Object.freeze({
         MOBILE_BREAKPOINT: MOBILE_BREAKPOINT,
-        TABLET_BREAKPOINT: TABLET_BREAKPOINT
+        TABLET_BREAKPOINT: TABLET_BREAKPOINT,
+        DEBOUNCE_DELAY: DEBOUNCE_DELAY
     });
 
     window.getDataVersion = getDataVersion;
