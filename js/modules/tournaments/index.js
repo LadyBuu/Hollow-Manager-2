@@ -13,7 +13,7 @@
  * 
  * LIFECYCLE:
  *   TabManager.register('tournaments') -> mountTournaments() ->
- *   TournamentUI.init() -> TournamentEvents.init(container) ->
+ *   TournamentsUI.init() -> TournamentEvents.init(container) ->
  *   renderTournamentContainer() -> render list/detail
  * 
  * IMPORTANT:
@@ -26,19 +26,29 @@
  *   - Providers are assembled here and injected into TournamentCore
  *   - No direct CharacterQueries usage - only via providers
  * 
+ * NAMING CONVENTION:
+ *   - The UI, Render, and Matches modules expose themselves as
+ *     Tournaments* (plural) on the window object:
+ *       window.TournamentsUI
+ *       window.TournamentsRender
+ *       window.TournamentsMatches
+ *   - Earlier versions of this file referenced singular names
+ *     (TournamentUI, TournamentRender, TournamentMatches). Those
+ *     references have been corrected.
+ * 
  * EXTERNAL PROVIDERS:
  *   - characterProvider: { exists: function(id) { ... } }
  *   - teamProvider: { exists: function(id) { ... } }
  * 
  * DEPENDENCIES:
  *   - window.TabManager (from tab-manager.js) - MANDATORY
- *   - window.TournamentUI (from tournament-ui.js) - MANDATORY
+ *   - window.TournamentsUI (from tournament-ui.js) - MANDATORY
  *   - window.TournamentEvents (from tournament-events.js) - MANDATORY
  *   - window.TournamentAggregator (from tournament-aggregator.js) - MANDATORY
  *   - window.TournamentQueries (from tournament-queries.js) - MANDATORY
- *   - window.TournamentRender (from tournament-render.js) - MANDATORY
+ *   - window.TournamentsRender (from tournament-render.js) - MANDATORY
  *   - window.TournamentCore (from tournament-core.js) - MANDATORY
- *   - window.TournamentMatches (from tournament-matches.js) - MANDATORY
+ *   - window.TournamentsMatches (from tournament-matches.js) - MANDATORY
  *   - window.DataLoader (from loader.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.TeamQueries (from team-queries.js) - MANDATORY
@@ -66,13 +76,13 @@
     // ============================================================
 
     var TabManager = window.TabManager;
-    var TournamentUI = window.TournamentUI;
+    var TournamentsUI = window.TournamentsUI;
     var TournamentEvents = window.TournamentEvents;
     var TournamentAggregator = window.TournamentAggregator;
     var TournamentQueries = window.TournamentQueries;
-    var TournamentRender = window.TournamentRender;
+    var TournamentsRender = window.TournamentsRender;
     var TournamentCore = window.TournamentCore;
-    var TournamentMatches = window.TournamentMatches;
+    var TournamentsMatches = window.TournamentsMatches;
     var DataLoader = window.DataLoader;
     var CharacterQueries = window.CharacterQueries;
     var TeamQueries = window.TeamQueries;
@@ -92,11 +102,11 @@
             missing.push('TabManager.register');
         }
 
-        if (!TournamentUI || typeof TournamentUI.init !== 'function') {
-            missing.push('TournamentUI.init');
+        if (!TournamentsUI || typeof TournamentsUI.init !== 'function') {
+            missing.push('TournamentsUI.init');
         }
-        if (!TournamentUI || typeof TournamentUI.getState !== 'function') {
-            missing.push('TournamentUI.getState');
+        if (!TournamentsUI || typeof TournamentsUI.getState !== 'function') {
+            missing.push('TournamentsUI.getState');
         }
 
         if (!TournamentEvents || typeof TournamentEvents.init !== 'function') {
@@ -123,11 +133,11 @@
             missing.push('TournamentQueries.getTournaments');
         }
 
-        if (!TournamentRender || typeof TournamentRender.renderList !== 'function') {
-            missing.push('TournamentRender.renderList');
+        if (!TournamentsRender || typeof TournamentsRender.renderList !== 'function') {
+            missing.push('TournamentsRender.renderList');
         }
-        if (!TournamentRender || typeof TournamentRender.renderDetail !== 'function') {
-            missing.push('TournamentRender.renderDetail');
+        if (!TournamentsRender || typeof TournamentsRender.renderDetail !== 'function') {
+            missing.push('TournamentsRender.renderDetail');
         }
 
         if (!TournamentCore || typeof TournamentCore.createTournament !== 'function') {
@@ -137,8 +147,8 @@
             missing.push('TournamentCore.getTournament');
         }
 
-        if (!TournamentMatches || typeof TournamentMatches.createMatch !== 'function') {
-            missing.push('TournamentMatches.createMatch');
+        if (!TournamentsMatches || typeof TournamentsMatches.createMatch !== 'function') {
+            missing.push('TournamentsMatches.createMatch');
         }
 
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
@@ -254,7 +264,7 @@
             }
         };
 
-        // NOTE: TournamentCore and TournamentMatches do not need providers
+        // NOTE: TournamentCore and TournamentsMatches do not need providers
         // injected since they use lazy loading for dependencies.
         // This is consistent with the other modules.
 
@@ -288,9 +298,9 @@
             return;
         }
 
-        var UI = TournamentUI;
+        var UI = TournamentsUI;
         var Aggregator = TournamentAggregator;
-        var Render = TournamentRender;
+        var Render = TournamentsRender;
 
         if (!UI || !Aggregator || !Render) {
             _container.innerHTML = '<p class="empty-state">Tournament dependencies not loaded. Please refresh the page.</p>';
@@ -317,7 +327,7 @@
             detailVM = Aggregator.getTournamentViewModel(selectedId);
         }
 
-        // Render using TournamentRender
+        // Render using TournamentsRender
         var html = '';
         
         // Header with controls
@@ -495,7 +505,7 @@
         _container = container;
 
         // Initialize UI state
-        TournamentUI.init();
+        TournamentsUI.init();
 
         // Set render function for Events
         TournamentEvents.setRenderFn(renderTournamentContainer);
@@ -539,14 +549,6 @@
         }
     }
 
-    function getTournamentCount() {
-        var data = window.data || {};
-        if (!Array.isArray(data.tournaments)) {
-            return 0;
-        }
-        return data.tournaments.length;
-    }
-
     function isMounted() {
         return _mounted;
     }
@@ -561,10 +563,10 @@
             initialized: _initialized,
             providersInitialized: _providersInitialized,
             tournamentCount: getTournamentCount(),
-            selectedTournamentId: TournamentUI.getSelectedTournamentId(),
-            activeTab: TournamentUI.getActiveTab(),
-            viewMode: TournamentUI.getViewMode(),
-            filters: TournamentUI.getFilters()
+            selectedTournamentId: TournamentsUI.getSelectedTournamentId(),
+            activeTab: TournamentsUI.getActiveTab(),
+            viewMode: TournamentsUI.getViewMode(),
+            filters: TournamentsUI.getFilters()
         };
     }
 
