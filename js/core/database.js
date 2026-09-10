@@ -8,6 +8,7 @@
  * - Proper error handling with events
  * - Data cloning to prevent reference issues
  * - Status tracking for UI feedback
+ * - DEFENSIVE version-mismatch recovery (auto-delete stale databases)
  * 
  * PERSISTENCE CONTRACT:
  * - saveData() returns a Promise that resolves to true on success
@@ -30,6 +31,19 @@
  *   typical client-side persistence patterns.
  * - Callers should ensure their mutation is complete before calling saveData()
  *   if they require precise transaction boundaries.
+ * 
+ * VERSION MISMATCH RECOVERY:
+ * - IndexedDB enforces that a database cannot be opened with a lower
+ *   version than it was created with.
+ * - If the stored database is newer than our DB_VERSION (e.g., because
+ *   an earlier iteration of the code used a higher DB_VERSION), we cannot
+ *   downgrade.
+ * - In that case, we DESTROY the local database and recreate it fresh.
+ * - This loses all locally stored data. In practice this only happens in
+ *   development or during a schema rollback, and is preferable to a
+ *   permanently broken application.
+ * - If recovery fails (e.g., another tab holds the database open), we
+ *   surface a clear error so the user can close other tabs and retry.
  * 
  * DATA VERSION HISTORY:
  * - Version 1: Initial character data
@@ -68,6 +82,9 @@
     // Save queue state - coalescing with frozen batches
     var _isSaving = false;
     var _saveWaiters = [];
+
+    // Recovery state - prevents infinite retry loops
+    var _recoveryAttempted = false;
 
     // ============================================================
     // DEFAULT FACTORIES
@@ -226,6 +243,46 @@
     }
 
     // ============================================================
+    // DATABASE DELETION - Used for version-mismatch recovery
+    // ============================================================
+
+    /**
+     * Delete the local IndexedDB database.
+     * Used during version-mismatch recovery to remove a stale database.
+     * 
+     * @returns {Promise<void>}
+     */
+    function deleteDatabase() {
+        return new Promise(function(resolve, reject) {
+            try {
+                var request = indexedDB.deleteDatabase(DB_NAME);
+
+                request.onsuccess = function() {
+                    console.log('[Database] Old database deleted successfully.');
+                    resolve();
+                };
+
+                request.onerror = function(event) {
+                    var error = event.target.error || new Error('Delete failed');
+                    console.error('[Database] Failed to delete database:', error);
+                    reject(error);
+                };
+
+                request.onblocked = function() {
+                    var error = new Error(
+                        'Database deletion blocked. Another tab may have the database open. ' +
+                        'Please close other tabs and retry.'
+                    );
+                    console.error('[Database]', error.message);
+                    reject(error);
+                };
+            } catch (err) {
+                reject(err);
+            }
+        });
+    }
+
+    // ============================================================
     // DATABASE OPENING
     // ============================================================
 
@@ -240,23 +297,85 @@
         _dbOpenPromise = new Promise(function(resolve, reject) {
             try {
                 var request = indexedDB.open(DB_NAME, DB_VERSION);
-                
+
                 request.onerror = function(event) {
                     var error = event.target.error;
                     _dbOpenPromise = null;
+
+                    // ---- RECOVERY: Handle version mismatch ----
+                    // If the stored database is newer than DB_VERSION, we can't
+                    // open it at a lower version. The safest recovery is to delete
+                    // the local database and recreate it fresh.
+                    if (error && error.name === 'VersionError' && !_recoveryAttempted) {
+                        _recoveryAttempted = true;
+
+                        console.warn(
+                            '[Database] Version mismatch detected. ' +
+                            'Stored database is newer than requested version ' + DB_VERSION + '. ' +
+                            'This usually means an earlier build used a higher DB_VERSION. ' +
+                            'Attempting recovery by deleting and recreating the local database.'
+                        );
+
+                        _dbStatus = 'recovering';
+
+                        deleteDatabase()
+                            .then(function() {
+                                // Reset state and retry once
+                                _dbOpenPromise = null;
+                                _dbStatus = 'uninitialized';
+                                console.log('[Database] Recreating database with version ' + DB_VERSION + '...');
+                                return openDatabase();
+                            })
+                            .then(resolve)
+                            .catch(function(recoveryError) {
+                                _dbStatus = 'failed';
+                                _dbOpenPromise = null;
+                                _dbInitPromise = null;
+
+                                console.error(
+                                    '[Database] Recovery failed. ' +
+                                    'The local database could not be deleted. ' +
+                                    'Please close all other tabs using this application ' +
+                                    'and reload the page. ' +
+                                    'Recovery error: ' + recoveryError.message
+                                );
+
+                                reject(new Error(
+                                    'Database version mismatch recovery failed: ' +
+                                    recoveryError.message +
+                                    '. Please close other tabs and reload.'
+                                ));
+                            });
+                        return;
+                    }
+
+                    // ---- Recovery already attempted, or non-VersionError ----
+                    if (error && error.name === 'VersionError' && _recoveryAttempted) {
+                        console.error(
+                            '[Database] Version mismatch persists after recovery attempt. ' +
+                            'The database may be locked by another tab. ' +
+                            'Please close all other tabs using this application and reload.'
+                        );
+                    }
+
                     _dbStatus = 'failed';
                     reject(error);
                 };
-                
+
                 request.onblocked = function() {
-                    console.warn('IndexedDB open blocked. Another tab may have the database open.');
+                    console.warn(
+                        '[Database] IndexedDB open blocked. ' +
+                        'Another tab may have the database open with a different version. ' +
+                        'Please close other tabs and retry.'
+                    );
                 };
-                
+
                 request.onsuccess = function(event) {
                     _indexedDB = event.target.result;
                     _dbOpenPromise = null;
                     _dbStatus = 'ready';
-                    
+                    _recoveryAttempted = false; // Reset recovery flag on success
+
                     _indexedDB.onversionchange = function() {
                         if (_indexedDB) {
                             _indexedDB.close();
@@ -265,21 +384,21 @@
                         _dbInitPromise = null;
                         _dbStatus = 'uninitialized';
                     };
-                    
+
                     _indexedDB.onclose = function() {
                         _indexedDB = null;
                         _dbInitPromise = null;
                         _dbStatus = 'uninitialized';
                     };
-                    
+
                     _indexedDB.onerror = function(event) {
                         console.error('IndexedDB connection error:', event.target.error);
                         _dispatchSaveFailure(event.target.error);
                     };
-                    
+
                     resolve(_indexedDB);
                 };
-                
+
                 request.onupgradeneeded = function(event) {
                     var database = event.target.result;
                     if (!database.objectStoreNames.contains(STORE_NAME)) {
@@ -320,7 +439,7 @@
         if (_dbInitPromise) {
             return _dbInitPromise;
         }
-        
+
         _dbStatus = 'initializing';
         _dbInitPromise = openDatabase()
             .then(function(result) {
@@ -335,7 +454,7 @@
                 _dbInitPromise = null;
                 throw err;
             });
-        
+
         return _dbInitPromise;
     }
 
@@ -348,7 +467,6 @@
             throw new Error('Invalid database data format');
         }
 
-        // Ensure base arrays exist
         if (!Array.isArray(data.characters)) data.characters = [];
         if (!Array.isArray(data.teams)) data.teams = [];
         if (!Array.isArray(data.tournaments)) data.tournaments = [];
@@ -375,45 +493,19 @@
         while (data._dataVersion < DATA_VERSION) {
             var currentVersion = data._dataVersion;
             switch (currentVersion) {
-                case 1:
-                    migrateToVersion2(data);
-                    break;
-                case 2:
-                    migrateToVersion3(data);
-                    break;
-                case 3:
-                    migrateToVersion4(data);
-                    break;
-                case 4:
-                    migrateToVersion5(data);
-                    break;
-                case 5:
-                    migrateToVersion6(data);
-                    break;
-                case 6:
-                    migrateToVersion7(data);
-                    break;
-                case 7:
-                    migrateToVersion8(data);
-                    break;
-                case 8:
-                    migrateToVersion9(data);
-                    break;
-                case 9:
-                    migrateToVersion10(data);
-                    break;
-                case 10:
-                    migrateToVersion11(data);
-                    break;
-                case 11:
-                    migrateToVersion12(data);
-                    break;
-                case 12:
-                    migrateToVersion13(data);
-                    break;
-                default:
-                    data._dataVersion = DATA_VERSION;
-                    break;
+                case 1: migrateToVersion2(data); break;
+                case 2: migrateToVersion3(data); break;
+                case 3: migrateToVersion4(data); break;
+                case 4: migrateToVersion5(data); break;
+                case 5: migrateToVersion6(data); break;
+                case 6: migrateToVersion7(data); break;
+                case 7: migrateToVersion8(data); break;
+                case 8: migrateToVersion9(data); break;
+                case 9: migrateToVersion10(data); break;
+                case 10: migrateToVersion11(data); break;
+                case 11: migrateToVersion12(data); break;
+                case 12: migrateToVersion13(data); break;
+                default: data._dataVersion = DATA_VERSION; break;
             }
         }
 
@@ -627,17 +719,17 @@
         if (!Array.isArray(data.activities)) { data.activities = []; repaired = true; }
         if (!Array.isArray(data.classes)) { data.classes = []; repaired = true; }
         if (!Array.isArray(data.locations)) { data.locations = []; repaired = true; }
-        if (!data.locationSchedules || typeof data.locationSchedules !== 'object') { 
-            data.locationSchedules = {}; 
-            repaired = true; 
+        if (!data.locationSchedules || typeof data.locationSchedules !== 'object') {
+            data.locationSchedules = {};
+            repaired = true;
         }
-        if (data.currentYear === undefined || data.currentYear === null) { 
-            data.currentYear = new Date().getFullYear(); 
-            repaired = true; 
+        if (data.currentYear === undefined || data.currentYear === null) {
+            data.currentYear = new Date().getFullYear();
+            repaired = true;
         }
-        if (data.currentWeek === undefined || data.currentWeek === null) { 
-            data.currentWeek = 1; 
-            repaired = true; 
+        if (data.currentWeek === undefined || data.currentWeek === null) {
+            data.currentWeek = 1;
+            repaired = true;
         }
 
         data.characters.forEach(function(char) {
@@ -769,8 +861,7 @@
 
                     var originalVersion = migrateData(_data);
                     var repaired = normaliseDataStructure(_data);
-                    
-                    // _data is the single source of truth
+
                     window.data = _data;
 
                     var needsPersistence = false;
@@ -906,14 +997,12 @@
             }
 
             try {
-                // _data is the single source of truth
                 var sourceData = _data;
 
                 if (!sourceData) {
                     sourceData = getEmptyData();
                 }
 
-                // Keep window.data in sync
                 window.data = sourceData;
                 _data = sourceData;
 
@@ -1043,7 +1132,8 @@
         createSafeCopy: createSafeCopy,
         getDatabaseStatus: getDatabaseStatus,
         isDatabaseReady: isDatabaseReady,
-        getLoadError: getLoadError
+        getLoadError: getLoadError,
+        deleteDatabase: deleteDatabase  // Exposed for manual recovery/debugging
     };
 
     window.loadData = loadData;
