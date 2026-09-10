@@ -77,7 +77,7 @@
     }
 
     function getCalendarConstants() {
-        return window.CALENDAR_CONSTANTS || window.CalendarConstants || null;
+        return window.CalendarConstants || window.CalendarConstants || null;
     }
 
     /**

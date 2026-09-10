@@ -47,7 +47,7 @@
     // ============================================================
 
     function getCalendarConstants() {
-        return window.CalendarConstants || window.CALENDAR_CONSTANTS || null;
+        return window.CalendarConstants || window.CalendarConstants || null;
     }
 
     // ============================================================

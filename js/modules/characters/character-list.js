@@ -25,7 +25,7 @@
  *   - window.CharacterQueries (from character-queries.js)
  *   - window.DomUtils (from dom-utils.js)
  *   - window.getCurrentEditId (from index.js)
- *   - window.CALENDAR_CONSTANTS (from constants.js)
+ *   - window.CalendarConstants (from constants.js)
  *   - window.AcademyQueries (from academy-queries.js)
  */
 
@@ -59,7 +59,7 @@
     }
 
     function getCalendarConstants() {
-        return window.CALENDAR_CONSTANTS || window.CalendarConstants || null;
+        return window.CalendarConstants || window.CalendarConstants || null;
     }
 
     /**

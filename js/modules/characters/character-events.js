@@ -144,7 +144,6 @@
         if (!CharacterGenerator || typeof CharacterGenerator.generatePersonality !== 'function') {
             missing.push('CharacterGenerator.generatePersonality');
         }
-        // FIXED: was generateStats, module exports generateStats3d6
         if (!CharacterGenerator || typeof CharacterGenerator.generateStats3d6 !== 'function') {
             missing.push('CharacterGenerator.generateStats3d6');
         }
@@ -167,8 +166,6 @@
         if (!UI_CONSTANTS || typeof UI_CONSTANTS.MOBILE_BREAKPOINT !== 'number') {
             missing.push('UI_CONSTANTS.MOBILE_BREAKPOINT');
         }
-
-        // FIXED: was CALENDAR_CONSTANTS.DEBOUNCE_DELAY, use UI_CONSTANTS.DEBOUNCE_DELAY
         if (!UI_CONSTANTS || typeof UI_CONSTANTS.DEBOUNCE_DELAY !== 'number') {
             missing.push('UI_CONSTANTS.DEBOUNCE_DELAY');
         }
@@ -325,6 +322,7 @@
         bindAddCharacter(container);
         bindFormSubmit(container);
         bindDeleteButton(container);
+        bindCancelButton(container);
         bindTabSwitching(container);
         bindFilters(container);
         bindDeceasedToggle(container);
@@ -333,6 +331,7 @@
         bindClickOutside(container);
         bindCharacterList(container);
         bindRandomButtons(container);
+        bindSpecialMoveButtons(container);
 
         _initialized = true;
     }
@@ -420,6 +419,28 @@
             .catch(function(err) {
                 notify('An error occurred while saving.', 'error');
             });
+    }
+
+    // ============================================================
+    // CANCEL BUTTON
+    // ============================================================
+
+    function bindCancelButton(container) {
+        var cancelBtn = document.getElementById('cancel-character-form');
+        if (cancelBtn) {
+            addSafeEventListener(cancelBtn, 'click', function() {
+                var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+                if (editId) {
+                    // Re-render with saved data to discard unsaved changes
+                    CharacterForm.render(editId);
+                } else {
+                    CharacterForm.hide();
+                    if (typeof window.setCurrentEditId === 'function') {
+                        window.setCurrentEditId(null);
+                    }
+                }
+            });
+        }
     }
 
     // ============================================================
@@ -724,6 +745,7 @@
     // ============================================================
 
     function bindRandomButtons(container) {
+        // Physical
         var randomPhysicalBtn = document.getElementById('random-physical-btn');
         if (randomPhysicalBtn) {
             addSafeEventListener(randomPhysicalBtn, 'click', function() {
@@ -731,6 +753,7 @@
             });
         }
 
+        // Personality
         var randomPersonalityBtn = document.getElementById('random-personality-btn');
         if (randomPersonalityBtn) {
             addSafeEventListener(randomPersonalityBtn, 'click', function() {
@@ -738,16 +761,37 @@
             });
         }
 
+        // Physical stats
         var randomStatsBtn = document.getElementById('random-stats-btn');
         if (randomStatsBtn) {
             addSafeEventListener(randomStatsBtn, 'click', function() {
                 fillRandomStats();
             });
         }
+
+        // Magic per-category
+        var categories = ['elemental', 'body', 'aether'];
+        categories.forEach(function(cat) {
+            var btn = document.getElementById('random-' + cat + '-btn');
+            if (btn) {
+                addSafeEventListener(btn, 'click', function() {
+                    fillRandomMagicCategory(cat);
+                });
+            }
+        });
+
+        // All magic
+        var randomMagicBtn = document.getElementById('random-magic-btn');
+        if (randomMagicBtn) {
+            addSafeEventListener(randomMagicBtn, 'click', function() {
+                fillRandomMagic();
+            });
+        }
     }
 
     function fillRandomPhysical() {
         var physical = CharacterGenerator.generatePhysical();
+        FormUtils.setField('char-gender', physical.gender);
         FormUtils.setField('char-eyes', physical.eyes);
         FormUtils.setField('char-hair', physical.hair);
         FormUtils.setField('char-skin', physical.skin);
@@ -773,14 +817,251 @@
     }
 
     function fillRandomStats() {
-        // FIXED: was generateStats, module exports generateStats3d6
         var stats = CharacterGenerator.generateStats3d6();
         var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
         statKeys.forEach(function(key) {
             var value = stats[key] !== undefined ? stats[key] : 10;
             FormUtils.setField('char-stat-' + key, value);
         });
-        notify('Random stats generated!', 'info');
+
+        // Refresh class suggestion if the view exposes it
+        if (window.CharacterStatsView && typeof window.CharacterStatsView.updateClassSuggestion === 'function') {
+            try {
+                window.CharacterStatsView.updateClassSuggestion();
+            } catch (e) {
+                // Ignore suggestion errors
+            }
+        }
+
+        notify('Random physical stats generated!', 'info');
+    }
+
+    function fillRandomMagic() {
+        var magic = CharacterGenerator.generateMagic();
+        applyMagicToForm(magic);
+        notify('Random magic proficiencies generated!', 'info');
+    }
+
+    function fillRandomMagicCategory(category) {
+        var magic = CharacterGenerator.generateMagicCategory(category);
+        applyMagicToForm(magic);
+
+        // Refresh magic class suggestion
+        if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicClassSuggestion === 'function') {
+            try {
+                window.CharacterStatsView.updateMagicClassSuggestion();
+            } catch (e) {
+                // Ignore suggestion errors
+            }
+        }
+        if (window.CharacterStatsView && typeof window.CharacterStatsView.updateMagicPowerDisplay === 'function') {
+            try {
+                window.CharacterStatsView.updateMagicPowerDisplay();
+            } catch (e) {
+                // Ignore suggestion errors
+            }
+        }
+
+        notify('Random ' + category + ' magic generated!', 'info');
+    }
+
+    function applyMagicToForm(magic) {
+        if (!magic || typeof magic !== 'object') {
+            return;
+        }
+        Object.keys(magic).forEach(function(key) {
+            var inputId = 'magic-' + key;
+            if (document.getElementById(inputId)) {
+                FormUtils.setField(inputId, magic[key]);
+            }
+        });
+    }
+
+    // ============================================================
+    // SPECIAL MOVE BUTTONS
+    // ============================================================
+
+    function bindSpecialMoveButtons(container) {
+        // Add physical move
+        var addPhysicalBtn = document.getElementById('add-physical-move-btn');
+        if (addPhysicalBtn) {
+            addSafeEventListener(addPhysicalBtn, 'click', function() {
+                var nameInput = document.getElementById('physical-move-name');
+                var descInput = document.getElementById('physical-move-desc');
+                var name = nameInput ? nameInput.value.trim() : '';
+                var desc = descInput ? descInput.value.trim() : '';
+                if (!name) {
+                    notify('Move name is required.', 'error');
+                    return;
+                }
+                handleAddSpecialMove('physical', name, desc);
+            });
+        }
+
+        // Add magical move
+        var addMagicalBtn = document.getElementById('add-magical-move-btn');
+        if (addMagicalBtn) {
+            addSafeEventListener(addMagicalBtn, 'click', function() {
+                var nameInput = document.getElementById('magical-move-name');
+                var descInput = document.getElementById('magical-move-desc');
+                var name = nameInput ? nameInput.value.trim() : '';
+                var desc = descInput ? descInput.value.trim() : '';
+                if (!name) {
+                    notify('Move name is required.', 'error');
+                    return;
+                }
+                handleAddSpecialMove('magical', name, desc);
+            });
+        }
+
+        // Remove special move (delegated)
+        addSafeDelegatedListener('.remove-special-move', 'click', function(e, target) {
+            e.stopPropagation();
+            var type = target.dataset.type;
+            var moveId = target.dataset.moveId;
+            if (type && moveId) {
+                handleRemoveSpecialMove(type, moveId);
+            }
+        });
+
+        // Edit special move (delegated)
+        addSafeDelegatedListener('.edit-special-move', 'click', function(e, target) {
+            e.stopPropagation();
+            var type = target.dataset.type;
+            var moveId = target.dataset.moveId;
+            if (type && moveId) {
+                handleEditSpecialMove(type, moveId);
+            }
+        });
+
+        // Listen for edit modal save event
+        document.addEventListener('specialMoveEdit', function(e) {
+            if (!e.detail) {
+                return;
+            }
+            var d = e.detail;
+            if (d.charId && d.type && d.moveId) {
+                handleUpdateSpecialMove(d.charId, d.type, d.moveId, d.name, d.description);
+            }
+        });
+    }
+
+    function handleAddSpecialMove(type, name, description) {
+        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify('Please save the character first.', 'error');
+            return;
+        }
+
+        if (!window.CharacterStats || typeof window.CharacterStats.addSpecialMove !== 'function') {
+            notify('Character stats module not available.', 'error');
+            return;
+        }
+
+        window.CharacterStats.addSpecialMove(charId, type, name, description)
+            .then(function(result) {
+                if (result && result.success) {
+                    // Clear inputs
+                    var nameInput = document.getElementById(type + '-move-name');
+                    var descInput = document.getElementById(type + '-move-desc');
+                    if (nameInput) {
+                        nameInput.value = '';
+                    }
+                    if (descInput) {
+                        descInput.value = '';
+                    }
+                    refreshSpecialMoves(charId);
+                }
+            })
+            .catch(function(err) {
+                notify('Failed to add move.', 'error');
+            });
+    }
+
+    function handleRemoveSpecialMove(type, moveId) {
+        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        if (!window.CharacterStats || typeof window.CharacterStats.removeSpecialMove !== 'function') {
+            notify('Character stats module not available.', 'error');
+            return;
+        }
+
+        window.CharacterStats.removeSpecialMove(charId, type, moveId)
+            .then(function(result) {
+                if (result && result.success) {
+                    refreshSpecialMoves(charId);
+                }
+            })
+            .catch(function(err) {
+                notify('Failed to remove move.', 'error');
+            });
+    }
+
+    function handleUpdateSpecialMove(charId, type, moveId, name, description) {
+        if (!window.CharacterStats || typeof window.CharacterStats.updateSpecialMove !== 'function') {
+            notify('Character stats module not available.', 'error');
+            return;
+        }
+
+        window.CharacterStats.updateSpecialMove(charId, type, moveId, name, description)
+            .then(function(result) {
+                if (result && result.success) {
+                    refreshSpecialMoves(charId);
+                }
+            })
+            .catch(function(err) {
+                notify('Failed to update move.', 'error');
+            });
+    }
+
+    function handleEditSpecialMove(type, moveId) {
+        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char || !char.specialMoves) {
+            return;
+        }
+
+        var moves = char.specialMoves[type] || [];
+        var move = null;
+        for (var i = 0; i < moves.length; i++) {
+            if (moves[i] && String(moves[i].id) === String(moveId)) {
+                move = moves[i];
+                break;
+            }
+        }
+
+        if (!move) {
+            notify('Move not found.', 'error');
+            return;
+        }
+
+        if (window.CharacterStatsView && typeof window.CharacterStatsView.openEditModal === 'function') {
+            window.CharacterStatsView.openEditModal(charId, type, moveId, move.name, move.description);
+        }
+    }
+
+    function refreshSpecialMoves(charId) {
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            return;
+        }
+
+        if (!window.CharacterStatsView || typeof window.CharacterStatsView.renderSpecialMoves !== 'function') {
+            return;
+        }
+
+        var moves = window.CharacterStats.getSpecialMoves(char);
+        window.CharacterStatsView.renderSpecialMoves('physical-moves-list', moves.physical, 'physical');
+        window.CharacterStatsView.renderSpecialMoves('magical-moves-list', moves.magical, 'magical');
     }
 
     // ============================================================

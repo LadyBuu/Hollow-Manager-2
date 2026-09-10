@@ -39,7 +39,7 @@
  * 
  * DEPENDENCIES:
  *   - window.TeamConstants (from team-constants.js) - MANDATORY
- *   - window.CALENDAR_CONSTANTS (from constants.js) - MANDATORY
+ *   - window.CalendarConstants (from constants.js) - MANDATORY
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
@@ -77,7 +77,7 @@
     // ============================================================
 
     var TeamConstants = window.TeamConstants;
-    var CalendarConstants = window.CALENDAR_CONSTANTS;
+    var CalendarConstants = window.CalendarConstants;
     var ObjectUtils = window.ObjectUtils;
     var IdUtils = window.IdUtils;
     var MutationPipeline = window.MutationPipeline;

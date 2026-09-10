@@ -21,7 +21,7 @@
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.TournamentQueries (from tournament-queries.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
- *   - window.CALENDAR_CONSTANTS (from constants.js) - MANDATORY
+ *   - window.CalendarConstants (from constants.js) - MANDATORY
  * 
  * USAGE:
  *   var EV = window.CharacterEliminationView;
@@ -45,7 +45,7 @@
     var CharacterQueries = window.CharacterQueries;
     var TournamentQueries = window.TournamentQueries;
     var DomUtils = window.DomUtils;
-    var CalendarConstants = window.CALENDAR_CONSTANTS;
+    var CalendarConstants = window.CalendarConstants;
 
     // ============================================================
     // CONSTANTS

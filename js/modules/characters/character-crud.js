@@ -42,7 +42,7 @@
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  *   - window.CharacterConstants (from character-constants.js) - MANDATORY
- *   - window.CALENDAR_CONSTANTS (from constants.js) - MANDATORY
+ *   - window.CalendarConstants (from constants.js) - MANDATORY
  */
 
 (function() {
@@ -62,7 +62,7 @@
     var MutationPipeline = window.MutationPipeline;
     var IdUtils = window.IdUtils;
     var CharacterConstants = window.CharacterConstants;
-    var CalendarConstants = window.CALENDAR_CONSTANTS;
+    var CalendarConstants = window.CalendarConstants;
 
     // ============================================================
     // CONSTANTS - From CharacterConstants (MANDATORY)
