@@ -6,18 +6,18 @@
  * 
  * This module provides:
  *   - performMutation() - Standard VALIDATE -> SNAPSHOT -> MUTATE -> PERSIST -> LOG -> UI COMMIT
- *   - createSafeBackup() - Centralised deep cloning with structuredClone
+ *   - createSafeBackup() - Centralised deep cloning via ObjectUtils
  *   - saveWithPromise() - Wraps window.saveData() to catch synchronous exceptions
  * 
  * IMPORTANT:
  *   - All mutations should use performMutation() for consistency
  *   - Mutations are SERIALISED to prevent rollback conflicts
- *   - createSafeBackup() uses CoreUtils.deepClone() (SINGLE SOURCE OF TRUTH)
+ *   - createSafeBackup() uses ObjectUtils.deepClone() (SINGLE SOURCE OF TRUTH)
  *   - saveWithPromise() ensures saveData() errors become Promise rejections
  *   - This module does NOT show UI - caller handles UX via callbacks
  *   - Uses NotificationSystem for notifications when available
  *   - Uses ActivityLog for logging (SINGLE SOURCE OF TRUTH)
- *   - Uses CoreUtils for cloning (SINGLE SOURCE OF TRUTH)
+ *   - Uses ObjectUtils for cloning (SINGLE SOURCE OF TRUTH)
  * 
  * MUTATION CONTRACT:
  *   performMutation(config) expects:
@@ -52,9 +52,15 @@
  * DEPENDENCIES:
  *   - window.saveData (from database.js)
  *   - window.data (global state)
- *   - window.CoreUtils (for deepClone)
- *   - window.ActivityLog (for activity logging)
+ *   - window.ObjectUtils (for deepClone) - MANDATORY
+ *   - window.ActivityLog (for activity logging) - MANDATORY
  *   - window.NotificationSystem (for notifications - optional, falls back to alert)
+ * 
+ * HISTORY:
+ *   - Previously depended on window.CoreUtils.deepClone. CoreUtils no longer
+ *     exists in the architecture; its responsibilities were split across
+ *     ObjectUtils, ValidationUtils, and IdUtils. This module now uses
+ *     ObjectUtils.deepClone, which is the canonical deep clone utility.
  */
 
 (function() {
@@ -69,7 +75,7 @@
     // DEPENDENCY IMPORTS
     // ============================================================
 
-    var CoreUtils = window.CoreUtils;
+    var ObjectUtils = window.ObjectUtils;
     var ActivityLog = window.ActivityLog;
     var NotificationSystem = window.NotificationSystem;
 
@@ -88,8 +94,8 @@
             missing.push('window.data');
         }
 
-        if (!CoreUtils || typeof CoreUtils.deepClone !== 'function') {
-            missing.push('CoreUtils.deepClone');
+        if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
+            missing.push('ObjectUtils.deepClone');
         }
 
         if (!ActivityLog || typeof ActivityLog.record !== 'function') {
@@ -197,7 +203,7 @@
             throw new Error('MutationPipeline: Cannot backup invalid data.');
         }
 
-        return CoreUtils.deepClone(data);
+        return ObjectUtils.deepClone(data);
     }
 
     // ============================================================
