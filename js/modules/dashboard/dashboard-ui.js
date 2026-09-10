@@ -1,31 +1,37 @@
 /**
  * js/modules/dashboard/dashboard-ui.js - Dashboard UI Controller
  * Event wiring and UI coordination for the dashboard
+ * 
  * Path: js/modules/dashboard/dashboard-ui.js
  * 
- * This module is responsible for:
- *   - Rendering the dashboard
- *   - Binding dashboard events
- *   - Coordinating year updates
- *   - Quick link navigation
+ * This module provides:
+ *   - render(container) - Render the dashboard and bind events
+ *   - destroy() - Clean up event listeners
  * 
  * IMPORTANT:
  *   - UI-ONLY - no domain mutations
- *   - All mutations delegate to domain cores
- *   - All notifications use NotificationSystem.notify()
- *   - All HTML escaping uses DomUtils.escapeHtml()
- *   - Year updates go through application settings/calendar domain
+ *   - Fetches view models from DashboardAggregator
+ *   - Delegates year updates to ApplicationSettingsCore
+ *   - Notifications come from MutationPipeline via ApplicationSettingsCore;
+ *     the UI does NOT show its own success/failure for year updates
+ *   - All HTML is produced by DashboardRender
+ *   - All event listeners are tracked for cleanup
+ * 
+ * LIFECYCLE:
+ *   - render(container) may be called multiple times
+ *   - Each render cleans up prior listeners before binding new ones
+ *   - destroy() removes all listeners and clears the container reference
  * 
  * DEPENDENCIES:
- *   - window.DashboardRender (from dashboard-render.js)
- *   - window.DashboardQueries (from dashboard-queries.js)
- *   - window.NotificationSystem (from notification.js)
- *   - window.TabManager (from tab-manager.js)
- *   - window.saveData (from database.js) - TEMPORARY, will be removed
+ *   - window.DashboardRender
+ *   - window.DashboardAggregator
+ *   - window.ApplicationSettingsCore
+ *   - window.TabManager
  * 
  * USAGE:
- *   var ui = window.DashboardUI;
- *   ui.render(container);
+ *   DashboardUI.render(container);
+ *   // Later, when the tab is torn down:
+ *   DashboardUI.destroy();
  */
 
 (function() {
@@ -36,7 +42,7 @@
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - NO FALLBACKS
+    // DEPENDENCY CHECK - FAIL LOUDLY
     // ============================================================
 
     var missing = [];
@@ -44,22 +50,14 @@
     if (!window.DashboardRender || typeof window.DashboardRender.renderDashboard !== 'function') {
         missing.push('DashboardRender.renderDashboard');
     }
-
-    if (!window.DashboardQueries || typeof window.DashboardQueries.getCurrentYear !== 'function') {
-        missing.push('DashboardQueries.getCurrentYear');
+    if (!window.DashboardAggregator || typeof window.DashboardAggregator.getDashboardViewModel !== 'function') {
+        missing.push('DashboardAggregator.getDashboardViewModel');
     }
-
-    if (!window.NotificationSystem || typeof window.NotificationSystem.notify !== 'function') {
-        missing.push('NotificationSystem.notify');
+    if (!window.ApplicationSettingsCore || typeof window.ApplicationSettingsCore.setCurrentYear !== 'function') {
+        missing.push('ApplicationSettingsCore.setCurrentYear');
     }
-
     if (!window.TabManager || typeof window.TabManager.switchTo !== 'function') {
         missing.push('TabManager.switchTo');
-    }
-
-    // saveData is temporary - will be replaced by MutationUtils
-    if (typeof window.saveData !== 'function') {
-        missing.push('saveData');
     }
 
     if (missing.length > 0) {
@@ -73,54 +71,54 @@
     // ============================================================
 
     var Render = window.DashboardRender;
-    var Queries = window.DashboardQueries;
-    var NotificationSystem = window.NotificationSystem;
+    var Aggregator = window.DashboardAggregator;
+    var AppSettings = window.ApplicationSettingsCore;
     var TabManager = window.TabManager;
 
     // ============================================================
     // STATE
     // ============================================================
 
-    var _eventListeners = [];
     var _container = null;
     var _mounted = false;
+    var _eventListeners = [];
 
     // ============================================================
-    // EVENT BINDING
+    // EVENT LISTENER TRACKING
     // ============================================================
 
-    function addSafeEventListener(element, eventName, handler, options) {
+    /**
+     * Register an event listener for cleanup.
+     * 
+     * @param {HTMLElement} element - Target element
+     * @param {string} eventName - Event name
+     * @param {function} handler - Event handler
+     */
+    function addTrackedListener(element, eventName, handler) {
         if (!element) {
             return;
         }
-        element.addEventListener(eventName, handler, options || false);
+        element.addEventListener(eventName, handler, false);
         _eventListeners.push({
             element: element,
             eventName: eventName,
-            handler: handler,
-            options: options || false
+            handler: handler
         });
     }
 
-    function removeAllEventListeners() {
+    /**
+     * Remove all tracked event listeners.
+     */
+    function removeAllTrackedListeners() {
         for (var i = 0; i < _eventListeners.length; i++) {
             var item = _eventListeners[i];
             try {
-                item.element.removeEventListener(item.eventName, item.handler, item.options);
+                item.element.removeEventListener(item.eventName, item.handler, false);
             } catch (e) {
-                // Ignore errors during cleanup
+                // Ignore cleanup errors
             }
         }
         _eventListeners = [];
-    }
-
-    // ============================================================
-    // NOTIFICATION
-    // ============================================================
-
-    function showNotification(message, type) {
-        type = type || 'info';
-        NotificationSystem.notify(message, type);
     }
 
     // ============================================================
@@ -128,120 +126,162 @@
     // ============================================================
 
     /**
-     * Update the current year.
-     * TEMPORARY: This will be replaced by a command through MutationUtils.
+     * Handle year update.
+     * 
+     * Reads the year input, validates it, and delegates to
+     * ApplicationSettingsCore.setCurrentYear(). On success, re-renders
+     * the dashboard to reflect the new value.
+     * 
+     * On failure, ApplicationSettingsCore returns a structured result
+     * with a message. MutationPipeline handles user notification.
+     * The UI does not display its own notification for year updates.
      */
-    function updateYear(year) {
-        // Validate
-        if (!Number.isInteger(year) || year < 1900 || year > 2100) {
-            showNotification('Please enter a valid year (1900-2100).', 'error');
-            return false;
+    function handleYearUpdate() {
+        if (!_container) {
+            return;
         }
 
-        // TEMPORARY: Direct persistence
-        // This will be replaced by: CalendarCore.setCurrentYear(year)
-        if (window.data) {
-            window.data.currentYear = year;
+        var yearInput = _container.querySelector('#dashboard-year-input');
+        if (!yearInput) {
+            return;
         }
 
-        if (typeof window.saveData === 'function') {
-            window.saveData()
-                .then(function() {
-                    showNotification('Year updated to ' + year + '.', 'success');
-                    render();
-                })
-                .catch(function() {
-                    showNotification('Failed to save year update.', 'error');
-                });
-        } else {
-            render();
+        var year = parseInt(yearInput.value, 10);
+        if (isNaN(year)) {
+            return;
         }
 
-        return true;
+        AppSettings.setCurrentYear(year)
+            .then(function(result) {
+                if (result && result.success) {
+                    // Re-render with the new year
+                    render(_container);
+                }
+                // Notification and rollback handled by MutationPipeline
+            })
+            .catch(function(err) {
+                // Unexpected error (should be rare - MutationPipeline handles
+                // most failure cases). Log it for debugging.
+                console.error('[DashboardUI] Failed to update year:', err);
+            });
     }
 
     // ============================================================
     // RENDER
     // ============================================================
 
+    /**
+     * Render the dashboard into the given container.
+     * 
+     * @param {HTMLElement} container - Container element
+     */
     function render(container) {
         if (!container) {
             container = document.getElementById('tab-dashboard');
         }
-
         if (!container) {
-            throw new Error('[DashboardUI] Container not found.');
+            console.warn('[DashboardUI] Container not found.');
+            return;
         }
 
-        // Clean up previous instance
+        // Clean up prior listeners before re-rendering
         if (_mounted) {
-            removeAllEventListeners();
+            removeAllTrackedListeners();
         }
 
         _container = container;
         _mounted = true;
 
-        // Render the dashboard
-        var html = Render.renderDashboard();
-        container.innerHTML = html;
+        // Fetch the view model from the aggregator
+        var viewModel = Aggregator.getDashboardViewModel();
+
+        // Render into the container
+        container.innerHTML = Render.renderDashboard(viewModel);
 
         // Bind events
         bindEvents(container);
     }
 
     // ============================================================
-    // BIND EVENTS
+    // EVENT BINDING
     // ============================================================
 
+    /**
+     * Bind all dashboard events to the container.
+     * 
+     * @param {HTMLElement} container - Container element
+     */
     function bindEvents(container) {
-        // Year update
+        // ---- Year update button ----
         var updateBtn = container.querySelector('#dashboard-update-year-btn');
-        var yearInput = container.querySelector('#dashboard-year-input');
-
-        if (updateBtn && yearInput) {
-            addSafeEventListener(updateBtn, 'click', function() {
-                var year = Number(yearInput.value);
-                updateYear(year);
+        if (updateBtn) {
+            addTrackedListener(updateBtn, 'click', function(e) {
+                e.preventDefault();
+                handleYearUpdate();
             });
+        }
 
-            addSafeEventListener(yearInput, 'keydown', function(e) {
+        // ---- Year input Enter key ----
+        var yearInput = container.querySelector('#dashboard-year-input');
+        if (yearInput) {
+            addTrackedListener(yearInput, 'keydown', function(e) {
                 if (e.key === 'Enter') {
-                    var year = Number(this.value);
-                    updateYear(year);
+                    e.preventDefault();
+                    handleYearUpdate();
                 }
             });
         }
 
-        // Quick links - use event delegation
-        addSafeEventListener(container, 'click', function(e) {
+        // ---- Quick links (event delegation) ----
+        addTrackedListener(container, 'click', function(e) {
             var link = e.target.closest('.quick-link');
-            if (link) {
-                e.preventDefault();
-                var tab = link.dataset.tab;
-                if (tab && TabManager && typeof TabManager.switchTo === 'function') {
-                    TabManager.switchTo(tab, true);
-                }
+            if (!link) {
+                return;
+            }
+            e.preventDefault();
+            var tab = link.getAttribute('data-tab');
+            if (tab) {
+                TabManager.switchTo(tab, true);
             }
         });
-
-        // Refresh button if present
-        var refreshBtn = container.querySelector('#dashboard-refresh-btn');
-        if (refreshBtn) {
-            addSafeEventListener(refreshBtn, 'click', function() {
-                render(_container);
-                showNotification('Dashboard refreshed.', 'success');
-            });
-        }
     }
 
     // ============================================================
     // DESTROY
     // ============================================================
 
+    /**
+     * Tear down the dashboard.
+     * Removes all event listeners and clears state.
+     * Does NOT clear the container's HTML - the caller may want to
+     * preserve the DOM for inspection or gradual teardown.
+     */
     function destroy() {
-        removeAllEventListeners();
+        removeAllTrackedListeners();
         _container = null;
         _mounted = false;
+    }
+
+    // ============================================================
+    // QUERIES
+    // ============================================================
+
+    /**
+     * Get the current container element.
+     * 
+     * @returns {HTMLElement|null} Container or null
+     */
+    function getContainer() {
+        return _container;
+    }
+
+    /**
+     * Check if the dashboard is currently mounted.
+     * 
+     * @returns {boolean} True if mounted
+     */
+    function isMounted() {
+        return _mounted;
     }
 
     // ============================================================
@@ -251,13 +291,8 @@
     window.DashboardUI = {
         render: render,
         destroy: destroy,
-        updateYear: updateYear,
-        getContainer: function() {
-            return _container;
-        },
-        isMounted: function() {
-            return _mounted;
-        }
+        getContainer: getContainer,
+        isMounted: isMounted
     };
 
 })();
