@@ -70,6 +70,9 @@
         if (!CharacterForm || typeof CharacterForm.collect !== 'function') {
             missing.push('CharacterForm.collect');
         }
+        if (!CharacterForm || typeof CharacterForm.addCareerEntryRow !== 'function') {
+            missing.push('CharacterForm.addCareerEntryRow');
+        }
         if (!CharacterClassView || typeof CharacterClassView.renderClassTags !== 'function') {
             missing.push('CharacterClassView.renderClassTags');
         }
@@ -162,10 +165,6 @@
         });
     }
 
-    /**
-     * Delegate a click/input/etc on document for a selector.
-     * Survives DOM replacement of the target.
-     */
     function addSafeDelegatedListener(selector, eventName, handler) {
         function wrappedHandler(e) {
             var target = e.target.closest ? e.target.closest(selector) : null;
@@ -216,7 +215,7 @@
 
         removeAllEventListeners();
 
-        // Static container elements (outside form content)
+        // Static container elements
         bindToggleList(container);
         bindAddCharacter(container);
         bindFormSubmit(container);
@@ -225,13 +224,14 @@
         bindClickOutside(container);
         bindCharacterList(container);
 
-        // Dynamically-rendered elements (inside form content) - DELEGATED
+        // Dynamically-rendered elements - DELEGATED
         bindTabSwitching();
         bindCancelButton();
         bindDeceasedToggle();
         bindBirthYearListener();
         bindRandomButtons();
         bindPreviousNameButtons();
+        bindCareerButtons();
         bindClassTagInput();
         bindClassTagRemoval();
 
@@ -380,7 +380,7 @@
     }
 
     // ============================================================
-    // DELEGATED BINDINGS (survive form re-render)
+    // DELEGATED BINDINGS
     // ============================================================
 
     function bindTabSwitching() {
@@ -404,11 +404,19 @@
         });
     }
 
+    /**
+     * Deceased toggle:
+     *   - Shows/hides the death fields container
+     *   - Enables/disables the death inputs so the user can type
+     */
     function bindDeceasedToggle() {
         addSafeDelegatedListener('#char-deceased', 'change', function(e, target) {
             var deathFields = document.getElementById('death-fields');
             if (deathFields) {
                 deathFields.style.display = target.checked ? 'block' : 'none';
+            }
+            if (CharacterForm && typeof CharacterForm.applyDeceasedState === 'function') {
+                CharacterForm.applyDeceasedState(target.checked);
             }
         });
     }
@@ -501,6 +509,52 @@
                 var input = newRow.querySelector('.previous-name-input');
                 if (input) { input.focus(); }
             }
+        });
+    }
+
+    // ============================================================
+    // CAREER STATUS BUTTONS
+    // ============================================================
+
+    function bindCareerButtons() {
+        addSafeDelegatedListener('#add-career-entry-btn', 'click', function(e, target) {
+            e.preventDefault();
+            var container = document.getElementById('career-status-container');
+            if (!container) { return; }
+
+            if (CharacterForm && typeof CharacterForm.addCareerEntryRow === 'function') {
+                CharacterForm.addCareerEntryRow(container);
+            }
+
+            var lastRow = container.querySelector('.career-status-entry:last-child');
+            if (lastRow) {
+                var select = lastRow.querySelector('.career-status-select');
+                if (select) { select.focus(); }
+            }
+        });
+
+        addSafeDelegatedListener('.remove-career-entry', 'click', function(e, target) {
+            e.preventDefault();
+            var row = target.closest('.career-status-entry');
+            if (!row) { return; }
+
+            var parent = row.parentElement;
+            if (!parent) { return; }
+
+            // If only one row left, just clear it instead of removing
+            if (parent.querySelectorAll('.career-status-entry').length <= 1) {
+                var select = row.querySelector('.career-status-select');
+                var startEl = row.querySelector('.career-start-year');
+                var endEl = row.querySelector('.career-end-year');
+                var titleEl = row.querySelector('.career-title');
+                if (select) { select.value = ''; }
+                if (startEl) { startEl.value = ''; }
+                if (endEl) { endEl.value = ''; }
+                if (titleEl) { titleEl.value = ''; }
+                return;
+            }
+
+            row.remove();
         });
     }
 

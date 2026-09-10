@@ -7,6 +7,7 @@
  *   - RENDER ONLY - no event binding (handled by CharacterEvents)
  *   - All field collection uses FormUtils.getField(id) - NOT getFormData()
  *     because inputs use id-only (no name attribute)
+ *   - Career status rows use DOM APIs (dynamic add/remove)
  */
 
 (function() {
@@ -93,6 +94,18 @@
             .replace(/'/g, '&#039;');
     }
 
+    function escapeAttribute(value) {
+        var DomUtils = getDomUtils();
+        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
+            return DomUtils.escapeAttribute(value);
+        }
+        if (value === undefined || value === null) { return ''; }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
     // ============================================================
     // CONSTANTS
     // ============================================================
@@ -116,6 +129,24 @@
     function getStatDefault() {
         var CC = getCharacterConstants();
         return CC ? CC.STAT_DEFAULT || 10 : 10;
+    }
+
+    function getCareerStatusOptions() {
+        var CC = getCharacterConstants();
+        if (CC && Array.isArray(CC.CAREER_STATUS_OPTIONS)) {
+            return CC.CAREER_STATUS_OPTIONS;
+        }
+        // Fallback in case constants aren't loaded yet
+        return [
+            { value: '', label: 'Select status...' },
+            { value: 'civilian', label: 'Civilian' },
+            { value: 'trainee', label: 'Trainee' },
+            { value: 'rookie', label: 'Rookie' },
+            { value: 'junior', label: 'Junior' },
+            { value: 'senior', label: 'Senior' },
+            { value: 'instructor', label: 'Instructor' },
+            { value: 'support', label: 'Support' }
+        ];
     }
 
     // ============================================================
@@ -184,6 +215,83 @@
     }
 
     // ============================================================
+    // CAREER STATUS ENTRY ROW
+    // ============================================================
+
+    /**
+     * Append a career status entry row to the given container.
+     * 
+     * @param {HTMLElement} container - Target container
+     * @param {object} entry - Optional entry to pre-fill:
+     *   { status, startYear, endYear, title }
+     */
+    function addCareerEntryRow(container, entry) {
+        if (!container) { return; }
+        entry = entry || {};
+
+        var row = document.createElement('div');
+        row.className = 'career-status-entry';
+        row.style.cssText = 'display:grid;grid-template-columns:1.2fr 0.7fr 0.7fr 1.2fr auto;gap:6px;align-items:center;margin-bottom:6px;';
+
+        // Status select
+        var select = document.createElement('select');
+        select.className = 'career-status-select';
+        select.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+
+        var options = getCareerStatusOptions();
+        var currentStatus = String(entry.status || '').toLowerCase();
+        for (var i = 0; i < options.length; i++) {
+            var opt = document.createElement('option');
+            opt.value = options[i].value;
+            opt.textContent = options[i].label;
+            if (options[i].value === currentStatus) {
+                opt.selected = true;
+            }
+            select.appendChild(opt);
+        }
+
+        // Start year
+        var startInput = document.createElement('input');
+        startInput.type = 'number';
+        startInput.className = 'career-start-year';
+        startInput.placeholder = 'Start';
+        startInput.value = entry.startYear !== undefined && entry.startYear !== null ? String(entry.startYear) : '';
+        startInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+
+        // End year
+        var endInput = document.createElement('input');
+        endInput.type = 'number';
+        endInput.className = 'career-end-year';
+        endInput.placeholder = 'End';
+        endInput.value = entry.endYear !== undefined && entry.endYear !== null ? String(entry.endYear) : '';
+        endInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+
+        // Title
+        var titleInput = document.createElement('input');
+        titleInput.type = 'text';
+        titleInput.className = 'career-title';
+        titleInput.placeholder = 'Title';
+        titleInput.value = entry.title ? String(entry.title) : '';
+        titleInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+
+        // Remove button
+        var removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'remove-career-entry small danger';
+        removeBtn.textContent = '✕';
+        removeBtn.setAttribute('aria-label', 'Remove status entry');
+        removeBtn.style.cssText = 'padding:4px 8px;font-size:0.65rem;';
+
+        row.appendChild(select);
+        row.appendChild(startInput);
+        row.appendChild(endInput);
+        row.appendChild(titleInput);
+        row.appendChild(removeBtn);
+
+        container.appendChild(row);
+    }
+
+    // ============================================================
     // RENDER
     // ============================================================
 
@@ -235,6 +343,11 @@
             if (prevContainer) {
                 prevContainer.textContent = '';
                 addPreviousNameRow(prevContainer, '');
+            }
+            var careerContainer = document.getElementById('career-status-container');
+            if (careerContainer) {
+                careerContainer.textContent = '';
+                addCareerEntryRow(careerContainer);
             }
             applyDeceasedState(false);
         }
@@ -625,11 +738,20 @@
 
         return `
             <div class="tab-panel" data-tab="professional" style="display:${active};">
+
                 <div class="form-group">
                     <label style="font-size:0.7rem;color:var(--text-dim);">Specialty</label>
                     <input type="text" id="char-specialty" value="${escapeHtml(c.specialty || '')}" placeholder="Area of expertise" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                 </div>
-                <div id="professional-view" style="margin-top:8px;"></div>
+
+                <div class="form-group" style="margin-top:12px;">
+                    <label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Career Status History</label>
+                    <div style="font-size:0.6rem;color:var(--text-dim);margin-bottom:6px;">Entries are sorted chronologically by start year.</div>
+                    <div id="career-status-container" style="display:flex;flex-direction:column;gap:2px;"></div>
+                    <button type="button" id="add-career-entry-btn" class="small secondary" style="margin-top:6px;font-size:0.65rem;padding:3px 10px;">+ Add Status Entry</button>
+                </div>
+
+                <div id="professional-view" style="margin-top:12px;"></div>
             </div>
         `;
     }
@@ -791,6 +913,19 @@
         // Professional Tab
         FormUtils.setField('char-specialty', char.specialty);
 
+        var careerContainer = document.getElementById('career-status-container');
+        if (careerContainer) {
+            careerContainer.textContent = '';
+            var careerEntries = Array.isArray(char.careerStatus) ? char.careerStatus : [];
+            if (careerEntries.length === 0) {
+                addCareerEntryRow(careerContainer);
+            } else {
+                careerEntries.forEach(function(entry) {
+                    addCareerEntryRow(careerContainer, entry);
+                });
+            }
+        }
+
         // Notes Tab
         FormUtils.setField('char-notes', char.notes);
 
@@ -805,8 +940,56 @@
     }
 
     // ============================================================
-    // FORM DATA COLLECTION - uses FormUtils.getField(id)
+    // FORM DATA COLLECTION
     // ============================================================
+
+    /**
+     * Collect career status entries from the DOM, sorted chronologically.
+     * Entries with no status are dropped. Entries with a valid startYear
+     * are sorted ascending; entries without a startYear keep insertion
+     * order at the end.
+     */
+    function collectCareerStatus(form) {
+        var rows = form.querySelectorAll('#career-status-container .career-status-entry');
+        var entries = [];
+
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            var statusEl = row.querySelector('.career-status-select');
+            var startEl = row.querySelector('.career-start-year');
+            var endEl = row.querySelector('.career-end-year');
+            var titleEl = row.querySelector('.career-title');
+
+            var status = statusEl ? String(statusEl.value || '').trim() : '';
+            if (!status) { continue; }
+
+            var startYear = startEl ? String(startEl.value || '').trim() : '';
+            var endYear = endEl ? String(endEl.value || '').trim() : '';
+            var title = titleEl ? String(titleEl.value || '').trim() : '';
+
+            entries.push({
+                status: status,
+                startYear: startYear,
+                endYear: endYear,
+                title: title
+            });
+        }
+
+        // Sort: entries with startYear ascending first; entries without startYear at the end.
+        entries.sort(function(a, b) {
+            var aNum = parseInt(a.startYear, 10);
+            var bNum = parseInt(b.startYear, 10);
+            var aHas = !isNaN(aNum);
+            var bHas = !isNaN(bNum);
+
+            if (aHas && bHas) { return aNum - bNum; }
+            if (aHas && !bHas) { return -1; }
+            if (!aHas && bHas) { return 1; }
+            return 0;
+        });
+
+        return entries;
+    }
 
     function collect() {
         var FormUtils = getFormUtils();
@@ -823,7 +1006,7 @@
         var statMax = getStatMax();
         var statDefault = getStatDefault();
 
-        // Previous Names (query the DOM directly since they are dynamic rows)
+        // Previous Names
         var previousNames = [];
         var prevInputs = form.querySelectorAll('.previous-name-input');
         for (var i = 0; i < prevInputs.length; i++) {
@@ -855,7 +1038,6 @@
 
         var birthYearRaw = FormUtils.getField('char-birthYear') || '';
 
-        // Auto-fill death age from birth year if empty
         if (isDeceased && !deathAge && birthYearRaw && deathYear) {
             var by = parseInt(birthYearRaw, 10);
             var dy = parseInt(deathYear, 10);
@@ -898,6 +1080,7 @@
 
             // Professional tab
             specialty: FormUtils.getField('char-specialty') || '',
+            careerStatus: collectCareerStatus(form),
 
             // Notes tab
             notes: FormUtils.getField('char-notes') || '',
@@ -991,6 +1174,7 @@
         generateRandomStats: generateRandomStats,
 
         addPreviousNameRow: addPreviousNameRow,
+        addCareerEntryRow: addCareerEntryRow,
         applyDeceasedState: applyDeceasedState,
 
         getCharacterGenerator: getCharacterGenerator,
