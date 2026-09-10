@@ -12,6 +12,7 @@
             <h1>Hollow Manager 2</h1>
             <nav id="main-nav">
                 <ul>
+                    <li><a href="#dashboard" data-tab="dashboard">Dashboard</a></li>
                     <li><a href="#characters" data-tab="characters">Characters</a></li>
                     <li><a href="#teams" data-tab="teams">Teams</a></li>
                     <li><a href="#calendar" data-tab="calendar">Calendar</a></li>
@@ -23,7 +24,8 @@
             </nav>
         </header>
         <main id="main-content">
-            <div id="tab-characters" class="tab-content active"></div>
+            <div id="tab-dashboard" class="tab-content active"></div>
+            <div id="tab-characters" class="tab-content"></div>
             <div id="tab-teams" class="tab-content"></div>
             <div id="tab-calendar" class="tab-content"></div>
             <div id="tab-social" class="tab-content"></div>
@@ -77,28 +79,9 @@
     <script src="js/modules/shared/queries/calendar-queries.js"></script>
 
     <!-- ============================================================
-         ACADEMY CORE MODULES (dependencies for AcademyQueries)
-         ============================================================ -->
-    <script src="js/modules/academy/academy-classes.js"></script>
-    <script src="js/modules/academy/academy-grades.js"></script>
-    <script src="js/modules/academy/academy-groups.js"></script>
-    <script src="js/modules/academy/academy-ranking.js"></script>
-    <script src="js/modules/academy/academy-disciplines.js"></script>
-    <script src="js/modules/academy/academy-locations.js"></script>
-
-    <!-- ============================================================
-         ACADEMY QUERIES - LOADS AFTER ITS DEPENDENCIES
-         ============================================================ -->
-    <script src="js/modules/shared/queries/academy-queries.js"></script>
-
-    <!-- ============================================================
-         ACADEMY ADDITIONAL - Schedule & Distribute
-         ============================================================ -->
-    <script src="js/modules/academy/academy-schedule.js"></script>
-    <script src="js/modules/academy/academy-distribute.js"></script>
-
-    <!-- ============================================================
          CORE INFRASTRUCTURE - LOADS BEFORE MODULES THAT USE IT
+         Note: bootstrap.js is deferred to the end so that all feature
+         modules can register with TabManager before data readiness fires.
          ============================================================ -->
     <script src="js/core/activity-log.js"></script>
     <script src="js/core/database.js"></script>
@@ -106,10 +89,11 @@
     <script src="js/core/state.js"></script>
     <script src="js/core/tab-manager.js"></script>
     <script src="js/core/mutation-pipeline.js"></script>
-    <script src="js/core/bootstrap.js"></script>
 
     <!-- ============================================================
-         CALENDAR MODULE
+         CALENDAR DOMAIN
+         Must load before Academy Additional (academy-schedule.js
+         depends on ScheduleCore at runtime via the injected provider).
          ============================================================ -->
     <script src="js/modules/calendar/schedule-core.js"></script>
     <script src="js/modules/calendar/calendar-renderer.js"></script>
@@ -121,7 +105,33 @@
     <script src="js/modules/calendar/index.js"></script>
 
     <!-- ============================================================
-         CHARACTER MODULE - Core first, then views, then aggregator
+         ACADEMY DOMAIN
+         ============================================================ -->
+    <script src="js/modules/academy/academy-classes.js"></script>
+    <script src="js/modules/academy/academy-grades.js"></script>
+    <script src="js/modules/academy/academy-groups.js"></script>
+    <script src="js/modules/academy/academy-ranking.js"></script>
+    <script src="js/modules/academy/academy-disciplines.js"></script>
+    <script src="js/modules/academy/academy-locations.js"></script>
+
+    <!-- Academy Queries (loads after Academy core) -->
+    <script src="js/modules/shared/queries/academy-queries.js"></script>
+
+    <!-- Academy Additional (depends on ScheduleCore + AcademyQueries) -->
+    <script src="js/modules/academy/academy-schedule.js"></script>
+    <script src="js/modules/academy/academy-distribute.js"></script>
+
+    <!-- Academy Aggregator / UI / Events / Tabs -->
+    <script src="js/modules/academy/academy-aggregator.js"></script>
+    <script src="js/modules/academy/academy-ui.js"></script>
+    <script src="js/modules/academy/academy-events.js"></script>
+    <script src="js/modules/academy/tabs/class-tab.js"></script>
+    <script src="js/modules/academy/tabs/student-tab.js"></script>
+    <script src="js/modules/academy/tabs/faculty-tab.js"></script>
+    <script src="js/modules/academy/index.js"></script>
+
+    <!-- ============================================================
+         CHARACTER DOMAIN
          ============================================================ -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
@@ -139,9 +149,7 @@
     <script src="js/modules/characters/index.js"></script>
 
     <!-- ============================================================
-         TOURNAMENT MODULE
-         Note: tournament-constants.js is in js/modules/shared/
-         Note: tournament-queries.js is in js/modules/shared/queries/
+         TOURNAMENT DOMAIN
          ============================================================ -->
     <script src="js/modules/tournaments/tournament-schema.js"></script>
     <script src="js/modules/tournaments/tournament-lifecycle.js"></script>
@@ -157,7 +165,7 @@
     <script src="js/modules/tournaments/index.js"></script>
 
     <!-- ============================================================
-         TEAM MODULE
+         TEAM DOMAIN
          ============================================================ -->
     <script src="js/modules/teams/team-core.js"></script>
     <script src="js/modules/teams/team-aggregator.js"></script>
@@ -167,30 +175,21 @@
     <script src="js/modules/teams/index.js"></script>
 
     <!-- ============================================================
-         SOCIAL MODULE
+         SOCIAL DOMAIN
+         Note: social-graph.js loads BEFORE social-events.js because
+         social-events.js requires SocialGraph at load time for its
+         dependency check.
          ============================================================ -->
     <script src="js/modules/social/social-core.js"></script>
     <script src="js/modules/social/social-aggregator.js"></script>
     <script src="js/modules/social/social-views.js"></script>
-    <script src="js/modules/social/social-events.js"></script>
     <script src="js/modules/social/social-graph.js"></script>
+    <script src="js/modules/social/social-events.js"></script>
     <script src="js/modules/social/index.js"></script>
 
     <!-- ============================================================
-         ACADEMY MODULE - Aggregator, UI, Events, Tabs
-         NOTE: AcademyCore does not exist - using direct modules
-         ============================================================ -->
-    <script src="js/modules/academy/academy-aggregator.js"></script>
-    <script src="js/modules/academy/academy-ui.js"></script>
-    <script src="js/modules/academy/academy-events.js"></script>
-    <script src="js/modules/academy/tabs/class-tab.js"></script>
-    <script src="js/modules/academy/tabs/student-tab.js"></script>
-    <script src="js/modules/academy/tabs/faculty-tab.js"></script>
-    <script src="js/modules/academy/index.js"></script>
-
-    <!-- ============================================================
-         MISSIONS MODULE - Refactored with new file names
-         Load order: Schema → Queries → Core → Aggregator → Views → Render → UI → Index
+         MISSIONS DOMAIN
+         Load order: Schema → Id → Views → Core → Aggregator → Render → UI → Index
          ============================================================ -->
     <script src="js/modules/missions/mission-schema.js"></script>
     <script src="js/modules/missions/mission-id.js"></script>
@@ -202,8 +201,47 @@
     <script src="js/modules/missions/index.js"></script>
 
     <!-- ============================================================
-         APP BOOTSTRAP
+         IMPORT/EXPORT DOMAIN
          ============================================================ -->
+    <script src="js/import-export/export-utils.js"></script>
+    <script src="js/import-export/import-result.js"></script>
+    <script src="js/import-export/csv-parser.js"></script>
+    <script src="js/import-export/export-schema.js"></script>
+    <script src="js/import-export/export-envelope.js"></script>
+    <script src="js/import-export/format-migrations.js"></script>
+    <script src="js/import-export/cross-domain-validator.js"></script>
+    <script src="js/import-export/import-pipeline.js"></script>
+    <script src="js/import-export/json-io.js"></script>
+    <script src="js/import-export/character-csv.js"></script>
+    <script src="js/import-export/mission-csv.js"></script>
+    <script src="js/import-export/ui.js"></script>
+    <script src="js/import-export/index.js"></script>
+
+    <!-- ============================================================
+         APPLICATION SETTINGS
+         Owns currentYear. Must load before Dashboard.
+         ============================================================ -->
+    <script src="js/modules/application/application-settings-core.js"></script>
+    <script src="js/modules/application/application-settings-queries.js"></script>
+
+    <!-- ============================================================
+         DASHBOARD
+         Aggregator reads ApplicationSettingsQueries + domain queries.
+         Render consumes view model. UI binds events. Index registers
+         with TabManager.
+         ============================================================ -->
+    <script src="js/modules/dashboard/dashboard-aggregator.js"></script>
+    <script src="js/modules/dashboard/dashboard-render.js"></script>
+    <script src="js/modules/dashboard/dashboard-ui.js"></script>
+    <script src="js/modules/dashboard/index.js"></script>
+
+    <!-- ============================================================
+         BOOTSTRAP + APPLICATION SHELL
+         bootstrap.js coordinates DataLoader readiness → TabManager.
+         app.js listens for bootstrapFailed and manages the mobile nav.
+         Both must load after every feature module has registered.
+         ============================================================ -->
+    <script src="js/core/bootstrap.js"></script>
     <script src="js/app.js"></script>
 
 </body>
