@@ -3,37 +3,10 @@
  * Handles form rendering, tab switching, and form field population
  * Path: js/modules/characters/character-form.js
  * 
- * This module is responsible for:
- *   - Rendering the character form in the right side container
- *   - Tab switching between form sections
- *   - Populating form fields from character data
- *   - Collecting form data for save operations
- *   - Delegating save operations to CharacterCRUD
- * 
  * IMPORTANT:
  *   - RENDER ONLY - no event binding (handled by CharacterEvents)
- *   - USES CharacterQueries for character data and display names
- *   - USES CharacterCRUD for save operations
- *   - USES CharacterGenerator for random generation (LAZY LOADED)
- *   - USES CharacterConstants for canonical constants
- *   - USES AcademyQueries directly for class queries (simple read)
- *   - USES FormUtils for form field operations
- *   - USES DomUtils for safe DOM operations
- *   - No direct data mutation
- *   - No direct persistence calls
- *   - All user-controlled data is escaped using DomUtils.escapeHtml()
- *   - getCurrentEditId and setCurrentEditId are LAZY LOADED from index.js
- * 
- * DEPENDENCIES (lazily loaded):
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.CharacterCRUD (from character-crud.js) - MANDATORY
- *   - window.CharacterGenerator (from character-generator.js) - LAZY LOADED
- *   - window.CharacterConstants (from character-constants.js) - MANDATORY
- *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
- *   - window.FormUtils (from form-utils.js) - MANDATORY
- *   - window.DomUtils (from dom-utils.js) - MANDATORY
- *   - window.getCurrentEditId (from index.js) - LAZY LOADED
- *   - window.setCurrentEditId (from index.js) - LAZY LOADED
+ *   - All field collection uses FormUtils.getField(id) - NOT getFormData()
+ *     because inputs use id-only (no name attribute)
  */
 
 (function() {
@@ -45,45 +18,17 @@
     window.__characterFormLoaded = true;
 
     // ============================================================
-    // LAZY LOADING HELPERS - Breaks circular dependencies
+    // LAZY LOADING HELPERS
     // ============================================================
 
-    function getCharacterQueries() {
-        return window.CharacterQueries || null;
-    }
+    function getCharacterQueries() { return window.CharacterQueries || null; }
+    function getCharacterCRUD() { return window.CharacterCRUD || null; }
+    function getCharacterGenerator() { return window.CharacterGenerator || null; }
+    function getCharacterConstants() { return window.CharacterConstants || null; }
+    function getAcademyQueries() { return window.AcademyQueries || null; }
+    function getFormUtils() { return window.FormUtils || null; }
+    function getDomUtils() { return window.DomUtils || null; }
 
-    function getCharacterCRUD() {
-        return window.CharacterCRUD || null;
-    }
-
-    function getCharacterGenerator() {
-        return window.CharacterGenerator || null;
-    }
-
-    function getCharacterConstants() {
-        return window.CharacterConstants || null;
-    }
-
-    function getAcademyQueries() {
-        return window.AcademyQueries || null;
-    }
-
-    function getFormUtils() {
-        return window.FormUtils || null;
-    }
-
-    function getDomUtils() {
-        return window.DomUtils || null;
-    }
-
-    function getCalendarConstants() {
-        return window.CalendarConstants || null;
-    }
-
-    /**
-     * Get the current edit ID from the global state.
-     * This is lazily loaded from characters/index.js
-     */
     function getCurrentEditId() {
         if (typeof window.getCurrentEditId === 'function') {
             return window.getCurrentEditId();
@@ -94,10 +39,6 @@
         return null;
     }
 
-    /**
-     * Set the current edit ID in the global state.
-     * This is lazily loaded from characters/index.js
-     */
     function setCurrentEditId(id) {
         if (typeof window.setCurrentEditId === 'function') {
             window.setCurrentEditId(id);
@@ -107,7 +48,7 @@
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - Warns but doesn't fail
+    // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
@@ -119,15 +60,7 @@
         if (!getAcademyQueries()) { missing.push('AcademyQueries'); }
         if (!getFormUtils()) { missing.push('FormUtils'); }
         if (!getDomUtils()) { missing.push('DomUtils'); }
-
         if (!getCharacterGenerator()) { missing.push('CharacterGenerator (lazy)'); }
-
-        if (typeof window.getCurrentEditId !== 'function' && window._currentEditId === undefined) {
-            missing.push('getCurrentEditId (lazy)');
-        }
-        if (typeof window.setCurrentEditId !== 'function' && window._currentEditId === undefined) {
-            missing.push('setCurrentEditId (lazy)');
-        }
 
         if (missing.length > 0) {
             var criticalMissing = missing.filter(function(m) { return m.indexOf('(lazy)') === -1; });
@@ -137,14 +70,13 @@
             }
             console.warn('[CharacterForm] Some lazy dependencies not yet loaded:', missing.join(', '));
         }
-
         return true;
     }
 
     checkDependencies();
 
     // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils
+    // HTML ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
@@ -152,9 +84,7 @@
         if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
             return DomUtils.escapeHtml(value);
         }
-        if (value === undefined || value === null) {
-            return '';
-        }
+        if (value === undefined || value === null) { return ''; }
         return String(value)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
@@ -164,59 +94,37 @@
     }
 
     // ============================================================
-    // CONSTANTS - Lazy loaded from CharacterConstants
+    // CONSTANTS
     // ============================================================
 
     function getStatKeys() {
         var CC = getCharacterConstants();
         return CC ? CC.STAT_KEYS || ['str', 'dex', 'con', 'int', 'wis', 'cha'] : ['str', 'dex', 'con', 'int', 'wis', 'cha'];
     }
-
     function getStatDefinitions() {
         var CC = getCharacterConstants();
         return CC ? CC.STAT_DEFINITIONS || {} : {};
     }
-
     function getStatMin() {
         var CC = getCharacterConstants();
         return CC ? CC.STAT_MIN || 1 : 1;
     }
-
     function getStatMax() {
         var CC = getCharacterConstants();
         return CC ? CC.STAT_MAX || 50 : 50;
     }
-
     function getStatDefault() {
         var CC = getCharacterConstants();
         return CC ? CC.STAT_DEFAULT || 10 : 10;
-    }
-
-    function getCalendarBounds() {
-        var CC = getCalendarConstants();
-        if (CC) {
-            return {
-                MIN_WEEK: CC.MIN_WEEK || 1,
-                MAX_WEEK: CC.MAX_WEEK || 52
-            };
-        }
-        return { MIN_WEEK: 1, MAX_WEEK: 52 };
     }
 
     // ============================================================
     // STATE
     // ============================================================
 
-    var state = {
-        currentTab: 'name'
-    };
-
+    var state = { currentTab: 'name' };
     var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'stats', 'social', 'notes'];
     var _initialized = false;
-
-    // ============================================================
-    // GET CURRENT YEAR
-    // ============================================================
 
     function getCurrentYear() {
         if (window.data && typeof window.data.currentYear === 'number') {
@@ -226,14 +134,12 @@
     }
 
     // ============================================================
-    // GET CLASS OPTIONS HTML - Uses AcademyQueries
+    // CLASS OPTIONS
     // ============================================================
 
     function getClassOptionsHTML(selectedId) {
         var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return '<option value="">None</option>';
-        }
+        if (!AcademyQueries) { return '<option value="">None</option>'; }
 
         var classes = AcademyQueries.getClasses() || [];
         var html = '<option value="">None</option>';
@@ -244,18 +150,13 @@
             var isSelected = String(cls.id) === String(selectedId);
             html += '<option value="' + escapeHtml(cls.id) + '" ' + (isSelected ? 'selected' : '') + '>' + escapeHtml(cls.name) + '</option>';
         }
-
         return html;
     }
 
     // ============================================================
-    // PREVIOUS NAME ROW HELPER
+    // PREVIOUS NAME ROW
     // ============================================================
 
-    /**
-     * Append a previous-name row to the given container.
-     * Used by populateFormFields and re-used by CharacterEvents.
-     */
     function addPreviousNameRow(container, value) {
         if (!container) { return; }
 
@@ -283,7 +184,7 @@
     }
 
     // ============================================================
-    // RENDER FORM
+    // RENDER
     // ============================================================
 
     function render(editId) {
@@ -330,13 +231,11 @@
         if (char) {
             populateFormFields(char);
         } else {
-            // Initialize previous-names container for new characters
             var prevContainer = document.getElementById('previous-names-container');
             if (prevContainer) {
                 prevContainer.textContent = '';
                 addPreviousNameRow(prevContainer, '');
             }
-            // Initialize death fields as disabled
             applyDeceasedState(false);
         }
 
@@ -362,16 +261,6 @@
         }
     }
 
-    // ============================================================
-    // DECEASED FIELD STATE HELPER
-    // ============================================================
-
-    /**
-     * Enable or disable the death detail fields based on whether
-     * the deceased checkbox is checked.
-     * 
-     * @param {boolean} isDeceased
-     */
     function applyDeceasedState(isDeceased) {
         var fields = ['char-deathYear', 'char-deathAge', 'char-deathCause'];
         fields.forEach(function(id) {
@@ -384,12 +273,11 @@
     }
 
     // ============================================================
-    // FORM HTML GENERATORS
+    // FORM HTML
     // ============================================================
 
     function getCharacterFormHTML(char, editId, currentYear) {
         var tabs = getTabsHTML();
-        var c = char || {};
 
         return `
             <div class="character-form-container">
@@ -397,14 +285,14 @@
                     ${tabs}
                 </div>
                 <div class="form-tab-content" id="form-tab-content">
-                    ${getNameTabHTML(c, editId)}
-                    ${getPhysicalTabHTML(c)}
-                    ${getPersonalityTabHTML(c)}
-                    ${getAcademicTabHTML(c)}
-                    ${getProfessionalTabHTML(c)}
-                    ${getStatsTabHTML(c)}
-                    ${getSocialTabHTML(c)}
-                    ${getNotesTabHTML(c)}
+                    ${getNameTabHTML(char || {})}
+                    ${getPhysicalTabHTML(char || {})}
+                    ${getPersonalityTabHTML(char || {})}
+                    ${getAcademicTabHTML(char || {})}
+                    ${getProfessionalTabHTML(char || {})}
+                    ${getStatsTabHTML(char || {})}
+                    ${getSocialTabHTML(char || {})}
+                    ${getNotesTabHTML(char || {})}
                 </div>
                 <div class="form-actions" style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
                     <button type="button" id="cancel-character-form" class="secondary" style="font-size:0.75rem;padding:6px 12px;">Cancel</button>
@@ -436,12 +324,11 @@
     }
 
     // ============================================================
-    // NAME TAB (with Life Events + Birth Year + Display Checkboxes)
+    // NAME TAB
     // ============================================================
 
-    function getNameTabHTML(char, editId) {
+    function getNameTabHTML(c) {
         var active = state.currentTab === 'name' ? 'block' : 'none';
-        var c = char || {};
 
         var dp = c.displayParts || {};
         var dpFirst    = dp.first    !== false;
@@ -553,11 +440,6 @@
                     </div>
                 </div>
 
-                <div class="form-group">
-                    <label style="font-size:0.7rem;color:var(--text-dim);">Sexuality</label>
-                    <input type="text" id="char-sexuality" value="${escapeHtml(c.sexuality || '')}" placeholder="e.g., Heterosexual, Bisexual, Asexual" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
-                </div>
-
                 <div class="form-group" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border-soft);">
                     <label style="font-size:0.75rem;color:var(--danger);font-weight:600;display:block;margin-bottom:6px;">Life Events</label>
 
@@ -567,7 +449,6 @@
                     </div>
 
                     <div id="death-fields" style="display:${isDeceased ? 'block' : 'none'};padding-left:20px;border-left:2px solid var(--danger);">
-
                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                             <div class="form-group">
                                 <label style="font-size:0.7rem;color:var(--text-dim);">Year of Death</label>
@@ -587,7 +468,6 @@
                         <div style="font-size:0.6rem;color:var(--text-dim);margin-top:4px;">
                             The character will appear as alive in any year before their year of death, and deceased from that year onward.
                         </div>
-
                     </div>
                 </div>
 
@@ -600,9 +480,8 @@
     // PHYSICAL TAB
     // ============================================================
 
-    function getPhysicalTabHTML(char) {
+    function getPhysicalTabHTML(c) {
         var active = state.currentTab === 'physical' ? 'block' : 'none';
-        var c = char || {};
 
         return `
             <div class="tab-panel" data-tab="physical" style="display:${active};">
@@ -655,9 +534,9 @@
     // PERSONALITY TAB
     // ============================================================
 
-    function getPersonalityTabHTML(char) {
+    function getPersonalityTabHTML(c) {
         var active = state.currentTab === 'personality' ? 'block' : 'none';
-        var p = char && char.personality ? char.personality : {};
+        var p = c.personality || {};
 
         return `
             <div class="tab-panel" data-tab="personality" style="display:${active};">
@@ -727,7 +606,7 @@
     // ACADEMIC TAB
     // ============================================================
 
-    function getAcademicTabHTML(char) {
+    function getAcademicTabHTML(c) {
         var active = state.currentTab === 'academic' ? 'block' : 'none';
 
         return `
@@ -741,9 +620,8 @@
     // PROFESSIONAL TAB
     // ============================================================
 
-    function getProfessionalTabHTML(char) {
+    function getProfessionalTabHTML(c) {
         var active = state.currentTab === 'professional' ? 'block' : 'none';
-        var c = char || {};
 
         return `
             <div class="tab-panel" data-tab="professional" style="display:${active};">
@@ -760,9 +638,9 @@
     // STATS TAB
     // ============================================================
 
-    function getStatsTabHTML(char) {
+    function getStatsTabHTML(c) {
         var active = state.currentTab === 'stats' ? 'block' : 'none';
-        var stats = char && char.stats ? char.stats : {};
+        var stats = c.stats || {};
         var statKeys = getStatKeys();
         var statDefinitions = getStatDefinitions();
 
@@ -800,7 +678,7 @@
     // SOCIAL TAB
     // ============================================================
 
-    function getSocialTabHTML(char) {
+    function getSocialTabHTML(c) {
         var active = state.currentTab === 'social' ? 'block' : 'none';
 
         return `
@@ -814,9 +692,8 @@
     // NOTES TAB
     // ============================================================
 
-    function getNotesTabHTML(char) {
+    function getNotesTabHTML(c) {
         var active = state.currentTab === 'notes' ? 'block' : 'none';
-        var c = char || {};
 
         return `
             <div class="tab-panel" data-tab="notes" style="display:${active};">
@@ -836,19 +713,15 @@
         if (!char) { return; }
 
         var FormUtils = getFormUtils();
-        if (!FormUtils) {
-            console.warn('[CharacterForm] FormUtils not available for populateFormFields');
-            return;
-        }
+        if (!FormUtils) { return; }
 
-        // ---- Name Tab ----
+        // Name Tab
         FormUtils.setField('char-firstName', char.firstName);
         FormUtils.setField('char-middleName', char.middleName);
         FormUtils.setField('char-lastName', char.lastName);
         FormUtils.setField('char-nickname', char.nickname);
         FormUtils.setField('char-alias', char.alias);
 
-        // Previous names
         var prevNamesContainer = document.getElementById('previous-names-container');
         if (prevNamesContainer) {
             prevNamesContainer.textContent = '';
@@ -862,7 +735,6 @@
             }
         }
 
-        // Display parts
         var dp = char.displayParts || {};
         FormUtils.setField('char-displayFirst',    dp.first    !== false);
         FormUtils.setField('char-displayNickname', dp.nickname === true);
@@ -870,7 +742,6 @@
         FormUtils.setField('char-displayLast',     dp.last     !== false);
         FormUtils.setField('char-displayAlias',    dp.alias    === true);
 
-        // Birth year + Age (Name tab)
         FormUtils.setField('char-birthYear', char.birthYear || '');
         var currentYear = getCurrentYear();
         var ageField = document.getElementById('char-age');
@@ -879,26 +750,22 @@
             ageField.value = !isNaN(by) ? String(currentYear - by) : '';
         }
 
-        // Gender / Attraction / Sexuality (Name tab)
         FormUtils.setField('char-gender', char.gender);
         FormUtils.setField('char-attraction', char.attraction);
-        FormUtils.setField('char-sexuality', char.sexuality);
 
-        // Life Events (deceased)
         var isDeceased = char.deceased === true;
         FormUtils.setField('char-deceased', isDeceased);
         FormUtils.setField('char-deathYear', char.deathYear || '');
         FormUtils.setField('char-deathAge', char.deathAge || '');
         FormUtils.setField('char-deathCause', char.deathCause || '');
 
-        // Sync UI state for the death field group
         var deathFields = document.getElementById('death-fields');
         if (deathFields) {
             deathFields.style.display = isDeceased ? 'block' : 'none';
         }
         applyDeceasedState(isDeceased);
 
-        // ---- Physical Tab ----
+        // Physical Tab
         FormUtils.setField('char-eyes', char.eyes);
         FormUtils.setField('char-hair', char.hair);
         FormUtils.setField('char-skin', char.skin);
@@ -907,7 +774,7 @@
         FormUtils.setField('char-build', char.build);
         FormUtils.setField('char-appearanceNotes', char.appearanceNotes);
 
-        // ---- Personality Tab ----
+        // Personality Tab
         if (char.personality) {
             FormUtils.setField('char-personality-traits', char.personality.traits);
             FormUtils.setField('char-personality-ideals', char.personality.ideals);
@@ -921,13 +788,13 @@
             FormUtils.setField('char-personality-goals', char.personality.goals);
         }
 
-        // ---- Professional Tab ----
+        // Professional Tab
         FormUtils.setField('char-specialty', char.specialty);
 
-        // ---- Notes Tab ----
+        // Notes Tab
         FormUtils.setField('char-notes', char.notes);
 
-        // ---- Stats Tab ----
+        // Stats Tab
         var statKeys = getStatKeys();
         if (char.stats) {
             statKeys.forEach(function(key) {
@@ -938,7 +805,7 @@
     }
 
     // ============================================================
-    // FORM DATA COLLECTION
+    // FORM DATA COLLECTION - uses FormUtils.getField(id)
     // ============================================================
 
     function collect() {
@@ -951,13 +818,12 @@
         var form = document.getElementById('character-form');
         if (!form) { return null; }
 
-        var data = FormUtils.getFormData(form);
         var statKeys = getStatKeys();
         var statMin = getStatMin();
         var statMax = getStatMax();
         var statDefault = getStatDefault();
 
-        // ---- Previous Names ----
+        // Previous Names (query the DOM directly since they are dynamic rows)
         var previousNames = [];
         var prevInputs = form.querySelectorAll('.previous-name-input');
         for (var i = 0; i < prevInputs.length; i++) {
@@ -965,7 +831,7 @@
             if (val) { previousNames.push(val); }
         }
 
-        // ---- Display Parts ----
+        // Display Parts
         var displayParts = {
             first:    FormUtils.getField('char-displayFirst') === true,
             nickname: FormUtils.getField('char-displayNickname') === true,
@@ -974,7 +840,7 @@
             alias:    FormUtils.getField('char-displayAlias') === true
         };
 
-        // ---- Deceased / Life Events ----
+        // Deceased / Life Events
         var isDeceased = FormUtils.getField('char-deceased') === true;
 
         var deathYear = '';
@@ -987,8 +853,9 @@
             deathCause = FormUtils.getField('char-deathCause') || '';
         }
 
+        var birthYearRaw = FormUtils.getField('char-birthYear') || '';
+
         // Auto-fill death age from birth year if empty
-        var birthYearRaw = data['char-birthYear'] || '';
         if (isDeceased && !deathAge && birthYearRaw && deathYear) {
             var by = parseInt(birthYearRaw, 10);
             var dy = parseInt(deathYear, 10);
@@ -999,21 +866,20 @@
 
         var dto = {
             // Name tab
-            firstName: data['char-firstName'] || '',
-            middleName: data['char-middleName'] || '',
-            lastName: data['char-lastName'] || '',
-            nickname: data['char-nickname'] || '',
-            alias: data['char-alias'] || '',
+            firstName: FormUtils.getField('char-firstName') || '',
+            middleName: FormUtils.getField('char-middleName') || '',
+            lastName: FormUtils.getField('char-lastName') || '',
+            nickname: FormUtils.getField('char-nickname') || '',
+            alias: FormUtils.getField('char-alias') || '',
             previousNames: previousNames,
             displayParts: displayParts,
 
-            // Birth year / age (Name tab)
-            birthYear: data['char-birthYear'] || '',
+            // Birth year (Name tab)
+            birthYear: birthYearRaw,
 
-            // Gender / Attraction / Sexuality (Name tab)
-            gender: data['char-gender'] || '',
-            attraction: data['char-attraction'] || '',
-            sexuality: data['char-sexuality'] || '',
+            // Gender / Attraction (Name tab)
+            gender: FormUtils.getField('char-gender') || '',
+            attraction: FormUtils.getField('char-attraction') || '',
 
             // Life events (Name tab)
             deceased: isDeceased,
@@ -1022,32 +888,32 @@
             deathCause: deathCause,
 
             // Physical tab
-            eyes: data['char-eyes'] || '',
-            hair: data['char-hair'] || '',
-            skin: data['char-skin'] || '',
-            height: data['char-height'] || '',
-            weight: data['char-weight'] || '',
-            build: data['char-build'] || '',
-            appearanceNotes: data['char-appearanceNotes'] || '',
+            eyes: FormUtils.getField('char-eyes') || '',
+            hair: FormUtils.getField('char-hair') || '',
+            skin: FormUtils.getField('char-skin') || '',
+            height: FormUtils.getField('char-height') || '',
+            weight: FormUtils.getField('char-weight') || '',
+            build: FormUtils.getField('char-build') || '',
+            appearanceNotes: FormUtils.getField('char-appearanceNotes') || '',
 
             // Professional tab
-            specialty: data['char-specialty'] || '',
+            specialty: FormUtils.getField('char-specialty') || '',
 
             // Notes tab
-            notes: data['char-notes'] || '',
+            notes: FormUtils.getField('char-notes') || '',
 
             // Personality tab
             personality: {
-                traits: data['char-personality-traits'] || '',
-                ideals: data['char-personality-ideals'] || '',
-                bonds: data['char-personality-bonds'] || '',
-                flaws: data['char-personality-flaws'] || '',
-                alignment: data['char-personality-alignment'] || '',
-                likes: data['char-personality-likes'] || '',
-                dislikes: data['char-personality-dislikes'] || '',
-                habits: data['char-personality-habits'] || '',
-                fears: data['char-personality-fears'] || '',
-                goals: data['char-personality-goals'] || ''
+                traits: FormUtils.getField('char-personality-traits') || '',
+                ideals: FormUtils.getField('char-personality-ideals') || '',
+                bonds: FormUtils.getField('char-personality-bonds') || '',
+                flaws: FormUtils.getField('char-personality-flaws') || '',
+                alignment: FormUtils.getField('char-personality-alignment') || '',
+                likes: FormUtils.getField('char-personality-likes') || '',
+                dislikes: FormUtils.getField('char-personality-dislikes') || '',
+                habits: FormUtils.getField('char-personality-habits') || '',
+                fears: FormUtils.getField('char-personality-fears') || '',
+                goals: FormUtils.getField('char-personality-goals') || ''
             },
 
             // Stats tab
@@ -1055,33 +921,9 @@
         };
 
         statKeys.forEach(function(key) {
-            var value = parseInt(data['char-stat-' + key], 10);
+            var value = parseInt(FormUtils.getField('char-stat-' + key), 10);
             dto.stats[key] = !isNaN(value) ? Math.max(statMin, Math.min(statMax, value)) : statDefault;
         });
-
-        var careerStatusRaw = data['char-careerStatus'] || '';
-        if (careerStatusRaw) {
-            try {
-                var parsed = JSON.parse(careerStatusRaw);
-                if (Array.isArray(parsed)) {
-                    dto.careerStatus = parsed;
-                }
-            } catch (e) {
-                // Ignore parse errors
-            }
-        }
-
-        var classIdsRaw = data['char-classIds'] || '';
-        if (classIdsRaw) {
-            var classIds = classIdsRaw.split(',').map(function(s) {
-                return s.trim();
-            }).filter(function(s) {
-                return s !== '';
-            });
-            if (classIds.length > 0) {
-                dto.classIds = classIds;
-            }
-        }
 
         return dto;
     }
@@ -1116,28 +958,19 @@
 
     function generateRandomPhysical() {
         var CharacterGenerator = getCharacterGenerator();
-        if (!CharacterGenerator) {
-            console.warn('[CharacterForm] CharacterGenerator not available');
-            return null;
-        }
+        if (!CharacterGenerator) { return null; }
         return CharacterGenerator.generatePhysical ? CharacterGenerator.generatePhysical() : null;
     }
 
     function generateRandomPersonality() {
         var CharacterGenerator = getCharacterGenerator();
-        if (!CharacterGenerator) {
-            console.warn('[CharacterForm] CharacterGenerator not available');
-            return null;
-        }
+        if (!CharacterGenerator) { return null; }
         return CharacterGenerator.generatePersonality ? CharacterGenerator.generatePersonality() : null;
     }
 
     function generateRandomStats() {
         var CharacterGenerator = getCharacterGenerator();
-        if (!CharacterGenerator) {
-            console.warn('[CharacterForm] CharacterGenerator not available');
-            return null;
-        }
+        if (!CharacterGenerator) { return null; }
         return CharacterGenerator.generateStats3d6 ? CharacterGenerator.generateStats3d6() : null;
     }
 
@@ -1170,31 +1003,5 @@
     };
 
     window.hideCharacterForm = hide;
-
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
-    (function verify() {
-        var exports = window.CharacterForm;
-        var missing = [];
-
-        var required = [
-            'render', 'hide', 'collect', 'switchTab',
-            'getCurrentTab', 'isInitialized'
-        ];
-
-        for (var i = 0; i < required.length; i++) {
-            if (typeof exports[required[i]] !== 'function') {
-                missing.push(required[i]);
-            }
-        }
-
-        if (missing.length > 0) {
-            console.warn('[CharacterForm] Verification - some exports may be missing:', missing.join(', '));
-        } else {
-            console.log('[CharacterForm] All exports verified successfully.');
-        }
-    })();
 
 })();

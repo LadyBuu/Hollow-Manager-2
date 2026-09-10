@@ -2,45 +2,11 @@
  * js/modules/characters/character-events.js - Character Events
  * Path: js/modules/characters/character-events.js
  * 
- * This module is responsible for UI event orchestration for the character module.
- * 
  * IMPORTANT:
- *   - ORCHESTRATION ONLY - no domain logic, no direct mutations
- *   - All mutations delegate to the appropriate module (CharacterCRUD, CharacterClasses, etc.)
- *   - Uses CharacterAggregator for cross-domain projections
- *   - Uses CharacterQueries for simple character reads
- *   - Uses CharacterForm.collect() to get form data
- *   - Uses CharacterCRUD for save/delete operations
- *   - Uses CharacterClassView for class rendering
- *   - Uses CharacterEliminationView for elimination rendering
- *   - Uses FormUtils for form field operations
- *   - Uses NotificationSystem for notifications
- *   - Safe event binding with proper cleanup
- *   - Can be re-initialized after DOM replacement
- *   - No inline event handlers in HTML
- *   - No direct mutation of window.data
- *   - No direct DOM manipulation (delegates to views)
- * 
- * LIFECYCLE:
- *   - init(container) - Binds events to the current DOM
- *   - destroy() - Removes all event listeners and resets state
- *   - Re-initialization is supported for dynamic DOM replacement
- * 
- * DEPENDENCIES (ALL MANDATORY):
- *   - window.CharacterAggregator (from character-aggregator.js)
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.CharacterCRUD (from character-crud.js)
- *   - window.CharacterForm (from character-form.js)
- *   - window.CharacterClassView (from character-class-view.js)
- *   - window.CharacterEliminationView (from character-elimination-view.js)
- *   - window.CharacterGenerator (from character-generator.js)
- *   - window.CharacterClasses (from character-classes.js)
- *   - window.FormUtils (from form-utils.js)
- *   - window.NotificationSystem (from notification.js)
- *   - window.getCurrentEditId (from index.js)
- *   - window.setCurrentEditId (from index.js)
- *   - window.toggleCharacterList (from index.js)
- *   - window.UI_CONSTANTS (from constants.js)
+ *   - All bindings for dynamically-rendered elements use DELEGATION
+ *     because #character-form-content is re-rendered on every
+ *     CharacterForm.render() call. Direct listeners would be lost.
+ *   - Static elements (outside the form content) use direct binding.
  */
 
 (function() {
@@ -52,7 +18,7 @@
     window.__characterEventsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // DEPENDENCY IMPORTS
     // ============================================================
 
     var CharacterAggregator = window.CharacterAggregator;
@@ -76,18 +42,13 @@
     var _filterDebounceTimer = null;
 
     // ============================================================
-    // DEPENDENCY CHECK - All dependencies mandatory
+    // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
         var missing = [];
 
-        var required = [
-            'getCurrentEditId',
-            'setCurrentEditId',
-            'toggleCharacterList'
-        ];
-
+        var required = ['getCurrentEditId', 'setCurrentEditId', 'toggleCharacterList'];
         required.forEach(function(name) {
             if (typeof window[name] !== 'function') {
                 missing.push(name);
@@ -97,87 +58,49 @@
         if (!CharacterAggregator || typeof CharacterAggregator.getCharacterDetail !== 'function') {
             missing.push('CharacterAggregator.getCharacterDetail');
         }
-        if (!CharacterAggregator || typeof CharacterAggregator.getCharacterListViewModel !== 'function') {
-            missing.push('CharacterAggregator.getCharacterListViewModel');
-        }
-
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-
         if (!CharacterCRUD || typeof CharacterCRUD.save !== 'function') {
             missing.push('CharacterCRUD.save');
         }
-        if (!CharacterCRUD || typeof CharacterCRUD.delete !== 'function') {
-            missing.push('CharacterCRUD.delete');
-        }
-
         if (!CharacterForm || typeof CharacterForm.render !== 'function') {
             missing.push('CharacterForm.render');
         }
         if (!CharacterForm || typeof CharacterForm.collect !== 'function') {
             missing.push('CharacterForm.collect');
         }
-
         if (!CharacterClassView || typeof CharacterClassView.renderClassTags !== 'function') {
             missing.push('CharacterClassView.renderClassTags');
         }
-        if (!CharacterClassView || typeof CharacterClassView.populateClassSelector !== 'function') {
-            missing.push('CharacterClassView.populateClassSelector');
-        }
-
         if (!CharacterEliminationView || typeof CharacterEliminationView.renderTournamentEliminations !== 'function') {
             missing.push('CharacterEliminationView.renderTournamentEliminations');
         }
-        if (!CharacterEliminationView || typeof CharacterEliminationView.renderStandaloneEliminations !== 'function') {
-            missing.push('CharacterEliminationView.renderStandaloneEliminations');
-        }
-
         if (!CharacterGenerator || typeof CharacterGenerator.generatePhysical !== 'function') {
             missing.push('CharacterGenerator.generatePhysical');
         }
-        if (!CharacterGenerator || typeof CharacterGenerator.generatePersonality !== 'function') {
-            missing.push('CharacterGenerator.generatePersonality');
-        }
-        if (!CharacterGenerator || typeof CharacterGenerator.generateStats3d6 !== 'function') {
-            missing.push('CharacterGenerator.generateStats3d6');
-        }
-
         if (!CharacterClasses || typeof CharacterClasses.addClassByName !== 'function') {
             missing.push('CharacterClasses.addClassByName');
         }
-        if (!CharacterClasses || typeof CharacterClasses.removeClassById !== 'function') {
-            missing.push('CharacterClasses.removeClassById');
-        }
-
         if (!FormUtils || typeof FormUtils.setField !== 'function') {
             missing.push('FormUtils.setField');
         }
-
         if (!NotificationSystem || typeof NotificationSystem.notify !== 'function') {
             missing.push('NotificationSystem.notify');
         }
-
         if (!UI_CONSTANTS || typeof UI_CONSTANTS.MOBILE_BREAKPOINT !== 'number') {
             missing.push('UI_CONSTANTS.MOBILE_BREAKPOINT');
-        }
-        if (!UI_CONSTANTS || typeof UI_CONSTANTS.DEBOUNCE_DELAY !== 'number') {
-            missing.push('UI_CONSTANTS.DEBOUNCE_DELAY');
         }
 
         if (missing.length > 0) {
             console.warn('[CharacterEvents] Missing required dependencies:', missing.join(', '));
             return false;
         }
-
         return true;
     }
 
     // ============================================================
-    // NOTIFICATION - Delegates to NotificationSystem
+    // NOTIFICATION
     // ============================================================
 
     function notify(message, type) {
@@ -186,16 +109,12 @@
     }
 
     // ============================================================
-    // UI REFRESH - Uses CharacterAggregator for projections
+    // UI REFRESH
     // ============================================================
 
     function refreshUI(char) {
         if (window.CharacterList && typeof window.CharacterList.render === 'function') {
-            try {
-                window.CharacterList.render();
-            } catch (e) {
-                // Ignore render errors
-            }
+            try { window.CharacterList.render(); } catch (e) {}
         }
 
         var classTagContainer = document.getElementById('class-tag-container');
@@ -224,22 +143,16 @@
         }
 
         if (typeof window.updateDashboardStats === 'function') {
-            try {
-                window.updateDashboardStats();
-            } catch (e) {
-                // Ignore render errors
-            }
+            try { window.updateDashboardStats(); } catch (e) {}
         }
     }
 
     // ============================================================
-    // SAFE EVENT BINDING WITH CLEANUP
+    // SAFE EVENT BINDING
     // ============================================================
 
     function addSafeEventListener(element, eventName, handler, options) {
-        if (!element) {
-            return;
-        }
+        if (!element) { return; }
         element.addEventListener(eventName, handler, options || false);
         _eventListeners.push({
             element: element,
@@ -249,12 +162,14 @@
         });
     }
 
+    /**
+     * Delegate a click/input/etc on document for a selector.
+     * Survives DOM replacement of the target.
+     */
     function addSafeDelegatedListener(selector, eventName, handler) {
         function wrappedHandler(e) {
             var target = e.target.closest ? e.target.closest(selector) : null;
-            if (!target) {
-                return;
-            }
+            if (!target) { return; }
             handler(e, target);
         }
 
@@ -265,17 +180,13 @@
             handler: wrappedHandler,
             options: false
         });
-
-        return wrappedHandler;
     }
 
     function removeAllEventListeners() {
         _eventListeners.forEach(function(item) {
             try {
                 item.element.removeEventListener(item.eventName, item.handler, item.options);
-            } catch (e) {
-                // Ignore errors during cleanup
-            }
+            } catch (e) {}
         });
         _eventListeners = [];
 
@@ -284,7 +195,7 @@
     }
 
     // ============================================================
-    // MAIN INITIALIZATION
+    // INIT / DESTROY
     // ============================================================
 
     function init(container) {
@@ -293,9 +204,7 @@
             return;
         }
 
-        if (_initialized) {
-            destroy();
-        }
+        if (_initialized) { destroy(); }
 
         if (!container) {
             container = document.getElementById('tab-characters');
@@ -307,21 +216,24 @@
 
         removeAllEventListeners();
 
+        // Static container elements (outside form content)
         bindToggleList(container);
         bindAddCharacter(container);
         bindFormSubmit(container);
         bindDeleteButton(container);
-        bindCancelButton(container);
-        bindTabSwitching(container);
         bindFilters(container);
-        bindDeceasedToggle(container);
-        bindBirthYearListener(container);
-        bindClassTagInput(container);
-        bindClassTagRemoval(container);
         bindClickOutside(container);
         bindCharacterList(container);
-        bindRandomButtons(container);
-        bindPreviousNameButtons(container);
+
+        // Dynamically-rendered elements (inside form content) - DELEGATED
+        bindTabSwitching();
+        bindCancelButton();
+        bindDeceasedToggle();
+        bindBirthYearListener();
+        bindRandomButtons();
+        bindPreviousNameButtons();
+        bindClassTagInput();
+        bindClassTagRemoval();
 
         _initialized = true;
     }
@@ -332,7 +244,7 @@
     }
 
     // ============================================================
-    // TOGGLE CHARACTER LIST
+    // STATIC BINDINGS
     // ============================================================
 
     function bindToggleList(container) {
@@ -346,10 +258,6 @@
             });
         }
     }
-
-    // ============================================================
-    // ADD CHARACTER
-    // ============================================================
 
     function bindAddCharacter(container) {
         var addBtn = document.getElementById('add-character-btn');
@@ -366,10 +274,6 @@
         }
     }
 
-    // ============================================================
-    // FORM SUBMIT
-    // ============================================================
-
     function bindFormSubmit(container) {
         var form = document.getElementById('character-form');
         if (form) {
@@ -380,120 +284,15 @@
         }
     }
 
-    function handleSave() {
-        var dto = CharacterForm.collect();
-        if (!dto) {
-            notify('Failed to collect form data.', 'error');
-            return;
-        }
-
-        var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        dto._editId = editId;
-
-        CharacterCRUD.save(dto)
-            .then(function(result) {
-                if (result && result.success) {
-                    var savedId = result.data ? result.data.id : editId;
-                    if (savedId) {
-                        if (typeof window.setCurrentEditId === 'function') {
-                            window.setCurrentEditId(savedId);
-                        }
-                        var char = CharacterQueries.getCharacterById(savedId);
-                        CharacterForm.render(savedId);
-                        refreshUI(char);
-                    }
-                }
-            })
-            .catch(function(err) {
-                notify('An error occurred while saving.', 'error');
-            });
-    }
-
-    // ============================================================
-    // CANCEL BUTTON
-    // ============================================================
-
-    function bindCancelButton(container) {
-        var cancelBtn = document.getElementById('cancel-character-form');
-        if (cancelBtn) {
-            addSafeEventListener(cancelBtn, 'click', function() {
-                var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-                if (editId) {
-                    CharacterForm.render(editId);
-                } else {
-                    CharacterForm.hide();
-                    if (typeof window.setCurrentEditId === 'function') {
-                        window.setCurrentEditId(null);
-                    }
-                }
-            });
-        }
-    }
-
-    // ============================================================
-    // DELETE BUTTON
-    // ============================================================
-
     function bindDeleteButton(container) {
         var deleteBtn = document.getElementById('delete-char-btn');
         if (deleteBtn) {
             addSafeEventListener(deleteBtn, 'click', function() {
                 var id = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-                if (id) {
-                    handleDelete(id);
-                }
+                if (id) { handleDelete(id); }
             });
         }
     }
-
-    function handleDelete(id) {
-        if (!id) {
-            return;
-        }
-
-        var char = CharacterQueries.getCharacterById(id);
-        if (!char) {
-            notify('Character not found.', 'error');
-            return;
-        }
-
-        var name = CharacterQueries.getDisplayName(char);
-        if (!confirm('Delete "' + name + '" permanently?')) {
-            return;
-        }
-
-        CharacterCRUD.delete(id)
-            .then(function(result) {
-                if (result && result.success) {
-                    if (typeof window.setCurrentEditId === 'function') {
-                        window.setCurrentEditId(null);
-                    }
-                    CharacterForm.hide();
-                    refreshUI(null);
-                    notify('Character deleted successfully!', 'success');
-                }
-            })
-            .catch(function(err) {
-                notify('An error occurred while deleting.', 'error');
-            });
-    }
-
-    // ============================================================
-    // TAB SWITCHING
-    // ============================================================
-
-    function bindTabSwitching(container) {
-        addSafeDelegatedListener('.form-tab-btn', 'click', function(e, target) {
-            var tab = target.dataset.tab;
-            if (tab) {
-                CharacterForm.switchTab(tab);
-            }
-        });
-    }
-
-    // ============================================================
-    // FILTERS
-    // ============================================================
 
     function bindFilters(container) {
         var nameFilter = document.getElementById('char-name-filter');
@@ -504,7 +303,7 @@
                     if (window.CharacterList && typeof window.CharacterList.render === 'function') {
                         window.CharacterList.render();
                     }
-                }, UI_CONSTANTS.DEBOUNCE_DELAY);
+                }, UI_CONSTANTS.DEBOUNCE_DELAY || 300);
             });
         }
 
@@ -555,142 +354,6 @@
         }
     }
 
-    // ============================================================
-    // DECEASED TOGGLE
-    // ============================================================
-
-    /**
-     * Toggle the visibility of the death-details field group.
-     * The checkbox is on the Name tab's Life Events section.
-     * When checked, the deathYear / deathWeek / deathCause /
-     * deathAge fields become visible.
-     * When unchecked, they're hidden and left alone - the values
-     * are preserved so re-checking the box restores them.
-     */
-    function bindDeceasedToggle(container) {
-        var deceasedCheck = document.getElementById('char-deceased');
-        if (deceasedCheck) {
-            addSafeEventListener(deceasedCheck, 'change', function() {
-                var deathFields = document.getElementById('death-fields');
-                if (deathFields) {
-                    deathFields.style.display = this.checked ? 'block' : 'none';
-                }
-            });
-        }
-    }
-
-    // ============================================================
-    // BIRTH YEAR → AGE LIVE UPDATE
-    // ============================================================
-
-    /**
-     * Live-update the read-only Age field when Birth Year changes.
-     * Age is derived: currentYear - birthYear.
-     * Cleared when birth year is empty or invalid.
-     */
-    function bindBirthYearListener(container) {
-        var birthYearInput = document.getElementById('char-birthYear');
-        if (birthYearInput) {
-            addSafeEventListener(birthYearInput, 'input', function() {
-                var ageField = document.getElementById('char-age');
-                if (!ageField) { return; }
-
-                var by = parseInt(this.value, 10);
-                if (isNaN(by)) {
-                    ageField.value = '';
-                    return;
-                }
-
-                var currentYear = (window.data && typeof window.data.currentYear === 'number')
-                    ? window.data.currentYear
-                    : new Date().getFullYear();
-
-                ageField.value = String(currentYear - by);
-            });
-        }
-    }
-
-    // ============================================================
-    // CLASS TAG INPUT
-    // ============================================================
-
-    function bindClassTagInput(container) {
-        var classInput = document.getElementById('class-tag-input');
-        if (classInput) {
-            addSafeEventListener(classInput, 'keydown', function(e) {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    var name = this.value.trim();
-                    if (name) {
-                        handleAddClassByName(name);
-                    }
-                }
-            });
-        }
-    }
-
-    function handleAddClassByName(name) {
-        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        if (!charId) {
-            notify('Please save the character first.', 'error');
-            return;
-        }
-
-        var char = CharacterQueries.getCharacterById(charId);
-        if (!char) {
-            notify('Character not found.', 'error');
-            return;
-        }
-
-        CharacterClasses.addClassByName(charId, name)
-            .then(function(result) {
-                if (result && result.success) {
-                    var input = document.getElementById('class-tag-input');
-                    if (input) { input.value = ''; }
-                    refreshUI(char);
-                }
-            })
-            .catch(function(err) {
-                notify('Failed to add class.', 'error');
-            });
-    }
-
-    // ============================================================
-    // CLASS TAG REMOVAL
-    // ============================================================
-
-    function bindClassTagRemoval(container) {
-        addSafeDelegatedListener('.remove-class-tag', 'click', function(e, target) {
-            e.stopPropagation();
-            var classId = target.dataset.id;
-            if (classId) {
-                handleRemoveClass(classId);
-            }
-        });
-    }
-
-    function handleRemoveClass(classId) {
-        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
-        if (!charId) {
-            notify('No character selected.', 'error');
-            return;
-        }
-
-        CharacterClasses.removeClassById(charId, classId)
-            .then(function(result) {
-                if (result && result.success) {
-                    refreshUI(null);
-                }
-            })
-            .catch(function(err) {
-                notify('Failed to remove class.', 'error');
-            });
-    }
-
-    // ============================================================
-    // CLICK OUTSIDE - Close character list
-    // ============================================================
-
     function bindClickOutside(container) {
         addSafeEventListener(document, 'click', function(e) {
             var panel = document.getElementById('char-list-panel');
@@ -709,134 +372,96 @@
         });
     }
 
-    // ============================================================
-    // CHARACTER LIST - Event delegation
-    // ============================================================
-
     function bindCharacterList(container) {
         addSafeDelegatedListener('.char-list-item', 'click', function(e, target) {
             var id = target.dataset.id;
-            if (id) {
-                handleCharacterSelect(id);
+            if (id) { handleCharacterSelect(id); }
+        });
+    }
+
+    // ============================================================
+    // DELEGATED BINDINGS (survive form re-render)
+    // ============================================================
+
+    function bindTabSwitching() {
+        addSafeDelegatedListener('.form-tab-btn', 'click', function(e, target) {
+            var tab = target.dataset.tab;
+            if (tab) { CharacterForm.switchTab(tab); }
+        });
+    }
+
+    function bindCancelButton() {
+        addSafeDelegatedListener('#cancel-character-form', 'click', function(e, target) {
+            var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+            if (editId) {
+                CharacterForm.render(editId);
+            } else {
+                CharacterForm.hide();
+                if (typeof window.setCurrentEditId === 'function') {
+                    window.setCurrentEditId(null);
+                }
             }
         });
     }
 
-    function handleCharacterSelect(id) {
-        if (!id) {
-            return;
-        }
-
-        var char = CharacterQueries.getCharacterById(id);
-        if (!char) {
-            notify('Character not found.', 'error');
-            return;
-        }
-
-        if (typeof window.setCurrentEditId === 'function') {
-            window.setCurrentEditId(id);
-        }
-
-        CharacterForm.render(id);
-        refreshUI(char);
-
-        var formContainer = document.getElementById('character-form-container');
-        if (formContainer) {
-            setTimeout(function() {
-                formContainer.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-            }, 100);
-        }
-
-        if (window.innerWidth < UI_CONSTANTS.MOBILE_BREAKPOINT && typeof window.toggleCharacterList === 'function') {
-            window.toggleCharacterList(false);
-        }
-    }
-
-    // ============================================================
-    // RANDOM BUTTONS
-    // ============================================================
-
-    function bindRandomButtons(container) {
-        var randomPhysicalBtn = document.getElementById('random-physical-btn');
-        if (randomPhysicalBtn) {
-            addSafeEventListener(randomPhysicalBtn, 'click', function() {
-                fillRandomPhysical();
-            });
-        }
-
-        var randomPersonalityBtn = document.getElementById('random-personality-btn');
-        if (randomPersonalityBtn) {
-            addSafeEventListener(randomPersonalityBtn, 'click', function() {
-                fillRandomPersonality();
-            });
-        }
-
-        var randomStatsBtn = document.getElementById('random-stats-btn');
-        if (randomStatsBtn) {
-            addSafeEventListener(randomStatsBtn, 'click', function() {
-                fillRandomStats();
-            });
-        }
-    }
-
-    function fillRandomPhysical() {
-        var physical = CharacterGenerator.generatePhysical();
-        FormUtils.setField('char-eyes', physical.eyes);
-        FormUtils.setField('char-hair', physical.hair);
-        FormUtils.setField('char-skin', physical.skin);
-        FormUtils.setField('char-height', physical.height);
-        FormUtils.setField('char-weight', physical.weight);
-        FormUtils.setField('char-build', physical.build);
-        notify('Random physical appearance generated!', 'info');
-    }
-
-    function fillRandomPersonality() {
-        var personality = CharacterGenerator.generatePersonality();
-        FormUtils.setField('char-personality-traits', personality.traits);
-        FormUtils.setField('char-personality-ideals', personality.ideals);
-        FormUtils.setField('char-personality-bonds', personality.bonds);
-        FormUtils.setField('char-personality-flaws', personality.flaws);
-        FormUtils.setField('char-personality-alignment', personality.alignment);
-        FormUtils.setField('char-personality-likes', personality.likes);
-        FormUtils.setField('char-personality-dislikes', personality.dislikes);
-        FormUtils.setField('char-personality-habits', personality.habits);
-        FormUtils.setField('char-personality-fears', personality.fears);
-        FormUtils.setField('char-personality-goals', personality.goals);
-        notify('Random personality generated!', 'info');
-    }
-
-    function fillRandomStats() {
-        var stats = CharacterGenerator.generateStats3d6();
-        var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-        statKeys.forEach(function(key) {
-            var value = stats[key] !== undefined ? stats[key] : 10;
-            FormUtils.setField('char-stat-' + key, value);
+    function bindDeceasedToggle() {
+        addSafeDelegatedListener('#char-deceased', 'change', function(e, target) {
+            var deathFields = document.getElementById('death-fields');
+            if (deathFields) {
+                deathFields.style.display = target.checked ? 'block' : 'none';
+            }
         });
-        notify('Random stats generated!', 'info');
     }
 
-    // ============================================================
-    // PREVIOUS NAME LIST EDITOR
-    // ============================================================
+    function bindBirthYearListener() {
+        addSafeDelegatedListener('#char-birthYear', 'input', function(e, target) {
+            var ageField = document.getElementById('char-age');
+            if (!ageField) { return; }
 
-    function bindPreviousNameButtons(container) {
-        var addBtn = document.getElementById('add-previous-name-btn');
-        if (addBtn) {
-            addSafeEventListener(addBtn, 'click', function() {
-                var containerEl = document.getElementById('previous-names-container');
-                if (!containerEl) { return; }
+            var by = parseInt(target.value, 10);
+            if (isNaN(by)) {
+                ageField.value = '';
+                return;
+            }
 
-                if (CharacterForm && typeof CharacterForm.addPreviousNameRow === 'function') {
-                    CharacterForm.addPreviousNameRow(containerEl, '');
-                }
+            var currentYear = (window.data && typeof window.data.currentYear === 'number')
+                ? window.data.currentYear
+                : new Date().getFullYear();
 
-                var lastRow = containerEl.querySelector('.previous-name-row:last-child');
-                if (lastRow) {
-                    var input = lastRow.querySelector('.previous-name-input');
-                    if (input) { input.focus(); }
-                }
-            });
-        }
+            ageField.value = String(currentYear - by);
+        });
+    }
+
+    function bindRandomButtons() {
+        addSafeDelegatedListener('#random-physical-btn', 'click', function(e, target) {
+            e.preventDefault();
+            fillRandomPhysical();
+        });
+        addSafeDelegatedListener('#random-personality-btn', 'click', function(e, target) {
+            e.preventDefault();
+            fillRandomPersonality();
+        });
+        addSafeDelegatedListener('#random-stats-btn', 'click', function(e, target) {
+            e.preventDefault();
+            fillRandomStats();
+        });
+    }
+
+    function bindPreviousNameButtons() {
+        addSafeDelegatedListener('#add-previous-name-btn', 'click', function(e, target) {
+            var containerEl = document.getElementById('previous-names-container');
+            if (!containerEl) { return; }
+
+            if (CharacterForm && typeof CharacterForm.addPreviousNameRow === 'function') {
+                CharacterForm.addPreviousNameRow(containerEl, '');
+            }
+
+            var lastRow = containerEl.querySelector('.previous-name-row:last-child');
+            if (lastRow) {
+                var input = lastRow.querySelector('.previous-name-input');
+                if (input) { input.focus(); }
+            }
+        });
 
         addSafeDelegatedListener('.remove-previous-name', 'click', function(e, target) {
             e.preventDefault();
@@ -877,6 +502,197 @@
                 if (input) { input.focus(); }
             }
         });
+    }
+
+    function bindClassTagInput() {
+        addSafeDelegatedListener('#class-tag-input', 'keydown', function(e, target) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                var name = target.value.trim();
+                if (name) { handleAddClassByName(name); }
+            }
+        });
+    }
+
+    function bindClassTagRemoval() {
+        addSafeDelegatedListener('.remove-class-tag', 'click', function(e, target) {
+            e.stopPropagation();
+            var classId = target.dataset.id;
+            if (classId) { handleRemoveClass(classId); }
+        });
+    }
+
+    // ============================================================
+    // HANDLERS
+    // ============================================================
+
+    function handleSave() {
+        var dto = CharacterForm.collect();
+        if (!dto) {
+            notify('Failed to collect form data.', 'error');
+            return;
+        }
+
+        var editId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        dto._editId = editId;
+
+        CharacterCRUD.save(dto)
+            .then(function(result) {
+                if (result && result.success) {
+                    var savedId = result.data ? result.data.id : editId;
+                    if (savedId) {
+                        if (typeof window.setCurrentEditId === 'function') {
+                            window.setCurrentEditId(savedId);
+                        }
+                        var char = CharacterQueries.getCharacterById(savedId);
+                        CharacterForm.render(savedId);
+                        refreshUI(char);
+                    }
+                }
+            })
+            .catch(function(err) {
+                notify('An error occurred while saving.', 'error');
+            });
+    }
+
+    function handleDelete(id) {
+        if (!id) { return; }
+
+        var char = CharacterQueries.getCharacterById(id);
+        if (!char) {
+            notify('Character not found.', 'error');
+            return;
+        }
+
+        var name = CharacterQueries.getDisplayName(char);
+        if (!confirm('Delete "' + name + '" permanently?')) { return; }
+
+        CharacterCRUD.delete(id)
+            .then(function(result) {
+                if (result && result.success) {
+                    if (typeof window.setCurrentEditId === 'function') {
+                        window.setCurrentEditId(null);
+                    }
+                    CharacterForm.hide();
+                    refreshUI(null);
+                    notify('Character deleted successfully!', 'success');
+                }
+            })
+            .catch(function(err) {
+                notify('An error occurred while deleting.', 'error');
+            });
+    }
+
+    function handleCharacterSelect(id) {
+        if (!id) { return; }
+
+        var char = CharacterQueries.getCharacterById(id);
+        if (!char) {
+            notify('Character not found.', 'error');
+            return;
+        }
+
+        if (typeof window.setCurrentEditId === 'function') {
+            window.setCurrentEditId(id);
+        }
+
+        CharacterForm.render(id);
+        refreshUI(char);
+
+        var formContainer = document.getElementById('character-form-container');
+        if (formContainer) {
+            setTimeout(function() {
+                formContainer.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }, 100);
+        }
+
+        if (window.innerWidth < UI_CONSTANTS.MOBILE_BREAKPOINT && typeof window.toggleCharacterList === 'function') {
+            window.toggleCharacterList(false);
+        }
+    }
+
+    function handleAddClassByName(name) {
+        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify('Please save the character first.', 'error');
+            return;
+        }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            notify('Character not found.', 'error');
+            return;
+        }
+
+        CharacterClasses.addClassByName(charId, name)
+            .then(function(result) {
+                if (result && result.success) {
+                    var input = document.getElementById('class-tag-input');
+                    if (input) { input.value = ''; }
+                    refreshUI(char);
+                }
+            })
+            .catch(function(err) {
+                notify('Failed to add class.', 'error');
+            });
+    }
+
+    function handleRemoveClass(classId) {
+        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        CharacterClasses.removeClassById(charId, classId)
+            .then(function(result) {
+                if (result && result.success) {
+                    refreshUI(null);
+                }
+            })
+            .catch(function(err) {
+                notify('Failed to remove class.', 'error');
+            });
+    }
+
+    // ============================================================
+    // RANDOM FILLERS
+    // ============================================================
+
+    function fillRandomPhysical() {
+        var physical = CharacterGenerator.generatePhysical();
+        FormUtils.setField('char-eyes', physical.eyes);
+        FormUtils.setField('char-hair', physical.hair);
+        FormUtils.setField('char-skin', physical.skin);
+        FormUtils.setField('char-height', physical.height);
+        FormUtils.setField('char-weight', physical.weight);
+        FormUtils.setField('char-build', physical.build);
+        notify('Random physical appearance generated!', 'info');
+    }
+
+    function fillRandomPersonality() {
+        var personality = CharacterGenerator.generatePersonality();
+        FormUtils.setField('char-personality-traits', personality.traits);
+        FormUtils.setField('char-personality-ideals', personality.ideals);
+        FormUtils.setField('char-personality-bonds', personality.bonds);
+        FormUtils.setField('char-personality-flaws', personality.flaws);
+        FormUtils.setField('char-personality-alignment', personality.alignment);
+        FormUtils.setField('char-personality-likes', personality.likes);
+        FormUtils.setField('char-personality-dislikes', personality.dislikes);
+        FormUtils.setField('char-personality-habits', personality.habits);
+        FormUtils.setField('char-personality-fears', personality.fears);
+        FormUtils.setField('char-personality-goals', personality.goals);
+        notify('Random personality generated!', 'info');
+    }
+
+    function fillRandomStats() {
+        var stats = CharacterGenerator.generateStats3d6();
+        var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+        statKeys.forEach(function(key) {
+            var value = stats[key] !== undefined ? stats[key] : 10;
+            FormUtils.setField('char-stat-' + key, value);
+        });
+        notify('Random stats generated!', 'info');
     }
 
     // ============================================================
