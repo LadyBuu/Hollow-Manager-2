@@ -1,75 +1,101 @@
 /**
- * js/app.js - Application Bootstrapper
- * Initializes all modules and handles burger menu
+ * js/app.js - Application Shell
  * Path: js/app.js
  * 
- * This file is responsible for:
- *   - DOM ready bootstrapping
- *   - Burger menu initialization
- *   - Tab switching coordination
- *   - Global render coordination
- *   - Activity logging (without hidden persistence)
- *   - Data readiness coordination with TabManager
- *   - Centralized error handling for data loading
+ * Responsibilities (deliberately minimal):
+ *   - Burger menu initialization and mobile nav behaviour
+ *   - Close the mobile nav when the current tab changes
+ *   - Close the mobile nav when the viewport returns to desktop width
+ *   - Display user-facing error when bootstrap reports a data-loading failure
  * 
- * IMPORTANT: logActivity() does NOT persist the entire dataset.
- * It only updates in-memory state. The caller is responsible for saving.
- * This prevents recursive save chains and race conditions.
+ * IMPORTANT:
+ *   - This file is the APPLICATION SHELL, not a bootstrap orchestrator
+ *   - It does NOT coordinate data readiness (that is bootstrap.js)
+ *   - It does NOT register tabs (that is TabManager and each domain's index.js)
+ *   - It does NOT render domain content (that is each domain's index.js)
+ *   - It does NOT log activities (that is ActivityLog)
+ *   - It does NOT touch window.data
+ *   - It does NOT contain domain knowledge of any kind
+ * 
+ * LOAD ORDER:
+ *   Must load after core infrastructure and after bootstrap.js.
+ *   The shell reacts to events; it does not produce them.
  * 
  * DEPENDENCIES:
- *   - window.UI_CONSTANTS (from constants.js)
- *   - window.NotificationSystem (from notification.js)
- *   - window.TabManager (from tab-manager.js)
- *   - window.CoreUtils (from core-utils.js)
- *   - window.data (from database.js)
+ *   - window.UI_CONSTANTS (from constants.js) - for breakpoint values
+ *   - window.NotificationSystem (from notification.js) - for user-facing errors
  * 
- * INTEGRATION WITH CHARACTER SYSTEM:
- *   - Listens for 'dataReady' event to coordinate tab rendering
- *   - Provides global error handling for data failures
- *   - Notification system integration for user feedback
- *   - Proper initialization ordering with TabManager
+ * EVENTS CONSUMED:
+ *   - bootstrapFailed  -> show error notification
+ *   - tabChanged       -> close mobile nav
+ *   - window resize    -> close mobile nav when entering desktop layout
+ * 
+ * EVENTS PRODUCED:
+ *   None.
  */
 
 (function() {
     'use strict';
-
-    // ============================================================
-    // INITIALIZATION GUARD
-    // ============================================================
 
     if (window.__appLoaded) {
         return;
     }
     window.__appLoaded = true;
 
-    var _dataReadyFired = false;
-
     // ============================================================
-    // CONSTANTS
+    // DEPENDENCY IMPORTS
     // ============================================================
 
     var UI = window.UI_CONSTANTS || {
         DEBOUNCE_DELAY: 300,
-        MOBILE_BREAKPOINT: 768,
-        ANIMATION_DURATION: 300
+        MOBILE_BREAKPOINT: 768
     };
 
+    var NotificationSystem = window.NotificationSystem;
+
     // ============================================================
-    // BURGER MENU CONTROLS
+    // MOBILE NAV
     // ============================================================
 
+    /**
+     * Close the mobile navigation.
+     * Safe to call when the nav is not open.
+     */
+    function closeMobileNav() {
+        var nav = document.getElementById('main-nav');
+        var toggle = document.getElementById('nav-toggle');
+        var actions = document.getElementById('header-actions');
+
+        if (nav) {
+            nav.classList.remove('open');
+        }
+        if (toggle) {
+            toggle.classList.remove('open');
+            toggle.textContent = '☰';
+        }
+        if (actions) {
+            actions.classList.remove('open');
+        }
+    }
+
+    /**
+     * Initialize the burger menu toggle.
+     * Idempotent: safe to call multiple times.
+     */
     function initBurgerMenu() {
         var toggle = document.getElementById('nav-toggle');
         var nav = document.getElementById('main-nav');
         var actions = document.getElementById('header-actions');
-        
+
         if (!toggle || !nav) {
             return;
         }
-        
-        if (toggle._burgerInitialized) return;
+
+        if (toggle._burgerInitialized) {
+            return;
+        }
         toggle._burgerInitialized = true;
-        
+
         toggle.addEventListener('click', function(e) {
             e.stopPropagation();
             var isOpen = nav.classList.toggle('open');
@@ -79,202 +105,88 @@
                 actions.classList.toggle('open', isOpen);
             }
         });
-        
+
         document.addEventListener('click', function(e) {
-            if (nav.classList.contains('open')) {
-                var isInsideNav = nav.contains(e.target);
-                var isToggle = toggle.contains(e.target);
-                var isInsideActions = actions && actions.contains(e.target);
-                
-                if (!isInsideNav && !isToggle && !isInsideActions) {
-                    nav.classList.remove('open');
-                    toggle.classList.remove('open');
-                    toggle.textContent = '☰';
-                    if (actions) {
-                        actions.classList.remove('open');
-                    }
-                }
+            if (!nav.classList.contains('open')) {
+                return;
+            }
+
+            var isInsideNav = nav.contains(e.target);
+            var isToggle = toggle.contains(e.target);
+            var isInsideActions = actions && actions.contains(e.target);
+
+            if (!isInsideNav && !isToggle && !isInsideActions) {
+                closeMobileNav();
             }
         });
 
         nav.querySelectorAll('a').forEach(function(link) {
             link.addEventListener('click', function() {
-                nav.classList.remove('open');
-                toggle.classList.remove('open');
-                toggle.textContent = '☰';
-                if (actions) {
-                    actions.classList.remove('open');
-                }
+                closeMobileNav();
             });
         });
     }
 
     // ============================================================
-    // RENDER ALL - Delegates to TabManager
+    // EVENT HANDLERS
     // ============================================================
 
-    function renderAll() {
-        if (window.TabManager && typeof window.TabManager.refreshCurrent === 'function') {
-            window.TabManager.refreshCurrent();
-        } else {
-            // Fallback: render dashboard
-            var tab = document.getElementById('tab-dashboard');
-            if (tab && window.renderDashboard) {
-                window.renderDashboard(tab);
-            }
+    /**
+     * Handle bootstrap failure.
+     * Shows a user-facing error. Does not retry or attempt recovery.
+     * 
+     * @param {CustomEvent} e - bootstrapFailed event
+     */
+    function handleBootstrapFailed(e) {
+        var detail = e && e.detail ? e.detail : {};
+        var message = detail.message || 'Failed to load application data. Please refresh the page.';
+
+        if (NotificationSystem && typeof NotificationSystem.notifyError === 'function') {
+            NotificationSystem.notifyError(message, 0);
+        }
+    }
+
+    /**
+     * Handle tab change.
+     * Closes the mobile nav so the new tab content is visible.
+     */
+    function handleTabChanged() {
+        closeMobileNav();
+    }
+
+    /**
+     * Handle viewport resize.
+     * If the viewport returns to desktop width, ensure the mobile nav is closed.
+     */
+    function handleResize() {
+        if (window.innerWidth >= UI.MOBILE_BREAKPOINT) {
+            closeMobileNav();
         }
     }
 
     // ============================================================
-    // LOG ACTIVITY - WITHOUT HIDDEN PERSISTENCE
-    // ============================================================
-
-    function logActivity(message, type) {
-        type = type || 'info';
-        
-        if (!window.data) {
-            return;
-        }
-
-        if (!Array.isArray(window.data.activities)) {
-            window.data.activities = [];
-        }
-        
-        var id;
-        if (window.CoreUtils && typeof window.CoreUtils.generateId === 'function') {
-            id = window.CoreUtils.generateId('act');
-        } else {
-            id = Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-        }
-        
-        window.data.activities.unshift({
-            id: id,
-            message: String(message),
-            type: type,
-            timestamp: new Date().toISOString()
-        });
-        
-        if (window.data.activities.length > 100) {
-            window.data.activities.length = 100;
-        }
-    }
-
-    // ============================================================
-    // DATA READY HANDLER - Simplified
-    // ============================================================
-
-    function handleDataReady(e) {
-        if (_dataReadyFired) return;
-        _dataReadyFired = true;
-
-        var detail = e && e.detail;
-        var status = detail ? detail.status : null;
-
-        if (status === 'failed') {
-            var error = detail ? detail.error : null;
-            handleDataFailure(error);
-            return;
-        }
-
-        handleDataSuccess(detail ? detail.data : null);
-    }
-
-    function handleDataSuccess(data) {
-        // Notify TabManager that data is ready
-        if (window.TabManager && typeof window.TabManager.onDataReady === 'function') {
-            window.TabManager.onDataReady();
-        }
-
-        // Render dashboard
-        var tab = document.getElementById('tab-dashboard');
-        if (tab && window.renderDashboard) {
-            try {
-                window.renderDashboard(tab);
-            } catch (e) {
-                // Ignore dashboard render errors during startup
-            }
-        }
-    }
-
-    function handleDataFailure(error) {
-        var message = 'Failed to load data. Please refresh the page.';
-        
-        if (error && error.message) {
-            message = 'Data loading failed: ' + error.message;
-        }
-        
-        if (window.NotificationSystem && typeof window.NotificationSystem.notifyError === 'function') {
-            window.NotificationSystem.notifyError(message, 0);
-        } else if (window.showToast) {
-            window.showToast(message, 'error');
-        } else {
-            var el = document.getElementById('tab-dashboard');
-            if (el) {
-                el.innerHTML = '<p class="empty-state" style="color:var(--danger);padding:20px;">' + message + '</p>';
-            }
-        }
-        
-        console.error('Data loading failed:', error);
-        
-        if (window.TabManager && typeof window.TabManager.onDataReady === 'function') {
-            window.TabManager.onDataReady();
-        }
-    }
-
-    // ============================================================
-    // NAVIGATION HELPERS
-    // ============================================================
-
-    function closeMobileNav() {
-        var nav = document.getElementById('main-nav');
-        var toggle = document.getElementById('nav-toggle');
-        var actions = document.getElementById('header-actions');
-        
-        if (nav) nav.classList.remove('open');
-        if (toggle) {
-            toggle.classList.remove('open');
-            toggle.textContent = '☰';
-        }
-        if (actions) actions.classList.remove('open');
-    }
-
-    // ============================================================
-    // APP INITIALIZATION
+    // INITIALIZATION
     // ============================================================
 
     function initApp() {
         initBurgerMenu();
-        
-        document.addEventListener('dataReady', handleDataReady);
-        
-        document.addEventListener('tabChanged', function() {
-            closeMobileNav();
-        });
-        
+
+        document.addEventListener('bootstrapFailed', handleBootstrapFailed);
+        document.addEventListener('tabChanged', handleTabChanged);
+
         var resizeTimeout;
         window.addEventListener('resize', function() {
             clearTimeout(resizeTimeout);
-            resizeTimeout = setTimeout(function() {
-                if (window.innerWidth >= UI.MOBILE_BREAKPOINT) {
-                    closeMobileNav();
-                }
-            }, UI.DEBOUNCE_DELAY);
+            resizeTimeout = setTimeout(handleResize, UI.DEBOUNCE_DELAY);
         });
-
-        if (window.data && !_dataReadyFired) {
-            _dataReadyFired = true;
-            setTimeout(function() {
-                handleDataSuccess(window.data);
-            }, 10);
-        }
     }
 
     // ============================================================
-    // EXPOSE FUNCTIONS
+    // EXPOSE
     // ============================================================
 
-    window.renderAll = renderAll;
-    window.logActivity = logActivity;
+    // The shell exposes only its own small surface.
+    // These are useful for testing and for the burger menu itself.
     window.initBurgerMenu = initBurgerMenu;
     window.initApp = initApp;
     window.closeMobileNav = closeMobileNav;
