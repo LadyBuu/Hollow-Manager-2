@@ -11,6 +11,9 @@
  *     live updates, weapons, moves) are all delegated.
  *   - Social tab bindings (add/edit/delete relationship, group toggles,
  *     graph view, character search filter) are all delegated.
+ *   - Academic tab uses a class DROPDOWN (not a free-text input) as of
+ *     the Academic tab rework. The Add button reads the selected class
+ *     from #academic-class-select and calls CharacterClasses.addToClass.
  *   - SocialCore is initialized on-demand via ensureSocialCoreInitialized()
  *     so the character form's Social tab works even if the top-level
  *     Social tab was never opened.
@@ -324,7 +327,7 @@
         bindRandomButtons();
         bindPreviousNameButtons();
         bindCareerButtons();
-        bindClassTagInput();
+        bindClassDropdown();
         bindClassTagRemoval();
 
         // Combat tab bindings
@@ -647,13 +650,36 @@
         });
     }
 
-    function bindClassTagInput() {
-        addSafeDelegatedListener('#class-tag-input', 'keydown', function(e, target) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                var name = target.value.trim();
-                if (name) { handleAddClassByName(name); }
+    // ============================================================
+    // ACADEMIC TAB - Class dropdown + tag removal
+    // ============================================================
+    // 
+    // The Academic tab no longer uses a free-text class tag input.
+    // Instead it uses a dropdown (#academic-class-select) plus an Add
+    // button (#academic-class-add-btn). The Add button reads the
+    // selected classId and calls CharacterClasses.addToClass, which
+    // goes through MutationPipeline and is Promise-based.
+    // 
+    // Removal still uses the same .remove-class-tag buttons rendered
+    // by CharacterClassView.
+
+    function bindClassDropdown() {
+        addSafeDelegatedListener('#academic-class-add-btn', 'click', function(e, target) {
+            e.preventDefault();
+
+            var select = document.getElementById('academic-class-select');
+            if (!select) {
+                notify('Class dropdown not found.', 'error');
+                return;
             }
+
+            var classId = select.value;
+            if (!classId) {
+                notify('Please select a class.', 'error');
+                return;
+            }
+
+            handleAddClassById(classId);
         });
     }
 
@@ -931,7 +957,7 @@
         var el = document.getElementById('derived-physical-class');
         if (!el) { return; }
 
-        el.textContent = (result && result.class) ? result.class.label : '—';
+        el.textContent = (result && result.class) ? result.class.label : '\u2014';
     }
 
     function updateMagicalClassDisplayFromInputs() {
@@ -944,10 +970,10 @@
         var fineEl = document.getElementById('derived-fine-class');
 
         if (broadEl) {
-            broadEl.textContent = result.broad ? result.broad.label : '—';
+            broadEl.textContent = result.broad ? result.broad.label : '\u2014';
         }
         if (fineEl) {
-            fineEl.textContent = result.fine ? result.fine.label : '—';
+            fineEl.textContent = result.fine ? result.fine.label : '\u2014';
         }
     }
 
@@ -1098,7 +1124,7 @@
             var isHidden = body.style.display === 'none';
             body.style.display = isHidden ? 'block' : 'none';
             if (caret) {
-                caret.textContent = isHidden ? '▾' : '▸';
+                caret.textContent = isHidden ? '\u25be' : '\u25b8';
             }
         });
 
@@ -1216,8 +1242,6 @@
         var modal = document.getElementById('character-relationship-modal');
         if (!modal) { return; }
 
-        // Use hideModal (not closeModal) so the modal stays in the DOM
-        // and can be reused for the next Add/Edit operation.
         if (Modal && typeof Modal.hideModal === 'function') {
             Modal.hideModal(modal);
         } else {
@@ -1423,8 +1447,6 @@
         var modal = document.getElementById('character-graph-modal');
         if (!modal) { return; }
 
-        // Use hideModal (not closeModal) so the modal stays in the DOM
-        // and can be reused.
         if (Modal && typeof Modal.hideModal === 'function') {
             Modal.hideModal(modal);
         } else {
@@ -1522,6 +1544,68 @@
         }
     }
 
+    /**
+     * Add a class to the character by class ID (via the dropdown).
+     * 
+     * Uses CharacterClasses.addToClass, which is Promise-based and
+     * goes through MutationPipeline. On success, MutationPipeline has
+     * already shown the success toast, so this handler does not notify
+     * again — it just refreshes the affected UI.
+     * 
+     * @param {string} classId - Class ID
+     */
+    function handleAddClassById(classId) {
+        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify('Please save the character first.', 'error');
+            return;
+        }
+
+        if (!classId) {
+            notify('Please select a class.', 'error');
+            return;
+        }
+
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            notify('Character not found.', 'error');
+            return;
+        }
+
+        if (!CharacterClasses || typeof CharacterClasses.addToClass !== 'function') {
+            notify('Character classes module not available.', 'error');
+            return;
+        }
+
+        CharacterClasses.addToClass(charId, classId)
+            .then(function(result) {
+                if (result && result.success) {
+                    // MutationPipeline already showed the success toast.
+                    // Re-render the character form so the Academic tab
+                    // picks up the new class (dropdown loses it, tag
+                    // list gains it). Then refresh the surrounding
+                    // character UI (list, tags, etc).
+                    CharacterForm.render(charId);
+                    var refreshedChar = CharacterQueries.getCharacterById(charId);
+                    refreshUI(refreshedChar);
+                }
+                // On failure, MutationPipeline already showed the toast.
+            })
+            .catch(function(err) {
+                notify('Failed to add class.', 'error');
+                console.error('[CharacterEvents] handleAddClassById error:', err);
+            });
+    }
+
+    /**
+     * Add a class to the character by name.
+     * 
+     * Kept for backward compatibility. It is still called from places
+     * that have a name rather than an ID. Uses CharacterClasses.addClassByName,
+     * which is Promise-based and goes through MutationPipeline.
+     * 
+     * @param {string} name - Class name
+     */
     function handleAddClassByName(name) {
         var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
         if (!charId) {
@@ -1535,12 +1619,18 @@
             return;
         }
 
+        if (!CharacterClasses || typeof CharacterClasses.addClassByName !== 'function') {
+            notify('Character classes module not available.', 'error');
+            return;
+        }
+
         CharacterClasses.addClassByName(charId, name)
             .then(function(result) {
                 if (result && result.success) {
-                    var input = document.getElementById('class-tag-input');
-                    if (input) { input.value = ''; }
-                    refreshUI(char);
+                    // MutationPipeline already showed the success toast.
+                    CharacterForm.render(charId);
+                    var refreshedChar = CharacterQueries.getCharacterById(charId);
+                    refreshUI(refreshedChar);
                 }
             })
             .catch(function() {
@@ -1555,14 +1645,26 @@
             return;
         }
 
+        if (!CharacterClasses || typeof CharacterClasses.removeClassById !== 'function') {
+            notify('Character classes module not available.', 'error');
+            return;
+        }
+
         CharacterClasses.removeClassById(charId, classId)
             .then(function(result) {
                 if (result && result.success) {
-                    refreshUI(null);
+                    // MutationPipeline already showed the success toast.
+                    // Re-render the form so the tag is removed and the
+                    // class reappears in the dropdown.
+                    CharacterForm.render(charId);
+                    var refreshedChar = CharacterQueries.getCharacterById(charId);
+                    refreshUI(refreshedChar);
                 }
+                // On failure, MutationPipeline already showed the toast.
             })
-            .catch(function() {
+            .catch(function(err) {
                 notify('Failed to remove class.', 'error');
+                console.error('[CharacterEvents] handleRemoveClass error:', err);
             });
     }
 
@@ -1604,7 +1706,10 @@
         init: init,
         destroy: destroy,
         removeAllEventListeners: removeAllEventListeners,
-        refreshUI: refreshUI
+        refreshUI: refreshUI,
+        handleAddClassById: handleAddClassById,
+        handleAddClassByName: handleAddClassByName,
+        handleRemoveClass: handleRemoveClass
     };
 
 })();

@@ -14,15 +14,26 @@
  *   No UI dependencies (no notifications, no confirm, no rendering)
  *   No DOM access
  *   USES CharacterQueries for character data and display names
- *   USES AcademyQueries for class data
- *   USES AcademyClasses for class creation (NON-PERSISTING when used in transactions)
+ *   USES AcademyQueries for class data (reads only)
  *   USES MutationPipeline for transaction management
  *   USES IdUtils for ID generation
+ * 
+ * CLASS ENTITY CREATION:
+ *   addClassByName is self-contained. When the named class does not
+ *   exist, it creates the class entity DIRECTLY inside its own
+ *   MutationPipeline transaction. It does NOT call AcademyClasses.create,
+ *   because that is itself a Promise-based pipeline call — nesting
+ *   pipelines would either deadlock or corrupt the transaction.
+ * 
+ *   The class entity shape produced here MUST match what AcademyClasses
+ *   produces on its own create path. If AcademyClasses ever changes its
+ *   entity shape, this file needs updating in lockstep. The shape is:
+ *     { id, name, status, year, description, instructorId,
+ *       createdAt, updatedAt }
  * 
  * DEPENDENCIES:
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
- *   - window.AcademyClasses (from academy-classes.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  * 
@@ -46,7 +57,6 @@
 
     var CharacterQueries = window.CharacterQueries;
     var AcademyQueries = window.AcademyQueries;
-    var AcademyClasses = window.AcademyClasses;
     var MutationPipeline = window.MutationPipeline;
     var IdUtils = window.IdUtils;
 
@@ -68,10 +78,6 @@
         }
         if (!AcademyQueries || typeof AcademyQueries.getClassByName !== 'function') {
             missing.push('AcademyQueries.getClassByName');
-        }
-
-        if (!AcademyClasses || typeof AcademyClasses.create !== 'function') {
-            missing.push('AcademyClasses.create');
         }
 
         if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
@@ -402,16 +408,59 @@
             },
 
             mutate: function(data) {
-                var cls = AcademyQueries.getClassByName(trimmedName);
+                // Look for the class entity inside the transaction's
+                // data snapshot, not the live store. This makes the
+                // operation consistent with the rest of the pipeline.
+                var classId = null;
+                var className_ = trimmedName;
+                var classCreated = false;
 
-                if (!cls) {
-                    var result = AcademyClasses.create(trimmedName);
-                    if (!result || !result.success) {
-                        throw new Error(result ? result.message : 'Failed to create class.');
-                    }
-                    cls = result.data.class;
+                if (!data.academy || typeof data.academy !== 'object') {
+                    data.academy = {};
+                }
+                if (!data.academy.graduatingClasses ||
+                    typeof data.academy.graduatingClasses !== 'object' ||
+                    Array.isArray(data.academy.graduatingClasses)) {
+                    data.academy.graduatingClasses = {};
                 }
 
+                // Look up existing class by name inside the snapshot.
+                var nameLower = trimmedName.toLowerCase();
+                var existing = null;
+                Object.keys(data.academy.graduatingClasses).forEach(function(id) {
+                    var c = data.academy.graduatingClasses[id];
+                    if (c && c.name && String(c.name).toLowerCase() === nameLower) {
+                        existing = c;
+                        classId = id;
+                    }
+                });
+
+                // Create the class entity directly if it doesn't exist.
+                // We do NOT call AcademyClasses.create here — that is a
+                // separate Promise-based pipeline call, and nesting
+                // pipelines is not supported.
+                if (!existing) {
+                    var now = new Date().toISOString();
+                    classId = IdUtils.generateId('class');
+                    var newClass = {
+                        id: classId,
+                        name: trimmedName,
+                        status: 'active',
+                        year: null,
+                        description: '',
+                        instructorId: null,
+                        createdAt: now,
+                        updatedAt: now
+                    };
+                    data.academy.graduatingClasses[classId] = newClass;
+                    existing = newClass;
+                    classCreated = true;
+                    className_ = newClass.name;
+                } else {
+                    className_ = existing.name;
+                }
+
+                // Add classId to the character.
                 var currentChar = data.characters.find(function(c) {
                     return c && String(c.id) === String(charId);
                 });
@@ -422,17 +471,17 @@
 
                 normaliseClassIds(currentChar);
 
-                if (currentChar.classIds.some(function(cid) { return String(cid) === String(cls.id); })) {
+                if (currentChar.classIds.some(function(cid) { return String(cid) === String(classId); })) {
                     throw new Error('Character is already in this class.');
                 }
 
-                currentChar.classIds.push(cls.id);
+                currentChar.classIds.push(classId);
 
                 return {
                     characterId: charId,
-                    classId: cls.id,
-                    className: cls.name,
-                    classCreated: !existingClass
+                    classId: classId,
+                    className: className_,
+                    classCreated: classCreated
                 };
             },
 
