@@ -7,6 +7,8 @@
  *     because #character-form-content is re-rendered on every
  *     CharacterForm.render() call. Direct listeners would be lost.
  *   - Static elements (outside the form content) use direct binding.
+ *   - Combat tab bindings (roll buttons, class overrides, stat/magic
+ *     live updates, weapons, moves) are all delegated.
  */
 
 (function() {
@@ -29,6 +31,10 @@
     var CharacterEliminationView = window.CharacterEliminationView;
     var CharacterGenerator = window.CharacterGenerator;
     var CharacterClasses = window.CharacterClasses;
+    var CharacterStats = window.CharacterStats;
+    var CharacterStatsView = window.CharacterStatsView;
+    var CharacterConstants = window.CharacterConstants;
+    var MagicConstants = window.MagicConstants;
     var FormUtils = window.FormUtils;
     var NotificationSystem = window.NotificationSystem;
     var UI_CONSTANTS = window.UI_CONSTANTS;
@@ -73,6 +79,9 @@
         if (!CharacterForm || typeof CharacterForm.addCareerEntryRow !== 'function') {
             missing.push('CharacterForm.addCareerEntryRow');
         }
+        if (!CharacterForm || typeof CharacterForm.addWeaponRow !== 'function') {
+            missing.push('CharacterForm.addWeaponRow');
+        }
         if (!CharacterClassView || typeof CharacterClassView.renderClassTags !== 'function') {
             missing.push('CharacterClassView.renderClassTags');
         }
@@ -84,6 +93,18 @@
         }
         if (!CharacterClasses || typeof CharacterClasses.addClassByName !== 'function') {
             missing.push('CharacterClasses.addClassByName');
+        }
+        if (!CharacterStats || typeof CharacterStats.rollPhysicalStats !== 'function') {
+            missing.push('CharacterStats.rollPhysicalStats');
+        }
+        if (!CharacterStatsView || typeof CharacterStatsView.populateMagicalFields !== 'function') {
+            missing.push('CharacterStatsView.populateMagicalFields');
+        }
+        if (!CharacterConstants || typeof CharacterConstants.getPhysicalClasses !== 'function') {
+            missing.push('CharacterConstants.getPhysicalClasses');
+        }
+        if (!MagicConstants || typeof MagicConstants.getTypeKeys !== 'function') {
+            missing.push('MagicConstants.getTypeKeys');
         }
         if (!FormUtils || typeof FormUtils.setField !== 'function') {
             missing.push('FormUtils.setField');
@@ -235,6 +256,13 @@
         bindClassTagInput();
         bindClassTagRemoval();
 
+        // Combat tab bindings
+        bindCombatRollButtons();
+        bindCombatClassOverrides();
+        bindCombatLiveUpdates();
+        bindWeaponButtons();
+        bindSpecialMoveButtons();
+
         _initialized = true;
     }
 
@@ -380,7 +408,7 @@
     }
 
     // ============================================================
-    // DELEGATED BINDINGS
+    // DELEGATED BINDINGS - GENERAL
     // ============================================================
 
     function bindTabSwitching() {
@@ -404,11 +432,6 @@
         });
     }
 
-    /**
-     * Deceased toggle:
-     *   - Shows/hides the death fields container
-     *   - Enables/disables the death inputs so the user can type
-     */
     function bindDeceasedToggle() {
         addSafeDelegatedListener('#char-deceased', 'change', function(e, target) {
             var deathFields = document.getElementById('death-fields');
@@ -448,10 +471,6 @@
         addSafeDelegatedListener('#random-personality-btn', 'click', function(e, target) {
             e.preventDefault();
             fillRandomPersonality();
-        });
-        addSafeDelegatedListener('#random-stats-btn', 'click', function(e, target) {
-            e.preventDefault();
-            fillRandomStats();
         });
     }
 
@@ -512,10 +531,6 @@
         });
     }
 
-    // ============================================================
-    // CAREER STATUS BUTTONS
-    // ============================================================
-
     function bindCareerButtons() {
         addSafeDelegatedListener('#add-career-entry-btn', 'click', function(e, target) {
             e.preventDefault();
@@ -541,7 +556,6 @@
             var parent = row.parentElement;
             if (!parent) { return; }
 
-            // If only one row left, just clear it instead of removing
             if (parent.querySelectorAll('.career-status-entry').length <= 1) {
                 var select = row.querySelector('.career-status-select');
                 var startEl = row.querySelector('.career-start-year');
@@ -577,6 +591,426 @@
     }
 
     // ============================================================
+    // COMBAT - ROLL BUTTONS
+    // ============================================================
+
+    function bindCombatRollButtons() {
+        addSafeDelegatedListener('#roll-stats-btn', 'click', function(e, target) {
+            e.preventDefault();
+            handleRollStats();
+        });
+
+        addSafeDelegatedListener('#roll-magic-btn', 'click', function(e, target) {
+            e.preventDefault();
+            handleRollMagic();
+        });
+
+        addSafeDelegatedListener('#roll-hp-btn', 'click', function(e, target) {
+            e.preventDefault();
+            handleRollHP();
+        });
+
+        addSafeDelegatedListener('#roll-mp-btn', 'click', function(e, target) {
+            e.preventDefault();
+            handleRollMP();
+        });
+    }
+
+    function handleRollStats() {
+        if (!CharacterStats || typeof CharacterStats.rollPhysicalStats !== 'function') {
+            notify('Stats module not available.', 'error');
+            return;
+        }
+
+        var rolled = CharacterStats.rollPhysicalStats();
+        var statKeys = CharacterStats.STAT_KEYS || ['str','dex','con','int','wis','cha'];
+
+        statKeys.forEach(function(key) {
+            FormUtils.setField('char-stat-' + key, rolled[key]);
+            updateStatModifierDisplay(key, rolled[key]);
+        });
+
+        updatePhysicalClassDisplayFromInputs();
+        notify('Random stats generated!', 'info');
+    }
+
+    function handleRollMagic() {
+        if (!CharacterStats || typeof CharacterStats.rollMagicalProficiencies !== 'function') {
+            notify('Magic module not available.', 'error');
+            return;
+        }
+
+        var rolled = CharacterStats.rollMagicalProficiencies();
+
+        // Fill inputs + update level labels
+        if (MagicConstants) {
+            MagicConstants.getTypeKeys().forEach(function(type) {
+                FormUtils.setField('char-magic-' + type, rolled[type]);
+                updateMagicLevelDisplay(type, rolled[type]);
+            });
+            updateMagicCategoryTotals(rolled);
+        }
+
+        updateMagicalClassDisplayFromInputs();
+        notify('Random magic generated!', 'info');
+    }
+
+    function handleRollHP() {
+        if (!CharacterStats || typeof CharacterStats.rollHP !== 'function') {
+            notify('Stats module not available.', 'error');
+            return;
+        }
+
+        var stats = readStatsFromInputs();
+        var hp = CharacterStats.rollHP(stats);
+        FormUtils.setField('char-hp', hp);
+        notify('HP rolled: ' + hp, 'info');
+    }
+
+    function handleRollMP() {
+        if (!CharacterStats || typeof CharacterStats.rollMP !== 'function') {
+            notify('Stats module not available.', 'error');
+            return;
+        }
+
+        var magic = readMagicFromInputs();
+        var mp = CharacterStats.rollMP(magic);
+        FormUtils.setField('char-mp', mp);
+        notify('MP rolled: ' + mp, 'info');
+    }
+
+    // ============================================================
+    // COMBAT - CLASS OVERRIDES
+    // ============================================================
+
+    function bindCombatClassOverrides() {
+        // Physical class override — rewrites stats to match the class
+        addSafeDelegatedListener('#physical-class-override', 'change', function(e, target) {
+            var classId = target.value;
+            if (!classId) { return; }
+
+            if (!CharacterStats || typeof CharacterStats.applyPhysicalClass !== 'function') {
+                notify('Stats module not available.', 'error');
+                return;
+            }
+
+            var newStats = CharacterStats.applyPhysicalClass(classId);
+            if (!newStats) {
+                notify('Could not apply class.', 'error');
+                return;
+            }
+
+            var statKeys = CharacterStats.STAT_KEYS || ['str','dex','con','int','wis','cha'];
+            statKeys.forEach(function(key) {
+                FormUtils.setField('char-stat-' + key, newStats[key]);
+                updateStatModifierDisplay(key, newStats[key]);
+            });
+
+            updatePhysicalClassDisplayFromInputs();
+
+            // Reset the override dropdown so the derived class shows again
+            target.value = '';
+
+            notify('Stats rewritten to match class.', 'info');
+        });
+
+        // Broad magical class override — display only
+        addSafeDelegatedListener('#broad-class-override', 'change', function(e, target) {
+            var classId = target.value;
+            var displayEl = document.getElementById('derived-broad-class');
+            if (!displayEl) { return; }
+
+            if (!classId) {
+                // Revert to derived
+                updateMagicalClassDisplayFromInputs();
+                return;
+            }
+
+            if (MagicConstants) {
+                var cls = MagicConstants.getBroadClass(classId);
+                if (cls) {
+                    displayEl.textContent = cls.label;
+                }
+            }
+        });
+
+        // Fine magical class override — raises target proficiency to 8
+        addSafeDelegatedListener('#fine-class-override', 'change', function(e, target) {
+            var classId = target.value;
+            if (!classId) { return; }
+
+            if (!CharacterStats || typeof CharacterStats.applyFineMagicalClass !== 'function') {
+                notify('Stats module not available.', 'error');
+                return;
+            }
+
+            var currentMagic = readMagicFromInputs();
+            var newMagic = CharacterStats.applyFineMagicalClass(classId, currentMagic);
+            if (!newMagic) {
+                notify('Could not apply fine class.', 'error');
+                return;
+            }
+
+            if (MagicConstants) {
+                MagicConstants.getTypeKeys().forEach(function(type) {
+                    FormUtils.setField('char-magic-' + type, newMagic[type]);
+                    updateMagicLevelDisplay(type, newMagic[type]);
+                });
+                updateMagicCategoryTotals(newMagic);
+            }
+
+            updateMagicalClassDisplayFromInputs();
+
+            // Reset dropdown
+            target.value = '';
+
+            notify('Proficiency raised to Expert.', 'info');
+        });
+    }
+
+    // ============================================================
+    // COMBAT - LIVE UPDATES
+    // ============================================================
+
+    function bindCombatLiveUpdates() {
+        // Physical stat input change → update modifier + re-derive class
+        addSafeDelegatedListener('.stat-input', 'input', function(e, target) {
+            var key = target.dataset.statKey;
+            if (!key) { return; }
+            var value = parseInt(target.value, 10);
+            if (isNaN(value)) { return; }
+            updateStatModifierDisplay(key, value);
+            updatePhysicalClassDisplayFromInputs();
+        });
+
+        // Magic input change → update level + category total + re-derive class
+        addSafeDelegatedListener('.magic-input', 'input', function(e, target) {
+            var type = target.dataset.magicKey;
+            if (!type) { return; }
+            var value = parseInt(target.value, 10);
+            if (isNaN(value)) { return; }
+            updateMagicLevelDisplay(type, value);
+            var magic = readMagicFromInputs();
+            updateMagicCategoryTotals(magic);
+            updateMagicalClassDisplayFromInputs();
+        });
+    }
+
+    function updateStatModifierDisplay(key, value) {
+        var el = document.querySelector('[data-modifier-key="' + key + '"]');
+        if (!el) { return; }
+
+        var num = parseInt(value, 10);
+        if (isNaN(num)) { num = 10; }
+
+        var modifier = Math.floor((num - 10) / 2);
+        var display = (modifier >= 0 ? '+' : '') + modifier;
+        el.textContent = display;
+
+        if (modifier > 0) {
+            el.style.color = 'var(--accent)';
+        } else if (modifier < 0) {
+            el.style.color = 'var(--danger)';
+        } else {
+            el.style.color = 'var(--text-dim)';
+        }
+    }
+
+    function updateMagicLevelDisplay(type, value) {
+        var el = document.querySelector('[data-magic-level="' + type + '"]');
+        if (!el) { return; }
+        if (!MagicConstants || typeof MagicConstants.getProficiencyLevelLabel !== 'function') { return; }
+        el.textContent = MagicConstants.getProficiencyLevelLabel(value);
+    }
+
+    function updateMagicCategoryTotals(magic) {
+        if (!MagicConstants) { return; }
+        var order = MagicConstants.getCategoryOrder ? MagicConstants.getCategoryOrder() : ['elemental', 'body', 'aether'];
+
+        order.forEach(function(catId) {
+            var types = MagicConstants.getCategoryTypes(catId);
+            var total = 0;
+            types.forEach(function(t) {
+                total += Number(magic[t]) || 0;
+            });
+            var totalEl = document.querySelector('[data-magic-total="' + catId + '"]');
+            if (totalEl) { totalEl.textContent = String(total); }
+        });
+    }
+
+    function readStatsFromInputs() {
+        var result = {};
+        var statKeys = CharacterStats && CharacterStats.STAT_KEYS
+            ? CharacterStats.STAT_KEYS
+            : ['str','dex','con','int','wis','cha'];
+        statKeys.forEach(function(key) {
+            var value = parseInt(FormUtils.getField('char-stat-' + key), 10);
+            result[key] = isNaN(value) ? 10 : value;
+        });
+        return result;
+    }
+
+    function readMagicFromInputs() {
+        var result = {};
+        if (!MagicConstants) { return result; }
+        MagicConstants.getTypeKeys().forEach(function(type) {
+            var value = parseInt(FormUtils.getField('char-magic-' + type), 10);
+            result[type] = isNaN(value) ? 0 : value;
+        });
+        return result;
+    }
+
+    function updatePhysicalClassDisplayFromInputs() {
+        if (!CharacterStats || typeof CharacterStats.derivePhysicalClass !== 'function') { return; }
+
+        var stats = readStatsFromInputs();
+        var result = CharacterStats.derivePhysicalClass(stats);
+
+        var el = document.getElementById('derived-physical-class');
+        if (!el) { return; }
+
+        el.textContent = (result && result.class) ? result.class.label : '—';
+    }
+
+    function updateMagicalClassDisplayFromInputs() {
+        if (!CharacterStats || typeof CharacterStats.deriveMagicalClasses !== 'function') { return; }
+
+        var magic = readMagicFromInputs();
+        var result = CharacterStats.deriveMagicalClasses(magic);
+
+        var broadEl = document.getElementById('derived-broad-class');
+        var fineEl = document.getElementById('derived-fine-class');
+
+        if (broadEl) {
+            broadEl.textContent = result.broad ? result.broad.label : '—';
+        }
+        if (fineEl) {
+            fineEl.textContent = result.fine ? result.fine.label : '—';
+        }
+    }
+
+    // ============================================================
+    // COMBAT - WEAPONS
+    // ============================================================
+
+    function bindWeaponButtons() {
+        addSafeDelegatedListener('#add-weapon-btn', 'click', function(e, target) {
+            e.preventDefault();
+            var container = document.getElementById('weapons-container');
+            if (!container) { return; }
+
+            if (CharacterForm && typeof CharacterForm.addWeaponRow === 'function') {
+                CharacterForm.addWeaponRow(container);
+            }
+
+            var lastRow = container.querySelector('.weapon-entry:last-child');
+            if (lastRow) {
+                var nameInput = lastRow.querySelector('.weapon-name');
+                if (nameInput) { nameInput.focus(); }
+            }
+        });
+
+        addSafeDelegatedListener('.remove-weapon', 'click', function(e, target) {
+            e.preventDefault();
+            var row = target.closest('.weapon-entry');
+            if (!row) { return; }
+            row.remove();
+        });
+    }
+
+    // ============================================================
+    // COMBAT - SPECIAL MOVES
+    // ============================================================
+
+    function bindSpecialMoveButtons() {
+        addSafeDelegatedListener('#add-physical-move-btn', 'click', function(e, target) {
+            e.preventDefault();
+            handleAddMove('physical');
+        });
+
+        addSafeDelegatedListener('#add-magical-move-btn', 'click', function(e, target) {
+            e.preventDefault();
+            handleAddMove('magical');
+        });
+
+        addSafeDelegatedListener('.remove-special-move', 'click', function(e, target) {
+            e.preventDefault();
+            var type = target.dataset.type;
+            var moveId = target.dataset.moveId;
+            if (!type || !moveId) { return; }
+            handleRemoveMove(type, moveId);
+        });
+    }
+
+    function handleAddMove(type) {
+        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify('Please save the character first.', 'error');
+            return;
+        }
+
+        var nameEl = document.getElementById(type + '-move-name');
+        var descEl = document.getElementById(type + '-move-desc');
+
+        var name = nameEl ? String(nameEl.value || '').trim() : '';
+        var desc = descEl ? String(descEl.value || '').trim() : '';
+
+        if (!name) {
+            notify('Move name is required.', 'error');
+            return;
+        }
+
+        if (!CharacterStats || typeof CharacterStats.addSpecialMove !== 'function') {
+            notify('Stats module not available.', 'error');
+            return;
+        }
+
+        CharacterStats.addSpecialMove(charId, type, name, desc)
+            .then(function(result) {
+                if (result && result.success) {
+                    if (nameEl) { nameEl.value = ''; }
+                    if (descEl) { descEl.value = ''; }
+
+                    var char = CharacterQueries.getCharacterById(charId);
+                    if (char && CharacterStatsView && typeof CharacterStatsView.renderMovesSection === 'function') {
+                        CharacterStatsView.renderMovesSection(char);
+                    }
+                }
+            })
+            .catch(function() {
+                notify('Failed to add move.', 'error');
+            });
+    }
+
+    function handleRemoveMove(type, moveId) {
+        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        if (!confirm('Remove this move?')) { return; }
+
+        if (!CharacterStats || typeof CharacterStats.removeSpecialMove !== 'function') {
+            notify('Stats module not available.', 'error');
+            return;
+        }
+
+        CharacterStats.removeSpecialMove(charId, type, moveId)
+            .then(function(result) {
+                if (result && result.success) {
+                    var char = CharacterQueries.getCharacterById(charId);
+                    if (char && CharacterStatsView && typeof CharacterStatsView.renderMovesSection === 'function') {
+                        CharacterStatsView.renderMovesSection(char);
+                    }
+                }
+            })
+            .catch(function() {
+                notify('Failed to remove move.', 'error');
+            });
+    }
+
+    // ============================================================
     // HANDLERS
     // ============================================================
 
@@ -604,7 +1038,7 @@
                     }
                 }
             })
-            .catch(function(err) {
+            .catch(function() {
                 notify('An error occurred while saving.', 'error');
             });
     }
@@ -632,7 +1066,7 @@
                     notify('Character deleted successfully!', 'success');
                 }
             })
-            .catch(function(err) {
+            .catch(function() {
                 notify('An error occurred while deleting.', 'error');
             });
     }
@@ -686,7 +1120,7 @@
                     refreshUI(char);
                 }
             })
-            .catch(function(err) {
+            .catch(function() {
                 notify('Failed to add class.', 'error');
             });
     }
@@ -704,13 +1138,13 @@
                     refreshUI(null);
                 }
             })
-            .catch(function(err) {
+            .catch(function() {
                 notify('Failed to remove class.', 'error');
             });
     }
 
     // ============================================================
-    // RANDOM FILLERS
+    // RANDOM FILLERS (Physical tab / Personality tab)
     // ============================================================
 
     function fillRandomPhysical() {
@@ -737,16 +1171,6 @@
         FormUtils.setField('char-personality-fears', personality.fears);
         FormUtils.setField('char-personality-goals', personality.goals);
         notify('Random personality generated!', 'info');
-    }
-
-    function fillRandomStats() {
-        var stats = CharacterGenerator.generateStats3d6();
-        var statKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
-        statKeys.forEach(function(key) {
-            var value = stats[key] !== undefined ? stats[key] : 10;
-            FormUtils.setField('char-stat-' + key, value);
-        });
-        notify('Random stats generated!', 'info');
     }
 
     // ============================================================
