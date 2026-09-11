@@ -4,14 +4,19 @@
  * 
  * This module is responsible for:
  *   - Class CRUD (list, create, edit, delete) - uses AcademyClasses directly
- *   - Class roster management (add/remove students) - uses AcademyClasses directly
- *   - Academic team management for a class - uses TeamCore for mutations, TeamQueries for reads
+ *   - Class roster management (add/remove students) - uses AcademyClasses
+ *     delegating to CharacterClasses
+ *   - Academic team management for a class - uses TeamCore for mutations,
+ *     TeamQueries for reads
  *   - Tournament management for a class
  *   - Auto-distribute students to teams - uses AcademyDistribute
  * 
  * IMPORTANT:
  *   - UI-ONLY - all mutations delegate to domain cores
- *   - Uses AcademyClasses DIRECTLY (AcademyCore does not exist)
+ *   - Uses AcademyClasses DIRECTLY for class ENTITY mutations
+ *   - Uses AcademyClasses.addStudent/removeStudent for MEMBERSHIP mutations
+ *     (which are DEPRECATED DELEGATES to CharacterClasses — they still work
+ *     but will be removed once the Academy UI rework lands)
  *   - Uses TeamQueries for READ operations (get team by ID)
  *   - Uses TeamCore for WRITE operations (create, delete, add/remove members)
  *   - Uses AcademyUI for state management
@@ -22,12 +27,20 @@
  *   - All notifications use NotificationSystem.notify()
  *   - All modals use Modal system
  * 
+ * PROMISE CONTRACT (v15+):
+ *   - AcademyClasses.create / update / delete return Promises.
+ *   - AcademyClasses.addStudent / removeStudent return Promises.
+ *   - AcademyDistribute.autoDistribute is synchronous (returns an object).
+ *   - TeamCore.createTeam / deleteTeam / addMember / removeMember are
+ *     synchronous (return the team/member or null).
+ *   - AcademyQueries and AcademyAggregator reads are synchronous.
+ * 
  * DEPENDENCY RESOLUTION:
  *   - Modules that are guaranteed to be loaded before this file are
  *     captured at module load (e.g. AcademyUI, AcademyQueries).
  *   - Modules that are NOT guaranteed to be loaded before this file
- *     (TeamCore, which loads later in the script order) are resolved
- *     lazily at call time via accessor functions.
+ *     (TeamCore, AcademyRanking) are resolved lazily at call time via
+ *     accessor functions.
  *   - This avoids load-order warnings and makes the module robust to
  *     future script reordering.
  * 
@@ -46,6 +59,7 @@
  * 
  * DEPENDENCIES (lazy - resolved at call time):
  *   - window.TeamCore
+ *   - window.AcademyRanking
  * 
  * USAGE:
  *   var tab = window.ClassTab;
@@ -89,6 +103,16 @@
      */
     function getTeamCore() {
         return window.TeamCore || null;
+    }
+
+    /**
+     * Get AcademyRanking, resolved at call time.
+     * AcademyRanking loads after this module in the current script order.
+     * 
+     * @returns {object|null} AcademyRanking or null if not yet loaded
+     */
+    function getAcademyRanking() {
+        return window.AcademyRanking || null;
     }
 
     // ============================================================
@@ -148,7 +172,6 @@
             missing.push('AcademyDistribute.autoDistribute');
         }
 
-        // TeamQueries is a load-time dependency (loaded before Academy tabs)
         if (!TeamQueries || typeof TeamQueries.getTeamById !== 'function') {
             missing.push('TeamQueries.getTeamById');
         }
@@ -176,8 +199,9 @@
             missing.push('Modal.createModal');
         }
 
-        // TeamCore is deliberately NOT checked here.
-        // It is resolved lazily at call time via getTeamCore().
+        // TeamCore and AcademyRanking are deliberately NOT checked here.
+        // They are resolved lazily at call time via getTeamCore() /
+        // getAcademyRanking().
 
         if (missing.length > 0) {
             console.warn('[ClassTab] Missing load-time dependencies:', missing.join(', '));
@@ -217,6 +241,29 @@
     }
 
     // ============================================================
+    // REFRESH HELPER
+    // ============================================================
+
+    /**
+     * Ask the Academy shell to re-render the current sub-tab.
+     * Falls back to a local re-render if the shell isn't available.
+     */
+    function requestRefresh() {
+        if (window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
+            window.AcademyEvents.refreshUI();
+        } else if (_currentContainer) {
+            var html = render({
+                selectedClassId: AcademyUI.getSelectedClassId(),
+                displayWeek: AcademyUI.getDisplayWeek()
+            });
+            _currentContainer.innerHTML = html;
+            bindEvents(_currentContainer);
+        }
+    }
+
+    var _currentContainer = null;
+
+    // ============================================================
     // CONSTANTS
     // ============================================================
 
@@ -230,16 +277,6 @@
     function getTeamById(teamId) {
         if (TeamQueries && typeof TeamQueries.getTeamById === 'function') {
             return TeamQueries.getTeamById(teamId);
-        }
-        if (AcademyQueries && typeof AcademyQueries.getClassTeams === 'function') {
-            var teams = AcademyQueries.getClassTeams();
-            if (Array.isArray(teams)) {
-                for (var i = 0; i < teams.length; i++) {
-                    if (teams[i] && String(teams[i].id) === String(teamId)) {
-                        return teams[i];
-                    }
-                }
-            }
         }
         return null;
     }
@@ -612,6 +649,8 @@
             return;
         }
 
+        _currentContainer = container;
+
         // ---- Class list selection ----
         var listContainer = container.querySelector('#academy-class-list');
         if (listContainer) {
@@ -621,10 +660,7 @@
                 var id = item.dataset.id;
                 if (id) {
                     AcademyUI.selectClass(id);
-                    if (typeof window.AcademyEvents !== 'undefined' &&
-                        window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                        window.AcademyEvents.refreshUI();
-                    }
+                    requestRefresh();
                 }
             });
         }
@@ -773,10 +809,7 @@
                 var key = this.dataset.key || 'search';
                 if (tab) {
                     AcademyUI.setFilter(tab, key, this.value);
-                    if (typeof window.AcademyEvents !== 'undefined' &&
-                        window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                        window.AcademyEvents.refreshUI();
-                    }
+                    requestRefresh();
                 }
             });
         }
@@ -787,16 +820,13 @@
                 var tab = this.dataset.tab;
                 if (tab) {
                     AcademyUI.resetFilter(tab);
-                    if (typeof window.AcademyEvents !== 'undefined' &&
-                        window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                        window.AcademyEvents.refreshUI();
-                    }
+                    requestRefresh();
                 }
             });
         }
 
         return function() {
-            // Cleanup - remove listeners
+            // Cleanup - no-op for now
         };
     }
 
@@ -810,6 +840,7 @@
         var closeBtn = document.getElementById('academy-class-modal-close');
         var cancelBtn = document.getElementById('academy-class-modal-cancel');
         var nameInput = document.getElementById('academy-class-name');
+        var saveBtn = document.getElementById('academy-class-modal-save');
 
         if (closeBtn) {
             closeBtn.addEventListener('click', function() {
@@ -834,6 +865,7 @@
         if (form) {
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
+
                 var name = nameInput ? nameInput.value.trim() : '';
                 if (!name) {
                     notify('Class name is required.', 'error');
@@ -841,24 +873,45 @@
                 }
 
                 var editId = form.dataset.editId;
-                var result;
 
-                if (editId) {
-                    result = AcademyClasses.update(editId, { name: name });
-                } else {
-                    result = AcademyClasses.create(name);
+                // Disable the save button while the Promise is in flight
+                // so a double-click can't create two classes.
+                if (saveBtn) {
+                    saveBtn.disabled = true;
                 }
 
-                if (result && result.success) {
-                    notify(editId ? 'Class updated successfully.' : 'Class created successfully.', 'success');
-                    if (modal) { modal.classList.add('hidden'); }
-                    if (typeof window.AcademyEvents !== 'undefined' &&
-                        window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                        window.AcademyEvents.refreshUI();
-                    }
-                } else {
-                    notify(result ? result.message : 'Failed to save class.', 'error');
-                }
+                var promise = editId
+                    ? AcademyClasses.update(editId, { name: name })
+                    : AcademyClasses.create(name);
+
+                promise
+                    .then(function(result) {
+                        if (result && result.success) {
+                            notify(editId ? 'Class updated successfully.' : 'Class created successfully.', 'success');
+                            if (modal) { modal.classList.add('hidden'); }
+
+                            // If we just created a class, select it so
+                            // the detail panel opens on it.
+                            if (!editId && result.data && result.data.classId) {
+                                AcademyUI.selectClass(result.data.classId);
+                            }
+
+                            requestRefresh();
+                        } else {
+                            notify(result ? result.message : 'Failed to save class.', 'error');
+                        }
+                    })
+                    .catch(function(err) {
+                        notify('Failed to save class.', 'error');
+                        console.error('[ClassTab] saveClass error:', err);
+                    })
+                    .then(function() {
+                        // Always re-enable the button, whether the
+                        // Promise resolved or rejected.
+                        if (saveBtn) {
+                            saveBtn.disabled = false;
+                        }
+                    });
             });
         }
     }
@@ -928,6 +981,7 @@
                     return;
                 }
 
+                // AcademyDistribute.autoDistribute is synchronous.
                 var result = AcademyDistribute.autoDistribute(classId, week, {
                     maxPerGroup: maxSize,
                     teamIds: teamIds
@@ -937,10 +991,7 @@
                     var data = result.data || {};
                     notify('Distributed ' + (data.totalStudents || 0) + ' students successfully.', 'success');
                     if (modal) { modal.classList.add('hidden'); }
-                    if (typeof window.AcademyEvents !== 'undefined' &&
-                        window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                        window.AcademyEvents.refreshUI();
-                    }
+                    requestRefresh();
                 } else {
                     notify(result ? result.message : 'Failed to distribute students.', 'error');
                 }
@@ -1234,17 +1285,27 @@
     // ============================================================
 
     function handleDeleteClass(classId) {
-        var result = AcademyClasses.delete(classId);
-        if (result && result.success) {
-            notify('Class deleted successfully.', 'success');
-            AcademyUI.clearSelection('class');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
-        } else {
-            notify(result ? result.message : 'Failed to delete class.', 'error');
-        }
+        AcademyClasses.delete(classId)
+            .then(function(result) {
+                if (result && result.success) {
+                    notify('Class deleted successfully.', 'success');
+
+                    // Deleting a class may invalidate any selection.
+                    // Clear the class selection; the character selection
+                    // may also be stale if the character had no other
+                    // classes, but AcademyUI handles the invalidation.
+                    AcademyUI.clearSelection('class');
+                    AcademyUI.clearSelection('student');
+
+                    requestRefresh();
+                } else {
+                    notify(result ? result.message : 'Failed to delete class.', 'error');
+                }
+            })
+            .catch(function(err) {
+                notify('Failed to delete class.', 'error');
+                console.error('[ClassTab] handleDeleteClass error:', err);
+            });
     }
 
     function handleAddStudentToClass(studentId) {
@@ -1254,29 +1315,35 @@
             return;
         }
 
-        var result = AcademyClasses.addStudent(classId, studentId);
-        if (result && result.success) {
-            notify('Student added to class.', 'success');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
-        } else {
-            notify(result ? result.message : 'Failed to add student.', 'error');
-        }
+        AcademyClasses.addStudent(classId, studentId)
+            .then(function(result) {
+                if (result && result.success) {
+                    notify('Student added to class.', 'success');
+                    requestRefresh();
+                } else {
+                    notify(result ? result.message : 'Failed to add student.', 'error');
+                }
+            })
+            .catch(function(err) {
+                notify('Failed to add student.', 'error');
+                console.error('[ClassTab] handleAddStudentToClass error:', err);
+            });
     }
 
     function handleRemoveStudentFromClass(classId, studentId) {
-        var result = AcademyClasses.removeStudent(classId, studentId);
-        if (result && result.success) {
-            notify('Student removed from class.', 'success');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
-        } else {
-            notify(result ? result.message : 'Failed to remove student.', 'error');
-        }
+        AcademyClasses.removeStudent(classId, studentId)
+            .then(function(result) {
+                if (result && result.success) {
+                    notify('Student removed from class.', 'success');
+                    requestRefresh();
+                } else {
+                    notify(result ? result.message : 'Failed to remove student.', 'error');
+                }
+            })
+            .catch(function(err) {
+                notify('Failed to remove student.', 'error');
+                console.error('[ClassTab] handleRemoveStudentFromClass error:', err);
+            });
     }
 
     function handleAddTeam(container) {
@@ -1319,10 +1386,7 @@
             notify('Team created successfully.', 'success');
             if (nameInput) { nameInput.value = ''; }
             if (numberInput) { numberInput.value = ''; }
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
+            requestRefresh();
         } else {
             notify('Failed to create team.', 'error');
         }
@@ -1339,10 +1403,7 @@
         var result = TeamCore.deleteTeam(teamId);
         if (result) {
             notify('Team deleted successfully.', 'success');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
+            requestRefresh();
         } else {
             notify('Failed to delete team.', 'error');
         }
@@ -1360,35 +1421,50 @@
         if (result) {
             notify('Member removed.', 'success');
             refreshTeamMembersModal(teamId);
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
+            requestRefresh();
         } else {
             notify('Failed to remove member.', 'error');
         }
     }
 
+    /**
+     * Auto-generate rankings for the current class and week.
+     * 
+     * NOTE: AcademyRanking.autoGenerate has signature
+     * (classId, week, options). The previous implementation in this
+     * file called it as autoGenerate(week), which failed silently
+     * with "Class ID is required".
+     */
     function handleAutoGenerateRankings() {
+        var classId = AcademyUI.getSelectedClassId();
+        if (!classId) {
+            notify('No class selected.', 'error');
+            return;
+        }
+
         var week = AcademyUI.getDisplayWeek();
 
         if (!confirm('Auto-generate rankings for week ' + week + ' from grade data?')) {
             return;
         }
 
-        if (window.AcademyRanking && typeof window.AcademyRanking.autoGenerate === 'function') {
-            var result = window.AcademyRanking.autoGenerate(week);
-            if (result && result.success) {
-                notify('Auto-generated rankings for week ' + week + '.', 'success');
-                if (typeof window.AcademyEvents !== 'undefined' &&
-                    window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                    window.AcademyEvents.refreshUI();
-                }
-            } else {
-                notify(result ? result.message : 'Failed to auto-generate rankings.', 'error');
-            }
-        } else {
+        var AcademyRanking = getAcademyRanking();
+        if (!AcademyRanking || typeof AcademyRanking.autoGenerate !== 'function') {
             notify('Ranking generation not available.', 'error');
+            return;
+        }
+
+        // autoGenerate is synchronous (mutates academy.rankings
+        // directly and returns a result object). It is not yet routed
+        // through MutationPipeline — that is a known limitation carried
+        // forward from the pre-v15 code.
+        var result = AcademyRanking.autoGenerate(classId, week);
+
+        if (result && result.success) {
+            notify('Auto-generated rankings for week ' + week + '.', 'success');
+            requestRefresh();
+        } else {
+            notify(result ? result.message : 'Failed to auto-generate rankings.', 'error');
         }
     }
 
