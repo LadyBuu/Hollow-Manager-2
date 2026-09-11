@@ -2,89 +2,56 @@
  * modules/academy/index.js - Academy Module Entry Point
  * Single entry point for all academic year functionality
  * 
- * This module consolidates:
- *   - Academy lifecycle management (mount/destroy)
- *   - Academy UI state coordination
- *   - Academy view rendering orchestration
- *   - Academy event lifecycle
- *   - Provider assembly and injection
+ * This module is responsible for:
+ *   - Registering with TabManager
+ *   - Verifying schema and dependencies at mount time
+ *   - Assembling and injecting external providers
+ *   - Delegating all rendering and event coordination to AcademyEvents
+ *   - Handling DataLoader integration
+ *   - Exposing the public Academy API
  * 
- * LIFECYCLE:
- *   TabManager registers 'academy' -> mountAcademy() ->
- *   AcademyUI.init() -> render shell -> render active sub-tab -> bind events
+ * ARCHITECTURE:
+ *   This file is the LIFECYCLE ENTRY POINT, not a render module.
+ *   All rendering, refresh, and event coordination live in
+ *   academy-events.js. This file's job is to make sure the world is
+ *   ready and then hand the container to AcademyEvents.
  * 
- * IMPORTANT:
- *   - This module is the only external entry point for academy
- *   - All academy logic lives in the sub-modules
- *   - TabManager is the single source of truth for lifecycle
- *   - No data mutations - all mutations delegate to domain cores
- *   - No direct window.data access except for the defensive academy structure guard
- *   - All HTML escaping uses DomUtils.escapeHtml()
- *   - All notifications use NotificationSystem.notify()
- *   - Assembles and injects external providers
+ *   Do not add render logic here. Do not add refresh logic here.
+ *   Do not add tab-content event binding here. If something needs to
+ *   re-render or re-bind, it goes through AcademyEvents.refreshUI().
  * 
  * CALENDAR PROVIDER READ/WRITE SPLIT:
  *   The calendar provider is a facade over two modules:
- *     - CalendarQueries owns READS (getStudentSchedule, getStudentRestDays,
- *       getSlotMetadata, findClassStart, getInstructorSchedule,
- *       getLocationSchedule).
- *     - ScheduleCore owns WRITES (setStudentSlot, removeStudentSlot,
- *       setRestDays, removeRestDays, setSlotMetadata, setInstructorTemplate,
- *       setLocationClass).
- *   The provider maps each method to the correct module. Do not mix them:
- *   ScheduleCore does NOT expose get* methods for state it does not own,
- *   and CalendarQueries does NOT expose mutating methods.
- * 
- * NOTE ON ACADEMYCORE:
- *   - AcademyCore does not exist. The Academy domain was refactored
- *   - to use AcademyDisciplines and AcademyLocations directly.
- *   - Earlier versions of this file referenced AcademyCore; those
- *   - references have been removed.
+ *     - CalendarQueries owns READS.
+ *     - ScheduleCore owns WRITES.
+ *   The provider maps each method to the correct module.
  * 
  * NOTE ON ACADEMY DATA STRUCTURE (v15+):
- *   - window.data.academy is created by database.js (getEmptyData,
- *     migrateToVersion15, normaliseDataStructure). It is part of the
- *     canonical schema, not a runtime side-effect.
- *   - Canonical shape:
- *       academy: {
- *           graduatingClasses: {},  // class entities keyed by classId
- *           grades: {},             // grades keyed by gradeId
- *           rankings: {},           // rankings keyed by rankId
- *           weeklyTeams: {}         // classId -> week -> teamId -> [charId]
- *       }
- *   - academy.classStudents no longer exists. Class membership is
- *     derived from character.classIds[].
- *   - The structure guard in mountAcademy() is DEFENSIVE ONLY. It
- *     verifies the structure is present; it does not manufacture it.
- *     If the guard fires, database.js has failed to seed the schema,
- *     which is a bug worth surfacing loudly, not silently patching.
- * 
- * EXTERNAL PROVIDERS:
- *   - CharacterQueries (for character data)
- *   - TeamQueries (for team data)
- *   - CalendarProvider (for schedule operations — reads from CalendarQueries,
- *     writes from ScheduleCore)
+ *   - window.data.academy is created by database.js.
+ *   - academy.classStudents no longer exists.
+ *   - The structure guard below is DEFENSIVE ONLY.
  * 
  * DEPENDENCIES:
- *   - window.TabManager (from tab-manager.js)
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.TeamQueries (from team-queries.js)
- *   - window.CalendarQueries (from calendar-queries.js)
- *   - window.ScheduleCore (from schedule-core.js)
- *   - window.AcademyUI (from academy-ui.js)
- *   - window.AcademyEvents (from academy-events.js)
- *   - window.AcademyClasses (from academy-classes.js)
- *   - window.AcademyQueries (from academy-queries.js)
- *   - window.AcademyGrades (from academy-grades.js)
- *   - window.AcademyGroups (from academy-groups.js)
- *   - window.AcademyRanking (from academy-ranking.js)
- *   - window.AcademyDistribute (from academy-distribute.js)
- *   - window.AcademySchedule (from academy-schedule.js)
- *   - window.AcademyDisciplines (from academy-disciplines.js)
- *   - window.AcademyLocations (from academy-locations.js)
- *   - window.DomUtils (from dom-utils.js)
- *   - window.NotificationSystem (from notification.js)
- *   - window.DataLoader (from loader.js)
+ *   - window.TabManager
+ *   - window.CharacterQueries
+ *   - window.TeamQueries
+ *   - window.CalendarQueries
+ *   - window.ScheduleCore
+ *   - window.AcademyUI
+ *   - window.AcademyEvents
+ *   - window.AcademyClasses
+ *   - window.AcademyQueries
+ *   - window.AcademyGrades
+ *   - window.AcademyGroups
+ *   - window.AcademyRanking
+ *   - window.AcademyDistribute
+ *   - window.AcademySchedule
+ *   - window.AcademyDisciplines
+ *   - window.AcademyLocations
+ *   - window.DomUtils
+ *   - window.NotificationSystem
+ *   - window.DataLoader
+ *   - window.CalendarConstants
  */
 
 (function() {
@@ -96,7 +63,7 @@
     window.__academyModuleLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // DEPENDENCY IMPORTS
     // ============================================================
 
     var TabManager = window.TabManager;
@@ -164,9 +131,6 @@
         if (!CalendarQueries || typeof CalendarQueries.getStudentRestDays !== 'function') {
             missing.push('CalendarQueries.getStudentRestDays');
         }
-        // getSlotMetadata is a READ. It lives on CalendarQueries, not
-        // ScheduleCore. See the read/write split note at the top of
-        // this file.
         if (!CalendarQueries || typeof CalendarQueries.getSlotMetadata !== 'function') {
             missing.push('CalendarQueries.getSlotMetadata');
         }
@@ -193,16 +157,9 @@
         if (!ScheduleCore || typeof ScheduleCore.removeRestDays !== 'function') {
             missing.push('ScheduleCore.removeRestDays');
         }
-        // hasConflict is a pure predicate on the ScheduleCore module.
-        // It does not read or write state — it evaluates a schedule
-        // object passed by the caller.
         if (!ScheduleCore || typeof ScheduleCore.hasConflict !== 'function') {
             missing.push('ScheduleCore.hasConflict');
         }
-        // NOTE: getSlotMetadata is deliberately NOT checked on
-        // ScheduleCore. That method does not exist there. It is
-        // exposed by CalendarQueries (checked above). Only
-        // setSlotMetadata is on ScheduleCore.
         if (!ScheduleCore || typeof ScheduleCore.setSlotMetadata !== 'function') {
             missing.push('ScheduleCore.setSlotMetadata');
         }
@@ -210,15 +167,15 @@
         if (!AcademyUI || typeof AcademyUI.init !== 'function') {
             missing.push('AcademyUI.init');
         }
-        if (!AcademyUI || typeof AcademyUI.getState !== 'function') {
-            missing.push('AcademyUI.getState');
-        }
 
         if (!AcademyEvents || typeof AcademyEvents.init !== 'function') {
             missing.push('AcademyEvents.init');
         }
         if (!AcademyEvents || typeof AcademyEvents.destroy !== 'function') {
             missing.push('AcademyEvents.destroy');
+        }
+        if (!AcademyEvents || typeof AcademyEvents.refreshUI !== 'function') {
+            missing.push('AcademyEvents.refreshUI');
         }
 
         if (!AcademyQueries || typeof AcademyQueries.getClasses !== 'function') {
@@ -232,8 +189,6 @@
             missing.push('AcademyClasses.create');
         }
 
-        // AcademyCore does not exist. Discipline and location operations
-        // live in AcademyDisciplines and AcademyLocations respectively.
         if (!AcademyDisciplines || typeof AcademyDisciplines.create !== 'function') {
             missing.push('AcademyDisciplines.create');
         }
@@ -243,9 +198,6 @@
 
         if (!AcademySchedule || typeof AcademySchedule.configure !== 'function') {
             missing.push('AcademySchedule.configure');
-        }
-        if (!AcademySchedule || typeof AcademySchedule.getStudentSchedule !== 'function') {
-            missing.push('AcademySchedule.getStudentSchedule');
         }
 
         if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
@@ -272,21 +224,6 @@
     // ACADEMY DATA STRUCTURE GUARD - DEFENSIVE ONLY
     // ============================================================
 
-    /**
-     * Verify the canonical academy data structure exists.
-     * 
-     * As of v15, window.data.academy is created by database.js:
-     *   - getEmptyData() includes it for fresh installs.
-     *   - migrateToVersion15() seeds it for existing databases.
-     *   - normaliseDataStructure() repairs it on every load.
-     * 
-     * This function is a DEFENSIVE VERIFICATION. It does not manufacture
-     * missing structures. If it finds them missing, that means
-     * database.js failed to seed the schema — a bug that should be
-     * surfaced loudly rather than silently patched over.
-     * 
-     * @returns {boolean} True if the structure is present and usable
-     */
     function ensureAcademyStructure() {
         if (!window.data || typeof window.data !== 'object') {
             return false;
@@ -295,8 +232,7 @@
         if (!window.data.academy || typeof window.data.academy !== 'object') {
             console.error(
                 '[AcademyModule] window.data.academy is missing. ' +
-                'database.js should have created it in getEmptyData() or migrateToVersion15(). ' +
-                'This indicates a schema initialisation failure.'
+                'database.js should have created it in getEmptyData() or migrateToVersion15().'
             );
             return false;
         }
@@ -304,44 +240,28 @@
         var academy = window.data.academy;
 
         if (!academy.graduatingClasses || typeof academy.graduatingClasses !== 'object') {
-            console.error(
-                '[AcademyModule] window.data.academy.graduatingClasses is missing. ' +
-                'database.js should have seeded it.'
-            );
+            console.error('[AcademyModule] academy.graduatingClasses is missing.');
             return false;
         }
         if (!academy.grades || typeof academy.grades !== 'object') {
-            console.error(
-                '[AcademyModule] window.data.academy.grades is missing. ' +
-                'database.js should have seeded it.'
-            );
+            console.error('[AcademyModule] academy.grades is missing.');
             return false;
         }
         if (!academy.rankings || typeof academy.rankings !== 'object') {
-            console.error(
-                '[AcademyModule] window.data.academy.rankings is missing. ' +
-                'database.js should have seeded it.'
-            );
+            console.error('[AcademyModule] academy.rankings is missing.');
             return false;
         }
         if (!academy.weeklyTeams || typeof academy.weeklyTeams !== 'object') {
-            console.error(
-                '[AcademyModule] window.data.academy.weeklyTeams is missing. ' +
-                'database.js should have seeded it (v15 schema).'
-            );
+            console.error('[AcademyModule] academy.weeklyTeams is missing.');
             return false;
         }
 
-        // academy.classStudents must NOT exist after v15.
-        // If it does, a stale writer is active somewhere.
         if (Object.prototype.hasOwnProperty.call(academy, 'classStudents')) {
             console.error(
-                '[AcademyModule] window.data.academy.classStudents exists. ' +
-                'This store was removed in v15 and must not be reintroduced. ' +
-                'Class membership is derived from character.classIds.'
+                '[AcademyModule] academy.classStudents exists. ' +
+                'This store was removed in v15. Class membership is derived ' +
+                'from character.classIds.'
             );
-            // Do not delete here — the load pipeline handles it. Just
-            // make the fact visible.
         }
 
         return true;
@@ -353,20 +273,11 @@
 
     var _providersInitialized = false;
 
-    /**
-     * Initialize providers and inject dependencies into Academy modules.
-     * Must be called before mounting.
-     * 
-     * See the CALENDAR PROVIDER READ/WRITE SPLIT note at the top of
-     * this file. Reads route to CalendarQueries, writes route to
-     * ScheduleCore. Do not cross the streams.
-     */
     function initProviders() {
         if (_providersInitialized) {
             return true;
         }
 
-        // ---- Character Provider ----
         var characterProvider = {
             exists: function(id) {
                 if (!id) { return false; }
@@ -390,20 +301,9 @@
             }
         };
 
-        // ---- Calendar Provider ----
-        // 
-        // READ methods → CalendarQueries
-        // WRITE methods → ScheduleCore
-        // 
-        // The provider is a facade that lets AcademySchedule and its
-        // callers treat calendar operations uniformly. It must not
-        // require ScheduleCore to expose reads it doesn't own, nor
-        // CalendarQueries to expose writes it doesn't own.
+        // Read/write split: reads to CalendarQueries, writes to ScheduleCore.
         var calendarProvider = {
-            // ============================================================
-            // READS — routed to CalendarQueries
-            // ============================================================
-
+            // ---- READS ----
             getStudentSchedule: function(studentId, week) {
                 return CalendarQueries.getStudentSchedule(studentId, week);
             },
@@ -429,10 +329,7 @@
                 return CalendarQueries.getLocationSchedule(locationId, week);
             },
 
-            // ============================================================
-            // WRITES — routed to ScheduleCore
-            // ============================================================
-
+            // ---- WRITES ----
             setStudentSlot: function(studentId, week, day, hour, disciplineId, duration, metadata) {
                 return ScheduleCore.setStudentSlot(studentId, week, day, hour, disciplineId, duration, metadata);
             },
@@ -473,20 +370,12 @@
                 return ScheduleCore.removeLocationClass(locationId, week, day, hour);
             },
 
-            // ============================================================
-            // PURE PREDICATES — routed to ScheduleCore
-            // ============================================================
-            // hasConflict evaluates a schedule object passed by the
-            // caller. It does not read or write state. Lives on
-            // ScheduleCore because that's where the conflict detection
-            // logic lives.
-
+            // ---- PURE PREDICATE ----
             hasConflict: function(schedule, day, hour, duration) {
                 return ScheduleCore.hasConflict(schedule, day, hour, duration);
             }
         };
 
-        // ---- Inject into AcademySchedule ----
         var scheduleConfigured = AcademySchedule.configure({
             calendarProvider: calendarProvider
         });
@@ -494,8 +383,7 @@
         if (!scheduleConfigured) {
             console.error(
                 '[AcademyModule] Failed to configure AcademySchedule. ' +
-                'The calendarProvider did not satisfy the required method contract. ' +
-                'Check for missing methods on ScheduleCore or CalendarQueries.'
+                'The calendarProvider did not satisfy the required method contract.'
             );
             return false;
         }
@@ -510,226 +398,6 @@
 
     var _mounted = false;
     var _container = null;
-
-    // ============================================================
-    // NOTIFICATION
-    // ============================================================
-
-    function showNotification(message, type) {
-        type = type || 'info';
-        NotificationSystem.notify(message, type);
-    }
-
-    // ============================================================
-    // RENDER
-    // ============================================================
-
-    function renderAcademy(container) {
-        if (!container) {
-            return;
-        }
-
-        var activeTab = AcademyUI.getActiveTab();
-        var displayWeek = AcademyUI.getDisplayWeek();
-
-        // Get sub-tab labels from AcademyConstants
-        var subTabs = [];
-        if (window.AcademyConstants && window.AcademyConstants.ACADEMY_SUBTABS) {
-            subTabs = window.AcademyConstants.ACADEMY_SUBTABS;
-        } else {
-            subTabs = [
-                { id: 'class', label: 'Classes' },
-                { id: 'student', label: 'Students' },
-                { id: 'faculty', label: 'Faculty' }
-            ];
-        }
-
-        var html = '';
-
-        // Sub-tab navigation
-        html += '<div class="academy-subtab-nav">';
-        for (var i = 0; i < subTabs.length; i++) {
-            var tab = subTabs[i];
-            var isActive = tab.id === activeTab;
-            html += '<button class="academy-subtab-btn' + (isActive ? ' active' : '') + '" data-tab="' + escapeAttribute(tab.id) + '">';
-            html += escapeHtml(tab.label);
-            html += '</button>';
-        }
-        html += '</div>';
-
-        // Week selector
-        html += '<div class="academy-week-selector">';
-        html += '<label>Week:</label>';
-        html += '<input type="number" class="academy-week-input" value="' + displayWeek + '" min="' + CalendarConstants.MIN_WEEK + '" max="' + CalendarConstants.MAX_WEEK + '">';
-        html += '<button class="academy-week-apply small secondary">Apply</button>';
-        html += '</div>';
-
-        // Content
-        html += '<div id="academy-subtab-content" class="academy-subtab-content"></div>';
-
-        container.innerHTML = html;
-
-        // Initial render of content
-        refreshUI();
-    }
-
-    function refreshUI() {
-        if (!_container) {
-            return;
-        }
-
-        var activeTab = AcademyUI.getActiveTab();
-        var selectedClassId = AcademyUI.getSelectedClassId();
-        var selectedStudentId = AcademyUI.getSelectedStudentId();
-        var selectedInstructorId = AcademyUI.getSelectedInstructorId();
-        var displayWeek = AcademyUI.getDisplayWeek();
-
-        var tabContent = _container.querySelector('#academy-subtab-content');
-        if (!tabContent) {
-            return;
-        }
-
-        var html = '';
-
-        // Use the appropriate tab renderer
-        switch (activeTab) {
-            case 'class':
-                if (window.ClassTab && typeof window.ClassTab.render === 'function') {
-                    html = window.ClassTab.render({
-                        selectedClassId: selectedClassId,
-                        displayWeek: displayWeek
-                    });
-                } else {
-                    html = '<p class="empty-state">Class tab not available.</p>';
-                }
-                break;
-
-            case 'student':
-                if (window.StudentTab && typeof window.StudentTab.render === 'function') {
-                    html = window.StudentTab.render({
-                        selectedClassId: selectedClassId,
-                        selectedStudentId: selectedStudentId,
-                        displayWeek: displayWeek
-                    });
-                } else {
-                    html = '<p class="empty-state">Student tab not available.</p>';
-                }
-                break;
-
-            case 'faculty':
-                if (window.FacultyTab && typeof window.FacultyTab.render === 'function') {
-                    html = window.FacultyTab.render({
-                        selectedClassId: selectedClassId,
-                        selectedInstructorId: selectedInstructorId,
-                        displayWeek: displayWeek
-                    });
-                } else {
-                    html = '<p class="empty-state">Faculty tab not available.</p>';
-                }
-                break;
-
-            default:
-                html = '<p class="empty-state">Unknown tab: ' + escapeHtml(activeTab) + '</p>';
-        }
-
-        tabContent.innerHTML = html;
-
-        // Bind events for the new content
-        bindTabContentEvents(tabContent);
-    }
-
-    // ============================================================
-    // HTML ESCAPING
-    // ============================================================
-
-    function escapeHtml(value) {
-        return DomUtils.escapeHtml(value);
-    }
-
-    function escapeAttribute(value) {
-        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
-            return DomUtils.escapeAttribute(value);
-        }
-        return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
-
-    // ============================================================
-    // BIND TAB CONTENT EVENTS
-    // ============================================================
-
-    function bindTabContentEvents(container) {
-        if (!container) {
-            return;
-        }
-
-        // ---- Sub-tab switching ----
-        var tabBtns = container.querySelectorAll('.academy-subtab-btn');
-        for (var i = 0; i < tabBtns.length; i++) {
-            var btn = tabBtns[i];
-            btn.addEventListener('click', function() {
-                var tab = this.dataset.tab;
-                if (tab) {
-                    handleTabSwitch(tab);
-                }
-            });
-        }
-
-        // ---- Week selector ----
-        var weekApply = container.querySelector('.academy-week-apply');
-        var weekInput = container.querySelector('.academy-week-input');
-        if (weekApply && weekInput) {
-            weekApply.addEventListener('click', function() {
-                var week = parseInt(weekInput.value, 10);
-                if (!isNaN(week) && week >= CalendarConstants.MIN_WEEK && week <= CalendarConstants.MAX_WEEK) {
-                    AcademyUI.setDisplayWeek(week);
-                    refreshUI();
-                } else {
-                    showNotification('Please enter a valid week (' + CalendarConstants.MIN_WEEK + '-' + CalendarConstants.MAX_WEEK + ').', 'error');
-                }
-            });
-            weekInput.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter') {
-                    weekApply.click();
-                }
-            });
-        }
-
-        // ---- Delegate to tab-specific event binding ----
-        var activeTab = AcademyUI.getActiveTab();
-
-        switch (activeTab) {
-            case 'class':
-                if (window.ClassTab && typeof window.ClassTab.bindEvents === 'function') {
-                    window.ClassTab.bindEvents(container);
-                }
-                break;
-
-            case 'student':
-                if (window.StudentTab && typeof window.StudentTab.bindEvents === 'function') {
-                    window.StudentTab.bindEvents(container);
-                }
-                break;
-
-            case 'faculty':
-                if (window.FacultyTab && typeof window.FacultyTab.bindEvents === 'function') {
-                    window.FacultyTab.bindEvents(container);
-                }
-                break;
-        }
-    }
-
-    // ============================================================
-    // HANDLERS
-    // ============================================================
-
-    function handleTabSwitch(tab) {
-        if (AcademyUI.setActiveTab(tab)) {
-            refreshUI();
-        }
-    }
 
     // ============================================================
     // MOUNT / UNMOUNT
@@ -750,9 +418,6 @@
             return;
         }
 
-        // Defensive: verify the academy data structure exists.
-        // As of v15, database.js creates it. If this fails, something
-        // upstream is broken and we should say so explicitly.
         if (!ensureAcademyStructure()) {
             container.innerHTML = '<p class="empty-state">Academy data structure is missing. Please refresh the page.</p>';
             return;
@@ -775,17 +440,9 @@
         _container = container;
         _mounted = true;
 
-        // Initialize UI state
-        AcademyUI.init();
-
-        // Render the container
-        renderAcademy(container);
-
-        // Bind top-level events
-        bindTopLevelEvents(container);
-
-        // Bind tab content events
-        bindTabContentEvents(container.querySelector('#academy-subtab-content'));
+        // Hand the container to AcademyEvents. From this point, all
+        // rendering and refresh goes through AcademyEvents.
+        AcademyEvents.init(container);
 
         dispatchReady();
     }
@@ -808,37 +465,7 @@
     }
 
     // ============================================================
-    // BIND TOP LEVEL EVENTS
-    // ============================================================
-
-    function bindTopLevelEvents(container) {
-        if (!container) {
-            return;
-        }
-
-        // ---- State change listeners ----
-        document.removeEventListener('academy:subtabchange', handleSubTabChange);
-        document.addEventListener('academy:subtabchange', handleSubTabChange);
-
-        document.removeEventListener('academy:refresh', handleRefresh);
-        document.addEventListener('academy:refresh', handleRefresh);
-    }
-
-    function handleSubTabChange(e) {
-        var subTab = e.detail && e.detail.subTab;
-        if (subTab) {
-            AcademyUI.setActiveTab(subTab);
-            refreshUI();
-        }
-    }
-
-    function handleRefresh() {
-        refreshUI();
-        showNotification('Refreshed', 'info');
-    }
-
-    // ============================================================
-    // DISPATCH EVENTS
+    // EVENTS
     // ============================================================
 
     function dispatchReady() {
@@ -915,10 +542,11 @@
         mount: mountAcademy,
         unmount: unmountAcademy,
 
-        // Refresh
+        // Refresh — delegated to AcademyEvents, which is the
+        // authoritative refresher.
         refresh: function() {
-            if (_container) {
-                refreshUI();
+            if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
+                AcademyEvents.refreshUI();
             }
         },
 
@@ -930,30 +558,42 @@
         // Selections
         selectClass: function(classId) {
             AcademyUI.selectClass(classId);
-            refreshUI();
+            if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
+                AcademyEvents.refreshUI();
+            }
         },
         selectStudent: function(studentId) {
             AcademyUI.selectStudent(studentId);
-            refreshUI();
+            if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
+                AcademyEvents.refreshUI();
+            }
         },
         selectInstructor: function(instructorId) {
             AcademyUI.selectInstructor(instructorId);
-            refreshUI();
+            if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
+                AcademyEvents.refreshUI();
+            }
         },
         switchSubTab: function(subTab) {
             if (AcademyUI.setActiveTab(subTab)) {
-                refreshUI();
+                if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
+                    AcademyEvents.refreshUI();
+                }
             }
         },
         clearSelections: function() {
             AcademyUI.clearSelections();
-            refreshUI();
+            if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
+                AcademyEvents.refreshUI();
+            }
         },
         setWeek: function(week) {
             var num = parseInt(week, 10);
             if (!isNaN(num) && num >= 1) {
                 AcademyUI.setDisplayWeek(num);
-                refreshUI();
+                if (AcademyEvents && typeof AcademyEvents.refreshUI === 'function') {
+                    AcademyEvents.refreshUI();
+                }
             }
         },
 
@@ -962,7 +602,7 @@
             return _mounted;
         },
 
-        // Module references (for advanced use)
+        // Module references
         AcademyClasses: AcademyClasses,
         AcademyQueries: AcademyQueries,
         AcademyGrades: AcademyGrades,
