@@ -59,7 +59,7 @@
  * - Version 11: Added statsConfig
  * - Version 12: Added personality and specialMoves to characters
  * - Version 13: Added attraction and sexuality to characters
- * - Version 14: Added hp, mp, weapons to characters
+ * - Version 14: Added hp, mp, weapons, combatNotes to characters
  */
 
 (function() {
@@ -304,9 +304,6 @@
                     _dbOpenPromise = null;
 
                     // ---- RECOVERY: Handle version mismatch ----
-                    // If the stored database is newer than DB_VERSION, we can't
-                    // open it at a lower version. The safest recovery is to delete
-                    // the local database and recreate it fresh.
                     if (error && error.name === 'VersionError' && !_recoveryAttempted) {
                         _recoveryAttempted = true;
 
@@ -321,7 +318,6 @@
 
                         deleteDatabase()
                             .then(function() {
-                                // Reset state and retry once
                                 _dbOpenPromise = null;
                                 _dbStatus = 'uninitialized';
                                 console.log('[Database] Recreating database with version ' + DB_VERSION + '...');
@@ -350,7 +346,6 @@
                         return;
                     }
 
-                    // ---- Recovery already attempted, or non-VersionError ----
                     if (error && error.name === 'VersionError' && _recoveryAttempted) {
                         console.error(
                             '[Database] Version mismatch persists after recovery attempt. ' +
@@ -375,7 +370,7 @@
                     _indexedDB = event.target.result;
                     _dbOpenPromise = null;
                     _dbStatus = 'ready';
-                    _recoveryAttempted = false; // Reset recovery flag on success
+                    _recoveryAttempted = false;
 
                     _indexedDB.onversionchange = function() {
                         if (_indexedDB) {
@@ -725,6 +720,11 @@
                 char.mp = 999;
             }
 
+            // Combat notes — string, default ''
+            if (typeof char.combatNotes !== 'string') {
+                char.combatNotes = '';
+            }
+
             // Weapons — array of { id, name, type, notes }
             if (!Array.isArray(char.weapons)) {
                 char.weapons = [];
@@ -799,13 +799,17 @@
                 repaired = true;
             }
 
-            // v14 — HP / MP / weapons
+            // v14 — HP / MP / combatNotes / weapons
             if (typeof char.hp !== 'number' || isNaN(char.hp) || char.hp < 0) {
                 char.hp = 0;
                 repaired = true;
             }
             if (typeof char.mp !== 'number' || isNaN(char.mp) || char.mp < 0) {
                 char.mp = 0;
+                repaired = true;
+            }
+            if (typeof char.combatNotes !== 'string') {
+                char.combatNotes = '';
                 repaired = true;
             }
             if (!Array.isArray(char.weapons)) {
@@ -1208,7 +1212,7 @@
         getDatabaseStatus: getDatabaseStatus,
         isDatabaseReady: isDatabaseReady,
         getLoadError: getLoadError,
-        deleteDatabase: deleteDatabase  // Exposed for manual recovery/debugging
+        deleteDatabase: deleteDatabase
     };
 
     window.loadData = loadData;
