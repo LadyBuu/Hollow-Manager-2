@@ -9,6 +9,7 @@
  *   - Magical section rendering delegates to CharacterStatsView
  *   - Physical stats, HP, MP, weapons rendered inline
  *   - Combat Notes (char.combatNotes) is SEPARATE from Notes tab (char.notes)
+ *   - Social tab rendering delegates to CharacterViews.renderCharacterSocial
  */
 
 (function() {
@@ -30,6 +31,7 @@
     function getMagicConstants() { return window.MagicConstants || null; }
     function getCharacterStats() { return window.CharacterStats || null; }
     function getCharacterStatsView() { return window.CharacterStatsView || null; }
+    function getCharacterViews() { return window.CharacterViews || null; }
     function getAcademyQueries() { return window.AcademyQueries || null; }
     function getFormUtils() { return window.FormUtils || null; }
     function getDomUtils() { return window.DomUtils || null; }
@@ -413,6 +415,7 @@
             applyDeceasedState(false);
         }
 
+        // Combat tab — delegate to CharacterStatsView
         var CharacterStatsView = getCharacterStatsView();
         if (CharacterStatsView) {
             if (char) {
@@ -438,6 +441,16 @@
                 if (typeof CharacterStatsView.renderMovesSection === 'function') {
                     CharacterStatsView.renderMovesSection(null);
                 }
+            }
+        }
+
+        // Social tab — delegate to CharacterViews
+        var CharacterViews = getCharacterViews();
+        if (CharacterViews && typeof CharacterViews.renderCharacterSocial === 'function') {
+            try {
+                CharacterViews.renderCharacterSocial(char);
+            } catch (e) {
+                console.warn('[CharacterForm] renderCharacterSocial failed:', e);
             }
         }
 
@@ -988,7 +1001,19 @@
 
         return `
             <div class="tab-panel" data-tab="social" style="display:${active};">
-                <div id="social-view" style="margin-top:8px;"></div>
+
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:6px;">
+                    <label style="font-size:0.8rem;color:var(--accent);font-weight:600;">Relationships</label>
+                    <div style="display:flex;gap:6px;">
+                        <button type="button" id="view-char-social-graph" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">◊ View Network</button>
+                        <button type="button" id="add-char-relationship-btn" class="small primary" style="font-size:0.65rem;padding:3px 10px;">+ Add Relationship</button>
+                    </div>
+                </div>
+
+                <div id="character-social-view">
+                    <p class="empty-state" style="padding:8px;font-size:0.8rem;">No relationships recorded.</p>
+                </div>
+
             </div>
         `;
     }
@@ -1109,7 +1134,7 @@
             }
         }
 
-        // Combat Tab - Stats (inputs already rendered with values; keeping for consistency)
+        // Combat Tab - Stats
         var statKeys = getStatKeys();
         if (char.stats) {
             statKeys.forEach(function(key) {
@@ -1132,10 +1157,10 @@
             });
         }
 
-        // Combat Tab - Combat Notes (SEPARATE from Notes tab)
+        // Combat Tab - Combat Notes
         FormUtils.setField('char-combat-notes', char.combatNotes || '');
 
-        // Notes Tab - general notes
+        // Notes Tab
         FormUtils.setField('char-notes-tab', char.notes || '');
     }
 
@@ -1308,7 +1333,7 @@
             // Combat tab - Weapons
             weapons: collectWeapons(form),
 
-            // Combat tab - Combat notes (separate from general notes)
+            // Combat tab - Combat notes
             combatNotes: FormUtils.getField('char-combat-notes') || '',
 
             // Notes tab - general notes
