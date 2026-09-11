@@ -7,6 +7,8 @@
  *   - getStudentViewModel - Student detail with grades, ranking, schedule
  *   - getInstructorViewModel - Instructor detail with schedule, groups
  *   - getClassListViewModel - Class list with student and team counts
+ *   - getRankingViewModel - Ordered ranking list for a class and week
+ *   - getLocationViewModel - Location detail with schedule
  * 
  * IMPORTANT:
  *   - Projection builder, not a query registry
@@ -16,6 +18,16 @@
  *   - Never mutates data
  *   - No UI dependencies
  *   - No passthrough methods
+ * 
+ * CLASS MEMBERSHIP MODEL (v15+):
+ *   - Class rosters are DERIVED from character.classIds[], not read from
+ *     a separate roster store. This module obtains rosters exclusively
+ *     through AcademyQueries.getClassStudents / getClassStudentIds,
+ *     which perform that derivation.
+ *   - There is no academy.classStudents store. It was removed in v15.
+ *   - The aggregator does not reach past AcademyQueries to construct
+ *     rosters itself. If AcademyQueries is unavailable, roster reads
+ *     return empty arrays rather than silently reading a stale store.
  * 
  * DEPENDENCIES:
  *   - window.AcademyQueries (from shared/queries/academy-queries.js) - MANDATORY
@@ -29,6 +41,7 @@
  *   var vm = AcademyAggregator.getClassViewModel('class_123', { week: 5 });
  *   var list = AcademyAggregator.getClassListViewModel({ week: 5 });
  *   var student = AcademyAggregator.getStudentViewModel('char_456', { week: 5 });
+ *   var rankings = AcademyAggregator.getRankingViewModel('class_123', 5);
  */
 
 (function() {
@@ -213,6 +226,9 @@
      * Get a complete view model for a class.
      * Combines class data with students, teams, and rankings.
      * 
+     * The student list is DERIVED through AcademyQueries.getClassStudents,
+     * which reads character.classIds. There is no roster store involved.
+     * 
      * @param {string} classId - Class ID
      * @param {object} options - Options
      * @param {number} options.week - Week number (default: current)
@@ -252,6 +268,7 @@
         };
 
         // ---- Students ----
+        // Roster is derived from character.classIds via AcademyQueries.
         if (includeStudents) {
             var studentIds = AcademyQueries.getClassStudents(classId);
             var students = [];
@@ -451,8 +468,9 @@
         }
 
         // ---- Ranking ----
+        // Iterate the student's classes (which are derived from
+        // character.classIds) and take the first ranking that matches.
         if (includeRanking) {
-            // Find which class this student belongs to
             var studentClasses = AcademyQueries.getCharacterClasses(student);
             var ranking = null;
             var classRanking = null;
@@ -597,8 +615,7 @@
 
         // ---- Schedule ----
         if (includeSchedule) {
-            // Get instructor schedule via CalendarQueries
-            var schedule = CalendarQueries.getInstructorSchedule ? 
+            var schedule = CalendarQueries.getInstructorSchedule ?
                 CalendarQueries.getInstructorSchedule(instructorId, week) : {};
 
             var scheduleEntries = [];
@@ -655,7 +672,6 @@
 
         // ---- Auto-Groups ----
         if (includeGroups) {
-            // Try to get auto-groups from AcademyGroups if available
             var groups = [];
             if (window.AcademyGroups && typeof window.AcademyGroups.getGroupsByInstructor === 'function') {
                 var groupData = window.AcademyGroups.getGroupsByInstructor(instructorId);
@@ -689,6 +705,9 @@
     /**
      * Get a view model for a list of classes.
      * Collection-level projection with student and team counts.
+     * 
+     * Student counts are derived through AcademyQueries.getClassStudents,
+     * which reads character.classIds.
      * 
      * @param {object} options - Options
      * @param {string} options.status - Status filter ('active', 'archived', 'graduated')
@@ -788,6 +807,154 @@
     }
 
     // ============================================================
+    // RANKING VIEW MODEL
+    // ============================================================
+
+    /**
+     * Get an ordered ranking view model for a class and week.
+     * 
+     * @param {string} classId - Class ID
+     * @param {number} week - Week number (default: current)
+     * @param {object} options - Options
+     * @param {boolean} options.includeStudentNames - Resolve display names (default: true)
+     * @returns {object|null} Ranking view model or null
+     */
+    function getRankingViewModel(classId, week, options) {
+        if (!classId) {
+            return null;
+        }
+
+        options = options || {};
+        var includeStudentNames = options.includeStudentNames !== false;
+        var weekNum = week || getCurrentWeek();
+
+        var cls = AcademyQueries.getClass(classId);
+        if (!cls) {
+            return null;
+        }
+
+        var rawRankings = AcademyQueries.calculateClassRanking(classId, weekNum);
+
+        var entries = rawRankings.map(function(entry) {
+            return {
+                studentId: entry.studentId,
+                studentName: includeStudentNames
+                    ? (entry.name || getCharacterDisplayName(entry.studentId))
+                    : null,
+                rank: entry.rank,
+                average: entry.average,
+                gradeCount: entry.gradeCount || 0
+            };
+        });
+
+        // Sort by rank ascending (1 is best)
+        entries.sort(function(a, b) {
+            return (a.rank || 999) - (b.rank || 999);
+        });
+
+        return {
+            classId: cls.id,
+            className: cls.name,
+            week: weekNum,
+            count: entries.length,
+            entries: entries
+        };
+    }
+
+    // ============================================================
+    // LOCATION VIEW MODEL
+    // ============================================================
+
+    /**
+     * Get a view model for a location with its schedule for a week.
+     * 
+     * @param {string} locationId - Location ID
+     * @param {number} week - Week number (default: current)
+     * @param {object} options - Options
+     * @param {boolean} options.includeSchedule - Include schedule (default: true)
+     * @returns {object|null} Location view model or null
+     */
+    function getLocationViewModel(locationId, week, options) {
+        if (!locationId) {
+            return null;
+        }
+
+        options = options || {};
+        var includeSchedule = options.includeSchedule !== false;
+        var weekNum = week || getCurrentWeek();
+
+        var loc = AcademyQueries.getLocation(locationId);
+        if (!loc) {
+            return null;
+        }
+
+        var viewModel = {
+            id: loc.id,
+            name: loc.name,
+            type: loc.type || 'other',
+            capacity: loc.capacity || null,
+            week: weekNum
+        };
+
+        if (includeSchedule) {
+            var rawSchedule = CalendarQueries.getLocationSchedule ?
+                CalendarQueries.getLocationSchedule(locationId, weekNum) : {};
+
+            var scheduleEntries = [];
+            for (var day in rawSchedule) {
+                if (!Object.prototype.hasOwnProperty.call(rawSchedule, day)) {
+                    continue;
+                }
+                var dayNum = parseInt(day, 10);
+                if (isNaN(dayNum)) {
+                    continue;
+                }
+                var daySchedule = rawSchedule[day];
+                if (!daySchedule || typeof daySchedule !== 'object') {
+                    continue;
+                }
+
+                for (var hour in daySchedule) {
+                    if (!Object.prototype.hasOwnProperty.call(daySchedule, hour)) {
+                        continue;
+                    }
+                    var hourNum = parseInt(hour, 10);
+                    if (isNaN(hourNum)) {
+                        continue;
+                    }
+                    var disciplineId = daySchedule[hour];
+                    if (!disciplineId) {
+                        continue;
+                    }
+
+                    var discipline = AcademyQueries.getDiscipline
+                        ? AcademyQueries.getDiscipline(disciplineId)
+                        : null;
+
+                    scheduleEntries.push({
+                        day: dayNum,
+                        hour: hourNum,
+                        disciplineId: disciplineId,
+                        disciplineName: discipline ? discipline.name : 'Unknown'
+                    });
+                }
+            }
+
+            scheduleEntries.sort(function(a, b) {
+                if (a.day !== b.day) {
+                    return a.day - b.day;
+                }
+                return a.hour - b.hour;
+            });
+
+            viewModel.schedule = scheduleEntries;
+            viewModel.scheduleCount = scheduleEntries.length;
+        }
+
+        return viewModel;
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -796,7 +963,9 @@
         getClassViewModel: getClassViewModel,
         getStudentViewModel: getStudentViewModel,
         getInstructorViewModel: getInstructorViewModel,
-        getClassListViewModel: getClassListViewModel
+        getClassListViewModel: getClassListViewModel,
+        getRankingViewModel: getRankingViewModel,
+        getLocationViewModel: getLocationViewModel
     };
 
 })();
