@@ -7,7 +7,8 @@
  *   - RENDER ONLY - no event binding (handled by CharacterEvents)
  *   - All field collection uses FormUtils.getField(id) - NOT getFormData()
  *   - Magical section rendering delegates to CharacterStatsView
- *   - Physical stats, HP, MP, weapons, notes rendered inline
+ *   - Physical stats, HP, MP, weapons rendered inline
+ *   - Combat Notes (char.combatNotes) is SEPARATE from Notes tab (char.notes)
  */
 
 (function() {
@@ -236,7 +237,6 @@
         row.className = 'career-status-entry';
         row.style.cssText = 'display:grid;grid-template-columns:1.2fr 0.7fr 0.7fr 1.2fr auto;gap:6px;align-items:center;margin-bottom:6px;';
 
-        // Status select
         var select = document.createElement('select');
         select.className = 'career-status-select';
         select.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
@@ -253,7 +253,6 @@
             select.appendChild(opt);
         }
 
-        // Start year
         var startInput = document.createElement('input');
         startInput.type = 'number';
         startInput.className = 'career-start-year';
@@ -261,7 +260,6 @@
         startInput.value = entry.startYear !== undefined && entry.startYear !== null ? String(entry.startYear) : '';
         startInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
 
-        // End year
         var endInput = document.createElement('input');
         endInput.type = 'number';
         endInput.className = 'career-end-year';
@@ -269,7 +267,6 @@
         endInput.value = entry.endYear !== undefined && entry.endYear !== null ? String(entry.endYear) : '';
         endInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
 
-        // Title
         var titleInput = document.createElement('input');
         titleInput.type = 'text';
         titleInput.className = 'career-title';
@@ -277,7 +274,6 @@
         titleInput.value = entry.title ? String(entry.title) : '';
         titleInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
 
-        // Remove button
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'remove-career-entry small danger';
@@ -309,7 +305,6 @@
             row.dataset.weaponId = weapon.id;
         }
 
-        // Name
         var nameInput = document.createElement('input');
         nameInput.type = 'text';
         nameInput.className = 'weapon-name';
@@ -317,7 +312,6 @@
         nameInput.value = weapon.name || '';
         nameInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
 
-        // Type select
         var typeSelect = document.createElement('select');
         typeSelect.className = 'weapon-type';
         typeSelect.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
@@ -332,7 +326,6 @@
             typeSelect.appendChild(opt);
         }
 
-        // Notes
         var notesInput = document.createElement('input');
         notesInput.type = 'text';
         notesInput.className = 'weapon-notes';
@@ -340,7 +333,6 @@
         notesInput.value = weapon.notes || '';
         notesInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
 
-        // Remove button
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'remove-weapon small danger';
@@ -421,7 +413,6 @@
             applyDeceasedState(false);
         }
 
-        // Render magical section via CharacterStatsView
         var CharacterStatsView = getCharacterStatsView();
         if (CharacterStatsView) {
             if (char) {
@@ -887,7 +878,7 @@
 
                 <div class="form-group" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border-soft);">
                     <label style="font-size:0.75rem;color:var(--accent);font-weight:600;display:block;margin-bottom:6px;">Combat Notes</label>
-                    <textarea id="char-notes" rows="4" placeholder="Combat-specific notes, tactics, observations..." style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;resize:vertical;">${escapeHtml(c.notes || '')}</textarea>
+                    <textarea id="char-combat-notes" rows="4" placeholder="Combat-specific notes, tactics, observations..." style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;resize:vertical;">${escapeHtml(c.combatNotes || '')}</textarea>
                 </div>
 
             </div>
@@ -903,14 +894,12 @@
         var statKeys = getStatKeys();
         var statDefinitions = getStatDefinitions();
 
-        // Build stat inputs with live modifier display
         var statInputs = '';
         statKeys.forEach(function(key) {
             var definition = statDefinitions[key] || {};
             var abbreviation = definition.abbreviation || key.toUpperCase();
             var value = stats[key] !== undefined ? stats[key] : getStatDefault();
 
-            // Compute modifier
             var modifier = Math.floor((value - 10) / 2);
             var modifierDisplay = (modifier >= 0 ? '+' : '') + modifier;
             var modColor = modifier > 0 ? 'var(--accent)' : (modifier < 0 ? 'var(--danger)' : 'var(--text-dim)');
@@ -924,7 +913,6 @@
             `;
         });
 
-        // Class options for the override dropdown
         var classOptions = '<option value="">— Derived —</option>';
         var physicalClasses = getPhysicalClasses();
         physicalClasses.forEach(function(cls) {
@@ -1121,7 +1109,7 @@
             }
         }
 
-        // Combat Tab - Stats (already set from HTML but ensure consistent)
+        // Combat Tab - Stats (inputs already rendered with values; keeping for consistency)
         var statKeys = getStatKeys();
         if (char.stats) {
             statKeys.forEach(function(key) {
@@ -1144,17 +1132,17 @@
             });
         }
 
-        // Combat Tab - Notes (also populate Notes tab textarea)
-        FormUtils.setField('char-notes-tab', char.notes);
+        // Combat Tab - Combat Notes (SEPARATE from Notes tab)
+        FormUtils.setField('char-combat-notes', char.combatNotes || '');
+
+        // Notes Tab - general notes
+        FormUtils.setField('char-notes-tab', char.notes || '');
     }
 
     // ============================================================
     // FORM DATA COLLECTION
     // ============================================================
 
-    /**
-     * Collect career status entries from the DOM, sorted chronologically.
-     */
     function collectCareerStatus(form) {
         var rows = form.querySelectorAll('#career-status-container .career-status-entry');
         var entries = [];
@@ -1195,9 +1183,6 @@
         return entries;
     }
 
-    /**
-     * Collect weapons from the DOM.
-     */
     function collectWeapons(form) {
         var rows = form.querySelectorAll('#weapons-container .weapon-entry');
         var weapons = [];
@@ -1209,10 +1194,10 @@
             var notesEl = row.querySelector('.weapon-notes');
 
             var name = nameEl ? String(nameEl.value || '').trim() : '';
-            if (!name) { continue; }  // skip empty weapons
+            if (!name) { continue; }
 
             weapons.push({
-                id: row.dataset.weaponId || undefined,  // undefined → CRUD will generate
+                id: row.dataset.weaponId || undefined,
                 name: name,
                 type: typeEl ? String(typeEl.value || '').trim() : getDefaultWeaponType(),
                 notes: notesEl ? String(notesEl.value || '').trim() : ''
@@ -1323,8 +1308,11 @@
             // Combat tab - Weapons
             weapons: collectWeapons(form),
 
-            // Combat tab - Notes (also saved to char.notes)
-            notes: FormUtils.getField('char-notes-tab') || FormUtils.getField('char-notes') || '',
+            // Combat tab - Combat notes (separate from general notes)
+            combatNotes: FormUtils.getField('char-combat-notes') || '',
+
+            // Notes tab - general notes
+            notes: FormUtils.getField('char-notes-tab') || '',
 
             // Personality tab
             personality: {
@@ -1347,7 +1335,7 @@
             dto.stats[key] = !isNaN(value) ? Math.max(statMin, Math.min(statMax, value)) : statDefault;
         });
 
-        // Magic — collect via CharacterStatsView
+        // Magic — collected via CharacterStatsView
         var CharacterStatsView = getCharacterStatsView();
         if (CharacterStatsView && typeof CharacterStatsView.collectMagicalFields === 'function') {
             dto.magic = CharacterStatsView.collectMagicalFields();
