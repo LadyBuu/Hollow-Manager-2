@@ -20,28 +20,35 @@
  *   - Uses AcademyQueries for read-only access
  *   - All HTML escaping uses DomUtils.escapeHtml()
  *   - All notifications use NotificationSystem.notify()
+ *   - All modals route through Modal.showModal / Modal.hideModal
+ * 
+ * MODAL VISIBILITY:
+ *   Modals in this file are shown and hidden through the Modal module.
+ *   The three-layer visibility contract is:
+ *     1. `hidden` class removed (it has `display: none !important`)
+ *     2. `visible` class added (it has `display: flex`)
+ *     3. `style.display = 'flex'` set inline
+ *   Modal.showModal does all three atomically. Modal.hideModal reverses
+ *   them. Do not manipulate modal classes or display directly; it's how
+ *   half-visible modals happen.
  * 
  * PROMISE CONTRACT:
  *   - AcademyDisciplines.create / update / delete return PLAIN OBJECTS
- *     (not Promises). They follow the candidate-based pattern and are
- *     synchronous from the caller's perspective.
+ *     (not Promises).
  *   - AcademyLocations.create / update / delete return PLAIN OBJECTS
- *     (not Promises). Same.
+ *     (not Promises).
  *   - AcademySchedule schedule reads are synchronous.
  *   - ScheduleCore writes are synchronous (return result objects).
  * 
  * KNOWN STUBS:
- *   The following handlers are currently stubs and show an informational
- *   notification instead of performing their intended operation. They
- *   will be wired to AcademySchedule / ScheduleCore when the schedule
- *   UI is properly implemented:
+ *   The following handlers are stubs and show an informational
+ *   notification instead of performing their intended operation:
  *     - handleAddSchedule
  *     - handleRemoveSchedule
  *     - handleAddBlock
  *     - handleRemoveBlock
- *     - location class assignment (bindLocationModalEvents)
- *   These are NOT v15 data-model regressions. They were stubs before the
- *   v15 pass and remain stubs after it.
+ *     - location class assignment
+ *   These are NOT v15 data-model regressions.
  * 
  * DEPENDENCIES:
  *   - window.AcademyUI (from academy-ui.js) - MANDATORY
@@ -74,8 +81,6 @@
     // ============================================================
     // DEPENDENCY IMPORTS - DIRECT (no lazy loading for these)
     // ============================================================
-    // AcademyDisciplines and AcademyLocations load before this file
-    // in the current script order. They are captured directly.
 
     var AcademyUI = window.AcademyUI;
     var AcademyAggregator = window.AcademyAggregator;
@@ -94,8 +99,6 @@
     // ============================================================
     // DEPENDENCY RESOLUTION - LAZY (defensive)
     // ============================================================
-    // Accessors for modules that could conceivably load after this
-    // file if script order is ever changed. Cheap insurance.
 
     function getAcademyDisciplines() { return window.AcademyDisciplines || null; }
     function getAcademyLocations() { return window.AcademyLocations || null; }
@@ -126,7 +129,6 @@
             missing.push('AcademyAggregator.getInstructorViewModel');
         }
 
-        // AcademyDisciplines replaces AcademyCore.createDiscipline etc.
         if (!AcademyDisciplines || typeof AcademyDisciplines.create !== 'function') {
             missing.push('AcademyDisciplines.create');
         }
@@ -137,7 +139,6 @@
             missing.push('AcademyDisciplines.delete');
         }
 
-        // AcademyLocations replaces AcademyCore.createLocation etc.
         if (!AcademyLocations || typeof AcademyLocations.create !== 'function') {
             missing.push('AcademyLocations.create');
         }
@@ -246,8 +247,8 @@
             missing.push('DomUtils.escapeHtml');
         }
 
-        if (!Modal || typeof Modal.createModal !== 'function') {
-            missing.push('Modal.createModal');
+        if (!Modal || typeof Modal.showModal !== 'function' || typeof Modal.hideModal !== 'function') {
+            missing.push('Modal.showModal / Modal.hideModal');
         }
 
         if (missing.length > 0) {
@@ -261,15 +262,49 @@
     checkDependencies();
 
     // ============================================================
+    // MODAL HELPERS
+    // ============================================================
+    // 
+    // All modal show/hide in this file routes through these two helpers.
+    // They use Modal.showModal / Modal.hideModal when available, and
+    // fall back to the three-step manual sequence when Modal isn't
+    // loaded. The fallback replicates exactly what Modal.showModal does
+    // internally, so the CSS state stays consistent either way.
+
+    function showModal(modal) {
+        if (!modal) { return; }
+
+        if (Modal && typeof Modal.showModal === 'function') {
+            Modal.showModal(modal);
+            return;
+        }
+
+        // Fallback: three-step manual show.
+        modal.classList.remove('hidden');
+        modal.classList.add('visible');
+        modal.style.display = 'flex';
+    }
+
+    function hideModal(modal) {
+        if (!modal) { return; }
+
+        if (Modal && typeof Modal.hideModal === 'function') {
+            Modal.hideModal(modal);
+            return;
+        }
+
+        // Fallback: three-step manual hide.
+        modal.classList.add('hidden');
+        modal.classList.remove('visible');
+        modal.style.display = 'none';
+    }
+
+    // ============================================================
     // REFRESH HELPER
     // ============================================================
 
     var _currentContainer = null;
 
-    /**
-     * Ask the Academy shell to re-render the current sub-tab.
-     * Falls back to a local re-render if the shell isn't available.
-     */
     function requestRefresh() {
         if (window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
             window.AcademyEvents.refreshUI();
@@ -547,7 +582,6 @@
         html += '</thead>';
         html += '<tbody>';
 
-        // Build lookup
         var scheduleLookup = {};
         for (var i = 0; i < schedule.length; i++) {
             var entry = schedule[i];
@@ -712,7 +746,6 @@
                 html += '</div>';
                 html += '</div>';
 
-                // Schedule
                 var hasClasses = false;
                 for (var day in schedule) {
                     if (!Object.prototype.hasOwnProperty.call(schedule, day)) { continue; }
@@ -819,7 +852,6 @@
                 html += '<button class="autogroup-delete-btn small danger" data-key="' + escapeHtml(key) + '">x</button>';
                 html += '</div>';
 
-                // Slots
                 if (group.slots && group.slots.length > 0) {
                     html += '<div class="autogroup-slots">';
                     for (var k = 0; k < group.slots.length; k++) {
@@ -830,7 +862,6 @@
                     html += '</div>';
                 }
 
-                // Students
                 if (group.students && group.students.length > 0) {
                     html += '<div class="autogroup-students">';
                     for (var s = 0; s < group.students.length; s++) {
@@ -841,7 +872,6 @@
                     html += '</div>';
                 }
 
-                // Add student
                 html += '<div class="autogroup-add-student">';
                 html += '<select class="autogroup-student-select small">';
                 html += '<option value="">Add student...</option>';
@@ -858,7 +888,6 @@
                 html += '<button class="autogroup-add-student-btn small primary" data-key="' + escapeHtml(key) + '">Add</button>';
                 html += '</div>';
 
-                // Add slot
                 html += '<div class="autogroup-add-slot">';
                 html += '<select class="autogroup-slot-day small">';
                 for (var d2 = 0; d2 < dayNames.length; d2++) {
@@ -1078,7 +1107,6 @@
             });
         }
 
-        // ---- Week input enter ----
         var weekInput = container.querySelector('#faculty-week-input');
         if (weekInput) {
             weekInput.addEventListener('keydown', function(e) {
@@ -1152,7 +1180,7 @@
             }
         });
 
-        // ---- Schedule add ----
+        // ---- Schedule add (stub) ----
         var scheduleAddBtn = container.querySelector('#schedule-add-btn');
         if (scheduleAddBtn) {
             scheduleAddBtn.addEventListener('click', function() {
@@ -1160,7 +1188,7 @@
             });
         }
 
-        // ---- Schedule remove ----
+        // ---- Schedule remove (stub) ----
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.schedule-remove-btn');
             if (btn) {
@@ -1172,7 +1200,7 @@
             }
         });
 
-        // ---- Block add ----
+        // ---- Block add (stub) ----
         var blockAddBtn = container.querySelector('#block-add-btn');
         if (blockAddBtn) {
             blockAddBtn.addEventListener('click', function() {
@@ -1180,7 +1208,7 @@
             });
         }
 
-        // ---- Block remove ----
+        // ---- Block remove (stub) ----
         container.addEventListener('click', function(e) {
             var btn = e.target.closest('.block-remove-btn');
             if (btn) {
@@ -1311,17 +1339,13 @@
             }
         });
 
-        // ---- Location modal events ----
-        bindLocationModalEvents(container);
-
-        // ---- Location form events ----
-        bindLocationFormEvents(container);
-
-        // ---- Discipline form events ----
-        bindDisciplineFormEvents(container);
+        // ---- Modal binding (idempotent, one-shot per modal instance) ----
+        bindLocationModalEvents();
+        bindLocationFormEvents();
+        bindDisciplineFormEvents();
 
         return function() {
-            // Cleanup
+            // Cleanup - no-op for now
         };
     }
 
@@ -1347,16 +1371,6 @@
     // ============================================================
     // HANDLERS - Schedule (STUBS)
     // ============================================================
-    // 
-    // These handlers are stubs. They were stubs before the v15 pass
-    // and remain stubs after it. They are NOT data-model regressions.
-    // 
-    // Wiring them requires:
-    //   - A discipline picker that reads the current instructor
-    //   - AcademySchedule.setInstructorTemplate / setInstructorBlock
-    //   - Refresh after mutation
-    // 
-    // That's UI work, not data-model work.
 
     function handleAddSchedule(container) {
         var instructorId = AcademyUI.getSelectedInstructorId();
@@ -1440,23 +1454,30 @@
     }
 
     // ============================================================
-    // HANDLERS - Location - Using AcademyLocations directly
+    // HANDLERS - Location (modal binding)
     // ============================================================
 
-    function bindLocationModalEvents(container) {
+    function bindLocationModalEvents() {
         var modal = document.getElementById('faculty-location-modal');
         var closeBtn = document.getElementById('faculty-location-close');
 
+        if (modal && modal.dataset.bound === 'true') {
+            return;
+        }
+        if (modal) {
+            modal.dataset.bound = 'true';
+        }
+
         if (closeBtn) {
             closeBtn.addEventListener('click', function() {
-                if (modal) { modal.classList.add('hidden'); }
+                hideModal(modal);
             });
         }
 
         if (modal) {
             modal.addEventListener('click', function(e) {
                 if (e.target === this) {
-                    this.classList.add('hidden');
+                    hideModal(modal);
                 }
             });
 
@@ -1469,54 +1490,56 @@
                     var select = document.getElementById('location-class-select');
 
                     if (locationId && select && select.value) {
-                        var week = AcademyUI.getDisplayWeek();
                         // STUB — wire to AcademySchedule when the schedule UI is ready.
                         notify('Assign class to location: ' + locationId + ' at ' + day + ':' + hour + ' - ' + select.value, 'info');
                         refreshLocationModal(locationId);
                     }
                 }
-            });
 
-            modal.addEventListener('click', function(e) {
-                var btn = e.target.closest('.location-remove-class-btn');
-                if (btn) {
-                    var locationId = btn.dataset.location;
-                    var day = parseInt(btn.dataset.day, 10);
-                    var hour = parseInt(btn.dataset.hour, 10);
-                    if (locationId && confirm('Remove this class from location?')) {
-                        var week = AcademyUI.getDisplayWeek();
+                var removeBtn = e.target.closest('.location-remove-class-btn');
+                if (removeBtn) {
+                    var rmLocationId = removeBtn.dataset.location;
+                    var rmDay = parseInt(removeBtn.dataset.day, 10);
+                    var rmHour = parseInt(removeBtn.dataset.hour, 10);
+                    if (rmLocationId && confirm('Remove this class from location?')) {
                         // STUB — wire to AcademySchedule when the schedule UI is ready.
-                        notify('Remove class from location: ' + locationId + ' day ' + day + ' hour ' + hour, 'info');
-                        refreshLocationModal(locationId);
+                        notify('Remove class from location: ' + rmLocationId + ' day ' + rmDay + ' hour ' + rmHour, 'info');
+                        refreshLocationModal(rmLocationId);
                     }
                 }
             });
         }
     }
 
-    function bindLocationFormEvents(container) {
+    function bindLocationFormEvents() {
         var modal = document.getElementById('faculty-location-form-modal');
         var form = document.getElementById('faculty-location-form');
         var closeBtn = document.getElementById('faculty-location-form-close');
         var cancelBtn = document.getElementById('faculty-location-form-cancel');
-        var titleEl = document.getElementById('faculty-location-form-title');
+
+        if (modal && modal.dataset.bound === 'true') {
+            return;
+        }
+        if (modal) {
+            modal.dataset.bound = 'true';
+        }
 
         if (closeBtn) {
             closeBtn.addEventListener('click', function() {
-                if (modal) { modal.classList.add('hidden'); }
+                hideModal(modal);
             });
         }
 
         if (cancelBtn) {
             cancelBtn.addEventListener('click', function() {
-                if (modal) { modal.classList.add('hidden'); }
+                hideModal(modal);
             });
         }
 
         if (modal) {
             modal.addEventListener('click', function(e) {
                 if (e.target === this) {
-                    this.classList.add('hidden');
+                    hideModal(modal);
                 }
             });
         }
@@ -1545,7 +1568,7 @@
 
         modal.dataset.locationId = locationId;
         refreshLocationModal(locationId);
-        modal.classList.remove('hidden');
+        showModal(modal);
     }
 
     function refreshLocationModal(locationId) {
@@ -1661,7 +1684,7 @@
             delete form.dataset.editId;
         }
 
-        modal.classList.remove('hidden');
+        showModal(modal);
         if (nameInput) {
             nameInput.focus();
             nameInput.select();
@@ -1686,23 +1709,20 @@
         };
 
         var editId = form.dataset.editId;
-        var AcademyLocations = getAcademyLocations();
-        if (!AcademyLocations) {
+        var AcademyLocationsLocal = getAcademyLocations();
+        if (!AcademyLocationsLocal) {
             notify('AcademyLocations not available.', 'error');
             return;
         }
 
-        // AcademyLocations.create / update return PLAIN OBJECTS,
-        // not Promises. They follow the candidate-based pattern and
-        // are synchronous from the caller's perspective.
         var result = editId
-            ? AcademyLocations.update(editId, data)
-            : AcademyLocations.create(data);
+            ? AcademyLocationsLocal.update(editId, data)
+            : AcademyLocationsLocal.create(data);
 
         if (result && result.success) {
             notify(editId ? 'Location updated successfully.' : 'Location created successfully.', 'success');
             var modal = document.getElementById('faculty-location-form-modal');
-            if (modal) { modal.classList.add('hidden'); }
+            hideModal(modal);
             requestRefresh();
         } else {
             notify(result ? result.message : 'Failed to save location.', 'error');
@@ -1775,32 +1795,38 @@
     }
 
     // ============================================================
-    // HANDLERS - Disciplines - Using AcademyDisciplines directly
+    // HANDLERS - Discipline (modal binding)
     // ============================================================
 
-    function bindDisciplineFormEvents(container) {
+    function bindDisciplineFormEvents() {
         var modal = document.getElementById('faculty-discipline-modal');
         var form = document.getElementById('faculty-discipline-form');
         var closeBtn = document.getElementById('faculty-discipline-close');
         var cancelBtn = document.getElementById('faculty-discipline-cancel');
-        var titleEl = document.getElementById('faculty-discipline-modal-title');
+
+        if (modal && modal.dataset.bound === 'true') {
+            return;
+        }
+        if (modal) {
+            modal.dataset.bound = 'true';
+        }
 
         if (closeBtn) {
             closeBtn.addEventListener('click', function() {
-                if (modal) { modal.classList.add('hidden'); }
+                hideModal(modal);
             });
         }
 
         if (cancelBtn) {
             cancelBtn.addEventListener('click', function() {
-                if (modal) { modal.classList.add('hidden'); }
+                hideModal(modal);
             });
         }
 
         if (modal) {
             modal.addEventListener('click', function(e) {
                 if (e.target === this) {
-                    this.classList.add('hidden');
+                    hideModal(modal);
                 }
             });
         }
@@ -1879,7 +1905,7 @@
             delete form.dataset.editId;
         }
 
-        modal.classList.remove('hidden');
+        showModal(modal);
         if (nameInput) {
             nameInput.focus();
             nameInput.select();
@@ -1912,22 +1938,20 @@
         };
 
         var editId = form.dataset.editId;
-        var AcademyDisciplines = getAcademyDisciplines();
-        if (!AcademyDisciplines) {
+        var AcademyDisciplinesLocal = getAcademyDisciplines();
+        if (!AcademyDisciplinesLocal) {
             notify('AcademyDisciplines not available.', 'error');
             return;
         }
 
-        // AcademyDisciplines.create / update return PLAIN OBJECTS,
-        // not Promises.
         var result = editId
-            ? AcademyDisciplines.update(editId, data)
-            : AcademyDisciplines.create(data);
+            ? AcademyDisciplinesLocal.update(editId, data)
+            : AcademyDisciplinesLocal.create(data);
 
         if (result && result.success) {
             notify(editId ? 'Discipline updated successfully.' : 'Discipline created successfully.', 'success');
             var modal = document.getElementById('faculty-discipline-modal');
-            if (modal) { modal.classList.add('hidden'); }
+            hideModal(modal);
             requestRefresh();
         } else {
             notify(result ? result.message : 'Failed to save discipline.', 'error');
@@ -1935,13 +1959,13 @@
     }
 
     function handleDeleteDiscipline(id) {
-        var AcademyDisciplines = getAcademyDisciplines();
-        if (!AcademyDisciplines) {
+        var AcademyDisciplinesLocal = getAcademyDisciplines();
+        if (!AcademyDisciplinesLocal) {
             notify('AcademyDisciplines not available.', 'error');
             return;
         }
 
-        var result = AcademyDisciplines.delete(id);
+        var result = AcademyDisciplinesLocal.delete(id);
 
         if (result && result.success) {
             notify('Discipline deleted successfully.', 'success');

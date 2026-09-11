@@ -36,7 +36,13 @@
  *   - AcademyRanking.autoGenerate currently mutates academy.rankings
  *     directly and does not go through MutationPipeline. This is a
  *     pre-existing limitation carried forward from the pre-v15 code.
- *     Fixing it is out of scope for the v15 data-model pass.
+ * 
+ * MODAL VISIBILITY:
+ *   This tab does not currently open any modals. The showModal and
+ *   hideModal helpers are defined here for future use and follow the
+ *   same three-step pattern as the other Academy tabs. If you add a
+ *   modal to this tab (e.g. a grade editor, a confirmation dialog),
+ *   route it through showModal / hideModal, not raw class manipulation.
  * 
  * DEPENDENCY RESOLUTION:
  *   - Modules guaranteed to be loaded before this file are captured at
@@ -55,6 +61,7 @@
  *   - window.CalendarConstants
  *   - window.NotificationSystem
  *   - window.DomUtils
+ *   - window.Modal
  * 
  * DEPENDENCIES (lazy - resolved at call time):
  *   - window.CharacterList
@@ -87,34 +94,22 @@
     var CalendarConstants = window.CalendarConstants;
     var NotificationSystem = window.NotificationSystem;
     var DomUtils = window.DomUtils;
+    var Modal = window.Modal;
 
     // ============================================================
     // DEPENDENCY RESOLUTION - LAZY (not guaranteed at load time)
     // ============================================================
 
-    /**
-     * Get CharacterList, resolved at call time.
-     * CharacterList loads after this module in the current script order
-     * (Character domain loads after Academy domain).
-     * 
-     * @returns {object|null} CharacterList or null if not yet loaded
-     */
     function getCharacterList() {
         return window.CharacterList || null;
     }
 
-    /**
-     * Get AcademyRanking, resolved at call time.
-     * AcademyRanking loads after this module in the current script order.
-     * 
-     * @returns {object|null} AcademyRanking or null if not yet loaded
-     */
     function getAcademyRanking() {
         return window.AcademyRanking || null;
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - LOAD-TIME ONLY
+    // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
@@ -214,6 +209,9 @@
             missing.push('DomUtils.escapeHtml');
         }
 
+        // Modal is not currently used in this tab, but the helpers
+        // are defined for future use. Don't fail if Modal isn't loaded.
+
         // CharacterList and AcademyRanking deliberately not checked
         // here — resolved lazily at call time.
 
@@ -228,15 +226,46 @@
     checkDependencies();
 
     // ============================================================
+    // MODAL HELPERS
+    // ============================================================
+    // 
+    // This tab does not currently open any modals, but these helpers
+    // are provided for consistency with the other Academy tabs and
+    // for future use. Any modal added to this tab should route
+    // through these, not raw class manipulation.
+
+    function showModal(modal) {
+        if (!modal) { return; }
+
+        if (Modal && typeof Modal.showModal === 'function') {
+            Modal.showModal(modal);
+            return;
+        }
+
+        modal.classList.remove('hidden');
+        modal.classList.add('visible');
+        modal.style.display = 'flex';
+    }
+
+    function hideModal(modal) {
+        if (!modal) { return; }
+
+        if (Modal && typeof Modal.hideModal === 'function') {
+            Modal.hideModal(modal);
+            return;
+        }
+
+        modal.classList.add('hidden');
+        modal.classList.remove('visible');
+        modal.style.display = 'none';
+    }
+
+    // ============================================================
     // REFRESH HELPER
     // ============================================================
 
     var _currentContainer = null;
 
-    /**
-     * Ask the Academy shell to re-render the current sub-tab.
-     * Falls back to a local re-render if the shell isn't available.
-     */
     function requestRefresh() {
         if (window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
             window.AcademyEvents.refreshUI();
@@ -565,7 +594,6 @@
         html += '</thead>';
         html += '<tbody>';
 
-        // Build lookup for schedule entries
         var scheduleLookup = {};
         for (var i = 0; i < schedule.length; i++) {
             var entry = schedule[i];
@@ -647,7 +675,6 @@
         var container = document.getElementById('student-character-list');
         if (!container) { return; }
 
-        // ---- RESOLVE CHARACTERLIST AT CALL TIME ----
         var CharacterList = getCharacterList();
         if (!CharacterList || typeof CharacterList.render !== 'function') {
             container.innerHTML = '<p class="empty-state small">Character list not available.</p>';
@@ -660,10 +687,6 @@
             classFilter.value = classId;
         }
 
-        // CharacterList.render() reads its own filter inputs and
-        // renders into #characters-container. If that container is
-        // not present in the Academy sidebar, the list won't appear
-        // here — this is a known coupling that Phase 4 will address.
         CharacterList.render();
     }
 
@@ -695,7 +718,6 @@
             });
         }
 
-        // ---- Week input enter ----
         var weekInput = container.querySelector('#student-week-input');
         if (weekInput) {
             weekInput.addEventListener('keydown', function(e) {
@@ -780,19 +802,21 @@
         }, true);
 
         // ---- Student selection via CharacterList ----
-        document.addEventListener('characterSelected', function(e) {
-            if (e.detail && e.detail.characterId) {
-                AcademyUI.selectStudent(e.detail.characterId);
-                requestRefresh();
-            }
-        });
+        document.addEventListener('characterSelected', handleCharacterSelected);
 
         // Initial render
         refreshCharacterList();
 
         return function() {
-            // Cleanup - no-op for now
+            document.removeEventListener('characterSelected', handleCharacterSelected);
         };
+    }
+
+    function handleCharacterSelected(e) {
+        if (e.detail && e.detail.characterId) {
+            AcademyUI.selectStudent(e.detail.characterId);
+            requestRefresh();
+        }
     }
 
     // ============================================================
@@ -824,21 +848,15 @@
 
         var value = input.value.trim();
         var letterEl = row.querySelector('.grade-letter');
-        var weightedEl = row.querySelector('.weighted-score');
 
         if (value !== '' && !isNaN(Number(value))) {
             var numericScore = Number(value);
             if (numericScore >= 0 && numericScore <= 100) {
                 var letter = getLetterGrade(numericScore);
                 if (letterEl) { letterEl.textContent = letter.label; }
-                if (weightedEl) {
-                    // Weight not known from the input alone; leave
-                    // the existing weighted display untouched.
-                }
             }
         } else if (value === '') {
             if (letterEl) { letterEl.textContent = '--'; }
-            if (weightedEl) { weightedEl.textContent = '--'; }
         }
     }
 
@@ -861,16 +879,10 @@
     /**
      * Save grades from the currently-rendered grade table.
      * 
-     * NOTE: AcademyGrades.saveGrades has signature:
+     * NOTE: AcademyGrades.saveGrades has signature
      *     saveGrades(gradesDataArray, options)
-     * where gradesDataArray is an array of grade DTOs, each carrying
-     * its own studentId, classId, disciplineId, week, score, maxScore,
-     * type, weight.
-     * 
-     * The previous implementation passed (studentId, week, gradesMap),
-     * which is not the accepted shape and was silently rejected by the
-     * "Grade data array is required" guard. This version constructs the
-     * array correctly.
+     * where gradesDataArray is an array of grade DTOs. This builds
+     * the array from the rendered inputs.
      */
     function handleSaveGrades(container) {
         var studentId = AcademyUI.getSelectedStudentId();
@@ -931,7 +943,6 @@
             return;
         }
 
-        // AcademyGrades.saveGrades returns a Promise.
         AcademyGrades.saveGrades(gradeDtos, { overwrite: true })
             .then(function(result) {
                 if (result && result.success) {
@@ -948,20 +959,6 @@
             });
     }
 
-    /**
-     * Auto-generate rankings for the selected class and current week.
-     * 
-     * NOTE: AcademyRanking.autoGenerate has signature
-     *     autoGenerate(classId, week, options)
-     * 
-     * The previous implementation in this file called
-     * autoGenerate(week), which failed silently with
-     * "Class ID is required".
-     * 
-     * autoGenerate is synchronous in the current implementation (it
-     * mutates academy.rankings directly and returns a result object).
-     * It is not yet routed through MutationPipeline.
-     */
     function handleAutoGenerateRankings() {
         var classId = AcademyUI.getSelectedClassId();
         if (!classId) {
@@ -1013,9 +1010,6 @@
             }
         }
 
-        // AcademySchedule.setStudentRestDays is synchronous (it
-        // delegates to ScheduleCore.setRestDays and returns the result
-        // object directly).
         var result = AcademySchedule.setStudentRestDays(studentId, week, days);
 
         if (result && result.success) {
@@ -1025,16 +1019,6 @@
             notify(result ? result.message : 'Failed to save rest days.', 'error');
         }
     }
-
-    // ============================================================
-    // MUTATION HANDLERS - Using AcademyClasses directly
-    // ============================================================
-    // These are exposed for external callers but are not currently
-    // wired to any button in this tab. They're kept because
-    // academy-events.js and other tabs may want to call them.
-    // 
-    // AcademyClasses.addStudent / removeStudent are Promise-based
-    // (they delegate to CharacterClasses).
 
     function handleAddStudentToClass(studentId) {
         var classId = AcademyUI.getSelectedClassId();
