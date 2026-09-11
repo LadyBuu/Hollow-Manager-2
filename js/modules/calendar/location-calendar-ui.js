@@ -1,27 +1,47 @@
 /**
  * modules/calendar/location-calendar-ui.js - Location Calendar UI
- * Thin UI layer for location calendar
+ * Thin UI layer for the location calendar
+ * Path: js/modules/calendar/location-calendar-ui.js
  * 
  * IMPORTANT:
- *   - THIN - orchestrates interaction only
+ *   - THIN UI LAYER - orchestrates interaction only
  *   - Uses CalendarAggregator for reads
  *   - Uses ScheduleCore for mutations
- *   - Uses CalendarRenderer for HTML
+ *   - Uses CalendarRenderer for HTML generation
+ *   - Uses CalendarUIBase for shared UI helpers
+ *   - Persists changes via window.saveData() after every ScheduleCore mutation
  *   - No direct external domain access
+ *   - No direct window.data access
  * 
  * DEPENDENCIES:
- *   - CalendarUIBase
- *   - CalendarAggregator
- *   - CalendarRenderer
- *   - ScheduleCore
- *   - CalendarConstants
+ *   - window.CalendarUIBase
+ *   - window.CalendarAggregator
+ *   - window.CalendarRenderer
+ *   - window.ScheduleCore
+ *   - window.CalendarConstants
+ *   - window.LocationQueries
+ *   - window.CharacterQueries
+ *   - window.DisciplineQueries
+ *   - window.CalendarQueries (for location schedule lookups)
+ * 
+ * USAGE:
+ *   var ui = window.LocationCalendarUI;
+ *   ui.render(container, { selectedId: 'loc_123', week: 5 });
  */
 
 (function() {
     'use strict';
 
+    // ============================================================
+    // LOAD GUARD - set immediately so re-inclusion is a no-op
+    // ============================================================
+
     if (window.__locationCalendarUILoaded) { return; }
     window.__locationCalendarUILoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
 
     var UIBase = window.CalendarUIBase;
     var Aggregator = window.CalendarAggregator;
@@ -31,6 +51,7 @@
     var LocationQueries = window.LocationQueries;
     var CharacterQueries = window.CharacterQueries;
     var DisciplineQueries = window.DisciplineQueries;
+    var CalendarQueries = window.CalendarQueries;
 
     // ============================================================
     // STATE
@@ -50,6 +71,27 @@
 
     function getLocationName(locationId) {
         return LocationQueries.getLocationName(locationId);
+    }
+
+    function getAvailableHours() {
+        var hours = [];
+        for (var h = CC.CALENDAR_START_HOUR; h <= CC.CALENDAR_END_HOUR; h++) {
+            hours.push(h);
+        }
+        return hours;
+    }
+
+    /**
+     * Persist the current data state after a ScheduleCore mutation.
+     * ScheduleCore mutates window.data.curriculum synchronously and does
+     * NOT persist. Callers must invoke saveData() themselves.
+     */
+    function persist() {
+        if (typeof window.saveData === 'function') {
+            window.saveData().catch(function() {
+                UIBase.notify('Changes applied but failed to save.', 'error');
+            });
+        }
     }
 
     // ============================================================
@@ -93,7 +135,10 @@
             hours: getAvailableHours()
         };
 
-        var html = Renderer.renderGrid({ selectedId: _state.selectedId, week: _state.week }, viewModel);
+        var html = Renderer.renderGrid(
+            { selectedId: _state.selectedId, week: _state.week },
+            viewModel
+        );
         container.innerHTML = html;
 
         bindEvents();
@@ -114,6 +159,7 @@
             var hour = parseInt(slot.dataset.hour, 10);
             if (isNaN(day) || isNaN(hour)) { continue; }
 
+            // Empty slot → assign class
             if (slot.classList.contains('schedule-empty')) {
                 var listener = UIBase.addEventListener(slot, 'click', function() {
                     var d = parseInt(this.dataset.day, 10);
@@ -123,7 +169,8 @@
                 if (listener) { _listeners.push(listener); }
             }
 
-            if (slot.classList.contains('schedule-occupied')) {
+            // Occupied slot → details, right-click to remove
+            if (slot.classList.contains('schedule-occupied') && !slot.classList.contains('schedule-blocked')) {
                 var listener = UIBase.addEventListener(slot, 'click', function() {
                     var d = parseInt(this.dataset.day, 10);
                     var h = parseInt(this.dataset.hour, 10);
@@ -154,9 +201,13 @@
         if (!select) { return; }
 
         var locations = getLocations();
-        UIBase.populateSelect(select, locations, function(s) { return s.id; }, function(s) {
-            return s.name || s.id;
-        }, _state.selectedId);
+        UIBase.populateSelect(
+            select,
+            locations,
+            function(s) { return s.id; },
+            function(s) { return s.name || s.id; },
+            _state.selectedId
+        );
 
         var listener = UIBase.addEventListener(select, 'change', function() {
             var id = this.value;
@@ -182,7 +233,9 @@
         }
 
         var availability = Aggregator.getLocationDisciplineAvailability(_state.selectedId, _state.week);
-        var availableDisciplines = availability.filter(function(d) { return d && d.available && d.canHost; });
+        var availableDisciplines = availability.filter(function(d) {
+            return d && d.available && d.canHost;
+        });
 
         if (availableDisciplines.length === 0) {
             UIBase.notify('No disciplines currently available at this location.', 'error');
@@ -201,16 +254,25 @@
             optionsHTML += '<option value="' + UIBase.escapeAttribute(d.id) + '">' + UIBase.escapeHtml(d.name) + '</option>';
         }
 
+        var durationOptionsHTML = '';
+        for (var h = CC.MIN_CLASS_DURATION; h <= CC.MAX_CLASS_DURATION; h++) {
+            durationOptionsHTML += '<option value="' + h + '">' + h + ' hour' + (h > 1 ? 's' : '') + '</option>';
+        }
+
         modal.innerHTML = (
             '<div class="modal-content modal-form-content">' +
                 '<div class="modal-header">' +
-                    '<h3>Assign Class to Location - ' + UIBase.escapeHtml(dayName) + ' at ' + UIBase.escapeHtml(hourDisplay) + '</h3>' +
+                    '<h3>Assign Class - ' + UIBase.escapeHtml(dayName) + ' at ' + UIBase.escapeHtml(hourDisplay) + '</h3>' +
                     '<button class="close-modal">&times;</button>' +
                 '</div>' +
                 '<div class="modal-body">' +
                     '<div class="form-group">' +
                         '<label>Discipline:</label>' +
                         '<select id="add-location-class-select" class="modal-select">' + optionsHTML + '</select>' +
+                    '</div>' +
+                    '<div class="form-group">' +
+                        '<label>Duration:</label>' +
+                        '<select id="add-location-class-duration" class="modal-select">' + durationOptionsHTML + '</select>' +
                     '</div>' +
                     '<div class="form-actions">' +
                         '<button type="button" id="cancel-add-location-class" class="secondary">Cancel</button>' +
@@ -221,7 +283,9 @@
         );
 
         document.body.appendChild(modal);
-        UIBase.modalSetup(modal, function() { if (modal.parentNode) { modal.parentNode.removeChild(modal); } });
+        UIBase.modalSetup(modal, function() {
+            if (modal.parentNode) { modal.parentNode.removeChild(modal); }
+        });
 
         var closeModal = function() {
             if (modal.parentNode) { modal.parentNode.removeChild(modal); }
@@ -242,14 +306,31 @@
             confirmBtn.onclick = function() {
                 var select = document.getElementById('add-location-class-select');
                 var disciplineId = select ? select.value : null;
+                var durationSelect = document.getElementById('add-location-class-duration');
+                var duration = durationSelect ? parseInt(durationSelect.value, 10) || 1 : 1;
 
                 if (!disciplineId) {
                     UIBase.notify('Please select a discipline.', 'error');
                     return;
                 }
 
-                var result = ScheduleCore.setLocationClass(_state.selectedId, _state.week, day, hour, disciplineId, 1);
+                if (hour + duration > CC.CALENDAR_END_HOUR + 1) {
+                    UIBase.notify('Class extends beyond the calendar boundary.', 'error');
+                    return;
+                }
+
+                // Signature: setLocationClass(locationId, week, day, hour, disciplineId, duration, metadata)
+                var result = ScheduleCore.setLocationClass(
+                    _state.selectedId,
+                    _state.week,
+                    day,
+                    hour,
+                    disciplineId,
+                    duration
+                );
+
                 if (result && result.success) {
+                    persist();
                     closeModal();
                     UIBase.notify('Class assigned to location successfully.', 'success');
                     render(_container, _state);
@@ -263,7 +344,7 @@
     function handleClassDetails(day, hour) {
         if (!_state.selectedId) { return; }
 
-        var schedule = window.CalendarQueries.getLocationSchedule(_state.selectedId, _state.week);
+        var schedule = CalendarQueries.getLocationSchedule(_state.selectedId, _state.week);
         if (!schedule[day] || !schedule[day][hour]) {
             UIBase.notify('Class not found.', 'error');
             return;
@@ -275,6 +356,11 @@
         var dayName = CC.getDayName(day);
         var hourDisplay = CC.formatHour(hour);
 
+        // Get metadata for label/duration
+        var metadata = CalendarQueries.getSlotMetadata(_state.selectedId, _state.week, day, hour);
+        var duration = metadata ? metadata.duration || 1 : 1;
+        var label = metadata ? metadata.label || '' : '';
+
         var students = Aggregator.getStudentsAtLocation(_state.selectedId, _state.week, day, hour);
         var studentNames = students.map(function(s) { return s.studentName; }).join(', ') || 'None';
 
@@ -284,12 +370,16 @@
         modal.innerHTML = (
             '<div class="modal-content modal-detail-content">' +
                 '<div class="modal-header">' +
-                    '<h3>' + UIBase.escapeHtml(disciplineName) + ' at ' + UIBase.escapeHtml(getLocationName(_state.selectedId)) + '</h3>' +
+                    '<h3>' + UIBase.escapeHtml(disciplineName) + (label ? ' [' + UIBase.escapeHtml(label) + ']' : '') + '</h3>' +
                     '<button class="close-modal">&times;</button>' +
                 '</div>' +
                 '<div class="modal-body">' +
+                    '<div class="detail-row"><span class="detail-label">Location:</span> <span class="detail-value"><strong>' +
+                        UIBase.escapeHtml(getLocationName(_state.selectedId)) + '</strong></span></div>' +
                     '<div class="detail-row"><span class="detail-label">Day/Time:</span> <span class="detail-value"><strong>' +
                         UIBase.escapeHtml(dayName + ' at ' + hourDisplay) + '</strong></span></div>' +
+                    '<div class="detail-row"><span class="detail-label">Duration:</span> <span class="detail-value"><strong>' +
+                        duration + ' hour(s)</strong></span></div>' +
                     '<div class="detail-row"><span class="detail-label">Students:</span> <span class="detail-value"><strong>' +
                         students.length + ' - ' + UIBase.escapeHtml(studentNames) + '</strong></span></div>' +
                     '<div class="detail-row"><span class="detail-label">Week:</span> <span class="detail-value"><strong>' +
@@ -303,7 +393,9 @@
         );
 
         document.body.appendChild(modal);
-        UIBase.modalSetup(modal, function() { if (modal.parentNode) { modal.parentNode.removeChild(modal); } });
+        UIBase.modalSetup(modal, function() {
+            if (modal.parentNode) { modal.parentNode.removeChild(modal); }
+        });
 
         var closeModal = function() {
             if (modal.parentNode) { modal.parentNode.removeChild(modal); }
@@ -338,19 +430,12 @@
 
         var result = ScheduleCore.removeLocationClass(_state.selectedId, _state.week, day, hour);
         if (result && result.success) {
+            persist();
             UIBase.notify('Class removed from location successfully.', 'success');
             render(_container, _state);
         } else {
             UIBase.notify(result ? result.message : 'Failed to remove class.', 'error');
         }
-    }
-
-    function getAvailableHours() {
-        var hours = [];
-        for (var h = CC.CALENDAR_START_HOUR; h <= CC.CALENDAR_END_HOUR; h++) {
-            hours.push(h);
-        }
-        return hours;
     }
 
     // ============================================================
@@ -361,10 +446,12 @@
 
     function setState(newState) {
         var changed = false;
+
         if (newState.selectedId !== undefined && newState.selectedId !== _state.selectedId) {
             _state.selectedId = newState.selectedId;
             changed = true;
         }
+
         if (newState.week !== undefined && newState.week !== _state.week) {
             var week = parseInt(newState.week, 10);
             if (!isNaN(week) && week >= CC.MIN_WEEK && week <= CC.MAX_WEEK) {
@@ -372,6 +459,7 @@
                 changed = true;
             }
         }
+
         if (changed && _container) { render(_container, _state); }
         return changed;
     }
