@@ -60,6 +60,18 @@
  * - Version 12: Added personality and specialMoves to characters
  * - Version 13: Added attraction and sexuality to characters
  * - Version 14: Added hp, mp, weapons, combatNotes to characters
+ * - Version 15: Added canonical academy structure; consolidated class
+ *               membership onto character.classIds; removed the legacy
+ *               academy.classStudents roster as an independent authority.
+ * 
+ * ACADEMY MEMBERSHIP MODEL (v15+):
+ * - character.classIds[] is the SINGLE SOURCE OF TRUTH for class membership.
+ * - The academy roster is DERIVED: characters.filter(c => c.classIds.includes(classId)).
+ * - academy.classStudents no longer exists after migration.
+ * - Class deletion cascades: removes the class, all character references,
+ *   weekly teams for the class, and grades/rankings keyed to the class.
+ * - normaliseDataStructure() enforces these invariants on every load and
+ *   prunes orphaned classId references (with a dev-mode warning).
  */
 
 (function() {
@@ -67,7 +79,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;  // IndexedDB structural version (only 1 object store)
-    var DATA_VERSION = 14;  // Application data schema version
+    var DATA_VERSION = 15;  // Application data schema version
     var STORE_NAME = 'appData';
 
     // INTERNAL: The actual IndexedDB connection (private)
@@ -162,6 +174,21 @@
         };
     }
 
+    /**
+     * Default empty Academy structure.
+     * 
+     * NOTE: classStudents is NOT included. Class membership is derived from
+     * character.classIds[]. The roster is a query, not stored data.
+     */
+    function getDefaultAcademyData() {
+        return {
+            graduatingClasses: {},
+            grades: {},
+            rankings: {},
+            weeklyTeams: {}
+        };
+    }
+
     function getEmptyData() {
         return {
             _dataVersion: DATA_VERSION,
@@ -177,7 +204,8 @@
             currentWeek: 1,
             curriculum: getDefaultCurriculumData(),
             social: getDefaultSocialData(),
-            statsConfig: getDefaultStatsConfig()
+            statsConfig: getDefaultStatsConfig(),
+            academy: getDefaultAcademyData()
         };
     }
 
@@ -502,6 +530,7 @@
                 case 11: migrateToVersion12(data); break;
                 case 12: migrateToVersion13(data); break;
                 case 13: migrateToVersion14(data); break;
+                case 14: migrateToVersion15(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -744,13 +773,138 @@
         data._dataVersion = 14;
     }
 
+    /**
+     * Version 15 migration — Academy data model consolidation.
+     * 
+     * This migration:
+     *   1. Ensures the canonical academy structure exists.
+     *   2. Reconciles class membership by UNION-ing the legacy
+     *      academy.classStudents roster with character.classIds[].
+     *      Both sides may be partially populated depending on which
+     *      UI path the user historically used; the union preserves
+     *      everything that either side knew about.
+     *   3. Removes academy.classStudents entirely. It is no longer
+     *      a persistent authority, and no code reads it after v15.
+     * 
+     * Post-migration invariants (also enforced by normaliseDataStructure):
+     *   - character.classIds is always an array.
+     *   - character.classIds is the single source of truth for membership.
+     *   - Academy rosters are derived, never stored.
+     */
+    function migrateToVersion15(data) {
+        // ---- 1. Ensure academy structure ----
+        if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
+            data.academy = {};
+        }
+        var academy = data.academy;
+
+        if (!academy.graduatingClasses || typeof academy.graduatingClasses !== 'object' || Array.isArray(academy.graduatingClasses)) {
+            academy.graduatingClasses = {};
+        }
+        if (!academy.grades || typeof academy.grades !== 'object' || Array.isArray(academy.grades)) {
+            academy.grades = {};
+        }
+        if (!academy.rankings || typeof academy.rankings !== 'object' || Array.isArray(academy.rankings)) {
+            academy.rankings = {};
+        }
+        if (!academy.weeklyTeams || typeof academy.weeklyTeams !== 'object' || Array.isArray(academy.weeklyTeams)) {
+            academy.weeklyTeams = {};
+        }
+
+        // ---- 2. Union legacy classStudents into character.classIds ----
+        var legacy = academy.classStudents;
+        var legacyMergedCount = 0;
+
+        if (legacy && typeof legacy === 'object' && !Array.isArray(legacy)) {
+            Object.keys(legacy).forEach(function(classId) {
+                var students = legacy[classId];
+                if (!Array.isArray(students)) {
+                    return;
+                }
+
+                students.forEach(function(studentId) {
+                    if (!studentId) {
+                        return;
+                    }
+                    var targetId = String(studentId);
+                    var char = data.characters.find(function(c) {
+                        return c && String(c.id) === targetId;
+                    });
+                    if (!char) {
+                        // Orphaned reference — student no longer exists.
+                        return;
+                    }
+
+                    if (!Array.isArray(char.classIds)) {
+                        char.classIds = [];
+                    }
+
+                    // Avoid duplicates — the union must be idempotent.
+                    var alreadyPresent = char.classIds.some(function(existingId) {
+                        return String(existingId) === String(classId);
+                    });
+
+                    if (!alreadyPresent) {
+                        char.classIds.push(classId);
+                        legacyMergedCount++;
+                    }
+                });
+            });
+        }
+
+        // ---- 3. Remove the legacy roster ----
+        delete academy.classStudents;
+
+        // ---- 4. Ensure every character has a classIds array ----
+        //          (Belt-and-braces; normaliseDataStructure also does this.)
+        data.characters.forEach(function(char) {
+            if (!Array.isArray(char.classIds)) {
+                char.classIds = [];
+            }
+        });
+
+        // ---- 5. Prune classIds that reference non-existent classes ----
+        //          This is a repair, not a policy. If a class doesn't
+        //          exist, a character shouldn't reference it.
+        var validClassIds = Object.create(null);
+        Object.keys(academy.graduatingClasses).forEach(function(id) {
+            validClassIds[id] = true;
+        });
+
+        var prunedCount = 0;
+        data.characters.forEach(function(char) {
+            var before = char.classIds.length;
+            char.classIds = char.classIds.filter(function(id) {
+                return validClassIds[id] === true;
+            });
+            prunedCount += before - char.classIds.length;
+        });
+
+        if (legacyMergedCount > 0) {
+            console.log('[Database] v15: merged ' + legacyMergedCount + ' legacy classStudents entries into character.classIds.');
+        }
+        if (prunedCount > 0) {
+            console.warn('[Database] v15: pruned ' + prunedCount + ' classId references to non-existent classes.');
+        }
+
+        data._dataVersion = 15;
+    }
+
     // ============================================================
     // NORMALISE DATA STRUCTURE - Current schema defaults
     // ============================================================
 
+    /**
+     * Repair and enforce current-schema invariants.
+     * 
+     * Runs on every load (after migration). Idempotent. Sets `repaired = true`
+     * if any change was made, which triggers a save so the repaired structure
+     * is persisted.
+     */
     function normaliseDataStructure(data) {
         var repaired = false;
 
+        // ---- Top-level arrays ----
         if (!Array.isArray(data.tournaments)) { data.tournaments = []; repaired = true; }
         if (!Array.isArray(data.characters)) { data.characters = []; repaired = true; }
         if (!Array.isArray(data.teams)) { data.teams = []; repaired = true; }
@@ -771,8 +925,12 @@
             repaired = true;
         }
 
+        // ---- Character invariants ----
         data.characters.forEach(function(char) {
-            if (!Array.isArray(char.classIds)) { char.classIds = []; repaired = true; }
+            if (!Array.isArray(char.classIds)) {
+                char.classIds = [];
+                repaired = true;
+            }
             if (!char.personality || typeof char.personality !== 'object' || Array.isArray(char.personality)) {
                 char.personality = {};
                 repaired = true;
@@ -840,6 +998,7 @@
             }
         });
 
+        // ---- Team invariants ----
         data.teams.forEach(function(team) {
             if (team.type === 'academic' && team.classId === undefined) {
                 team.classId = null;
@@ -851,6 +1010,7 @@
             }
         });
 
+        // ---- Curriculum ----
         if (!data.curriculum || typeof data.curriculum !== 'object' || Array.isArray(data.curriculum)) {
             data.curriculum = getDefaultCurriculumData();
             repaired = true;
@@ -859,6 +1019,7 @@
             data.curriculum = deepMergeDefaults(data.curriculum, curriculumDefaults);
         }
 
+        // ---- Social ----
         if (!data.social || typeof data.social !== 'object' || Array.isArray(data.social)) {
             data.social = getDefaultSocialData();
             repaired = true;
@@ -867,6 +1028,7 @@
             data.social = deepMergeDefaults(data.social, socialDefaults);
         }
 
+        // ---- StatsConfig ----
         if (!data.statsConfig || typeof data.statsConfig !== 'object' || Array.isArray(data.statsConfig)) {
             data.statsConfig = getDefaultStatsConfig();
             repaired = true;
@@ -874,6 +1036,91 @@
             var statsDefaults = getDefaultStatsConfig();
             data.statsConfig = deepMergeDefaults(data.statsConfig, statsDefaults);
         }
+
+        // ---- Academy (v15+) ----
+        // academy.classStudents is DELIBERATELY absent. If a legacy database
+        // somehow reaches this point with it still present (e.g. a database
+        // written by an intermediate build), it's dropped here — class
+        // membership is derived, never stored.
+        if (!data.academy || typeof data.academy !== 'object' || Array.isArray(data.academy)) {
+            data.academy = getDefaultAcademyData();
+            repaired = true;
+        } else {
+            var academyDefaults = getDefaultAcademyData();
+            data.academy = deepMergeDefaults(data.academy, academyDefaults);
+
+            // Drop any lingering legacy roster — it is not part of the
+            // current schema and must not be reintroduced.
+            if (data.academy.classStudents !== undefined) {
+                delete data.academy.classStudents;
+                repaired = true;
+            }
+        }
+
+        // ---- Class-membership invariants (v15+) ----
+        // Enforce: every classId on a character refers to an existing class.
+        // Orphaned references are pruned. A dev-mode warning fires so that
+        // a buggy mutation path becomes visible instead of silently healing.
+        var validClassIds = Object.create(null);
+        Object.keys(data.academy.graduatingClasses).forEach(function(id) {
+            validClassIds[id] = true;
+        });
+
+        var prunedClassRefs = 0;
+        data.characters.forEach(function(char) {
+            if (!Array.isArray(char.classIds)) {
+                return;
+            }
+            var before = char.classIds.length;
+            char.classIds = char.classIds.filter(function(id) {
+                return validClassIds[id] === true;
+            });
+            if (char.classIds.length !== before) {
+                prunedClassRefs += (before - char.classIds.length);
+                repaired = true;
+            }
+        });
+
+        if (prunedClassRefs > 0) {
+            console.warn(
+                '[Database] normaliseDataStructure pruned ' + prunedClassRefs +
+                ' orphaned classId reference(s). A mutation path is not cascading correctly.'
+            );
+        }
+
+        // ---- Prune orphaned weeklyTeams entries ----
+        // A weeklyTeams entry for a class that no longer exists is
+        // unreachable data. Clean it up.
+        if (data.academy.weeklyTeams && typeof data.academy.weeklyTeams === 'object') {
+            Object.keys(data.academy.weeklyTeams).forEach(function(classId) {
+                if (!validClassIds[classId]) {
+                    delete data.academy.weeklyTeams[classId];
+                    repaired = true;
+                }
+            });
+        }
+
+        // ---- Prune orphaned grades / rankings ----
+        // Grades and rankings carry a classId. If the class is gone,
+        // the grade/ranking is unreachable. Prune.
+        function pruneByClassId(storeName) {
+            var store = data.academy[storeName];
+            if (!store || typeof store !== 'object') {
+                return;
+            }
+            Object.keys(store).forEach(function(recordId) {
+                var record = store[recordId];
+                if (!record || typeof record !== 'object') {
+                    return;
+                }
+                if (record.classId && !validClassIds[record.classId]) {
+                    delete store[recordId];
+                    repaired = true;
+                }
+            });
+        }
+        pruneByClassId('grades');
+        pruneByClassId('rankings');
 
         return repaired;
     }
