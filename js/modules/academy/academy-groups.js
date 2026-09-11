@@ -1,32 +1,50 @@
 /**
  * modules/academy/academy-groups.js - Academy Groups
- * CANONICAL source of truth for auto-group mutations
+ * CANONICAL source of truth for auto-group MUTATIONS.
  * 
  * This module provides:
- *   - Group CRUD mutations (create, delete)
+ *   - Group mutations (create, delete)
  *   - Student membership mutations (add, remove, bulk)
  *   - Slot mutations (add, remove, bulk)
  *   - Candidate builders for MutationPipeline
  * 
  * IMPORTANT:
- *   - This module owns auto-group MUTATIONS only
- *   - Reads are in AcademyQueries (moved to shared/queries/)
- *   - Uses LAZY LOADING to break circular dependencies
- *   - All mutations are candidate-based: validate, clone, modify, return candidate
- *   - This module does NOT commit to window.data or call saveData()
- *   - Persistence and logging are owned by MutationPipeline
- *   - All validation uses CalendarValidation
- *   - All deep cloning uses ObjectUtils.deepClone()
- *   - All ID generation uses IdUtils.generateId()
+ *   - This module owns auto-group MUTATIONS only.
+ *   - READS are owned by AcademyQueries. This module does not
+ *     re-implement reads; the legacy read functions below are thin
+ *     aliases that delegate to AcademyQueries and are kept only for
+ *     backward compatibility. New code should call AcademyQueries.
+ *   - Uses LAZY LOADING to break circular dependencies.
+ *   - All mutations are candidate-based: validate, clone, return a
+ *     candidate with a `mutate` closure. Callers run the closure
+ *     inside their own transaction (or invoke it directly, which is
+ *     what the public mutation functions below do).
+ *   - This module does NOT call saveData() directly. The public
+ *     mutation functions here are self-contained candidate runners;
+ *     if you need transactional persistence, route through
+ *     MutationPipeline at the call site.
+ * 
+ * DATA STORE CONTRACT:
+ *   - window.data.curriculum.autoGroups is the source of truth.
+ *   - Shape:
+ *       autoGroups = {
+ *         [groupKey]: {
+ *           id, disciplineId, instructorId, displayName,
+ *           students: [charId, ...],
+ *           slots: [{ week, day, hour, duration, label }],
+ *           createdAt
+ *         }
+ *       }
+ *   - groupKey is conventionally `disciplineId + '_' + instructorId`.
  * 
  * DEPENDENCIES (lazily loaded):
- *   - window.ObjectUtils (from object-utils.js) - MANDATORY
- *   - window.IdUtils (from id-utils.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.DisciplineQueries (from discipline-queries.js) - MANDATORY
- *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
- *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
- *   - window.AcademyQueries (from academy-queries.js) - LAZY LOADED
+ *   - window.ObjectUtils - MANDATORY
+ *   - window.IdUtils - MANDATORY
+ *   - window.CharacterQueries - MANDATORY
+ *   - window.DisciplineQueries - MANDATORY
+ *   - window.CalendarValidation - MANDATORY
+ *   - window.CalendarConstants - MANDATORY
+ *   - window.AcademyQueries - LAZY (for reads only)
  * 
  * USAGE:
  *   var groups = window.AcademyGroups;
@@ -38,13 +56,9 @@
  *   var result = groups.removeStudentFromGroup(key, studentId);
  *   var result = groups.addSlotToGroup(key, week, day, hour, duration, label);
  *   var result = groups.removeSlotFromGroup(key, week, day, hour);
- *   var result = groups.addStudentsToGroup(key, [studentId1, studentId2]);
- *   var result = groups.removeStudentsFromGroup(key, [studentId1, studentId2]);
  *   
  *   // Candidate builders (for MutationPipeline)
  *   var candidate = groups.buildCreateGroupCandidate(disciplineId, instructorId);
- *   var candidate = groups.buildDeleteGroupCandidate(key);
- *   // etc.
  */
 
 (function() {
@@ -56,7 +70,7 @@
     window.__academyGroupsLoaded = true;
 
     // ============================================================
-    // LAZY LOADING HELPERS - Breaks circular dependencies
+    // LAZY LOADING HELPERS
     // ============================================================
 
     function getAcademyQueries() {
@@ -87,10 +101,6 @@
         return window.CalendarConstants || null;
     }
 
-    function getMutationPipeline() {
-        return window.MutationPipeline || null;
-    }
-
     // ============================================================
     // DEPENDENCY CHECK - Warns but doesn't fail
     // ============================================================
@@ -98,7 +108,6 @@
     function checkDependencies() {
         var missing = [];
 
-        // Check critical dependencies
         if (!getObjectUtils()) {
             missing.push('ObjectUtils');
         }
@@ -118,7 +127,6 @@
             missing.push('CalendarConstants');
         }
 
-        // AcademyQueries is lazily loaded - warn but don't fail
         if (!getAcademyQueries()) {
             missing.push('AcademyQueries (lazy)');
         }
@@ -175,326 +183,23 @@
         return { success: true, data: data };
     }
 
+    /**
+     * Get the auto-groups store, defensively.
+     * The store is a plain object at curriculum.autoGroups.
+     * Returns {} if missing.
+     */
     function getAutoGroupsStore() {
         if (!window.data || typeof window.data !== 'object') {
-            return null;
+            return {};
         }
         if (!window.data.curriculum || typeof window.data.curriculum !== 'object') {
-            return null;
-        }
-        return window.data.curriculum.autoGroups;
-    }
-
-    // ============================================================
-    // READ OPERATIONS - Lazy load from AcademyQueries
-    // ============================================================
-
-    /**
-     * Get an auto-group by key (lazy loaded from AcademyQueries).
-     * 
-     * @param {string} key - Group key (disciplineId_instructorId)
-     * @returns {object|null} Group object or null
-     */
-    function getAutoGroup(key) {
-        if (!isNonEmptyString(key)) {
-            return null;
-        }
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return null;
-        }
-        var getGroup = AcademyQueries.getGroup || AcademyQueries.getAutoGroup;
-        if (typeof getGroup === 'function') {
-            return getGroup.call(AcademyQueries, key);
-        }
-        return null;
-    }
-
-    /**
-     * Check if a student is in a group (lazy loaded from AcademyQueries).
-     * 
-     * @param {string} key - Group key
-     * @param {string} studentId - Student ID
-     * @returns {boolean} True if in group
-     */
-    function isStudentInGroup(key, studentId) {
-        if (!isNonEmptyString(key) || !isNonEmptyString(studentId)) {
-            return false;
-        }
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return false;
-        }
-        var isInGroup = AcademyQueries.isStudentInGroup;
-        if (typeof isInGroup === 'function') {
-            return isInGroup.call(AcademyQueries, key, studentId);
-        }
-        return false;
-    }
-
-    /**
-     * Get students in a group (lazy loaded from AcademyQueries).
-     * 
-     * @param {string} key - Group key
-     * @returns {array} Array of student IDs
-     */
-    function getGroupStudents(key) {
-        if (!isNonEmptyString(key)) {
-            return [];
-        }
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return [];
-        }
-        var getStudents = AcademyQueries.getGroupStudents;
-        if (typeof getStudents === 'function') {
-            return getStudents.call(AcademyQueries, key);
-        }
-        return [];
-    }
-
-    /**
-     * Get slots in a group (lazy loaded from AcademyQueries).
-     * 
-     * @param {string} key - Group key
-     * @returns {array} Array of slot objects
-     */
-    function getGroupSlots(key) {
-        if (!isNonEmptyString(key)) {
-            return [];
-        }
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return [];
-        }
-        var getSlots = AcademyQueries.getGroupSlots;
-        if (typeof getSlots === 'function') {
-            return getSlots.call(AcademyQueries, key);
-        }
-        return [];
-    }
-
-    /**
-     * Get all auto-groups (lazy loaded from AcademyQueries).
-     * 
-     * @returns {object} Groups by key
-     */
-    function getAllAutoGroups() {
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
             return {};
         }
-        var getAll = AcademyQueries.getAllGroups || AcademyQueries.getAutoGroups;
-        if (typeof getAll === 'function') {
-            return getAll.call(AcademyQueries);
-        }
-        return {};
-    }
-
-    /**
-     * Get groups by discipline (lazy loaded from AcademyQueries).
-     * 
-     * @param {string} disciplineId - Discipline ID
-     * @returns {object} Groups by key
-     */
-    function getGroupsByDiscipline(disciplineId) {
-        if (!isNonEmptyString(disciplineId)) {
+        var store = window.data.curriculum.autoGroups;
+        if (!store || typeof store !== 'object' || Array.isArray(store)) {
             return {};
         }
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return {};
-        }
-        var getByDiscipline = AcademyQueries.getGroupsByDiscipline;
-        if (typeof getByDiscipline === 'function') {
-            return getByDiscipline.call(AcademyQueries, disciplineId);
-        }
-        return {};
-    }
-
-    /**
-     * Get groups by instructor (lazy loaded from AcademyQueries).
-     * 
-     * @param {string} instructorId - Instructor ID
-     * @returns {object} Groups by key
-     */
-    function getGroupsByInstructor(instructorId) {
-        if (!isNonEmptyString(instructorId)) {
-            return {};
-        }
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return {};
-        }
-        var getByInstructor = AcademyQueries.getGroupsByInstructor;
-        if (typeof getByInstructor === 'function') {
-            return getByInstructor.call(AcademyQueries, instructorId);
-        }
-        return {};
-    }
-
-    /**
-     * Get student count in a group (lazy loaded from AcademyQueries).
-     * 
-     * @param {string} key - Group key
-     * @returns {number} Number of students
-     */
-    function getGroupStudentCount(key) {
-        if (!isNonEmptyString(key)) {
-            return 0;
-        }
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return 0;
-        }
-        var getCount = AcademyQueries.getGroupStudentCount;
-        if (typeof getCount === 'function') {
-            return getCount.call(AcademyQueries, key);
-        }
-        var students = getGroupStudents(key);
-        return students.length;
-    }
-
-    /**
-     * Get slot count in a group (lazy loaded from AcademyQueries).
-     * 
-     * @param {string} key - Group key
-     * @returns {number} Number of slots
-     */
-    function getGroupSlotCount(key) {
-        if (!isNonEmptyString(key)) {
-            return 0;
-        }
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return 0;
-        }
-        var getCount = AcademyQueries.getGroupSlotCount;
-        if (typeof getCount === 'function') {
-            return getCount.call(AcademyQueries, key);
-        }
-        var slots = getGroupSlots(key);
-        return slots.length;
-    }
-
-    /**
-     * Get groups for a student (lazy loaded from AcademyQueries).
-     * 
-     * @param {string} studentId - Student ID
-     * @returns {object} Groups by key
-     */
-    function getGroupsForStudent(studentId) {
-        if (!isNonEmptyString(studentId)) {
-            return {};
-        }
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return {};
-        }
-        var getForStudent = AcademyQueries.getGroupsForStudent;
-        if (typeof getForStudent === 'function') {
-            return getForStudent.call(AcademyQueries, studentId);
-        }
-        return {};
-    }
-
-    /**
-     * Get groups for a specific week (lazy loaded from AcademyQueries).
-     * 
-     * @param {number} week - Week number
-     * @returns {object} Groups by key
-     */
-    function getGroupsForWeek(week) {
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return {};
-        }
-        var getForWeek = AcademyQueries.getGroupsForWeek;
-        if (typeof getForWeek === 'function') {
-            return getForWeek.call(AcademyQueries, week);
-        }
-        return {};
-    }
-
-    /**
-     * Get slots for a group at a specific week (lazy loaded from AcademyQueries).
-     * 
-     * @param {string} key - Group key
-     * @param {number} week - Week number
-     * @returns {array} Array of slot objects
-     */
-    function getGroupSlotsByWeek(key, week) {
-        if (!isNonEmptyString(key)) {
-            return [];
-        }
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return [];
-        }
-        var getSlotsByWeek = AcademyQueries.getGroupSlotsByWeek;
-        if (typeof getSlotsByWeek === 'function') {
-            return getSlotsByWeek.call(AcademyQueries, key, week);
-        }
-        return [];
-    }
-
-    /**
-     * Get a group summary (lazy loaded from AcademyQueries).
-     * 
-     * @param {string} key - Group key
-     * @returns {object|null} Group summary or null
-     */
-    function getGroupSummary(key) {
-        if (!isNonEmptyString(key)) {
-            return null;
-        }
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return null;
-        }
-        var getSummary = AcademyQueries.getGroupSummary;
-        if (typeof getSummary === 'function') {
-            return getSummary.call(AcademyQueries, key);
-        }
-        return null;
-    }
-
-    /**
-     * Get all group summaries (lazy loaded from AcademyQueries).
-     * 
-     * @returns {array} Array of group summaries
-     */
-    function getAllGroupSummaries() {
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return [];
-        }
-        var getAllSummaries = AcademyQueries.getAllGroupSummaries;
-        if (typeof getAllSummaries === 'function') {
-            return getAllSummaries.call(AcademyQueries);
-        }
-        return [];
-    }
-
-    /**
-     * Get group display name (lazy loaded from AcademyQueries).
-     * 
-     * @param {string} key - Group key
-     * @returns {string} Group display name
-     */
-    function getGroupDisplayName(key) {
-        if (!isNonEmptyString(key)) {
-            return 'Unknown Group';
-        }
-        var AcademyQueries = getAcademyQueries();
-        if (!AcademyQueries) {
-            return 'Unknown Group';
-        }
-        var getDisplay = AcademyQueries.getGroupDisplayName;
-        if (typeof getDisplay === 'function') {
-            return getDisplay.call(AcademyQueries, key);
-        }
-        return 'Unknown Group';
+        return store;
     }
 
     // ============================================================
@@ -617,6 +322,54 @@
     }
 
     // ============================================================
+    // INTERNAL READS - Direct store access for mutations
+    // ============================================================
+    // 
+    // These are used INTERNALLY by the candidate builders to
+    // validate preconditions. They read the store directly. The
+    // public read API is on AcademyQueries; these are private
+    // helpers so that mutations don't depend on the public read
+    // module.
+
+    function getGroupFromStore(key) {
+        if (!isNonEmptyString(key)) {
+            return null;
+        }
+        var store = getAutoGroupsStore();
+        return store[key] || null;
+    }
+
+    function getStudentIdsFromStore(key) {
+        var group = getGroupFromStore(key);
+        if (!group || !Array.isArray(group.students)) {
+            return [];
+        }
+        return group.students.slice();
+    }
+
+    function getSlotsFromStore(key) {
+        var group = getGroupFromStore(key);
+        if (!group || !Array.isArray(group.slots)) {
+            return [];
+        }
+        return group.slots.map(function(slot) { return deepClone(slot); });
+    }
+
+    function isStudentInGroupStore(key, studentId) {
+        if (!isNonEmptyString(key) || !isNonEmptyString(studentId)) {
+            return false;
+        }
+        var students = getStudentIdsFromStore(key);
+        var target = String(studentId);
+        for (var i = 0; i < students.length; i++) {
+            if (String(students[i]) === target) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // ============================================================
     // CANDIDATE BUILDERS - For MutationPipeline
     // ============================================================
 
@@ -625,7 +378,7 @@
      * 
      * @param {string} disciplineId - Discipline ID
      * @param {string} instructorId - Instructor ID
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {object} { success, data?: { mutate, group, groupKey }, message? }
      */
     function buildCreateGroupCandidate(disciplineId, instructorId) {
         var discResult = validateDisciplineId(disciplineId);
@@ -645,8 +398,7 @@
 
         var groupKey = String(disciplineId) + '_' + String(instructorId);
 
-        // Use lazy-loaded AcademyQueries for read
-        var existing = getAutoGroup(groupKey);
+        var existing = getGroupFromStore(groupKey);
         if (existing) {
             return failure('Group already exists for this discipline and instructor.');
         }
@@ -673,7 +425,9 @@
             if (!dataStore.curriculum) {
                 dataStore.curriculum = {};
             }
-            if (!dataStore.curriculum.autoGroups) {
+            if (!dataStore.curriculum.autoGroups ||
+                typeof dataStore.curriculum.autoGroups !== 'object' ||
+                Array.isArray(dataStore.curriculum.autoGroups)) {
                 dataStore.curriculum.autoGroups = {};
             }
             dataStore.curriculum.autoGroups[groupKey] = deepClone(newGroup);
@@ -691,7 +445,7 @@
      * Build a candidate for deleting a group.
      * 
      * @param {string} key - Group key
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {object} { success, data?: { mutate, displayName }, message? }
      */
     function buildDeleteGroupCandidate(key) {
         var keyResult = validateGroupKey(key);
@@ -699,8 +453,7 @@
             return failure(keyResult.message);
         }
 
-        // Use lazy-loaded AcademyQueries for read
-        var group = getAutoGroup(key);
+        var group = getGroupFromStore(key);
         if (!group) {
             return failure('Group not found.');
         }
@@ -727,7 +480,7 @@
      * 
      * @param {string} key - Group key
      * @param {string} studentId - Student ID
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {object} { success, data?: { mutate, ... }, message? }
      */
     function buildAddStudentCandidate(key, studentId) {
         var keyResult = validateGroupKey(key);
@@ -740,13 +493,12 @@
             return failure(studentResult.message);
         }
 
-        // Use lazy-loaded AcademyQueries for read
-        var group = getAutoGroup(key);
+        var group = getGroupFromStore(key);
         if (!group) {
             return failure('Group not found.');
         }
 
-        if (isStudentInGroup(key, studentId)) {
+        if (isStudentInGroupStore(key, studentId)) {
             return failure('Student is already in this group.');
         }
 
@@ -783,7 +535,7 @@
      * 
      * @param {string} key - Group key
      * @param {string} studentId - Student ID
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {object} { success, data?: { mutate, ... }, message? }
      */
     function buildRemoveStudentCandidate(key, studentId) {
         var keyResult = validateGroupKey(key);
@@ -795,13 +547,12 @@
             return failure('Student ID is required.');
         }
 
-        // Use lazy-loaded AcademyQueries for read
-        var group = getAutoGroup(key);
+        var group = getGroupFromStore(key);
         if (!group) {
             return failure('Group not found.');
         }
 
-        if (!isStudentInGroup(key, studentId)) {
+        if (!isStudentInGroupStore(key, studentId)) {
             return failure('Student is not in this group.');
         }
 
@@ -844,7 +595,7 @@
      * @param {number|string} hour - Hour number
      * @param {number|string} duration - Duration in hours
      * @param {string} label - Optional label
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {object} { success, data?: { mutate, ... }, message? }
      */
     function buildAddSlotCandidate(key, week, day, hour, duration, label) {
         var CalendarConstants = getCalendarConstants();
@@ -879,13 +630,12 @@
             return failure(keyResult.message);
         }
 
-        // Use lazy-loaded AcademyQueries for read
-        var group = getAutoGroup(key);
+        var group = getGroupFromStore(key);
         if (!group) {
             return failure('Group not found.');
         }
 
-        var slots = getGroupSlots(key);
+        var slots = getSlotsFromStore(key);
 
         var newSlot = {
             week: weekNum,
@@ -936,7 +686,7 @@
      * @param {number|string} week - Week number
      * @param {number|string} day - Day number (1-7)
      * @param {number|string} hour - Hour number
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {object} { success, data?: { mutate, ... }, message? }
      */
     function buildRemoveSlotCandidate(key, week, day, hour) {
         var CalendarConstants = getCalendarConstants();
@@ -966,13 +716,12 @@
             return failure(keyResult.message);
         }
 
-        // Use lazy-loaded AcademyQueries for read
-        var group = getAutoGroup(key);
+        var group = getGroupFromStore(key);
         if (!group) {
             return failure('Group not found.');
         }
 
-        var slots = getGroupSlots(key);
+        var slots = getSlotsFromStore(key);
         if (!Array.isArray(slots) || slots.length === 0) {
             return failure('Group has no slots.');
         }
@@ -1025,7 +774,7 @@
      * 
      * @param {string} key - Group key
      * @param {array} studentIds - Array of student IDs
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {object} { success, data?: { mutate, ... }, message? }
      */
     function buildAddStudentsCandidate(key, studentIds) {
         var keyResult = validateGroupKey(key);
@@ -1038,13 +787,12 @@
             return failure(studentValidation.message);
         }
 
-        // Use lazy-loaded AcademyQueries for read
-        var group = getAutoGroup(key);
+        var group = getGroupFromStore(key);
         if (!group) {
             return failure('Group not found.');
         }
 
-        var existingStudents = getGroupStudents(key);
+        var existingStudents = getStudentIdsFromStore(key);
         var newStudents = [];
         var alreadyInGroup = [];
 
@@ -1109,7 +857,7 @@
      * 
      * @param {string} key - Group key
      * @param {array} studentIds - Array of student IDs
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {object} { success, data?: { mutate, ... }, message? }
      */
     function buildRemoveStudentsCandidate(key, studentIds) {
         var keyResult = validateGroupKey(key);
@@ -1121,13 +869,12 @@
             return failure('At least one student ID is required.');
         }
 
-        // Use lazy-loaded AcademyQueries for read
-        var group = getAutoGroup(key);
+        var group = getGroupFromStore(key);
         if (!group) {
             return failure('Group not found.');
         }
 
-        var existingStudents = getGroupStudents(key);
+        var existingStudents = getStudentIdsFromStore(key);
         if (!Array.isArray(existingStudents) || existingStudents.length === 0) {
             return failure('Group has no students.');
         }
@@ -1198,10 +945,10 @@
 
     /**
      * Create a new group.
-     * 
-     * @param {string} disciplineId - Discipline ID
-     * @param {string} instructorId - Instructor ID
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * Runs the candidate mutate directly. Does not persist through
+     * MutationPipeline; if transactional persistence is needed, use
+     * buildCreateGroupCandidate at the call site and route it through
+     * MutationPipeline.
      */
     function createGroup(disciplineId, instructorId) {
         var candidate = buildCreateGroupCandidate(disciplineId, instructorId);
@@ -1217,12 +964,6 @@
         }
     }
 
-    /**
-     * Delete a group.
-     * 
-     * @param {string} key - Group key
-     * @returns {object} { success: boolean, data?: object, message?: string }
-     */
     function deleteGroup(key) {
         var candidate = buildDeleteGroupCandidate(key);
         if (!candidate.success) {
@@ -1237,13 +978,6 @@
         }
     }
 
-    /**
-     * Add a student to a group.
-     * 
-     * @param {string} key - Group key
-     * @param {string} studentId - Student ID
-     * @returns {object} { success: boolean, data?: object, message?: string }
-     */
     function addStudentToGroup(key, studentId) {
         var candidate = buildAddStudentCandidate(key, studentId);
         if (!candidate.success) {
@@ -1258,13 +992,6 @@
         }
     }
 
-    /**
-     * Remove a student from a group.
-     * 
-     * @param {string} key - Group key
-     * @param {string} studentId - Student ID
-     * @returns {object} { success: boolean, data?: object, message?: string }
-     */
     function removeStudentFromGroup(key, studentId) {
         var candidate = buildRemoveStudentCandidate(key, studentId);
         if (!candidate.success) {
@@ -1279,17 +1006,6 @@
         }
     }
 
-    /**
-     * Add a slot to a group.
-     * 
-     * @param {string} key - Group key
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @param {number|string} duration - Duration in hours
-     * @param {string} label - Optional label
-     * @returns {object} { success: boolean, data?: object, message?: string }
-     */
     function addSlotToGroup(key, week, day, hour, duration, label) {
         var candidate = buildAddSlotCandidate(key, week, day, hour, duration, label);
         if (!candidate.success) {
@@ -1304,15 +1020,6 @@
         }
     }
 
-    /**
-     * Remove a slot from a group.
-     * 
-     * @param {string} key - Group key
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @returns {object} { success: boolean, data?: object, message?: string }
-     */
     function removeSlotFromGroup(key, week, day, hour) {
         var candidate = buildRemoveSlotCandidate(key, week, day, hour);
         if (!candidate.success) {
@@ -1327,13 +1034,6 @@
         }
     }
 
-    /**
-     * Add multiple students to a group.
-     * 
-     * @param {string} key - Group key
-     * @param {array} studentIds - Array of student IDs
-     * @returns {object} { success: boolean, data?: object, message?: string }
-     */
     function addStudentsToGroup(key, studentIds) {
         var candidate = buildAddStudentsCandidate(key, studentIds);
         if (!candidate.success) {
@@ -1341,7 +1041,7 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            candidate.data.mutate();
             return success({
                 added: candidate.data.added,
                 students: candidate.data.students,
@@ -1353,13 +1053,6 @@
         }
     }
 
-    /**
-     * Remove multiple students from a group.
-     * 
-     * @param {string} key - Group key
-     * @param {array} studentIds - Array of student IDs
-     * @returns {object} { success: boolean, data?: object, message?: string }
-     */
     function removeStudentsFromGroup(key, studentIds) {
         var candidate = buildRemoveStudentsCandidate(key, studentIds);
         if (!candidate.success) {
@@ -1367,7 +1060,7 @@
         }
 
         try {
-            var result = candidate.data.mutate();
+            candidate.data.mutate();
             return success({
                 removed: candidate.data.removed,
                 students: candidate.data.students,
@@ -1376,6 +1069,139 @@
         } catch (e) {
             return failure(e.message || 'Failed to remove students.');
         }
+    }
+
+    // ============================================================
+    // BACKWARD-COMPATIBILITY READ ALIASES
+    // ============================================================
+    // 
+    // These delegate to AcademyQueries. They exist for backward
+    // compatibility with callers that still use AcademyGroups.getX.
+    // New code should call AcademyQueries.getX directly.
+    // 
+    // IMPORTANT: do not add new reads here, and do not make
+    // AcademyQueries call these aliases — that would recreate the
+    // recursion loop that caused a stack overflow. AcademyQueries is
+    // the single source of truth for reads; these are aliases only.
+
+    function getAllAutoGroups() {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getAllGroups === 'function') {
+            return AQ.getAllGroups();
+        }
+        return {};
+    }
+
+    function getAutoGroup(key) {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getGroup === 'function') {
+            return AQ.getGroup(key);
+        }
+        return null;
+    }
+
+    function isStudentInGroup(key, studentId) {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.isStudentInGroup === 'function') {
+            return AQ.isStudentInGroup(key, studentId);
+        }
+        return false;
+    }
+
+    function getGroupStudents(key) {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getGroupStudents === 'function') {
+            return AQ.getGroupStudents(key);
+        }
+        return [];
+    }
+
+    function getGroupSlots(key) {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getGroupSlots === 'function') {
+            return AQ.getGroupSlots(key);
+        }
+        return [];
+    }
+
+    function getGroupsByDiscipline(disciplineId) {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getGroupsByDiscipline === 'function') {
+            return AQ.getGroupsByDiscipline(disciplineId);
+        }
+        return {};
+    }
+
+    function getGroupsByInstructor(instructorId) {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getGroupsByInstructor === 'function') {
+            return AQ.getGroupsByInstructor(instructorId);
+        }
+        return {};
+    }
+
+    function getGroupStudentCount(key) {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getGroupStudentCount === 'function') {
+            return AQ.getGroupStudentCount(key);
+        }
+        return 0;
+    }
+
+    function getGroupSlotCount(key) {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getGroupSlotCount === 'function') {
+            return AQ.getGroupSlotCount(key);
+        }
+        return 0;
+    }
+
+    function getGroupsForStudent(studentId) {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getGroupsForStudent === 'function') {
+            return AQ.getGroupsForStudent(studentId);
+        }
+        return {};
+    }
+
+    function getGroupsForWeek(week) {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getGroupsForWeek === 'function') {
+            return AQ.getGroupsForWeek(week);
+        }
+        return {};
+    }
+
+    function getGroupSlotsByWeek(key, week) {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getGroupSlotsByWeek === 'function') {
+            return AQ.getGroupSlotsByWeek(key, week);
+        }
+        return [];
+    }
+
+    function getGroupSummary(key) {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getGroupSummary === 'function') {
+            return AQ.getGroupSummary(key);
+        }
+        return null;
+    }
+
+    function getAllGroupSummaries() {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getAllGroupSummaries === 'function') {
+            return AQ.getAllGroupSummaries();
+        }
+        return [];
+    }
+
+    function getGroupDisplayName(key) {
+        var AQ = getAcademyQueries();
+        if (AQ && typeof AQ.getGroupDisplayName === 'function') {
+            return AQ.getGroupDisplayName(key);
+        }
+        return 'Unknown Group';
     }
 
     // ============================================================
@@ -1403,7 +1229,7 @@
         buildAddStudentsCandidate: buildAddStudentsCandidate,
         buildRemoveStudentsCandidate: buildRemoveStudentsCandidate,
 
-        // ---- Read Operations (lazy loaded from AcademyQueries) ----
+        // ---- Read aliases (DEPRECATED — call AcademyQueries directly) ----
         getAutoGroup: getAutoGroup,
         isStudentInGroup: isStudentInGroup,
         getGroupStudents: getGroupStudents,
@@ -1446,23 +1272,8 @@
             }
         }
 
-        // Check lazy-loaded read operations
-        var readOps = [
-            'getAutoGroup', 'isStudentInGroup', 'getGroupStudents',
-            'getGroupSlots', 'getAllAutoGroups', 'getGroupsByDiscipline',
-            'getGroupsByInstructor', 'getGroupStudentCount', 'getGroupSlotCount',
-            'getGroupsForStudent', 'getGroupsForWeek', 'getGroupSlotsByWeek',
-            'getGroupSummary', 'getAllGroupSummaries', 'getGroupDisplayName'
-        ];
-
-        for (var j = 0; j < readOps.length; j++) {
-            if (typeof exports[readOps[j]] !== 'function') {
-                missing.push(readOps[j] + ' (lazy)');
-            }
-        }
-
         if (missing.length > 0) {
-            console.warn('[AcademyGroups] Verification - some exports may be missing:', missing.join(', '));
+            console.warn('[AcademyGroups] Verification failed - missing exports:', missing.join(', '));
         } else {
             console.log('[AcademyGroups] All exports verified successfully.');
         }
