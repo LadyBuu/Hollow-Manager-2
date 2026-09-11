@@ -1,91 +1,90 @@
 /**
  * modules/characters/character-stats.js - Character Stats & Magic System
- * Domain logic for stats, magic, class suggestions, and special moves
+ * Domain logic for physical stats, magical proficiencies, classes,
+ * HP/MP, and special moves.
+ * 
  * Path: js/modules/characters/character-stats.js
  * 
  * This module handles:
- *   - Physical stats calculation and validation
- *   - Magic proficiency calculation and validation
- *   - Class suggestion algorithm
- *   - Magic class suggestion algorithm
- *   - Magic power calculation
+ *   - Physical stat calculation, validation, modifiers
+ *   - Random physical stat generation (6–18 range)
+ *   - Physical class derivation (weighted scoring)
+ *   - Physical class application (rewrites stats)
+ *   - Magical proficiency calculation, validation, levels
+ *   - Random magical proficiency generation (weighted by category)
+ *   - Broad magical class derivation (category totals)
+ *   - Fine magical class derivation (per-proficiency)
+ *   - Fine magical class application (raises a single proficiency)
+ *   - Total magical power (0–180 sum)
+ *   - HP / MP calculation (random + modifiers)
  *   - Special moves CRUD (via MutationPipeline)
  * 
  * IMPORTANT:
- *   - DOMAIN LOGIC ONLY - no rendering (see character-stats-view.js)
+ *   - DOMAIN LOGIC ONLY - no rendering
  *   - All MUTATIONS use MutationPipeline
  *   - All mutation APIs accept characterId, not live character objects
  *   - Returns structured results for caller handling
  *   - No UI dependencies (no notifications, no confirm, no rendering)
- *   - Uses CharacterConstants for all definitions (single source of truth)
+ *   - Uses CharacterConstants for physical classes
+ *   - Uses MagicConstants for magical types, classes, levels
  *   - Uses CharacterQueries for character data and display names
  *   - Uses MutationPipeline for transaction management
  *   - Uses IdUtils for ID generation
- *   - Validation is PURE - no side effects
  * 
  * DEPENDENCIES:
- *   - window.CharacterConstants (from character-constants.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
- *   - window.IdUtils (from id-utils.js) - MANDATORY
- *   - window.MagicConstants (from magic-constants.js) - MANDATORY
+ *   - window.CharacterConstants - MANDATORY
+ *   - window.MagicConstants - MANDATORY
+ *   - window.CharacterQueries - MANDATORY
+ *   - window.MutationPipeline - MANDATORY
+ *   - window.IdUtils - MANDATORY
  * 
  * USAGE:
  *   var CS = window.CharacterStats;
- *   CS.addSpecialMove('char_123', 'physical', 'Flurry Strike')
- *      .then(function(result) { ... });
- *   CS.removeSpecialMove('char_123', 'physical', 'move_456')
- *      .then(function(result) { ... });
- *   var suggestion = CS.suggestClass({ str: 16, dex: 14, ... });
+ *   var stats = CS.rollPhysicalStats();
+ *   var cls = CS.derivePhysicalClass(stats);
+ *   var magic = CS.rollMagicalProficiencies();
+ *   var classes = CS.deriveMagicalClasses(magic);
+ *   CS.addSpecialMove('char_123', 'physical', 'Flurry Strike').then(...);
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__characterStatsLoaded) {
         return;
     }
     window.__characterStatsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // DEPENDENCY IMPORTS
     // ============================================================
 
     var CharacterConstants = window.CharacterConstants;
+    var MagicConstants = window.MagicConstants;
     var CharacterQueries = window.CharacterQueries;
     var MutationPipeline = window.MutationPipeline;
     var IdUtils = window.IdUtils;
-    var MagicConstants = window.MagicConstants;
 
     // ============================================================
-    // CONSTANTS - From CharacterConstants (MANDATORY)
+    // CONSTANTS - Lazy access with fallback guards
     // ============================================================
 
-    // Stats
-    var STAT_KEYS = CharacterConstants.STAT_KEYS;
-    var STAT_MIN = CharacterConstants.STAT_MIN;
-    var STAT_MAX = CharacterConstants.STAT_MAX;
-    var STAT_DEFAULT = CharacterConstants.STAT_DEFAULT;
-    var STAT_DEFINITIONS = CharacterConstants.STAT_DEFINITIONS;
+    function getCC() { return CharacterConstants; }
+    function getMC() { return MagicConstants; }
 
-    // Magic
-    var MAGIC_MAX = CharacterConstants.MAGIC_MAX;
-    var MAGIC_TYPES = CharacterConstants.MAGIC_TYPES;
-    var MAGIC_CATEGORIES = CharacterConstants.MAGIC_CATEGORIES;
-    var MAGIC_TYPE_KEYS = CharacterConstants.MAGIC_TYPE_KEYS;
-    var BALANCED_MAGE_THRESHOLD = CharacterConstants.BALANCED_MAGE_THRESHOLD;
-    var MAGIC_CATEGORY_MULTIPLIERS = CharacterConstants.MAGIC_CATEGORY_MULTIPLIERS;
-    var MAGIC_CLASS_MAP = CharacterConstants.MAGIC_CLASS_MAP;
-    var MAGIC_POWER_THRESHOLDS = CharacterConstants.MAGIC_POWER_THRESHOLDS;
+    var STAT_KEYS = (CharacterConstants && CharacterConstants.STAT_KEYS) || ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    var STAT_MIN = (CharacterConstants && CharacterConstants.STAT_MIN) || 1;
+    var STAT_MAX = (CharacterConstants && CharacterConstants.STAT_MAX) || 30;
+    var STAT_DEFAULT = (CharacterConstants && CharacterConstants.STAT_DEFAULT) || 10;
+    var STAT_RANDOM_MIN = (CharacterConstants && CharacterConstants.STAT_RANDOM_MIN) || 6;
+    var STAT_RANDOM_MAX = (CharacterConstants && CharacterConstants.STAT_RANDOM_MAX) || 18;
 
-    // Classes
-    var CLASS_DEFINITIONS = CharacterConstants.CLASS_DEFINITIONS;
+    var MAGIC_MAX = (MagicConstants && MagicConstants.MAGIC_MAX) || 10;
+    var MAGIC_FINE_CLASS_MIN = (MagicConstants && MagicConstants.MAGIC_FINE_CLASS_MIN) || 3;
 
-    // Special moves
-    var MAX_SPECIAL_MOVES = CharacterConstants.MAX_SPECIAL_MOVES;
-    var MAX_MOVE_NAME_LENGTH = CharacterConstants.MAX_MOVE_NAME_LENGTH;
-    var MAX_MOVE_DESCRIPTION_LENGTH = CharacterConstants.MAX_MOVE_DESCRIPTION_LENGTH;
+    var MAX_SPECIAL_MOVES = (CharacterConstants && CharacterConstants.MAX_SPECIAL_MOVES) || 20;
+    var MAX_MOVE_NAME_LENGTH = (CharacterConstants && CharacterConstants.MAX_MOVE_NAME_LENGTH) || 100;
+    var MAX_MOVE_DESCRIPTION_LENGTH = (CharacterConstants && CharacterConstants.MAX_MOVE_DESCRIPTION_LENGTH) || 500;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -94,12 +93,9 @@
     function checkDependencies() {
         var missing = [];
 
-        // CharacterConstants is MANDATORY
-        if (!CharacterConstants) {
-            missing.push('CharacterConstants');
-        }
+        if (!CharacterConstants) { missing.push('CharacterConstants'); }
+        if (!MagicConstants) { missing.push('MagicConstants'); }
 
-        // CharacterQueries is MANDATORY
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
             missing.push('CharacterQueries.getCharacterById');
         }
@@ -107,30 +103,63 @@
             missing.push('CharacterQueries.getDisplayName');
         }
 
-        // MutationPipeline is MANDATORY
         if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
             missing.push('MutationPipeline.performMutation');
         }
 
-        // IdUtils is MANDATORY
         if (!IdUtils || typeof IdUtils.generateId !== 'function') {
             missing.push('IdUtils.generateId');
         }
 
-        // MagicConstants is MANDATORY
-        if (!MagicConstants) {
-            missing.push('MagicConstants');
-        }
-
         if (missing.length > 0) {
-            console.warn('CharacterStats: Missing dependencies:', missing.join(', '));
+            console.warn('[CharacterStats] Missing dependencies:', missing.join(', '));
             return false;
         }
         return true;
     }
 
     // ============================================================
-    // STAT FUNCTIONS - Pure
+    // UTILITY - Random helpers
+    // ============================================================
+
+    function randomInt(min, max) {
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
+    function pickWeighted(items, weights) {
+        // items: array, weights: same length, sums to any positive
+        var total = 0;
+        for (var i = 0; i < weights.length; i++) { total += weights[i]; }
+        if (total <= 0) { return items[0]; }
+
+        var roll = Math.random() * total;
+        var acc = 0;
+        for (var j = 0; j < items.length; j++) {
+            acc += weights[j];
+            if (roll < acc) { return items[j]; }
+        }
+        return items[items.length - 1];
+    }
+
+    function shuffle(arr) {
+        var result = arr.slice();
+        for (var i = result.length - 1; i > 0; i--) {
+            var j = Math.floor(Math.random() * (i + 1));
+            var tmp = result[i];
+            result[i] = result[j];
+            result[j] = tmp;
+        }
+        return result;
+    }
+
+    function clampNumber(value, min, max) {
+        var num = Number(value);
+        if (!isFinite(num)) { return min; }
+        return Math.max(min, Math.min(max, num));
+    }
+
+    // ============================================================
+    // PHYSICAL STATS
     // ============================================================
 
     function getDefaultStats() {
@@ -143,12 +172,12 @@
 
     function clampStat(value) {
         var num = Number(value);
-        if (isNaN(num) || !isFinite(num)) return STAT_DEFAULT;
+        if (isNaN(num) || !isFinite(num)) { return STAT_DEFAULT; }
         return Math.max(STAT_MIN, Math.min(STAT_MAX, Math.round(num)));
     }
 
     function getCharacterStats(char) {
-        if (!char) return getDefaultStats();
+        if (!char) { return getDefaultStats(); }
         if (!char.stats || typeof char.stats !== 'object') {
             return getDefaultStats();
         }
@@ -176,195 +205,119 @@
     }
 
     // ============================================================
-    // CLASS SUGGESTION - Pure
+    // PHYSICAL STATS - Random roll
     // ============================================================
 
-    function suggestClass(stats) {
-        if (!stats) return null;
-
-        var scores = {};
+    /**
+     * Roll 6 physical stats, each independently in STAT_RANDOM_MIN..STAT_RANDOM_MAX.
+     * Uses a slight bias toward the middle of the range (3d6-shaped).
+     * 
+     * @returns {object} Stats object with str/dex/con/int/wis/cha
+     */
+    function rollPhysicalStats() {
+        var stats = {};
         STAT_KEYS.forEach(function(key) {
-            scores[key] = clampStat(stats[key]);
+            // 3d6 roll: 3-18, mean 10.5, bell-curve
+            var roll = randomInt(1, 6) + randomInt(1, 6) + randomInt(1, 6);
+
+            // Clamp to the allowed random range
+            if (roll < STAT_RANDOM_MIN) { roll = STAT_RANDOM_MIN; }
+            if (roll > STAT_RANDOM_MAX) { roll = STAT_RANDOM_MAX; }
+
+            stats[key] = roll;
+        });
+        return stats;
+    }
+
+    // ============================================================
+    // PHYSICAL CLASS - Derivation
+    // ============================================================
+
+    /**
+     * Derive the best-matching physical class from a stat profile.
+     * 
+     * @param {object} stats - Stats object
+     * @returns {object|null} { class: <classDef>, score: number, ranked: [...] }
+     */
+    function derivePhysicalClass(stats) {
+        if (!CharacterConstants || !Array.isArray(CharacterConstants.PHYSICAL_CLASSES)) {
+            return null;
+        }
+        if (!stats || typeof stats !== 'object') {
+            return null;
+        }
+
+        var normalised = {};
+        STAT_KEYS.forEach(function(key) {
+            normalised[key] = clampStat(stats[key]);
         });
 
-        var bestClass = null;
-        var bestScore = -Infinity;
-        var bestPriority = -Infinity;
+        var ranked = [];
 
-        CLASS_DEFINITIONS.forEach(function(cls) {
-            var meetsMin = true;
-            for (var stat in cls.minStats) {
-                if (Object.prototype.hasOwnProperty.call(cls.minStats, stat)) {
-                    if ((scores[stat] || 0) < cls.minStats[stat]) {
-                        meetsMin = false;
-                        break;
-                    }
-                }
-            }
-
-            if (!meetsMin) return;
-
-            var total = 0;
-            var totalWeight = 0;
-            for (var stat in cls.statWeights) {
-                if (Object.prototype.hasOwnProperty.call(cls.statWeights, stat)) {
-                    var weight = cls.statWeights[stat] || 0;
-                    var score = scores[stat] || STAT_DEFAULT;
-                    total += (score - 10) * weight;
-                    totalWeight += weight;
-                }
-            }
-
-            var normalized = totalWeight > 0 ? total / totalWeight : 0;
-
-            var primaryBonus = 0;
-            cls.primaryStats.forEach(function(stat) {
-                primaryBonus += (scores[stat] - 10) * 0.1;
+        CharacterConstants.PHYSICAL_CLASSES.forEach(function(cls) {
+            var score = 0;
+            STAT_KEYS.forEach(function(key) {
+                var weight = cls.weights[key] || 0;
+                score += normalised[key] * weight;
             });
-
-            var finalScore = normalized + primaryBonus;
-            var priority = cls.priority || 0;
-
-            if (finalScore > bestScore ||
-                (finalScore === bestScore && priority > bestPriority)) {
-                bestScore = finalScore;
-                bestPriority = priority;
-                bestClass = cls;
-            }
+            ranked.push({ class: cls, score: score });
         });
 
-        return bestClass;
+        ranked.sort(function(a, b) {
+            if (b.score !== a.score) { return b.score - a.score; }
+            // Stable tiebreak: alphabetical by label
+            return (a.class.label || '').localeCompare(b.class.label || '');
+        });
+
+        if (ranked.length === 0) { return null; }
+
+        return {
+            class: ranked[0].class,
+            score: ranked[0].score,
+            ranked: ranked
+        };
     }
 
-    // ============================================================
-    // CLASS APPLICATION - Domain operations (pure)
-    // ============================================================
-
     /**
-     * Apply class requirements to stats.
-     * Returns the required stat changes, does not mutate.
+     * Apply a physical class to a character's stats — returns new stats.
+     * Does NOT mutate. Formula: stat = 6 + weight * 40 + jitter(-2..+2)
      * 
-     * @param {object} stats - Current stats
-     * @param {string} classId - Class ID
-     * @returns {object} { success: boolean, changes: object, message: string }
+     * @param {string} classId - Physical class id
+     * @param {object} options - { jitter: boolean } default true
+     * @returns {object|null} New stats object, or null if class invalid
      */
-    function applyClassRequirements(stats, classId) {
-        var classDef = CLASS_DEFINITIONS.find(function(c) {
-            return c.id === classId;
-        });
+    function applyPhysicalClass(classId, options) {
+        options = options || {};
+        var useJitter = options.jitter !== false;
 
-        if (!classDef) {
-            return {
-                success: false,
-                message: 'Class definition not found.'
-            };
-        }
+        var cls = CharacterConstants && CharacterConstants.getPhysicalClass
+            ? CharacterConstants.getPhysicalClass(classId)
+            : null;
 
-        var changes = {};
-        var hasChanges = false;
+        if (!cls) { return null; }
 
-        var currentStats = {};
+        var stats = {};
         STAT_KEYS.forEach(function(key) {
-            currentStats[key] = clampStat(stats[key] || STAT_DEFAULT);
+            var w = cls.weights[key] || 0;
+            var base = Math.round(6 + w * 40);
+            if (useJitter) {
+                base += randomInt(-2, 2);
+            }
+            stats[key] = clampStat(base);
         });
 
-        if (classDef.minStats) {
-            for (var stat in classDef.minStats) {
-                if (Object.prototype.hasOwnProperty.call(classDef.minStats, stat)) {
-                    var min = classDef.minStats[stat];
-                    if (currentStats[stat] < min) {
-                        changes[stat] = min;
-                        hasChanges = true;
-                    }
-                }
-            }
-        }
-
-        return {
-            success: true,
-            changes: changes,
-            hasChanges: hasChanges,
-            classId: classId,
-            className: classDef.label,
-            message: hasChanges ? 'Applied ' + classDef.label + ' requirements.' : 'Stats already meet requirements.'
-        };
-    }
-
-    /**
-     * Apply magic class requirements to magic proficiencies.
-     * Returns the required proficiency changes, does not mutate.
-     * 
-     * @param {object} magic - Current magic proficiencies
-     * @param {string} magicClass - Magic class ID
-     * @returns {object} { success: boolean, changes: object, message: string }
-     */
-    function applyMagicClassRequirements(magic, magicClass) {
-        // Magic class requirements are defined in MAGIC_CLASS_MAP
-        var classConfig = null;
-        for (var category in MAGIC_CLASS_MAP) {
-            if (Object.prototype.hasOwnProperty.call(MAGIC_CLASS_MAP, category)) {
-                for (var type in MAGIC_CLASS_MAP[category]) {
-                    if (Object.prototype.hasOwnProperty.call(MAGIC_CLASS_MAP[category], type)) {
-                        if (MAGIC_CLASS_MAP[category][type] === magicClass) {
-                            classConfig = { category: category, type: type };
-                            break;
-                        }
-                    }
-                }
-                if (classConfig) break;
-            }
-        }
-
-        if (!classConfig) {
-            return {
-                success: false,
-                message: 'Magic class configuration not found.'
-            };
-        }
-
-        var changes = {};
-        var hasChanges = false;
-
-        // Get the types for this category
-        var categoryTypes = MagicConstants.getCategoryTypes(classConfig.category) || [];
-
-        // Minimum proficiency for specialized classes is 7
-        var minProficiency = 7;
-
-        // For general classes (e.g., Elementalist), min is 4
-        var isGeneral = magicClass.indexOf('General') !== -1 ||
-                        magicClass === 'Elementalist' ||
-                        magicClass === 'Body Mage' ||
-                        magicClass === 'Aether Mage';
-
-        if (isGeneral) {
-            minProficiency = 4;
-        }
-
-        categoryTypes.forEach(function(type) {
-            var current = magic[type] || 0;
-            if (current < minProficiency) {
-                changes[type] = minProficiency;
-                hasChanges = true;
-            }
-        });
-
-        return {
-            success: true,
-            changes: changes,
-            hasChanges: hasChanges,
-            magicClass: magicClass,
-            message: hasChanges ? 'Applied ' + magicClass + ' requirements.' : 'Magic proficiencies already meet requirements.'
-        };
+        return stats;
     }
 
     // ============================================================
-    // MAGIC FUNCTIONS - Pure
+    // MAGICAL PROFICIENCIES
     // ============================================================
 
     function getDefaultMagicProficiencies() {
         var proficiencies = {};
-        MAGIC_TYPE_KEYS.forEach(function(key) {
+        if (!MagicConstants) { return proficiencies; }
+        var keys = MagicConstants.getTypeKeys();
+        keys.forEach(function(key) {
             proficiencies[key] = 0;
         });
         return proficiencies;
@@ -372,18 +325,18 @@
 
     function clampMagic(value) {
         var num = Number(value);
-        if (isNaN(num) || !isFinite(num)) return 0;
+        if (isNaN(num) || !isFinite(num)) { return 0; }
         return Math.max(0, Math.min(MAGIC_MAX, Math.round(num)));
     }
 
     function getCharacterMagic(char) {
-        if (!char) return getDefaultMagicProficiencies();
-        if (!char.magic || typeof char.magic !== 'object') {
-            return getDefaultMagicProficiencies();
+        var result = getDefaultMagicProficiencies();
+        if (!char || !char.magic || typeof char.magic !== 'object') {
+            return result;
         }
         var magic = char.magic;
-        var result = {};
-        MAGIC_TYPE_KEYS.forEach(function(key) {
+        var keys = MagicConstants ? MagicConstants.getTypeKeys() : Object.keys(magic);
+        keys.forEach(function(key) {
             var val = magic[key];
             if (typeof val === 'number' && !isNaN(val) && isFinite(val)) {
                 result[key] = clampMagic(val);
@@ -395,217 +348,337 @@
     }
 
     // ============================================================
-    // MAGIC POWER CALCULATION - Pure
+    // MAGICAL PROFICIENCIES - Random roll
     // ============================================================
 
-    function calculateMagicPower(char) {
-        var magic = getCharacterMagic(char);
-        if (!magic) return 0;
+    /**
+     * Roll magical proficiencies with category-weighted distribution.
+     * 
+     * Elemental: all 6 roll, values cluster 3–5 (range 1–8)
+     * Body:      3–4 of 6 roll, values cluster 2–4 (range 1–7)
+     * Aether:    10% chance none; else 1–2 of 6 roll (range 1–6)
+     * 
+     * @returns {object} Magic proficiencies object
+     */
+    function rollMagicalProficiencies() {
+        var magic = getDefaultMagicProficiencies();
 
-        var categoryStats = {
-            elemental: { total: 0, max: 0, count: 0, types: [] },
-            body: { total: 0, max: 0, count: 0, types: [] },
-            aether: { total: 0, max: 0, count: 0, types: [] }
-        };
+        if (!MagicConstants) { return magic; }
 
-        MAGIC_TYPE_KEYS.forEach(function(key) {
-            var typeInfo = MAGIC_TYPES[key];
-            if (!typeInfo) return;
-            var category = typeInfo.category;
-            var value = magic[key] || 0;
+        var elementalTypes = MagicConstants.getCategoryTypes('elemental');
+        var bodyTypes      = MagicConstants.getCategoryTypes('body');
+        var aetherTypes    = MagicConstants.getCategoryTypes('aether');
 
-            if (categoryStats[category]) {
-                categoryStats[category].total += value;
-                categoryStats[category].max = Math.max(categoryStats[category].max, value);
-                categoryStats[category].count++;
-                categoryStats[category].types.push({ key: key, value: value });
-            }
+        // ---- Elemental: all roll, peak around 4 ----
+        elementalTypes.forEach(function(type) {
+            var values  = [1, 2, 3, 4, 5, 6, 7, 8];
+            var weights = [5, 10, 15, 20, 20, 15, 10, 5];
+            magic[type] = pickWeighted(values, weights);
         });
 
-        var totalScore = 0;
-        var totalWeight = 0;
-
-        for (var cat in categoryStats) {
-            if (!Object.prototype.hasOwnProperty.call(categoryStats, cat)) continue;
-            var stats = categoryStats[cat];
-            if (stats.count === 0) continue;
-
-            var multiplier = MAGIC_CATEGORY_MULTIPLIERS[cat] || 1.0;
-            var avg = stats.total / stats.count;
-            var maxVal = stats.max;
-
-            // Specialisation bonus
-            var specializationBonus = 0;
-            if (maxVal >= 8) {
-                specializationBonus = (maxVal - 7) * 2.5;
-            } else if (maxVal >= 5) {
-                specializationBonus = (maxVal - 4) * 1.5;
-            } else if (maxVal >= 3) {
-                specializationBonus = (maxVal - 2) * 0.8;
-            }
-
-            // Balanced mage bonus
-            var balancedBonus = 0;
-            var allAboveThreshold = true;
-            stats.types.forEach(function(t) {
-                if (t.value < BALANCED_MAGE_THRESHOLD) allAboveThreshold = false;
-            });
-            if (allAboveThreshold && stats.count >= 3) {
-                balancedBonus = avg * 0.3;
-            }
-
-            var categoryScore = (avg * multiplier) + specializationBonus + balancedBonus;
-            var weight = 1 + (stats.total / 20);
-
-            totalScore += categoryScore * weight;
-            totalWeight += weight;
+        // ---- Body: 3–4 of 6 roll, peak around 3 ----
+        var bodyShuffled = shuffle(bodyTypes);
+        var bodyCount = randomInt(3, 4);
+        for (var i = 0; i < bodyCount; i++) {
+            var values  = [1, 2, 3, 4, 5, 6, 7];
+            var weights = [10, 20, 25, 20, 12, 8, 5];
+            magic[bodyShuffled[i]] = pickWeighted(values, weights);
         }
 
-        var rawScore = totalWeight > 0 ? totalScore / totalWeight : 0;
-        var scaledScore = Math.min(100, Math.round(rawScore * 5));
+        // ---- Aether: 10% none, else 1–2 of 6, peak around 2 ----
+        var skipAether = Math.random() < 0.10;
+        if (!skipAether) {
+            var aetherShuffled = shuffle(aetherTypes);
+            var aetherCount = randomInt(1, 2);
+            for (var j = 0; j < aetherCount; j++) {
+                var values  = [1, 2, 3, 4, 5, 6];
+                var weights = [20, 30, 25, 15, 7, 3];
+                magic[aetherShuffled[j]] = pickWeighted(values, weights);
+            }
+        }
 
-        // Master bonus
-        var hasMaster = false;
-        MAGIC_TYPE_KEYS.forEach(function(key) {
-            if ((magic[key] || 0) >= 9) hasMaster = true;
+        return magic;
+    }
+
+    // ============================================================
+    // MAGICAL CLASSES - Derivation
+    // ============================================================
+
+    /**
+     * Sum magic proficiencies per category.
+     * @param {object} magic
+     * @returns {object} { elemental, body, aether }
+     */
+    function getCategoryTotals(magic) {
+        var totals = { elemental: 0, body: 0, aether: 0 };
+        if (!magic || !MagicConstants) { return totals; }
+
+        var keys = MagicConstants.getTypeKeys();
+        keys.forEach(function(type) {
+            var category = MagicConstants.getTypeCategory(type);
+            var value = Number(magic[type]) || 0;
+            if (category && totals[category] !== undefined) {
+                totals[category] += value;
+            }
         });
-        if (hasMaster) {
-            scaledScore = Math.min(100, scaledScore + 10);
-        }
-
-        return Math.max(0, scaledScore);
+        return totals;
     }
 
     /**
-     * Get magic rank based on power score.
-     * Returns: 'Archmage', 'Master', 'Adept', 'Apprentice', 'Novice', 'Untrained'
+     * Get the sum of all 18 proficiencies (0–180).
      */
-    function getMagicRank(power) {
-        var thresholds = MAGIC_POWER_THRESHOLDS;
-        if (power >= thresholds.ARCHMAGE) return 'Archmage';
-        if (power >= thresholds.MASTER) return 'Master';
-        if (power >= thresholds.ADEPT) return 'Adept';
-        if (power >= thresholds.APPRENTICE) return 'Apprentice';
-        if (power >= thresholds.NOVICE) return 'Novice';
+    function calculateTotalMagicalPower(magic) {
+        if (!magic || !MagicConstants) { return 0; }
+        var total = 0;
+        MagicConstants.getTypeKeys().forEach(function(type) {
+            total += Number(magic[type]) || 0;
+        });
+        return total;
+    }
+
+    /**
+     * Derive broad + fine magical classes from a proficiency profile.
+     * 
+     * Rules:
+     *   - All zeros → no classes
+     *   - Category tie (2-way) → broad "Dual Mage", no fine class
+     *   - Category tie (3-way) → broad "Balanced Mage", no fine class
+     *   - Single winning category → broad class from that category
+     *   - Top proficiency in category < MAGIC_FINE_CLASS_MIN → no fine class
+     *   - Two-way proficiency tie → fine "Pyromancer / Hydromancer"
+     *   - Three-way proficiency tie → fine "Balanced Mage"
+     *   - Single proficiency → fine class from that type
+     * 
+     * @param {object} magic
+     * @returns {object} {
+     *   broad: { id, label, category } | { id: 'dual_mage', label: 'Dual Mage' } | { id: 'balanced_mage', label: 'Balanced Mage' } | null,
+     *   fine:  { id, label, type } | { id: 'balanced_mage', label: 'Balanced Mage' } | { id: 'dual_fine', label: 'X / Y' } | null,
+     *   categoryTotals: { elemental, body, aether },
+     *   topCategory: string | null,
+     *   topType: string | null,
+     *   topValue: number,
+     *   tie: 'dual' | 'triple' | null,
+     *   tieCategory: 'dual' | 'triple' | null
+     * }
+     */
+    function deriveMagicalClasses(magic) {
+        var result = {
+            broad: null,
+            fine: null,
+            categoryTotals: { elemental: 0, body: 0, aether: 0 },
+            topCategory: null,
+            topType: null,
+            topValue: 0,
+            tie: null,
+            tieCategory: null
+        };
+
+        if (!MagicConstants) { return result; }
+
+        var normalised = {};
+        MagicConstants.getTypeKeys().forEach(function(type) {
+            normalised[type] = clampMagic(magic ? magic[type] : 0);
+        });
+
+        var totals = getCategoryTotals(normalised);
+        result.categoryTotals = totals;
+
+        var grandTotal = totals.elemental + totals.body + totals.aether;
+        if (grandTotal === 0) {
+            return result;  // no magic at all
+        }
+
+        // ---- Find top category or categories ----
+        var categories = MagicConstants.getCategoryOrder();  // ['elemental','body','aether']
+        var topTotal = -1;
+        categories.forEach(function(cat) {
+            if (totals[cat] > topTotal) { topTotal = totals[cat]; }
+        });
+
+        var categoriesAtTop = categories.filter(function(cat) {
+            return totals[cat] === topTotal && topTotal > 0;
+        });
+
+        if (categoriesAtTop.length === 3) {
+            result.broad = { id: 'balanced_mage', label: 'Balanced Mage', category: null };
+            result.tieCategory = 'triple';
+            return result;
+        }
+
+        if (categoriesAtTop.length === 2) {
+            result.broad = { id: 'dual_mage', label: 'Dual Mage', category: null };
+            result.tieCategory = 'dual';
+            return result;
+        }
+
+        // Single winning category
+        var winningCategory = categoriesAtTop[0];
+        result.topCategory = winningCategory;
+
+        var broadClass = MagicConstants.getBroadClassForCategory(winningCategory);
+        result.broad = broadClass;
+
+        // ---- Find top proficiency within the winning category ----
+        var typesInCategory = MagicConstants.getCategoryTypes(winningCategory);
+        var topValue = 0;
+        typesInCategory.forEach(function(type) {
+            if (normalised[type] > topValue) {
+                topValue = normalised[type];
+            }
+        });
+
+        result.topValue = topValue;
+
+        if (topValue < MAGIC_FINE_CLASS_MIN) {
+            // Below threshold → no fine class
+            return result;
+        }
+
+        var typesAtTop = typesInCategory.filter(function(type) {
+            return normalised[type] === topValue;
+        });
+
+        if (typesAtTop.length >= 3) {
+            result.fine = { id: 'balanced_mage', label: 'Balanced Mage', type: null };
+            result.tie = 'triple';
+            return result;
+        }
+
+        if (typesAtTop.length === 2) {
+            var fineA = MagicConstants.getFineClassForType(typesAtTop[0]);
+            var fineB = MagicConstants.getFineClassForType(typesAtTop[1]);
+            var label = (fineA ? fineA.label : typesAtTop[0]) + ' / ' +
+                        (fineB ? fineB.label : typesAtTop[1]);
+            result.fine = { id: 'dual_fine', label: label, type: null };
+            result.tie = 'dual';
+            return result;
+        }
+
+        // Single winner
+        var winningType = typesAtTop[0];
+        result.topType = winningType;
+        result.fine = MagicConstants.getFineClassForType(winningType);
+
+        return result;
+    }
+
+    /**
+     * Apply a fine magical class — raises the corresponding proficiency
+     * to at least 8 (Expert level) if currently lower. Returns new magic.
+     * Does NOT touch other proficiencies.
+     * 
+     * @param {string} fineClassId - Fine class id (e.g. 'pyromancer')
+     * @param {object} currentMagic - Current magic object
+     * @returns {object|null} New magic object, or null if class invalid
+     */
+    function applyFineMagicalClass(fineClassId, currentMagic) {
+        if (!MagicConstants) { return null; }
+
+        var fine = MagicConstants.getFineClass(fineClassId);
+        if (!fine) { return null; }
+
+        var newMagic = getDefaultMagicProficiencies();
+        // Copy current values
+        MagicConstants.getTypeKeys().forEach(function(type) {
+            newMagic[type] = clampMagic(currentMagic ? currentMagic[type] : 0);
+        });
+
+        // Raise the target proficiency to at least 8
+        var target = fine.type;
+        if (target) {
+            newMagic[target] = Math.max(newMagic[target], 8);
+        }
+
+        return newMagic;
+    }
+
+    // ============================================================
+    // MAGIC RANK (used by older display code)
+    // ============================================================
+
+    /**
+     * Get a qualitative rank label from a total magical power (0–180).
+     * This replaces the old 0–100 weighted score ranking.
+     */
+    function getMagicRank(totalPower) {
+        var num = Number(totalPower) || 0;
+        if (num >= 140) { return 'Archmage'; }
+        if (num >= 100) { return 'Master'; }
+        if (num >= 70)  { return 'Adept'; }
+        if (num >= 40)  { return 'Apprentice'; }
+        if (num >= 15)  { return 'Novice'; }
+        if (num > 0)    { return 'Dabbler'; }
         return 'Untrained';
     }
 
     // ============================================================
-    // MAGIC CLASS SUGGESTION - Pure
-    // ============================================================
-
-    function isBalancedCategory(magic, category) {
-        var types = MagicConstants.getCategoryTypes(category) || [];
-        for (var i = 0; i < types.length; i++) {
-            if ((magic[types[i]] || 0) < BALANCED_MAGE_THRESHOLD) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    function suggestMagicClass(char) {
-        var magic = getCharacterMagic(char);
-        var totalPower = 0;
-        MAGIC_TYPE_KEYS.forEach(function(key) {
-            totalPower += magic[key] || 0;
-        });
-
-        if (totalPower <= 0) {
-            return null;
-        }
-
-        var categoryScores = { elemental: 0, body: 0, aether: 0 };
-
-        for (var key in MAGIC_TYPES) {
-            if (!Object.prototype.hasOwnProperty.call(MAGIC_TYPES, key)) continue;
-            var type = MAGIC_TYPES[key];
-            var score = magic[key] || 0;
-            if (categoryScores[type.category] !== undefined) {
-                categoryScores[type.category] += score;
-            }
-        }
-
-        var balancedCategories = [];
-        for (var cat in MAGIC_CATEGORIES) {
-            if (Object.prototype.hasOwnProperty.call(MAGIC_CATEGORIES, cat)) {
-                if (isBalancedCategory(magic, cat)) {
-                    balancedCategories.push(cat);
-                }
-            }
-        }
-
-        if (balancedCategories.length >= 2) {
-            var maxBalancedScore = 0;
-            for (var i = 0; i < balancedCategories.length; i++) {
-                var score = categoryScores[balancedCategories[i]] || 0;
-                if (score > maxBalancedScore) {
-                    maxBalancedScore = score;
-                }
-            }
-            return {
-                name: 'Balanced Mage',
-                category: null,
-                categoryLabel: null,
-                primaryType: null,
-                primaryLabel: null,
-                score: maxBalancedScore,
-                isBalanced: true
-            };
-        }
-
-        var highestCategory = 'elemental';
-        var highestScore = -1;
-        for (var cat in categoryScores) {
-            if (Object.prototype.hasOwnProperty.call(categoryScores, cat)) {
-                if (categoryScores[cat] > highestScore) {
-                    highestScore = categoryScores[cat];
-                    highestCategory = cat;
-                }
-            }
-        }
-
-        var highestType = null;
-        var highestTypeScore = -1;
-        for (var key in magic) {
-            if (!Object.prototype.hasOwnProperty.call(magic, key)) continue;
-            if (MAGIC_TYPES[key].category !== highestCategory) continue;
-            if (magic[key] > highestTypeScore) {
-                highestTypeScore = magic[key];
-                highestType = key;
-            }
-        }
-
-        var className = 'Adept Mage';
-        if (highestType && MAGIC_CLASS_MAP[highestCategory] && MAGIC_CLASS_MAP[highestCategory][highestType]) {
-            className = MAGIC_CLASS_MAP[highestCategory][highestType];
-        } else if (highestCategory === 'elemental') {
-            className = 'Elementalist';
-        } else if (highestCategory === 'body') {
-            className = 'Body Mage';
-        } else if (highestCategory === 'aether') {
-            className = 'Aether Mage';
-        }
-
-        return {
-            name: className,
-            category: highestCategory,
-            categoryLabel: MAGIC_CATEGORIES[highestCategory] ? MAGIC_CATEGORIES[highestCategory].label : highestCategory,
-            primaryType: highestType,
-            primaryLabel: highestType ? MAGIC_TYPES[highestType] ? MAGIC_TYPES[highestType].label : null : null,
-            score: highestTypeScore,
-            isBalanced: false
-        };
-    }
-
-    // ============================================================
-    // SPECIAL MOVES - Internal helpers
+    // HP / MP
     // ============================================================
 
     /**
-     * Validate special moves structure.
-     * Pure validation - no side effects.
+     * Roll HP based on stats and class. Returns a number.
+     * Base 20–40 + class hpBonus + 2×CON modifier, min 1.
+     * 
+     * @param {object} stats
+     * @returns {number}
      */
+    function rollHP(stats) {
+        var normalised = {};
+        STAT_KEYS.forEach(function(key) {
+            normalised[key] = clampStat(stats ? stats[key] : STAT_DEFAULT);
+        });
+
+        var base = randomInt(20, 40);
+
+        var classMatch = derivePhysicalClass(normalised);
+        var classBonus = classMatch && classMatch.class && classMatch.class.hpBonus
+            ? classMatch.class.hpBonus
+            : 0;
+
+        var conMod = getAbilityModifier(normalised.con);
+
+        var hp = base + classBonus + (conMod * 2);
+        if (hp < 1) { hp = 1; }
+        return hp;
+    }
+
+    /**
+     * Roll MP based on magical proficiencies.
+     * Base = totalMagic / 5
+     * + bodyTotal × 0.5
+     * + aetherTotal × 2
+     * + random(0..10)
+     * Capped at 200.
+     * 
+     * @param {object} magic
+     * @returns {number}
+     */
+    function rollMP(magic) {
+        var normalised = {};
+        if (MagicConstants) {
+            MagicConstants.getTypeKeys().forEach(function(type) {
+                normalised[type] = clampMagic(magic ? magic[type] : 0);
+            });
+        }
+
+        var totals = getCategoryTotals(normalised);
+        var totalPower = calculateTotalMagicalPower(normalised);
+
+        var base = Math.round(totalPower / 5);
+        var bodyBonus = Math.round(totals.body * 0.5);
+        var aetherBonus = totals.aether * 2;
+        var random = randomInt(0, 10);
+
+        var mp = base + bodyBonus + aetherBonus + random;
+        if (mp < 0) { mp = 0; }
+        if (mp > 200) { mp = 200; }
+        return mp;
+    }
+
+    // ============================================================
+    // SPECIAL MOVES - Helpers
+    // ============================================================
+
     function validateSpecialMovesStructure(char) {
         var errors = [];
 
@@ -622,7 +695,6 @@
         if (!Array.isArray(char.specialMoves.physical)) {
             errors.push('Physical moves must be an array.');
         }
-
         if (!Array.isArray(char.specialMoves.magical)) {
             errors.push('Magical moves must be an array.');
         }
@@ -638,6 +710,7 @@
         var physical = Array.isArray(char.specialMoves.physical)
             ? char.specialMoves.physical.map(function(move) {
                 return {
+                    id: move && move.id ? move.id : '',
                     name: move && typeof move.name === 'string' ? move.name : '',
                     description: move && typeof move.description === 'string' ? move.description : ''
                 };
@@ -646,6 +719,7 @@
         var magical = Array.isArray(char.specialMoves.magical)
             ? char.specialMoves.magical.map(function(move) {
                 return {
+                    id: move && move.id ? move.id : '',
                     name: move && typeof move.name === 'string' ? move.name : '',
                     description: move && typeof move.description === 'string' ? move.description : ''
                 };
@@ -655,56 +729,28 @@
     }
 
     // ============================================================
-    // SPECIAL MOVES - Mutations using MutationPipeline
+    // SPECIAL MOVES - Mutations
     // ============================================================
 
-    /**
-     * Add a special move to a character.
-     * 
-     * @param {string} charId - Character ID
-     * @param {string} type - 'physical' or 'magical'
-     * @param {string} name - Move name
-     * @param {string} description - Move description (optional)
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function addSpecialMove(charId, type, name, description) {
         if (!checkDependencies()) {
-            return Promise.resolve({
-                success: false,
-                message: 'Dependencies not loaded. Please refresh the page.'
-            });
+            return Promise.resolve({ success: false, message: 'Dependencies not loaded.' });
         }
-
         if (!charId) {
-            return Promise.resolve({
-                success: false,
-                message: 'Character ID is required.'
-            });
+            return Promise.resolve({ success: false, message: 'Character ID is required.' });
         }
-
         if (type !== 'physical' && type !== 'magical') {
-            return Promise.resolve({
-                success: false,
-                message: 'Invalid move type. Must be "physical" or "magical".'
-            });
+            return Promise.resolve({ success: false, message: 'Invalid move type.' });
         }
-
         if (!name || typeof name !== 'string' || name.trim() === '') {
-            return Promise.resolve({
-                success: false,
-                message: 'Move name is required.'
-            });
+            return Promise.resolve({ success: false, message: 'Move name is required.' });
         }
 
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
-            return Promise.resolve({
-                success: false,
-                message: 'Character not found.'
-            });
+            return Promise.resolve({ success: false, message: 'Character not found.' });
         }
 
-        // Validate move limits (read-only)
         var structureValidation = validateSpecialMovesStructure(char);
         if (!structureValidation.valid) {
             return Promise.resolve({
@@ -729,55 +775,33 @@
         var displayName = CharacterQueries.getDisplayName(char);
 
         return MutationPipeline.performMutation({
-            validate: function(data) {
-                var currentChar = CharacterQueries.getCharacterById(charId);
-                if (!currentChar) {
-                    return {
-                        valid: false,
-                        message: 'Character no longer exists.'
-                    };
+            validate: function() {
+                var current = CharacterQueries.getCharacterById(charId);
+                if (!current) {
+                    return { valid: false, message: 'Character no longer exists.' };
                 }
-
-                var currentValidation = validateSpecialMovesStructure(currentChar);
-                if (!currentValidation.valid) {
-                    return {
-                        valid: false,
-                        message: 'Special moves data is corrupted: ' + currentValidation.errors.join(', ')
-                    };
+                var v = validateSpecialMovesStructure(current);
+                if (!v.valid) {
+                    return { valid: false, message: 'Special moves data is corrupted.' };
                 }
-
-                var currentMoves = currentChar.specialMoves[type] || [];
+                var currentMoves = current.specialMoves[type] || [];
                 if (currentMoves.length >= MAX_SPECIAL_MOVES) {
-                    return {
-                        valid: false,
-                        message: 'Maximum of ' + MAX_SPECIAL_MOVES + ' ' + type + ' moves reached.'
-                    };
+                    return { valid: false, message: 'Maximum moves reached.' };
                 }
-
                 return { valid: true };
             },
-
             mutate: function(data) {
                 var currentChar = data.characters.find(function(c) {
                     return c && String(c.id) === String(charId);
                 });
-
                 if (!currentChar) {
                     throw new Error('Character not found in data store.');
                 }
 
-                // Repair malformed structure (after snapshot)
-                if (!currentChar.specialMoves || typeof currentChar.specialMoves !== 'object' || Array.isArray(currentChar.specialMoves)) {
+                if (!currentChar.specialMoves || typeof currentChar.specialMoves !== 'object') {
                     currentChar.specialMoves = { physical: [], magical: [] };
                 }
-                if (!Array.isArray(currentChar.specialMoves.physical)) {
-                    currentChar.specialMoves.physical = [];
-                }
-                if (!Array.isArray(currentChar.specialMoves.magical)) {
-                    currentChar.specialMoves.magical = [];
-                }
-
-                if (!currentChar.specialMoves[type] || !Array.isArray(currentChar.specialMoves[type])) {
+                if (!Array.isArray(currentChar.specialMoves[type])) {
                     currentChar.specialMoves[type] = [];
                 }
 
@@ -788,370 +812,157 @@
                 };
 
                 currentChar.specialMoves[type].push(move);
-
-                return {
-                    move: move,
-                    type: type,
-                    characterId: charId
-                };
+                return { move: move, type: type, characterId: charId };
             },
-
-            logMessage: function(result) {
+            logMessage: function() {
                 return 'Added ' + type + ' move "' + nameTruncated + '" to ' + displayName;
             },
-
-            successMessage: function(result) {
+            successMessage: function() {
                 return type.charAt(0).toUpperCase() + type.slice(1) + ' move added!';
             },
             failureMessage: 'Failed to add move.'
         });
     }
 
-    /**
-     * Update a special move.
-     * 
-     * @param {string} charId - Character ID
-     * @param {string} type - 'physical' or 'magical'
-     * @param {string} moveId - Move ID
-     * @param {string} name - New move name
-     * @param {string} description - New move description (optional)
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function updateSpecialMove(charId, type, moveId, name, description) {
         if (!checkDependencies()) {
-            return Promise.resolve({
-                success: false,
-                message: 'Dependencies not loaded. Please refresh the page.'
-            });
+            return Promise.resolve({ success: false, message: 'Dependencies not loaded.' });
         }
-
-        if (!charId) {
-            return Promise.resolve({
-                success: false,
-                message: 'Character ID is required.'
-            });
+        if (!charId || !moveId) {
+            return Promise.resolve({ success: false, message: 'Character ID and move ID are required.' });
         }
-
         if (type !== 'physical' && type !== 'magical') {
-            return Promise.resolve({
-                success: false,
-                message: 'Invalid move type.'
-            });
-        }
-
-        if (!moveId) {
-            return Promise.resolve({
-                success: false,
-                message: 'Move ID is required.'
-            });
+            return Promise.resolve({ success: false, message: 'Invalid move type.' });
         }
 
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
-            return Promise.resolve({
-                success: false,
-                message: 'Character not found.'
-            });
+            return Promise.resolve({ success: false, message: 'Character not found.' });
         }
 
-        var structureValidation = validateSpecialMovesStructure(char);
-        if (!structureValidation.valid) {
-            return Promise.resolve({
-                success: false,
-                message: 'Special moves data is corrupted: ' + structureValidation.errors.join(', ')
-            });
-        }
-
-        var moves = char.specialMoves[type] || [];
-        var moveIndex = -1;
-        var existingMove = null;
-
-        for (var i = 0; i < moves.length; i++) {
-            if (moves[i] && String(moves[i].id) === String(moveId)) {
-                moveIndex = i;
-                existingMove = moves[i];
-                break;
-            }
-        }
-
-        if (!existingMove) {
-            return Promise.resolve({
-                success: false,
-                message: 'Move not found.'
-            });
-        }
-
-        var newName = name !== undefined && name !== null ? String(name).trim() : existingMove.name;
-        var newDesc = description !== undefined ? String(description).trim() : existingMove.description;
-
+        var newName = name !== undefined && name !== null ? String(name).trim() : '';
         if (!newName) {
-            return Promise.resolve({
-                success: false,
-                message: 'Move name is required.'
-            });
+            return Promise.resolve({ success: false, message: 'Move name is required.' });
         }
+        var newDesc = description !== undefined ? String(description).trim() : '';
 
         var displayName = CharacterQueries.getDisplayName(char);
 
         return MutationPipeline.performMutation({
-            validate: function(data) {
-                var currentChar = CharacterQueries.getCharacterById(charId);
-                if (!currentChar) {
-                    return {
-                        valid: false,
-                        message: 'Character no longer exists.'
-                    };
+            validate: function() {
+                var current = CharacterQueries.getCharacterById(charId);
+                if (!current) {
+                    return { valid: false, message: 'Character no longer exists.' };
                 }
-
-                var currentValidation = validateSpecialMovesStructure(currentChar);
-                if (!currentValidation.valid) {
-                    return {
-                        valid: false,
-                        message: 'Special moves data is corrupted: ' + currentValidation.errors.join(', ')
-                    };
+                var v = validateSpecialMovesStructure(current);
+                if (!v.valid) {
+                    return { valid: false, message: 'Special moves data is corrupted.' };
                 }
-
-                var currentMoves = currentChar.specialMoves[type] || [];
-                var found = false;
-                for (var i = 0; i < currentMoves.length; i++) {
-                    if (currentMoves[i] && String(currentMoves[i].id) === String(moveId)) {
-                        found = true;
-                        break;
-                    }
-                }
-
+                var moves = current.specialMoves[type] || [];
+                var found = moves.some(function(m) {
+                    return m && String(m.id) === String(moveId);
+                });
                 if (!found) {
-                    return {
-                        valid: false,
-                        message: 'Move no longer exists.'
-                    };
+                    return { valid: false, message: 'Move not found.' };
                 }
-
                 return { valid: true };
             },
-
             mutate: function(data) {
                 var currentChar = data.characters.find(function(c) {
                     return c && String(c.id) === String(charId);
                 });
-
                 if (!currentChar) {
                     throw new Error('Character not found in data store.');
                 }
-
-                if (!currentChar.specialMoves || typeof currentChar.specialMoves !== 'object') {
-                    currentChar.specialMoves = { physical: [], magical: [] };
-                }
-                if (!Array.isArray(currentChar.specialMoves.physical)) {
-                    currentChar.specialMoves.physical = [];
-                }
-                if (!Array.isArray(currentChar.specialMoves.magical)) {
-                    currentChar.specialMoves.magical = [];
-                }
-
-                if (!currentChar.specialMoves[type] || !Array.isArray(currentChar.specialMoves[type])) {
-                    return {
-                        valid: false,
-                        message: 'No ' + type + ' moves found.'
-                    };
-                }
-
+                var moves = currentChar.specialMoves[type] || [];
                 var found = false;
-                for (var i = 0; i < currentChar.specialMoves[type].length; i++) {
-                    if (currentChar.specialMoves[type][i] && String(currentChar.specialMoves[type][i].id) === String(moveId)) {
-                        currentChar.specialMoves[type][i].name = newName.slice(0, MAX_MOVE_NAME_LENGTH);
-                        currentChar.specialMoves[type][i].description = newDesc.slice(0, MAX_MOVE_DESCRIPTION_LENGTH);
+                for (var i = 0; i < moves.length; i++) {
+                    if (moves[i] && String(moves[i].id) === String(moveId)) {
+                        moves[i].name = newName.slice(0, MAX_MOVE_NAME_LENGTH);
+                        moves[i].description = newDesc.slice(0, MAX_MOVE_DESCRIPTION_LENGTH);
                         found = true;
                         break;
                     }
                 }
-
-                if (!found) {
-                    throw new Error('Move not found.');
-                }
-
-                return {
-                    moveId: moveId,
-                    type: type,
-                    characterId: charId,
-                    name: newName,
-                    description: newDesc
-                };
+                if (!found) { throw new Error('Move not found.'); }
+                return { moveId: moveId, type: type, characterId: charId };
             },
-
-            logMessage: function(result) {
+            logMessage: function() {
                 return 'Updated ' + type + ' move on ' + displayName;
             },
-
-            successMessage: function(result) {
+            successMessage: function() {
                 return type.charAt(0).toUpperCase() + type.slice(1) + ' move updated!';
             },
             failureMessage: 'Failed to update move.'
         });
     }
 
-    /**
-     * Remove a special move.
-     * 
-     * @param {string} charId - Character ID
-     * @param {string} type - 'physical' or 'magical'
-     * @param {string} moveId - Move ID
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function removeSpecialMove(charId, type, moveId) {
         if (!checkDependencies()) {
-            return Promise.resolve({
-                success: false,
-                message: 'Dependencies not loaded. Please refresh the page.'
-            });
+            return Promise.resolve({ success: false, message: 'Dependencies not loaded.' });
         }
-
-        if (!charId) {
-            return Promise.resolve({
-                success: false,
-                message: 'Character ID is required.'
-            });
+        if (!charId || !moveId) {
+            return Promise.resolve({ success: false, message: 'Character ID and move ID are required.' });
         }
-
         if (type !== 'physical' && type !== 'magical') {
-            return Promise.resolve({
-                success: false,
-                message: 'Invalid move type.'
-            });
-        }
-
-        if (!moveId) {
-            return Promise.resolve({
-                success: false,
-                message: 'Move ID is required.'
-            });
+            return Promise.resolve({ success: false, message: 'Invalid move type.' });
         }
 
         var char = CharacterQueries.getCharacterById(charId);
         if (!char) {
-            return Promise.resolve({
-                success: false,
-                message: 'Character not found.'
-            });
-        }
-
-        var structureValidation = validateSpecialMovesStructure(char);
-        if (!structureValidation.valid) {
-            return Promise.resolve({
-                success: false,
-                message: 'Special moves data is corrupted: ' + structureValidation.errors.join(', ')
-            });
-        }
-
-        var moves = char.specialMoves[type] || [];
-        var found = false;
-        var moveName = '';
-
-        for (var i = 0; i < moves.length; i++) {
-            if (moves[i] && String(moves[i].id) === String(moveId)) {
-                found = true;
-                moveName = moves[i].name || 'Unnamed move';
-                break;
-            }
-        }
-
-        if (!found) {
-            return Promise.resolve({
-                success: false,
-                message: 'Move not found.'
-            });
+            return Promise.resolve({ success: false, message: 'Character not found.' });
         }
 
         var displayName = CharacterQueries.getDisplayName(char);
 
         return MutationPipeline.performMutation({
-            validate: function(data) {
-                var currentChar = CharacterQueries.getCharacterById(charId);
-                if (!currentChar) {
-                    return {
-                        valid: false,
-                        message: 'Character no longer exists.'
-                    };
+            validate: function() {
+                var current = CharacterQueries.getCharacterById(charId);
+                if (!current) {
+                    return { valid: false, message: 'Character no longer exists.' };
                 }
-
-                var currentValidation = validateSpecialMovesStructure(currentChar);
-                if (!currentValidation.valid) {
-                    return {
-                        valid: false,
-                        message: 'Special moves data is corrupted: ' + currentValidation.errors.join(', ')
-                    };
+                var v = validateSpecialMovesStructure(current);
+                if (!v.valid) {
+                    return { valid: false, message: 'Special moves data is corrupted.' };
                 }
-
-                var currentMoves = currentChar.specialMoves[type] || [];
-                var found = false;
-                for (var i = 0; i < currentMoves.length; i++) {
-                    if (currentMoves[i] && String(currentMoves[i].id) === String(moveId)) {
-                        found = true;
-                        break;
-                    }
-                }
-
+                var moves = current.specialMoves[type] || [];
+                var found = moves.some(function(m) {
+                    return m && String(m.id) === String(moveId);
+                });
                 if (!found) {
-                    return {
-                        valid: false,
-                        message: 'Move no longer exists.'
-                    };
+                    return { valid: false, message: 'Move not found.' };
                 }
-
                 return { valid: true };
             },
-
             mutate: function(data) {
                 var currentChar = data.characters.find(function(c) {
                     return c && String(c.id) === String(charId);
                 });
-
                 if (!currentChar) {
                     throw new Error('Character not found in data store.');
                 }
-
-                if (!currentChar.specialMoves || typeof currentChar.specialMoves !== 'object') {
-                    currentChar.specialMoves = { physical: [], magical: [] };
-                }
-                if (!Array.isArray(currentChar.specialMoves.physical)) {
-                    currentChar.specialMoves.physical = [];
-                }
-                if (!Array.isArray(currentChar.specialMoves.magical)) {
-                    currentChar.specialMoves.magical = [];
-                }
-
-                if (!currentChar.specialMoves[type] || !Array.isArray(currentChar.specialMoves[type])) {
-                    throw new Error('No ' + type + ' moves found.');
-                }
-
                 var found = false;
-                var removedMove = null;
-                currentChar.specialMoves[type] = currentChar.specialMoves[type].filter(function(m) {
+                var removed = null;
+                currentChar.specialMoves[type] = (currentChar.specialMoves[type] || []).filter(function(m) {
                     if (m && String(m.id) === String(moveId)) {
                         found = true;
-                        removedMove = m;
+                        removed = m;
                         return false;
                     }
                     return true;
                 });
-
-                if (!found) {
-                    throw new Error('Move not found.');
-                }
-
+                if (!found) { throw new Error('Move not found.'); }
                 return {
                     moveId: moveId,
                     type: type,
                     characterId: charId,
-                    moveName: removedMove ? removedMove.name : 'Unnamed move'
+                    moveName: removed ? removed.name : ''
                 };
             },
-
             logMessage: function(result) {
-                return 'Removed ' + type + ' move "' + result.moveName + '" from ' + displayName;
+                return 'Removed ' + type + ' move "' + (result.moveName || '') + '" from ' + displayName;
             },
-
-            successMessage: function(result) {
+            successMessage: function() {
                 return type.charAt(0).toUpperCase() + type.slice(1) + ' move removed.';
             },
             failureMessage: 'Failed to remove move.'
@@ -1159,65 +970,50 @@
     }
 
     // ============================================================
-    // MAGIC TYPE HELPERS (delegate to constants)
-    // ============================================================
-
-    function getMagicTypeKeys() {
-        return MagicConstants.getTypeKeys() || MAGIC_TYPE_KEYS.slice();
-    }
-
-    function getMagicCategoryTypes(category) {
-        return MagicConstants.getCategoryTypes(category) || [];
-    }
-
-    function getMagicTypeLabel(key) {
-        return MagicConstants.getTypeLabel(key) || key;
-    }
-
-    function getMagicCategoryLabel(category) {
-        return MagicConstants.getCategoryLabel(category) || category;
-    }
-
-    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.CharacterStats = {
-        // Constants (read-only, from CharacterConstants)
-        MAGIC_MAX: MAGIC_MAX,
+        // Constants exposed for convenience
+        STAT_KEYS: STAT_KEYS,
         STAT_MIN: STAT_MIN,
         STAT_MAX: STAT_MAX,
-        BALANCED_MAGE_THRESHOLD: BALANCED_MAGE_THRESHOLD,
-        MAGIC_CATEGORY_MULTIPLIERS: MAGIC_CATEGORY_MULTIPLIERS,
-        MAGIC_POWER_THRESHOLDS: MAGIC_POWER_THRESHOLDS,
+        STAT_DEFAULT: STAT_DEFAULT,
+        STAT_RANDOM_MIN: STAT_RANDOM_MIN,
+        STAT_RANDOM_MAX: STAT_RANDOM_MAX,
+        MAGIC_MAX: MAGIC_MAX,
+        MAGIC_FINE_CLASS_MIN: MAGIC_FINE_CLASS_MIN,
 
-        // Magic type helpers
-        getMagicTypeKeys: getMagicTypeKeys,
-        getMagicCategoryTypes: getMagicCategoryTypes,
-        getMagicTypeLabel: getMagicTypeLabel,
-        getMagicCategoryLabel: getMagicCategoryLabel,
-
-        // Stats
+        // Physical stats
         getDefaultStats: getDefaultStats,
         getCharacterStats: getCharacterStats,
         getAbilityModifier: getAbilityModifier,
         getModifierDisplay: getModifierDisplay,
+        clampStat: clampStat,
+        rollPhysicalStats: rollPhysicalStats,
 
-        // Class suggestion
-        suggestClass: suggestClass,
+        // Physical class
+        derivePhysicalClass: derivePhysicalClass,
+        applyPhysicalClass: applyPhysicalClass,
 
-        // Class application (pure)
-        applyClassRequirements: applyClassRequirements,
-        applyMagicClassRequirements: applyMagicClassRequirements,
-
-        // Magic
+        // Magical proficiencies
         getDefaultMagicProficiencies: getDefaultMagicProficiencies,
         getCharacterMagic: getCharacterMagic,
-        calculateMagicPower: calculateMagicPower,
-        getMagicRank: getMagicRank,
-        suggestMagicClass: suggestMagicClass,
+        clampMagic: clampMagic,
+        rollMagicalProficiencies: rollMagicalProficiencies,
 
-        // Special moves - ID-based APIs with save
+        // Magical classes
+        getCategoryTotals: getCategoryTotals,
+        calculateTotalMagicalPower: calculateTotalMagicalPower,
+        deriveMagicalClasses: deriveMagicalClasses,
+        applyFineMagicalClass: applyFineMagicalClass,
+        getMagicRank: getMagicRank,
+
+        // HP / MP
+        rollHP: rollHP,
+        rollMP: rollMP,
+
+        // Special moves
         getSpecialMoves: getSpecialMoves,
         addSpecialMove: addSpecialMove,
         updateSpecialMove: updateSpecialMove,
