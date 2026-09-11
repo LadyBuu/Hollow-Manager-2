@@ -15,8 +15,8 @@
  *   - UI-ONLY - all mutations delegate to domain cores
  *   - Uses AcademyClasses DIRECTLY for class ENTITY mutations
  *   - Uses AcademyClasses.addStudent/removeStudent for MEMBERSHIP mutations
- *     (which are DEPRECATED DELEGATES to CharacterClasses — they still work
- *     but will be removed once the Academy UI rework lands)
+ *     (DEPRECATED DELEGATES to CharacterClasses; still work but will be
+ *     removed once the Academy UI rework lands)
  *   - Uses TeamQueries for READ operations (get team by ID)
  *   - Uses TeamCore for WRITE operations (create, delete, add/remove members)
  *   - Uses AcademyUI for state management
@@ -25,7 +25,18 @@
  *   - Uses AcademyQueries for read-only access
  *   - All HTML escaping uses DomUtils.escapeHtml()
  *   - All notifications use NotificationSystem.notify()
- *   - All modals use Modal system
+ *   - All modals route through Modal.showModal / Modal.hideModal
+ * 
+ * MODAL VISIBILITY:
+ *   Modals in this file are shown and hidden through the Modal module.
+ *   The three-layer visibility contract is:
+ *     1. `hidden` class removed (it has `display: none !important`)
+ *     2. `visible` class added (it has `display: flex`)
+ *     3. `style.display = 'flex'` set inline
+ *   Modal.showModal does all three atomically, plus focus management
+ *   and animation. Modal.hideModal reverses all three. Do not manipulate
+ *   modal classes or display directly; it's how half-visible modals
+ *   happen.
  * 
  * PROMISE CONTRACT (v15+):
  *   - AcademyClasses.create / update / delete return Promises.
@@ -36,13 +47,10 @@
  *   - AcademyQueries and AcademyAggregator reads are synchronous.
  * 
  * DEPENDENCY RESOLUTION:
- *   - Modules that are guaranteed to be loaded before this file are
- *     captured at module load (e.g. AcademyUI, AcademyQueries).
- *   - Modules that are NOT guaranteed to be loaded before this file
- *     (TeamCore, AcademyRanking) are resolved lazily at call time via
- *     accessor functions.
- *   - This avoids load-order warnings and makes the module robust to
- *     future script reordering.
+ *   - Modules guaranteed to be loaded before this file are captured at
+ *     module load.
+ *   - Modules NOT guaranteed at load time (TeamCore, AcademyRanking) are
+ *     resolved lazily at call time via accessor functions.
  * 
  * DEPENDENCIES (loaded before this file - captured at load):
  *   - window.AcademyUI
@@ -94,29 +102,16 @@
     // DEPENDENCY RESOLUTION - LAZY (not guaranteed at load time)
     // ============================================================
 
-    /**
-     * Get TeamCore, resolved at call time.
-     * TeamCore loads after this module in the current script order,
-     * so it cannot be captured at load time.
-     * 
-     * @returns {object|null} TeamCore or null if not yet loaded
-     */
     function getTeamCore() {
         return window.TeamCore || null;
     }
 
-    /**
-     * Get AcademyRanking, resolved at call time.
-     * AcademyRanking loads after this module in the current script order.
-     * 
-     * @returns {object|null} AcademyRanking or null if not yet loaded
-     */
     function getAcademyRanking() {
         return window.AcademyRanking || null;
     }
 
     // ============================================================
-    // DEPENDENCY CHECK - LOAD-TIME ONLY
+    // DEPENDENCY CHECK
     // ============================================================
 
     function checkDependencies() {
@@ -195,13 +190,11 @@
             missing.push('DomUtils.escapeHtml');
         }
 
-        if (!Modal || typeof Modal.createModal !== 'function') {
-            missing.push('Modal.createModal');
+        if (!Modal || typeof Modal.showModal !== 'function' || typeof Modal.hideModal !== 'function') {
+            missing.push('Modal.showModal / Modal.hideModal');
         }
 
         // TeamCore and AcademyRanking are deliberately NOT checked here.
-        // They are resolved lazily at call time via getTeamCore() /
-        // getAcademyRanking().
 
         if (missing.length > 0) {
             console.warn('[ClassTab] Missing load-time dependencies:', missing.join(', '));
@@ -241,8 +234,58 @@
     }
 
     // ============================================================
+    // MODAL HELPERS
+    // ============================================================
+    // 
+    // All modal show/hide in this file routes through these two helpers.
+    // They use Modal.showModal / Modal.hideModal when available, and
+    // fall back to the three-step manual sequence when Modal isn't
+    // loaded. The fallback replicates exactly what Modal.showModal does
+    // internally, so the CSS state stays consistent either way.
+
+    /**
+     * Show a modal correctly.
+     * 
+     * @param {HTMLElement} modal - Modal element
+     */
+    function showModal(modal) {
+        if (!modal) { return; }
+
+        if (Modal && typeof Modal.showModal === 'function') {
+            Modal.showModal(modal);
+            return;
+        }
+
+        // Fallback: three-step manual show.
+        modal.classList.remove('hidden');
+        modal.classList.add('visible');
+        modal.style.display = 'flex';
+    }
+
+    /**
+     * Hide a modal correctly.
+     * 
+     * @param {HTMLElement} modal - Modal element
+     */
+    function hideModal(modal) {
+        if (!modal) { return; }
+
+        if (Modal && typeof Modal.hideModal === 'function') {
+            Modal.hideModal(modal);
+            return;
+        }
+
+        // Fallback: three-step manual hide.
+        modal.classList.add('hidden');
+        modal.classList.remove('visible');
+        modal.style.display = 'none';
+    }
+
+    // ============================================================
     // REFRESH HELPER
     // ============================================================
+
+    var _currentContainer = null;
 
     /**
      * Ask the Academy shell to re-render the current sub-tab.
@@ -260,8 +303,6 @@
             bindEvents(_currentContainer);
         }
     }
-
-    var _currentContainer = null;
 
     // ============================================================
     // CONSTANTS
@@ -792,14 +833,10 @@
             });
         }
 
-        // ---- Class form events ----
-        bindClassFormEvents(container);
-
-        // ---- Distribute events ----
-        bindDistributeEvents(container);
-
-        // ---- Team members events ----
-        bindTeamMembersEvents(container);
+        // ---- Modal event binding ----
+        bindClassFormEvents();
+        bindDistributeEvents();
+        bindTeamMembersEvents();
 
         // ---- Filter events ----
         var filterInput = container.querySelector('#class-filter-input');
@@ -833,8 +870,16 @@
     // ============================================================
     // CLASS FORM EVENTS
     // ============================================================
+    // 
+    // IMPORTANT: Modals live in the DOM once (rendered by ClassTab.render).
+    // If ClassTab.render is called again, they're re-created, which means
+    // any listeners bound to them are lost. The listeners here are bound
+    // to document.querySelector, which finds the current modal each time.
+    // 
+    // To guard against duplicate binding (if bindEvents runs twice without
+    // a re-render), we use a flag on the modal element itself.
 
-    function bindClassFormEvents(container) {
+    function bindClassFormEvents() {
         var modal = document.getElementById('academy-class-modal');
         var form = document.getElementById('academy-class-form');
         var closeBtn = document.getElementById('academy-class-modal-close');
@@ -842,22 +887,29 @@
         var nameInput = document.getElementById('academy-class-name');
         var saveBtn = document.getElementById('academy-class-modal-save');
 
+        if (modal && modal.dataset.bound === 'true') {
+            return;  // Already bound to this modal instance
+        }
+        if (modal) {
+            modal.dataset.bound = 'true';
+        }
+
         if (closeBtn) {
             closeBtn.addEventListener('click', function() {
-                if (modal) { modal.classList.add('hidden'); }
+                hideModal(modal);
             });
         }
 
         if (cancelBtn) {
             cancelBtn.addEventListener('click', function() {
-                if (modal) { modal.classList.add('hidden'); }
+                hideModal(modal);
             });
         }
 
         if (modal) {
             modal.addEventListener('click', function(e) {
                 if (e.target === this) {
-                    this.classList.add('hidden');
+                    hideModal(modal);
                 }
             });
         }
@@ -874,8 +926,6 @@
 
                 var editId = form.dataset.editId;
 
-                // Disable the save button while the Promise is in flight
-                // so a double-click can't create two classes.
                 if (saveBtn) {
                     saveBtn.disabled = true;
                 }
@@ -888,10 +938,8 @@
                     .then(function(result) {
                         if (result && result.success) {
                             notify(editId ? 'Class updated successfully.' : 'Class created successfully.', 'success');
-                            if (modal) { modal.classList.add('hidden'); }
+                            hideModal(modal);
 
-                            // If we just created a class, select it so
-                            // the detail panel opens on it.
                             if (!editId && result.data && result.data.classId) {
                                 AcademyUI.selectClass(result.data.classId);
                             }
@@ -906,8 +954,6 @@
                         console.error('[ClassTab] saveClass error:', err);
                     })
                     .then(function() {
-                        // Always re-enable the button, whether the
-                        // Promise resolved or rejected.
                         if (saveBtn) {
                             saveBtn.disabled = false;
                         }
@@ -920,28 +966,35 @@
     // DISTRIBUTE EVENTS
     // ============================================================
 
-    function bindDistributeEvents(container) {
+    function bindDistributeEvents() {
         var modal = document.getElementById('academy-distribute-modal');
         var closeBtn = document.getElementById('academy-distribute-close');
         var cancelBtn = document.getElementById('academy-distribute-cancel');
         var confirmBtn = document.getElementById('academy-distribute-confirm');
 
+        if (modal && modal.dataset.bound === 'true') {
+            return;
+        }
+        if (modal) {
+            modal.dataset.bound = 'true';
+        }
+
         if (closeBtn) {
             closeBtn.addEventListener('click', function() {
-                if (modal) { modal.classList.add('hidden'); }
+                hideModal(modal);
             });
         }
 
         if (cancelBtn) {
             cancelBtn.addEventListener('click', function() {
-                if (modal) { modal.classList.add('hidden'); }
+                hideModal(modal);
             });
         }
 
         if (modal) {
             modal.addEventListener('click', function(e) {
                 if (e.target === this) {
-                    this.classList.add('hidden');
+                    hideModal(modal);
                 }
             });
         }
@@ -981,7 +1034,6 @@
                     return;
                 }
 
-                // AcademyDistribute.autoDistribute is synchronous.
                 var result = AcademyDistribute.autoDistribute(classId, week, {
                     maxPerGroup: maxSize,
                     teamIds: teamIds
@@ -990,7 +1042,7 @@
                 if (result && result.success) {
                     var data = result.data || {};
                     notify('Distributed ' + (data.totalStudents || 0) + ' students successfully.', 'success');
-                    if (modal) { modal.classList.add('hidden'); }
+                    hideModal(modal);
                     requestRefresh();
                 } else {
                     notify(result ? result.message : 'Failed to distribute students.', 'error');
@@ -1003,101 +1055,103 @@
     // TEAM MEMBERS EVENTS
     // ============================================================
 
-    function bindTeamMembersEvents(container) {
+    function bindTeamMembersEvents() {
         var modal = document.getElementById('academy-team-members-modal');
         var closeBtn = document.getElementById('academy-team-members-close');
 
+        if (modal && modal.dataset.bound === 'true') {
+            return;
+        }
+        if (modal) {
+            modal.dataset.bound = 'true';
+        }
+
         if (closeBtn) {
             closeBtn.addEventListener('click', function() {
-                if (modal) { modal.classList.add('hidden'); }
+                hideModal(modal);
             });
         }
 
         if (modal) {
             modal.addEventListener('click', function(e) {
                 if (e.target === this) {
-                    this.classList.add('hidden');
+                    hideModal(modal);
+                }
+            });
+
+            // Add member (delegated on the modal body)
+            modal.addEventListener('click', function(e) {
+                var btn = e.target.closest('#team-member-add-btn');
+                if (btn) {
+                    var teamId = modal.dataset.teamId;
+                    var select = document.getElementById('team-member-select');
+                    var roleInput = document.getElementById('team-member-role');
+                    var joinInput = document.getElementById('team-member-join');
+
+                    if (!teamId) {
+                        notify('No team selected.', 'error');
+                        return;
+                    }
+
+                    var studentId = select ? select.value : '';
+                    if (!studentId) {
+                        notify('Please select a student.', 'error');
+                        return;
+                    }
+
+                    var TeamCore = getTeamCore();
+                    if (!TeamCore || typeof TeamCore.addMember !== 'function') {
+                        notify('TeamCore is not available.', 'error');
+                        return;
+                    }
+
+                    var role = roleInput ? roleInput.value.trim() : 'Member';
+                    var join = joinInput ? joinInput.value.trim() : String(AcademyUI.getDisplayWeek());
+
+                    var result = TeamCore.addMember(teamId, {
+                        characterId: studentId,
+                        role: role,
+                        joinPeriod: join,
+                        leavePeriod: ''
+                    });
+
+                    if (result) {
+                        notify('Student added to team.', 'success');
+                        refreshTeamMembersModal(teamId);
+                    } else {
+                        notify('Failed to add student.', 'error');
+                    }
+                }
+
+                var removeBtn = e.target.closest('.team-member-remove-btn');
+                if (removeBtn) {
+                    var rmTeamId = removeBtn.dataset.team;
+                    var rmStudentId = removeBtn.dataset.student;
+
+                    if (!rmTeamId || !rmStudentId) {
+                        return;
+                    }
+
+                    if (!confirm('Remove this member?')) {
+                        return;
+                    }
+
+                    var TeamCore = getTeamCore();
+                    if (!TeamCore || typeof TeamCore.removeMember !== 'function') {
+                        notify('TeamCore is not available.', 'error');
+                        return;
+                    }
+
+                    var result = TeamCore.removeMember(rmTeamId, rmStudentId);
+                    if (result) {
+                        notify('Member removed.', 'success');
+                        refreshTeamMembersModal(rmTeamId);
+                    } else {
+                        notify('Failed to remove member.', 'error');
+                    }
                 }
             });
         }
-
-        // Add member button
-        container.addEventListener('click', function(e) {
-            var btn = e.target.closest('#team-member-add-btn');
-            if (btn) {
-                var teamId = modal ? modal.dataset.teamId : null;
-                var select = document.getElementById('team-member-select');
-                var roleInput = document.getElementById('team-member-role');
-                var joinInput = document.getElementById('team-member-join');
-
-                if (!teamId) {
-                    notify('No team selected.', 'error');
-                    return;
-                }
-
-                var studentId = select ? select.value : '';
-                if (!studentId) {
-                    notify('Please select a student.', 'error');
-                    return;
-                }
-
-                // ---- RESOLVE TEAMCORE AT CALL TIME ----
-                var TeamCore = getTeamCore();
-                if (!TeamCore || typeof TeamCore.addMember !== 'function') {
-                    notify('TeamCore is not available.', 'error');
-                    return;
-                }
-
-                var role = roleInput ? roleInput.value.trim() : 'Member';
-                var join = joinInput ? joinInput.value.trim() : String(AcademyUI.getDisplayWeek());
-
-                var result = TeamCore.addMember(teamId, {
-                    characterId: studentId,
-                    role: role,
-                    joinPeriod: join,
-                    leavePeriod: ''
-                });
-
-                if (result) {
-                    notify('Student added to team.', 'success');
-                    refreshTeamMembersModal(teamId);
-                } else {
-                    notify('Failed to add student.', 'error');
-                }
-            }
-        });
-
-        // Remove member button
-        container.addEventListener('click', function(e) {
-            var btn = e.target.closest('.team-member-remove-btn');
-            if (btn) {
-                var teamId = btn.dataset.team;
-                var studentId = btn.dataset.student;
-
-                if (!teamId || !studentId) {
-                    return;
-                }
-
-                if (!confirm('Remove this member?')) {
-                    return;
-                }
-
-                // ---- RESOLVE TEAMCORE AT CALL TIME ----
-                var TeamCore = getTeamCore();
-                if (!TeamCore || typeof TeamCore.removeMember !== 'function') {
-                    notify('TeamCore is not available.', 'error');
-                    return;
-                }
-
-                var result = TeamCore.removeMember(teamId, studentId);
-                if (result) {
-                    notify('Member removed.', 'success');
-                    refreshTeamMembersModal(teamId);
-                } else {
-                    notify('Failed to remove member.', 'error');
-                }
-            }
-        });
     }
 
     // ============================================================
@@ -1145,7 +1199,7 @@
             delete form.dataset.editId;
         }
 
-        modal.classList.remove('hidden');
+        showModal(modal);
         nameInput.focus();
         nameInput.select();
     }
@@ -1202,7 +1256,7 @@
         html += '</div>';
 
         content.innerHTML = html;
-        modal.classList.remove('hidden');
+        showModal(modal);
     }
 
     function showTeamMembersModal(teamId) {
@@ -1214,7 +1268,7 @@
 
         modal.dataset.teamId = teamId;
         refreshTeamMembersModal(teamId);
-        modal.classList.remove('hidden');
+        showModal(modal);
     }
 
     function refreshTeamMembersModal(teamId) {
@@ -1290,10 +1344,6 @@
                 if (result && result.success) {
                     notify('Class deleted successfully.', 'success');
 
-                    // Deleting a class may invalidate any selection.
-                    // Clear the class selection; the character selection
-                    // may also be stale if the character had no other
-                    // classes, but AcademyUI handles the invalidation.
                     AcademyUI.clearSelection('class');
                     AcademyUI.clearSelection('student');
 
@@ -1353,7 +1403,6 @@
             return;
         }
 
-        // ---- RESOLVE TEAMCORE AT CALL TIME ----
         var TeamCore = getTeamCore();
         if (!TeamCore || typeof TeamCore.createTeam !== 'function') {
             notify('TeamCore is not available.', 'error');
@@ -1393,7 +1442,6 @@
     }
 
     function handleDeleteTeam(teamId) {
-        // ---- RESOLVE TEAMCORE AT CALL TIME ----
         var TeamCore = getTeamCore();
         if (!TeamCore || typeof TeamCore.deleteTeam !== 'function') {
             notify('TeamCore is not available.', 'error');
@@ -1410,7 +1458,6 @@
     }
 
     function handleRemoveTeamMember(teamId, studentId) {
-        // ---- RESOLVE TEAMCORE AT CALL TIME ----
         var TeamCore = getTeamCore();
         if (!TeamCore || typeof TeamCore.removeMember !== 'function') {
             notify('TeamCore is not available.', 'error');
@@ -1427,14 +1474,6 @@
         }
     }
 
-    /**
-     * Auto-generate rankings for the current class and week.
-     * 
-     * NOTE: AcademyRanking.autoGenerate has signature
-     * (classId, week, options). The previous implementation in this
-     * file called it as autoGenerate(week), which failed silently
-     * with "Class ID is required".
-     */
     function handleAutoGenerateRankings() {
         var classId = AcademyUI.getSelectedClassId();
         if (!classId) {
@@ -1454,10 +1493,6 @@
             return;
         }
 
-        // autoGenerate is synchronous (mutates academy.rankings
-        // directly and returns a result object). It is not yet routed
-        // through MutationPipeline — that is a known limitation carried
-        // forward from the pre-v15 code.
         var result = AcademyRanking.autoGenerate(classId, week);
 
         if (result && result.success) {
