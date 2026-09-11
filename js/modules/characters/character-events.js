@@ -11,6 +11,9 @@
  *     live updates, weapons, moves) are all delegated.
  *   - Social tab bindings (add/edit/delete relationship, group toggles,
  *     graph view, character search filter) are all delegated.
+ *   - SocialCore is initialized on-demand via ensureSocialCoreInitialized()
+ *     so the character form's Social tab works even if the top-level
+ *     Social tab was never opened.
  */
 
 (function() {
@@ -56,7 +59,8 @@
     var _filterDebounceTimer = null;
 
     // Social modal state
-    var _socialEditId = null;      // relationship id being edited, or null for create
+    var _socialEditId = null;
+    var _socialCoreInitialized = false;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -127,12 +131,13 @@
             missing.push('UI_CONSTANTS.MOBILE_BREAKPOINT');
         }
 
-        // Social dependencies — warn but don't fail (Social buttons just won't bind)
+        // Social dependencies — warn but don't fail
         var socialMissing = [];
         if (!SocialConstants) socialMissing.push('SocialConstants');
         if (!SocialQueries) socialMissing.push('SocialQueries');
         if (!SocialCore) socialMissing.push('SocialCore');
         if (!SocialGraph) socialMissing.push('SocialGraph');
+        if (!Modal) socialMissing.push('Modal');
         if (socialMissing.length > 0) {
             console.warn('[CharacterEvents] Social dependencies missing (social tab disabled):', socialMissing.join(', '));
         }
@@ -142,6 +147,54 @@
             return false;
         }
         return true;
+    }
+
+    // ============================================================
+    // SOCIAL CORE INITIALIZATION
+    // ============================================================
+
+    /**
+     * Ensure SocialCore has been initialized with a characterProvider.
+     * Idempotent — safe to call multiple times.
+     * 
+     * SocialCore needs a `characterProvider` with an `exists(id)` method
+     * so it can validate that both characters exist before creating a
+     * relationship. The top-level Social module calls this on mount, but
+     * the Character form's Social tab must work even if the standalone
+     * Social tab was never opened. This helper makes the character form
+     * self-sufficient.
+     */
+    function ensureSocialCoreInitialized() {
+        // Already done in this session — skip
+        if (_socialCoreInitialized) { return true; }
+
+        if (!window.SocialCore || typeof window.SocialCore.init !== 'function') {
+            return false;
+        }
+        if (!window.CharacterQueries || typeof window.CharacterQueries.getCharacterById !== 'function') {
+            return false;
+        }
+
+        var characterProvider = {
+            exists: function(id) {
+                if (!id) { return false; }
+                var char = window.CharacterQueries.getCharacterById(id);
+                return char !== null && char !== undefined;
+            }
+        };
+
+        try {
+            var result = window.SocialCore.init({ characterProvider: characterProvider });
+            // SocialCore.init returns true when the provider was accepted
+            if (result !== false) {
+                _socialCoreInitialized = true;
+                return true;
+            }
+            return false;
+        } catch (e) {
+            console.warn('[CharacterEvents] SocialCore.init failed:', e);
+            return false;
+        }
     }
 
     // ============================================================
@@ -256,6 +309,10 @@
         }
 
         removeAllEventListeners();
+
+        // Ensure SocialCore has a characterProvider so relationship
+        // mutations work even if the top-level Social tab was never opened.
+        ensureSocialCoreInitialized();
 
         // Static container elements
         bindToggleList(container);
@@ -1027,19 +1084,16 @@
     // ============================================================
 
     function bindSocialButtons() {
-        // Add relationship button
         addSafeDelegatedListener('#add-char-relationship-btn', 'click', function(e, target) {
             e.preventDefault();
             openRelationshipModal(null);
         });
 
-        // View graph button
         addSafeDelegatedListener('#view-char-social-graph', 'click', function(e, target) {
             e.preventDefault();
             openCharacterGraphModal();
         });
 
-        // Collapsible group toggle
         addSafeDelegatedListener('.relationship-group-header', 'click', function(e, target) {
             e.preventDefault();
             var group = target.closest('.relationship-group');
@@ -1055,7 +1109,6 @@
             }
         });
 
-        // Edit relationship
         addSafeDelegatedListener('.edit-char-relationship', 'click', function(e, target) {
             e.preventDefault();
             e.stopPropagation();
@@ -1063,7 +1116,6 @@
             if (relId) { openRelationshipModal(relId); }
         });
 
-        // Delete relationship
         addSafeDelegatedListener('.delete-char-relationship', 'click', function(e, target) {
             e.preventDefault();
             e.stopPropagation();
@@ -1071,23 +1123,19 @@
             if (relId) { handleDeleteRelationship(relId); }
         });
 
-        // Character search input filter (char1)
         addSafeDelegatedListener('#rel-char1-search', 'input', function(e, target) {
             filterCharacterOptions('rel-char1', target.value);
         });
 
-        // Character search input filter (char2)
         addSafeDelegatedListener('#rel-char2-search', 'input', function(e, target) {
             filterCharacterOptions('rel-char2', target.value);
         });
 
-        // Form submit for the relationship modal
         addSafeDelegatedListener('#character-relationship-form', 'submit', function(e) {
             e.preventDefault();
             handleSaveRelationship();
         });
 
-        // Modal close buttons
         addSafeDelegatedListener('#close-char-relationship-modal', 'click', function(e, target) {
             e.preventDefault();
             closeRelationshipModal();
@@ -1098,14 +1146,12 @@
             closeRelationshipModal();
         });
 
-        // Modal backdrop click
         addSafeDelegatedListener('#character-relationship-modal', 'click', function(e, target) {
             if (e.target === target) {
                 closeRelationshipModal();
             }
         });
 
-        // Graph modal close
         addSafeDelegatedListener('#close-char-graph-modal', 'click', function(e, target) {
             e.preventDefault();
             closeCharacterGraphModal();
@@ -1118,16 +1164,15 @@
         });
     }
 
-    /**
-     * Open the relationship modal.
-     * @param {number|string|null} relId - Relationship id to edit, or null to create
-     */
     function openRelationshipModal(relId) {
         var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
         if (!charId) {
             notify('Please save the character first.', 'error');
             return;
         }
+
+        // Make sure SocialCore has a provider before we try to mutate
+        ensureSocialCoreInitialized();
 
         if (!SocialCore || !SocialQueries || !SocialConstants) {
             notify('Social module not available.', 'error');
@@ -1140,7 +1185,6 @@
             return;
         }
 
-        // Build the form HTML (CharacterViews provides this)
         var CharacterViews = window.CharacterViews;
         if (!CharacterViews || typeof CharacterViews.buildRelationshipFormHTML !== 'function') {
             notify('Character views module not available.', 'error');
@@ -1159,16 +1203,13 @@
             }
         }
 
-        // Build form HTML
         formContainer.innerHTML = CharacterViews.buildRelationshipFormHTML(charId, existingRel);
 
-        // Update modal title
         var titleEl = document.getElementById('character-relationship-modal-title');
         if (titleEl) {
             titleEl.textContent = _socialEditId ? 'Edit Relationship' : 'Add Relationship';
         }
 
-        // Show modal
         var modal = document.getElementById('character-relationship-modal');
         if (modal && Modal && typeof Modal.showModal === 'function') {
             Modal.showModal(modal);
@@ -1178,9 +1219,6 @@
         }
     }
 
-    /**
-     * Close the relationship modal.
-     */
     function closeRelationshipModal() {
         _socialEditId = null;
         var modal = document.getElementById('character-relationship-modal');
@@ -1192,12 +1230,6 @@
         }
     }
 
-    /**
-     * Filter visible options in a character select dropdown.
-     * Shows only options whose text matches the search string.
-     * @param {string} selectId - The id of the select element
-     * @param {string} query - Search string
-     */
     function filterCharacterOptions(selectId, query) {
         var select = document.getElementById(selectId);
         if (!select) { return; }
@@ -1215,7 +1247,6 @@
             }
         });
 
-        // If current selection was filtered out, select the first visible option
         if (select.selectedOptions && select.selectedOptions.length > 0) {
             var selected = select.selectedOptions[0];
             if (selected.style.display === 'none') {
@@ -1225,15 +1256,15 @@
         }
     }
 
-    /**
-     * Save (create or update) a relationship from the modal form.
-     */
     function handleSaveRelationship() {
         var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
         if (!charId) {
             notify('No character selected.', 'error');
             return;
         }
+
+        // Ensure the provider is in place
+        ensureSocialCoreInitialized();
 
         var char1El = document.getElementById('rel-char1');
         var char2El = document.getElementById('rel-char2');
@@ -1290,21 +1321,19 @@
             .then(function(result) {
                 if (result && result.success) {
                     closeRelationshipModal();
-                    // Re-render the social tab for this character
                     var char = CharacterQueries.getCharacterById(charId);
                     if (char && CharacterViews && typeof CharacterViews.renderCharacterSocial === 'function') {
                         CharacterViews.renderCharacterSocial(char);
                     }
+                } else if (result && result.message) {
+                    notify(result.message, 'error');
                 }
             })
-            .catch(function() {
+            .catch(function(err) {
                 notify('Failed to save relationship.', 'error');
             });
     }
 
-    /**
-     * Delete a relationship with confirmation.
-     */
     function handleDeleteRelationship(relId) {
         if (!relId) { return; }
         if (!SocialCore || !SocialQueries) {
@@ -1318,7 +1347,6 @@
             return;
         }
 
-        // Build display text using aggregator
         var name1 = 'Unknown';
         var name2 = 'Unknown';
         var label = 'relationship';
@@ -1356,9 +1384,6 @@
             });
     }
 
-    /**
-     * Open the character's SVG network graph in a modal.
-     */
     function openCharacterGraphModal() {
         var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
         if (!charId) {
@@ -1377,7 +1402,6 @@
             return;
         }
 
-        // Build graph modal if not present
         var existing = document.getElementById('character-graph-modal');
         if (!existing) {
             var wrapper = document.createElement('div');
@@ -1393,7 +1417,6 @@
             modal.style.display = 'flex';
         }
 
-        // After modal is shown, render the graph scoped to this character
         setTimeout(function() {
             if (CharacterViews && typeof CharacterViews.renderCharacterGraph === 'function') {
                 CharacterViews.renderCharacterGraph(charId);
