@@ -2503,3 +2503,508 @@ main {
         max-height: 500px;
     }
 }
+
+/* ============================================================
+   CALENDAR MODULE
+   ============================================================ */
+
+.calendar-module {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.calendar-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.calendar-controls .mode-selector {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.calendar-controls .mode-btn {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 0.7rem;
+    cursor: pointer;
+    transition: 0.2s;
+    white-space: nowrap;
+}
+
+.calendar-controls .mode-btn:hover {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.calendar-controls .mode-btn.active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.calendar-controls .week-nav {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.calendar-controls .week-nav button {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    line-height: 1;
+}
+
+.calendar-controls .week-nav button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.calendar-controls .week-display {
+    font-size: 0.75rem;
+    color: var(--text);
+    font-weight: 600;
+    min-width: 70px;
+    text-align: center;
+}
+
+.calendar-controls .entity-selector {
+    margin-left: auto;
+}
+
+.calendar-controls .entity-selector select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 0.7rem;
+    font-family: 'Inter', sans-serif;
+    min-width: 180px;
+}
+
+.calendar-controls .entity-selector select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.calendar-content {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px;
+    overflow-x: auto;
+}
+
+.calendar-grid-container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+}
+
+.calendar-grid-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+}
+
+.calendar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.calendar-header .calendar-title {
+    font-size: 0.9rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+/* ============================================================
+   SCHEDULE GRID - the actual calendar
+   ============================================================ */
+
+.schedule-grid {
+    display: grid;
+    /* First column is time, then 7 day columns */
+    grid-template-columns: 70px repeat(7, minmax(90px, 1fr));
+    gap: 2px;
+    background: var(--border-soft);
+    padding: 2px;
+    border-radius: 6px;
+    overflow-x: auto;
+    min-width: 0;
+    font-size: 0.7rem;
+}
+
+.schedule-cell {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: stretch;
+    padding: 4px 6px;
+    background: var(--panel);
+    border-radius: 3px;
+    min-height: 44px;
+    min-width: 0;
+    overflow: hidden;
+    word-break: break-word;
+}
+
+/* ---------- Header cells ---------- */
+
+.schedule-cell.schedule-header {
+    background: var(--panel-alt);
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    font-size: 0.6rem;
+    letter-spacing: 0.04em;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    min-height: 32px;
+    padding: 6px 4px;
+}
+
+.schedule-cell.schedule-time.schedule-header {
+    color: var(--accent);
+}
+
+/* ---------- Time column ---------- */
+
+.schedule-cell.schedule-time {
+    background: var(--panel-alt);
+    color: var(--text-dim);
+    font-size: 0.6rem;
+    font-weight: 500;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    padding: 4px 2px;
+    border-right: 1px solid var(--border);
+}
+
+/* ---------- Slots ---------- */
+
+.schedule-cell.schedule-slot {
+    cursor: pointer;
+    transition: 0.15s;
+}
+
+.schedule-cell.schedule-slot.schedule-empty {
+    background: var(--panel);
+    border: 1px dashed var(--border-soft);
+    color: var(--text-dim);
+    justify-content: center;
+    align-items: center;
+}
+
+.schedule-cell.schedule-slot.schedule-empty:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.schedule-cell.schedule-slot.schedule-empty .schedule-empty-label {
+    font-size: 1rem;
+    font-weight: 600;
+    opacity: 0.4;
+    line-height: 1;
+}
+
+.schedule-cell.schedule-slot.schedule-empty:hover .schedule-empty-label {
+    opacity: 1;
+}
+
+/* ---------- Occupied slots ---------- */
+
+.schedule-cell.schedule-slot.schedule-occupied {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    justify-content: flex-start;
+}
+
+.schedule-cell.schedule-slot.schedule-occupied:hover {
+    background: var(--accent-hover);
+}
+
+.schedule-cell.schedule-slot.schedule-occupied .schedule-discipline-name {
+    font-weight: 600;
+    color: var(--accent);
+    font-size: 0.7rem;
+    line-height: 1.15;
+    margin-bottom: 1px;
+}
+
+.schedule-cell.schedule-slot.schedule-occupied .schedule-label {
+    font-size: 0.6rem;
+    color: var(--text);
+    font-style: italic;
+    line-height: 1.15;
+}
+
+.schedule-cell.schedule-slot.schedule-occupied .schedule-group-label {
+    font-size: 0.58rem;
+    color: var(--text-dim);
+    line-height: 1.15;
+}
+
+.schedule-cell.schedule-slot.schedule-occupied .schedule-instructor {
+    font-size: 0.58rem;
+    color: var(--info);
+    line-height: 1.15;
+}
+
+.schedule-cell.schedule-slot.schedule-occupied .schedule-duration {
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    font-size: 0.5rem;
+    color: var(--text-dim);
+    background: var(--bg);
+    border-radius: 3px;
+    padding: 0 3px;
+}
+
+.schedule-cell.schedule-slot.schedule-occupied {
+    position: relative;
+}
+
+.schedule-cell.schedule-slot.schedule-occupied .schedule-continuation {
+    position: absolute;
+    bottom: 2px;
+    right: 4px;
+    font-size: 0.65rem;
+    color: var(--accent);
+}
+
+/* ---------- Blocked slots ---------- */
+
+.schedule-cell.schedule-slot.schedule-blocked {
+    background: repeating-linear-gradient(
+        45deg,
+        var(--panel-alt),
+        var(--panel-alt) 6px,
+        var(--bg) 6px,
+        var(--bg) 12px
+    );
+    border-left: 3px solid var(--text-dim);
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    color: var(--text-dim);
+}
+
+.schedule-cell.schedule-slot.schedule-blocked .schedule-blocked-label {
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    line-height: 1.2;
+}
+
+/* ---------- Rest days ---------- */
+
+.schedule-cell.schedule-rest-day {
+    background: repeating-linear-gradient(
+        45deg,
+        var(--bg),
+        var(--bg) 4px,
+        var(--panel-alt) 4px,
+        var(--panel-alt) 8px
+    );
+    color: var(--text-dim);
+    cursor: default;
+}
+
+.schedule-cell.schedule-slot.schedule-rest-day:hover {
+    background: repeating-linear-gradient(
+        45deg,
+        var(--bg),
+        var(--bg) 4px,
+        var(--panel-alt) 4px,
+        var(--panel-alt) 8px
+    );
+    border-color: transparent;
+    color: var(--text-dim);
+}
+
+/* ---------- Available items sidebar / legend ---------- */
+
+.calendar-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.65rem;
+}
+
+.calendar-legend .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.calendar-legend .legend-color {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+}
+
+.calendar-legend .legend-color.legend-occupied {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.calendar-legend .legend-color.legend-rest-day {
+    background: repeating-linear-gradient(
+        45deg,
+        var(--bg),
+        var(--bg) 3px,
+        var(--panel-alt) 3px,
+        var(--panel-alt) 6px
+    );
+}
+
+.calendar-legend .legend-color.legend-blocked {
+    background: repeating-linear-gradient(
+        45deg,
+        var(--panel-alt),
+        var(--panel-alt) 3px,
+        var(--bg) 3px,
+        var(--bg) 6px
+    );
+}
+
+/* ============================================================
+   CALENDAR - MODAL CONTENTS
+   ============================================================ */
+
+.modal-form-content .form-group,
+.modal-detail-content .form-group {
+    margin-bottom: 10px;
+}
+
+.modal-form-content label,
+.modal-detail-content label {
+    display: block;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-weight: 500;
+    margin-bottom: 3px;
+}
+
+.modal-select,
+.modal-input {
+    width: 100%;
+    padding: 5px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.modal-select:focus,
+.modal-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.modal-detail-content .detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 0.75rem;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.modal-detail-content .detail-row .detail-label {
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+.modal-detail-content .detail-row .detail-value {
+    color: var(--text);
+    text-align: right;
+}
+
+.modal-detail-content .detail-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+/* ============================================================
+   CALENDAR - MOBILE
+   ============================================================ */
+
+@media (max-width: 700px) {
+    .schedule-grid {
+        grid-template-columns: 54px repeat(7, minmax(70px, 1fr));
+        font-size: 0.6rem;
+    }
+
+    .schedule-cell {
+        padding: 3px 4px;
+        min-height: 40px;
+    }
+
+    .schedule-cell.schedule-header {
+        font-size: 0.52rem;
+        padding: 4px 2px;
+        min-height: 28px;
+    }
+
+    .schedule-cell.schedule-time {
+        font-size: 0.52rem;
+    }
+
+    .schedule-cell.schedule-slot.schedule-occupied .schedule-discipline-name {
+        font-size: 0.6rem;
+    }
+
+    .schedule-cell.schedule-slot.schedule-occupied .schedule-label,
+    .schedule-cell.schedule-slot.schedule-occupied .schedule-instructor,
+    .schedule-cell.schedule-slot.schedule-occupied .schedule-group-label {
+        font-size: 0.5rem;
+    }
+
+    .calendar-controls .entity-selector select {
+        min-width: 140px;
+    }
+}
