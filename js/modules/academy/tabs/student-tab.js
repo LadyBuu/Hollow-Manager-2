@@ -11,25 +11,38 @@
  * 
  * IMPORTANT:
  *   - UI-ONLY - all mutations delegate to domain cores
- *   - Uses AcademyClasses DIRECTLY (AcademyCore does not exist)
+ *   - Uses AcademyClasses DIRECTLY for class entity mutations
+ *   - Uses AcademyClasses.addStudent/removeStudent for membership
+ *     (DEPRECATED DELEGATES to CharacterClasses; still work but will
+ *     be removed once the Academy UI rework lands)
  *   - Uses AcademyUI for state management
  *   - Uses AcademyAggregator for projections
  *   - Uses AcademyGrades for grade operations
- *   - Uses AcademyRanking for ranking operations
+ *   - Uses AcademyRanking for ranking operations (lazy)
  *   - Uses AcademySchedule for schedule operations
  *   - Uses AcademyQueries for read-only access
  *   - CharacterList is REUSED (not duplicated)
  *   - All HTML escaping uses DomUtils.escapeHtml()
  *   - All notifications use NotificationSystem.notify()
  * 
+ * PROMISE CONTRACT (v15+):
+ *   - AcademyClasses.addStudent / removeStudent return Promises.
+ *   - AcademyGrades.saveGrades returns a Promise.
+ *   - AcademyRanking.autoGenerate is synchronous (see note below).
+ *   - AcademySchedule.setStudentRestDays is synchronous.
+ *   - AcademySchedule.getStudentRestDays is synchronous.
+ * 
+ * KNOWN LIMITATION:
+ *   - AcademyRanking.autoGenerate currently mutates academy.rankings
+ *     directly and does not go through MutationPipeline. This is a
+ *     pre-existing limitation carried forward from the pre-v15 code.
+ *     Fixing it is out of scope for the v15 data-model pass.
+ * 
  * DEPENDENCY RESOLUTION:
- *   - Modules that are guaranteed to be loaded before this file are
- *     captured at module load.
- *   - CharacterList loads AFTER this file in the current script order
- *     (Character domain is loaded after Academy domain). It is therefore
- *     resolved lazily at call time via getCharacterList().
- *   - This avoids load-order warnings and makes the module robust to
- *     future script reordering.
+ *   - Modules guaranteed to be loaded before this file are captured at
+ *     module load.
+ *   - Modules NOT guaranteed at load time (CharacterList, AcademyRanking)
+ *     are resolved lazily at call time via accessor functions.
  * 
  * DEPENDENCIES (loaded before this file - captured at load):
  *   - window.AcademyUI
@@ -37,7 +50,6 @@
  *   - window.AcademyClasses
  *   - window.AcademyQueries
  *   - window.AcademyGrades
- *   - window.AcademyRanking
  *   - window.AcademySchedule
  *   - window.CharacterQueries
  *   - window.CalendarConstants
@@ -46,6 +58,7 @@
  * 
  * DEPENDENCIES (lazy - resolved at call time):
  *   - window.CharacterList
+ *   - window.AcademyRanking
  * 
  * USAGE:
  *   var tab = window.StudentTab;
@@ -69,7 +82,6 @@
     var AcademyClasses = window.AcademyClasses;
     var AcademyQueries = window.AcademyQueries;
     var AcademyGrades = window.AcademyGrades;
-    var AcademyRanking = window.AcademyRanking;
     var AcademySchedule = window.AcademySchedule;
     var CharacterQueries = window.CharacterQueries;
     var CalendarConstants = window.CalendarConstants;
@@ -83,13 +95,22 @@
     /**
      * Get CharacterList, resolved at call time.
      * CharacterList loads after this module in the current script order
-     * (Character domain loads after Academy domain), so it cannot be
-     * captured at load time.
+     * (Character domain loads after Academy domain).
      * 
      * @returns {object|null} CharacterList or null if not yet loaded
      */
     function getCharacterList() {
         return window.CharacterList || null;
+    }
+
+    /**
+     * Get AcademyRanking, resolved at call time.
+     * AcademyRanking loads after this module in the current script order.
+     * 
+     * @returns {object|null} AcademyRanking or null if not yet loaded
+     */
+    function getAcademyRanking() {
+        return window.AcademyRanking || null;
     }
 
     // ============================================================
@@ -135,6 +156,9 @@
         if (!AcademyQueries || typeof AcademyQueries.getAvailableStudents !== 'function') {
             missing.push('AcademyQueries.getAvailableStudents');
         }
+        if (!AcademyQueries || typeof AcademyQueries.getDiscipline !== 'function') {
+            missing.push('AcademyQueries.getDiscipline');
+        }
 
         if (!AcademyGrades || typeof AcademyGrades.getStudentGrades !== 'function') {
             missing.push('AcademyGrades.getStudentGrades');
@@ -147,13 +171,6 @@
         }
         if (!AcademyGrades || typeof AcademyGrades.calculateStudentGPA !== 'function') {
             missing.push('AcademyGrades.calculateStudentGPA');
-        }
-
-        if (!AcademyRanking || typeof AcademyRanking.getStudentRank !== 'function') {
-            missing.push('AcademyRanking.getStudentRank');
-        }
-        if (!AcademyRanking || typeof AcademyRanking.autoGenerate !== 'function') {
-            missing.push('AcademyRanking.autoGenerate');
         }
 
         if (!AcademySchedule || typeof AcademySchedule.getStudentSchedule !== 'function') {
@@ -197,8 +214,8 @@
             missing.push('DomUtils.escapeHtml');
         }
 
-        // CharacterList is deliberately NOT checked here.
-        // It is resolved lazily at call time via getCharacterList().
+        // CharacterList and AcademyRanking deliberately not checked
+        // here — resolved lazily at call time.
 
         if (missing.length > 0) {
             console.warn('[StudentTab] Missing load-time dependencies:', missing.join(', '));
@@ -209,6 +226,30 @@
     }
 
     checkDependencies();
+
+    // ============================================================
+    // REFRESH HELPER
+    // ============================================================
+
+    var _currentContainer = null;
+
+    /**
+     * Ask the Academy shell to re-render the current sub-tab.
+     * Falls back to a local re-render if the shell isn't available.
+     */
+    function requestRefresh() {
+        if (window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
+            window.AcademyEvents.refreshUI();
+        } else if (_currentContainer) {
+            var html = render({
+                selectedClassId: AcademyUI.getSelectedClassId(),
+                selectedStudentId: AcademyUI.getSelectedStudentId(),
+                displayWeek: AcademyUI.getDisplayWeek()
+            });
+            _currentContainer.innerHTML = html;
+            bindEvents(_currentContainer);
+        }
+    }
 
     // ============================================================
     // HTML ESCAPING
@@ -416,7 +457,7 @@
                 html += '<td>' + escapeHtml(g.type || 'assignment') + '</td>';
                 html += '<td>' + (g.weight || 1).toFixed(1) + '</td>';
                 html += '<td>';
-                html += '<input type="number" class="grade-input" data-discipline="' + escapeHtml(g.disciplineId) + '" ';
+                html += '<input type="number" class="grade-input" data-discipline="' + escapeAttribute(g.disciplineId) + '" ';
                 html += 'value="' + (g.score !== undefined && g.score !== null ? g.score : '') + '" min="0" max="100" step="0.5" ';
                 html += 'style="width:60px;padding:2px 4px;font-size:0.7rem;">';
                 html += '</td>';
@@ -561,7 +602,7 @@
 
                 html += '<td class="' + className + '" data-day="' + d3 + '" data-hour="' + hour + '"';
                 if (entry) {
-                    html += ' data-discipline="' + escapeHtml(entry.disciplineId || '') + '"';
+                    html += ' data-discipline="' + escapeAttribute(entry.disciplineId || '') + '"';
                 }
                 html += '>';
                 html += '<span class="schedule-cell-content">' + escapeHtml(display) + '</span>';
@@ -618,6 +659,11 @@
         if (classFilter && classId) {
             classFilter.value = classId;
         }
+
+        // CharacterList.render() reads its own filter inputs and
+        // renders into #characters-container. If that container is
+        // not present in the Academy sidebar, the list won't appear
+        // here — this is a known coupling that Phase 4 will address.
         CharacterList.render();
     }
 
@@ -630,6 +676,8 @@
             return;
         }
 
+        _currentContainer = container;
+
         // ---- Week apply ----
         var weekApply = container.querySelector('#student-week-apply');
         if (weekApply) {
@@ -639,10 +687,7 @@
                     var week = parseInt(input.value, 10);
                     if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
                         AcademyUI.setDisplayWeek(week);
-                        if (typeof window.AcademyEvents !== 'undefined' &&
-                            window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                            window.AcademyEvents.refreshUI();
-                        }
+                        requestRefresh();
                     } else {
                         notify('Please enter a valid week (' + MIN_WEEK + '-' + MAX_WEEK + ').', 'error');
                     }
@@ -738,10 +783,7 @@
         document.addEventListener('characterSelected', function(e) {
             if (e.detail && e.detail.characterId) {
                 AcademyUI.selectStudent(e.detail.characterId);
-                if (typeof window.AcademyEvents !== 'undefined' &&
-                    window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                    window.AcademyEvents.refreshUI();
-                }
+                requestRefresh();
             }
         });
 
@@ -749,7 +791,7 @@
         refreshCharacterList();
 
         return function() {
-            // Cleanup
+            // Cleanup - no-op for now
         };
     }
 
@@ -790,7 +832,8 @@
                 var letter = getLetterGrade(numericScore);
                 if (letterEl) { letterEl.textContent = letter.label; }
                 if (weightedEl) {
-                    weightedEl.textContent = '--';
+                    // Weight not known from the input alone; leave
+                    // the existing weighted display untouched.
                 }
             }
         } else if (value === '') {
@@ -815,6 +858,20 @@
     // HANDLERS
     // ============================================================
 
+    /**
+     * Save grades from the currently-rendered grade table.
+     * 
+     * NOTE: AcademyGrades.saveGrades has signature:
+     *     saveGrades(gradesDataArray, options)
+     * where gradesDataArray is an array of grade DTOs, each carrying
+     * its own studentId, classId, disciplineId, week, score, maxScore,
+     * type, weight.
+     * 
+     * The previous implementation passed (studentId, week, gradesMap),
+     * which is not the accepted shape and was silently rejected by the
+     * "Grade data array is required" guard. This version constructs the
+     * array correctly.
+     */
     function handleSaveGrades(container) {
         var studentId = AcademyUI.getSelectedStudentId();
         if (!studentId) {
@@ -822,77 +879,117 @@
             return;
         }
 
-        var week = AcademyUI.getDisplayWeek();
+        var classId = AcademyUI.getSelectedClassId();
+        if (!classId) {
+            notify('No class selected.', 'error');
+            return;
+        }
 
-        var grades = {};
-        var hasChanges = false;
-        var invalidInputs = [];
+        var week = AcademyUI.getDisplayWeek();
+        var gradeDtos = [];
+        var validationErrors = [];
 
         var inputs = container.querySelectorAll('.grade-input');
         for (var i = 0; i < inputs.length; i++) {
             var input = inputs[i];
             var disciplineId = input.dataset.discipline;
-            var currentValue = input.value.trim();
+            if (!disciplineId) {
+                continue;
+            }
 
+            var currentValue = input.value.trim();
             if (currentValue === '') {
-                grades[disciplineId] = null;
-                hasChanges = true;
                 continue;
             }
 
             var numericValue = Number(currentValue);
             if (!isFinite(numericValue) || numericValue < 0 || numericValue > 100) {
-                invalidInputs.push(disciplineId);
+                var d = AcademyQueries.getDiscipline ? AcademyQueries.getDiscipline(disciplineId) : null;
+                validationErrors.push(d ? d.name : disciplineId);
                 continue;
             }
 
-            grades[disciplineId] = Math.round(numericValue * 10) / 10;
-            hasChanges = true;
-        }
-
-        if (invalidInputs.length > 0) {
-            var names = invalidInputs.map(function(id) {
-                var d = AcademyQueries.getDiscipline ? AcademyQueries.getDiscipline(id) : null;
-                return d ? d.name : id;
+            gradeDtos.push({
+                studentId: studentId,
+                classId: classId,
+                disciplineId: disciplineId,
+                week: week,
+                score: Math.round(numericValue * 10) / 10,
+                maxScore: 100,
+                type: input.dataset.gradeType || 'assignment',
+                weight: parseFloat(input.dataset.gradeWeight) || 1.0
             });
-            notify('Invalid scores for: ' + names.join(', '), 'error');
+        }
+
+        if (validationErrors.length > 0) {
+            notify('Invalid scores for: ' + validationErrors.join(', '), 'error');
             return;
         }
 
-        if (!hasChanges) {
-            notify('No changes to save.', 'info');
+        if (gradeDtos.length === 0) {
+            notify('No grades to save.', 'info');
             return;
         }
 
-        var result = AcademyGrades.saveGrades(studentId, week, grades);
-
-        if (result && result.success) {
-            notify('Grades saved successfully.', 'success');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
-        } else {
-            notify(result ? result.message : 'Failed to save grades.', 'error');
-        }
+        // AcademyGrades.saveGrades returns a Promise.
+        AcademyGrades.saveGrades(gradeDtos, { overwrite: true })
+            .then(function(result) {
+                if (result && result.success) {
+                    var savedCount = (result.data && result.data.successCount) || gradeDtos.length;
+                    notify('Saved ' + savedCount + ' grade' + (savedCount === 1 ? '' : 's') + '.', 'success');
+                    requestRefresh();
+                } else {
+                    notify(result ? result.message : 'Failed to save grades.', 'error');
+                }
+            })
+            .catch(function(err) {
+                notify('Failed to save grades.', 'error');
+                console.error('[StudentTab] handleSaveGrades error:', err);
+            });
     }
 
+    /**
+     * Auto-generate rankings for the selected class and current week.
+     * 
+     * NOTE: AcademyRanking.autoGenerate has signature
+     *     autoGenerate(classId, week, options)
+     * 
+     * The previous implementation in this file called
+     * autoGenerate(week), which failed silently with
+     * "Class ID is required".
+     * 
+     * autoGenerate is synchronous in the current implementation (it
+     * mutates academy.rankings directly and returns a result object).
+     * It is not yet routed through MutationPipeline.
+     */
     function handleAutoGenerateRankings() {
+        var classId = AcademyUI.getSelectedClassId();
+        if (!classId) {
+            notify('No class selected.', 'error');
+            return;
+        }
+
         var week = AcademyUI.getDisplayWeek();
 
         if (!confirm('Auto-generate rankings for week ' + week + ' from grade data?')) {
             return;
         }
 
-        var result = AcademyRanking.autoGenerate(week);
+        var AcademyRanking = getAcademyRanking();
+        if (!AcademyRanking || typeof AcademyRanking.autoGenerate !== 'function') {
+            notify('Ranking generation not available.', 'error');
+            return;
+        }
+
+        var result = AcademyRanking.autoGenerate(classId, week);
 
         if (result && result.success) {
-            var count = result.count || 0;
-            notify('Auto-generated rankings for week ' + week + ' (' + count + ' students ranked).', 'success');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
+            var count = result.data && result.data.totalStudents !== undefined
+                ? result.data.totalStudents
+                : 0;
+            var countMsg = count > 0 ? ' (' + count + ' students ranked)' : '';
+            notify('Auto-generated rankings for week ' + week + countMsg + '.', 'success');
+            requestRefresh();
         } else {
             notify(result ? result.message : 'Failed to auto-generate rankings.', 'error');
         }
@@ -910,17 +1007,20 @@
         var checkboxes = container.querySelectorAll('.rest-day-checkbox:checked');
         var days = [];
         for (var i = 0; i < checkboxes.length; i++) {
-            days.push(parseInt(checkboxes[i].value, 10));
+            var dayNum = parseInt(checkboxes[i].value, 10);
+            if (!isNaN(dayNum)) {
+                days.push(dayNum);
+            }
         }
 
+        // AcademySchedule.setStudentRestDays is synchronous (it
+        // delegates to ScheduleCore.setRestDays and returns the result
+        // object directly).
         var result = AcademySchedule.setStudentRestDays(studentId, week, days);
 
         if (result && result.success) {
             notify('Rest days saved successfully.', 'success');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
+            requestRefresh();
         } else {
             notify(result ? result.message : 'Failed to save rest days.', 'error');
         }
@@ -929,6 +1029,12 @@
     // ============================================================
     // MUTATION HANDLERS - Using AcademyClasses directly
     // ============================================================
+    // These are exposed for external callers but are not currently
+    // wired to any button in this tab. They're kept because
+    // academy-events.js and other tabs may want to call them.
+    // 
+    // AcademyClasses.addStudent / removeStudent are Promise-based
+    // (they delegate to CharacterClasses).
 
     function handleAddStudentToClass(studentId) {
         var classId = AcademyUI.getSelectedClassId();
@@ -937,29 +1043,35 @@
             return;
         }
 
-        var result = AcademyClasses.addStudent(classId, studentId);
-        if (result && result.success) {
-            notify('Student added to class.', 'success');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
-        } else {
-            notify(result ? result.message : 'Failed to add student.', 'error');
-        }
+        AcademyClasses.addStudent(classId, studentId)
+            .then(function(result) {
+                if (result && result.success) {
+                    notify('Student added to class.', 'success');
+                    requestRefresh();
+                } else {
+                    notify(result ? result.message : 'Failed to add student.', 'error');
+                }
+            })
+            .catch(function(err) {
+                notify('Failed to add student.', 'error');
+                console.error('[StudentTab] handleAddStudentToClass error:', err);
+            });
     }
 
     function handleRemoveStudentFromClass(classId, studentId) {
-        var result = AcademyClasses.removeStudent(classId, studentId);
-        if (result && result.success) {
-            notify('Student removed from class.', 'success');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
-        } else {
-            notify(result ? result.message : 'Failed to remove student.', 'error');
-        }
+        AcademyClasses.removeStudent(classId, studentId)
+            .then(function(result) {
+                if (result && result.success) {
+                    notify('Student removed from class.', 'success');
+                    requestRefresh();
+                } else {
+                    notify(result ? result.message : 'Failed to remove student.', 'error');
+                }
+            })
+            .catch(function(err) {
+                notify('Failed to remove student.', 'error');
+                console.error('[StudentTab] handleRemoveStudentFromClass error:', err);
+            });
     }
 
     // ============================================================
