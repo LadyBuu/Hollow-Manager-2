@@ -23,6 +23,18 @@
  *   - All notifications use NotificationSystem.notify()
  *   - Assembles and injects external providers
  * 
+ * CALENDAR PROVIDER READ/WRITE SPLIT:
+ *   The calendar provider is a facade over two modules:
+ *     - CalendarQueries owns READS (getStudentSchedule, getStudentRestDays,
+ *       getSlotMetadata, findClassStart, getInstructorSchedule,
+ *       getLocationSchedule).
+ *     - ScheduleCore owns WRITES (setStudentSlot, removeStudentSlot,
+ *       setRestDays, removeRestDays, setSlotMetadata, setInstructorTemplate,
+ *       setLocationClass).
+ *   The provider maps each method to the correct module. Do not mix them:
+ *   ScheduleCore does NOT expose get* methods for state it does not own,
+ *   and CalendarQueries does NOT expose mutating methods.
+ * 
  * NOTE ON ACADEMYCORE:
  *   - AcademyCore does not exist. The Academy domain was refactored
  *   - to use AcademyDisciplines and AcademyLocations directly.
@@ -50,7 +62,8 @@
  * EXTERNAL PROVIDERS:
  *   - CharacterQueries (for character data)
  *   - TeamQueries (for team data)
- *   - CalendarProvider (for schedule operations)
+ *   - CalendarProvider (for schedule operations — reads from CalendarQueries,
+ *     writes from ScheduleCore)
  * 
  * DEPENDENCIES:
  *   - window.TabManager (from tab-manager.js)
@@ -148,10 +161,14 @@
         if (!CalendarQueries || typeof CalendarQueries.getLocationSchedule !== 'function') {
             missing.push('CalendarQueries.getLocationSchedule');
         }
-        // These two were the source of the original mount failure.
-        // The provider now correctly routes them through CalendarQueries.
         if (!CalendarQueries || typeof CalendarQueries.getStudentRestDays !== 'function') {
             missing.push('CalendarQueries.getStudentRestDays');
+        }
+        // getSlotMetadata is a READ. It lives on CalendarQueries, not
+        // ScheduleCore. See the read/write split note at the top of
+        // this file.
+        if (!CalendarQueries || typeof CalendarQueries.getSlotMetadata !== 'function') {
+            missing.push('CalendarQueries.getSlotMetadata');
         }
         if (!CalendarQueries || typeof CalendarQueries.findClassStart !== 'function') {
             missing.push('CalendarQueries.findClassStart');
@@ -176,12 +193,16 @@
         if (!ScheduleCore || typeof ScheduleCore.removeRestDays !== 'function') {
             missing.push('ScheduleCore.removeRestDays');
         }
+        // hasConflict is a pure predicate on the ScheduleCore module.
+        // It does not read or write state — it evaluates a schedule
+        // object passed by the caller.
         if (!ScheduleCore || typeof ScheduleCore.hasConflict !== 'function') {
             missing.push('ScheduleCore.hasConflict');
         }
-        if (!ScheduleCore || typeof ScheduleCore.getSlotMetadata !== 'function') {
-            missing.push('ScheduleCore.getSlotMetadata');
-        }
+        // NOTE: getSlotMetadata is deliberately NOT checked on
+        // ScheduleCore. That method does not exist there. It is
+        // exposed by CalendarQueries (checked above). Only
+        // setSlotMetadata is on ScheduleCore.
         if (!ScheduleCore || typeof ScheduleCore.setSlotMetadata !== 'function') {
             missing.push('ScheduleCore.setSlotMetadata');
         }
@@ -264,12 +285,6 @@
      * database.js failed to seed the schema — a bug that should be
      * surfaced loudly rather than silently patched over.
      * 
-     * The only reason it might still need to create a missing sub-key
-     * is if a database was written by an intermediate build that predates
-     * the v15 schema without being migrated. In that case, the load
-     * pipeline would already have run migrateToVersion15, so this is
-     * unreachable in practice.
-     * 
      * @returns {boolean} True if the structure is present and usable
      */
     function ensureAcademyStructure() {
@@ -341,6 +356,10 @@
     /**
      * Initialize providers and inject dependencies into Academy modules.
      * Must be called before mounting.
+     * 
+     * See the CALENDAR PROVIDER READ/WRITE SPLIT note at the top of
+     * this file. Reads route to CalendarQueries, writes route to
+     * ScheduleCore. Do not cross the streams.
      */
     function initProviders() {
         if (_providersInitialized) {
@@ -373,20 +392,47 @@
 
         // ---- Calendar Provider ----
         // 
-        // WRITE operations (setStudentSlot, removeStudentSlot, etc.) go
-        // through ScheduleCore.
+        // READ methods → CalendarQueries
+        // WRITE methods → ScheduleCore
         // 
-        // READ operations (getStudentRestDays, findClassStart, and the
-        // instructor/location schedule reads) go through CalendarQueries.
-        // 
-        // This split is deliberate. Earlier versions of this file
-        // incorrectly mapped getStudentRestDays and findClassStart to
-        // ScheduleCore, neither of which exposes those methods. That
-        // caused AcademySchedule.configure() to fail, which caused the
-        // Academy tab to refuse to mount. The current mapping reflects
-        // what each module actually exposes.
+        // The provider is a facade that lets AcademySchedule and its
+        // callers treat calendar operations uniformly. It must not
+        // require ScheduleCore to expose reads it doesn't own, nor
+        // CalendarQueries to expose writes it doesn't own.
         var calendarProvider = {
-            // ---- Student schedule writes ----
+            // ============================================================
+            // READS — routed to CalendarQueries
+            // ============================================================
+
+            getStudentSchedule: function(studentId, week) {
+                return CalendarQueries.getStudentSchedule(studentId, week);
+            },
+            getStudentRestDays: function(studentId, week) {
+                return CalendarQueries.getStudentRestDays(studentId, week);
+            },
+            getSlotMetadata: function(studentId, week, day, hour) {
+                return CalendarQueries.getSlotMetadata(studentId, week, day, hour);
+            },
+            findClassStart: function(schedule, metadata, studentId, week, day, hour) {
+                return CalendarQueries.findClassStart(schedule, metadata, studentId, week, day, hour);
+            },
+            getInstructorSchedule: function(instructorId, week) {
+                return CalendarQueries.getInstructorSchedule(instructorId, week);
+            },
+            getInstructorTemplates: function(instructorId, week) {
+                return CalendarQueries.getInstructorTemplates(instructorId, week);
+            },
+            getInstructorBlocks: function(instructorId, week) {
+                return CalendarQueries.getInstructorBlocks(instructorId, week);
+            },
+            getLocationSchedule: function(locationId, week) {
+                return CalendarQueries.getLocationSchedule(locationId, week);
+            },
+
+            // ============================================================
+            // WRITES — routed to ScheduleCore
+            // ============================================================
+
             setStudentSlot: function(studentId, week, day, hour, disciplineId, duration, metadata) {
                 return ScheduleCore.setStudentSlot(studentId, week, day, hour, disciplineId, duration, metadata);
             },
@@ -399,54 +445,15 @@
             duplicateStudentSchedule: function(studentId, fromWeek, toWeek) {
                 return ScheduleCore.duplicateStudentSchedule(studentId, fromWeek, toWeek);
             },
-
-            // ---- Rest days ----
-            // READ from CalendarQueries (source of truth).
-            // WRITE via ScheduleCore.
-            getStudentRestDays: function(studentId, week) {
-                return CalendarQueries.getStudentRestDays(studentId, week);
-            },
             setRestDays: function(studentId, week, days) {
                 return ScheduleCore.setRestDays(studentId, week, days);
             },
             removeRestDays: function(studentId, week) {
                 return ScheduleCore.removeRestDays(studentId, week);
             },
-
-            // ---- Conflict detection & metadata ----
-            hasConflict: function(schedule, day, hour, duration) {
-                return ScheduleCore.hasConflict(schedule, day, hour, duration);
-            },
-            getSlotMetadata: function(studentId, week, day, hour) {
-                return ScheduleCore.getSlotMetadata(studentId, week, day, hour);
-            },
             setSlotMetadata: function(studentId, week, day, hour, metadata) {
                 return ScheduleCore.setSlotMetadata(studentId, week, day, hour, metadata);
             },
-
-            // ---- Student schedule reads ----
-            getStudentSchedule: function(studentId, week) {
-                return CalendarQueries.getStudentSchedule(studentId, week);
-            },
-
-            // ---- findClassStart ----
-            // READ from CalendarQueries. ScheduleCore does not expose this.
-            findClassStart: function(schedule, metadata, studentId, week, day, hour) {
-                return CalendarQueries.findClassStart(schedule, metadata, studentId, week, day, hour);
-            },
-
-            // ---- Instructor reads ----
-            getInstructorSchedule: function(instructorId, week) {
-                return CalendarQueries.getInstructorSchedule(instructorId, week);
-            },
-            getInstructorTemplates: function(instructorId, week) {
-                return CalendarQueries.getInstructorTemplates(instructorId, week);
-            },
-            getInstructorBlocks: function(instructorId, week) {
-                return CalendarQueries.getInstructorBlocks(instructorId, week);
-            },
-
-            // ---- Instructor writes ----
             setInstructorTemplate: function(instructorId, week, day, hour, templateData) {
                 return ScheduleCore.setInstructorTemplate(instructorId, week, day, hour, templateData);
             },
@@ -459,18 +466,23 @@
             removeInstructorBlock: function(instructorId, week, day, hour) {
                 return ScheduleCore.removeInstructorBlock(instructorId, week, day, hour);
             },
-
-            // ---- Location reads ----
-            getLocationSchedule: function(locationId, week) {
-                return CalendarQueries.getLocationSchedule(locationId, week);
-            },
-
-            // ---- Location writes ----
             setLocationClass: function(locationId, week, day, hour, disciplineId, metadata) {
                 return ScheduleCore.setLocationClass(locationId, week, day, hour, disciplineId, 1, metadata);
             },
             removeLocationClass: function(locationId, week, day, hour) {
                 return ScheduleCore.removeLocationClass(locationId, week, day, hour);
+            },
+
+            // ============================================================
+            // PURE PREDICATES — routed to ScheduleCore
+            // ============================================================
+            // hasConflict evaluates a schedule object passed by the
+            // caller. It does not read or write state. Lives on
+            // ScheduleCore because that's where the conflict detection
+            // logic lives.
+
+            hasConflict: function(schedule, day, hour, duration) {
+                return ScheduleCore.hasConflict(schedule, day, hour, duration);
             }
         };
 
