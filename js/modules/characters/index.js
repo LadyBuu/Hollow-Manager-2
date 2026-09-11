@@ -10,6 +10,7 @@
  *   - Managing character lifecycle
  *   - Coordinating character state
  *   - Ensuring CharacterAggregator is available
+ *   - Mounting the relationship modal shell (used by character-views / character-events)
  * 
  * LIFECYCLE:
  *   TabManager.register('characters') -> mountCharacters() -> 
@@ -23,6 +24,8 @@
  *   - mountCharacters() is the ONLY function that constructs the full HTML
  *   - TabManager is the single source of truth for lifecycle
  *   - CharacterAggregator is verified at initialization
+ *   - The relationship modal shell (#character-relationship-modal) is mounted here ONCE
+ *   - The graph modal is created on demand by CharacterEvents
  * 
  * STATE SOURCE OF TRUTH:
  *   - _currentEditId is the canonical edit state (PRIVATE)
@@ -35,6 +38,8 @@
  *   - window.CharacterList (from character-list.js) - MANDATORY
  *   - window.CharacterForm (from character-form.js) - MANDATORY
  *   - window.CharacterEvents (from character-events.js) - MANDATORY
+ *   - window.CharacterClassView (from character-class-view.js) - MANDATORY
+ *   - window.CharacterViews (from character-views.js) - MANDATORY (for Social tab)
  *   - window.DataLoader (from loader.js) - OPTIONAL (for compatibility)
  * 
  * EXPOSED API:
@@ -64,6 +69,7 @@
     var CharacterEvents = window.CharacterEvents;
     var DataLoader = window.DataLoader;
     var CharacterClassView = window.CharacterClassView;
+    var CharacterViews = window.CharacterViews;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -100,6 +106,16 @@
         }
         if (!CharacterEvents || typeof CharacterEvents.destroy !== 'function') {
             missing.push('CharacterEvents.destroy');
+        }
+
+        if (!CharacterClassView || typeof CharacterClassView.populateClassFilter !== 'function') {
+            missing.push('CharacterClassView.populateClassFilter');
+        }
+
+        // CharacterViews is required for the Social tab to render.
+        // If it's missing, we still mount the rest of the form.
+        if (!CharacterViews || typeof CharacterViews.renderCharacterSocial !== 'function') {
+            console.warn('[CharactersModule] CharacterViews not loaded - Social tab will be empty.');
         }
 
         if (missing.length > 0) {
@@ -152,7 +168,7 @@
             try {
                 CharacterList.render();
             } catch (e) {
-                // Ignore render errors
+                console.warn('[CharactersModule] CharacterList.render failed:', e);
             }
         }
 
@@ -161,7 +177,7 @@
             try {
                 CharacterClassView.populateClassFilter();
             } catch (e) {
-                // Ignore render errors
+                console.warn('[CharactersModule] populateClassFilter failed:', e);
             }
         }
 
@@ -170,7 +186,7 @@
             try {
                 CharacterEvents.init(container);
             } catch (e) {
-                // Ignore init errors
+                console.warn('[CharactersModule] CharacterEvents.init failed:', e);
             }
         }
 
@@ -180,7 +196,7 @@
             try {
                 CharacterForm.render(editId);
             } catch (e) {
-                // Ignore render errors
+                console.warn('[CharactersModule] CharacterForm.render failed:', e);
             }
         }
 
@@ -258,6 +274,19 @@
                                 <p class="empty-state">Select a character from the list to view and edit details.</p>
                             </div>
                         </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Relationship Modal Shell (used by CharacterViews / CharacterEvents) -->
+            <div id="character-relationship-modal" class="modal hidden" style="display:none;">
+                <div class="modal-content" style="max-width:600px;">
+                    <div class="modal-header">
+                        <h3 id="character-relationship-modal-title">Add Relationship</h3>
+                        <button type="button" id="close-char-relationship-modal" class="close-modal" aria-label="Close">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="character-relationship-form-container"></div>
                     </div>
                 </div>
             </div>
