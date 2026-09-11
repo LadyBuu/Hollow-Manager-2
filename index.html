@@ -127,6 +127,16 @@
     <script src="js/modules/academy/tabs/faculty-tab.js"></script>
     <script src="js/modules/academy/index.js"></script>
 
+    <!-- SOCIAL DOMAIN - must load BEFORE character domain
+         so that character-events.js can capture SocialCore,
+         SocialGraph, SocialQueries at IIFE time -->
+    <script src="js/modules/social/social-core.js"></script>
+    <script src="js/modules/social/social-aggregator.js"></script>
+    <script src="js/modules/social/social-views.js"></script>
+    <script src="js/modules/social/social-graph.js"></script>
+    <script src="js/modules/social/social-events.js"></script>
+    <script src="js/modules/social/index.js"></script>
+
     <!-- CHARACTER DOMAIN -->
     <script src="js/modules/characters/character-generator.js"></script>
     <script src="js/modules/characters/character-stats.js"></script>
@@ -140,6 +150,7 @@
     <script src="js/modules/characters/character-class-view.js"></script>
     <script src="js/modules/characters/character-elimination-view.js"></script>
     <script src="js/modules/characters/character-stats-view.js"></script>
+    <script src="js/modules/characters/character-views.js"></script>
     <script src="js/modules/characters/character-events.js"></script>
     <script src="js/modules/characters/index.js"></script>
 
@@ -164,14 +175,6 @@
     <script src="js/modules/teams/team-render.js"></script>
     <script src="js/modules/teams/team-events.js"></script>
     <script src="js/modules/teams/index.js"></script>
-
-    <!-- SOCIAL DOMAIN -->
-    <script src="js/modules/social/social-core.js"></script>
-    <script src="js/modules/social/social-aggregator.js"></script>
-    <script src="js/modules/social/social-views.js"></script>
-    <script src="js/modules/social/social-graph.js"></script>
-    <script src="js/modules/social/social-events.js"></script>
-    <script src="js/modules/social/index.js"></script>
 
     <!-- MISSIONS DOMAIN -->
     <script src="js/modules/missions/mission-schema.js"></script>
