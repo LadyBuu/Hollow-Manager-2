@@ -16,7 +16,7 @@
  *   - Uses DomUtils for DOM operations (mandatory dependency)
  *   - Race-condition safe with generation tracking
  *   - Only one modal may be active at a time (application invariant)
- *   - modalSetup() must be called only once per modal
+ *   - modalSetup() is IDEMPOTENT — safe to call multiple times per modal
  *   - Accessibility: ARIA attributes, focus management, focus trapping
  *   - Focus management: saves previous focus, restores on close
  * 
@@ -26,6 +26,12 @@
  *   - showModal() REMOVES the `hidden` class so the modal can be shown
  *   - hideModal() RE-ADDS the `hidden` class after the animation completes
  *   - This keeps the CSS state and JS state in sync
+ * 
+ * IDEMPOTENCY:
+ *   - Each setup function (modalClickOutside, modalEscapeKey) tracks its
+ *     own installation flag
+ *   - modalSetup() calls both, each of which no-ops if already installed
+ *   - Duplicate calls are silent and safe
  * 
  * DEPENDENCIES:
  *   - window.DomUtils (for DOM operations) - MANDATORY
@@ -96,14 +102,10 @@
 
     /**
      * Get all focusable elements within a container.
-     * 
-     * @param {HTMLElement} container - Container element
-     * @returns {HTMLElement[]} Array of focusable elements
      */
     function getFocusableElements(container) {
         if (!container) return [];
 
-        // Check cache
         if (_focusableElementsCache.has(container)) {
             return _focusableElementsCache.get(container);
         }
@@ -118,11 +120,10 @@
         ].join(',');
 
         var elements = Array.from(container.querySelectorAll(selector));
-        
-        // Filter out elements that are not visible
+
         elements = elements.filter(function(el) {
-            return el.offsetParent !== null || 
-                   el === container || 
+            return el.offsetParent !== null ||
+                   el === container ||
                    el.getAttribute('tabindex') !== null;
         });
 
@@ -151,14 +152,12 @@
     function _focusModal(modal) {
         if (!modal) return;
 
-        // Try to focus the modal content
         var focusTarget = modal.querySelector('.modal-content');
         if (!focusTarget) {
             focusTarget = modal;
         }
 
         try {
-            // Ensure the element can receive focus
             if (focusTarget.getAttribute('tabindex') === null) {
                 focusTarget.setAttribute('tabindex', '-1');
             }
@@ -167,12 +166,10 @@
             // Ignore focus errors
         }
 
-        // Store focusable elements for trapping
         var focusable = getFocusableElements(modal);
         var state = _getModalState(modal);
         state.focusableElements = focusable;
 
-        // If there are focusable elements, focus the first one
         if (focusable.length > 0) {
             try {
                 focusable[0].focus();
@@ -229,7 +226,9 @@
                 hideResolvers: [],
                 previousFocus: null,
                 focusableElements: [],
-                isSetup: false
+                isSetup: false,              // legacy aggregate flag (unused)
+                outsideClickSetup: false,    // per-listener idempotency
+                escapeKeySetup: false        // per-listener idempotency
             };
             _modalState.set(modal, state);
         }
@@ -243,8 +242,6 @@
     /**
      * Remove the `hidden` CSS class from a modal.
      * Called by showModal() so the modal can actually be displayed.
-     * The `hidden` class has `display: none !important` in the CSS,
-     * so it MUST be removed before the modal can be visible.
      */
     function _clearHiddenClass(modal) {
         if (!modal || !modal.classList) return;
@@ -269,12 +266,6 @@
     // MODAL HELPERS
     // ============================================================
 
-    /**
-     * Create a modal overlay.
-     * 
-     * @param {string} className - Additional CSS class
-     * @returns {HTMLElement} Modal element
-     */
     function createModal(className) {
         if (!checkDependencies()) {
             throw new Error('[Modal] Dependencies not available. Cannot create modal.');
@@ -285,19 +276,17 @@
         overlay.classList.add('hidden');
         overlay.setAttribute('role', 'dialog');
         overlay.setAttribute('aria-modal', 'true');
-        
+
         var content = DomUtils.createDiv('modal-content');
         content.setAttribute('tabindex', '-1');
         overlay.appendChild(content);
 
-        // Add close button by default
         var closeBtn = document.createElement('button');
         closeBtn.className = 'modal-close-btn';
         closeBtn.setAttribute('aria-label', 'Close modal');
         closeBtn.textContent = '×';
         content.appendChild(closeBtn);
 
-        // Close button event
         closeBtn.addEventListener('click', function() {
             var state = _getModalState(overlay);
             if (state.isShowing) {
@@ -318,13 +307,10 @@
      *   4. Saves current focus and sets focus to modal
      *   5. Sets style.display = 'flex' and appends to body if needed
      *   6. Adds the `visible` class after an animation frame
-     * 
-     * @param {HTMLElement} modal - Modal element
      */
     function showModal(modal) {
         if (!modal) return;
 
-        // Close any existing active modal
         if (_activeModal && _activeModal !== modal) {
             var oldState = _getModalState(_activeModal);
             if (oldState.isShowing) {
@@ -334,65 +320,46 @@
 
         var state = _getModalState(modal);
 
-        // Bump generation to invalidate any stale close/hide operations
         state.generation++;
 
-        // Clear any pending hide timer
         if (state.hideTimer) {
             clearTimeout(state.hideTimer);
             state.hideTimer = null;
         }
 
-        // Cancel any pending animation frame
         if (state.animationFrame) {
             cancelAnimationFrame(state.animationFrame);
             state.animationFrame = null;
         }
 
-        // Resolve any pending hide promises (they are superseded)
         if (state.hideResolvers.length > 0) {
             var resolvers = state.hideResolvers;
             state.hideResolvers = [];
             resolvers.forEach(function(resolve) {
-                try {
-                    resolve();
-                } catch (e) {
-                    // Ignore resolver errors
-                }
+                try { resolve(); } catch (e) {}
             });
         }
 
-        // Save current focus before showing
         _saveFocus(modal);
 
-        // ============================================================
-        // CRITICAL: Remove the 'hidden' class before showing.
-        // The `.modal.hidden { display: none !important; }` rule in
-        // style.css would otherwise keep this modal invisible.
-        // ============================================================
+        // Remove the `hidden` class so the modal can be displayed
         _clearHiddenClass(modal);
 
-        // Show the modal
         modal.style.display = 'flex';
 
-        // Ensure the modal is attached to the DOM
         if (!document.body.contains(modal)) {
             document.body.appendChild(modal);
         }
 
-        // Set active modal
         _activeModal = modal;
 
-        // Add focus trap listener
         document.addEventListener('keydown', _trapFocus);
 
-        // Use animation frame with state tracking
         state.isShowing = true;
         state.animationFrame = requestAnimationFrame(function() {
             state.animationFrame = null;
             if (state.isShowing) {
                 DomUtils.addClass(modal, 'visible');
-                // Focus the modal after animation
                 setTimeout(function() {
                     _focusModal(modal);
                 }, 50);
@@ -403,37 +370,26 @@
     /**
      * Hide a modal.
      * Returns a promise that resolves when the animation completes.
-     * The modal remains alive (listeners intact) for potential re-showing.
-     * Multiple calls to hideModal() on the same modal will chain correctly.
-     * 
-     * After the animation completes, the `hidden` class is re-added so
-     * the modal's CSS state matches its JS state.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     * @returns {Promise<void>}
+     * Re-adds the `hidden` class after hiding.
      */
     function hideModal(modal) {
         if (!modal) return Promise.resolve();
 
         var state = _getModalState(modal);
 
-        // Mark as not showing so animation frame won't add .visible
         state.isShowing = false;
 
-        // Cancel any pending animation frame
         if (state.animationFrame) {
             cancelAnimationFrame(state.animationFrame);
             state.animationFrame = null;
         }
 
-        // Clear any existing hide timer
         if (state.hideTimer) {
             clearTimeout(state.hideTimer);
             state.hideTimer = null;
         }
 
         return new Promise(function(resolve) {
-            // Store resolver for potential superseding
             state.hideResolvers.push(resolve);
 
             DomUtils.removeClass(modal, 'visible');
@@ -442,43 +398,25 @@
                 state.hideTimer = null;
                 modal.style.display = 'none';
 
-                // ============================================================
-                // Re-add the 'hidden' class so the CSS contract is preserved
-                // ============================================================
                 _restoreHiddenClass(modal);
-
-                // Restore focus after hiding
                 _restoreFocus(modal);
 
-                // Remove focus trap if this is the active modal
                 if (_activeModal === modal) {
                     _activeModal = null;
                     document.removeEventListener('keydown', _trapFocus);
                 }
 
-                // Resolve all pending hide promises
                 var resolvers = state.hideResolvers;
                 state.hideResolvers = [];
                 resolvers.forEach(function(r) {
-                    try {
-                        r();
-                    } catch (e) {
-                        // Ignore resolver errors
-                    }
+                    try { r(); } catch (e) {}
                 });
             }, ANIMATION_DURATION);
         });
     }
 
     /**
-     * Close a modal (remove from DOM).
-     * Executes all cleanup functions associated with the modal.
-     * After close, the modal is fully destroyed and cannot be re-shown.
-     * Uses generation tracking to prevent stale operations from destroying
-     * a modal that was re-shown between close and its animation completion.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     * @returns {Promise<void>}
+     * Close a modal (remove from DOM after hide).
      */
     function closeModal(modal) {
         if (!modal) return Promise.resolve();
@@ -487,48 +425,36 @@
         var generation = state.generation;
 
         return hideModal(modal).then(function() {
-            // Check if a new show operation happened during the hide animation
             if (state.generation !== generation) {
-                // Modal was re-shown - do not destroy it
-                return;
+                return;  // re-shown, don't destroy
             }
 
-            // Execute all cleanup functions for this modal
             if (state.cleanups) {
                 state.cleanups.forEach(function(fn) {
-                    try {
-                        fn();
-                    } catch (e) {
+                    try { fn(); } catch (e) {
                         console.error('[Modal] Cleanup error:', e);
                     }
                 });
                 state.cleanups = [];
             }
 
-            // Cancel any remaining timer
             if (state.hideTimer) {
                 clearTimeout(state.hideTimer);
                 state.hideTimer = null;
             }
 
-            // Cancel any remaining animation frame
             if (state.animationFrame) {
                 cancelAnimationFrame(state.animationFrame);
                 state.animationFrame = null;
             }
 
-            // Clear focusable elements cache
             _focusableElementsCache.delete(modal);
-
-            // Remove from state
             _modalState.delete(modal);
 
-            // Remove from DOM
             if (modal.parentNode) {
                 modal.parentNode.removeChild(modal);
             }
 
-            // Clear active modal if this was it
             if (_activeModal === modal) {
                 _activeModal = null;
                 document.removeEventListener('keydown', _trapFocus);
@@ -536,19 +462,21 @@
         });
     }
 
-    /**
-     * Register a cleanup function for a modal.
-     * Internal use only - used by modal event setup functions.
-     */
     function _registerCleanup(modal, fn) {
         if (!modal) return;
         var state = _getModalState(modal);
         state.cleanups.push(fn);
     }
 
+    // ============================================================
+    // SETUP FUNCTIONS — individually idempotent
+    // ============================================================
+
     /**
      * Setup click-outside to close a modal.
-     * Does not prevent the modal from being hidden and re-shown.
+     * 
+     * IDEMPOTENT: calling multiple times on the same modal is safe.
+     * The listener is installed only once; subsequent calls are no-ops.
      * 
      * @param {HTMLElement} modal - Modal element
      * @param {Function} onClose - Optional callback when closed
@@ -558,16 +486,14 @@
         if (!modal) return function() {};
 
         var state = _getModalState(modal);
-        
-        // Prevent duplicate setup
-        if (state.isSetup) {
-            console.warn('[Modal] modalClickOutside called multiple times on the same modal.');
+
+        // Idempotent — no-op if already installed
+        if (state.outsideClickSetup) {
             return function() {};
         }
-        state.isSetup = true;
+        state.outsideClickSetup = true;
 
         var handler = function(e) {
-            // Only close if clicking on the backdrop (not the content)
             if (e.target === modal) {
                 if (typeof onClose === 'function') {
                     onClose();
@@ -581,6 +507,7 @@
 
         var cleanup = function() {
             modal.removeEventListener('click', handler);
+            state.outsideClickSetup = false;
         };
 
         _registerCleanup(modal, cleanup);
@@ -591,6 +518,9 @@
     /**
      * Setup escape key to close a modal.
      * 
+     * IDEMPOTENT: calling multiple times on the same modal is safe.
+     * The listener is installed only once; subsequent calls are no-ops.
+     * 
      * @param {HTMLElement} modal - Modal element
      * @param {Function} onClose - Optional callback when closed
      * @returns {Function} Cleanup function
@@ -599,13 +529,12 @@
         if (!modal) return function() {};
 
         var state = _getModalState(modal);
-        
-        // Prevent duplicate setup
-        if (state.isSetup) {
-            console.warn('[Modal] modalEscapeKey called multiple times on the same modal.');
+
+        // Idempotent — no-op if already installed
+        if (state.escapeKeySetup) {
             return function() {};
         }
-        state.isSetup = true;
+        state.escapeKeySetup = true;
 
         var handler = function(e) {
             if (e.key === 'Escape') {
@@ -622,6 +551,7 @@
 
         var cleanup = function() {
             document.removeEventListener('keydown', handler);
+            state.escapeKeySetup = false;
         };
 
         _registerCleanup(modal, cleanup);
@@ -631,8 +561,10 @@
 
     /**
      * Setup both click-outside and escape-key for a modal.
-     * Convenience function for common case.
-     * Must be called only once per modal.
+     * 
+     * IDEMPOTENT: safe to call multiple times on the same modal.
+     * Each sub-function is individually idempotent, so this is a
+     * silent no-op when called on an already-setup modal.
      * 
      * @param {HTMLElement} modal - Modal element
      * @param {Function} onClose - Optional callback when closed
@@ -640,45 +572,25 @@
     function modalSetup(modal, onClose) {
         if (!modal) return;
 
-        var state = _getModalState(modal);
-        
-        // Prevent duplicate setup
-        if (state.isSetup) {
-            console.warn('[Modal] modalSetup called multiple times on the same modal.');
-            return;
-        }
-        state.isSetup = true;
-
+        // Each sub-function handles its own idempotency
         modalClickOutside(modal, onClose);
         modalEscapeKey(modal, onClose);
     }
 
-    /**
-     * Get the currently active modal.
-     * 
-     * @returns {HTMLElement|null} Active modal element or null
-     */
+    // ============================================================
+    // QUERIES
+    // ============================================================
+
     function getActiveModal() {
         return _activeModal;
     }
 
-    /**
-     * Check if a modal is currently showing.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     * @returns {boolean} True if modal is showing
-     */
     function isShowing(modal) {
         if (!modal) return false;
         var state = _modalState.get(modal);
         return state ? state.isShowing : false;
     }
 
-    /**
-     * Close all modals.
-     * 
-     * @returns {Promise<void>}
-     */
     function closeAllModals() {
         if (!_activeModal) {
             return Promise.resolve();
@@ -848,7 +760,6 @@
         injectStyles();
     }
 
-    // Auto-init on DOM ready
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
         init();
     } else {
