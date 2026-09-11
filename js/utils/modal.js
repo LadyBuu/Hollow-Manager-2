@@ -20,6 +20,13 @@
  *   - Accessibility: ARIA attributes, focus management, focus trapping
  *   - Focus management: saves previous focus, restores on close
  * 
+ * HIDDEN CLASS CONTRACT:
+ *   - The CSS class `.hidden` has `display: none !important` in style.css
+ *   - Modals are often declared with `<div class="modal hidden">`
+ *   - showModal() REMOVES the `hidden` class so the modal can be shown
+ *   - hideModal() RE-ADDS the `hidden` class after the animation completes
+ *   - This keeps the CSS state and JS state in sync
+ * 
  * DEPENDENCIES:
  *   - window.DomUtils (for DOM operations) - MANDATORY
  * 
@@ -230,6 +237,35 @@
     }
 
     // ============================================================
+    // HIDDEN CLASS MANAGEMENT
+    // ============================================================
+
+    /**
+     * Remove the `hidden` CSS class from a modal.
+     * Called by showModal() so the modal can actually be displayed.
+     * The `hidden` class has `display: none !important` in the CSS,
+     * so it MUST be removed before the modal can be visible.
+     */
+    function _clearHiddenClass(modal) {
+        if (!modal || !modal.classList) return;
+        if (modal.classList.contains('hidden')) {
+            modal.classList.remove('hidden');
+        }
+    }
+
+    /**
+     * Re-add the `hidden` CSS class to a modal.
+     * Called by hideModal() after the hide animation finishes,
+     * so the modal's state stays consistent with the CSS contract.
+     */
+    function _restoreHiddenClass(modal) {
+        if (!modal || !modal.classList) return;
+        if (!modal.classList.contains('hidden')) {
+            modal.classList.add('hidden');
+        }
+    }
+
+    // ============================================================
     // MODAL HELPERS
     // ============================================================
 
@@ -246,6 +282,7 @@
 
         var overlay = DomUtils.createDiv('modal' + (className ? ' ' + className : ''));
         overlay.style.display = 'none';
+        overlay.classList.add('hidden');
         overlay.setAttribute('role', 'dialog');
         overlay.setAttribute('aria-modal', 'true');
         
@@ -273,9 +310,14 @@
 
     /**
      * Show a modal.
-     * Clears any pending hide timer for this modal.
-     * Increments generation to invalidate stale operations.
-     * Saves current focus and sets focus to modal.
+     * 
+     * STEPS:
+     *   1. Removes the `hidden` class (so the modal can be visible)
+     *   2. Clears any pending hide timer
+     *   3. Increments generation to invalidate stale operations
+     *   4. Saves current focus and sets focus to modal
+     *   5. Sets style.display = 'flex' and appends to body if needed
+     *   6. Adds the `visible` class after an animation frame
      * 
      * @param {HTMLElement} modal - Modal element
      */
@@ -323,8 +365,20 @@
         // Save current focus before showing
         _saveFocus(modal);
 
+        // ============================================================
+        // CRITICAL: Remove the 'hidden' class before showing.
+        // The `.modal.hidden { display: none !important; }` rule in
+        // style.css would otherwise keep this modal invisible.
+        // ============================================================
+        _clearHiddenClass(modal);
+
+        // Show the modal
         modal.style.display = 'flex';
-        document.body.appendChild(modal);
+
+        // Ensure the modal is attached to the DOM
+        if (!document.body.contains(modal)) {
+            document.body.appendChild(modal);
+        }
 
         // Set active modal
         _activeModal = modal;
@@ -351,6 +405,9 @@
      * Returns a promise that resolves when the animation completes.
      * The modal remains alive (listeners intact) for potential re-showing.
      * Multiple calls to hideModal() on the same modal will chain correctly.
+     * 
+     * After the animation completes, the `hidden` class is re-added so
+     * the modal's CSS state matches its JS state.
      * 
      * @param {HTMLElement} modal - Modal element
      * @returns {Promise<void>}
@@ -384,6 +441,11 @@
             state.hideTimer = setTimeout(function() {
                 state.hideTimer = null;
                 modal.style.display = 'none';
+
+                // ============================================================
+                // Re-add the 'hidden' class so the CSS contract is preserved
+                // ============================================================
+                _restoreHiddenClass(modal);
 
                 // Restore focus after hiding
                 _restoreFocus(modal);
