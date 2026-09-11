@@ -27,6 +27,14 @@
  *   - All notifications use NotificationSystem.notify()
  *   - All modals route through Modal.showModal / Modal.hideModal
  * 
+ * NOTIFICATION OWNERSHIP:
+ *   Modules that internally use MutationPipeline (AcademyClasses,
+ *   CharacterClasses) already show their own success and failure toasts.
+ *   This tab does NOT notify again on those paths; doing so produces
+ *   duplicate toasts. This tab DOES notify on paths where the domain
+ *   module doesn't use MutationPipeline (TeamCore CRUD,
+ *   AcademyDistribute, pre-validation checks, dependency checks).
+ * 
  * MODAL VISIBILITY:
  *   Modals in this file are shown and hidden through the Modal module.
  *   The three-layer visibility contract is:
@@ -34,9 +42,7 @@
  *     2. `visible` class added (it has `display: flex`)
  *     3. `style.display = 'flex'` set inline
  *   Modal.showModal does all three atomically, plus focus management
- *   and animation. Modal.hideModal reverses all three. Do not manipulate
- *   modal classes or display directly; it's how half-visible modals
- *   happen.
+ *   and animation. Modal.hideModal reverses all three.
  * 
  * PROMISE CONTRACT (v15+):
  *   - AcademyClasses.create / update / delete return Promises.
@@ -194,8 +200,6 @@
             missing.push('Modal.showModal / Modal.hideModal');
         }
 
-        // TeamCore and AcademyRanking are deliberately NOT checked here.
-
         if (missing.length > 0) {
             console.warn('[ClassTab] Missing load-time dependencies:', missing.join(', '));
             return false;
@@ -227,6 +231,12 @@
     // ============================================================
     // NOTIFICATION
     // ============================================================
+    // 
+    // Use this for pre-validation messages, dependency errors, and
+    // paths where the domain module does NOT use MutationPipeline
+    // (TeamCore CRUD, AcademyDistribute). Do NOT use this to
+    // duplicate a MutationPipeline success/failure message — the
+    // pipeline shows those itself.
 
     function notify(message, type) {
         type = type || 'info';
@@ -236,18 +246,7 @@
     // ============================================================
     // MODAL HELPERS
     // ============================================================
-    // 
-    // All modal show/hide in this file routes through these two helpers.
-    // They use Modal.showModal / Modal.hideModal when available, and
-    // fall back to the three-step manual sequence when Modal isn't
-    // loaded. The fallback replicates exactly what Modal.showModal does
-    // internally, so the CSS state stays consistent either way.
 
-    /**
-     * Show a modal correctly.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     */
     function showModal(modal) {
         if (!modal) { return; }
 
@@ -256,17 +255,11 @@
             return;
         }
 
-        // Fallback: three-step manual show.
         modal.classList.remove('hidden');
         modal.classList.add('visible');
         modal.style.display = 'flex';
     }
 
-    /**
-     * Hide a modal correctly.
-     * 
-     * @param {HTMLElement} modal - Modal element
-     */
     function hideModal(modal) {
         if (!modal) { return; }
 
@@ -275,7 +268,6 @@
             return;
         }
 
-        // Fallback: three-step manual hide.
         modal.classList.add('hidden');
         modal.classList.remove('visible');
         modal.style.display = 'none';
@@ -287,10 +279,6 @@
 
     var _currentContainer = null;
 
-    /**
-     * Ask the Academy shell to re-render the current sub-tab.
-     * Falls back to a local re-render if the shell isn't available.
-     */
     function requestRefresh() {
         if (window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
             window.AcademyEvents.refreshUI();
@@ -870,14 +858,6 @@
     // ============================================================
     // CLASS FORM EVENTS
     // ============================================================
-    // 
-    // IMPORTANT: Modals live in the DOM once (rendered by ClassTab.render).
-    // If ClassTab.render is called again, they're re-created, which means
-    // any listeners bound to them are lost. The listeners here are bound
-    // to document.querySelector, which finds the current modal each time.
-    // 
-    // To guard against duplicate binding (if bindEvents runs twice without
-    // a re-render), we use a flag on the modal element itself.
 
     function bindClassFormEvents() {
         var modal = document.getElementById('academy-class-modal');
@@ -888,7 +868,7 @@
         var saveBtn = document.getElementById('academy-class-modal-save');
 
         if (modal && modal.dataset.bound === 'true') {
-            return;  // Already bound to this modal instance
+            return;
         }
         if (modal) {
             modal.dataset.bound = 'true';
@@ -920,6 +900,7 @@
 
                 var name = nameInput ? nameInput.value.trim() : '';
                 if (!name) {
+                    // Pre-validation: caller owns this notification.
                     notify('Class name is required.', 'error');
                     return;
                 }
@@ -937,7 +918,7 @@
                 promise
                     .then(function(result) {
                         if (result && result.success) {
-                            notify(editId ? 'Class updated successfully.' : 'Class created successfully.', 'success');
+                            // MutationPipeline already showed the success toast.
                             hideModal(modal);
 
                             if (!editId && result.data && result.data.classId) {
@@ -945,11 +926,13 @@
                             }
 
                             requestRefresh();
-                        } else {
-                            notify(result ? result.message : 'Failed to save class.', 'error');
                         }
+                        // On failure, MutationPipeline already showed the toast.
+                        // No notify() here — that would duplicate it.
                     })
                     .catch(function(err) {
+                        // Infrastructure-level failure (not a validation reject).
+                        // Pipeline may not have had a chance to notify.
                         notify('Failed to save class.', 'error');
                         console.error('[ClassTab] saveClass error:', err);
                     })
@@ -1034,6 +1017,8 @@
                     return;
                 }
 
+                // AcademyDistribute does NOT use MutationPipeline.
+                // Caller owns both success and failure notifications.
                 var result = AcademyDistribute.autoDistribute(classId, week, {
                     maxPerGroup: maxSize,
                     teamIds: teamIds
@@ -1079,7 +1064,6 @@
                 }
             });
 
-            // Add member (delegated on the modal body)
             modal.addEventListener('click', function(e) {
                 var btn = e.target.closest('#team-member-add-btn');
                 if (btn) {
@@ -1108,6 +1092,8 @@
                     var role = roleInput ? roleInput.value.trim() : 'Member';
                     var join = joinInput ? joinInput.value.trim() : String(AcademyUI.getDisplayWeek());
 
+                    // TeamCore does NOT use MutationPipeline.
+                    // Caller owns the notification.
                     var result = TeamCore.addMember(teamId, {
                         characterId: studentId,
                         role: role,
@@ -1342,15 +1328,12 @@
         AcademyClasses.delete(classId)
             .then(function(result) {
                 if (result && result.success) {
-                    notify('Class deleted successfully.', 'success');
-
+                    // MutationPipeline already showed the success toast.
                     AcademyUI.clearSelection('class');
                     AcademyUI.clearSelection('student');
-
                     requestRefresh();
-                } else {
-                    notify(result ? result.message : 'Failed to delete class.', 'error');
                 }
+                // On failure, MutationPipeline already showed the toast.
             })
             .catch(function(err) {
                 notify('Failed to delete class.', 'error');
@@ -1368,11 +1351,10 @@
         AcademyClasses.addStudent(classId, studentId)
             .then(function(result) {
                 if (result && result.success) {
-                    notify('Student added to class.', 'success');
+                    // MutationPipeline already showed the success toast.
                     requestRefresh();
-                } else {
-                    notify(result ? result.message : 'Failed to add student.', 'error');
                 }
+                // On failure, MutationPipeline already showed the toast.
             })
             .catch(function(err) {
                 notify('Failed to add student.', 'error');
@@ -1384,11 +1366,10 @@
         AcademyClasses.removeStudent(classId, studentId)
             .then(function(result) {
                 if (result && result.success) {
-                    notify('Student removed from class.', 'success');
+                    // MutationPipeline already showed the success toast.
                     requestRefresh();
-                } else {
-                    notify(result ? result.message : 'Failed to remove student.', 'error');
                 }
+                // On failure, MutationPipeline already showed the toast.
             })
             .catch(function(err) {
                 notify('Failed to remove student.', 'error');
@@ -1430,6 +1411,8 @@
             status: 'active'
         };
 
+        // TeamCore does NOT use MutationPipeline.
+        // Caller owns the notification.
         var result = TeamCore.createTeam(teamData);
         if (result) {
             notify('Team created successfully.', 'success');
@@ -1493,6 +1476,8 @@
             return;
         }
 
+        // AcademyRanking.autoGenerate does NOT use MutationPipeline.
+        // Caller owns the notification.
         var result = AcademyRanking.autoGenerate(classId, week);
 
         if (result && result.success) {

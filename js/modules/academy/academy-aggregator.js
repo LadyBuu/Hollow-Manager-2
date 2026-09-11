@@ -29,6 +29,13 @@
  *     rosters itself. If AcademyQueries is unavailable, roster reads
  *     return empty arrays rather than silently reading a stale store.
  * 
+ * RETURN SHAPE NOTE:
+ *   AcademyQueries.getClassStudents(classId) returns full character
+ *   OBJECTS by default (returnObjects defaults to true). Only when
+ *   called as getClassStudents(classId, false) does it return IDs.
+ *   This module relies on the default (objects) behaviour. Do not
+ *   treat the result as an array of IDs.
+ * 
  * DEPENDENCIES:
  *   - window.AcademyQueries (from shared/queries/academy-queries.js) - MANDATORY
  *   - window.CharacterQueries (from shared/queries/character-queries.js) - MANDATORY
@@ -229,6 +236,10 @@
      * The student list is DERIVED through AcademyQueries.getClassStudents,
      * which reads character.classIds. There is no roster store involved.
      * 
+     * AcademyQueries.getClassStudents returns full character OBJECTS by
+     * default. This function relies on that behaviour and must not
+     * assume the return value is an array of IDs.
+     * 
      * @param {string} classId - Class ID
      * @param {object} options - Options
      * @param {number} options.week - Week number (default: current)
@@ -269,43 +280,40 @@
 
         // ---- Students ----
         // Roster is derived from character.classIds via AcademyQueries.
+        // getClassStudents returns full character objects by default.
         if (includeStudents) {
-            var studentIds = AcademyQueries.getClassStudents(classId);
-            var students = [];
-            var enrolledCount = studentIds.length;
+            var students = AcademyQueries.getClassStudents(classId);
+            var enrolledCount = students.length;
 
-            for (var i = 0; i < studentIds.length; i++) {
-                var char = CharacterQueries.getCharacterById(studentIds[i]);
-                if (char) {
-                    students.push({
-                        id: char.id,
-                        name: CharacterQueries.getDisplayName(char),
-                        status: CharacterQueries.getCurrentStatus(char),
-                        age: CharacterQueries.getCharacterAge(char),
-                        deceased: char.deceased || false,
-                        classIds: char.classIds || []
-                    });
-                }
-            }
+            var studentViewModels = students.map(function(char) {
+                return {
+                    id: char.id,
+                    name: CharacterQueries.getDisplayName(char),
+                    status: CharacterQueries.getCurrentStatus(char),
+                    age: CharacterQueries.getCharacterAge(char),
+                    deceased: char.deceased || false,
+                    classIds: char.classIds || []
+                };
+            });
 
             // Sort by name
-            students.sort(function(a, b) {
+            studentViewModels.sort(function(a, b) {
                 return a.name.localeCompare(b.name);
             });
 
-            viewModel.students = students;
-            viewModel.studentCount = students.length;
+            viewModel.students = studentViewModels;
+            viewModel.studentCount = studentViewModels.length;
             viewModel.enrolledCount = enrolledCount;
 
             // ---- Grades ----
             if (includeGrades) {
                 var gradeSummaries = [];
-                for (var j = 0; j < students.length; j++) {
-                    var grades = AcademyQueries.getStudentGrades(students[j].id, week);
+                for (var j = 0; j < studentViewModels.length; j++) {
+                    var grades = AcademyQueries.getStudentGrades(studentViewModels[j].id, week);
                     var summary = AcademyQueries.calculateGradeSummary(grades);
                     gradeSummaries.push({
-                        studentId: students[j].id,
-                        studentName: students[j].name,
+                        studentId: studentViewModels[j].id,
+                        studentName: studentViewModels[j].name,
                         gradeCount: grades.length,
                         average: summary.average,
                         passing: summary.passing,
@@ -468,8 +476,6 @@
         }
 
         // ---- Ranking ----
-        // Iterate the student's classes (which are derived from
-        // character.classIds) and take the first ranking that matches.
         if (includeRanking) {
             var studentClasses = AcademyQueries.getCharacterClasses(student);
             var ranking = null;
@@ -725,10 +731,8 @@
         var sort = options.sort || 'name';
         var sortDirection = options.sortDirection || 'asc';
 
-        // Get classes from AcademyQueries
         var classes = AcademyQueries.getClasses(status);
 
-        // Apply search filter
         if (search) {
             var lowerSearch = search.toLowerCase();
             classes = classes.filter(function(cls) {
@@ -736,7 +740,6 @@
             });
         }
 
-        // Build list items
         var listItems = classes.map(function(cls) {
             var studentCount = AcademyQueries.getClassStudents(cls.id).length;
             var teams = TeamQueries.getTeamsByClass(cls.id);
@@ -756,7 +759,6 @@
             };
         });
 
-        // Sort
         var total = listItems.length;
 
         listItems.sort(function(a, b) {
@@ -847,7 +849,6 @@
             };
         });
 
-        // Sort by rank ascending (1 is best)
         entries.sort(function(a, b) {
             return (a.rank || 999) - (b.rank || 999);
         });
