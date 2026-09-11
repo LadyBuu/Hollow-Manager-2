@@ -1,6 +1,6 @@
 /**
  * modules/social/social-events.js - Social Events
- * Event orchestration for the social/relationship domain
+ * Event orchestration for the standalone Social tab
  * 
  * This module provides:
  *   - init - Bind all event listeners
@@ -12,9 +12,10 @@
  *   - handleViewModeChange - Switch between list and graph views
  *   - handleGraphNodeClick - Show character detail
  *   - handleCharacterDetailClose - Close detail modal
+ *   - handleGroupToggle - Collapse/expand a relationship type group
  * 
  * IMPORTANT:
- *   - Orchestrates UI interactions
+ *   - Orchestrates UI interactions for the STANDALONE Social tab
  *   - Calls SocialCore for mutations
  *   - Calls SocialViews for rendering
  *   - Calls SocialGraph for graph rendering
@@ -49,7 +50,7 @@
     window.__socialEventsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS - MANDATORY (no fallbacks)
+    // DEPENDENCY IMPORTS - MANDATORY
     // ============================================================
 
     var SocialCore = window.SocialCore;
@@ -97,6 +98,9 @@
         if (!SocialAggregator || typeof SocialAggregator.getCharacterRelationshipsViewModel !== 'function') {
             missing.push('SocialAggregator.getCharacterRelationshipsViewModel');
         }
+        if (!SocialAggregator || typeof SocialAggregator.getRelationshipViewModel !== 'function') {
+            missing.push('SocialAggregator.getRelationshipViewModel');
+        }
 
         if (!SocialGraph || typeof SocialGraph.setGraphVisible !== 'function') {
             missing.push('SocialGraph.setGraphVisible');
@@ -125,7 +129,7 @@
     }
 
     // ============================================================
-    // NOTIFICATION - Delegates to NotificationSystem
+    // NOTIFICATION
     // ============================================================
 
     function notify(message, type) {
@@ -216,14 +220,18 @@
 
         SocialViews.renderSocialView(container);
 
+        // Static / direct bindings
         bindAddRelationship();
         bindViewModeButtons();
         bindRelationshipForm();
         bindFilters();
         bindZoomControls();
         bindCharacterDetail();
+
+        // Delegated bindings (survive re-renders)
         bindDeleteRelationship();
         bindEditRelationship();
+        bindGroupToggle();
 
         _initialized = true;
         _editId = null;
@@ -330,7 +338,7 @@
         var char1 = document.getElementById('rel-char1').value;
         var char2 = document.getElementById('rel-char2').value;
         var typeId = document.getElementById('rel-type').value;
-        var clarification = document.getElementById('rel-clarification').value.trim();
+        var title = document.getElementById('rel-clarification').value.trim();
         var startYear = document.getElementById('rel-start-year').value;
         var endYear = document.getElementById('rel-end-year').value;
         var notes = document.getElementById('rel-notes').value.trim();
@@ -352,7 +360,7 @@
                 character1: char1,
                 character2: char2,
                 typeId: typeId,
-                clarification: clarification,
+                clarification: title,
                 startYear: startYear,
                 endYear: endYear,
                 notes: notes
@@ -361,7 +369,7 @@
             promise = SocialCore.createRelationship(
                 char1, char2, typeId,
                 startYear, endYear,
-                clarification, notes
+                title, notes
             );
         }
 
@@ -409,7 +417,6 @@
             return;
         }
 
-        // Use Aggregator for display names
         var vm = SocialAggregator.getRelationshipViewModel(rel);
         var name1 = vm ? vm.name1 : 'Unknown';
         var name2 = vm ? vm.name2 : 'Unknown';
@@ -456,6 +463,27 @@
         }
 
         handleAddRelationship(id);
+    }
+
+    // ============================================================
+    // GROUP COLLAPSE / EXPAND
+    // ============================================================
+
+    function bindGroupToggle() {
+        delegate('.relationship-group-header', 'click', function(e, target) {
+            var group = target.closest('.relationship-group');
+            if (!group) { return; }
+
+            var body = group.querySelector('.relationship-group-body');
+            var caret = group.querySelector('.relationship-group-caret');
+            if (!body) { return; }
+
+            var isHidden = body.style.display === 'none';
+            body.style.display = isHidden ? 'block' : 'none';
+            if (caret) {
+                caret.textContent = isHidden ? '▾' : '▸';
+            }
+        });
     }
 
     // ============================================================
@@ -516,14 +544,14 @@
         var clearBtn = document.getElementById('clear-social-filters');
         if (clearBtn) {
             addEventListener(clearBtn, 'click', function() {
-                var charFilter = document.getElementById('social-character-filter');
-                var typeFilter = document.getElementById('social-type-filter');
+                var charFilterEl = document.getElementById('social-character-filter');
+                var typeFilterEl = document.getElementById('social-type-filter');
 
-                if (charFilter) {
-                    charFilter.value = 'all';
+                if (charFilterEl) {
+                    charFilterEl.value = 'all';
                 }
-                if (typeFilter) {
-                    typeFilter.value = 'all';
+                if (typeFilterEl) {
+                    typeFilterEl.value = 'all';
                 }
 
                 SocialViews.renderRelationships();
@@ -562,7 +590,7 @@
     }
 
     // ============================================================
-    // CHARACTER DETAIL
+    // CHARACTER DETAIL (graph node click)
     // ============================================================
 
     function bindCharacterDetail() {
@@ -602,7 +630,6 @@
             return;
         }
 
-        // Use Aggregator to check character exists
         var vm = SocialAggregator.getConnectedCharactersViewModel(charId);
         if (!vm || !vm.characterName) {
             notify('Character not found.', 'error');
