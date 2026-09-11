@@ -35,6 +35,12 @@
  *   - deathAge is auto-filled from birthYear + deathYear on save if missing
  *   - deathWeek is preserved for legacy data but not actively collected
  * 
+ * COMBAT MODEL (v14):
+ *   - hp: number, 0–999, manual or rolled
+ *   - mp: number, 0–999, manual or rolled
+ *   - weapons: array of { id, name, type, notes }
+ *   - Physical/magical classes are DERIVED from stats, never stored
+ * 
  * IMPORTANT:
  *   - No DOM extraction here - form extraction is in character-form.js
  *   - No UI rendering here - rendering is in character-form.js
@@ -81,6 +87,19 @@
     var MAX_SPECIAL_MOVES = CharacterConstants.MAX_SPECIAL_MOVES;
     var MAX_MOVE_NAME_LENGTH = CharacterConstants.MAX_MOVE_NAME_LENGTH;
     var MAX_MOVE_DESCRIPTION_LENGTH = CharacterConstants.MAX_MOVE_DESCRIPTION_LENGTH;
+
+    var HP_MIN = CharacterConstants.HP_MIN;
+    var HP_MAX = CharacterConstants.HP_MAX;   // base cap (modifiers may exceed)
+    var HP_HARD_CAP = 999;
+
+    var MP_MIN = CharacterConstants.MP_MIN;
+    var MP_MAX = CharacterConstants.MP_MAX;   // base cap
+    var MP_HARD_CAP = 999;
+
+    var MAX_WEAPONS = CharacterConstants.MAX_WEAPONS;
+    var MAX_WEAPON_NAME_LENGTH = CharacterConstants.MAX_WEAPON_NAME_LENGTH;
+    var MAX_WEAPON_NOTES_LENGTH = CharacterConstants.MAX_WEAPON_NOTES_LENGTH;
+    var DEFAULT_WEAPON_TYPE = CharacterConstants.DEFAULT_WEAPON_TYPE;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -129,14 +148,6 @@
     /**
      * Compute the cached `deceased` boolean from the death fields
      * relative to the current application year.
-     * 
-     * Rules:
-     *   - No deathYear → alive
-     *   - deathYear <= currentYear → dead
-     *   - deathYear > currentYear → alive (they die in the future)
-     * 
-     * @param {object} data - Normalised character data
-     * @returns {boolean} True if the character is dead as of current year
      */
     function computeCachedDeceased(data) {
         var deathYear = parseInt(data.deathYear, 10);
@@ -145,15 +156,95 @@
     }
 
     // ============================================================
+    // WEAPON NORMALISATION
+    // ============================================================
+
+    /**
+     * Normalise a single weapon entry. Returns a cleaned object or null
+     * if the entry is unusable (non-object).
+     */
+    function normaliseWeapon(weapon) {
+        if (!weapon || typeof weapon !== 'object' || Array.isArray(weapon)) {
+            return null;
+        }
+
+        var id = (typeof weapon.id === 'string' && weapon.id)
+            ? weapon.id
+            : (IdUtils && typeof IdUtils.generateId === 'function'
+                ? IdUtils.generateId('weapon')
+                : 'weapon_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8));
+
+        var name = typeof weapon.name === 'string' ? weapon.name.trim() : '';
+        if (name.length > MAX_WEAPON_NAME_LENGTH) {
+            name = name.slice(0, MAX_WEAPON_NAME_LENGTH);
+        }
+
+        var type = typeof weapon.type === 'string' && weapon.type
+            ? weapon.type
+            : DEFAULT_WEAPON_TYPE;
+
+        // Validate type against CharacterConstants
+        if (CharacterConstants && typeof CharacterConstants.isValidWeaponType === 'function') {
+            if (!CharacterConstants.isValidWeaponType(type)) {
+                type = DEFAULT_WEAPON_TYPE;
+            }
+        }
+
+        var notes = typeof weapon.notes === 'string' ? weapon.notes.trim() : '';
+        if (notes.length > MAX_WEAPON_NOTES_LENGTH) {
+            notes = notes.slice(0, MAX_WEAPON_NOTES_LENGTH);
+        }
+
+        return {
+            id: id,
+            name: name,
+            type: type,
+            notes: notes
+        };
+    }
+
+    /**
+     * Normalise an array of weapons. Drops empty-name entries, caps
+     * the array at MAX_WEAPONS, and ensures uniqueness of ids.
+     */
+    function normaliseWeapons(weapons) {
+        if (!Array.isArray(weapons)) {
+            return [];
+        }
+
+        var result = [];
+        var seenIds = Object.create(null);
+
+        for (var i = 0; i < weapons.length; i++) {
+            var w = normaliseWeapon(weapons[i]);
+            if (!w) { continue; }
+            if (!w.name) { continue; }  // drop nameless entries
+
+            // Ensure unique id
+            if (seenIds[w.id]) {
+                w.id = (IdUtils && typeof IdUtils.generateId === 'function')
+                    ? IdUtils.generateId('weapon')
+                    : 'weapon_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+            }
+            seenIds[w.id] = true;
+
+            result.push(w);
+
+            if (result.length >= MAX_WEAPONS) {
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    // ============================================================
     // CHARACTER VALIDATION - Pure domain validation
     // ============================================================
 
     /**
      * Validate character data.
-     * This is a PURE function - no side effects, no state mutation.
-     * 
-     * @param {object} charData - Character data to validate
-     * @returns {object} { valid: boolean, message?: string }
+     * PURE function - no side effects, no state mutation.
      */
     function validateCharacter(charData) {
         if (!charData.firstName || charData.firstName.trim() === '') {
@@ -164,8 +255,6 @@
         }
 
         // Death validation
-        // A character is either alive (no deathYear) or dead (deathYear set).
-        // If dead, we need at least the death year.
         var hasDeathYear = charData.deathYear !== undefined &&
                            charData.deathYear !== null &&
                            String(charData.deathYear).trim() !== '';
@@ -177,7 +266,6 @@
             }
         }
 
-        // Death age validation (optional)
         if (charData.deathAge !== undefined &&
             charData.deathAge !== null &&
             String(charData.deathAge).trim() !== '') {
@@ -187,13 +275,53 @@
             }
         }
 
-        // Death week validation (legacy field, preserved if present)
         if (charData.deathWeek !== undefined &&
             charData.deathWeek !== null &&
             String(charData.deathWeek).trim() !== '') {
             var week = parseInt(charData.deathWeek, 10);
             if (isNaN(week) || week < 1 || week > 52) {
                 return { valid: false, message: 'Death Week must be between 1 and 52.' };
+            }
+        }
+
+        // ---- HP / MP validation ----
+        if (charData.hp !== undefined && charData.hp !== null && charData.hp !== '') {
+            var hp = Number(charData.hp);
+            if (isNaN(hp) || hp < 0 || hp > HP_HARD_CAP) {
+                return { valid: false, message: 'HP must be a number between 0 and ' + HP_HARD_CAP + '.' };
+            }
+        }
+        if (charData.mp !== undefined && charData.mp !== null && charData.mp !== '') {
+            var mp = Number(charData.mp);
+            if (isNaN(mp) || mp < 0 || mp > MP_HARD_CAP) {
+                return { valid: false, message: 'MP must be a number between 0 and ' + MP_HARD_CAP + '.' };
+            }
+        }
+
+        // ---- Weapons validation ----
+        if (charData.weapons !== undefined) {
+            if (!Array.isArray(charData.weapons)) {
+                return { valid: false, message: 'Weapons must be an array.' };
+            }
+            if (charData.weapons.length > MAX_WEAPONS) {
+                return { valid: false, message: 'Too many weapons. Maximum is ' + MAX_WEAPONS + '.' };
+            }
+            for (var i = 0; i < charData.weapons.length; i++) {
+                var w = charData.weapons[i];
+                if (!w || typeof w !== 'object' || Array.isArray(w)) {
+                    return { valid: false, message: 'Weapon entry at index ' + i + ' is invalid.' };
+                }
+                if (w.name && w.name.length > MAX_WEAPON_NAME_LENGTH) {
+                    return { valid: false, message: 'Weapon name exceeds maximum length of ' + MAX_WEAPON_NAME_LENGTH + '.' };
+                }
+                if (w.notes && w.notes.length > MAX_WEAPON_NOTES_LENGTH) {
+                    return { valid: false, message: 'Weapon notes exceed maximum length of ' + MAX_WEAPON_NOTES_LENGTH + '.' };
+                }
+                if (w.type && CharacterConstants && typeof CharacterConstants.isValidWeaponType === 'function') {
+                    if (!CharacterConstants.isValidWeaponType(w.type)) {
+                        return { valid: false, message: 'Weapon type "' + w.type + '" is not recognised.' };
+                    }
+                }
             }
         }
 
@@ -209,8 +337,8 @@
         }
 
         var allMoves = physicalMoves.concat(magicalMoves);
-        for (var i = 0; i < allMoves.length; i++) {
-            var move = allMoves[i];
+        for (var j = 0; j < allMoves.length; j++) {
+            var move = allMoves[j];
             if (move.name && move.name.length > MAX_MOVE_NAME_LENGTH) {
                 return { valid: false, message: 'Move name exceeds maximum length of ' + MAX_MOVE_NAME_LENGTH + ' characters.' };
             }
@@ -219,10 +347,10 @@
             }
         }
 
-        // Stats validation - only validate canonical stat keys
+        // Stats validation
         var stats = charData.stats || {};
-        for (var i = 0; i < STAT_KEYS.length; i++) {
-            var key = STAT_KEYS[i];
+        for (var k = 0; k < STAT_KEYS.length; k++) {
+            var key = STAT_KEYS[k];
             var val = stats[key];
             if (val === undefined || val === null) {
                 continue;
@@ -246,15 +374,14 @@
      * persisted character records. It:
      *   - Trims string fields
      *   - Clamps stats to their allowed range
+     *   - Clamps hp/mp to their allowed range
+     *   - Normalises weapons to a canonical shape
      *   - Ensures array fields are arrays
      *   - Normalises displayParts into a canonical 5-boolean object
      *   - Derives `deceased` from `deathYear` relative to current year
      *   - Auto-fills `deathAge` from `birthYear` + `deathYear` if missing
      *   - Does NOT touch fields it doesn't know about (those are
      *     preserved on edit via Object.assign in updateExistingCharacter)
-     * 
-     * @param {object} charData - Character data from form collect
-     * @returns {object} Normalised character data
      */
     function normaliseCharacterData(charData) {
         var data = {};
@@ -266,15 +393,12 @@
         data.nickname = charData.nickname ? charData.nickname.trim() : '';
         data.alias = charData.alias ? charData.alias.trim() : '';
 
-        // Previous names - array of trimmed non-empty strings
         data.previousNames = Array.isArray(charData.previousNames)
             ? charData.previousNames
                 .map(function(n) { return String(n || '').trim(); })
                 .filter(function(n) { return n !== ''; })
             : [];
 
-        // Display parts - canonical 5-boolean object
-        // Defaults: first/middle/last on, nickname/alias off
         var incomingDp = charData.displayParts && typeof charData.displayParts === 'object'
             ? charData.displayParts
             : null;
@@ -287,9 +411,6 @@
             alias:    incomingDp ? incomingDp.alias    === true  : false
         };
 
-        // Legacy nameFormat - kept for backward compatibility with the
-        // getDisplayName() legacy fallback path. New characters don't
-        // set this; existing characters keep whatever they had.
         if (charData.nameFormat !== undefined) {
             data.nameFormat = charData.nameFormat || 'firstlast';
         }
@@ -323,8 +444,12 @@
         data.stats = {};
         for (var i = 0; i < STAT_KEYS.length; i++) {
             var key = STAT_KEYS[i];
-            var val = charData.stats && charData.stats[key] !== undefined ? charData.stats[key] : STAT_DEFAULT;
-            data.stats[key] = Math.max(STAT_MIN, Math.min(STAT_MAX, val));
+            var val = charData.stats && charData.stats[key] !== undefined
+                ? charData.stats[key]
+                : STAT_DEFAULT;
+            var numeric = Number(val);
+            if (isNaN(numeric)) { numeric = STAT_DEFAULT; }
+            data.stats[key] = Math.max(STAT_MIN, Math.min(STAT_MAX, Math.round(numeric)));
         }
 
         // ---- Magic ----
@@ -334,12 +459,39 @@
             var magicKeys = MagicConstants && MagicConstants.getTypeKeys
                 ? MagicConstants.getTypeKeys()
                 : Object.keys(charData.magic || {});
-            for (var i = 0; i < magicKeys.length; i++) {
-                var key = magicKeys[i];
-                data.magic[key] = charData.magic && charData.magic[key] !== undefined
-                    ? charData.magic[key]
+            var magicMax = MagicConstants && typeof MagicConstants.MAGIC_MAX === 'number'
+                ? MagicConstants.MAGIC_MAX
+                : 10;
+            for (var m = 0; m < magicKeys.length; m++) {
+                var mKey = magicKeys[m];
+                var raw = charData.magic && charData.magic[mKey] !== undefined
+                    ? Number(charData.magic[mKey])
                     : 0;
+                if (isNaN(raw)) { raw = 0; }
+                data.magic[mKey] = Math.max(0, Math.min(magicMax, Math.round(raw)));
             }
+        }
+
+        // ---- HP / MP ----
+        var rawHP = charData.hp !== undefined && charData.hp !== null && charData.hp !== ''
+            ? Number(charData.hp)
+            : 0;
+        if (isNaN(rawHP) || rawHP < 0) { rawHP = 0; }
+        if (rawHP > HP_HARD_CAP) { rawHP = HP_HARD_CAP; }
+        data.hp = Math.round(rawHP);
+
+        var rawMP = charData.mp !== undefined && charData.mp !== null && charData.mp !== ''
+            ? Number(charData.mp)
+            : 0;
+        if (isNaN(rawMP) || rawMP < 0) { rawMP = 0; }
+        if (rawMP > MP_HARD_CAP) { rawMP = MP_HARD_CAP; }
+        data.mp = Math.round(rawMP);
+
+        // ---- Weapons ----
+        if (charData.weapons !== undefined) {
+            data.weapons = normaliseWeapons(charData.weapons);
+        } else {
+            data.weapons = [];
         }
 
         // ---- Special moves ----
@@ -374,21 +526,13 @@
         }
 
         // ---- Death fields ----
-        // deathYear is the source of truth. `deceased` is DERIVED from
-        // it relative to the current year, so it can flip back and forth
-        // as the user scrubs the year.
         data.deathYear = charData.deathYear ? String(charData.deathYear).trim() : '';
         data.deathCause = charData.deathCause ? charData.deathCause.trim() : '';
 
-        // deathWeek - legacy field. Only set if the caller provided it.
-        // The form no longer collects it, but if it exists on the source
-        // data, preserve it.
         if (charData.deathWeek !== undefined) {
             data.deathWeek = charData.deathWeek ? String(charData.deathWeek).trim() : '';
         }
 
-        // deathAge - auto-fill from birthYear + deathYear if the caller
-        // didn't provide an explicit value and both years are known.
         if (charData.deathAge !== undefined &&
             charData.deathAge !== null &&
             String(charData.deathAge).trim() !== '') {
@@ -405,8 +549,6 @@
             data.deathAge = '';
         }
 
-        // Derive the cached `deceased` flag from deathYear.
-        // This is what legacy consumers still read.
         data.deceased = computeCachedDeceased(data);
 
         return data;
@@ -416,12 +558,6 @@
     // SAVE CHARACTER - Uses MutationPipeline
     // ============================================================
 
-    /**
-     * Save a character (create or update).
-     * 
-     * @param {object} formData - Form data DTO from CharacterForm.collect()
-     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
-     */
     function save(formData) {
         if (!checkDependencies()) {
             return Promise.resolve({
@@ -430,7 +566,6 @@
             });
         }
 
-        // ---- PHASE 1: VALIDATE INPUT ----
         if (!formData || typeof formData !== 'object') {
             return Promise.resolve({
                 success: false,
@@ -465,62 +600,46 @@
             name = CharacterQueries.getDisplayName(existingChar);
         }
 
-        // ---- PHASE 2: EXECUTE MUTATION VIA PIPELINE ----
         return MutationPipeline.performMutation({
-            validate: function(data) {
+            validate: function() {
                 var reValidation = validateCharacter(normalised);
                 if (!reValidation.valid) {
-                    return {
-                        valid: false,
-                        message: reValidation.message
-                    };
+                    return { valid: false, message: reValidation.message };
                 }
-
                 if (isEditing) {
                     var currentChar = CharacterQueries.getCharacterById(editId);
                     if (!currentChar) {
-                        return {
-                            valid: false,
-                            message: 'Character no longer exists.'
-                        };
+                        return { valid: false, message: 'Character no longer exists.' };
                     }
                 }
-
                 return { valid: true };
             },
-
             mutate: function(data) {
                 var result;
-
                 if (isEditing) {
                     result = updateExistingCharacter(existingChar, normalised, data);
                 } else {
                     result = createNewCharacter(normalised, data);
                 }
-
                 if (!result.success) {
                     throw new Error(result.error || 'Failed to save character.');
                 }
-
                 return {
                     id: result.id,
                     character: result.character,
                     isNew: !isEditing
                 };
             },
-
-            logMessage: function(result) {
+            logMessage: function() {
                 return isEditing
                     ? 'Updated character: ' + name
                     : 'Created character: ' + name;
             },
-
-            successMessage: function(result) {
+            successMessage: function() {
                 return isEditing
                     ? 'Character updated successfully!'
                     : 'Character created successfully!';
             },
-
             failureMessage: 'Failed to save character.'
         });
     }
@@ -548,9 +667,6 @@
             eliminatedWeeks: Array.isArray(current.eliminatedWeeks) ? current.eliminatedWeeks.slice() : []
         };
 
-        // Merge - normalised overrides everything except preserved fields.
-        // Any field in `current` that is NOT in `normalised` is retained
-        // automatically by Object.assign's left-to-right semantics.
         var updated = Object.assign({}, current, normalised, preserved);
 
         data.characters[index] = updated;
@@ -567,6 +683,9 @@
 
         var newChar = Object.assign({}, normalised, {
             id: id,
+            hp: normalised.hp || 0,
+            mp: normalised.mp || 0,
+            weapons: Array.isArray(normalised.weapons) ? normalised.weapons : [],
             eliminations: [],
             eliminatedWeeks: [],
             createdAt: new Date().toISOString()
@@ -585,12 +704,6 @@
     // DELETE CHARACTER - Uses MutationPipeline
     // ============================================================
 
-    /**
-     * Delete a character.
-     * 
-     * @param {string} id - Character ID
-     * @returns {Promise<{ success: boolean, message?: string }>}
-     */
     function deleteCharacter(id) {
         if (!checkDependencies()) {
             return Promise.resolve({
@@ -619,20 +732,14 @@
         var name = CharacterQueries.getDisplayName(char);
 
         return MutationPipeline.performMutation({
-            validate: function(data) {
+            validate: function() {
                 var currentChar = CharacterQueries.getCharacterById(targetId);
                 if (!currentChar) {
-                    return {
-                        valid: false,
-                        message: 'Character no longer exists.'
-                    };
+                    return { valid: false, message: 'Character no longer exists.' };
                 }
-
                 return { valid: true };
             },
-
             mutate: function(data) {
-                // Remove character from all teams
                 if (Array.isArray(data.teams)) {
                     data.teams.forEach(function(team) {
                         if (Array.isArray(team.members)) {
@@ -643,7 +750,6 @@
                     });
                 }
 
-                // Remove character
                 var found = false;
                 data.characters = data.characters.filter(function(c) {
                     if (c && String(c.id) === targetId) {
@@ -659,11 +765,9 @@
 
                 return { deleted: true };
             },
-
             logMessage: function() {
                 return 'Deleted character: ' + name;
             },
-
             successMessage: 'Character deleted successfully!',
             failureMessage: 'Failed to delete character.'
         });
@@ -673,12 +777,6 @@
     // BULK OPERATIONS
     // ============================================================
 
-    /**
-     * Delete all characters.
-     * USE WITH CAUTION - mainly for testing.
-     * 
-     * @returns {Promise<{ success: boolean, count?: number, message?: string }>}
-     */
     function deleteAllCharacters() {
         if (!checkDependencies()) {
             return Promise.resolve({
@@ -698,14 +796,10 @@
             validate: function(data) {
                 var count = Array.isArray(data.characters) ? data.characters.length : 0;
                 if (count === 0) {
-                    return {
-                        valid: false,
-                        message: 'No characters to delete.'
-                    };
+                    return { valid: false, message: 'No characters to delete.' };
                 }
                 return { valid: true };
             },
-
             mutate: function(data) {
                 var count = Array.isArray(data.characters) ? data.characters.length : 0;
 
@@ -718,14 +812,11 @@
                 }
 
                 data.characters = [];
-
                 return { deletedCount: count };
             },
-
             logMessage: function(result) {
                 return 'Deleted all characters (' + result.deletedCount + ')';
             },
-
             successMessage: function(result) {
                 return 'Deleted ' + result.deletedCount + ' characters.';
             },
