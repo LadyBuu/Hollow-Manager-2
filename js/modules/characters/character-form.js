@@ -6,8 +6,8 @@
  * IMPORTANT:
  *   - RENDER ONLY - no event binding (handled by CharacterEvents)
  *   - All field collection uses FormUtils.getField(id) - NOT getFormData()
- *     because inputs use id-only (no name attribute)
- *   - Career status rows use DOM APIs (dynamic add/remove)
+ *   - Magical section rendering delegates to CharacterStatsView
+ *   - Physical stats, HP, MP, weapons, notes rendered inline
  */
 
 (function() {
@@ -26,6 +26,9 @@
     function getCharacterCRUD() { return window.CharacterCRUD || null; }
     function getCharacterGenerator() { return window.CharacterGenerator || null; }
     function getCharacterConstants() { return window.CharacterConstants || null; }
+    function getMagicConstants() { return window.MagicConstants || null; }
+    function getCharacterStats() { return window.CharacterStats || null; }
+    function getCharacterStatsView() { return window.CharacterStatsView || null; }
     function getAcademyQueries() { return window.AcademyQueries || null; }
     function getFormUtils() { return window.FormUtils || null; }
     function getDomUtils() { return window.DomUtils || null; }
@@ -58,18 +61,15 @@
         if (!getCharacterQueries()) { missing.push('CharacterQueries'); }
         if (!getCharacterCRUD()) { missing.push('CharacterCRUD'); }
         if (!getCharacterConstants()) { missing.push('CharacterConstants'); }
+        if (!getMagicConstants()) { missing.push('MagicConstants'); }
+        if (!getCharacterStats()) { missing.push('CharacterStats'); }
         if (!getAcademyQueries()) { missing.push('AcademyQueries'); }
         if (!getFormUtils()) { missing.push('FormUtils'); }
         if (!getDomUtils()) { missing.push('DomUtils'); }
-        if (!getCharacterGenerator()) { missing.push('CharacterGenerator (lazy)'); }
 
         if (missing.length > 0) {
-            var criticalMissing = missing.filter(function(m) { return m.indexOf('(lazy)') === -1; });
-            if (criticalMissing.length > 0) {
-                console.warn('[CharacterForm] Critical dependencies missing:', criticalMissing.join(', '));
-                return false;
-            }
-            console.warn('[CharacterForm] Some lazy dependencies not yet loaded:', missing.join(', '));
+            console.warn('[CharacterForm] Critical dependencies missing:', missing.join(', '));
+            return false;
         }
         return true;
     }
@@ -124,19 +124,29 @@
     }
     function getStatMax() {
         var CC = getCharacterConstants();
-        return CC ? CC.STAT_MAX || 50 : 50;
+        return CC ? CC.STAT_MAX || 30 : 30;
     }
     function getStatDefault() {
         var CC = getCharacterConstants();
         return CC ? CC.STAT_DEFAULT || 10 : 10;
     }
-
+    function getPhysicalClasses() {
+        var CC = getCharacterConstants();
+        return CC && typeof CC.getPhysicalClasses === 'function' ? CC.getPhysicalClasses() : [];
+    }
+    function getWeaponTypes() {
+        var CC = getCharacterConstants();
+        return CC && typeof CC.getWeaponTypes === 'function' ? CC.getWeaponTypes() : [];
+    }
+    function getDefaultWeaponType() {
+        var CC = getCharacterConstants();
+        return CC && CC.DEFAULT_WEAPON_TYPE ? CC.DEFAULT_WEAPON_TYPE : 'sharp';
+    }
     function getCareerStatusOptions() {
         var CC = getCharacterConstants();
         if (CC && Array.isArray(CC.CAREER_STATUS_OPTIONS)) {
             return CC.CAREER_STATUS_OPTIONS;
         }
-        // Fallback in case constants aren't loaded yet
         return [
             { value: '', label: 'Select status...' },
             { value: 'civilian', label: 'Civilian' },
@@ -154,7 +164,7 @@
     // ============================================================
 
     var state = { currentTab: 'name' };
-    var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'stats', 'social', 'notes'];
+    var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'combat', 'social', 'notes'];
     var _initialized = false;
 
     function getCurrentYear() {
@@ -215,16 +225,9 @@
     }
 
     // ============================================================
-    // CAREER STATUS ENTRY ROW
+    // CAREER STATUS ROW
     // ============================================================
 
-    /**
-     * Append a career status entry row to the given container.
-     * 
-     * @param {HTMLElement} container - Target container
-     * @param {object} entry - Optional entry to pre-fill:
-     *   { status, startYear, endYear, title }
-     */
     function addCareerEntryRow(container, entry) {
         if (!container) { return; }
         entry = entry || {};
@@ -292,6 +295,68 @@
     }
 
     // ============================================================
+    // WEAPON ROW
+    // ============================================================
+
+    function addWeaponRow(container, weapon) {
+        if (!container) { return; }
+        weapon = weapon || {};
+
+        var row = document.createElement('div');
+        row.className = 'weapon-entry';
+        row.style.cssText = 'display:grid;grid-template-columns:1.5fr 1fr 2fr auto;gap:6px;align-items:center;margin-bottom:6px;';
+        if (weapon.id) {
+            row.dataset.weaponId = weapon.id;
+        }
+
+        // Name
+        var nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.className = 'weapon-name';
+        nameInput.placeholder = 'Weapon name';
+        nameInput.value = weapon.name || '';
+        nameInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+
+        // Type select
+        var typeSelect = document.createElement('select');
+        typeSelect.className = 'weapon-type';
+        typeSelect.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+
+        var types = getWeaponTypes();
+        var currentType = weapon.type || getDefaultWeaponType();
+        for (var i = 0; i < types.length; i++) {
+            var opt = document.createElement('option');
+            opt.value = types[i].id;
+            opt.textContent = types[i].label;
+            if (types[i].id === currentType) { opt.selected = true; }
+            typeSelect.appendChild(opt);
+        }
+
+        // Notes
+        var notesInput = document.createElement('input');
+        notesInput.type = 'text';
+        notesInput.className = 'weapon-notes';
+        notesInput.placeholder = 'Notes';
+        notesInput.value = weapon.notes || '';
+        notesInput.style.cssText = 'padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;';
+
+        // Remove button
+        var removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'remove-weapon small danger';
+        removeBtn.textContent = '✕';
+        removeBtn.setAttribute('aria-label', 'Remove weapon');
+        removeBtn.style.cssText = 'padding:4px 8px;font-size:0.65rem;';
+
+        row.appendChild(nameInput);
+        row.appendChild(typeSelect);
+        row.appendChild(notesInput);
+        row.appendChild(removeBtn);
+
+        container.appendChild(row);
+    }
+
+    // ============================================================
     // RENDER
     // ============================================================
 
@@ -349,7 +414,40 @@
                 careerContainer.textContent = '';
                 addCareerEntryRow(careerContainer);
             }
+            var weaponsContainer = document.getElementById('weapons-container');
+            if (weaponsContainer) {
+                weaponsContainer.textContent = '';
+            }
             applyDeceasedState(false);
+        }
+
+        // Render magical section via CharacterStatsView
+        var CharacterStatsView = getCharacterStatsView();
+        if (CharacterStatsView) {
+            if (char) {
+                if (typeof CharacterStatsView.populateMagicalFields === 'function') {
+                    CharacterStatsView.populateMagicalFields(char);
+                }
+                if (typeof CharacterStatsView.updatePhysicalClassDisplay === 'function') {
+                    CharacterStatsView.updatePhysicalClassDisplay(char);
+                }
+                if (typeof CharacterStatsView.updateMagicalClassDisplay === 'function') {
+                    CharacterStatsView.updateMagicalClassDisplay(char);
+                }
+                if (typeof CharacterStatsView.renderMovesSection === 'function') {
+                    CharacterStatsView.renderMovesSection(char);
+                }
+            } else {
+                if (typeof CharacterStatsView.updatePhysicalClassDisplay === 'function') {
+                    CharacterStatsView.updatePhysicalClassDisplay(null);
+                }
+                if (typeof CharacterStatsView.updateMagicalClassDisplay === 'function') {
+                    CharacterStatsView.updateMagicalClassDisplay(null);
+                }
+                if (typeof CharacterStatsView.renderMovesSection === 'function') {
+                    CharacterStatsView.renderMovesSection(null);
+                }
+            }
         }
 
         var form = document.getElementById('character-form');
@@ -403,7 +501,7 @@
                     ${getPersonalityTabHTML(char || {})}
                     ${getAcademicTabHTML(char || {})}
                     ${getProfessionalTabHTML(char || {})}
-                    ${getStatsTabHTML(char || {})}
+                    ${getCombatTabHTML(char || {})}
                     ${getSocialTabHTML(char || {})}
                     ${getNotesTabHTML(char || {})}
                 </div>
@@ -422,7 +520,7 @@
             'personality': 'Personality',
             'academic': 'Academic',
             'professional': 'Professional',
-            'stats': 'Stats',
+            'combat': 'Combat',
             'social': 'Social',
             'notes': 'Notes'
         };
@@ -741,7 +839,7 @@
 
                 <div class="form-group">
                     <label style="font-size:0.7rem;color:var(--text-dim);">Specialty</label>
-                    <input type="text" id="char-specialty" value="${escapeHtml(c.specialty || '')}" placeholder="Area of expertise" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                    <input type="text" id="char-specialty" value="${escapeHtml(c.specialty || '')}" placeholder="e.g., herbalist, alchemist, smith" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
                 </div>
 
                 <div class="form-group" style="margin-top:12px;">
@@ -757,43 +855,140 @@
     }
 
     // ============================================================
-    // STATS TAB
+    // COMBAT TAB
     // ============================================================
 
-    function getStatsTabHTML(c) {
-        var active = state.currentTab === 'stats' ? 'block' : 'none';
+    function getCombatTabHTML(c) {
+        var active = state.currentTab === 'combat' ? 'block' : 'none';
+
+        var CharacterStatsView = getCharacterStatsView();
+        var magicalHTML = '';
+        var movesHTML = '';
+
+        if (CharacterStatsView) {
+            if (typeof CharacterStatsView.getMagicalSectionHTML === 'function') {
+                magicalHTML = CharacterStatsView.getMagicalSectionHTML(c);
+            }
+            if (typeof CharacterStatsView.getMovesSectionHTML === 'function') {
+                movesHTML = CharacterStatsView.getMovesSectionHTML(c);
+            }
+        }
+
+        return `
+            <div class="tab-panel" data-tab="combat" style="display:${active};">
+
+                ${getPhysicalSectionHTML(c)}
+
+                ${magicalHTML}
+
+                ${movesHTML}
+
+                ${getWeaponsSectionHTML(c)}
+
+                <div class="form-group" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border-soft);">
+                    <label style="font-size:0.75rem;color:var(--accent);font-weight:600;display:block;margin-bottom:6px;">Combat Notes</label>
+                    <textarea id="char-notes" rows="4" placeholder="Combat-specific notes, tactics, observations..." style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;resize:vertical;">${escapeHtml(c.notes || '')}</textarea>
+                </div>
+
+            </div>
+        `;
+    }
+
+    // ============================================================
+    // COMBAT TAB - PHYSICAL SECTION
+    // ============================================================
+
+    function getPhysicalSectionHTML(c) {
         var stats = c.stats || {};
         var statKeys = getStatKeys();
         var statDefinitions = getStatDefinitions();
 
-        var html = `
-            <div class="tab-panel" data-tab="stats" style="display:${active};">
-                <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
-                    <button type="button" id="random-stats-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">⟳ Random</button>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
-        `;
-
+        // Build stat inputs with live modifier display
+        var statInputs = '';
         statKeys.forEach(function(key) {
             var definition = statDefinitions[key] || {};
-            var label = definition.label || key.toUpperCase();
+            var abbreviation = definition.abbreviation || key.toUpperCase();
             var value = stats[key] !== undefined ? stats[key] : getStatDefault();
 
-            html += `
-                <div class="form-group">
-                    <label style="font-size:0.7rem;color:var(--text-dim);">${label}</label>
-                    <input type="number" id="char-stat-${key}" value="${value}" min="${getStatMin()}" max="${getStatMax()}" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;text-align:center;">
+            // Compute modifier
+            var modifier = Math.floor((value - 10) / 2);
+            var modifierDisplay = (modifier >= 0 ? '+' : '') + modifier;
+            var modColor = modifier > 0 ? 'var(--accent)' : (modifier < 0 ? 'var(--danger)' : 'var(--text-dim)');
+
+            statInputs += `
+                <div class="stat-block" style="display:flex;flex-direction:column;gap:2px;align-items:center;padding:6px;background:var(--panel-alt);border:1px solid var(--border);border-radius:6px;">
+                    <label style="font-size:0.6rem;color:var(--text-dim);font-weight:600;">${abbreviation}</label>
+                    <input type="number" id="char-stat-${key}" value="${value}" min="${getStatMin()}" max="${getStatMax()}" data-stat-key="${key}" class="stat-input" style="width:100%;padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.9rem;font-weight:700;text-align:center;">
+                    <span class="stat-modifier" data-modifier-key="${key}" style="font-size:0.65rem;color:${modColor};font-weight:600;">${modifierDisplay}</span>
                 </div>
             `;
         });
 
-        html += `
+        // Class options for the override dropdown
+        var classOptions = '<option value="">— Derived —</option>';
+        var physicalClasses = getPhysicalClasses();
+        physicalClasses.forEach(function(cls) {
+            classOptions += '<option value="' + escapeHtml(cls.id) + '">' + escapeHtml(cls.label) + '</option>';
+        });
+
+        return `
+            <div class="combat-section" style="margin-bottom:12px;padding:10px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
+                    <label style="font-size:0.8rem;color:var(--accent);font-weight:600;">Physical</label>
+                    <button type="button" id="roll-stats-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">⟳ Roll Stats</button>
                 </div>
-                <div id="stats-view" style="margin-top:8px;"></div>
+
+                <div class="stat-grid" style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-bottom:10px;">
+                    ${statInputs}
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Derived Class</label>
+                        <div id="derived-physical-class" style="padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--accent);border-radius:4px;font-size:0.75rem;font-weight:600;">—</div>
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">Override (rewrites stats)</label>
+                        <select id="physical-class-override" style="width:100%;padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;">
+                            ${classOptions}
+                        </select>
+                    </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">HP</label>
+                        <div style="display:flex;gap:6px;">
+                            <input type="number" id="char-hp" value="${c.hp || 0}" min="0" max="999" style="flex:1;padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.8rem;">
+                            <button type="button" id="roll-hp-btn" class="small secondary" style="font-size:0.7rem;padding:4px 10px;">⟳</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label style="font-size:0.7rem;color:var(--text-dim);">MP</label>
+                        <div style="display:flex;gap:6px;">
+                            <input type="number" id="char-mp" value="${c.mp || 0}" min="0" max="999" style="flex:1;padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.8rem;">
+                            <button type="button" id="roll-mp-btn" class="small secondary" style="font-size:0.7rem;padding:4px 10px;">⟳</button>
+                        </div>
+                    </div>
+                </div>
             </div>
         `;
+    }
 
-        return html;
+    // ============================================================
+    // COMBAT TAB - WEAPONS SECTION
+    // ============================================================
+
+    function getWeaponsSectionHTML(c) {
+        return `
+            <div class="combat-section" style="margin-bottom:12px;padding:10px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
+                    <label style="font-size:0.8rem;color:var(--accent);font-weight:600;">Weapons</label>
+                    <button type="button" id="add-weapon-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">+ Add Weapon</button>
+                </div>
+                <div id="weapons-container" style="display:flex;flex-direction:column;gap:2px;"></div>
+            </div>
+        `;
     }
 
     // ============================================================
@@ -821,7 +1016,7 @@
             <div class="tab-panel" data-tab="notes" style="display:${active};">
                 <div class="form-group">
                     <label style="font-size:0.7rem;color:var(--text-dim);">Notes</label>
-                    <textarea id="char-notes" rows="6" placeholder="General notes about this character..." style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;resize:vertical;">${escapeHtml(c.notes || '')}</textarea>
+                    <textarea id="char-notes-tab" rows="8" placeholder="General notes about this character..." style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.75rem;resize:vertical;">${escapeHtml(c.notes || '')}</textarea>
                 </div>
             </div>
         `;
@@ -926,10 +1121,7 @@
             }
         }
 
-        // Notes Tab
-        FormUtils.setField('char-notes', char.notes);
-
-        // Stats Tab
+        // Combat Tab - Stats (already set from HTML but ensure consistent)
         var statKeys = getStatKeys();
         if (char.stats) {
             statKeys.forEach(function(key) {
@@ -937,6 +1129,23 @@
                 FormUtils.setField('char-stat-' + key, value);
             });
         }
+
+        // Combat Tab - HP / MP
+        FormUtils.setField('char-hp', char.hp || 0);
+        FormUtils.setField('char-mp', char.mp || 0);
+
+        // Combat Tab - Weapons
+        var weaponsContainer = document.getElementById('weapons-container');
+        if (weaponsContainer) {
+            weaponsContainer.textContent = '';
+            var weapons = Array.isArray(char.weapons) ? char.weapons : [];
+            weapons.forEach(function(w) {
+                addWeaponRow(weaponsContainer, w);
+            });
+        }
+
+        // Combat Tab - Notes (also populate Notes tab textarea)
+        FormUtils.setField('char-notes-tab', char.notes);
     }
 
     // ============================================================
@@ -945,9 +1154,6 @@
 
     /**
      * Collect career status entries from the DOM, sorted chronologically.
-     * Entries with no status are dropped. Entries with a valid startYear
-     * are sorted ascending; entries without a startYear keep insertion
-     * order at the end.
      */
     function collectCareerStatus(form) {
         var rows = form.querySelectorAll('#career-status-container .career-status-entry');
@@ -975,13 +1181,11 @@
             });
         }
 
-        // Sort: entries with startYear ascending first; entries without startYear at the end.
         entries.sort(function(a, b) {
             var aNum = parseInt(a.startYear, 10);
             var bNum = parseInt(b.startYear, 10);
             var aHas = !isNaN(aNum);
             var bHas = !isNaN(bNum);
-
             if (aHas && bHas) { return aNum - bNum; }
             if (aHas && !bHas) { return -1; }
             if (!aHas && bHas) { return 1; }
@@ -989,6 +1193,33 @@
         });
 
         return entries;
+    }
+
+    /**
+     * Collect weapons from the DOM.
+     */
+    function collectWeapons(form) {
+        var rows = form.querySelectorAll('#weapons-container .weapon-entry');
+        var weapons = [];
+
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            var nameEl = row.querySelector('.weapon-name');
+            var typeEl = row.querySelector('.weapon-type');
+            var notesEl = row.querySelector('.weapon-notes');
+
+            var name = nameEl ? String(nameEl.value || '').trim() : '';
+            if (!name) { continue; }  // skip empty weapons
+
+            weapons.push({
+                id: row.dataset.weaponId || undefined,  // undefined → CRUD will generate
+                name: name,
+                type: typeEl ? String(typeEl.value || '').trim() : getDefaultWeaponType(),
+                notes: notesEl ? String(notesEl.value || '').trim() : ''
+            });
+        }
+
+        return weapons;
     }
 
     function collect() {
@@ -1056,14 +1287,14 @@
             previousNames: previousNames,
             displayParts: displayParts,
 
-            // Birth year (Name tab)
+            // Birth year
             birthYear: birthYearRaw,
 
-            // Gender / Attraction (Name tab)
+            // Gender / Attraction
             gender: FormUtils.getField('char-gender') || '',
             attraction: FormUtils.getField('char-attraction') || '',
 
-            // Life events (Name tab)
+            // Life events
             deceased: isDeceased,
             deathYear: deathYear,
             deathAge: deathAge,
@@ -1082,8 +1313,18 @@
             specialty: FormUtils.getField('char-specialty') || '',
             careerStatus: collectCareerStatus(form),
 
-            // Notes tab
-            notes: FormUtils.getField('char-notes') || '',
+            // Combat tab - Physical stats
+            stats: {},
+
+            // Combat tab - HP / MP
+            hp: parseInt(FormUtils.getField('char-hp'), 10) || 0,
+            mp: parseInt(FormUtils.getField('char-mp'), 10) || 0,
+
+            // Combat tab - Weapons
+            weapons: collectWeapons(form),
+
+            // Combat tab - Notes (also saved to char.notes)
+            notes: FormUtils.getField('char-notes-tab') || FormUtils.getField('char-notes') || '',
 
             // Personality tab
             personality: {
@@ -1097,16 +1338,20 @@
                 habits: FormUtils.getField('char-personality-habits') || '',
                 fears: FormUtils.getField('char-personality-fears') || '',
                 goals: FormUtils.getField('char-personality-goals') || ''
-            },
-
-            // Stats tab
-            stats: {}
+            }
         };
 
+        // Stats
         statKeys.forEach(function(key) {
             var value = parseInt(FormUtils.getField('char-stat-' + key), 10);
             dto.stats[key] = !isNaN(value) ? Math.max(statMin, Math.min(statMax, value)) : statDefault;
         });
+
+        // Magic — collect via CharacterStatsView
+        var CharacterStatsView = getCharacterStatsView();
+        if (CharacterStatsView && typeof CharacterStatsView.collectMagicalFields === 'function') {
+            dto.magic = CharacterStatsView.collectMagicalFields();
+        }
 
         return dto;
     }
@@ -1151,12 +1396,6 @@
         return CharacterGenerator.generatePersonality ? CharacterGenerator.generatePersonality() : null;
     }
 
-    function generateRandomStats() {
-        var CharacterGenerator = getCharacterGenerator();
-        if (!CharacterGenerator) { return null; }
-        return CharacterGenerator.generateStats3d6 ? CharacterGenerator.generateStats3d6() : null;
-    }
-
     // ============================================================
     // EXPOSE
     // ============================================================
@@ -1171,10 +1410,10 @@
 
         generateRandomPhysical: generateRandomPhysical,
         generateRandomPersonality: generateRandomPersonality,
-        generateRandomStats: generateRandomStats,
 
         addPreviousNameRow: addPreviousNameRow,
         addCareerEntryRow: addCareerEntryRow,
+        addWeaponRow: addWeaponRow,
         applyDeceasedState: applyDeceasedState,
 
         getCharacterGenerator: getCharacterGenerator,
@@ -1187,5 +1426,31 @@
     };
 
     window.hideCharacterForm = hide;
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.CharacterForm;
+        var missing = [];
+
+        var required = [
+            'render', 'hide', 'collect', 'switchTab',
+            'getCurrentTab', 'isInitialized'
+        ];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn('[CharacterForm] Verification - some exports may be missing:', missing.join(', '));
+        } else {
+            console.log('[CharacterForm] All exports verified successfully.');
+        }
+    })();
 
 })();
