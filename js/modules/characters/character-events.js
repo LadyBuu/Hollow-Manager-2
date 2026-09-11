@@ -9,6 +9,8 @@
  *   - Static elements (outside the form content) use direct binding.
  *   - Combat tab bindings (roll buttons, class overrides, stat/magic
  *     live updates, weapons, moves) are all delegated.
+ *   - Social tab bindings (add/edit/delete relationship, group toggles,
+ *     graph view, character search filter) are all delegated.
  */
 
 (function() {
@@ -33,9 +35,15 @@
     var CharacterClasses = window.CharacterClasses;
     var CharacterStats = window.CharacterStats;
     var CharacterStatsView = window.CharacterStatsView;
+    var CharacterViews = window.CharacterViews;
     var CharacterConstants = window.CharacterConstants;
     var MagicConstants = window.MagicConstants;
+    var SocialConstants = window.SocialConstants;
+    var SocialQueries = window.SocialQueries;
+    var SocialCore = window.SocialCore;
+    var SocialGraph = window.SocialGraph;
     var FormUtils = window.FormUtils;
+    var Modal = window.Modal;
     var NotificationSystem = window.NotificationSystem;
     var UI_CONSTANTS = window.UI_CONSTANTS;
 
@@ -46,6 +54,9 @@
     var _initialized = false;
     var _eventListeners = [];
     var _filterDebounceTimer = null;
+
+    // Social modal state
+    var _socialEditId = null;      // relationship id being edited, or null for create
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -114,6 +125,16 @@
         }
         if (!UI_CONSTANTS || typeof UI_CONSTANTS.MOBILE_BREAKPOINT !== 'number') {
             missing.push('UI_CONSTANTS.MOBILE_BREAKPOINT');
+        }
+
+        // Social dependencies — warn but don't fail (Social buttons just won't bind)
+        var socialMissing = [];
+        if (!SocialConstants) socialMissing.push('SocialConstants');
+        if (!SocialQueries) socialMissing.push('SocialQueries');
+        if (!SocialCore) socialMissing.push('SocialCore');
+        if (!SocialGraph) socialMissing.push('SocialGraph');
+        if (socialMissing.length > 0) {
+            console.warn('[CharacterEvents] Social dependencies missing (social tab disabled):', socialMissing.join(', '));
         }
 
         if (missing.length > 0) {
@@ -263,12 +284,16 @@
         bindWeaponButtons();
         bindSpecialMoveButtons();
 
+        // Social tab bindings
+        bindSocialButtons();
+
         _initialized = true;
     }
 
     function destroy() {
         removeAllEventListeners();
         _initialized = false;
+        _socialEditId = null;
     }
 
     // ============================================================
@@ -642,7 +667,6 @@
 
         var rolled = CharacterStats.rollMagicalProficiencies();
 
-        // Fill inputs + update level labels
         if (MagicConstants) {
             MagicConstants.getTypeKeys().forEach(function(type) {
                 FormUtils.setField('char-magic-' + type, rolled[type]);
@@ -684,7 +708,6 @@
     // ============================================================
 
     function bindCombatClassOverrides() {
-        // Physical class override — rewrites stats to match the class
         addSafeDelegatedListener('#physical-class-override', 'change', function(e, target) {
             var classId = target.value;
             if (!classId) { return; }
@@ -707,21 +730,16 @@
             });
 
             updatePhysicalClassDisplayFromInputs();
-
-            // Reset the override dropdown so the derived class shows again
             target.value = '';
-
             notify('Stats rewritten to match class.', 'info');
         });
 
-        // Broad magical class override — display only
         addSafeDelegatedListener('#broad-class-override', 'change', function(e, target) {
             var classId = target.value;
             var displayEl = document.getElementById('derived-broad-class');
             if (!displayEl) { return; }
 
             if (!classId) {
-                // Revert to derived
                 updateMagicalClassDisplayFromInputs();
                 return;
             }
@@ -734,7 +752,6 @@
             }
         });
 
-        // Fine magical class override — raises target proficiency to 8
         addSafeDelegatedListener('#fine-class-override', 'change', function(e, target) {
             var classId = target.value;
             if (!classId) { return; }
@@ -760,10 +777,7 @@
             }
 
             updateMagicalClassDisplayFromInputs();
-
-            // Reset dropdown
             target.value = '';
-
             notify('Proficiency raised to Expert.', 'info');
         });
     }
@@ -773,7 +787,6 @@
     // ============================================================
 
     function bindCombatLiveUpdates() {
-        // Physical stat input change → update modifier + re-derive class
         addSafeDelegatedListener('.stat-input', 'input', function(e, target) {
             var key = target.dataset.statKey;
             if (!key) { return; }
@@ -783,7 +796,6 @@
             updatePhysicalClassDisplayFromInputs();
         });
 
-        // Magic input change → update level + category total + re-derive class
         addSafeDelegatedListener('.magic-input', 'input', function(e, target) {
             var type = target.dataset.magicKey;
             if (!type) { return; }
@@ -1008,6 +1020,395 @@
             .catch(function() {
                 notify('Failed to remove move.', 'error');
             });
+    }
+
+    // ============================================================
+    // SOCIAL - Main entry
+    // ============================================================
+
+    function bindSocialButtons() {
+        // Add relationship button
+        addSafeDelegatedListener('#add-char-relationship-btn', 'click', function(e, target) {
+            e.preventDefault();
+            openRelationshipModal(null);
+        });
+
+        // View graph button
+        addSafeDelegatedListener('#view-char-social-graph', 'click', function(e, target) {
+            e.preventDefault();
+            openCharacterGraphModal();
+        });
+
+        // Collapsible group toggle
+        addSafeDelegatedListener('.relationship-group-header', 'click', function(e, target) {
+            e.preventDefault();
+            var group = target.closest('.relationship-group');
+            if (!group) { return; }
+            var body = group.querySelector('.relationship-group-body');
+            var caret = group.querySelector('.relationship-group-caret');
+            if (!body) { return; }
+
+            var isHidden = body.style.display === 'none';
+            body.style.display = isHidden ? 'block' : 'none';
+            if (caret) {
+                caret.textContent = isHidden ? '▾' : '▸';
+            }
+        });
+
+        // Edit relationship
+        addSafeDelegatedListener('.edit-char-relationship', 'click', function(e, target) {
+            e.preventDefault();
+            e.stopPropagation();
+            var relId = target.dataset.relId;
+            if (relId) { openRelationshipModal(relId); }
+        });
+
+        // Delete relationship
+        addSafeDelegatedListener('.delete-char-relationship', 'click', function(e, target) {
+            e.preventDefault();
+            e.stopPropagation();
+            var relId = target.dataset.relId;
+            if (relId) { handleDeleteRelationship(relId); }
+        });
+
+        // Character search input filter (char1)
+        addSafeDelegatedListener('#rel-char1-search', 'input', function(e, target) {
+            filterCharacterOptions('rel-char1', target.value);
+        });
+
+        // Character search input filter (char2)
+        addSafeDelegatedListener('#rel-char2-search', 'input', function(e, target) {
+            filterCharacterOptions('rel-char2', target.value);
+        });
+
+        // Form submit for the relationship modal
+        addSafeDelegatedListener('#character-relationship-form', 'submit', function(e) {
+            e.preventDefault();
+            handleSaveRelationship();
+        });
+
+        // Modal close buttons
+        addSafeDelegatedListener('#close-char-relationship-modal', 'click', function(e, target) {
+            e.preventDefault();
+            closeRelationshipModal();
+        });
+
+        addSafeDelegatedListener('#cancel-char-relationship-modal', 'click', function(e, target) {
+            e.preventDefault();
+            closeRelationshipModal();
+        });
+
+        // Modal backdrop click
+        addSafeDelegatedListener('#character-relationship-modal', 'click', function(e, target) {
+            if (e.target === target) {
+                closeRelationshipModal();
+            }
+        });
+
+        // Graph modal close
+        addSafeDelegatedListener('#close-char-graph-modal', 'click', function(e, target) {
+            e.preventDefault();
+            closeCharacterGraphModal();
+        });
+
+        addSafeDelegatedListener('#character-graph-modal', 'click', function(e, target) {
+            if (e.target === target) {
+                closeCharacterGraphModal();
+            }
+        });
+    }
+
+    /**
+     * Open the relationship modal.
+     * @param {number|string|null} relId - Relationship id to edit, or null to create
+     */
+    function openRelationshipModal(relId) {
+        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify('Please save the character first.', 'error');
+            return;
+        }
+
+        if (!SocialCore || !SocialQueries || !SocialConstants) {
+            notify('Social module not available.', 'error');
+            return;
+        }
+
+        var formContainer = document.getElementById('character-relationship-form-container');
+        if (!formContainer) {
+            notify('Relationship form container not found.', 'error');
+            return;
+        }
+
+        // Build the form HTML (CharacterViews provides this)
+        var CharacterViews = window.CharacterViews;
+        if (!CharacterViews || typeof CharacterViews.buildRelationshipFormHTML !== 'function') {
+            notify('Character views module not available.', 'error');
+            return;
+        }
+
+        _socialEditId = relId || null;
+
+        var existingRel = null;
+        if (_socialEditId) {
+            existingRel = SocialQueries.getRelationshipById(_socialEditId);
+            if (!existingRel) {
+                notify('Relationship not found.', 'error');
+                _socialEditId = null;
+                return;
+            }
+        }
+
+        // Build form HTML
+        formContainer.innerHTML = CharacterViews.buildRelationshipFormHTML(charId, existingRel);
+
+        // Update modal title
+        var titleEl = document.getElementById('character-relationship-modal-title');
+        if (titleEl) {
+            titleEl.textContent = _socialEditId ? 'Edit Relationship' : 'Add Relationship';
+        }
+
+        // Show modal
+        var modal = document.getElementById('character-relationship-modal');
+        if (modal && Modal && typeof Modal.showModal === 'function') {
+            Modal.showModal(modal);
+        } else if (modal) {
+            modal.classList.remove('hidden');
+            modal.style.display = 'flex';
+        }
+    }
+
+    /**
+     * Close the relationship modal.
+     */
+    function closeRelationshipModal() {
+        _socialEditId = null;
+        var modal = document.getElementById('character-relationship-modal');
+        if (modal && Modal && typeof Modal.closeModal === 'function') {
+            Modal.closeModal(modal);
+        } else if (modal) {
+            modal.classList.add('hidden');
+            modal.style.display = 'none';
+        }
+    }
+
+    /**
+     * Filter visible options in a character select dropdown.
+     * Shows only options whose text matches the search string.
+     * @param {string} selectId - The id of the select element
+     * @param {string} query - Search string
+     */
+    function filterCharacterOptions(selectId, query) {
+        var select = document.getElementById(selectId);
+        if (!select) { return; }
+
+        var term = String(query || '').toLowerCase().trim();
+        var options = select.querySelectorAll('option');
+        var firstVisible = null;
+
+        options.forEach(function(opt) {
+            var matches = !term || opt.textContent.toLowerCase().indexOf(term) !== -1;
+            opt.style.display = matches ? '' : 'none';
+            opt.hidden = !matches;
+            if (matches && !firstVisible) {
+                firstVisible = opt;
+            }
+        });
+
+        // If current selection was filtered out, select the first visible option
+        if (select.selectedOptions && select.selectedOptions.length > 0) {
+            var selected = select.selectedOptions[0];
+            if (selected.style.display === 'none') {
+                if (firstVisible) { firstVisible.selected = true; }
+                else { select.value = ''; }
+            }
+        }
+    }
+
+    /**
+     * Save (create or update) a relationship from the modal form.
+     */
+    function handleSaveRelationship() {
+        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify('No character selected.', 'error');
+            return;
+        }
+
+        var char1El = document.getElementById('rel-char1');
+        var char2El = document.getElementById('rel-char2');
+        var typeEl = document.getElementById('rel-type');
+        var titleEl = document.getElementById('rel-title');
+        var startEl = document.getElementById('rel-start-year');
+        var endEl = document.getElementById('rel-end-year');
+        var notesEl = document.getElementById('rel-notes');
+
+        var char1 = char1El ? String(char1El.value || '').trim() : '';
+        var char2 = char2El ? String(char2El.value || '').trim() : '';
+        var typeId = typeEl ? String(typeEl.value || '').trim() : '';
+        var title = titleEl ? String(titleEl.value || '').trim() : '';
+        var startYear = startEl ? String(startEl.value || '').trim() : '';
+        var endYear = endEl ? String(endEl.value || '').trim() : '';
+        var notes = notesEl ? String(notesEl.value || '').trim() : '';
+
+        if (!char1 || !char2 || !typeId) {
+            notify('Please fill in Character 1, Character 2, and Type.', 'error');
+            return;
+        }
+
+        if (char1 === char2) {
+            notify('Cannot create a relationship between the same character.', 'error');
+            return;
+        }
+
+        if (!SocialCore) {
+            notify('Social module not available.', 'error');
+            return;
+        }
+
+        var promise;
+
+        if (_socialEditId) {
+            promise = SocialCore.updateRelationship(_socialEditId, {
+                character1: char1,
+                character2: char2,
+                typeId: typeId,
+                clarification: title,
+                startYear: startYear,
+                endYear: endYear,
+                notes: notes
+            });
+        } else {
+            promise = SocialCore.createRelationship(
+                char1, char2, typeId,
+                startYear, endYear,
+                title, notes
+            );
+        }
+
+        promise
+            .then(function(result) {
+                if (result && result.success) {
+                    closeRelationshipModal();
+                    // Re-render the social tab for this character
+                    var char = CharacterQueries.getCharacterById(charId);
+                    if (char && CharacterViews && typeof CharacterViews.renderCharacterSocial === 'function') {
+                        CharacterViews.renderCharacterSocial(char);
+                    }
+                }
+            })
+            .catch(function() {
+                notify('Failed to save relationship.', 'error');
+            });
+    }
+
+    /**
+     * Delete a relationship with confirmation.
+     */
+    function handleDeleteRelationship(relId) {
+        if (!relId) { return; }
+        if (!SocialCore || !SocialQueries) {
+            notify('Social module not available.', 'error');
+            return;
+        }
+
+        var rel = SocialQueries.getRelationshipById(relId);
+        if (!rel) {
+            notify('Relationship not found.', 'error');
+            return;
+        }
+
+        // Build display text using aggregator
+        var name1 = 'Unknown';
+        var name2 = 'Unknown';
+        var label = 'relationship';
+
+        if (SocialConstants && typeof SocialConstants.getLabel === 'function') {
+            label = SocialConstants.getLabel(rel.typeId);
+        }
+
+        if (CharacterQueries) {
+            var c1 = CharacterQueries.getCharacterById(rel.character1);
+            var c2 = CharacterQueries.getCharacterById(rel.character2);
+            if (c1) { name1 = CharacterQueries.getDisplayName(c1); }
+            if (c2) { name2 = CharacterQueries.getDisplayName(c2); }
+        }
+
+        if (!confirm('Delete the ' + label + ' relationship between ' + name1 + ' and ' + name2 + '?')) {
+            return;
+        }
+
+        SocialCore.deleteRelationship(relId)
+            .then(function(result) {
+                if (result && result.success) {
+                    var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+                    if (charId) {
+                        var char = CharacterQueries.getCharacterById(charId);
+                        var CharacterViews = window.CharacterViews;
+                        if (char && CharacterViews && typeof CharacterViews.renderCharacterSocial === 'function') {
+                            CharacterViews.renderCharacterSocial(char);
+                        }
+                    }
+                }
+            })
+            .catch(function() {
+                notify('Failed to delete relationship.', 'error');
+            });
+    }
+
+    /**
+     * Open the character's SVG network graph in a modal.
+     */
+    function openCharacterGraphModal() {
+        var charId = typeof window.getCurrentEditId === 'function' ? window.getCurrentEditId() : null;
+        if (!charId) {
+            notify('Please save the character first.', 'error');
+            return;
+        }
+
+        if (!SocialGraph || typeof SocialGraph.renderGraph !== 'function') {
+            notify('Graph module not available.', 'error');
+            return;
+        }
+
+        var CharacterViews = window.CharacterViews;
+        if (!CharacterViews || typeof CharacterViews.buildGraphModalHTML !== 'function') {
+            notify('Character views module not available.', 'error');
+            return;
+        }
+
+        // Build graph modal if not present
+        var existing = document.getElementById('character-graph-modal');
+        if (!existing) {
+            var wrapper = document.createElement('div');
+            wrapper.innerHTML = CharacterViews.buildGraphModalHTML();
+            document.body.appendChild(wrapper.firstElementChild);
+        }
+
+        var modal = document.getElementById('character-graph-modal');
+        if (modal && Modal && typeof Modal.showModal === 'function') {
+            Modal.showModal(modal);
+        } else if (modal) {
+            modal.classList.remove('hidden');
+            modal.style.display = 'flex';
+        }
+
+        // After modal is shown, render the graph scoped to this character
+        setTimeout(function() {
+            if (CharacterViews && typeof CharacterViews.renderCharacterGraph === 'function') {
+                CharacterViews.renderCharacterGraph(charId);
+            }
+        }, 50);
+    }
+
+    function closeCharacterGraphModal() {
+        var modal = document.getElementById('character-graph-modal');
+        if (modal && Modal && typeof Modal.closeModal === 'function') {
+            Modal.closeModal(modal);
+        } else if (modal) {
+            modal.classList.add('hidden');
+            modal.style.display = 'none';
+        }
     }
 
     // ============================================================
