@@ -1,39 +1,23 @@
 /**
  * js/modules/characters/character-views.js - Character Views
- * Renders academic, professional, and social views for a character
+ * Renders the Social tab inside the Character form.
  * Path: js/modules/characters/character-views.js
  * 
  * This module is responsible for:
- *   - Rendering academic view (teams, grades, eliminations)
- *   - Rendering professional view (teams, missions)
- *   - Rendering social view (relationships)
- *   - Career status entry creation (DOM-based)
+ *   - Rendering the character's relationships grouped by type
+ *   - Collapsible group sections (state kept per render session)
+ *   - Ongoing / Ended subsections within each type
+ *   - Inline directional arrows for directional relationship types
+ *   - The "Add / Edit Relationship" modal form
+ *   - The character SVG network graph modal
  * 
  * IMPORTANT:
- *   - All user-controlled data is inserted using DOM APIs (textContent)
- *   - No inline event handlers - events bound in character-events.js
- *   - Safe CSS color validation for relationship types
- *   - NO DIRECT window.data ACCESS - all data via query modules
- *   - USES CharacterQueries for character data and display names
- *   - USES AcademyQueries for class display names
- *   - USES TeamQueries for team queries
- *   - USES DisciplineQueries for discipline names
- *   - USES GradeQueries for grade data
- *   - USES MissionQueries for mission data
- *   - USES SocialQueries for social data
- *   - USES EliminationQueries for elimination status
- * 
- * DEPENDENCIES (ALL MANDATORY):
- *   - window.CharacterQueries (from character-queries.js)
- *   - window.AcademyQueries (from academy-queries.js)
- *   - window.TeamQueries (from team-queries.js)
- *   - window.DisciplineQueries (from discipline-queries.js)
- *   - window.GradeQueries (from grade-queries.js)
- *   - window.MissionQueries (from mission-queries.js)
- *   - window.SocialQueries (from social-queries.js)
- *   - window.EliminationQueries (from elimination-queries.js)
- *   - window.DomUtils (from dom-utils.js)
- *   - window.CharacterConstants (from character-constants.js)
+ *   - RENDER ONLY - no data mutation
+ *   - No direct window.data access - uses SocialQueries
+ *   - Uses SocialConstants for type definitions
+ *   - Uses CharacterQueries for display names
+ *   - Uses DomUtils for safe escaping
+ *   - Uses SocialCore only for reading the relationship-by-id (read path)
  */
 
 (function() {
@@ -45,685 +29,648 @@
     window.__characterViewsLoaded = true;
 
     // ============================================================
-    // DEPENDENCY IMPORTS
+    // LAZY LOADING HELPERS
     // ============================================================
 
-    var CharacterQueries = window.CharacterQueries;
-    var AcademyQueries = window.AcademyQueries;
-    var TeamQueries = window.TeamQueries;
-    var DisciplineQueries = window.DisciplineQueries;
-    var GradeQueries = window.GradeQueries;
-    var MissionQueries = window.MissionQueries;
-    var SocialQueries = window.SocialQueries;
-    var EliminationQueries = window.EliminationQueries;
-    var DomUtils = window.DomUtils;
-    var CharacterConstants = window.CharacterConstants;
+    function getCharacterQueries() { return window.CharacterQueries || null; }
+    function getSocialQueries() { return window.SocialQueries || null; }
+    function getSocialConstants() { return window.SocialConstants || null; }
+    function getSocialGraph() { return window.SocialGraph || null; }
+    function getDomUtils() { return window.DomUtils || null; }
 
     // ============================================================
-    // DEPENDENCY CHECK - MANDATORY (no fallbacks)
+    // STATE - collapse state per (charId, typeId)
     // ============================================================
 
-    function checkDependencies() {
-        var missing = [];
+    var _collapsedGroups = Object.create(null);  // key = charId + '|' + typeId
 
-        if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
-            missing.push('CharacterQueries.getCharacterById');
-        }
-        if (!CharacterQueries || typeof CharacterQueries.getDisplayName !== 'function') {
-            missing.push('CharacterQueries.getDisplayName');
-        }
-
-        if (!AcademyQueries || typeof AcademyQueries.getClassDisplayName !== 'function') {
-            missing.push('AcademyQueries.getClassDisplayName');
-        }
-
-        if (!TeamQueries || typeof TeamQueries.getTeamsForCharacter !== 'function') {
-            missing.push('TeamQueries.getTeamsForCharacter');
-        }
-        if (!TeamQueries || typeof TeamQueries.getTeamName !== 'function') {
-            missing.push('TeamQueries.getTeamName');
-        }
-        if (!TeamQueries || typeof TeamQueries.getCharacterTeamMembership !== 'function') {
-            missing.push('TeamQueries.getCharacterTeamMembership');
-        }
-
-        if (!DisciplineQueries || typeof DisciplineQueries.getDiscipline !== 'function') {
-            missing.push('DisciplineQueries.getDiscipline');
-        }
-
-        if (!GradeQueries || typeof GradeQueries.getCharacterGrades !== 'function') {
-            missing.push('GradeQueries.getCharacterGrades');
-        }
-
-        if (!MissionQueries || typeof MissionQueries.getMissionsForCharacter !== 'function') {
-            missing.push('MissionQueries.getMissionsForCharacter');
-        }
-
-        if (!SocialQueries || typeof SocialQueries.getCharacterRelationships !== 'function') {
-            missing.push('SocialQueries.getCharacterRelationships');
-        }
-        if (!SocialQueries || typeof SocialQueries.getRelationshipTypeColor !== 'function') {
-            missing.push('SocialQueries.getRelationshipTypeColor');
-        }
-        if (!SocialQueries || typeof SocialQueries.getRelationshipTypeLabel !== 'function') {
-            missing.push('SocialQueries.getRelationshipTypeLabel');
-        }
-
-        if (!EliminationQueries || typeof EliminationQueries.isCharacterEliminated !== 'function') {
-            missing.push('EliminationQueries.isCharacterEliminated');
-        }
-
-        if (!DomUtils || typeof DomUtils.escapeHtml !== 'function') {
-            missing.push('DomUtils.escapeHtml');
-        }
-
-        if (missing.length > 0) {
-            throw new Error('CharacterViews: Missing required dependencies: ' + missing.join(', '));
-        }
-
-        return true;
+    function getGroupKey(charId, typeId) {
+        return String(charId) + '|' + String(typeId);
     }
 
-    checkDependencies();
+    function isGroupCollapsed(charId, typeId) {
+        return _collapsedGroups[getGroupKey(charId, typeId)] === true;
+    }
+
+    function setGroupCollapsed(charId, typeId, collapsed) {
+        var key = getGroupKey(charId, typeId);
+        if (collapsed) {
+            _collapsedGroups[key] = true;
+        } else {
+            delete _collapsedGroups[key];
+        }
+    }
 
     // ============================================================
-    // CONSTANTS
-    // ============================================================
-
-    var CAREER_STATUS_OPTIONS = CharacterConstants ? CharacterConstants.CAREER_STATUS_OPTIONS : [
-        { value: '', label: 'Select status...' },
-        { value: 'civilian', label: 'Civilian' },
-        { value: 'trainee', label: 'Trainee' },
-        { value: 'rookie', label: 'Rookie' },
-        { value: 'junior', label: 'Junior' },
-        { value: 'senior', label: 'Senior' },
-        { value: 'instructor', label: 'Instructor' },
-        { value: 'support', label: 'Support' }
-    ];
-
-    var ALLOWED_COLORS = {
-        '#8cbb3a': true,
-        '#c9a24b': true,
-        '#c1453c': true,
-        '#4a9bc7': true,
-        '#9b59b6': true,
-        '#e67e22': true,
-        '#27ae60': true,
-        '#7f8c8d': true
-    };
-
-    // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils
+    // ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
-        return DomUtils.escapeHtml(value);
-    }
-
-    // ============================================================
-    // RELATIONSHIP HELPERS
-    // ============================================================
-
-    function getSafeRelationshipColor(typeId) {
-        var color = SocialQueries.getRelationshipTypeColor(typeId);
-
-        if (!color || typeof color !== 'string') {
-            return '#7f8c8d';
+        var DomUtils = getDomUtils();
+        if (DomUtils && typeof DomUtils.escapeHtml === 'function') {
+            return DomUtils.escapeHtml(value);
         }
+        if (value === undefined || value === null) { return ''; }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
 
-        var normalized = color.toLowerCase();
-        if (ALLOWED_COLORS[normalized]) {
-            return normalized;
+    function escapeAttribute(value) {
+        var DomUtils = getDomUtils();
+        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
+            return DomUtils.escapeAttribute(value);
         }
-
-        return '#7f8c8d';
-    }
-
-    function getRelationshipTypeLabel(typeId) {
-        return SocialQueries.getRelationshipTypeLabel(typeId) || 'Other';
+        if (value === undefined || value === null) { return ''; }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     // ============================================================
-    // FORMAT HELPERS
+    // HELPERS - Relationship display
     // ============================================================
 
-    function formatMembershipPeriod(join, leave, prefix) {
-        prefix = prefix || '';
-        var joinStr = (join !== undefined && join !== null && join !== '') ? String(join) : '';
-        var leaveStr = (leave !== undefined && leave !== null && leave !== '') ? String(leave) : '';
-
-        if (joinStr && leaveStr) return prefix + joinStr + ' -> ' + prefix + leaveStr;
-        if (joinStr) return prefix + joinStr + ' -> Present';
-        if (leaveStr) return 'Until ' + prefix + leaveStr;
-        return prefix + '?';
+    function getCharacterName(charId) {
+        var CharacterQueries = getCharacterQueries();
+        if (!CharacterQueries || !charId) { return 'Unknown'; }
+        var char = CharacterQueries.getCharacterById(charId);
+        return char ? CharacterQueries.getDisplayName(char) : 'Unknown';
     }
 
-    function formatGradeValue(score) {
-        var num = Number(score);
-        if (Number.isFinite(num) && num >= 0 && num <= 100) {
-            return Math.round(num) + '%';
+    /**
+     * Determine the "other" character in a relationship relative to the context char.
+     */
+    function getOtherCharacterId(relationship, charId) {
+        if (!relationship || !charId) { return null; }
+        var target = String(charId);
+        if (String(relationship.character1) === target) {
+            return relationship.character2;
         }
-        return 'Invalid';
-    }
-
-    function getCurrentWeek() {
-        if (window.data && typeof window.data.currentWeek === 'number') {
-            return window.data.currentWeek;
+        if (String(relationship.character2) === target) {
+            return relationship.character1;
         }
-        return 1;
+        return null;
+    }
+
+    /**
+     * Determine the direction glyph to show next to the other character.
+     * - Undirected: ↔
+     * - Directional: → if the context character is the source
+     *                ← if the context character is the target
+     */
+    function getDirectionGlyph(relationship, charId) {
+        var SocialConstants = getSocialConstants();
+        if (!SocialConstants || typeof SocialConstants.isDirectional !== 'function') {
+            return '↔';
+        }
+        if (!SocialConstants.isDirectional(relationship.typeId)) {
+            return '↔';
+        }
+        if (String(relationship.character1) === String(charId)) {
+            return '→';
+        }
+        return '←';
     }
 
     // ============================================================
-    // RENDER ACADEMIC VIEW
+    // RENDER - Main entry point for the character Social tab
     // ============================================================
 
-    function renderAcademic(char) {
-        var container = document.getElementById('academic-view');
-        if (!container) return;
+    /**
+     * Render the character's social relationships into #character-social-view.
+     * 
+     * @param {object|null} char - Character object, or null for empty state
+     */
+    function renderCharacterSocial(char) {
+        var container = document.getElementById('character-social-view');
+        if (!container) { return; }
 
         container.textContent = '';
 
-        var heading = document.createElement('h4');
-        heading.style.cssText = 'color:var(--accent);font-size:0.8rem;margin:8px 0 4px 0;';
-        heading.textContent = 'Academic Teams';
-        container.appendChild(heading);
-
-        var acadTeams = TeamQueries.getTeamsForCharacter(char.id, ['academic']);
-
-        if (acadTeams.length > 0) {
-            acadTeams.forEach(function(team) {
-                var member = TeamQueries.getCharacterTeamMembership(team.id, char.id);
-                var joinPeriod = member ? member.joinPeriod : '';
-                var leavePeriod = member ? member.leavePeriod : '';
-                var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod, 'Wk ');
-                var classDisplay = '';
-                if (team.classId) {
-                    var className = AcademyQueries.getClassDisplayName(team.classId);
-                    classDisplay = ' [' + className + ']';
-                }
-
-                var div = document.createElement('div');
-                div.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--accent);margin-bottom:3px;font-size:0.75rem;';
-
-                var strong = document.createElement('strong');
-                strong.textContent = team.name;
-                div.appendChild(strong);
-
-                if (classDisplay) {
-                    var classSpan = document.createElement('span');
-                    classSpan.textContent = classDisplay;
-                    div.appendChild(classSpan);
-                }
-
-                var periodSpan = document.createElement('span');
-                periodSpan.style.cssText = 'color:var(--text-dim);font-size:0.7rem;';
-                periodSpan.textContent = ' (' + periodDisplay + ')';
-                div.appendChild(periodSpan);
-
-                if (member && member.role) {
-                    var roleSpan = document.createElement('span');
-                    roleSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
-                    roleSpan.textContent = ' [' + member.role + ']';
-                    div.appendChild(roleSpan);
-                }
-
-                container.appendChild(div);
-            });
-        } else {
-            var empty = document.createElement('p');
-            empty.className = 'empty-state';
-            empty.style.cssText = 'padding:4px;font-size:0.7rem;';
-            empty.textContent = 'No academic teams';
-            container.appendChild(empty);
+        if (!char || !char.id) {
+            container.innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Select a character to view relationships.</p>';
+            return;
         }
 
-        var gradeHeading = document.createElement('h4');
-        gradeHeading.style.cssText = 'color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;';
-        gradeHeading.textContent = 'Grades';
-        container.appendChild(gradeHeading);
+        var SocialQueries = getSocialQueries();
+        var SocialConstants = getSocialConstants();
 
-        var grades = GradeQueries.getCharacterGrades(char.id) || [];
-
-        if (grades.length > 0) {
-            grades.sort(function(a, b) {
-                return parseInt(a.week, 10) - parseInt(b.week, 10);
-            });
-
-            var gradeContainer = document.createElement('div');
-            gradeContainer.style.cssText = 'max-height:100px;overflow-y:auto;font-size:0.7rem;';
-
-            grades.forEach(function(g) {
-                var formattedScore = formatGradeValue(g.score);
-                var discipline = DisciplineQueries.getDiscipline(g.disciplineId);
-                var disciplineName = discipline ? discipline.name : 'Unknown';
-
-                var gradeDiv = document.createElement('div');
-                gradeDiv.style.cssText = 'padding:2px 8px;background:var(--bg);border-radius:3px;margin-bottom:2px;display:flex;justify-content:space-between;';
-
-                var nameSpan = document.createElement('span');
-                nameSpan.textContent = disciplineName + ' (Wk ' + g.week + ')';
-                gradeDiv.appendChild(nameSpan);
-
-                var scoreSpan = document.createElement('span');
-                scoreSpan.style.cssText = 'color:var(--accent);font-weight:600;';
-                scoreSpan.textContent = formattedScore;
-                gradeDiv.appendChild(scoreSpan);
-
-                gradeContainer.appendChild(gradeDiv);
-            });
-
-            container.appendChild(gradeContainer);
-        } else {
-            var empty = document.createElement('p');
-            empty.className = 'empty-state';
-            empty.style.cssText = 'padding:4px;font-size:0.7rem;';
-            empty.textContent = 'No grades recorded';
-            container.appendChild(empty);
+        if (!SocialQueries || !SocialConstants) {
+            container.innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">Social module not loaded.</p>';
+            return;
         }
-
-        var elimHeading = document.createElement('h4');
-        elimHeading.style.cssText = 'color:var(--danger);font-size:0.8rem;margin:8px 0 4px 0;';
-        elimHeading.textContent = 'Elimination Status';
-        container.appendChild(elimHeading);
-
-        var currentWeek = getCurrentWeek();
-        var isEliminated = EliminationQueries.isCharacterEliminated(char.id, currentWeek);
-
-        var elimDiv = document.createElement('div');
-        elimDiv.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + (isEliminated ? 'var(--danger)' : 'var(--accent)') + ';font-size:0.75rem;';
-        elimDiv.textContent = isEliminated ? '\u26a0 This character is eliminated' : '\u2713 Not eliminated';
-        container.appendChild(elimDiv);
-    }
-
-    // ============================================================
-    // RENDER PROFESSIONAL VIEW
-    // ============================================================
-
-    function renderProfessional(char) {
-        var container = document.getElementById('professional-view');
-        if (!container) return;
-
-        container.textContent = '';
-
-        var heading = document.createElement('h4');
-        heading.style.cssText = 'color:var(--info);font-size:0.8rem;margin:8px 0 4px 0;';
-        heading.textContent = 'Professional Teams';
-        container.appendChild(heading);
-
-        var profTeams = TeamQueries.getTeamsForCharacter(char.id, ['professional']);
-
-        if (profTeams.length > 0) {
-            profTeams.forEach(function(team) {
-                var member = TeamQueries.getCharacterTeamMembership(team.id, char.id);
-                var joinPeriod = member ? member.joinPeriod : '';
-                var leavePeriod = member ? member.leavePeriod : '';
-                var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod);
-
-                var div = document.createElement('div');
-                div.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--info);margin-bottom:3px;font-size:0.75rem;';
-
-                var strong = document.createElement('strong');
-                strong.textContent = team.name;
-                div.appendChild(strong);
-
-                var periodSpan = document.createElement('span');
-                periodSpan.style.cssText = 'color:var(--text-dim);font-size:0.7rem;';
-                periodSpan.textContent = ' (' + periodDisplay + ')';
-                div.appendChild(periodSpan);
-
-                if (member && member.role) {
-                    var roleSpan = document.createElement('span');
-                    roleSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
-                    roleSpan.textContent = ' [' + member.role + ']';
-                    div.appendChild(roleSpan);
-                }
-
-                container.appendChild(div);
-            });
-        } else {
-            var empty = document.createElement('p');
-            empty.className = 'empty-state';
-            empty.style.cssText = 'padding:4px;font-size:0.7rem;';
-            empty.textContent = 'No professional teams';
-            container.appendChild(empty);
-        }
-
-        var tempHeading = document.createElement('h4');
-        tempHeading.style.cssText = 'color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;';
-        tempHeading.textContent = 'Temporary Teams';
-        container.appendChild(tempHeading);
-
-        var tempTeams = TeamQueries.getTeamsForCharacter(char.id, ['temporary']);
-
-        if (tempTeams.length > 0) {
-            tempTeams.forEach(function(team) {
-                var member = TeamQueries.getCharacterTeamMembership(team.id, char.id);
-                var joinPeriod = member ? member.joinPeriod : '';
-                var leavePeriod = member ? member.leavePeriod : '';
-                var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod);
-
-                var div = document.createElement('div');
-                div.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--warning);margin-bottom:3px;font-size:0.75rem;';
-
-                var strong = document.createElement('strong');
-                strong.textContent = team.name;
-                div.appendChild(strong);
-
-                var periodSpan = document.createElement('span');
-                periodSpan.style.cssText = 'color:var(--text-dim);font-size:0.7rem;';
-                periodSpan.textContent = ' (' + periodDisplay + ')';
-                div.appendChild(periodSpan);
-
-                if (member && member.role) {
-                    var roleSpan = document.createElement('span');
-                    roleSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
-                    roleSpan.textContent = ' [' + member.role + ']';
-                    div.appendChild(roleSpan);
-                }
-
-                container.appendChild(div);
-            });
-        } else {
-            var empty = document.createElement('p');
-            empty.className = 'empty-state';
-            empty.style.cssText = 'padding:4px;font-size:0.7rem;';
-            empty.textContent = 'No temporary teams';
-            container.appendChild(empty);
-        }
-
-        var civHeading = document.createElement('h4');
-        civHeading.style.cssText = 'color:var(--text-dim);font-size:0.8rem;margin:8px 0 4px 0;';
-        civHeading.textContent = 'Civilian Teams';
-        container.appendChild(civHeading);
-
-        var civTeams = TeamQueries.getTeamsForCharacter(char.id, ['civilian']);
-
-        if (civTeams.length > 0) {
-            civTeams.forEach(function(team) {
-                var member = TeamQueries.getCharacterTeamMembership(team.id, char.id);
-                var joinPeriod = member ? member.joinPeriod : '';
-                var leavePeriod = member ? member.leavePeriod : '';
-                var periodDisplay = formatMembershipPeriod(joinPeriod, leavePeriod);
-
-                var div = document.createElement('div');
-                div.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--text-dim);margin-bottom:3px;font-size:0.75rem;';
-
-                var strong = document.createElement('strong');
-                strong.textContent = team.name;
-                div.appendChild(strong);
-
-                var periodSpan = document.createElement('span');
-                periodSpan.style.cssText = 'color:var(--text-dim);font-size:0.7rem;';
-                periodSpan.textContent = ' (' + periodDisplay + ')';
-                div.appendChild(periodSpan);
-
-                if (member && member.role) {
-                    var roleSpan = document.createElement('span');
-                    roleSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
-                    roleSpan.textContent = ' [' + member.role + ']';
-                    div.appendChild(roleSpan);
-                }
-
-                container.appendChild(div);
-            });
-        } else {
-            var empty = document.createElement('p');
-            empty.className = 'empty-state';
-            empty.style.cssText = 'padding:4px;font-size:0.7rem;';
-            empty.textContent = 'No civilian teams';
-            container.appendChild(empty);
-        }
-
-        var missionHeading = document.createElement('h4');
-        missionHeading.style.cssText = 'color:var(--warning);font-size:0.8rem;margin:8px 0 4px 0;';
-        missionHeading.textContent = 'Missions';
-        container.appendChild(missionHeading);
-
-        var missions = MissionQueries.getMissionsForCharacter(char.id) || [];
-
-        if (missions.length > 0) {
-            missions.forEach(function(m) {
-                var statusColor = m.status === 'completed' ? 'var(--accent)' :
-                                 m.status === 'cancelled' ? 'var(--danger)' : 'var(--warning)';
-                var teamName = TeamQueries.getTeamName(m.assignedTeamId) || 'Unknown Team';
-
-                var div = document.createElement('div');
-                div.style.cssText = 'padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + statusColor + ';margin-bottom:3px;font-size:0.75rem;';
-
-                var strong = document.createElement('strong');
-                strong.textContent = m.title || 'Untitled';
-                div.appendChild(strong);
-
-                var teamSpan = document.createElement('span');
-                teamSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
-                teamSpan.textContent = ' [' + (teamName || 'Unknown Team') + '] ';
-                div.appendChild(teamSpan);
-
-                var statusSpan = document.createElement('span');
-                statusSpan.style.cssText = 'color:' + statusColor + ';font-size:0.65rem;';
-                statusSpan.textContent = m.status || 'active';
-                div.appendChild(statusSpan);
-
-                if (m.location) {
-                    var locSpan = document.createElement('span');
-                    locSpan.style.cssText = 'color:var(--text-dim);font-size:0.65rem;';
-                    locSpan.textContent = ' (' + m.location + ')';
-                    div.appendChild(locSpan);
-                }
-
-                container.appendChild(div);
-            });
-        } else {
-            var empty = document.createElement('p');
-            empty.className = 'empty-state';
-            empty.style.cssText = 'padding:4px;font-size:0.7rem;';
-            empty.textContent = 'No missions assigned';
-            container.appendChild(empty);
-        }
-    }
-
-    // ============================================================
-    // RENDER SOCIAL VIEW
-    // ============================================================
-
-    function renderSocial(char) {
-        var container = document.getElementById('social-view');
-        if (!container) return;
-
-        container.textContent = '';
 
         var relationships = SocialQueries.getCharacterRelationships(char.id) || [];
 
         if (relationships.length === 0) {
-            var empty = document.createElement('p');
-            empty.className = 'empty-state';
-            empty.style.cssText = 'padding:8px;font-size:0.8rem;';
-            empty.textContent = 'No social connections';
-            container.appendChild(empty);
+            container.innerHTML = '<p class="empty-state" style="padding:8px;font-size:0.8rem;">No relationships recorded yet. Use <strong>+ Add Relationship</strong> to create one.</p>';
             return;
         }
 
+        // ---- Group by type ----
+        var byType = Object.create(null);
         relationships.forEach(function(rel) {
-            var otherId = String(rel.character1) === String(char.id) ? rel.character2 : rel.character1;
-            var other = CharacterQueries.getCharacterById(otherId);
-            var otherName = other ? CharacterQueries.getDisplayName(other) : '\u26a0 Unknown Character';
-
-            var typeLabel = getRelationshipTypeLabel(rel.typeId);
-            var typeColor = getSafeRelationshipColor(rel.typeId);
-
-            var period = '';
-            if (rel.startYear && rel.endYear) {
-                period = rel.startYear + ' -> ' + rel.endYear;
-            } else if (rel.startYear) {
-                period = 'From ' + rel.startYear;
+            if (!rel || !rel.typeId) { return; }
+            if (!byType[rel.typeId]) {
+                byType[rel.typeId] = [];
             }
-
-            var clarification = rel.clarification ? ' (' + rel.clarification + ')' : '';
-            var notes = rel.notes ? ' \uD83D\uDCDD' : '';
-
-            var div = document.createElement('div');
-            div.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:3px 8px;background:var(--bg);border-radius:4px;border-left:3px solid ' + typeColor + ';margin-bottom:3px;font-size:0.75rem;';
-
-            var leftSpan = document.createElement('span');
-            var strong = document.createElement('strong');
-            strong.textContent = otherName;
-            leftSpan.appendChild(strong);
-
-            var typeSpan = document.createElement('span');
-            typeSpan.style.cssText = 'color:' + typeColor + ';';
-            typeSpan.textContent = ' ' + typeLabel + clarification;
-            leftSpan.appendChild(typeSpan);
-
-            if (notes) {
-                var notesSpan = document.createElement('span');
-                notesSpan.textContent = notes;
-                leftSpan.appendChild(notesSpan);
-            }
-
-            div.appendChild(leftSpan);
-
-            var rightSpan = document.createElement('span');
-            rightSpan.style.cssText = 'font-size:0.65rem;color:var(--text-dim);';
-            rightSpan.textContent = period;
-            div.appendChild(rightSpan);
-
-            container.appendChild(div);
-        });
-    }
-
-    // ============================================================
-    // CAREER STATUS ENTRY
-    // ============================================================
-
-    function addCareerStatusEntry(container, status, startYear, endYear) {
-        if (!container) return;
-
-        var entry = document.createElement('div');
-        entry.className = 'career-status-entry';
-        entry.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;flex-wrap:wrap;align-items:center;';
-
-        var select = document.createElement('select');
-        select.className = 'career-status-select';
-        select.style.cssText = 'flex:1;min-width:100px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 6px;font-size:0.7rem;';
-
-        CAREER_STATUS_OPTIONS.forEach(function(opt) {
-            var option = document.createElement('option');
-            option.value = opt.value;
-            option.textContent = opt.label;
-            if (status && status === opt.value) {
-                option.selected = true;
-            }
-            select.appendChild(option);
+            byType[rel.typeId].push(rel);
         });
 
-        var startInput = document.createElement('input');
-        startInput.type = 'number';
-        startInput.className = 'career-start-year';
-        startInput.placeholder = 'Start Year';
-        startInput.style.cssText = 'flex:1;min-width:60px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 6px;font-size:0.7rem;';
-        if (startYear !== undefined && startYear !== null && startYear !== '') {
-            startInput.value = startYear;
+        // ---- Sort types alphabetically by label ----
+        var typeIds = Object.keys(byType).sort(function(a, b) {
+            var la = SocialConstants.getLabel(a) || a;
+            var lb = SocialConstants.getLabel(b) || b;
+            return la.localeCompare(lb);
+        });
+
+        // ---- Build HTML ----
+        var html = '<div class="relationship-groups" style="display:flex;flex-direction:column;gap:8px;">';
+
+        typeIds.forEach(function(typeId) {
+            html += renderTypeGroup(char.id, typeId, byType[typeId]);
+        });
+
+        html += '</div>';
+
+        container.innerHTML = html;
+    }
+
+    /**
+     * Render one relationship type group (collapsible).
+     */
+    function renderTypeGroup(charId, typeId, relationships) {
+        var SocialConstants = getSocialConstants();
+        var label = SocialConstants && typeof SocialConstants.getLabel === 'function'
+            ? SocialConstants.getLabel(typeId)
+            : typeId;
+        var color = SocialConstants && typeof SocialConstants.getColor === 'function'
+            ? SocialConstants.getColor(typeId)
+            : '#7f8c8d';
+
+        // Split into ongoing and ended
+        var ongoing = [];
+        var ended = [];
+        relationships.forEach(function(rel) {
+            if (rel && rel.endYear !== undefined && rel.endYear !== null && String(rel.endYear).trim() !== '') {
+                ended.push(rel);
+            } else {
+                ongoing.push(rel);
+            }
+        });
+
+        var isCollapsed = isGroupCollapsed(charId, typeId);
+        var caret = isCollapsed ? '▸' : '▾';
+        var bodyDisplay = isCollapsed ? 'none' : 'block';
+
+        var count = relationships.length;
+
+        var html = '';
+        html += '<div class="relationship-group" data-type="' + escapeAttribute(typeId) + '" style="background:var(--panel-alt);border:1px solid var(--border-soft);border-radius:6px;overflow:hidden;">';
+
+        // Header
+        html += '<div class="relationship-group-header" style="display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;background:var(--panel);border-left:3px solid ' + escapeAttribute(color) + ';">';
+        html += '<span class="relationship-group-caret" style="font-size:0.7rem;color:var(--text-dim);width:12px;display:inline-block;">' + caret + '</span>';
+        html += '<span style="font-size:0.75rem;font-weight:600;color:' + escapeAttribute(color) + ';">' + escapeHtml(label) + '</span>';
+        html += '<span style="font-size:0.65rem;color:var(--text-dim);">(' + count + ')</span>';
+        html += '</div>';
+
+        // Body
+        html += '<div class="relationship-group-body" style="display:' + bodyDisplay + ';padding:6px 10px;">';
+
+        if (ongoing.length > 0) {
+            html += '<div class="relationship-subheader" style="font-size:0.6rem;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:0.05em;padding:4px 0;border-bottom:1px solid var(--border-soft);margin-bottom:4px;">Ongoing</div>';
+            ongoing.forEach(function(rel) {
+                html += renderRelationshipRow(charId, rel, color);
+            });
         }
 
-        var endInput = document.createElement('input');
-        endInput.type = 'number';
-        endInput.className = 'career-end-year';
-        endInput.placeholder = 'End Year';
-        endInput.style.cssText = 'flex:1;min-width:60px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 6px;font-size:0.7rem;';
-        if (endYear !== undefined && endYear !== null && endYear !== '') {
-            endInput.value = endYear;
+        if (ended.length > 0) {
+            html += '<div class="relationship-subheader" style="font-size:0.6rem;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em;padding:4px 0 4px 0;border-bottom:1px solid var(--border-soft);margin-bottom:4px;margin-top:6px;">Ended</div>';
+            ended.forEach(function(rel) {
+                html += renderRelationshipRow(charId, rel, color);
+            });
         }
 
-        var removeBtn = document.createElement('button');
-        removeBtn.type = 'button';
-        removeBtn.className = 'small danger remove-status';
-        removeBtn.textContent = '\u2715';
-        removeBtn.style.cssText = 'padding:2px 6px;font-size:0.6rem;';
+        html += '</div>';  // body
+        html += '</div>';  // group
 
-        entry.appendChild(select);
-        entry.appendChild(startInput);
-        entry.appendChild(endInput);
-        entry.appendChild(removeBtn);
-        container.appendChild(entry);
+        return html;
+    }
+
+    /**
+     * Render a single relationship row.
+     */
+    function renderRelationshipRow(charId, rel, color) {
+        var otherId = getOtherCharacterId(rel, charId);
+        var otherName = getCharacterName(otherId);
+        var arrow = getDirectionGlyph(rel, charId);
+
+        var title = rel.clarification ? String(rel.clarification) : '';
+
+        // Period display
+        var startYear = rel.startYear ? String(rel.startYear) : '';
+        var endYear = rel.endYear ? String(rel.endYear) : '';
+        var periodDisplay = '';
+        if (startYear && endYear) {
+            periodDisplay = startYear + ' – ' + endYear;
+        } else if (startYear) {
+            periodDisplay = 'from ' + startYear;
+        } else if (endYear) {
+            periodDisplay = 'until ' + endYear;
+        }
+
+        var html = '';
+        html += '<div class="relationship-row" style="display:flex;align-items:center;gap:6px;padding:4px 0 4px 18px;font-size:0.72rem;">';
+
+        // Other character + arrow + title
+        html += '<span style="flex:1;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">';
+        html += '<span style="font-weight:600;">' + escapeHtml(otherName) + '</span>';
+        html += '<span style="color:var(--text-dim);font-size:0.9rem;">' + arrow + '</span>';
+        if (title) {
+            html += '<span style="color:' + escapeAttribute(color) + ';font-size:0.7rem;">' + escapeHtml(title) + '</span>';
+        }
+        html += '</span>';
+
+        // Period
+        if (periodDisplay) {
+            html += '<span style="color:var(--text-dim);font-size:0.65rem;">' + escapeHtml(periodDisplay) + '</span>';
+        }
+
+        // Actions
+        html += '<span style="display:flex;gap:4px;">';
+        html += '<button type="button" class="edit-char-relationship small" data-rel-id="' + escapeAttribute(rel.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Edit">✎</button>';
+        html += '<button type="button" class="delete-char-relationship small danger" data-rel-id="' + escapeAttribute(rel.id) + '" style="font-size:0.55rem;padding:1px 6px;" title="Delete">✕</button>';
+        html += '</span>';
+
+        html += '</div>';
+
+        return html;
     }
 
     // ============================================================
-    // TAB HTML GENERATORS
+    // RELATIONSHIP FORM (Modal contents)
     // ============================================================
 
-    function getAcademicTabHTML() {
-        return `
-            <div id="academic-view" style="padding:4px 0;">
-                <p class="empty-state" style="padding:8px;font-size:0.8rem;">Loading academic data...</p>
-            </div>
-            <div class="form-group full-width section-divider">
-                <label class="section-label">Class Management</label>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px;">
-                    <select id="academic-class-select" style="flex:1;min-width:150px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">
-                        <option value="">Select a class...</option>
-                    </select>
-                    <button type="button" id="add-to-class-btn" class="primary small">Add to Class</button>
-                    <button type="button" id="remove-from-class-btn" class="danger small">Remove from Class</button>
-                </div>
-                <div id="character-classes-display" style="margin-top:8px;padding:8px;background:var(--bg);border-radius:4px;border:1px solid var(--border-soft);">
-                    <span style="color:var(--text-dim);font-size:0.7rem;">Current Classes: <span id="current-classes-list">None</span></span>
-                </div>
-            </div>
-            <div class="form-group full-width section-divider">
-                <label>Tournament Eliminations</label>
-                <div id="tournament-eliminations-view"><p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p></div>
-            </div>
-            <div class="form-group full-width section-divider">
-                <label class="section-label warning-label">Standalone Elimination</label>
-                <div class="elimination-controls">
-                    <label>Week:</label>
-                    <input type="number" id="standalone-elim-week" min="1" max="52" value="1" />
-                    <label>Reason:</label>
-                    <input type="text" id="standalone-elim-reason" placeholder="e.g., Dropped out" />
-                    <button type="button" id="add-standalone-elim-btn" class="small warning-btn">Apply</button>
-                </div>
-                <div id="standalone-eliminations-container"><p class="empty-state" style="padding:6px;font-size:0.75rem;">None</p></div>
-            </div>
-        `;
+    /**
+     * Build the relationship form HTML.
+     * 
+     * @param {string} charId - The current character id (locked as one side)
+     * @param {object|null} existingRel - Existing relationship for edit mode
+     * @returns {string} Form HTML
+     */
+    function buildRelationshipFormHTML(charId, existingRel) {
+        var CharacterQueries = getCharacterQueries();
+        var SocialConstants = getSocialConstants();
+
+        if (!CharacterQueries || !SocialConstants) {
+            return '<p class="empty-state">Dependencies not loaded.</p>';
+        }
+
+        var characters = CharacterQueries.getCharacters() || [];
+        var currentChar = CharacterQueries.getCharacterById(charId);
+        var currentCharName = currentChar ? CharacterQueries.getDisplayName(currentChar) : 'Unknown';
+
+        // Sort characters alphabetically
+        var sortedChars = characters.slice().sort(function(a, b) {
+            return CharacterQueries.getDisplayName(a).localeCompare(
+                CharacterQueries.getDisplayName(b)
+            );
+        });
+
+        // Determine current values
+        var char1Value = existingRel ? String(existingRel.character1) : String(charId);
+        var char2Value = existingRel ? String(existingRel.character2) : '';
+        var typeValue = existingRel ? existingRel.typeId : '';
+        var titleValue = existingRel ? (existingRel.clarification || '') : '';
+        var startValue = existingRel ? (existingRel.startYear || '') : '';
+        var endValue = existingRel ? (existingRel.endYear || '') : '';
+        var notesValue = existingRel ? (existingRel.notes || '') : '';
+
+        // Build character option lists
+        var char1Options = buildCharacterOptions(sortedChars, char1Value, currentCharName, false);
+        var char2Options = buildCharacterOptions(sortedChars, char2Value, null, true);
+
+        // Build type options
+        var types = SocialConstants.getRelationshipTypes ? SocialConstants.getRelationshipTypes() : [];
+        var typeOptions = '<option value="">Select type...</option>';
+        types.forEach(function(t) {
+            var sel = t.id === typeValue ? ' selected' : '';
+            var dirIndicator = t.directional ? ' (→)' : '';
+            typeOptions += '<option value="' + escapeAttribute(t.id) + '"' + sel + '>' + escapeHtml(t.label + dirIndicator) + '</option>';
+        });
+
+        // Build the form
+        var html = '';
+        html += '<form id="character-relationship-form">';
+
+        // Character 1 (search + select)
+        html += '<div class="form-group" style="margin-bottom:8px;">';
+        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Character 1 *</label>';
+        html += '<input type="text" id="rel-char1-search" placeholder="Type to filter..." style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;margin-bottom:4px;">';
+        html += '<select id="rel-char1" style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
+        html += char1Options;
+        html += '</select>';
+        html += '</div>';
+
+        // Character 2 (search + select)
+        html += '<div class="form-group" style="margin-bottom:8px;">';
+        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Character 2 *</label>';
+        html += '<input type="text" id="rel-char2-search" placeholder="Type to filter..." style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;margin-bottom:4px;">';
+        html += '<select id="rel-char2" style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
+        html += char2Options;
+        html += '</select>';
+        html += '</div>';
+
+        // Type
+        html += '<div class="form-group" style="margin-bottom:8px;">';
+        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Relationship Type *</label>';
+        html += '<select id="rel-type" style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
+        html += typeOptions;
+        html += '</select>';
+        html += '</div>';
+
+        // Title
+        html += '<div class="form-group" style="margin-bottom:8px;">';
+        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Title</label>';
+        html += '<input type="text" id="rel-title" placeholder="e.g., mother, best friend, boss" value="' + escapeAttribute(titleValue) + '" style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
+        html += '</div>';
+
+        // Years (start / end)
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">';
+        html += '<div class="form-group">';
+        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Start Year</label>';
+        html += '<input type="number" id="rel-start-year" placeholder="e.g., 1900" value="' + escapeAttribute(startValue) + '" style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
+        html += '</div>';
+        html += '<div class="form-group">';
+        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">End Year (optional)</label>';
+        html += '<input type="number" id="rel-end-year" placeholder="Leave empty if ongoing" value="' + escapeAttribute(endValue) + '" style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">';
+        html += '</div>';
+        html += '</div>';
+
+        // Notes
+        html += '<div class="form-group" style="margin-bottom:12px;">';
+        html += '<label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;">Notes</label>';
+        html += '<textarea id="rel-notes" rows="3" placeholder="Additional context..." style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;resize:vertical;">' + escapeHtml(notesValue) + '</textarea>';
+        html += '</div>';
+
+        // Actions
+        html += '<div class="form-actions" style="display:flex;gap:8px;justify-content:flex-end;">';
+        html += '<button type="button" id="cancel-char-relationship-modal" class="secondary" style="font-size:0.7rem;padding:4px 12px;">Cancel</button>';
+        html += '<button type="submit" class="primary" style="font-size:0.7rem;padding:4px 12px;">Save</button>';
+        html += '</div>';
+
+        html += '</form>';
+
+        return html;
     }
 
-    function getProfessionalTabHTML() {
-        return `
-            <div class="form-group full-width">
-                <label>Career Status History</label>
-                <div id="career-status-container">
-                    <div class="career-status-entry">
-                        <select class="career-status-select">
-                            ${CAREER_STATUS_OPTIONS.map(function(opt) {
-                                return '<option value="' + opt.value + '">' + opt.label + '</option>';
-                            }).join('')}
-                        </select>
-                        <input type="number" class="career-start-year" placeholder="Start Year" />
-                        <input type="number" class="career-end-year" placeholder="End Year" />
-                        <button type="button" class="small danger remove-status">\u2715</button>
-                    </div>
-                </div>
-                <button type="button" id="add-status-btn" class="small">+ Add Status</button>
-            </div>
-            <div class="form-group full-width">
-                <label>Specialty/Discipline</label>
-                <input type="text" id="char-specialty" />
-            </div>
-            <div id="professional-view" style="padding:4px 0;">
-                <p class="empty-state" style="padding:8px;font-size:0.8rem;">Loading professional data...</p>
-            </div>
-        `;
+    /**
+     * Build the <option> list for a character select.
+     */
+    function buildCharacterOptions(sortedChars, selectedId, lockedName, includeEmpty) {
+        var html = '';
+        if (includeEmpty) {
+            html += '<option value="">Select character...</option>';
+        }
+
+        var CharacterQueries = getCharacterQueries();
+        if (!CharacterQueries) { return html; }
+
+        var foundSelected = false;
+        sortedChars.forEach(function(c) {
+            if (!c || !c.id) { return; }
+            var name = CharacterQueries.getDisplayName(c);
+            var isSelected = String(c.id) === String(selectedId);
+            if (isSelected) { foundSelected = true; }
+            html += '<option value="' + escapeAttribute(c.id) + '"' + (isSelected ? ' selected' : '') + '>' + escapeHtml(name) + '</option>';
+        });
+
+        // If a locked name was requested but no match (e.g. self not in list), add manually
+        if (!foundSelected && selectedId) {
+            var name = lockedName || 'Unknown';
+            html += '<option value="' + escapeAttribute(selectedId) + '" selected>' + escapeHtml(name) + '</option>';
+        }
+
+        return html;
     }
 
-    function getSocialTabHTML() {
-        return `
-            <div id="social-view">
-                <p class="empty-state" style="padding:8px;font-size:0.8rem;">Loading social connections...</p>
-            </div>
-            <div class="form-actions" style="margin-top:8px;">
-                <button type="button" id="add-social-relation-btn" class="primary small">+ Add Connection</button>
-            </div>
-        `;
+    // ============================================================
+    // GRAPH MODAL
+    // ============================================================
+
+    /**
+     * Build the graph modal shell HTML.
+     * Returned as a single root element string.
+     */
+    function buildGraphModalHTML() {
+        var html = '';
+        html += '<div id="character-graph-modal" class="modal hidden" style="display:none;">';
+        html += '<div class="modal-content wide" style="max-width:900px;">';
+        html += '<div class="modal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
+        html += '<h3 style="margin:0;color:var(--accent);font-size:0.95rem;">Character Network</h3>';
+        html += '<button type="button" id="close-char-graph-modal" class="close-modal" style="background:none;border:none;color:var(--text-dim);font-size:1.2rem;cursor:pointer;">×</button>';
+        html += '</div>';
+        html += '<div class="modal-body">';
+        html += '<div id="character-graph-container" style="width:100%;height:500px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;position:relative;">';
+        html += '<svg id="character-graph-svg" width="100%" height="100%" style="display:block;background:var(--bg);">';
+        html += '<g id="character-graph-transform"></g>';
+        html += '</svg>';
+        html += '</div>';
+        html += '<div id="character-graph-legend" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;padding:8px;background:var(--panel-alt);border-radius:var(--radius);border:1px solid var(--border);">';
+        html += '<span style="font-size:0.7rem;color:var(--text-dim);font-weight:600;">Legend:</span>';
+        html += '<span id="character-graph-legend-items"></span>';
+        html += '</div>';
+        html += '</div>';
+        html += '</div>';
+        html += '</div>';
+        return html;
+    }
+
+    /**
+     * Render the character's network graph.
+     * Delegates to SocialGraph if it supports a char-scoped render.
+     * Otherwise renders an inline scoped graph here.
+     */
+    function renderCharacterGraph(charId) {
+        var svg = document.getElementById('character-graph-svg');
+        var transformGroup = document.getElementById('character-graph-transform');
+        var container = document.getElementById('character-graph-container');
+        if (!svg || !transformGroup || !container) { return; }
+
+        var SocialQueries = getSocialQueries();
+        var SocialConstants = getSocialConstants();
+        var CharacterQueries = getCharacterQueries();
+        if (!SocialQueries || !SocialConstants || !CharacterQueries) {
+            transformGroup.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--text-dim)" font-size="14">Dependencies not loaded</text>';
+            return;
+        }
+
+        var relationships = SocialQueries.getCharacterRelationships(charId) || [];
+        if (relationships.length === 0) {
+            transformGroup.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--text-dim)" font-size="14">No relationships to display</text>';
+            renderGraphLegend([], null);
+            return;
+        }
+
+        // ---- Build node set (this char + everyone connected to them) ----
+        var nodeSet = Object.create(null);
+        nodeSet[String(charId)] = true;
+        relationships.forEach(function(rel) {
+            if (!rel) { return; }
+            nodeSet[String(rel.character1)] = true;
+            nodeSet[String(rel.character2)] = true;
+        });
+
+        var nodeIds = Object.keys(nodeSet);
+        if (nodeIds.length < 2) {
+            transformGroup.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--text-dim)" font-size="14">No connections yet</text>';
+            renderGraphLegend([], charId);
+            return;
+        }
+
+        // ---- Compute positions on a circle ----
+        var width = container.clientWidth || 800;
+        var height = container.clientHeight || 500;
+        svg.setAttribute('width', width);
+        svg.setAttribute('height', height);
+
+        var centerX = width / 2;
+        var centerY = height / 2;
+
+        // Context char is at center; other nodes on circle
+        var others = nodeIds.filter(function(id) { return id !== String(charId); });
+        var radius = Math.min(width, height) * 0.35;
+
+        var positions = Object.create(null);
+        positions[String(charId)] = { x: centerX, y: centerY };
+
+        others.forEach(function(id, i) {
+            var angle = (2 * Math.PI * i) / others.length - Math.PI / 2;
+            positions[id] = {
+                x: centerX + radius * Math.cos(angle),
+                y: centerY + radius * Math.sin(angle)
+            };
+        });
+
+        // ---- Build SVG content ----
+        var html = '';
+
+        // Edges
+        relationships.forEach(function(rel) {
+            if (!rel) { return; }
+            var p1 = positions[String(rel.character1)];
+            var p2 = positions[String(rel.character2)];
+            if (!p1 || !p2) { return; }
+
+            var color = SocialConstants.getColor(rel.typeId) || '#7f8c8d';
+            var isDir = SocialConstants.isDirectional(rel.typeId);
+
+            html += '<line x1="' + p1.x + '" y1="' + p1.y + '" x2="' + p2.x + '" y2="' + p2.y + '" stroke="' + escapeAttribute(color) + '" stroke-width="2" opacity="0.6" />';
+
+            // Directional arrowhead
+            if (isDir) {
+                var dx = p2.x - p1.x;
+                var dy = p2.y - p1.y;
+                var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                var angle = Math.atan2(dy, dx);
+                var arrowSize = 9;
+                var arrowDist = Math.max(0, dist - 22);
+                var ratio = Math.min(1, arrowDist / dist);
+                var ax = p1.x + (p2.x - p1.x) * ratio;
+                var ay = p1.y + (p2.y - p1.y) * ratio;
+
+                html += '<polygon points="' +
+                    (ax + arrowSize * Math.cos(angle - 0.4)) + ',' + (ay + arrowSize * Math.sin(angle - 0.4)) + ' ' +
+                    (ax + arrowSize * Math.cos(angle + 0.4)) + ',' + (ay + arrowSize * Math.sin(angle + 0.4)) + ' ' +
+                    (ax + arrowSize * 1.4 * Math.cos(angle)) + ',' + (ay + arrowSize * 1.4 * Math.sin(angle)) +
+                    '" fill="' + escapeAttribute(color) + '" opacity="0.8" />';
+            }
+        });
+
+        // Nodes
+        nodeIds.forEach(function(id) {
+            var pos = positions[id];
+            if (!pos) { return; }
+            var char = CharacterQueries.getCharacterById(id);
+            var name = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
+            var isCenter = String(id) === String(charId);
+
+            // Count connections
+            var connCount = 0;
+            relationships.forEach(function(rel) {
+                if (!rel) { return; }
+                if (String(rel.character1) === id || String(rel.character2) === id) {
+                    connCount++;
+                }
+            });
+
+            var r = isCenter
+                ? Math.max(28, Math.min(40, 28 + connCount * 2))
+                : Math.max(20, Math.min(32, 20 + connCount * 2));
+
+            var fill = isCenter ? '#8cbb3a' : '#4a9bc7';
+            var stroke = isCenter ? '#6a9b2a' : '#3a7ba7';
+
+            // Short label
+            var label = name;
+            if (label.length > 12) {
+                var parts = label.split(' ');
+                if (parts.length >= 2) {
+                    var first = parts[0];
+                    var last = parts[parts.length - 1];
+                    label = (first.length > 6 ? first.charAt(0) + '. ' + last : first + ' ' + last.charAt(0) + '.');
+                } else {
+                    label = label.substring(0, 10) + '...';
+                }
+            }
+
+            html += '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + (r + 3) + '" fill="rgba(0,0,0,0.3)" />';
+            html += '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + r + '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="2" />';
+            html += '<text x="' + pos.x + '" y="' + (pos.y + 4) + '" text-anchor="middle" fill="var(--text)" font-size="' + Math.max(9, r * 0.5) + '" font-weight="600" pointer-events="none">' + escapeHtml(label) + '</text>';
+        });
+
+        transformGroup.innerHTML = html;
+
+        // ---- Legend ----
+        var usedTypeIds = Object.create(null);
+        relationships.forEach(function(rel) {
+            if (rel && rel.typeId) { usedTypeIds[rel.typeId] = true; }
+        });
+        renderGraphLegend(Object.keys(usedTypeIds), charId);
+    }
+
+    function renderGraphLegend(typeIds, charId) {
+        var legendItems = document.getElementById('character-graph-legend-items');
+        if (!legendItems) { return; }
+        legendItems.textContent = '';
+
+        var SocialConstants = getSocialConstants();
+        if (!SocialConstants) { return; }
+
+        typeIds.forEach(function(typeId) {
+            var label = SocialConstants.getLabel(typeId);
+            var color = SocialConstants.getColor(typeId);
+            var isDir = SocialConstants.isDirectional(typeId);
+
+            var span = document.createElement('span');
+            span.style.cssText = 'display:inline-flex;align-items:center;gap:4px;margin-right:8px;font-size:0.7rem;';
+
+            var swatch = document.createElement('span');
+            swatch.style.cssText = 'display:inline-block;width:12px;height:4px;background:' + color + ';border-radius:2px;';
+            span.appendChild(swatch);
+
+            var text = document.createElement('span');
+            text.textContent = label + (isDir ? ' →' : '');
+            span.appendChild(text);
+
+            legendItems.appendChild(span);
+        });
     }
 
     // ============================================================
@@ -731,18 +678,22 @@
     // ============================================================
 
     window.CharacterViews = {
-        renderAcademic: renderAcademic,
-        renderProfessional: renderProfessional,
-        renderSocial: renderSocial,
+        // Social tab
+        renderCharacterSocial: renderCharacterSocial,
 
-        addCareerStatusEntry: addCareerStatusEntry,
+        // Modal contents
+        buildRelationshipFormHTML: buildRelationshipFormHTML,
+        buildGraphModalHTML: buildGraphModalHTML,
 
-        getRelationshipTypeLabel: getRelationshipTypeLabel,
-        getRelationshipTypeColor: getSafeRelationshipColor,
+        // Graph
+        renderCharacterGraph: renderCharacterGraph,
 
-        getAcademicTabHTML: getAcademicTabHTML,
-        getProfessionalTabHTML: getProfessionalTabHTML,
-        getSocialTabHTML: getSocialTabHTML
+        // Utilities (exposed for testing)
+        clearCollapseState: function() {
+            _collapsedGroups = Object.create(null);
+        }
     };
+
+    console.log('[CharacterViews] Loaded.');
 
 })();
