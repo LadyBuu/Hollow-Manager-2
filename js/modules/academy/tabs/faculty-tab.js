@@ -11,8 +11,8 @@
  * 
  * IMPORTANT:
  *   - UI-ONLY - all mutations delegate to domain cores
- *   - Uses AcademyDisciplines DIRECTLY (AcademyCore does not exist)
- *   - Uses AcademyLocations DIRECTLY (AcademyCore does not exist)
+ *   - Uses AcademyDisciplines DIRECTLY for discipline CRUD
+ *   - Uses AcademyLocations DIRECTLY for location CRUD
  *   - Uses AcademyUI for state management
  *   - Uses AcademyAggregator for projections
  *   - Uses AcademySchedule for schedule operations
@@ -21,11 +21,33 @@
  *   - All HTML escaping uses DomUtils.escapeHtml()
  *   - All notifications use NotificationSystem.notify()
  * 
+ * PROMISE CONTRACT:
+ *   - AcademyDisciplines.create / update / delete return PLAIN OBJECTS
+ *     (not Promises). They follow the candidate-based pattern and are
+ *     synchronous from the caller's perspective.
+ *   - AcademyLocations.create / update / delete return PLAIN OBJECTS
+ *     (not Promises). Same.
+ *   - AcademySchedule schedule reads are synchronous.
+ *   - ScheduleCore writes are synchronous (return result objects).
+ * 
+ * KNOWN STUBS:
+ *   The following handlers are currently stubs and show an informational
+ *   notification instead of performing their intended operation. They
+ *   will be wired to AcademySchedule / ScheduleCore when the schedule
+ *   UI is properly implemented:
+ *     - handleAddSchedule
+ *     - handleRemoveSchedule
+ *     - handleAddBlock
+ *     - handleRemoveBlock
+ *     - location class assignment (bindLocationModalEvents)
+ *   These are NOT v15 data-model regressions. They were stubs before the
+ *   v15 pass and remain stubs after it.
+ * 
  * DEPENDENCIES:
  *   - window.AcademyUI (from academy-ui.js) - MANDATORY
  *   - window.AcademyAggregator (from academy-aggregator.js) - MANDATORY
- *   - window.AcademyDisciplines (from academy-disciplines.js) - MANDATORY (replaces AcademyCore)
- *   - window.AcademyLocations (from academy-locations.js) - MANDATORY (replaces AcademyCore)
+ *   - window.AcademyDisciplines (from academy-disciplines.js) - MANDATORY
+ *   - window.AcademyLocations (from academy-locations.js) - MANDATORY
  *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.AcademySchedule (from academy-schedule.js) - MANDATORY
  *   - window.AcademyGroups (from academy-groups.js) - MANDATORY
@@ -50,13 +72,15 @@
     }
 
     // ============================================================
-    // DEPENDENCY IMPORTS - DIRECT (no lazy loading for critical deps)
+    // DEPENDENCY IMPORTS - DIRECT (no lazy loading for these)
     // ============================================================
+    // AcademyDisciplines and AcademyLocations load before this file
+    // in the current script order. They are captured directly.
 
     var AcademyUI = window.AcademyUI;
     var AcademyAggregator = window.AcademyAggregator;
-    var AcademyDisciplines = window.AcademyDisciplines;  // Direct - replaces AcademyCore
-    var AcademyLocations = window.AcademyLocations;      // Direct - replaces AcademyCore
+    var AcademyDisciplines = window.AcademyDisciplines;
+    var AcademyLocations = window.AcademyLocations;
     var AcademyQueries = window.AcademyQueries;
     var AcademySchedule = window.AcademySchedule;
     var AcademyGroups = window.AcademyGroups;
@@ -66,6 +90,17 @@
     var NotificationSystem = window.NotificationSystem;
     var DomUtils = window.DomUtils;
     var Modal = window.Modal;
+
+    // ============================================================
+    // DEPENDENCY RESOLUTION - LAZY (defensive)
+    // ============================================================
+    // Accessors for modules that could conceivably load after this
+    // file if script order is ever changed. Cheap insurance.
+
+    function getAcademyDisciplines() { return window.AcademyDisciplines || null; }
+    function getAcademyLocations() { return window.AcademyLocations || null; }
+    function getAcademySchedule() { return window.AcademySchedule || null; }
+    function getTeamCore() { return window.TeamCore || null; }
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -224,6 +259,30 @@
     }
 
     checkDependencies();
+
+    // ============================================================
+    // REFRESH HELPER
+    // ============================================================
+
+    var _currentContainer = null;
+
+    /**
+     * Ask the Academy shell to re-render the current sub-tab.
+     * Falls back to a local re-render if the shell isn't available.
+     */
+    function requestRefresh() {
+        if (window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
+            window.AcademyEvents.refreshUI();
+        } else if (_currentContainer) {
+            var html = render({
+                selectedClassId: AcademyUI.getSelectedClassId(),
+                selectedInstructorId: AcademyUI.getSelectedInstructorId(),
+                displayWeek: AcademyUI.getDisplayWeek()
+            });
+            _currentContainer.innerHTML = html;
+            bindEvents(_currentContainer);
+        }
+    }
 
     // ============================================================
     // HTML ESCAPING - Delegates to DomUtils
@@ -519,8 +578,8 @@
 
                 html += '<td class="' + className + '" data-day="' + d4 + '" data-hour="' + h2 + '"';
                 if (entry) {
-                    html += ' data-discipline="' + escapeHtml(entry.disciplineId || '') + '"';
-                    html += ' data-duration="' + escapeHtml(entry.duration || 1) + '"';
+                    html += ' data-discipline="' + escapeAttribute(entry.disciplineId || '') + '"';
+                    html += ' data-duration="' + escapeAttribute(entry.duration || 1) + '"';
                 }
                 html += '>';
                 html += '<span class="schedule-cell-content">' + escapeHtml(display) + '</span>';
@@ -887,11 +946,6 @@
     // ============================================================
 
     function getModalsHTML() {
-        var startHour = CALENDAR_START_HOUR;
-        var endHour = CALENDAR_END_HOUR;
-        var minDur = MIN_CLASS_DURATION;
-        var maxDur = MAX_CLASS_DURATION;
-
         return [
             '<!-- Location Manage Modal -->',
             '<div id="faculty-location-modal" class="modal hidden">',
@@ -1005,6 +1059,8 @@
             return;
         }
 
+        _currentContainer = container;
+
         // ---- Week apply ----
         var weekApply = container.querySelector('#faculty-week-apply');
         if (weekApply) {
@@ -1014,10 +1070,7 @@
                     var week = parseInt(input.value, 10);
                     if (!isNaN(week) && week >= MIN_WEEK && week <= MAX_WEEK) {
                         AcademyUI.setDisplayWeek(week);
-                        if (typeof window.AcademyEvents !== 'undefined' &&
-                            window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                            window.AcademyEvents.refreshUI();
-                        }
+                        requestRefresh();
                     } else {
                         notify('Please enter a valid week (' + MIN_WEEK + '-' + MAX_WEEK + ').', 'error');
                     }
@@ -1068,10 +1121,7 @@
                 var id = item.dataset.id;
                 if (id) {
                     AcademyUI.selectInstructor(id);
-                    if (typeof window.AcademyEvents !== 'undefined' &&
-                        window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                        window.AcademyEvents.refreshUI();
-                    }
+                    requestRefresh();
                 }
             });
         }
@@ -1083,10 +1133,7 @@
                 var tab = this.dataset.tab || 'faculty';
                 var key = this.dataset.key || 'search';
                 AcademyUI.setFilter(tab, key, this.value);
-                if (typeof window.AcademyEvents !== 'undefined' &&
-                    window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                    window.AcademyEvents.refreshUI();
-                }
+                requestRefresh();
             });
         }
 
@@ -1298,8 +1345,18 @@
     }
 
     // ============================================================
-    // HANDLERS - Schedule
+    // HANDLERS - Schedule (STUBS)
     // ============================================================
+    // 
+    // These handlers are stubs. They were stubs before the v15 pass
+    // and remain stubs after it. They are NOT data-model regressions.
+    // 
+    // Wiring them requires:
+    //   - A discipline picker that reads the current instructor
+    //   - AcademySchedule.setInstructorTemplate / setInstructorBlock
+    //   - Refresh after mutation
+    // 
+    // That's UI work, not data-model work.
 
     function handleAddSchedule(container) {
         var instructorId = AcademyUI.getSelectedInstructorId();
@@ -1325,8 +1382,7 @@
             return;
         }
 
-        // Use AcademySchedule to set the slot via CalendarProvider
-        // This is a placeholder - actual implementation depends on your CalendarProvider
+        // STUB — wire to AcademySchedule when the schedule UI is ready.
         notify('Schedule operation: ' + disciplineId + ' at ' + day + ':' + hour + ' for ' + duration + 'h', 'info');
     }
 
@@ -1339,12 +1395,12 @@
 
         var week = AcademyUI.getDisplayWeek();
 
-        // Remove via CalendarProvider/Core
+        // STUB — wire to AcademySchedule when the schedule UI is ready.
         notify('Remove schedule: instructor ' + instructorId + ' week ' + week + ' day ' + day + ' hour ' + hour, 'info');
     }
 
     // ============================================================
-    // HANDLERS - Blocks
+    // HANDLERS - Blocks (STUBS)
     // ============================================================
 
     function handleAddBlock(container) {
@@ -1366,7 +1422,7 @@
         var duration = durationSelect ? parseInt(durationSelect.value, 10) : 1;
         var label = labelInput ? labelInput.value.trim() : 'Blocked';
 
-        // Use CalendarProvider/Core to add block
+        // STUB — wire to AcademySchedule when the schedule UI is ready.
         notify('Add block: ' + label + ' at ' + day + ':' + hour + ' for ' + duration + 'h', 'info');
     }
 
@@ -1379,7 +1435,7 @@
 
         var week = AcademyUI.getDisplayWeek();
 
-        // Remove via CalendarProvider/Core
+        // STUB — wire to AcademySchedule when the schedule UI is ready.
         notify('Remove block: instructor ' + instructorId + ' week ' + week + ' day ' + day + ' hour ' + hour, 'info');
     }
 
@@ -1403,39 +1459,39 @@
                     this.classList.add('hidden');
                 }
             });
+
+            modal.addEventListener('click', function(e) {
+                var btn = e.target.closest('.location-add-class-btn');
+                if (btn) {
+                    var locationId = btn.dataset.location;
+                    var day = parseInt(btn.dataset.day, 10);
+                    var hour = parseInt(btn.dataset.hour, 10);
+                    var select = document.getElementById('location-class-select');
+
+                    if (locationId && select && select.value) {
+                        var week = AcademyUI.getDisplayWeek();
+                        // STUB — wire to AcademySchedule when the schedule UI is ready.
+                        notify('Assign class to location: ' + locationId + ' at ' + day + ':' + hour + ' - ' + select.value, 'info');
+                        refreshLocationModal(locationId);
+                    }
+                }
+            });
+
+            modal.addEventListener('click', function(e) {
+                var btn = e.target.closest('.location-remove-class-btn');
+                if (btn) {
+                    var locationId = btn.dataset.location;
+                    var day = parseInt(btn.dataset.day, 10);
+                    var hour = parseInt(btn.dataset.hour, 10);
+                    if (locationId && confirm('Remove this class from location?')) {
+                        var week = AcademyUI.getDisplayWeek();
+                        // STUB — wire to AcademySchedule when the schedule UI is ready.
+                        notify('Remove class from location: ' + locationId + ' day ' + day + ' hour ' + hour, 'info');
+                        refreshLocationModal(locationId);
+                    }
+                }
+            });
         }
-
-        modal.addEventListener('click', function(e) {
-            var btn = e.target.closest('.location-add-class-btn');
-            if (btn) {
-                var locationId = btn.dataset.location;
-                var day = parseInt(btn.dataset.day, 10);
-                var hour = parseInt(btn.dataset.hour, 10);
-                var select = document.getElementById('location-class-select');
-
-                if (locationId && select && select.value) {
-                    var week = AcademyUI.getDisplayWeek();
-                    // Use AcademySchedule to set location class via CalendarProvider
-                    notify('Assign class to location: ' + locationId + ' at ' + day + ':' + hour + ' - ' + select.value, 'info');
-                    refreshLocationModal(locationId);
-                }
-            }
-        });
-
-        modal.addEventListener('click', function(e) {
-            var btn = e.target.closest('.location-remove-class-btn');
-            if (btn) {
-                var locationId = btn.dataset.location;
-                var day = parseInt(btn.dataset.day, 10);
-                var hour = parseInt(btn.dataset.hour, 10);
-                if (locationId && confirm('Remove this class from location?')) {
-                    var week = AcademyUI.getDisplayWeek();
-                    // Remove via CalendarProvider/Core
-                    notify('Remove class from location: ' + locationId + ' day ' + day + ' hour ' + hour, 'info');
-                    refreshLocationModal(locationId);
-                }
-            }
-        });
     }
 
     function bindLocationFormEvents(container) {
@@ -1630,24 +1686,24 @@
         };
 
         var editId = form.dataset.editId;
-        var result;
-
-        if (editId) {
-            // Use AcademyLocations.update directly
-            result = AcademyLocations.update(editId, data);
-        } else {
-            // Use AcademyLocations.create directly
-            result = AcademyLocations.create(data);
+        var AcademyLocations = getAcademyLocations();
+        if (!AcademyLocations) {
+            notify('AcademyLocations not available.', 'error');
+            return;
         }
+
+        // AcademyLocations.create / update return PLAIN OBJECTS,
+        // not Promises. They follow the candidate-based pattern and
+        // are synchronous from the caller's perspective.
+        var result = editId
+            ? AcademyLocations.update(editId, data)
+            : AcademyLocations.create(data);
 
         if (result && result.success) {
             notify(editId ? 'Location updated successfully.' : 'Location created successfully.', 'success');
             var modal = document.getElementById('faculty-location-form-modal');
             if (modal) { modal.classList.add('hidden'); }
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
+            requestRefresh();
         } else {
             notify(result ? result.message : 'Failed to save location.', 'error');
         }
@@ -1673,10 +1729,7 @@
 
         if (result && result.success) {
             notify('Auto-group created successfully.', 'success');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
+            requestRefresh();
         } else {
             notify(result ? result.message : 'Failed to create auto-group.', 'error');
         }
@@ -1687,10 +1740,7 @@
 
         if (result && result.success) {
             notify('Auto-group deleted successfully.', 'success');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
+            requestRefresh();
         } else {
             notify(result ? result.message : 'Failed to delete auto-group.', 'error');
         }
@@ -1701,10 +1751,7 @@
 
         if (result && result.success) {
             notify('Student added to auto-group.', 'success');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
+            requestRefresh();
         } else {
             notify(result ? result.message : 'Failed to add student.', 'error');
         }
@@ -1717,10 +1764,7 @@
 
         if (result && result.success) {
             notify('Slot added to auto-group.', 'success');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
+            requestRefresh();
         } else {
             notify(result ? result.message : 'Failed to add slot.', 'error');
         }
@@ -1868,39 +1912,40 @@
         };
 
         var editId = form.dataset.editId;
-        var result;
-
-        if (editId) {
-            // Use AcademyDisciplines.update directly
-            result = AcademyDisciplines.update(editId, data);
-        } else {
-            // Use AcademyDisciplines.create directly
-            result = AcademyDisciplines.create(data);
+        var AcademyDisciplines = getAcademyDisciplines();
+        if (!AcademyDisciplines) {
+            notify('AcademyDisciplines not available.', 'error');
+            return;
         }
+
+        // AcademyDisciplines.create / update return PLAIN OBJECTS,
+        // not Promises.
+        var result = editId
+            ? AcademyDisciplines.update(editId, data)
+            : AcademyDisciplines.create(data);
 
         if (result && result.success) {
             notify(editId ? 'Discipline updated successfully.' : 'Discipline created successfully.', 'success');
             var modal = document.getElementById('faculty-discipline-modal');
             if (modal) { modal.classList.add('hidden'); }
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
+            requestRefresh();
         } else {
             notify(result ? result.message : 'Failed to save discipline.', 'error');
         }
     }
 
     function handleDeleteDiscipline(id) {
-        // Use AcademyDisciplines.delete directly
+        var AcademyDisciplines = getAcademyDisciplines();
+        if (!AcademyDisciplines) {
+            notify('AcademyDisciplines not available.', 'error');
+            return;
+        }
+
         var result = AcademyDisciplines.delete(id);
 
         if (result && result.success) {
             notify('Discipline deleted successfully.', 'success');
-            if (typeof window.AcademyEvents !== 'undefined' &&
-                window.AcademyEvents && typeof window.AcademyEvents.refreshUI === 'function') {
-                window.AcademyEvents.refreshUI();
-            }
+            requestRefresh();
         } else {
             notify(result ? result.message : 'Failed to delete discipline.', 'error');
         }
