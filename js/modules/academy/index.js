@@ -29,12 +29,23 @@
  *   - Earlier versions of this file referenced AcademyCore; those
  *   - references have been removed.
  * 
- * NOTE ON ACADEMY DATA STRUCTURE:
- *   - window.data.academy is the canonical home for:
- *       graduatingClasses, classStudents, grades, rankings
- *   - The structure is created lazily by Academy mutation modules on first use.
- *   - mountAcademy() defensively ensures the structure exists so the tab
- *     can render on a fresh database that has never seen an academy mutation.
+ * NOTE ON ACADEMY DATA STRUCTURE (v15+):
+ *   - window.data.academy is created by database.js (getEmptyData,
+ *     migrateToVersion15, normaliseDataStructure). It is part of the
+ *     canonical schema, not a runtime side-effect.
+ *   - Canonical shape:
+ *       academy: {
+ *           graduatingClasses: {},  // class entities keyed by classId
+ *           grades: {},             // grades keyed by gradeId
+ *           rankings: {},           // rankings keyed by rankId
+ *           weeklyTeams: {}         // classId -> week -> teamId -> [charId]
+ *       }
+ *   - academy.classStudents no longer exists. Class membership is
+ *     derived from character.classIds[].
+ *   - The structure guard in mountAcademy() is DEFENSIVE ONLY. It
+ *     verifies the structure is present; it does not manufacture it.
+ *     If the guard fires, database.js has failed to seed the schema,
+ *     which is a bug worth surfacing loudly, not silently patching.
  * 
  * EXTERNAL PROVIDERS:
  *   - CharacterQueries (for character data)
@@ -127,6 +138,7 @@
             missing.push('TeamQueries.getTeamName');
         }
 
+        // ---- CalendarQueries — READ operations ----
         if (!CalendarQueries || typeof CalendarQueries.getStudentSchedule !== 'function') {
             missing.push('CalendarQueries.getStudentSchedule');
         }
@@ -136,12 +148,42 @@
         if (!CalendarQueries || typeof CalendarQueries.getLocationSchedule !== 'function') {
             missing.push('CalendarQueries.getLocationSchedule');
         }
+        // These two were the source of the original mount failure.
+        // The provider now correctly routes them through CalendarQueries.
+        if (!CalendarQueries || typeof CalendarQueries.getStudentRestDays !== 'function') {
+            missing.push('CalendarQueries.getStudentRestDays');
+        }
+        if (!CalendarQueries || typeof CalendarQueries.findClassStart !== 'function') {
+            missing.push('CalendarQueries.findClassStart');
+        }
 
+        // ---- ScheduleCore — WRITE operations ----
         if (!ScheduleCore || typeof ScheduleCore.setStudentSlot !== 'function') {
             missing.push('ScheduleCore.setStudentSlot');
         }
         if (!ScheduleCore || typeof ScheduleCore.removeStudentSlot !== 'function') {
             missing.push('ScheduleCore.removeStudentSlot');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.clearStudentSchedule !== 'function') {
+            missing.push('ScheduleCore.clearStudentSchedule');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.duplicateStudentSchedule !== 'function') {
+            missing.push('ScheduleCore.duplicateStudentSchedule');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.setRestDays !== 'function') {
+            missing.push('ScheduleCore.setRestDays');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.removeRestDays !== 'function') {
+            missing.push('ScheduleCore.removeRestDays');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.hasConflict !== 'function') {
+            missing.push('ScheduleCore.hasConflict');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.getSlotMetadata !== 'function') {
+            missing.push('ScheduleCore.getSlotMetadata');
+        }
+        if (!ScheduleCore || typeof ScheduleCore.setSlotMetadata !== 'function') {
+            missing.push('ScheduleCore.setSlotMetadata');
         }
 
         if (!AcademyUI || typeof AcademyUI.init !== 'function') {
@@ -206,18 +248,27 @@
     }
 
     // ============================================================
-    // ACADEMY DATA STRUCTURE GUARD
+    // ACADEMY DATA STRUCTURE GUARD - DEFENSIVE ONLY
     // ============================================================
 
     /**
-     * Ensure the academy data structure exists in window.data.
+     * Verify the canonical academy data structure exists.
      * 
-     * Academy mutation modules create these structures lazily on first use,
-     * but the tab cannot render without them. This defensive initialisation
-     * makes the tab usable on a fresh database that has never seen an
-     * academy mutation, without requiring the user to create a class first.
+     * As of v15, window.data.academy is created by database.js:
+     *   - getEmptyData() includes it for fresh installs.
+     *   - migrateToVersion15() seeds it for existing databases.
+     *   - normaliseDataStructure() repairs it on every load.
      * 
-     * Idempotent: safe to call multiple times.
+     * This function is a DEFENSIVE VERIFICATION. It does not manufacture
+     * missing structures. If it finds them missing, that means
+     * database.js failed to seed the schema — a bug that should be
+     * surfaced loudly rather than silently patched over.
+     * 
+     * The only reason it might still need to create a missing sub-key
+     * is if a database was written by an intermediate build that predates
+     * the v15 schema without being migrated. In that case, the load
+     * pipeline would already have run migrateToVersion15, so this is
+     * unreachable in practice.
      * 
      * @returns {boolean} True if the structure is present and usable
      */
@@ -227,22 +278,55 @@
         }
 
         if (!window.data.academy || typeof window.data.academy !== 'object') {
-            window.data.academy = {};
+            console.error(
+                '[AcademyModule] window.data.academy is missing. ' +
+                'database.js should have created it in getEmptyData() or migrateToVersion15(). ' +
+                'This indicates a schema initialisation failure.'
+            );
+            return false;
         }
 
         var academy = window.data.academy;
 
         if (!academy.graduatingClasses || typeof academy.graduatingClasses !== 'object') {
-            academy.graduatingClasses = {};
-        }
-        if (!academy.classStudents || typeof academy.classStudents !== 'object') {
-            academy.classStudents = {};
+            console.error(
+                '[AcademyModule] window.data.academy.graduatingClasses is missing. ' +
+                'database.js should have seeded it.'
+            );
+            return false;
         }
         if (!academy.grades || typeof academy.grades !== 'object') {
-            academy.grades = {};
+            console.error(
+                '[AcademyModule] window.data.academy.grades is missing. ' +
+                'database.js should have seeded it.'
+            );
+            return false;
         }
         if (!academy.rankings || typeof academy.rankings !== 'object') {
-            academy.rankings = {};
+            console.error(
+                '[AcademyModule] window.data.academy.rankings is missing. ' +
+                'database.js should have seeded it.'
+            );
+            return false;
+        }
+        if (!academy.weeklyTeams || typeof academy.weeklyTeams !== 'object') {
+            console.error(
+                '[AcademyModule] window.data.academy.weeklyTeams is missing. ' +
+                'database.js should have seeded it (v15 schema).'
+            );
+            return false;
+        }
+
+        // academy.classStudents must NOT exist after v15.
+        // If it does, a stale writer is active somewhere.
+        if (Object.prototype.hasOwnProperty.call(academy, 'classStudents')) {
+            console.error(
+                '[AcademyModule] window.data.academy.classStudents exists. ' +
+                'This store was removed in v15 and must not be reintroduced. ' +
+                'Class membership is derived from character.classIds.'
+            );
+            // Do not delete here — the load pipeline handles it. Just
+            // make the fact visible.
         }
 
         return true;
@@ -288,10 +372,21 @@
         };
 
         // ---- Calendar Provider ----
+        // 
+        // WRITE operations (setStudentSlot, removeStudentSlot, etc.) go
+        // through ScheduleCore.
+        // 
+        // READ operations (getStudentRestDays, findClassStart, and the
+        // instructor/location schedule reads) go through CalendarQueries.
+        // 
+        // This split is deliberate. Earlier versions of this file
+        // incorrectly mapped getStudentRestDays and findClassStart to
+        // ScheduleCore, neither of which exposes those methods. That
+        // caused AcademySchedule.configure() to fail, which caused the
+        // Academy tab to refuse to mount. The current mapping reflects
+        // what each module actually exposes.
         var calendarProvider = {
-            getStudentSchedule: function(studentId, week) {
-                return CalendarQueries.getStudentSchedule(studentId, week);
-            },
+            // ---- Student schedule writes ----
             setStudentSlot: function(studentId, week, day, hour, disciplineId, duration, metadata) {
                 return ScheduleCore.setStudentSlot(studentId, week, day, hour, disciplineId, duration, metadata);
             },
@@ -304,8 +399,12 @@
             duplicateStudentSchedule: function(studentId, fromWeek, toWeek) {
                 return ScheduleCore.duplicateStudentSchedule(studentId, fromWeek, toWeek);
             },
+
+            // ---- Rest days ----
+            // READ from CalendarQueries (source of truth).
+            // WRITE via ScheduleCore.
             getStudentRestDays: function(studentId, week) {
-                return ScheduleCore.getStudentRestDays(studentId, week);
+                return CalendarQueries.getStudentRestDays(studentId, week);
             },
             setRestDays: function(studentId, week, days) {
                 return ScheduleCore.setRestDays(studentId, week, days);
@@ -313,6 +412,8 @@
             removeRestDays: function(studentId, week) {
                 return ScheduleCore.removeRestDays(studentId, week);
             },
+
+            // ---- Conflict detection & metadata ----
             hasConflict: function(schedule, day, hour, duration) {
                 return ScheduleCore.hasConflict(schedule, day, hour, duration);
             },
@@ -322,9 +423,19 @@
             setSlotMetadata: function(studentId, week, day, hour, metadata) {
                 return ScheduleCore.setSlotMetadata(studentId, week, day, hour, metadata);
             },
-            findClassStart: function(schedule, metadata, studentId, week, day, hour) {
-                return ScheduleCore.findClassStart(schedule, metadata, studentId, week, day, hour);
+
+            // ---- Student schedule reads ----
+            getStudentSchedule: function(studentId, week) {
+                return CalendarQueries.getStudentSchedule(studentId, week);
             },
+
+            // ---- findClassStart ----
+            // READ from CalendarQueries. ScheduleCore does not expose this.
+            findClassStart: function(schedule, metadata, studentId, week, day, hour) {
+                return CalendarQueries.findClassStart(schedule, metadata, studentId, week, day, hour);
+            },
+
+            // ---- Instructor reads ----
             getInstructorSchedule: function(instructorId, week) {
                 return CalendarQueries.getInstructorSchedule(instructorId, week);
             },
@@ -334,9 +445,8 @@
             getInstructorBlocks: function(instructorId, week) {
                 return CalendarQueries.getInstructorBlocks(instructorId, week);
             },
-            getLocationSchedule: function(locationId, week) {
-                return CalendarQueries.getLocationSchedule(locationId, week);
-            },
+
+            // ---- Instructor writes ----
             setInstructorTemplate: function(instructorId, week, day, hour, templateData) {
                 return ScheduleCore.setInstructorTemplate(instructorId, week, day, hour, templateData);
             },
@@ -349,6 +459,13 @@
             removeInstructorBlock: function(instructorId, week, day, hour) {
                 return ScheduleCore.removeInstructorBlock(instructorId, week, day, hour);
             },
+
+            // ---- Location reads ----
+            getLocationSchedule: function(locationId, week) {
+                return CalendarQueries.getLocationSchedule(locationId, week);
+            },
+
+            // ---- Location writes ----
             setLocationClass: function(locationId, week, day, hour, disciplineId, metadata) {
                 return ScheduleCore.setLocationClass(locationId, week, day, hour, disciplineId, 1, metadata);
             },
@@ -363,7 +480,11 @@
         });
 
         if (!scheduleConfigured) {
-            console.warn('[AcademyModule] Failed to configure AcademySchedule.');
+            console.error(
+                '[AcademyModule] Failed to configure AcademySchedule. ' +
+                'The calendarProvider did not satisfy the required method contract. ' +
+                'Check for missing methods on ScheduleCore or CalendarQueries.'
+            );
             return false;
         }
 
@@ -617,9 +738,11 @@
             return;
         }
 
-        // Defensive: ensure the academy data structure exists
+        // Defensive: verify the academy data structure exists.
+        // As of v15, database.js creates it. If this fails, something
+        // upstream is broken and we should say so explicitly.
         if (!ensureAcademyStructure()) {
-            container.innerHTML = '<p class="empty-state">Loading academy data...</p>';
+            container.innerHTML = '<p class="empty-state">Academy data structure is missing. Please refresh the page.</p>';
             return;
         }
 
