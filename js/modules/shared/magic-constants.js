@@ -2,51 +2,20 @@
  * modules/shared/magic-constants.js - Magic Constants
  * Single source of truth for all magic-related constants
  * Path: js/modules/shared/magic-constants.js
- * 
- * This module provides:
- *   - Magic type definitions and categories
- *   - Magic type metadata (labels, colors, categories)
- *   - Magic class mapping
- *   - Magic power thresholds
- *   - Magic category multipliers
- *   - Balanced mage threshold
- * 
- * IMPORTANT:
- *   - This is the SINGLE SOURCE OF TRUTH for magic constants
- *   - All modules MUST use these constants - do NOT duplicate
- *   - Constants are DEEP FROZEN to prevent mutation
- *   - Validation runs BEFORE publishing to ensure integrity
- *   - No character-specific constants (stats, moves, etc.)
- * 
- * DEPENDENCIES:
- *   - None (self-contained)
- * 
- * USAGE:
- *   var MC = window.MagicConstants;
- *   var types = MC.getTypeKeys();
- *   var categories = MC.getCategories();
- *   var label = MC.getTypeLabel('fire');
- *   var power = MC.calculatePower(magic);
  */
 
 (function() {
     'use strict';
 
-    // Guard against duplicate loading
     if (window.__magicConstantsLoaded) {
         return;
     }
     window.__magicConstantsLoaded = true;
 
-    // ============================================================
-    // DEEP FREEZE UTILITY
-    // ============================================================
-
     function deepFreeze(obj) {
         if (!obj || typeof obj !== 'object' || Object.isFrozen(obj)) {
             return obj;
         }
-
         var keys = Object.getOwnPropertyNames(obj);
         for (var i = 0; i < keys.length; i++) {
             var key = keys[i];
@@ -55,156 +24,55 @@
                 deepFreeze(value);
             }
         }
-
         return Object.freeze(obj);
     }
 
     // ============================================================
-    // MAGIC TYPE DEFINITIONS - CANONICAL SOURCE OF TRUTH
+    // MAGIC TYPE DEFINITIONS
     // ============================================================
 
-    /**
-     * Magic type definitions.
-     * 
-     * Each type has:
-     *   - id: Unique identifier (used in data storage)
-     *   - label: Human-readable display name
-     *   - category: 'elemental' | 'body' | 'aether'
-     *   - color: CSS color value (trusted application configuration)
-     *   - description: Optional description of the magic type
-     */
     var MAGIC_TYPES = {
-        // Elemental Magic
-        earth: {
-            id: 'earth',
-            label: 'Earth',
-            category: 'elemental',
-            color: '#8B7355',
-            description: 'Control over stone, soil, and metal'
-        },
-        water: {
-            id: 'water',
-            label: 'Water',
-            category: 'elemental',
-            color: '#4A9BC7',
-            description: 'Control over water, ice, and fluids'
-        },
-        fire: {
-            id: 'fire',
-            label: 'Fire',
-            category: 'elemental',
-            color: '#E67E22',
-            description: 'Control over fire, heat, and combustion'
-        },
-        air: {
-            id: 'air',
-            label: 'Air',
-            category: 'elemental',
-            color: '#A8D5E2',
-            description: 'Control over air, wind, and weather'
-        },
-        metal: {
-            id: 'metal',
-            label: 'Metal',
-            category: 'elemental',
-            color: '#95A5A6',
-            description: 'Control over refined metals and alloys'
-        },
-        wood: {
-            id: 'wood',
-            label: 'Wood',
-            category: 'elemental',
-            color: '#27AE60',
-            description: 'Control over wood, plants, and growth'
-        },
+        // Elemental
+        earth: { id: 'earth', label: 'Earth', category: 'elemental', color: '#8B7355',
+                 description: 'Control over stone, soil, and metal' },
+        water: { id: 'water', label: 'Water', category: 'elemental', color: '#4A9BC7',
+                 description: 'Control over water, ice, and fluids' },
+        fire:  { id: 'fire',  label: 'Fire',  category: 'elemental', color: '#E67E22',
+                 description: 'Control over fire, heat, and combustion' },
+        air:   { id: 'air',   label: 'Air',   category: 'elemental', color: '#A8D5E2',
+                 description: 'Control over air, wind, and weather' },
+        metal: { id: 'metal', label: 'Metal', category: 'elemental', color: '#95A5A6',
+                 description: 'Control over refined metals and alloys' },
+        wood:  { id: 'wood',  label: 'Wood',  category: 'elemental', color: '#27AE60',
+                 description: 'Control over wood, plants, and growth' },
 
-        // Body Magic
-        blood: {
-            id: 'blood',
-            label: 'Blood',
-            category: 'body',
-            color: '#C0392B',
-            description: 'Control over blood, circulation, and vitality'
-        },
-        bone: {
-            id: 'bone',
-            label: 'Bone',
-            category: 'body',
-            color: '#F5F5DC',
-            description: 'Control over bone, structure, and skeleton'
-        },
-        mind: {
-            id: 'mind',
-            label: 'Mind',
-            category: 'body',
-            color: '#8E44AD',
-            description: 'Control over thoughts, memory, and consciousness'
-        },
-        morphic: {
-            id: 'morphic',
-            label: 'Morphic',
-            category: 'body',
-            color: '#1ABC9C',
-            description: 'Control over shape, form, and transformation'
-        },
-        life: {
-            id: 'life',
-            label: 'Life',
-            category: 'body',
-            color: '#2ECC71',
-            description: 'Control over growth, healing, and vitality'
-        },
-        death: {
-            id: 'death',
-            label: 'Death',
-            category: 'body',
-            color: '#2C3E50',
-            description: 'Control over decay, entropy, and mortality'
-        },
+        // Body
+        blood:   { id: 'blood',   label: 'Blood',   category: 'body', color: '#C0392B',
+                   description: 'Control over blood, circulation, and vitality' },
+        bone:    { id: 'bone',    label: 'Bone',    category: 'body', color: '#F5F5DC',
+                   description: 'Control over bone, structure, and skeleton' },
+        mind:    { id: 'mind',    label: 'Mind',    category: 'body', color: '#8E44AD',
+                   description: 'Control over thoughts, memory, and consciousness' },
+        morphic: { id: 'morphic', label: 'Morphic', category: 'body', color: '#1ABC9C',
+                   description: 'Control over shape, form, and transformation' },
+        life:    { id: 'life',    label: 'Life',    category: 'body', color: '#2ECC71',
+                   description: 'Control over growth, healing, and vitality' },
+        death:   { id: 'death',   label: 'Death',   category: 'body', color: '#2C3E50',
+                   description: 'Control over decay, entropy, and mortality' },
 
-        // Aether Magic
-        space: {
-            id: 'space',
-            label: 'Space',
-            category: 'aether',
-            color: '#3498DB',
-            description: 'Control over distance, position, and dimensions'
-        },
-        time: {
-            id: 'time',
-            label: 'Time',
-            category: 'aether',
-            color: '#F39C12',
-            description: 'Control over temporal flow and causality'
-        },
-        dimension: {
-            id: 'dimension',
-            label: 'Dimension',
-            category: 'aether',
-            color: '#9B59B6',
-            description: 'Control over alternate realities and planes'
-        },
-        void: {
-            id: 'void',
-            label: 'Void',
-            category: 'aether',
-            color: '#1A1A2E',
-            description: 'Control over nothingness and absence'
-        },
-        reality: {
-            id: 'reality',
-            label: 'Reality',
-            category: 'aether',
-            color: '#F1C40F',
-            description: 'Control over fundamental existence'
-        },
-        transference: {
-            id: 'transference',
-            label: 'Transference',
-            category: 'aether',
-            color: '#E74C3C',
-            description: 'Control over energy, matter, and essence transfer'
-        }
+        // Aether
+        space:        { id: 'space',        label: 'Space',        category: 'aether', color: '#3498DB',
+                        description: 'Control over distance, position, and dimensions' },
+        time:         { id: 'time',         label: 'Time',         category: 'aether', color: '#F39C12',
+                        description: 'Control over temporal flow and causality' },
+        dimension:    { id: 'dimension',    label: 'Dimension',    category: 'aether', color: '#9B59B6',
+                        description: 'Control over alternate realities and planes' },
+        void:         { id: 'void',         label: 'Void',         category: 'aether', color: '#1A1A2E',
+                        description: 'Control over nothingness and absence' },
+        reality:      { id: 'reality',      label: 'Reality',      category: 'aether', color: '#F1C40F',
+                        description: 'Control over fundamental existence' },
+        transference: { id: 'transference', label: 'Transference', category: 'aether', color: '#E74C3C',
+                        description: 'Control over energy, matter, and essence transfer' }
     };
 
     // ============================================================
@@ -238,279 +106,264 @@
         }
     };
 
+    // Deterministic order for tiebreaks (elemental → body → aether)
+    var MAGIC_CATEGORY_ORDER = ['elemental', 'body', 'aether'];
+
+    // ============================================================
+    // BROAD MAGICAL CLASSES (3)
+    // ============================================================
+    // Derived from the category with the highest total proficiency.
+
+    var MAGIC_BROAD_CLASSES = [
+        {
+            id: 'elementalist',
+            label: 'Elementalist',
+            category: 'elemental',
+            description: 'Master of the natural elements'
+        },
+        {
+            id: 'biomancer',
+            label: 'Biomancer',
+            category: 'body',
+            description: 'Master of flesh, life, and death'
+        },
+        {
+            id: 'occultist',
+            label: 'Occultist',
+            category: 'aether',
+            description: 'Master of the veils of reality'
+        }
+    ];
+
+    // ============================================================
+    // FINE MAGICAL CLASSES (18)
+    // ============================================================
+    // One per proficiency. Derived from the highest proficiency within
+    // the winning category.
+
+    var MAGIC_FINE_CLASSES = {
+        // Elemental
+        earth: { id: 'geomancer',      label: 'Geomancer',      type: 'earth' },
+        water: { id: 'hydromancer',    label: 'Hydromancer',    type: 'water' },
+        fire:  { id: 'pyromancer',     label: 'Pyromancer',     type: 'fire' },
+        air:   { id: 'aeromancer',     label: 'Aeromancer',     type: 'air' },
+        metal: { id: 'metallurgist',   label: 'Metallurgist',   type: 'metal' },
+        wood:  { id: 'dendromancer',   label: 'Dendromancer',   type: 'wood' },
+
+        // Body
+        blood:   { id: 'hemomancer',   label: 'Hemomancer',     type: 'blood' },
+        bone:    { id: 'osteomancer',  label: 'Osteomancer',    type: 'bone' },
+        mind:    { id: 'mentalist',    label: 'Mentalist',      type: 'mind' },
+        morphic: { id: 'shaper',       label: 'Shaper',         type: 'morphic' },
+        life:    { id: 'vitalist',     label: 'Vitalist',       type: 'life' },
+        death:   { id: 'necromancer',  label: 'Necromancer',    type: 'death' },
+
+        // Aether
+        space:        { id: 'spatiomancer',   label: 'Spatiomancer',   type: 'space' },
+        time:         { id: 'chronomancer',   label: 'Chronomancer',   type: 'time' },
+        dimension:    { id: 'dimensionalist', label: 'Dimensionalist', type: 'dimension' },
+        void:         { id: 'voidcaller',     label: 'Voidcaller',     type: 'void' },
+        reality:      { id: 'reality_shaper', label: 'Reality Shaper', type: 'reality' },
+        transference: { id: 'transmuter',     label: 'Transmuter',     type: 'transference' }
+    };
+
     // ============================================================
     // MAGIC CONFIGURATION
     // ============================================================
 
-    /** Maximum magic proficiency (0-10 scale) */
     var MAGIC_MAX = 10;
-
-    /** Balanced mage threshold (minimum proficiency in each type of a category) */
     var BALANCED_MAGE_THRESHOLD = 3;
 
-    /** Magic category multipliers for power calculation */
+    // Below this value, no fine class is shown (broad class still applies)
+    var MAGIC_FINE_CLASS_MIN = 3;
+
     var MAGIC_CATEGORY_MULTIPLIERS = {
         'elemental': 1.0,
         'body': 1.2,
         'aether': 1.5
     };
 
-    /**
-     * Magic class mapping.
-     * Maps category + type to a magic class name.
-     * Used for suggestions and display.
-     */
-    var MAGIC_CLASS_MAP = {
-        elemental: {
-            earth: 'Geomancer',
-            water: 'Hydromancer',
-            fire: 'Pyromancer',
-            air: 'Aeromancer',
-            metal: 'Ferromancer',
-            wood: 'Dendromancer'
-        },
-        body: {
-            blood: 'Hemomancer',
-            bone: 'Osteomancer',
-            mind: 'Psychomancer',
-            morphic: 'Morphomancer',
-            life: 'Vitalmancer',
-            death: 'Necromancer'
-        },
-        aether: {
-            space: 'Spatiomancer',
-            time: 'Chronomancer',
-            dimension: 'Dimensionist',
-            void: 'Voidmancer',
-            reality: 'Reality Weaver',
-            transference: 'Transference Mage'
-        }
-    };
+    // ============================================================
+    // PROFICIENCY LEVELS
+    // ============================================================
 
-    /**
-     * Magic power thresholds.
-     * Used to determine rank from power score.
-     */
-    var MAGIC_POWER_THRESHOLDS = {
-        'ARCHMAGE': 90,
-        'MASTER': 70,
-        'ADEPT': 50,
-        'APPRENTICE': 30,
-        'NOVICE': 10
-    };
+    var MAGIC_PROFICIENCY_LEVELS = [
+        { id: 'master',     label: 'Master',     min: 9, max: 10 },
+        { id: 'expert',     label: 'Expert',     min: 7, max: 8  },
+        { id: 'adept',      label: 'Adept',      min: 5, max: 6  },
+        { id: 'apprentice', label: 'Apprentice', min: 3, max: 4  },
+        { id: 'novice',     label: 'Novice',     min: 1, max: 2  },
+        { id: 'untrained',  label: 'Untrained',  min: 0, max: 0  }
+    ];
 
     // ============================================================
     // DERIVED DATA
     // ============================================================
 
-    /** Array of all magic type keys */
     var MAGIC_TYPE_KEYS = Object.keys(MAGIC_TYPES);
 
-    /** Map of type ID to type definition */
     var _typeMap = Object.create(null);
     MAGIC_TYPE_KEYS.forEach(function(key) {
         _typeMap[key] = MAGIC_TYPES[key];
     });
 
-    /** Map of category ID to category definition */
     var _categoryMap = Object.create(null);
     var categoryKeys = Object.keys(MAGIC_CATEGORIES);
     categoryKeys.forEach(function(key) {
         _categoryMap[key] = MAGIC_CATEGORIES[key];
     });
 
-    /** Map of type ID to category */
     var _typeCategoryMap = Object.create(null);
     MAGIC_TYPE_KEYS.forEach(function(key) {
         _typeCategoryMap[key] = MAGIC_TYPES[key].category;
     });
 
-    /** Map of type ID to label */
     var _typeLabelMap = Object.create(null);
     MAGIC_TYPE_KEYS.forEach(function(key) {
         _typeLabelMap[key] = MAGIC_TYPES[key].label;
     });
 
-    /** Map of type ID to color */
     var _typeColorMap = Object.create(null);
     MAGIC_TYPE_KEYS.forEach(function(key) {
         _typeColorMap[key] = MAGIC_TYPES[key].color;
+    });
+
+    var _broadClassByCategory = Object.create(null);
+    MAGIC_BROAD_CLASSES.forEach(function(cls) {
+        _broadClassByCategory[cls.category] = cls;
+    });
+
+    var _fineClassByType = Object.create(null);
+    MAGIC_TYPE_KEYS.forEach(function(typeKey) {
+        if (MAGIC_FINE_CLASSES[typeKey]) {
+            _fineClassByType[typeKey] = MAGIC_FINE_CLASSES[typeKey];
+        }
     });
 
     // ============================================================
     // LOOKUP FUNCTIONS
     // ============================================================
 
-    /**
-     * Get all magic type keys.
-     * 
-     * @returns {string[]} Array of magic type keys
-     */
-    function getTypeKeys() {
-        return MAGIC_TYPE_KEYS.slice();
-    }
+    function getTypeKeys() { return MAGIC_TYPE_KEYS.slice(); }
 
-    /**
-     * Get a magic type definition by key.
-     * 
-     * @param {string} key - Magic type key
-     * @returns {object|null} Type definition or null
-     */
     function getType(key) {
-        if (!key || typeof key !== 'string') {
-            return null;
-        }
+        if (!key || typeof key !== 'string') { return null; }
         return _typeMap[key] || null;
     }
 
-    /**
-     * Get the label for a magic type.
-     * 
-     * @param {string} key - Magic type key
-     * @returns {string} Label or the key if not found
-     */
     function getTypeLabel(key) {
-        if (!key || typeof key !== 'string') {
-            return '';
-        }
+        if (!key || typeof key !== 'string') { return ''; }
         return _typeLabelMap[key] || key;
     }
 
-    /**
-     * Get the color for a magic type.
-     * 
-     * @param {string} key - Magic type key
-     * @returns {string} CSS color value or default
-     */
     function getTypeColor(key) {
-        if (!key || typeof key !== 'string') {
-            return '#7f8c8d';
-        }
+        if (!key || typeof key !== 'string') { return '#7f8c8d'; }
         return _typeColorMap[key] || '#7f8c8d';
     }
 
-    /**
-     * Get the category for a magic type.
-     * 
-     * @param {string} key - Magic type key
-     * @returns {string|null} Category ID or null
-     */
     function getTypeCategory(key) {
-        if (!key || typeof key !== 'string') {
-            return null;
-        }
+        if (!key || typeof key !== 'string') { return null; }
         return _typeCategoryMap[key] || null;
     }
 
-    /**
-     * Get all magic category definitions.
-     * 
-     * @returns {object} Category definitions
-     */
-    function getCategories() {
-        return Object.assign({}, MAGIC_CATEGORIES);
-    }
+    function getCategories() { return Object.assign({}, MAGIC_CATEGORIES); }
 
-    /**
-     * Get a magic category definition by ID.
-     * 
-     * @param {string} categoryId - Category ID
-     * @returns {object|null} Category definition or null
-     */
     function getCategory(categoryId) {
-        if (!categoryId || typeof categoryId !== 'string') {
-            return null;
-        }
+        if (!categoryId || typeof categoryId !== 'string') { return null; }
         return _categoryMap[categoryId] || null;
     }
 
-    /**
-     * Get the label for a magic category.
-     * 
-     * @param {string} categoryId - Category ID
-     * @returns {string} Label or the ID if not found
-     */
     function getCategoryLabel(categoryId) {
-        if (!categoryId || typeof categoryId !== 'string') {
-            return '';
-        }
         var category = getCategory(categoryId);
-        return category ? category.label : categoryId;
+        return category ? category.label : (categoryId || '');
     }
 
-    /**
-     * Get the types for a magic category.
-     * 
-     * @param {string} categoryId - Category ID
-     * @returns {string[]} Array of type keys
-     */
     function getCategoryTypes(categoryId) {
-        if (!categoryId || typeof categoryId !== 'string') {
-            return [];
-        }
         var category = getCategory(categoryId);
         return category ? category.types.slice() : [];
     }
 
-    /**
-     * Get the multiplier for a magic category.
-     * 
-     * @param {string} categoryId - Category ID
-     * @returns {number} Multiplier or 1.0
-     */
     function getCategoryMultiplier(categoryId) {
-        if (!categoryId || typeof categoryId !== 'string') {
-            return 1.0;
-        }
+        if (!categoryId || typeof categoryId !== 'string') { return 1.0; }
         return MAGIC_CATEGORY_MULTIPLIERS[categoryId] || 1.0;
     }
 
-    /**
-     * Get the magic class name for a type.
-     * 
-     * @param {string} categoryId - Category ID
-     * @param {string} typeKey - Magic type key
-     * @returns {string|null} Magic class name or null
-     */
-    function getMagicClass(categoryId, typeKey) {
-        if (!categoryId || !typeKey) {
-            return null;
-        }
-        if (MAGIC_CLASS_MAP[categoryId] && MAGIC_CLASS_MAP[categoryId][typeKey]) {
-            return MAGIC_CLASS_MAP[categoryId][typeKey];
+    function getCategoryOrder() {
+        return MAGIC_CATEGORY_ORDER.slice();
+    }
+
+    // ============================================================
+    // CLASS LOOKUP
+    // ============================================================
+
+    function getBroadClasses() { return MAGIC_BROAD_CLASSES.slice(); }
+
+    function getBroadClass(classId) {
+        if (!classId || typeof classId !== 'string') { return null; }
+        for (var i = 0; i < MAGIC_BROAD_CLASSES.length; i++) {
+            if (MAGIC_BROAD_CLASSES[i].id === classId) {
+                return MAGIC_BROAD_CLASSES[i];
+            }
         }
         return null;
     }
 
-    /**
-     * Get the magic power threshold for a rank.
-     * 
-     * @param {string} rank - Rank name (ARCHMAGE, MASTER, etc.)
-     * @returns {number} Threshold or 0
-     */
-    function getPowerThreshold(rank) {
-        if (!rank || typeof rank !== 'string') {
-            return 0;
+    function getBroadClassForCategory(categoryId) {
+        if (!categoryId || typeof categoryId !== 'string') { return null; }
+        return _broadClassByCategory[categoryId] || null;
+    }
+
+    function getFineClasses() {
+        var result = [];
+        MAGIC_TYPE_KEYS.forEach(function(typeKey) {
+            if (MAGIC_FINE_CLASSES[typeKey]) {
+                result.push(MAGIC_FINE_CLASSES[typeKey]);
+            }
+        });
+        return result;
+    }
+
+    function getFineClass(classId) {
+        if (!classId || typeof classId !== 'string') { return null; }
+        for (var i = 0; i < MAGIC_TYPE_KEYS.length; i++) {
+            var typeKey = MAGIC_TYPE_KEYS[i];
+            var fine = MAGIC_FINE_CLASSES[typeKey];
+            if (fine && fine.id === classId) {
+                return fine;
+            }
         }
-        return MAGIC_POWER_THRESHOLDS[rank] || 0;
+        return null;
     }
 
-    /**
-     * Get all magic power thresholds.
-     * 
-     * @returns {object} Power thresholds
-     */
-    function getPowerThresholds() {
-        return Object.assign({}, MAGIC_POWER_THRESHOLDS);
+    function getFineClassForType(typeKey) {
+        if (!typeKey || typeof typeKey !== 'string') { return null; }
+        return _fineClassByType[typeKey] || null;
     }
 
-    /**
-     * Get the magic class map.
-     * 
-     * @returns {object} Magic class map
-     */
-    function getMagicClassMap() {
-        return Object.assign({}, MAGIC_CLASS_MAP);
+    // ============================================================
+    // PROFICIENCY LEVEL
+    // ============================================================
+
+    function getProficiencyLevel(value) {
+        var num = Number(value);
+        if (isNaN(num) || num < 0) { num = 0; }
+        if (num > MAGIC_MAX) { num = MAGIC_MAX; }
+
+        for (var i = 0; i < MAGIC_PROFICIENCY_LEVELS.length; i++) {
+            var level = MAGIC_PROFICIENCY_LEVELS[i];
+            if (num >= level.min && num <= level.max) {
+                return level;
+            }
+        }
+        return MAGIC_PROFICIENCY_LEVELS[MAGIC_PROFICIENCY_LEVELS.length - 1];
+    }
+
+    function getProficiencyLevelLabel(value) {
+        return getProficiencyLevel(value).label;
+    }
+
+    function getProficiencyLevels() {
+        return MAGIC_PROFICIENCY_LEVELS.slice();
     }
 
     // ============================================================
@@ -520,7 +373,7 @@
     function validateConstants() {
         var errors = [];
 
-        // ---- MAGIC TYPES ----
+        // --- Types ---
         if (!MAGIC_TYPES || typeof MAGIC_TYPES !== 'object') {
             errors.push('MAGIC_TYPES is missing or invalid.');
         }
@@ -529,15 +382,13 @@
             errors.push('MAGIC_TYPE_KEYS is missing or empty.');
         }
 
-        // Validate each magic type
         MAGIC_TYPE_KEYS.forEach(function(key) {
             var type = MAGIC_TYPES[key];
             if (!type) {
                 errors.push('Magic type "' + key + '" has no definition.');
                 return;
             }
-
-            if (!type.id || type.id !== key) {
+            if (type.id !== key) {
                 errors.push('Magic type "' + key + '" has mismatched id.');
             }
             if (!type.label || typeof type.label !== 'string') {
@@ -546,12 +397,9 @@
             if (!type.category || typeof type.category !== 'string') {
                 errors.push('Magic type "' + key + '" missing category.');
             }
-            if (!type.color || typeof type.color !== 'string') {
-                errors.push('Magic type "' + key + '" missing color.');
-            }
         });
 
-        // ---- MAGIC CATEGORIES ----
+        // --- Categories ---
         if (!MAGIC_CATEGORIES || typeof MAGIC_CATEGORIES !== 'object') {
             errors.push('MAGIC_CATEGORIES is missing or invalid.');
         }
@@ -567,83 +415,94 @@
                 errors.push('Category "' + key + '" has no definition.');
                 return;
             }
-
-            if (!cat.id || cat.id !== key) {
+            if (cat.id !== key) {
                 errors.push('Category "' + key + '" has mismatched id.');
-            }
-            if (!cat.label || typeof cat.label !== 'string') {
-                errors.push('Category "' + key + '" missing label.');
             }
             if (!Array.isArray(cat.types)) {
                 errors.push('Category "' + key + '" missing types array.');
             }
         });
 
-        // ---- MAGIC CONFIGURATION ----
-        if (typeof MAGIC_MAX !== 'number' || MAGIC_MAX < 0) {
-            errors.push('MAGIC_MAX must be a non-negative number.');
+        // --- Broad classes ---
+        if (!Array.isArray(MAGIC_BROAD_CLASSES) || MAGIC_BROAD_CLASSES.length !== 3) {
+            errors.push('MAGIC_BROAD_CLASSES must contain exactly 3 entries.');
         }
 
-        if (typeof BALANCED_MAGE_THRESHOLD !== 'number' || BALANCED_MAGE_THRESHOLD < 0) {
-            errors.push('BALANCED_MAGE_THRESHOLD must be a non-negative number.');
-        }
+        MAGIC_BROAD_CLASSES.forEach(function(cls) {
+            if (!cls.id || typeof cls.id !== 'string') {
+                errors.push('Broad class missing id.');
+            }
+            if (!cls.label || typeof cls.label !== 'string') {
+                errors.push('Broad class "' + cls.id + '" missing label.');
+            }
+            if (!cls.category || typeof cls.category !== 'string') {
+                errors.push('Broad class "' + cls.id + '" missing category.');
+            } else if (!MAGIC_CATEGORIES[cls.category]) {
+                errors.push('Broad class "' + cls.id + '" references unknown category "' + cls.category + '".');
+            }
+        });
 
-        // ---- MAGIC CATEGORY MULTIPLIERS ----
-        if (!MAGIC_CATEGORY_MULTIPLIERS || typeof MAGIC_CATEGORY_MULTIPLIERS !== 'object') {
-            errors.push('MAGIC_CATEGORY_MULTIPLIERS is missing or invalid.');
-        }
+        // --- Fine classes ---
+        MAGIC_TYPE_KEYS.forEach(function(typeKey) {
+            if (!MAGIC_FINE_CLASSES[typeKey]) {
+                errors.push('Fine class missing for type "' + typeKey + '".');
+                return;
+            }
+            var fine = MAGIC_FINE_CLASSES[typeKey];
+            if (!fine.id || typeof fine.id !== 'string') {
+                errors.push('Fine class for "' + typeKey + '" missing id.');
+            }
+            if (!fine.label || typeof fine.label !== 'string') {
+                errors.push('Fine class for "' + typeKey + '" missing label.');
+            }
+            if (fine.type !== typeKey) {
+                errors.push('Fine class "' + fine.id + '" has mismatched type (expected "' + typeKey + '").');
+            }
+        });
 
+        // --- Category multipliers ---
         categoryKeys.forEach(function(key) {
             if (MAGIC_CATEGORY_MULTIPLIERS[key] === undefined) {
                 errors.push('MAGIC_CATEGORY_MULTIPLIERS missing key "' + key + '".');
             } else if (typeof MAGIC_CATEGORY_MULTIPLIERS[key] !== 'number' || MAGIC_CATEGORY_MULTIPLIERS[key] <= 0) {
-                errors.push('MAGIC_CATEGORY_MULTIPLIERS["' + key + '"] must be a positive number.');
+                errors.push('MAGIC_CATEGORY_MULTIPLIERS["' + key + '"] must be positive.');
             }
         });
 
-        // ---- MAGIC CLASS MAP ----
-        if (!MAGIC_CLASS_MAP || typeof MAGIC_CLASS_MAP !== 'object') {
-            errors.push('MAGIC_CLASS_MAP is missing or invalid.');
+        // --- Proficiency levels ---
+        if (!Array.isArray(MAGIC_PROFICIENCY_LEVELS) || MAGIC_PROFICIENCY_LEVELS.length === 0) {
+            errors.push('MAGIC_PROFICIENCY_LEVELS must be a non-empty array.');
         }
 
-        categoryKeys.forEach(function(key) {
-            var category = MAGIC_CATEGORIES[key];
-            if (!category) return;
-
-            if (!MAGIC_CLASS_MAP[key]) {
-                errors.push('MAGIC_CLASS_MAP missing key "' + key + '".');
-                return;
-            }
-
-            var typeMap = MAGIC_CLASS_MAP[key];
-            category.types.forEach(function(typeKey) {
-                if (!typeMap[typeKey]) {
-                    errors.push('MAGIC_CLASS_MAP["' + key + '"] missing type "' + typeKey + '".');
+        // Check coverage: 0..MAGIC_MAX with no gaps or overlaps
+        var covered = new Array(MAGIC_MAX + 1).fill(0);
+        MAGIC_PROFICIENCY_LEVELS.forEach(function(level) {
+            for (var v = level.min; v <= level.max; v++) {
+                if (v < 0 || v > MAGIC_MAX) {
+                    errors.push('Proficiency level "' + level.id + '" covers out-of-range value ' + v + '.');
+                    continue;
                 }
-            });
+                covered[v]++;
+            }
         });
+        for (var v = 0; v <= MAGIC_MAX; v++) {
+            if (covered[v] === 0) {
+                errors.push('Proficiency value ' + v + ' not covered by any level.');
+            } else if (covered[v] > 1) {
+                errors.push('Proficiency value ' + v + ' covered by multiple levels.');
+            }
+        }
 
-        // ---- MAGIC POWER THRESHOLDS ----
-        var validRanks = ['ARCHMAGE', 'MASTER', 'ADEPT', 'APPRENTICE', 'NOVICE'];
-        validRanks.forEach(function(rank) {
-            if (MAGIC_POWER_THRESHOLDS[rank] === undefined) {
-                errors.push('MAGIC_POWER_THRESHOLDS missing key "' + rank + '".');
-            } else if (typeof MAGIC_POWER_THRESHOLDS[rank] !== 'number' || MAGIC_POWER_THRESHOLDS[rank] < 0 || MAGIC_POWER_THRESHOLDS[rank] > 100) {
-                errors.push('MAGIC_POWER_THRESHOLDS["' + rank + '"] must be between 0 and 100.');
-            }
-        });
-
-        // Check thresholds are in descending order
-        var prev = 101;
-        validRanks.forEach(function(rank) {
-            var val = MAGIC_POWER_THRESHOLDS[rank];
-            if (val !== undefined && val >= prev) {
-                errors.push('Magic power thresholds must be in descending order. "' + rank + '" is ' + val + ', expected < ' + prev);
-            }
-            if (val !== undefined) {
-                prev = val;
-            }
-        });
+        // --- Configuration ---
+        if (typeof MAGIC_MAX !== 'number' || MAGIC_MAX < 0) {
+            errors.push('MAGIC_MAX must be a non-negative number.');
+        }
+        if (typeof BALANCED_MAGE_THRESHOLD !== 'number' || BALANCED_MAGE_THRESHOLD < 0) {
+            errors.push('BALANCED_MAGE_THRESHOLD must be a non-negative number.');
+        }
+        if (typeof MAGIC_FINE_CLASS_MIN !== 'number' || MAGIC_FINE_CLASS_MIN < 0) {
+            errors.push('MAGIC_FINE_CLASS_MIN must be a non-negative number.');
+        }
 
         if (errors.length > 0) {
             throw new Error('MagicConstants validation failed:\n  ' + errors.join('\n  '));
@@ -651,10 +510,6 @@
 
         return true;
     }
-
-    // ============================================================
-    // VALIDATE BEFORE PUBLISHING
-    // ============================================================
 
     try {
         validateConstants();
@@ -665,37 +520,37 @@
     }
 
     // ============================================================
-    // DEEP FREEZE
+    // FREEZE
     // ============================================================
 
     deepFreeze(MAGIC_TYPES);
     deepFreeze(MAGIC_CATEGORIES);
     deepFreeze(MAGIC_TYPE_KEYS);
+    deepFreeze(MAGIC_CATEGORY_ORDER);
+    deepFreeze(MAGIC_BROAD_CLASSES);
+    deepFreeze(MAGIC_FINE_CLASSES);
     deepFreeze(MAGIC_CATEGORY_MULTIPLIERS);
-    deepFreeze(MAGIC_CLASS_MAP);
-    deepFreeze(MAGIC_POWER_THRESHOLDS);
-    deepFreeze(_typeMap);
-    deepFreeze(_categoryMap);
-    deepFreeze(_typeCategoryMap);
-    deepFreeze(_typeLabelMap);
-    deepFreeze(_typeColorMap);
+    deepFreeze(MAGIC_PROFICIENCY_LEVELS);
 
     // ============================================================
     // EXPOSE
     // ============================================================
 
     window.MagicConstants = Object.freeze({
-        // Raw definitions (read-only)
+        // Raw definitions
         MAGIC_TYPES: MAGIC_TYPES,
         MAGIC_CATEGORIES: MAGIC_CATEGORIES,
         MAGIC_TYPE_KEYS: MAGIC_TYPE_KEYS,
+        MAGIC_CATEGORY_ORDER: MAGIC_CATEGORY_ORDER,
+        MAGIC_BROAD_CLASSES: MAGIC_BROAD_CLASSES,
+        MAGIC_FINE_CLASSES: MAGIC_FINE_CLASSES,
+        MAGIC_PROFICIENCY_LEVELS: MAGIC_PROFICIENCY_LEVELS,
 
         // Configuration
         MAGIC_MAX: MAGIC_MAX,
         BALANCED_MAGE_THRESHOLD: BALANCED_MAGE_THRESHOLD,
+        MAGIC_FINE_CLASS_MIN: MAGIC_FINE_CLASS_MIN,
         MAGIC_CATEGORY_MULTIPLIERS: MAGIC_CATEGORY_MULTIPLIERS,
-        MAGIC_CLASS_MAP: MAGIC_CLASS_MAP,
-        MAGIC_POWER_THRESHOLDS: MAGIC_POWER_THRESHOLDS,
 
         // Type lookup
         getTypeKeys: getTypeKeys,
@@ -709,33 +564,39 @@
         getCategory: getCategory,
         getCategoryLabel: getCategoryLabel,
         getCategoryTypes: getCategoryTypes,
-
-        // Configuration lookup
         getCategoryMultiplier: getCategoryMultiplier,
-        getMagicClass: getMagicClass,
-        getPowerThreshold: getPowerThreshold,
-        getPowerThresholds: getPowerThresholds,
-        getMagicClassMap: getMagicClassMap,
+        getCategoryOrder: getCategoryOrder,
 
-        // Validation (public for testing)
+        // Broad class lookup
+        getBroadClasses: getBroadClasses,
+        getBroadClass: getBroadClass,
+        getBroadClassForCategory: getBroadClassForCategory,
+
+        // Fine class lookup
+        getFineClasses: getFineClasses,
+        getFineClass: getFineClass,
+        getFineClassForType: getFineClassForType,
+
+        // Proficiency level
+        getProficiencyLevel: getProficiencyLevel,
+        getProficiencyLevelLabel: getProficiencyLevelLabel,
+        getProficiencyLevels: getProficiencyLevels,
+
+        // Validation
         validateConstants: validateConstants
     });
 
     // ============================================================
-    // LEGACY COMPATIBILITY (DEPRECATED - Will be removed)
+    // LEGACY COMPATIBILITY
     // ============================================================
-
-    // These aliases are provided for backward compatibility
-    // during the migration from old constants structure.
-    // They will be removed in a future version.
 
     window.MAGIC_MAX = MAGIC_MAX;
     window.MAGIC_TYPES = MAGIC_TYPES;
     window.MAGIC_CATEGORIES = MAGIC_CATEGORIES;
     window.MAGIC_TYPE_KEYS = MAGIC_TYPE_KEYS;
-    window.MAGIC_CATEGORY_MULTIPLIERS = MAGIC_CATEGORY_MULTIPLIERS;
-    window.MAGIC_CLASS_MAP = MAGIC_CLASS_MAP;
-    window.MAGIC_POWER_THRESHOLDS = MAGIC_POWER_THRESHOLDS;
+    window.MAGIC_BROAD_CLASSES = MAGIC_BROAD_CLASSES;
+    window.MAGIC_FINE_CLASSES = MAGIC_FINE_CLASSES;
     window.BALANCED_MAGE_THRESHOLD = BALANCED_MAGE_THRESHOLD;
+    window.MAGIC_FINE_CLASS_MIN = MAGIC_FINE_CLASS_MIN;
 
 })();
