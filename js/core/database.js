@@ -59,6 +59,7 @@
  * - Version 11: Added statsConfig
  * - Version 12: Added personality and specialMoves to characters
  * - Version 13: Added attraction and sexuality to characters
+ * - Version 14: Added hp, mp, weapons to characters
  */
 
 (function() {
@@ -66,7 +67,7 @@
 
     var DB_NAME = 'HollowBladesDB';
     var DB_VERSION = 1;  // IndexedDB structural version (only 1 object store)
-    var DATA_VERSION = 13;  // Application data schema version
+    var DATA_VERSION = 14;  // Application data schema version
     var STORE_NAME = 'appData';
 
     // INTERNAL: The actual IndexedDB connection (private)
@@ -505,6 +506,7 @@
                 case 10: migrateToVersion11(data); break;
                 case 11: migrateToVersion12(data); break;
                 case 12: migrateToVersion13(data); break;
+                case 13: migrateToVersion14(data); break;
                 default: data._dataVersion = DATA_VERSION; break;
             }
         }
@@ -705,6 +707,43 @@
         data._dataVersion = 13;
     }
 
+    function migrateToVersion14(data) {
+        data.characters.forEach(function(char) {
+            // HP — number, default 0
+            if (typeof char.hp !== 'number' || isNaN(char.hp) || char.hp < 0) {
+                char.hp = 0;
+            }
+            if (char.hp > 999) {
+                char.hp = 999;
+            }
+
+            // MP — number, default 0
+            if (typeof char.mp !== 'number' || isNaN(char.mp) || char.mp < 0) {
+                char.mp = 0;
+            }
+            if (char.mp > 999) {
+                char.mp = 999;
+            }
+
+            // Weapons — array of { id, name, type, notes }
+            if (!Array.isArray(char.weapons)) {
+                char.weapons = [];
+            } else {
+                char.weapons = char.weapons.filter(function(w) {
+                    return w && typeof w === 'object';
+                }).map(function(w) {
+                    return {
+                        id:    typeof w.id === 'string' && w.id ? w.id : ('weapon_' + Math.random().toString(36).slice(2, 10)),
+                        name:  typeof w.name === 'string' ? w.name : '',
+                        type:  typeof w.type === 'string' ? w.type : 'sharp',
+                        notes: typeof w.notes === 'string' ? w.notes : ''
+                    };
+                });
+            }
+        });
+        data._dataVersion = 14;
+    }
+
     // ============================================================
     // NORMALISE DATA STRUCTURE - Current schema defaults
     // ============================================================
@@ -758,6 +797,42 @@
             if (char.sexuality === undefined) {
                 char.sexuality = '';
                 repaired = true;
+            }
+
+            // v14 — HP / MP / weapons
+            if (typeof char.hp !== 'number' || isNaN(char.hp) || char.hp < 0) {
+                char.hp = 0;
+                repaired = true;
+            }
+            if (typeof char.mp !== 'number' || isNaN(char.mp) || char.mp < 0) {
+                char.mp = 0;
+                repaired = true;
+            }
+            if (!Array.isArray(char.weapons)) {
+                char.weapons = [];
+                repaired = true;
+            } else {
+                var needsWeaponRepair = false;
+                char.weapons.forEach(function(w) {
+                    if (!w || typeof w !== 'object') { needsWeaponRepair = true; return; }
+                    if (typeof w.id !== 'string' || !w.id) { needsWeaponRepair = true; }
+                    if (typeof w.name !== 'string') { needsWeaponRepair = true; }
+                    if (typeof w.type !== 'string') { needsWeaponRepair = true; }
+                    if (typeof w.notes !== 'string') { needsWeaponRepair = true; }
+                });
+                if (needsWeaponRepair) {
+                    char.weapons = char.weapons.filter(function(w) {
+                        return w && typeof w === 'object';
+                    }).map(function(w) {
+                        return {
+                            id:    typeof w.id === 'string' && w.id ? w.id : ('weapon_' + Math.random().toString(36).slice(2, 10)),
+                            name:  typeof w.name === 'string' ? w.name : '',
+                            type:  typeof w.type === 'string' ? w.type : 'sharp',
+                            notes: typeof w.notes === 'string' ? w.notes : ''
+                        };
+                    });
+                    repaired = true;
+                }
             }
         });
 
