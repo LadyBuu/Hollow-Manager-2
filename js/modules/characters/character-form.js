@@ -10,6 +10,8 @@
  *   - Physical stats, HP, MP, weapons rendered inline
  *   - Combat Notes (char.combatNotes) is SEPARATE from Notes tab (char.notes)
  *   - Social tab rendering delegates to CharacterViews.renderCharacterSocial
+ *   - Academic tab rendering delegates to
+ *     CharacterClassView.renderAcademicTab
  */
 
 (function() {
@@ -32,6 +34,7 @@
     function getCharacterStats() { return window.CharacterStats || null; }
     function getCharacterStatsView() { return window.CharacterStatsView || null; }
     function getCharacterViews() { return window.CharacterViews || null; }
+    function getCharacterClassView() { return window.CharacterClassView || null; }
     function getAcademyQueries() { return window.AcademyQueries || null; }
     function getFormUtils() { return window.FormUtils || null; }
     function getDomUtils() { return window.DomUtils || null; }
@@ -218,7 +221,7 @@
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'remove-previous-name small danger';
-        removeBtn.textContent = '✕';
+        removeBtn.textContent = '\u2715';
         removeBtn.setAttribute('aria-label', 'Remove previous name');
         removeBtn.style.cssText = 'padding:4px 8px;font-size:0.65rem;';
 
@@ -279,7 +282,7 @@
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'remove-career-entry small danger';
-        removeBtn.textContent = '✕';
+        removeBtn.textContent = '\u2715';
         removeBtn.setAttribute('aria-label', 'Remove status entry');
         removeBtn.style.cssText = 'padding:4px 8px;font-size:0.65rem;';
 
@@ -338,7 +341,7 @@
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'remove-weapon small danger';
-        removeBtn.textContent = '✕';
+        removeBtn.textContent = '\u2715';
         removeBtn.setAttribute('aria-label', 'Remove weapon');
         removeBtn.style.cssText = 'padding:4px 8px;font-size:0.65rem;';
 
@@ -440,6 +443,19 @@
                 }
                 if (typeof CharacterStatsView.renderMovesSection === 'function') {
                     CharacterStatsView.renderMovesSection(null);
+                }
+            }
+        }
+
+        // Academic tab — delegate to CharacterClassView
+        var CharacterClassView = getCharacterClassView();
+        if (CharacterClassView && typeof CharacterClassView.renderAcademicTab === 'function') {
+            var academicContainer = document.getElementById('academic-class-view');
+            if (academicContainer) {
+                try {
+                    CharacterClassView.renderAcademicTab(char, academicContainer);
+                } catch (e) {
+                    console.warn('[CharacterForm] renderAcademicTab failed:', e);
                 }
             }
         }
@@ -701,7 +717,7 @@
         return `
             <div class="tab-panel" data-tab="physical" style="display:${active};">
                 <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
-                    <button type="button" id="random-physical-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">⟳ Random</button>
+                    <button type="button" id="random-physical-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">\u27f3 Random</button>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
@@ -756,7 +772,7 @@
         return `
             <div class="tab-panel" data-tab="personality" style="display:${active};">
                 <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
-                    <button type="button" id="random-personality-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">⟳ Random</button>
+                    <button type="button" id="random-personality-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">\u27f3 Random</button>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
@@ -826,7 +842,7 @@
 
         return `
             <div class="tab-panel" data-tab="academic" style="display:${active};">
-                <div id="academic-class-view" style="margin-top:8px;"></div>
+                <div id="academic-class-view"></div>
             </div>
         `;
     }
@@ -926,7 +942,7 @@
             `;
         });
 
-        var classOptions = '<option value="">— Derived —</option>';
+        var classOptions = '<option value="">\u2014 Derived \u2014</option>';
         var physicalClasses = getPhysicalClasses();
         physicalClasses.forEach(function(cls) {
             classOptions += '<option value="' + escapeHtml(cls.id) + '">' + escapeHtml(cls.label) + '</option>';
@@ -936,7 +952,7 @@
             <div class="combat-section" style="margin-bottom:12px;padding:10px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
                     <label style="font-size:0.8rem;color:var(--accent);font-weight:600;">Physical</label>
-                    <button type="button" id="roll-stats-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">⟳ Roll Stats</button>
+                    <button type="button" id="roll-stats-btn" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">\u27f3 Roll Stats</button>
                 </div>
 
                 <div class="stat-grid" style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-bottom:10px;">
@@ -946,7 +962,7 @@
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">Derived Class</label>
-                        <div id="derived-physical-class" style="padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--accent);border-radius:4px;font-size:0.75rem;font-weight:600;">—</div>
+                        <div id="derived-physical-class" style="padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--accent);border-radius:4px;font-size:0.75rem;font-weight:600;">\u2014</div>
                     </div>
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">Override (rewrites stats)</label>
@@ -961,14 +977,14 @@
                         <label style="font-size:0.7rem;color:var(--text-dim);">HP</label>
                         <div style="display:flex;gap:6px;">
                             <input type="number" id="char-hp" value="${c.hp || 0}" min="0" max="999" style="flex:1;padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.8rem;">
-                            <button type="button" id="roll-hp-btn" class="small secondary" style="font-size:0.7rem;padding:4px 10px;">⟳</button>
+                            <button type="button" id="roll-hp-btn" class="small secondary" style="font-size:0.7rem;padding:4px 10px;">\u27f3</button>
                         </div>
                     </div>
                     <div class="form-group">
                         <label style="font-size:0.7rem;color:var(--text-dim);">MP</label>
                         <div style="display:flex;gap:6px;">
                             <input type="number" id="char-mp" value="${c.mp || 0}" min="0" max="999" style="flex:1;padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.8rem;">
-                            <button type="button" id="roll-mp-btn" class="small secondary" style="font-size:0.7rem;padding:4px 10px;">⟳</button>
+                            <button type="button" id="roll-mp-btn" class="small secondary" style="font-size:0.7rem;padding:4px 10px;">\u27f3</button>
                         </div>
                     </div>
                 </div>
@@ -1005,7 +1021,7 @@
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:6px;">
                     <label style="font-size:0.8rem;color:var(--accent);font-weight:600;">Relationships</label>
                     <div style="display:flex;gap:6px;">
-                        <button type="button" id="view-char-social-graph" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">◊ View Network</button>
+                        <button type="button" id="view-char-social-graph" class="small secondary" style="font-size:0.65rem;padding:3px 10px;">\u25ca View Network</button>
                         <button type="button" id="add-char-relationship-btn" class="small primary" style="font-size:0.65rem;padding:3px 10px;">+ Add Relationship</button>
                     </div>
                 </div>
