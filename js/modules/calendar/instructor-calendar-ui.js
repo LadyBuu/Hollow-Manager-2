@@ -1,27 +1,46 @@
 /**
  * modules/calendar/instructor-calendar-ui.js - Instructor Calendar UI
- * Thin UI layer for instructor calendar
+ * Thin UI layer for the instructor calendar
+ * Path: js/modules/calendar/instructor-calendar-ui.js
  * 
  * IMPORTANT:
- *   - THIN - orchestrates interaction only
+ *   - THIN UI LAYER - orchestrates interaction only
  *   - Uses CalendarAggregator for reads
  *   - Uses ScheduleCore for mutations
- *   - Uses CalendarRenderer for HTML
+ *   - Uses CalendarRenderer for HTML generation
+ *   - Uses CalendarUIBase for shared UI helpers
+ *   - Persists changes via window.saveData() after every ScheduleCore mutation
  *   - No direct external domain access
+ *   - No direct window.data access
  * 
  * DEPENDENCIES:
- *   - CalendarUIBase
- *   - CalendarAggregator
- *   - CalendarRenderer
- *   - ScheduleCore
- *   - CalendarConstants
+ *   - window.CalendarUIBase
+ *   - window.CalendarAggregator
+ *   - window.CalendarRenderer
+ *   - window.ScheduleCore
+ *   - window.CalendarConstants
+ *   - window.CharacterQueries
+ *   - window.DisciplineQueries
+ *   - window.CalendarQueries (for template lookups)
+ * 
+ * USAGE:
+ *   var ui = window.InstructorCalendarUI;
+ *   ui.render(container, { selectedId: 'char_123', week: 5 });
  */
 
 (function() {
     'use strict';
 
+    // ============================================================
+    // LOAD GUARD - set immediately so re-inclusion is a no-op
+    // ============================================================
+
     if (window.__instructorCalendarUILoaded) { return; }
     window.__instructorCalendarUILoaded = true;
+
+    // ============================================================
+    // DEPENDENCY IMPORTS
+    // ============================================================
 
     var UIBase = window.CalendarUIBase;
     var Aggregator = window.CalendarAggregator;
@@ -30,6 +49,7 @@
     var CC = window.CalendarConstants;
     var CharacterQueries = window.CharacterQueries;
     var DisciplineQueries = window.DisciplineQueries;
+    var CalendarQueries = window.CalendarQueries;
 
     // ============================================================
     // STATE
@@ -48,7 +68,29 @@
     }
 
     function getInstructorName(instructorId) {
-        return CharacterQueries.getCharacterNameById(instructorId);
+        var instructor = CharacterQueries.getCharacterById(instructorId);
+        return instructor ? CharacterQueries.getDisplayName(instructor) : 'Unknown';
+    }
+
+    function getAvailableHours() {
+        var hours = [];
+        for (var h = CC.CALENDAR_START_HOUR; h <= CC.CALENDAR_END_HOUR; h++) {
+            hours.push(h);
+        }
+        return hours;
+    }
+
+    /**
+     * Persist the current data state after a ScheduleCore mutation.
+     * ScheduleCore mutates window.data.curriculum synchronously and does
+     * NOT persist. Callers must invoke saveData() themselves.
+     */
+    function persist() {
+        if (typeof window.saveData === 'function') {
+            window.saveData().catch(function() {
+                UIBase.notify('Changes applied but failed to save.', 'error');
+            });
+        }
     }
 
     // ============================================================
@@ -92,7 +134,10 @@
             hours: getAvailableHours()
         };
 
-        var html = Renderer.renderGrid({ selectedId: _state.selectedId, week: _state.week }, viewModel);
+        var html = Renderer.renderGrid(
+            { selectedId: _state.selectedId, week: _state.week },
+            viewModel
+        );
         container.innerHTML = html;
 
         bindEvents();
@@ -113,6 +158,7 @@
             var hour = parseInt(slot.dataset.hour, 10);
             if (isNaN(day) || isNaN(hour)) { continue; }
 
+            // Empty slot → add template
             if (slot.classList.contains('schedule-empty')) {
                 var listener = UIBase.addEventListener(slot, 'click', function() {
                     var d = parseInt(this.dataset.day, 10);
@@ -122,7 +168,8 @@
                 if (listener) { _listeners.push(listener); }
             }
 
-            if (slot.classList.contains('schedule-occupied')) {
+            // Occupied slot → details, right-click to remove
+            if (slot.classList.contains('schedule-occupied') && !slot.classList.contains('schedule-blocked')) {
                 var listener = UIBase.addEventListener(slot, 'click', function() {
                     var d = parseInt(this.dataset.day, 10);
                     var h = parseInt(this.dataset.hour, 10);
@@ -141,6 +188,7 @@
                 if (listener2) { _listeners.push(listener2); }
             }
 
+            // Blocked slot → details, right-click to remove
             if (slot.classList.contains('schedule-blocked')) {
                 var listener = UIBase.addEventListener(slot, 'click', function() {
                     var d = parseInt(this.dataset.day, 10);
@@ -172,9 +220,13 @@
         if (!select) { return; }
 
         var instructors = getInstructors();
-        UIBase.populateSelect(select, instructors, function(s) { return s.id; }, function(s) {
-            return CharacterQueries.getDisplayName(s);
-        }, _state.selectedId);
+        UIBase.populateSelect(
+            select,
+            instructors,
+            function(s) { return s.id; },
+            function(s) { return CharacterQueries.getDisplayName(s); },
+            _state.selectedId
+        );
 
         var listener = UIBase.addEventListener(select, 'change', function() {
             var id = this.value;
@@ -250,7 +302,9 @@
         );
 
         document.body.appendChild(modal);
-        UIBase.modalSetup(modal, function() { if (modal.parentNode) { modal.parentNode.removeChild(modal); } });
+        UIBase.modalSetup(modal, function() {
+            if (modal.parentNode) { modal.parentNode.removeChild(modal); }
+        });
 
         var closeModal = function() {
             if (modal.parentNode) { modal.parentNode.removeChild(modal); }
@@ -273,8 +327,8 @@
                 var disciplineId = select ? select.value : null;
                 var durationSelect = document.getElementById('add-template-duration');
                 var duration = durationSelect ? parseInt(durationSelect.value, 10) || 1 : 1;
-                var label = document.getElementById('add-template-label');
-                var labelValue = label ? label.value.trim() : '';
+                var labelInput = document.getElementById('add-template-label');
+                var labelValue = labelInput ? labelInput.value.trim() : '';
 
                 if (!disciplineId) {
                     UIBase.notify('Please select a discipline.', 'error');
@@ -286,8 +340,20 @@
                     return;
                 }
 
-                var result = ScheduleCore.setInstructorTemplate(_state.selectedId, _state.week, day, hour, disciplineId, duration, labelValue);
+                // Signature: setInstructorTemplate(instructorId, week, day, hour, disciplineId, duration, label, assignedStudents)
+                var result = ScheduleCore.setInstructorTemplate(
+                    _state.selectedId,
+                    _state.week,
+                    day,
+                    hour,
+                    disciplineId,
+                    duration,
+                    labelValue,
+                    []
+                );
+
                 if (result && result.success) {
+                    persist();
                     closeModal();
                     UIBase.notify('Template added successfully.', 'success');
                     render(_container, _state);
@@ -301,7 +367,7 @@
     function handleTemplateDetails(day, hour) {
         if (!_state.selectedId) { return; }
 
-        var templates = window.CalendarQueries.getInstructorTemplates(_state.selectedId, _state.week);
+        var templates = CalendarQueries.getInstructorTemplates(_state.selectedId, _state.week);
         var key = String(day) + '_' + String(hour);
         var template = templates[key];
 
@@ -345,7 +411,9 @@
         );
 
         document.body.appendChild(modal);
-        UIBase.modalSetup(modal, function() { if (modal.parentNode) { modal.parentNode.removeChild(modal); } });
+        UIBase.modalSetup(modal, function() {
+            if (modal.parentNode) { modal.parentNode.removeChild(modal); }
+        });
 
         var closeModal = function() {
             if (modal.parentNode) { modal.parentNode.removeChild(modal); }
@@ -380,6 +448,7 @@
 
         var result = ScheduleCore.removeInstructorTemplate(_state.selectedId, _state.week, day, hour);
         if (result && result.success) {
+            persist();
             UIBase.notify('Template removed successfully.', 'success');
             render(_container, _state);
         } else {
@@ -388,7 +457,61 @@
     }
 
     function handleBlockDetails(day, hour) {
-        UIBase.notify('This time is blocked.', 'info');
+        if (!_state.selectedId) { return; }
+
+        var dayName = CC.getDayName(day);
+        var hourDisplay = CC.formatHour(hour);
+
+        var modal = UIBase.createModal('block-details-modal');
+        if (!modal) { UIBase.notify('Could not create modal.', 'error'); return; }
+
+        modal.innerHTML = (
+            '<div class="modal-content modal-detail-content">' +
+                '<div class="modal-header">' +
+                    '<h3>Blocked Time</h3>' +
+                    '<button class="close-modal">&times;</button>' +
+                '</div>' +
+                '<div class="modal-body">' +
+                    '<div class="detail-row"><span class="detail-label">Day/Time:</span> <span class="detail-value"><strong>' +
+                        UIBase.escapeHtml(dayName + ' at ' + hourDisplay) + '</strong></span></div>' +
+                    '<div class="detail-row"><span class="detail-label">Week:</span> <span class="detail-value"><strong>' +
+                        _state.week + '</strong></span></div>' +
+                    '<div class="detail-actions">' +
+                        '<button type="button" id="remove-block-btn" class="danger small">Remove Block</button>' +
+                        '<button type="button" id="close-detail" class="secondary small">Close</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>'
+        );
+
+        document.body.appendChild(modal);
+        UIBase.modalSetup(modal, function() {
+            if (modal.parentNode) { modal.parentNode.removeChild(modal); }
+        });
+
+        var closeModal = function() {
+            if (modal.parentNode) { modal.parentNode.removeChild(modal); }
+        };
+
+        var closeBtn = modal.querySelector('.close-modal');
+        if (closeBtn) { closeBtn.onclick = closeModal; }
+
+        var closeDetailBtn = modal.querySelector('#close-detail');
+        if (closeDetailBtn) { closeDetailBtn.onclick = closeModal; }
+
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal) { closeModal(); }
+        });
+
+        var removeBtn = modal.querySelector('#remove-block-btn');
+        if (removeBtn) {
+            removeBtn.onclick = function() {
+                closeModal();
+                if (confirm('Remove this block?')) {
+                    handleRemoveBlock(day, hour);
+                }
+            };
+        }
     }
 
     function handleRemoveBlock(day, hour) {
@@ -399,19 +522,12 @@
 
         var result = ScheduleCore.removeInstructorBlock(_state.selectedId, _state.week, day, hour);
         if (result && result.success) {
+            persist();
             UIBase.notify('Block removed successfully.', 'success');
             render(_container, _state);
         } else {
             UIBase.notify(result ? result.message : 'Failed to remove block.', 'error');
         }
-    }
-
-    function getAvailableHours() {
-        var hours = [];
-        for (var h = CC.CALENDAR_START_HOUR; h <= CC.CALENDAR_END_HOUR; h++) {
-            hours.push(h);
-        }
-        return hours;
     }
 
     // ============================================================
@@ -422,10 +538,12 @@
 
     function setState(newState) {
         var changed = false;
+
         if (newState.selectedId !== undefined && newState.selectedId !== _state.selectedId) {
             _state.selectedId = newState.selectedId;
             changed = true;
         }
+
         if (newState.week !== undefined && newState.week !== _state.week) {
             var week = parseInt(newState.week, 10);
             if (!isNaN(week) && week >= CC.MIN_WEEK && week <= CC.MAX_WEEK) {
@@ -433,6 +551,7 @@
                 changed = true;
             }
         }
+
         if (changed && _container) { render(_container, _state); }
         return changed;
     }
