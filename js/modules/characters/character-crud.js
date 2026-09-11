@@ -39,6 +39,7 @@
  *   - hp: number, 0–999, manual or rolled
  *   - mp: number, 0–999, manual or rolled
  *   - weapons: array of { id, name, type, notes }
+ *   - combatNotes: string, Combat-tab-specific notes (SEPARATE from notes)
  *   - Physical/magical classes are DERIVED from stats, never stored
  * 
  * IMPORTANT:
@@ -89,11 +90,11 @@
     var MAX_MOVE_DESCRIPTION_LENGTH = CharacterConstants.MAX_MOVE_DESCRIPTION_LENGTH;
 
     var HP_MIN = CharacterConstants.HP_MIN;
-    var HP_MAX = CharacterConstants.HP_MAX;   // base cap (modifiers may exceed)
+    var HP_MAX = CharacterConstants.HP_MAX;
     var HP_HARD_CAP = 999;
 
     var MP_MIN = CharacterConstants.MP_MIN;
-    var MP_MAX = CharacterConstants.MP_MAX;   // base cap
+    var MP_MAX = CharacterConstants.MP_MAX;
     var MP_HARD_CAP = 999;
 
     var MAX_WEAPONS = CharacterConstants.MAX_WEAPONS;
@@ -183,7 +184,6 @@
             ? weapon.type
             : DEFAULT_WEAPON_TYPE;
 
-        // Validate type against CharacterConstants
         if (CharacterConstants && typeof CharacterConstants.isValidWeaponType === 'function') {
             if (!CharacterConstants.isValidWeaponType(type)) {
                 type = DEFAULT_WEAPON_TYPE;
@@ -218,9 +218,8 @@
         for (var i = 0; i < weapons.length; i++) {
             var w = normaliseWeapon(weapons[i]);
             if (!w) { continue; }
-            if (!w.name) { continue; }  // drop nameless entries
+            if (!w.name) { continue; }
 
-            // Ensure unique id
             if (seenIds[w.id]) {
                 w.id = (IdUtils && typeof IdUtils.generateId === 'function')
                     ? IdUtils.generateId('weapon')
@@ -431,6 +430,7 @@
         data.attraction = charData.attraction ? charData.attraction.trim() : '';
         data.sexuality = charData.sexuality ? charData.sexuality.trim() : '';
         data.notes = charData.notes ? charData.notes.trim() : '';
+        data.combatNotes = charData.combatNotes ? charData.combatNotes.trim() : '';
 
         // ---- Academic fields ----
         if (charData.graduatingClassId !== undefined) {
@@ -686,6 +686,7 @@
             hp: normalised.hp || 0,
             mp: normalised.mp || 0,
             weapons: Array.isArray(normalised.weapons) ? normalised.weapons : [],
+            combatNotes: normalised.combatNotes || '',
             eliminations: [],
             eliminatedWeeks: [],
             createdAt: new Date().toISOString()
