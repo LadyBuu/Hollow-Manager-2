@@ -1,12 +1,12 @@
 /**
  * modules/social/social-graph.js - Social Graph Visualization
- * SVG-based social network graph rendering
+ * SVG-based social network graph rendering (top-level Social tab)
  * 
  * This module provides:
  *   - renderGraph - Main graph render entry
+ *   - renderCharacterGraph - Scoped render around a single character
  *   - calculatePositions - Node positioning algorithm
  *   - getGraphLabel - Smart label shortening
- *   - applyGraphTransform - Zoom/pan transform
  *   - getNodeColor - Character color coding
  *   - updateLegend - Relationship type legend
  * 
@@ -15,22 +15,14 @@
  *   - No direct window.data access - uses SocialQueries + SocialAggregator
  *   - Uses SocialConstants for type definitions
  *   - Uses SocialAggregator for character data (names, status, etc.)
- *   - Graph is rendered as SVG
- *   - Click events are delegated to SocialEvents
- *   - Zoom state is managed locally
+ *   - The CHARACTER-FORM graph is rendered separately by character-views.js
+ *   - This file renders the standalone Social tab's graph
  * 
  * DEPENDENCIES:
  *   - window.SocialQueries (from social-queries.js) - MANDATORY
  *   - window.SocialAggregator (from social-aggregator.js) - MANDATORY
  *   - window.SocialConstants (from social-constants.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
- * 
- * USAGE:
- *   var SG = window.SocialGraph;
- *   SG.renderGraph();
- *   SG.setZoomLevel(1.5);
- *   SG.zoomIn();
- *   SG.zoomOut();
  */
 
 (function() {
@@ -69,6 +61,9 @@
         if (!SocialQueries || typeof SocialQueries.isRelationshipDirectional !== 'function') {
             missing.push('SocialQueries.isRelationshipDirectional');
         }
+        if (!SocialQueries || typeof SocialQueries.getCharacterRelationships !== 'function') {
+            missing.push('SocialQueries.getCharacterRelationships');
+        }
 
         if (!SocialAggregator || typeof SocialAggregator.getConnectedCharactersViewModel !== 'function') {
             missing.push('SocialAggregator.getConnectedCharactersViewModel');
@@ -94,11 +89,22 @@
     }
 
     // ============================================================
-    // HTML ESCAPING - Delegates to DomUtils (SINGLE SOURCE OF TRUTH)
+    // HTML ESCAPING
     // ============================================================
 
     function escapeHtml(value) {
         return DomUtils.escapeHtml(value);
+    }
+
+    function escapeAttribute(value) {
+        if (DomUtils && typeof DomUtils.escapeAttribute === 'function') {
+            return DomUtils.escapeAttribute(value);
+        }
+        if (value === undefined || value === null) { return ''; }
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     // ============================================================
@@ -107,6 +113,7 @@
 
     var _zoomLevel = 1;
     var _isGraphVisible = false;
+    var _scopedCharId = null;  // when set, graph renders around this character
 
     // ============================================================
     // ZOOM MANAGEMENT
@@ -116,7 +123,7 @@
         var newLevel = Math.max(0.3, Math.min(3, level));
         _zoomLevel = newLevel;
         updateZoomDisplay();
-        renderGraph();
+        renderGraph(_scopedCharId);
     }
 
     function getZoomLevel() {
@@ -146,8 +153,9 @@
     // VISIBILITY
     // ============================================================
 
-    function setGraphVisible(visible) {
+    function setGraphVisible(visible, charId) {
         _isGraphVisible = visible;
+        _scopedCharId = charId || null;
 
         var listView = document.getElementById('social-list-view');
         var graphView = document.getElementById('social-graph-view');
@@ -161,7 +169,7 @@
 
         if (visible) {
             updateZoomDisplay();
-            setTimeout(renderGraph, 50);
+            setTimeout(function() { renderGraph(_scopedCharId); }, 50);
         }
     }
 
@@ -173,7 +181,15 @@
     // GRAPH RENDER
     // ============================================================
 
-    function renderGraph() {
+    /**
+     * Render the graph.
+     * 
+     * @param {string|null} charId - Optional. When provided, only relationships
+     *                                involving this character are rendered
+     *                                (scope mode). When null, the whole graph
+     *                                renders (top-level Social tab).
+     */
+    function renderGraph(charId) {
         if (!_isGraphVisible) {
             return;
         }
@@ -182,6 +198,9 @@
             showError('Graph dependencies not loaded.');
             return;
         }
+
+        // Track scope
+        _scopedCharId = charId || null;
 
         var svg = document.getElementById('social-svg');
         if (!svg) {
@@ -206,22 +225,31 @@
         svg.setAttribute('width', width);
         svg.setAttribute('height', height);
 
-        var relationships = SocialQueries.getAllRelationships();
+        // ---- Get relationships (scoped or all) ----
+        var relationships;
+        if (_scopedCharId) {
+            relationships = SocialQueries.getCharacterRelationships(_scopedCharId) || [];
+        } else {
+            relationships = SocialQueries.getAllRelationships() || [];
+        }
 
         if (relationships.length === 0) {
             transformGroup.innerHTML = '<text x="' + (width/2) + '" y="' + (height/2) + '" text-anchor="middle" fill="var(--text-dim)" font-size="16">No relationships to display</text>';
+            updateLegend();
             return;
         }
 
+        // ---- Build node map ----
         var nodeMap = buildNodeMap(relationships);
 
         if (Object.keys(nodeMap).length < 2) {
             transformGroup.innerHTML = '<text x="' + (width/2) + '" y="' + (height/2) + '" text-anchor="middle" fill="var(--text-dim)" font-size="16">Need at least 2 characters with relationships</text>';
+            updateLegend();
             return;
         }
 
-        // Use Aggregator to get character data
-        var characterData = {};
+        // ---- Character data lookup ----
+        var characterData = Object.create(null);
         var nodeIds = Object.keys(nodeMap);
         for (var i = 0; i < nodeIds.length; i++) {
             var id = nodeIds[i];
@@ -243,18 +271,38 @@
             }
         }
 
-        var nodes = Object.values(nodeMap);
+        // ---- Positions ----
+        var nodes = nodeIds.map(function(k) { return nodeMap[k]; });
         var positions = calculatePositions(nodes, width, height);
 
+        // ---- Group by pair ----
         var pairGroups = groupRelationshipsByPair(relationships);
 
+        // ---- Build SVG content ----
         var content = buildGraphSVG(pairGroups, nodeMap, positions, width, height, characterData);
 
         transformGroup.innerHTML = content;
 
+        // ---- Apply zoom transform ----
         applyGraphTransform(transformGroup, width, height);
 
+        // ---- Legend ----
         updateLegend();
+    }
+
+    /**
+     * Render the graph scoped to a single character.
+     * Public helper — the top-level Social tab can call this to show
+     * a character's network from the Social tab.
+     */
+    function renderCharacterGraph(charId) {
+        if (!charId) {
+            renderGraph(null);
+            return;
+        }
+
+        // Ensure graph is visible
+        setGraphVisible(true, charId);
     }
 
     // ============================================================
@@ -336,15 +384,16 @@
 
         var angleStep = (2 * Math.PI) / nodes.length;
 
+        // Max connections for degree-factor
+        var maxConnections = 1;
+        nodes.forEach(function(n) {
+            if (n.connections > maxConnections) {
+                maxConnections = n.connections;
+            }
+        });
+
         nodes.forEach(function(node, index) {
             var angle = angleStep * index - Math.PI / 2;
-
-            var maxConnections = 1;
-            nodes.forEach(function(n) {
-                if (n.connections > maxConnections) {
-                    maxConnections = n.connections;
-                }
-            });
 
             var degreeFactor = 1 - (node.connections / (maxConnections + 5)) * 0.4;
             var dist = radius * (0.6 + 0.4 * degreeFactor);
@@ -365,7 +414,7 @@
     function buildGraphSVG(pairGroups, nodeMap, positions, width, height, characterData) {
         var html = '';
 
-        // Draw relationship lines
+        // ---- Draw relationship lines ----
         Object.keys(pairGroups).forEach(function(pairKey) {
             var rels = pairGroups[pairKey];
             var firstRel = rels[0];
@@ -381,6 +430,7 @@
                 var typeLabel = SocialQueries.getRelationshipTypeLabel(r.typeId);
                 var isDirectional = SocialQueries.isRelationshipDirectional(r.typeId);
 
+                // Offset parallel lines between the same pair
                 var offset = 0;
                 if (total > 1) {
                     var offsetAmount = 8;
@@ -401,21 +451,22 @@
                 var y2 = pos2.y + perpY * offset;
 
                 html += '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '" ';
-                html += 'stroke="' + escapeHtml(color) + '" stroke-width="2" opacity="0.6" />';
+                html += 'stroke="' + escapeAttribute(color) + '" stroke-width="2" opacity="0.6" />';
 
                 if (isDirectional) {
-                    html += buildDirectionArrow(x1, y1, x2, y2, pos1, pos2, color);
+                    html += buildDirectionArrow(x1, y1, x2, y2, color);
                 }
 
+                // Label near midpoint
                 var midX = (x1 + x2) / 2 + perpX * offset * 1.5;
                 var midY = (y1 + y2) / 2 + perpY * offset * 1.5;
                 var labelY = midY - 5 - (total > 1 ? (index - (total - 1) / 2) * 6 : 0);
 
-                html += '<text x="' + midX + '" y="' + labelY + '" text-anchor="middle" fill="' + escapeHtml(color) + '" font-size="9" opacity="0.7">' + escapeHtml(typeLabel) + '</text>';
+                html += '<text x="' + midX + '" y="' + labelY + '" text-anchor="middle" fill="' + escapeAttribute(color) + '" font-size="9" opacity="0.7">' + escapeHtml(typeLabel) + '</text>';
             });
         });
 
-        // Draw nodes
+        // ---- Draw nodes ----
         var nodeIds = Object.keys(nodeMap);
         nodeIds.forEach(function(nodeId) {
             var node = nodeMap[nodeId];
@@ -429,15 +480,19 @@
             var radius = Math.max(20, Math.min(35, 20 + node.connections * 3));
             var color = getNodeColor(deceased, status);
 
+            // Shadow
             html += '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + radius + '" fill="rgba(0,0,0,0.3)" opacity="0.3" />';
 
-            html += '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + radius + '" fill="' + escapeHtml(color) + '" stroke="var(--border)" stroke-width="2" cursor="pointer" class="graph-node" data-id="' + escapeHtml(nodeId) + '" />';
+            // Node
+            html += '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + radius + '" fill="' + escapeAttribute(color) + '" stroke="var(--border)" stroke-width="2" cursor="pointer" class="graph-node" data-id="' + escapeAttribute(nodeId) + '" />';
 
+            // Label
             var fontSize = Math.max(9, Math.min(13, radius * 0.6));
             var displayName = getGraphLabel(name);
 
             html += '<text x="' + pos.x + '" y="' + (pos.y + 4) + '" text-anchor="middle" fill="var(--text)" font-size="' + fontSize + '" font-weight="600" pointer-events="none" class="graph-label">' + escapeHtml(displayName) + '</text>';
 
+            // Status below
             if (status) {
                 var statusColor = deceased ? 'var(--danger)' : 'var(--text-dim)';
                 html += '<text x="' + pos.x + '" y="' + (pos.y + radius + 14) + '" text-anchor="middle" fill="' + statusColor + '" font-size="8" pointer-events="none">' + escapeHtml(status) + '</text>';
@@ -448,17 +503,17 @@
     }
 
     // ============================================================
-    // DIRECTION ARROW BUILDER
+    // DIRECTION ARROW
     // ============================================================
 
-    function buildDirectionArrow(x1, y1, x2, y2, pos1, pos2, color) {
+    function buildDirectionArrow(x1, y1, x2, y2, color) {
         var dx = x2 - x1;
         var dy = y2 - y1;
         var dist = Math.sqrt(dx * dx + dy * dy) || 1;
 
         var angle = Math.atan2(dy, dx);
 
-        // Estimate target node radius based on degree (simplified)
+        // Estimate target node radius (approx)
         var radius = 20;
 
         var arrowDist = Math.max(0, dist - radius - 4);
@@ -473,7 +528,7 @@
             (arrowX + arrowSize * Math.cos(angle - 0.4)) + ',' + (arrowY + arrowSize * Math.sin(angle - 0.4)) + ' ' +
             (arrowX + arrowSize * Math.cos(angle + 0.4)) + ',' + (arrowY + arrowSize * Math.sin(angle + 0.4)) + ' ' +
             (arrowX + arrowSize * 1.4 * Math.cos(angle)) + ',' + (arrowY + arrowSize * 1.4 * Math.sin(angle)) +
-            '" fill="' + escapeHtml(color) + '" opacity="0.8" />';
+            '" fill="' + escapeAttribute(color) + '" opacity="0.8" />';
     }
 
     // ============================================================
@@ -522,8 +577,7 @@
             var last = parts[parts.length - 1];
 
             if (first.length > 6) {
-                var initial = first.charAt(0);
-                return initial + '. ' + last;
+                return first.charAt(0) + '. ' + last;
             }
 
             return first + ' ' + last.charAt(0) + '.';
@@ -539,9 +593,7 @@
     function applyGraphTransform(transformGroup, width, height) {
         if (!transformGroup) {
             transformGroup = document.querySelector('#social-graph-transform');
-            if (!transformGroup) {
-                return;
-            }
+            if (!transformGroup) { return; }
         }
 
         var centerX = (width || 800) / 2;
@@ -601,7 +653,7 @@
                     svg.setAttribute('height', container.clientHeight);
                 }
             }
-            setTimeout(renderGraph, 100);
+            setTimeout(function() { renderGraph(_scopedCharId); }, 100);
         }
     }
 
@@ -611,14 +663,10 @@
 
     function showError(message) {
         var svg = document.getElementById('social-svg');
-        if (!svg) {
-            return;
-        }
+        if (!svg) { return; }
 
         var transformGroup = svg.querySelector('#social-graph-transform');
-        if (!transformGroup) {
-            return;
-        }
+        if (!transformGroup) { return; }
 
         var width = svg.clientWidth || 800;
         var height = svg.clientHeight || 600;
@@ -633,6 +681,7 @@
     window.SocialGraph = {
         // Render
         renderGraph: renderGraph,
+        renderCharacterGraph: renderCharacterGraph,
 
         // Zoom
         setZoomLevel: setZoomLevel,
@@ -651,13 +700,10 @@
         // Resize
         handleResize: handleResize,
 
-        // Helpers
+        // Helpers (exposed for testing)
         calculatePositions: calculatePositions,
         getGraphLabel: getGraphLabel,
-        getNodeColor: getNodeColor,
-
-        // State
-        getZoomLevel: getZoomLevel
+        getNodeColor: getNodeColor
     };
 
 })();
