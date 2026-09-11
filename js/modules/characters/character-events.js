@@ -14,6 +14,8 @@
  *   - SocialCore is initialized on-demand via ensureSocialCoreInitialized()
  *     so the character form's Social tab works even if the top-level
  *     Social tab was never opened.
+ *   - Modals are HIDDEN (not destroyed) so they can be reused:
+ *     use Modal.hideModal() not Modal.closeModal().
  */
 
 (function() {
@@ -156,16 +158,8 @@
     /**
      * Ensure SocialCore has been initialized with a characterProvider.
      * Idempotent — safe to call multiple times.
-     * 
-     * SocialCore needs a `characterProvider` with an `exists(id)` method
-     * so it can validate that both characters exist before creating a
-     * relationship. The top-level Social module calls this on mount, but
-     * the Character form's Social tab must work even if the standalone
-     * Social tab was never opened. This helper makes the character form
-     * self-sufficient.
      */
     function ensureSocialCoreInitialized() {
-        // Already done in this session — skip
         if (_socialCoreInitialized) { return true; }
 
         if (!window.SocialCore || typeof window.SocialCore.init !== 'function') {
@@ -185,7 +179,6 @@
 
         try {
             var result = window.SocialCore.init({ characterProvider: characterProvider });
-            // SocialCore.init returns true when the provider was accepted
             if (result !== false) {
                 _socialCoreInitialized = true;
                 return true;
@@ -1171,7 +1164,6 @@
             return;
         }
 
-        // Make sure SocialCore has a provider before we try to mutate
         ensureSocialCoreInitialized();
 
         if (!SocialCore || !SocialQueries || !SocialConstants) {
@@ -1222,9 +1214,13 @@
     function closeRelationshipModal() {
         _socialEditId = null;
         var modal = document.getElementById('character-relationship-modal');
-        if (modal && Modal && typeof Modal.closeModal === 'function') {
-            Modal.closeModal(modal);
-        } else if (modal) {
+        if (!modal) { return; }
+
+        // Use hideModal (not closeModal) so the modal stays in the DOM
+        // and can be reused for the next Add/Edit operation.
+        if (Modal && typeof Modal.hideModal === 'function') {
+            Modal.hideModal(modal);
+        } else {
             modal.classList.add('hidden');
             modal.style.display = 'none';
         }
@@ -1263,7 +1259,6 @@
             return;
         }
 
-        // Ensure the provider is in place
         ensureSocialCoreInitialized();
 
         var char1El = document.getElementById('rel-char1');
@@ -1329,7 +1324,7 @@
                     notify(result.message, 'error');
                 }
             })
-            .catch(function(err) {
+            .catch(function() {
                 notify('Failed to save relationship.', 'error');
             });
     }
@@ -1426,9 +1421,13 @@
 
     function closeCharacterGraphModal() {
         var modal = document.getElementById('character-graph-modal');
-        if (modal && Modal && typeof Modal.closeModal === 'function') {
-            Modal.closeModal(modal);
-        } else if (modal) {
+        if (!modal) { return; }
+
+        // Use hideModal (not closeModal) so the modal stays in the DOM
+        // and can be reused.
+        if (Modal && typeof Modal.hideModal === 'function') {
+            Modal.hideModal(modal);
+        } else {
             modal.classList.add('hidden');
             modal.style.display = 'none';
         }
