@@ -15,18 +15,22 @@
  *   - No passthrough methods
  * 
  * API:
- *   - getRelationshipViewModel(relationship)
+ *   - getRelationshipViewModel(relationship, contextCharId)
  *   - getCharacterRelationshipsViewModel(characterId)
  *   - getConnectedCharactersViewModel(characterId)
  *   - getSocialPageViewModel(options)
+ *   - getGroupedCharacterRelationshipsViewModel(characterId)
+ *   - getAllGroupedRelationshipsViewModel(options)
  * 
  * DEPENDENCIES:
  *   - window.SocialQueries (from social-queries.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
+ *   - window.SocialConstants (from social-constants.js) - MANDATORY
  * 
  * USAGE:
  *   var vm = SocialAggregator.getCharacterRelationshipsViewModel('char_123');
  *   var rel = SocialAggregator.getRelationshipViewModel(relationship);
+ *   var grouped = SocialAggregator.getGroupedCharacterRelationshipsViewModel('char_123');
  */
 
 (function() {
@@ -43,6 +47,7 @@
 
     var SocialQueries = window.SocialQueries;
     var CharacterQueries = window.CharacterQueries;
+    var SocialConstants = window.SocialConstants;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -81,6 +86,19 @@
         }
         if (!CharacterQueries || typeof CharacterQueries.getCharacterAge !== 'function') {
             missing.push('CharacterQueries.getCharacterAge');
+        }
+
+        if (!SocialConstants || typeof SocialConstants.isDirectional !== 'function') {
+            missing.push('SocialConstants.isDirectional');
+        }
+        if (!SocialConstants || typeof SocialConstants.getLabel !== 'function') {
+            missing.push('SocialConstants.getLabel');
+        }
+        if (!SocialConstants || typeof SocialConstants.getColor !== 'function') {
+            missing.push('SocialConstants.getColor');
+        }
+        if (!SocialConstants || typeof SocialConstants.getRelationshipTypes !== 'function') {
+            missing.push('SocialConstants.getRelationshipTypes');
         }
 
         if (missing.length > 0) {
@@ -142,22 +160,39 @@
         if (startYear) {
             return 'From ' + startYear;
         }
+        if (endYear) {
+            return 'Until ' + endYear;
+        }
         return '';
     }
 
     function getDirectionText(relationship, charId) {
-        var isDirectional = SocialQueries.isRelationshipDirectional(relationship.typeId);
+        if (!relationship) { return ''; }
+        var isDirectional = SocialConstants.isDirectional(relationship.typeId);
         if (!isDirectional) { return ' ↔ '; }
 
-        if (!charId) { return ' → '; }
+        if (!charId) {
+            return ' → ';
+        }
 
         var target = String(charId);
         var isSource = String(relationship.character1) === target;
         return isSource ? ' → ' : ' ← ';
     }
 
+    /**
+     * Is this relationship ongoing (no endYear) or ended?
+     */
+    function isOngoing(relationship) {
+        if (!relationship) { return true; }
+        var end = relationship.endYear;
+        if (end === undefined || end === null) { return true; }
+        if (typeof end === 'string' && end.trim() === '') { return true; }
+        return false;
+    }
+
     // ============================================================
-    // PUBLIC API
+    // PUBLIC API - Single relationship view model
     // ============================================================
 
     /**
@@ -185,6 +220,11 @@
         var directionText = getDirectionText(relationship, contextCharId);
 
         var period = formatPeriod(relationship.startYear, relationship.endYear);
+        var ongoing = isOngoing(relationship);
+
+        var otherCharId = contextCharId
+            ? getOtherCharacterId(relationship, contextCharId)
+            : null;
 
         return {
             id: relationship.id,
@@ -201,18 +241,25 @@
             startYear: relationship.startYear || '',
             endYear: relationship.endYear || '',
             period: period,
+            ongoing: ongoing,
             notes: relationship.notes || '',
             createdAt: relationship.createdAt || '',
-            // Computed display
+
+            // Computed display helpers
             displayName: name1 + directionText + name2,
             displayType: typeLabel + (relationship.clarification ? ' (' + relationship.clarification + ')' : ''),
             displayPeriod: period,
-            // Context character
+
+            // Context character (when a perspective is provided)
             contextCharId: contextCharId || null,
-            otherCharId: contextCharId ? getOtherCharacterId(relationship, contextCharId) : null,
-            otherCharName: contextCharId ? getCharacterDisplayName(getOtherCharacterId(relationship, contextCharId)) : null
+            otherCharId: otherCharId,
+            otherCharName: otherCharId ? getCharacterDisplayName(otherCharId) : null
         };
     }
+
+    // ============================================================
+    // PUBLIC API - Character relationships view model
+    // ============================================================
 
     /**
      * Get a view model for all relationships of a character.
@@ -227,7 +274,7 @@
                 characterName: null,
                 relationships: [],
                 relationshipCount: 0,
-                byType: {}
+                byType: []
             };
         }
 
@@ -243,23 +290,25 @@
         });
 
         // Group by type
-        var byType = {};
+        var byTypeMap = Object.create(null);
         viewModels.forEach(function(vm) {
             if (!vm) { return; }
             var key = vm.typeId;
-            if (!byType[key]) {
-                byType[key] = {
+            if (!byTypeMap[key]) {
+                byTypeMap[key] = {
                     typeId: key,
                     typeLabel: vm.typeLabel,
                     typeColor: vm.typeColor,
                     relationships: []
                 };
             }
-            byType[key].relationships.push(vm);
+            byTypeMap[key].relationships.push(vm);
         });
 
         // Sort by type label
-        var sortedByType = Object.values(byType).sort(function(a, b) {
+        var sortedByType = Object.keys(byTypeMap).map(function(k) {
+            return byTypeMap[k];
+        }).sort(function(a, b) {
             return a.typeLabel.localeCompare(b.typeLabel);
         });
 
@@ -281,6 +330,10 @@
         };
     }
 
+    // ============================================================
+    // PUBLIC API - Connected characters view model
+    // ============================================================
+
     /**
      * Get a view model for all characters connected to a character.
      * 
@@ -301,7 +354,7 @@
         var characterName = char ? CharacterQueries.getDisplayName(char) : 'Unknown';
 
         var relationships = SocialQueries.getCharacterRelationships(characterId);
-        var connectionMap = {};
+        var connectionMap = Object.create(null);
 
         relationships.forEach(function(rel) {
             var otherId = getOtherCharacterId(rel, characterId);
@@ -321,9 +374,10 @@
             connectionMap[otherId].relationships.push(getRelationshipViewModel(rel, characterId));
         });
 
-        var connections = Object.values(connectionMap);
+        var connections = Object.keys(connectionMap).map(function(k) {
+            return connectionMap[k];
+        });
 
-        // Sort by character name
         connections.sort(function(a, b) {
             return a.characterName.localeCompare(b.characterName);
         });
@@ -335,6 +389,10 @@
             connectionCount: connections.length
         };
     }
+
+    // ============================================================
+    // PUBLIC API - Full social page view model
+    // ============================================================
 
     /**
      * Get a complete social page view model.
@@ -378,7 +436,7 @@
         });
 
         // Get all characters with relationships
-        var characterIds = {};
+        var characterIds = Object.create(null);
         allRelationships.forEach(function(r) {
             if (r && r.character1) { characterIds[String(r.character1)] = true; }
             if (r && r.character2) { characterIds[String(r.character2)] = true; }
@@ -404,7 +462,7 @@
         }
 
         // Types with counts
-        var typeCounts = {};
+        var typeCounts = Object.create(null);
         allRelationships.forEach(function(r) {
             if (!r || !r.typeId) { return; }
             var key = r.typeId;
@@ -418,7 +476,9 @@
             }
             typeCounts[key].count++;
         });
-        var types = Object.values(typeCounts).sort(function(a, b) {
+        var types = Object.keys(typeCounts).map(function(k) {
+            return typeCounts[k];
+        }).sort(function(a, b) {
             return a.typeLabel.localeCompare(b.typeLabel);
         });
 
@@ -437,15 +497,184 @@
     }
 
     // ============================================================
+    // PUBLIC API - Grouped relationships (NEW)
+    // ============================================================
+
+    /**
+     * Get the character's relationships grouped by type.
+     * Each group has:
+     *   - typeId, typeLabel, typeColor
+     *   - ongoing: [] of relationship view models
+     *   - ended:   [] of relationship view models
+     *   - total:   number
+     * 
+     * Groups sorted alphabetically by type label.
+     * Ongoing and ended sorted by start year (ascending, empty last).
+     * 
+     * @param {string} characterId - Character ID
+     * @returns {array} Array of type-group view models
+     */
+    function getGroupedCharacterRelationshipsViewModel(characterId) {
+        if (!characterId) {
+            return [];
+        }
+
+        var relationships = SocialQueries.getCharacterRelationships(characterId);
+        if (!relationships || relationships.length === 0) {
+            return [];
+        }
+
+        // Map view models
+        var viewModels = relationships.map(function(rel) {
+            return getRelationshipViewModel(rel, characterId);
+        }).filter(function(vm) { return vm !== null; });
+
+        // Group by type
+        var groupMap = Object.create(null);
+        viewModels.forEach(function(vm) {
+            var key = vm.typeId;
+            if (!groupMap[key]) {
+                groupMap[key] = {
+                    typeId: key,
+                    typeLabel: vm.typeLabel,
+                    typeColor: vm.typeColor,
+                    ongoing: [],
+                    ended: [],
+                    total: 0
+                };
+            }
+            if (vm.ongoing) {
+                groupMap[key].ongoing.push(vm);
+            } else {
+                groupMap[key].ended.push(vm);
+            }
+            groupMap[key].total++;
+        });
+
+        // Sort each group's relationships by start year
+        function sortByStartYear(a, b) {
+            var aY = parseInt(a.startYear, 10);
+            var bY = parseInt(b.startYear, 10);
+            var aHas = !isNaN(aY);
+            var bHas = !isNaN(bY);
+            if (aHas && bHas) { return aY - bY; }
+            if (aHas && !bHas) { return -1; }
+            if (!aHas && bHas) { return 1; }
+            // Tiebreak on other char name
+            return String(a.otherCharName || '').localeCompare(String(b.otherCharName || ''));
+        }
+
+        var groups = Object.keys(groupMap).map(function(k) {
+            var g = groupMap[k];
+            g.ongoing.sort(sortByStartYear);
+            g.ended.sort(sortByStartYear);
+            return g;
+        });
+
+        // Sort groups alphabetically by type label
+        groups.sort(function(a, b) {
+            return a.typeLabel.localeCompare(b.typeLabel);
+        });
+
+        return groups;
+    }
+
+    /**
+     * Get ALL relationships grouped by type across the whole social graph.
+     * Used by the top-level Social tab for the grouped view.
+     * 
+     * @param {object} options - Options
+     * @param {string} options.characterFilter - Restrict to relationships involving this character
+     * @param {string} options.typeFilter - Restrict to a single type
+     * @returns {array} Array of type-group view models
+     */
+    function getAllGroupedRelationshipsViewModel(options) {
+        options = options || {};
+        var charFilter = options.characterFilter || 'all';
+        var typeFilter = options.typeFilter || 'all';
+
+        var relationships = SocialQueries.getAllRelationships();
+
+        if (charFilter !== 'all') {
+            relationships = relationships.filter(function(r) {
+                return String(r.character1) === String(charFilter) ||
+                       String(r.character2) === String(charFilter);
+            });
+        }
+        if (typeFilter !== 'all') {
+            relationships = relationships.filter(function(r) {
+                return r.typeId === typeFilter;
+            });
+        }
+
+        var contextCharId = charFilter !== 'all' ? charFilter : null;
+
+        var viewModels = relationships.map(function(rel) {
+            return getRelationshipViewModel(rel, contextCharId);
+        }).filter(function(vm) { return vm !== null; });
+
+        var groupMap = Object.create(null);
+        viewModels.forEach(function(vm) {
+            var key = vm.typeId;
+            if (!groupMap[key]) {
+                groupMap[key] = {
+                    typeId: key,
+                    typeLabel: vm.typeLabel,
+                    typeColor: vm.typeColor,
+                    ongoing: [],
+                    ended: [],
+                    total: 0
+                };
+            }
+            if (vm.ongoing) {
+                groupMap[key].ongoing.push(vm);
+            } else {
+                groupMap[key].ended.push(vm);
+            }
+            groupMap[key].total++;
+        });
+
+        function sortByStartYear(a, b) {
+            var aY = parseInt(a.startYear, 10);
+            var bY = parseInt(b.startYear, 10);
+            var aHas = !isNaN(aY);
+            var bHas = !isNaN(bY);
+            if (aHas && bHas) { return aY - bY; }
+            if (aHas && !bHas) { return -1; }
+            if (!aHas && bHas) { return 1; }
+            return String(a.displayName || '').localeCompare(String(b.displayName || ''));
+        }
+
+        var groups = Object.keys(groupMap).map(function(k) {
+            var g = groupMap[k];
+            g.ongoing.sort(sortByStartYear);
+            g.ended.sort(sortByStartYear);
+            return g;
+        });
+
+        groups.sort(function(a, b) {
+            return a.typeLabel.localeCompare(b.typeLabel);
+        });
+
+        return groups;
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.SocialAggregator = {
-        // Projections
+        // Single relationship
         getRelationshipViewModel: getRelationshipViewModel,
+
+        // Character-scoped
         getCharacterRelationshipsViewModel: getCharacterRelationshipsViewModel,
         getConnectedCharactersViewModel: getConnectedCharactersViewModel,
-        getSocialPageViewModel: getSocialPageViewModel
+        getGroupedCharacterRelationshipsViewModel: getGroupedCharacterRelationshipsViewModel,
+
+        // Global
+        getSocialPageViewModel: getSocialPageViewModel,
+        getAllGroupedRelationshipsViewModel: getAllGroupedRelationshipsViewModel
     };
 
 })();
