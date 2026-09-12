@@ -32,6 +32,17 @@
  *   - The academic tab refresh delegates to
  *     CharacterClassView.renderAcademicTab, which is the SINGLE
  *     rendering entry point for the academic tab.
+ *
+ * EDIT FLOW (characterEdit event):
+ *   - CharacterDetail dispatches a `characterEdit` CustomEvent on
+ *     document when the user clicks "Edit Character" in the detail
+ *     modal. The event carries { characterId }.
+ *   - This module listens for that event and drives the edit flow:
+ *     setCurrentEditId, CharacterForm.render, refreshUI.
+ *   - Without this listener, the detail modal's edit button is dead.
+ *   - The listener is registered once at init time. It is idempotent
+ *     (guarded by a module-level flag) so re-initialising does not
+ *     stack handlers.
  */
 
 (function() {
@@ -79,6 +90,11 @@
     // Social modal state
     var _socialEditId = null;
     var _socialCoreInitialized = false;
+
+    // [FIX] Guard against duplicate characterEdit listeners across
+    // re-inits. The listener lives on document and outlives container
+    // swaps, so we install it once and never re-add.
+    var _characterEditListenerInstalled = false;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -321,6 +337,67 @@
     }
 
     // ============================================================
+    // CHARACTER EDIT EVENT - consumed by CharacterDetail's edit button
+    // ============================================================
+    //
+    // CharacterDetail dispatches this event when the user clicks
+    // "Edit Character" in the detail modal. The detail modal is
+    // owned by CharacterDetail, so it closes itself before dispatching.
+    // Here we only need to:
+    //   1. Set the current edit ID.
+    //   2. Render the character form for that ID.
+    //   3. Refresh the surrounding UI so the list selection highlights.
+    //
+    // The listener is installed ONCE for the lifetime of the page. It
+    // is NOT added to _eventListeners because destroy() should not
+    // remove it — the detail modal outlives container swaps, and if we
+    // removed and re-added the listener on every init we would risk
+    // dropping an edit event fired during the swap window.
+
+    function installCharacterEditListener() {
+        if (_characterEditListenerInstalled) {
+            return;
+        }
+        _characterEditListenerInstalled = true;
+
+        document.addEventListener('characterEdit', function(e) {
+            var charId = e && e.detail ? e.detail.characterId : null;
+            if (!charId) {
+                return;
+            }
+
+            var char = CharacterQueries.getCharacterById(charId);
+            if (!char) {
+                notify('Character not found.', 'error');
+                return;
+            }
+
+            if (typeof window.setCurrentEditId === 'function') {
+                window.setCurrentEditId(charId);
+            }
+
+            CharacterForm.render(charId);
+            refreshUI(char);
+
+            // Scroll the form into view so the user sees the edit
+            // open. Matches handleCharacterSelect's behaviour.
+            var formContainer = document.getElementById('character-form-container');
+            if (formContainer) {
+                setTimeout(function() {
+                    formContainer.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                }, 100);
+            }
+
+            // On mobile, close the character list panel so the form
+            // is not obscured. Matches handleCharacterSelect.
+            if (window.innerWidth < UI_CONSTANTS.MOBILE_BREAKPOINT &&
+                typeof window.toggleCharacterList === 'function') {
+                window.toggleCharacterList(false);
+            }
+        });
+    }
+
+    // ============================================================
     // INIT / DESTROY
     // ============================================================
 
@@ -345,6 +422,9 @@
         // Ensure SocialCore has a characterProvider so relationship
         // mutations work even if the top-level Social tab was never opened.
         ensureSocialCoreInitialized();
+
+        // [FIX] Install the characterEdit listener exactly once.
+        installCharacterEditListener();
 
         // Static container elements
         bindToggleList(container);
@@ -383,6 +463,9 @@
         removeAllEventListeners();
         _initialized = false;
         _socialEditId = null;
+        // Note: _characterEditListenerInstalled intentionally stays true.
+        // The document-level listener survives container teardown so the
+        // detail modal's edit button keeps working across remounts.
     }
 
     // ============================================================

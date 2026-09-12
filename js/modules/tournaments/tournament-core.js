@@ -2,18 +2,19 @@
  * modules/tournaments/tournament-core.js - Tournament Core
  * CANONICAL mutation API for tournaments (tournament and round level)
  * Path: js/modules/tournaments/tournament-core.js
- * 
+ *
  * This module provides:
  *   - Tournament CRUD (create, update, delete)
  *   - Participant management (add, remove)
  *   - Round management (add, remove)
  *   - Tournament completion
  *   - Status transitions (canonical entry point)
- * 
+ *   - Cross-domain cascade helper (stripCharacterRefs)
+ *
  * IMPORTANT:
  *   - This module owns tournament and round mutations
  *   - Match-level mutations are delegated to TournamentMatches
- *   - TournamentCore → TournamentMatches uses INTERNAL PURE builders
+ *   - TournamentCore -> TournamentMatches uses INTERNAL PURE builders
  *   - Does NOT call saveData() - caller owns persistence via MutationPipeline
  *   - Does NOT log activity - MutationPipeline owns activity logging
  *   - Does NOT render or notify - UI layer owns that
@@ -21,7 +22,7 @@
  *   - Uses TournamentLifecycle for permission checks
  *   - Uses TournamentRules for domain condition checks
  *   - Returns DEFENSIVE COPIES of mutated objects
- * 
+ *
  * MUTATION PHILOSOPHY:
  *   - Caller is responsible for persistence via MutationPipeline
  *   - Invalid inputs are REJECTED (operation returns null/false)
@@ -31,28 +32,37 @@
  *   - Mutations are VALIDATION-ATOMIC: all validation completes before any mutation
  *   - Malformed existing data is NOT silently repaired
  *   - Getters return DEFENSIVE COPIES to prevent external mutation
- * 
+ *
  * STATUS TRANSITIONS:
  *   - status is NOT an updatable field via updateTournament
  *   - transitionStatus() is the SINGLE canonical entry point for status changes
  *   - completeTournament() is a thin wrapper around transitionStatus(id, 'completed')
- *   - All transitions validate against TournamentLifecycle.isValidStatusTransition
- *   - Domain prerequisites are enforced via TournamentRules
- *   - This closes the hole where a raw status update could bypass
- *     round-completeness and winner-existence prerequisites
- * 
+ *
  * YEAR SEMANTICS:
- *   - Years are UNBOUNDED positive integers.
- *   - There is no MIN_YEAR or MAX_YEAR.
  *   - Tournaments are scoped to WEEKS (bounded 1-52), not years.
- *   - Years are not stored on tournaments; this module never
- *     reads or writes year values.
- * 
+ *
  * MATCH DELEGATION:
  *   - addRound() uses TournamentMatches.buildRound() (internal pure builder)
  *   - addRound() does NOT call TournamentMatches.createMatch() (public command)
- *   - This prevents nested mutation transactions
- * 
+ *
+ * CASCADE SEMANTICS (stripCharacterRefs):
+ *   A character can appear in a tournament in four places:
+ *     1. tournament.participants[] - { id, type }. Entries with
+ *        type === 'character' matching the ID are removed.
+ *     2. tournament.eliminations[] - { participantId, participantType }.
+ *        Entries with participantType === 'character' matching are removed.
+ *     3. tournament.winner - { id, type }. Cleared if type === 'character'
+ *        and id matches.
+ *     4. tournament.rounds[].matches[].participants[] - raw ID arrays.
+ *        Matching IDs are filtered out. Matches that become empty are
+ *        pruned. Within a match, winner / loser / advancing[] fields are
+ *        also cleared of the deleted character.
+ *
+ *   This helper is PURE with respect to appData: it mutates the
+ *   tournaments array, but does not touch window.data. It is designed
+ *   to be called from inside a pipeline mutate() callback in another
+ *   module's transaction. It never throws.
+ *
  * DEPENDENCIES:
  *   - window.TournamentSchema (from tournament-schema.js) - MANDATORY
  *   - window.TournamentLifecycle (from tournament-lifecycle.js) - MANDATORY
@@ -64,7 +74,7 @@
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   var Core = window.TournamentCore;
  *   var tournament = Core.createTournament({ name: 'Spring Cup' });
@@ -257,13 +267,6 @@
     // ============================================================
     // INTERNAL SCHEMA / RECORD HELPERS
     // ============================================================
-    // 
-    // NAMING CONVENTION:
-    //   Internal helpers that accept a TOURNAMENT OBJECT end in
-    //   "FromRecord" or "Internal". Public exports accept a
-    //   TOURNAMENT ID. This naming split prevents hoisting collisions
-    //   between an internal helper and a public export that share a
-    //   logical concept.
 
     function validateTournamentInternal(tournament, strict) {
         var Schema = getSchema();
@@ -345,6 +348,144 @@
     }
 
     // ============================================================
+    // CASCADE HELPERS - Remove all references to a character ID
+    // ============================================================
+
+    /**
+     * Strip all references to a character from tournaments.
+     *
+     * A character can appear as:
+     *   - A tournament participant (participant.type === 'character').
+     *   - An elimination record (participantType === 'character').
+     *   - The tournament winner (if winner.type === 'character').
+     *   - A match participant inside rounds[].matches[].participants[].
+     *     Match participants are stored as raw ID arrays; matching IDs
+     *     are filtered out. Matches that become empty are pruned. Within
+     *     a surviving match, winner / loser / advancing[] fields are
+     *     also cleared of the deleted character.
+     *
+     * This helper is PURE with respect to appData: it mutates the
+     * tournaments array, but it does not touch window.data. It is
+     * designed to be called from inside a pipeline mutate() callback
+     * in another module's transaction. It never throws.
+     *
+     * @param {object} appData - The pipeline's appData snapshot
+     * @param {string} charId - Character ID to strip
+     * @returns {object} Cascade summary
+     */
+    function stripCharacterRefs(appData, charId) {
+        var result = {
+            participantRecordsRemoved: 0,
+            eliminationRecordsRemoved: 0,
+            winnerRecordsCleared: 0,
+            matchParticipantSlotsRemoved: 0,
+            matchesPruned: 0
+        };
+
+        if (!appData || !charId) {
+            return result;
+        }
+
+        if (!Array.isArray(appData.tournaments)) {
+            return result;
+        }
+
+        var target = String(charId);
+
+        for (var i = 0; i < appData.tournaments.length; i++) {
+            var tournament = appData.tournaments[i];
+            if (!tournament || typeof tournament !== 'object') {
+                continue;
+            }
+
+            // ---- Participants ----
+            if (Array.isArray(tournament.participants)) {
+                var beforeP = tournament.participants.length;
+                tournament.participants = tournament.participants.filter(function(p) {
+                    if (!p) { return true; }
+                    if (p.type !== 'character') { return true; }
+                    return String(p.id) !== target;
+                });
+                result.participantRecordsRemoved += beforeP - tournament.participants.length;
+            }
+
+            // ---- Eliminations ----
+            if (Array.isArray(tournament.eliminations)) {
+                var beforeE = tournament.eliminations.length;
+                tournament.eliminations = tournament.eliminations.filter(function(e) {
+                    if (!e) { return true; }
+                    if (e.participantType !== 'character') { return true; }
+                    return String(e.participantId) !== target;
+                });
+                result.eliminationRecordsRemoved += beforeE - tournament.eliminations.length;
+            }
+
+            // ---- Winner ----
+            if (tournament.winner &&
+                tournament.winner.type === 'character' &&
+                String(tournament.winner.id) === target) {
+                tournament.winner = null;
+                result.winnerRecordsCleared++;
+            }
+
+            // ---- Match participants inside rounds ----
+            if (Array.isArray(tournament.rounds)) {
+                for (var r = 0; r < tournament.rounds.length; r++) {
+                    var round = tournament.rounds[r];
+                    if (!round || !Array.isArray(round.matches)) {
+                        continue;
+                    }
+
+                    var matchesToKeep = [];
+
+                    for (var m = 0; m < round.matches.length; m++) {
+                        var match = round.matches[m];
+                        if (!match || typeof match !== 'object') {
+                            matchesToKeep.push(match);
+                            continue;
+                        }
+
+                        if (Array.isArray(match.participants)) {
+                            var beforeM = match.participants.length;
+                            match.participants = match.participants.filter(function(id) {
+                                return String(id) !== target;
+                            });
+                            result.matchParticipantSlotsRemoved +=
+                                beforeM - match.participants.length;
+                        }
+
+                        // If a match no longer has participants, drop it.
+                        if (Array.isArray(match.participants) && match.participants.length === 0) {
+                            result.matchesPruned++;
+                            continue;
+                        }
+
+                        // If the winner/loser of the match was the deleted
+                        // character, clear it.
+                        if (match.winner && String(match.winner) === target) {
+                            match.winner = null;
+                        }
+                        if (match.loser && String(match.loser) === target) {
+                            match.loser = null;
+                        }
+                        if (Array.isArray(match.advancing)) {
+                            match.advancing = match.advancing.filter(function(id) {
+                                return String(id) !== target;
+                            });
+                        }
+
+                        matchesToKeep.push(match);
+                    }
+
+                    round.matches = matchesToKeep;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    // ============================================================
     // TOURNAMENT QUERY HELPERS (delegated to Queries)
     // ============================================================
 
@@ -421,17 +562,17 @@
 
     /**
      * Check if a tournament is complete.
-     * 
+     *
      * A tournament is complete when ALL of the following hold:
      *   1. status === 'completed'
      *   2. rounds is a non-empty array
      *   3. every round has status === 'completed'
      *   4. a winner is set
-     * 
+     *
      * This is stricter than "status says completed". A tournament that
      * was transitioned to 'completed' without meeting its structural
      * prerequisites is malformed, not complete.
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @returns {boolean} True if complete
      */
@@ -462,7 +603,7 @@
 
     /**
      * Create a new tournament.
-     * 
+     *
      * @param {object} data - Tournament data
      * @returns {object|null} Created tournament or null
      */
@@ -566,7 +707,7 @@
 
     /**
      * Update an existing tournament.
-     * 
+     *
      * UPDATABLE FIELDS:
      *   - name
      *   - mode
@@ -575,7 +716,7 @@
      *   - totalRounds
      *   - graduatingClassId
      *   - classFilterEnabled
-     * 
+     *
      * NOT UPDATABLE HERE:
      *   - status: use transitionStatus()
      *   - participants: use addParticipant/removeParticipant
@@ -583,7 +724,7 @@
      *   - eliminations: use TournamentEliminationWorkflow
      *   - winner: derived from match completion
      *   - id, createdAt: immutable
-     * 
+     *
      * @param {string} id - Tournament ID
      * @param {object} updates - Updates to apply
      * @returns {object|null} Updated tournament or null
@@ -695,7 +836,7 @@
 
     /**
      * Delete a tournament permanently.
-     * 
+     *
      * @param {string} id - Tournament ID
      * @returns {boolean} Success
      */
@@ -740,7 +881,7 @@
 
     /**
      * Add a participant to a tournament.
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @param {object} participant - { id, type }
      * @returns {boolean} Success
@@ -833,7 +974,7 @@
 
     /**
      * Remove a participant from a tournament.
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @param {string} participantId - Participant ID
      * @returns {boolean} Success
@@ -893,7 +1034,7 @@
      * Add a round to a tournament.
      * Uses TournamentMatches.buildRound() (internal pure builder).
      * Does NOT call TournamentMatches.createMatch() (public command).
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @param {object} roundData - { matchSize, matchType }
      * @returns {boolean} Success
@@ -1003,7 +1144,7 @@
 
     /**
      * Remove a round from a tournament.
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @param {number} roundIndex - Index of round to remove (0-based)
      * @returns {boolean} Success
@@ -1081,17 +1222,17 @@
      * Transition a tournament to a new status.
      * This is the SINGLE canonical entry point for all status changes.
      * completeTournament() delegates to this.
-     * 
+     *
      * TRANSITION RULES (delegated to TournamentLifecycle):
-     *   - draft      → active, completed
-     *   - active     → completed
-     *   - completed  → (terminal, no transitions)
-     * 
+     *   - draft      -> active, completed
+     *   - active     -> completed
+     *   - completed  -> (terminal, no transitions)
+     *
      * PREREQUISITES (delegated to TournamentRules):
-     *   - draft → active:     requires >= 2 participants, valid week range
-     *   - active → completed: requires all rounds complete, winner present
+     *   - draft -> active:     requires >= 2 participants, valid week range
+     *   - active -> completed: requires all rounds complete, winner present
      *                         (bypassed when force === true)
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @param {string} newStatus - Target status ('active' or 'completed')
      * @param {boolean} force - Bypass domain prerequisites (not lifecycle)
@@ -1134,7 +1275,7 @@
         var Rules = getRules();
 
         if (!force) {
-            // draft → active
+            // draft -> active
             if (currentStatus === 'draft' && newStatus === 'active') {
                 if (Rules && typeof Rules.canStartTournament === 'function') {
                     if (!Rules.canStartTournament(tournament)) {
@@ -1143,7 +1284,7 @@
                 }
             }
 
-            // active → completed
+            // active -> completed
             if (currentStatus === 'active' && newStatus === 'completed') {
                 if (Rules && typeof Rules.isReadyForCompletion === 'function') {
                     if (!Rules.isReadyForCompletion(tournament)) {
@@ -1182,7 +1323,7 @@
     /**
      * Complete a tournament.
      * Thin wrapper around transitionStatus(id, 'completed').
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @param {boolean} force - Bypass prerequisites
      * @returns {boolean} Success
@@ -1198,7 +1339,7 @@
     /**
      * Get the lifecycle status of a tournament.
      * Delegates to TournamentLifecycle.
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @returns {object} Lifecycle status object
      */
@@ -1243,7 +1384,7 @@
     /**
      * Get the lifecycle rules for a status.
      * Delegates to TournamentLifecycle.
-     * 
+     *
      * @param {string} status - Tournament status
      * @returns {object|null} Lifecycle rules or null
      */
@@ -1258,7 +1399,7 @@
     /**
      * Get the allowed transitions for a tournament's current status.
      * Delegates to TournamentLifecycle.
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @returns {array} Array of { value, label } transition options
      */
@@ -1282,7 +1423,7 @@
 
     /**
      * Check if a participant is in a tournament.
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @param {string} participantId - Participant ID
      * @param {string} participantType - Participant type (optional)
@@ -1298,7 +1439,7 @@
 
     /**
      * Get participant type from tournament record.
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @param {string} participantId - Participant ID
      * @returns {string|null} Participant type or null
@@ -1313,7 +1454,7 @@
 
     /**
      * Check if a participant is eliminated.
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @param {string} participantId - Participant ID
      * @returns {boolean} True if eliminated
@@ -1328,7 +1469,7 @@
 
     /**
      * Get active participants (not eliminated).
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @returns {array} Array of active participants
      */
@@ -1350,7 +1491,7 @@
 
     /**
      * Get the winner of a tournament (defensive copy).
-     * 
+     *
      * @param {string} tournamentId - Tournament ID
      * @returns {object|null} Winner object or null
      */
@@ -1364,7 +1505,7 @@
 
     /**
      * Validate a tournament against the schema.
-     * 
+     *
      * @param {object} tournament - Tournament to validate
      * @param {boolean} strict - Strict validation
      * @returns {object} Validation result
@@ -1375,7 +1516,7 @@
 
     /**
      * Get a validation report for a tournament.
-     * 
+     *
      * @param {object} tournament - Tournament to report on
      * @returns {object} Validation report
      */
@@ -1414,6 +1555,9 @@
         getLifecycleRules: getLifecycleRules,
         getAllowedTransitions: getAllowedTransitions,
 
+        // ---- Cascade helpers (for cross-domain cleanup) ----
+        stripCharacterRefs: stripCharacterRefs,
+
         // ---- Query Helpers (read-only, defensive copies) ----
         getTournament: getTournament,
         getTournaments: getTournaments,
@@ -1445,6 +1589,7 @@
             'addRound', 'removeRound',
             'transitionStatus', 'completeTournament',
             'getLifecycleStatus', 'getLifecycleRules', 'getAllowedTransitions',
+            'stripCharacterRefs',
             'getTournament', 'getTournaments',
             'getParticipants', 'getRounds', 'getRoundCount',
             'getCurrentRound', 'isComplete', 'getWinner',

@@ -1,13 +1,15 @@
 /**
  * modules/academy/academy-groups.js - Academy Groups
  * CANONICAL source of truth for auto-group MUTATIONS.
- * 
+ *
  * This module provides:
  *   - Group mutations (create, delete)
  *   - Student membership mutations (add, remove, bulk)
  *   - Slot mutations (add, remove, bulk)
- *   - Candidate builders for MutationPipeline
- * 
+ *   - Bulk cleanup (delete all groups for instructor / discipline)
+ *   - Candidate builders for MutationPipeline (advanced callers)
+ *   - Cross-domain cascade helper (stripCharacterRefs)
+ *
  * IMPORTANT:
  *   - This module owns auto-group MUTATIONS only.
  *   - READS are owned by AcademyQueries. This module does not
@@ -15,15 +17,40 @@
  *     aliases that delegate to AcademyQueries and are kept only for
  *     backward compatibility. New code should call AcademyQueries.
  *   - Uses LAZY LOADING to break circular dependencies.
- *   - All mutations are candidate-based: validate, clone, return a
- *     candidate with a `mutate` closure. Callers run the closure
- *     inside their own transaction (or invoke it directly, which is
- *     what the public mutation functions below do).
- *   - This module does NOT call saveData() directly. The public
- *     mutation functions here are self-contained candidate runners;
- *     if you need transactional persistence, route through
- *     MutationPipeline at the call site.
- * 
+ *   - All PUBLIC mutations go through MutationPipeline. The pipeline
+ *     owns persistence, rollback, and activity logging.
+ *   - Candidate builders are still exported for callers that need to
+ *     run their own transaction (e.g. cascade deletes). They are
+ *     pure: they compute the closure but do not run it. The closure
+ *     takes an `appData` argument and expects to run INSIDE a pipeline
+ *     mutate() callback.
+ *   - This module does NOT call saveData() directly.
+ *
+ * STATUS MATCHING:
+ *   - CharacterQueries.getCurrentStatus returns TITLE-CASE values
+ *     ('Instructor', 'Trainee', 'Junior', ...).
+ *   - CharacterConstants.isInstructorStatus / isStudentStatus accept
+ *     any casing and do the lowercase comparison internally.
+ *   - When CharacterConstants is loaded, this module delegates to it.
+ *   - The local fallback lists are lowercase and the comparison
+ *     lowercases the incoming status before matching.
+ *
+ * MUTATION CONTRACT:
+ *   - All public mutations return Promise<{ success, data?, message? }>
+ *   - The candidate builders return { success, data: { mutate, ... } }
+ *     synchronously; the caller owns the transaction.
+ *
+ * CASCADE SEMANTICS (stripCharacterRefs):
+ *   A character can be referenced in autoGroups two ways:
+ *     - As the instructor (group.instructorId === charId). Groups
+ *       with a deleted instructor are removed entirely.
+ *     - As a student (group.students includes charId). The student
+ *       is removed from the array. Groups left with no students and
+ *       no slots are pruned.
+ *   This helper is called by CharacterCRUD.deleteCharacter from
+ *   inside its pipeline mutate, so it runs in the same transaction
+ *   as the character removal.
+ *
  * DATA STORE CONTRACT:
  *   - window.data.curriculum.autoGroups is the source of truth.
  *   - Shape:
@@ -36,7 +63,7 @@
  *         }
  *       }
  *   - groupKey is conventionally `disciplineId + '_' + instructorId`.
- * 
+ *
  * DEPENDENCIES (lazily loaded):
  *   - window.ObjectUtils - MANDATORY
  *   - window.IdUtils - MANDATORY
@@ -44,21 +71,26 @@
  *   - window.DisciplineQueries - MANDATORY
  *   - window.CalendarValidation - MANDATORY
  *   - window.CalendarConstants - MANDATORY
- *   - window.AcademyQueries - LAZY (for reads only)
- * 
+ *   - window.MutationPipeline - MANDATORY
+ *   - window.CharacterConstants - OPTIONAL (preferred for status checks)
+ *   - window.AcademyQueries - LAZY (for read aliases only)
+ *
  * USAGE:
  *   var groups = window.AcademyGroups;
- *   
- *   // Mutations
- *   var result = groups.createGroup(disciplineId, instructorId);
- *   var result = groups.deleteGroup(key);
- *   var result = groups.addStudentToGroup(key, studentId);
- *   var result = groups.removeStudentFromGroup(key, studentId);
- *   var result = groups.addSlotToGroup(key, week, day, hour, duration, label);
- *   var result = groups.removeSlotFromGroup(key, week, day, hour);
- *   
- *   // Candidate builders (for MutationPipeline)
+ *
+ *   // Mutations (Promise-based)
+ *   groups.createGroup(disciplineId, instructorId)
+ *       .then(function(result) { ... });
+ *
+ *   // Advanced: run the mutation inside your own transaction
  *   var candidate = groups.buildCreateGroupCandidate(disciplineId, instructorId);
+ *   if (candidate.success) {
+ *       MutationPipeline.performMutation({
+ *           validate: function() { return { valid: true }; },
+ *           mutate: function(appData) { return candidate.data.mutate(appData); },
+ *           // ...
+ *       });
+ *   }
  */
 
 (function() {
@@ -81,6 +113,10 @@
         return window.CharacterQueries || null;
     }
 
+    function getCharacterConstants() {
+        return window.CharacterConstants || null;
+    }
+
     function getDisciplineQueries() {
         return window.DisciplineQueries || null;
     }
@@ -99,6 +135,10 @@
 
     function getCalendarConstants() {
         return window.CalendarConstants || null;
+    }
+
+    function getMutationPipeline() {
+        return window.MutationPipeline || null;
     }
 
     // ============================================================
@@ -125,6 +165,9 @@
         }
         if (!getCalendarConstants()) {
             missing.push('CalendarConstants');
+        }
+        if (!getMutationPipeline()) {
+            missing.push('MutationPipeline');
         }
 
         if (!getAcademyQueries()) {
@@ -183,11 +226,6 @@
         return { success: true, data: data };
     }
 
-    /**
-     * Get the auto-groups store, defensively.
-     * The store is a plain object at curriculum.autoGroups.
-     * Returns {} if missing.
-     */
     function getAutoGroupsStore() {
         if (!window.data || typeof window.data !== 'object') {
             return {};
@@ -200,6 +238,64 @@
             return {};
         }
         return store;
+    }
+
+    /**
+     * Ensure the autoGroups store exists on the given appData object.
+     * This is the ONLY place in the module that creates structure.
+     * Called from inside pipeline mutate callbacks.
+     */
+    function ensureAutoGroupsStore(appData) {
+        if (!appData.curriculum || typeof appData.curriculum !== 'object') {
+            appData.curriculum = {};
+        }
+        if (!appData.curriculum.autoGroups ||
+            typeof appData.curriculum.autoGroups !== 'object' ||
+            Array.isArray(appData.curriculum.autoGroups)) {
+            appData.curriculum.autoGroups = {};
+        }
+        return appData.curriculum.autoGroups;
+    }
+
+    // ============================================================
+    // STATUS CLASSIFIERS
+    // ============================================================
+    //
+    // CharacterQueries.getCurrentStatus returns TITLE-CASE values
+    // ('Instructor', 'Trainee', ...). We need to classify them without
+    // hard-coding a list that can drift from CharacterConstants.
+    //
+    // Preferred path: CharacterConstants.isInstructorStatus /
+    // isStudentStatus (they already lowercase internally).
+    // Fallback path: local list, lowercased before comparison.
+
+    var LOCAL_INSTRUCTOR_STATUSES = ['instructor', 'teacher', 'professor', 'senior'];
+    var LOCAL_STUDENT_STATUSES = ['trainee', 'rookie', 'junior', 'student'];
+
+    function isInstructorStatus(status) {
+        if (!isNonEmptyString(status)) {
+            return false;
+        }
+
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.isInstructorStatus === 'function') {
+            return CC.isInstructorStatus(status) === true;
+        }
+
+        return LOCAL_INSTRUCTOR_STATUSES.indexOf(status.toLowerCase()) !== -1;
+    }
+
+    function isStudentStatus(status) {
+        if (!isNonEmptyString(status)) {
+            return false;
+        }
+
+        var CC = getCharacterConstants();
+        if (CC && typeof CC.isStudentStatus === 'function') {
+            return CC.isStudentStatus(status) === true;
+        }
+
+        return LOCAL_STUDENT_STATUSES.indexOf(status.toLowerCase()) !== -1;
     }
 
     // ============================================================
@@ -241,7 +337,7 @@
             return { valid: false, message: 'Instructor not found.' };
         }
         var status = CharacterQueries.getCurrentStatus(instructor);
-        if (status !== 'instructor' && status !== 'teacher' && status !== 'professor' && status !== 'senior') {
+        if (!isInstructorStatus(status)) {
             return { valid: false, message: 'Character is not an instructor.' };
         }
         return { valid: true, instructor: instructor };
@@ -260,7 +356,7 @@
             return { valid: false, message: 'Student not found.' };
         }
         var status = CharacterQueries.getCurrentStatus(student);
-        if (status !== 'trainee' && status !== 'rookie' && status !== 'junior') {
+        if (!isStudentStatus(status)) {
             return { valid: false, message: 'Character is not a student.' };
         }
         return { valid: true, student: student };
@@ -324,12 +420,10 @@
     // ============================================================
     // INTERNAL READS - Direct store access for mutations
     // ============================================================
-    // 
-    // These are used INTERNALLY by the candidate builders to
-    // validate preconditions. They read the store directly. The
-    // public read API is on AcademyQueries; these are private
-    // helpers so that mutations don't depend on the public read
-    // module.
+    // Used by candidate builders to validate preconditions. These
+    // read the LIVE store, not a snapshot. That's intentional: the
+    // candidate builder is a pre-flight check. The pipeline's
+    // validate() callback re-checks against the snapshot.
 
     function getGroupFromStore(key) {
         if (!isNonEmptyString(key)) {
@@ -372,14 +466,12 @@
     // ============================================================
     // CANDIDATE BUILDERS - For MutationPipeline
     // ============================================================
+    //
+    // Each builder returns { success: true, data: { mutate, ... } }.
+    // The `mutate` closure takes an `appData` argument and is designed
+    // to run INSIDE a pipeline mutate() callback. It does NOT reach
+    // into window.data directly.
 
-    /**
-     * Build a candidate for creating a group.
-     * 
-     * @param {string} disciplineId - Discipline ID
-     * @param {string} instructorId - Instructor ID
-     * @returns {object} { success, data?: { mutate, group, groupKey }, message? }
-     */
     function buildCreateGroupCandidate(disciplineId, instructorId) {
         var discResult = validateDisciplineId(disciplineId);
         if (!discResult.valid) {
@@ -420,17 +512,9 @@
             createdAt: new Date().toISOString()
         };
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum) {
-                dataStore.curriculum = {};
-            }
-            if (!dataStore.curriculum.autoGroups ||
-                typeof dataStore.curriculum.autoGroups !== 'object' ||
-                Array.isArray(dataStore.curriculum.autoGroups)) {
-                dataStore.curriculum.autoGroups = {};
-            }
-            dataStore.curriculum.autoGroups[groupKey] = deepClone(newGroup);
+        function mutate(appData) {
+            var store = ensureAutoGroupsStore(appData);
+            store[groupKey] = deepClone(newGroup);
             return { group: deepClone(newGroup) };
         }
 
@@ -441,12 +525,6 @@
         });
     }
 
-    /**
-     * Build a candidate for deleting a group.
-     * 
-     * @param {string} key - Group key
-     * @returns {object} { success, data?: { mutate, displayName }, message? }
-     */
     function buildDeleteGroupCandidate(key) {
         var keyResult = validateGroupKey(key);
         if (!keyResult.valid) {
@@ -460,12 +538,12 @@
 
         var displayName = group.displayName || key;
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum || !dataStore.curriculum.autoGroups) {
+        function mutate(appData) {
+            var store = ensureAutoGroupsStore(appData);
+            if (!store[key]) {
                 return { deleted: false };
             }
-            delete dataStore.curriculum.autoGroups[key];
+            delete store[key];
             return { deleted: true };
         }
 
@@ -475,13 +553,6 @@
         });
     }
 
-    /**
-     * Build a candidate for adding a student to a group.
-     * 
-     * @param {string} key - Group key
-     * @param {string} studentId - Student ID
-     * @returns {object} { success, data?: { mutate, ... }, message? }
-     */
     function buildAddStudentCandidate(key, studentId) {
         var keyResult = validateGroupKey(key);
         if (!keyResult.valid) {
@@ -505,12 +576,9 @@
         var CharacterQueries = getCharacterQueries();
         var studentName = CharacterQueries ? CharacterQueries.getDisplayName(studentResult.student) : 'Unknown';
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum || !dataStore.curriculum.autoGroups) {
-                return { added: false };
-            }
-            var candidateGroup = dataStore.curriculum.autoGroups[key];
+        function mutate(appData) {
+            var store = ensureAutoGroupsStore(appData);
+            var candidateGroup = store[key];
             if (!candidateGroup) {
                 return { added: false };
             }
@@ -530,13 +598,6 @@
         });
     }
 
-    /**
-     * Build a candidate for removing a student from a group.
-     * 
-     * @param {string} key - Group key
-     * @param {string} studentId - Student ID
-     * @returns {object} { success, data?: { mutate, ... }, message? }
-     */
     function buildRemoveStudentCandidate(key, studentId) {
         var keyResult = validateGroupKey(key);
         if (!keyResult.valid) {
@@ -556,12 +617,9 @@
             return failure('Student is not in this group.');
         }
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum || !dataStore.curriculum.autoGroups) {
-                return { removed: false };
-            }
-            var candidateGroup = dataStore.curriculum.autoGroups[key];
+        function mutate(appData) {
+            var store = ensureAutoGroupsStore(appData);
+            var candidateGroup = store[key];
             if (!candidateGroup || !Array.isArray(candidateGroup.students)) {
                 return { removed: false };
             }
@@ -573,7 +631,7 @@
             var hasStudents = candidateGroup.students && candidateGroup.students.length > 0;
             var hasSlots = candidateGroup.slots && candidateGroup.slots.length > 0;
             if (!hasStudents && !hasSlots) {
-                delete dataStore.curriculum.autoGroups[key];
+                delete store[key];
             }
 
             return { removed: true };
@@ -586,17 +644,6 @@
         });
     }
 
-    /**
-     * Build a candidate for adding a slot to a group.
-     * 
-     * @param {string} key - Group key
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @param {number|string} duration - Duration in hours
-     * @param {string} label - Optional label
-     * @returns {object} { success, data?: { mutate, ... }, message? }
-     */
     function buildAddSlotCandidate(key, week, day, hour, duration, label) {
         var CalendarConstants = getCalendarConstants();
         var CalendarValidation = getCalendarValidation();
@@ -649,12 +696,9 @@
             return failure('Slot overlaps with an existing slot in this group.');
         }
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum || !dataStore.curriculum.autoGroups) {
-                return { added: false };
-            }
-            var candidateGroup = dataStore.curriculum.autoGroups[key];
+        function mutate(appData) {
+            var store = ensureAutoGroupsStore(appData);
+            var candidateGroup = store[key];
             if (!candidateGroup) {
                 return { added: false };
             }
@@ -679,15 +723,6 @@
         });
     }
 
-    /**
-     * Build a candidate for removing a slot from a group.
-     * 
-     * @param {string} key - Group key
-     * @param {number|string} week - Week number
-     * @param {number|string} day - Day number (1-7)
-     * @param {number|string} hour - Hour number
-     * @returns {object} { success, data?: { mutate, ... }, message? }
-     */
     function buildRemoveSlotCandidate(key, week, day, hour) {
         var CalendarConstants = getCalendarConstants();
         var CalendarValidation = getCalendarValidation();
@@ -741,12 +776,9 @@
             return failure('Slot not found in group.');
         }
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum || !dataStore.curriculum.autoGroups) {
-                return { removed: false };
-            }
-            var candidateGroup = dataStore.curriculum.autoGroups[key];
+        function mutate(appData) {
+            var store = ensureAutoGroupsStore(appData);
+            var candidateGroup = store[key];
             if (!candidateGroup || !Array.isArray(candidateGroup.slots)) {
                 return { removed: false };
             }
@@ -756,7 +788,7 @@
             var hasStudents = candidateGroup.students && candidateGroup.students.length > 0;
             var hasSlots = candidateGroup.slots && candidateGroup.slots.length > 0;
             if (!hasStudents && !hasSlots) {
-                delete dataStore.curriculum.autoGroups[key];
+                delete store[key];
             }
 
             return { removed: true };
@@ -769,13 +801,6 @@
         });
     }
 
-    /**
-     * Build a candidate for adding multiple students to a group.
-     * 
-     * @param {string} key - Group key
-     * @param {array} studentIds - Array of student IDs
-     * @returns {object} { success, data?: { mutate, ... }, message? }
-     */
     function buildAddStudentsCandidate(key, studentIds) {
         var keyResult = validateGroupKey(key);
         if (!keyResult.valid) {
@@ -821,12 +846,9 @@
             return CharacterQueries ? CharacterQueries.getDisplayName(s.student) : 'Unknown';
         });
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum || !dataStore.curriculum.autoGroups) {
-                return { added: 0 };
-            }
-            var candidateGroup = dataStore.curriculum.autoGroups[key];
+        function mutate(appData) {
+            var store = ensureAutoGroupsStore(appData);
+            var candidateGroup = store[key];
             if (!candidateGroup) {
                 return { added: 0 };
             }
@@ -852,13 +874,6 @@
         });
     }
 
-    /**
-     * Build a candidate for removing multiple students from a group.
-     * 
-     * @param {string} key - Group key
-     * @param {array} studentIds - Array of student IDs
-     * @returns {object} { success, data?: { mutate, ... }, message? }
-     */
     function buildRemoveStudentsCandidate(key, studentIds) {
         var keyResult = validateGroupKey(key);
         if (!keyResult.valid) {
@@ -903,16 +918,13 @@
         }
 
         var removedSet = {};
-        for (var i = 0; i < removedStudents.length; i++) {
-            removedSet[String(removedStudents[i])] = true;
+        for (var k = 0; k < removedStudents.length; k++) {
+            removedSet[String(removedStudents[k])] = true;
         }
 
-        function mutate() {
-            var dataStore = window.data;
-            if (!dataStore.curriculum || !dataStore.curriculum.autoGroups) {
-                return { removed: 0 };
-            }
-            var candidateGroup = dataStore.curriculum.autoGroups[key];
+        function mutate(appData) {
+            var store = ensureAutoGroupsStore(appData);
+            var candidateGroup = store[key];
             if (!candidateGroup || !Array.isArray(candidateGroup.students)) {
                 return { removed: 0 };
             }
@@ -924,7 +936,7 @@
             var hasStudents = candidateGroup.students && candidateGroup.students.length > 0;
             var hasSlots = candidateGroup.slots && candidateGroup.slots.length > 0;
             if (!hasStudents && !hasSlots) {
-                delete dataStore.curriculum.autoGroups[key];
+                delete store[key];
             }
 
             return { removed: removedStudents.length };
@@ -939,146 +951,352 @@
         });
     }
 
+    function buildDeleteAllForInstructorCandidate(instructorId) {
+        if (!isNonEmptyString(instructorId)) {
+            return failure('Instructor ID is required.');
+        }
+
+        var store = getAutoGroupsStore();
+        var target = String(instructorId);
+        var keysToRemove = [];
+
+        for (var key in store) {
+            if (Object.prototype.hasOwnProperty.call(store, key)) {
+                var group = store[key];
+                if (group && String(group.instructorId) === target) {
+                    keysToRemove.push(key);
+                }
+            }
+        }
+
+        if (keysToRemove.length === 0) {
+            return failure('No groups found for this instructor.');
+        }
+
+        function mutate(appData) {
+            var candidateStore = ensureAutoGroupsStore(appData);
+            var removed = 0;
+            for (var i = 0; i < keysToRemove.length; i++) {
+                if (candidateStore[keysToRemove[i]]) {
+                    delete candidateStore[keysToRemove[i]];
+                    removed++;
+                }
+            }
+            return { removed: removed, keys: keysToRemove.slice() };
+        }
+
+        return success({
+            mutate: mutate,
+            count: keysToRemove.length,
+            keys: keysToRemove.slice()
+        });
+    }
+
+    function buildDeleteAllForDisciplineCandidate(disciplineId) {
+        if (!isNonEmptyString(disciplineId)) {
+            return failure('Discipline ID is required.');
+        }
+
+        var store = getAutoGroupsStore();
+        var target = String(disciplineId);
+        var keysToRemove = [];
+
+        for (var key in store) {
+            if (Object.prototype.hasOwnProperty.call(store, key)) {
+                var group = store[key];
+                if (group && String(group.disciplineId) === target) {
+                    keysToRemove.push(key);
+                }
+            }
+        }
+
+        if (keysToRemove.length === 0) {
+            return failure('No groups found for this discipline.');
+        }
+
+        function mutate(appData) {
+            var candidateStore = ensureAutoGroupsStore(appData);
+            var removed = 0;
+            for (var i = 0; i < keysToRemove.length; i++) {
+                if (candidateStore[keysToRemove[i]]) {
+                    delete candidateStore[keysToRemove[i]];
+                    removed++;
+                }
+            }
+            return { removed: removed, keys: keysToRemove.slice() };
+        }
+
+        return success({
+            mutate: mutate,
+            count: keysToRemove.length,
+            keys: keysToRemove.slice()
+        });
+    }
+
     // ============================================================
-    // PUBLIC MUTATION API
+    // CASCADE HELPERS - Remove all references to a character ID
     // ============================================================
 
     /**
-     * Create a new group.
-     * Runs the candidate mutate directly. Does not persist through
-     * MutationPipeline; if transactional persistence is needed, use
-     * buildCreateGroupCandidate at the call site and route it through
-     * MutationPipeline.
+     * Strip all references to a character from curriculum.autoGroups.
+     *
+     * A character can be referenced two ways:
+     *   - As the instructor of a group (group.instructorId === charId).
+     *     Groups with a deleted instructor are removed entirely, since
+     *     there's no way to render or use them.
+     *   - As a member of a group (group.students includes charId).
+     *     Members are removed from the students list, but the group
+     *     survives. Groups left with no students and no slots are
+     *     pruned (same rule as removeStudentFromGroup's mutate).
+     *
+     * This helper is PURE with respect to `appData`: it mutates the
+     * store, but it does not touch `window.data`. It is designed to be
+     * called from inside a pipeline mutate() callback in another
+     * module's transaction. It never throws.
+     *
+     * @param {object} appData - The pipeline's appData snapshot
+     * @param {string} charId - Character ID to strip
+     * @returns {object} { instructorGroupsRemoved, studentMembershipsRemoved }
      */
+    function stripCharacterRefs(appData, charId) {
+        var result = {
+            instructorGroupsRemoved: 0,
+            studentMembershipsRemoved: 0
+        };
+
+        if (!appData || !charId) {
+            return result;
+        }
+
+        if (!appData.curriculum || typeof appData.curriculum !== 'object') {
+            return result;
+        }
+
+        var store = appData.curriculum.autoGroups;
+        if (!store || typeof store !== 'object' || Array.isArray(store)) {
+            return result;
+        }
+
+        var target = String(charId);
+        var keysToRemove = [];
+
+        Object.keys(store).forEach(function(key) {
+            var group = store[key];
+            if (!group) {
+                return;
+            }
+
+            // ---- Instructor reference: remove the whole group ----
+            if (group.instructorId && String(group.instructorId) === target) {
+                keysToRemove.push(key);
+                result.instructorGroupsRemoved++;
+                return;
+            }
+
+            // ---- Student reference: remove from students list ----
+            if (Array.isArray(group.students)) {
+                var before = group.students.length;
+                group.students = group.students.filter(function(id) {
+                    return String(id) !== target;
+                });
+                var removed = before - group.students.length;
+                if (removed > 0) {
+                    result.studentMembershipsRemoved += removed;
+
+                    var hasStudents = group.students.length > 0;
+                    var hasSlots = Array.isArray(group.slots) && group.slots.length > 0;
+                    if (!hasStudents && !hasSlots) {
+                        keysToRemove.push(key);
+                    }
+                }
+            }
+        });
+
+        for (var i = 0; i < keysToRemove.length; i++) {
+            delete store[keysToRemove[i]];
+        }
+
+        return result;
+    }
+
+    // ============================================================
+    // MUTATION PIPELINE WRAPPER
+    // ============================================================
+
+    /**
+     * Run a candidate's mutate closure inside a MutationPipeline
+     * transaction. Handles dependency check and error wrapping.
+     */
+    function runCandidate(candidate, options) {
+        if (!candidate || !candidate.success) {
+            return Promise.resolve(candidate || failure('Candidate build failed.'));
+        }
+
+        var MutationPipeline = getMutationPipeline();
+        if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
+            return Promise.resolve(failure('MutationPipeline is not available.'));
+        }
+
+        options = options || {};
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                return candidate.data.mutate(appData);
+            },
+            logMessage: options.logMessage || 'Auto-group mutation',
+            successMessage: options.successMessage || 'Operation completed successfully.',
+            failureMessage: options.failureMessage || 'Operation failed.'
+        });
+    }
+
+    // ============================================================
+    // PUBLIC MUTATION API - Promise-based
+    // ============================================================
+
     function createGroup(disciplineId, instructorId) {
         var candidate = buildCreateGroupCandidate(disciplineId, instructorId);
         if (!candidate.success) {
-            return candidate;
+            return Promise.resolve(candidate);
         }
 
-        try {
-            var result = candidate.data.mutate();
-            return success({ group: result.group });
-        } catch (e) {
-            return failure(e.message || 'Failed to create group.');
-        }
+        return runCandidate(candidate, {
+            logMessage: 'Created auto-group: ' + (candidate.data.group.displayName || candidate.data.groupKey),
+            successMessage: 'Group created successfully!',
+            failureMessage: 'Failed to create group.'
+        });
     }
 
     function deleteGroup(key) {
         var candidate = buildDeleteGroupCandidate(key);
         if (!candidate.success) {
-            return candidate;
+            return Promise.resolve(candidate);
         }
 
-        try {
-            var result = candidate.data.mutate();
-            return success({ deleted: result.deleted });
-        } catch (e) {
-            return failure(e.message || 'Failed to delete group.');
-        }
+        return runCandidate(candidate, {
+            logMessage: 'Deleted auto-group: ' + (candidate.data.displayName || key),
+            successMessage: 'Group deleted successfully!',
+            failureMessage: 'Failed to delete group.'
+        });
     }
 
     function addStudentToGroup(key, studentId) {
         var candidate = buildAddStudentCandidate(key, studentId);
         if (!candidate.success) {
-            return candidate;
+            return Promise.resolve(candidate);
         }
 
-        try {
-            var result = candidate.data.mutate();
-            return success({ added: result.added });
-        } catch (e) {
-            return failure(e.message || 'Failed to add student.');
-        }
+        return runCandidate(candidate, {
+            logMessage: 'Added ' + (candidate.data.studentName || candidate.data.studentId) + ' to ' + (candidate.data.groupName || key),
+            successMessage: 'Student added to group.',
+            failureMessage: 'Failed to add student.'
+        });
     }
 
     function removeStudentFromGroup(key, studentId) {
         var candidate = buildRemoveStudentCandidate(key, studentId);
         if (!candidate.success) {
-            return candidate;
+            return Promise.resolve(candidate);
         }
 
-        try {
-            var result = candidate.data.mutate();
-            return success({ removed: result.removed });
-        } catch (e) {
-            return failure(e.message || 'Failed to remove student.');
-        }
+        return runCandidate(candidate, {
+            logMessage: 'Removed student from ' + (candidate.data.groupName || key),
+            successMessage: 'Student removed from group.',
+            failureMessage: 'Failed to remove student.'
+        });
     }
 
     function addSlotToGroup(key, week, day, hour, duration, label) {
         var candidate = buildAddSlotCandidate(key, week, day, hour, duration, label);
         if (!candidate.success) {
-            return candidate;
+            return Promise.resolve(candidate);
         }
 
-        try {
-            var result = candidate.data.mutate();
-            return success({ added: result.added });
-        } catch (e) {
-            return failure(e.message || 'Failed to add slot.');
-        }
+        return runCandidate(candidate, {
+            logMessage: 'Added slot to ' + (candidate.data.groupName || key),
+            successMessage: 'Slot added to group.',
+            failureMessage: 'Failed to add slot.'
+        });
     }
 
     function removeSlotFromGroup(key, week, day, hour) {
         var candidate = buildRemoveSlotCandidate(key, week, day, hour);
         if (!candidate.success) {
-            return candidate;
+            return Promise.resolve(candidate);
         }
 
-        try {
-            var result = candidate.data.mutate();
-            return success({ removed: result.removed });
-        } catch (e) {
-            return failure(e.message || 'Failed to remove slot.');
-        }
+        return runCandidate(candidate, {
+            logMessage: 'Removed slot from ' + (candidate.data.groupName || key),
+            successMessage: 'Slot removed from group.',
+            failureMessage: 'Failed to remove slot.'
+        });
     }
 
     function addStudentsToGroup(key, studentIds) {
         var candidate = buildAddStudentsCandidate(key, studentIds);
         if (!candidate.success) {
-            return candidate;
+            return Promise.resolve(candidate);
         }
 
-        try {
-            candidate.data.mutate();
-            return success({
-                added: candidate.data.added,
-                students: candidate.data.students,
-                studentNames: candidate.data.studentNames,
-                alreadyInGroup: candidate.data.alreadyInGroup
-            });
-        } catch (e) {
-            return failure(e.message || 'Failed to add students.');
-        }
+        return runCandidate(candidate, {
+            logMessage: 'Added ' + candidate.data.added + ' student(s) to ' + (candidate.data.groupName || key),
+            successMessage: 'Students added to group.',
+            failureMessage: 'Failed to add students.'
+        });
     }
 
     function removeStudentsFromGroup(key, studentIds) {
         var candidate = buildRemoveStudentsCandidate(key, studentIds);
         if (!candidate.success) {
-            return candidate;
+            return Promise.resolve(candidate);
         }
 
-        try {
-            candidate.data.mutate();
-            return success({
-                removed: candidate.data.removed,
-                students: candidate.data.students,
-                notInGroup: candidate.data.notInGroup
-            });
-        } catch (e) {
-            return failure(e.message || 'Failed to remove students.');
+        return runCandidate(candidate, {
+            logMessage: 'Removed ' + candidate.data.removed + ' student(s) from ' + (candidate.data.groupName || key),
+            successMessage: 'Students removed from group.',
+            failureMessage: 'Failed to remove students.'
+        });
+    }
+
+    function deleteAllGroupsForInstructor(instructorId) {
+        var candidate = buildDeleteAllForInstructorCandidate(instructorId);
+        if (!candidate.success) {
+            return Promise.resolve(candidate);
         }
+
+        return runCandidate(candidate, {
+            logMessage: 'Deleted ' + candidate.data.count + ' group(s) for instructor ' + instructorId,
+            successMessage: 'Instructor groups deleted.',
+            failureMessage: 'Failed to delete instructor groups.'
+        });
+    }
+
+    function deleteAllGroupsForDiscipline(disciplineId) {
+        var candidate = buildDeleteAllForDisciplineCandidate(disciplineId);
+        if (!candidate.success) {
+            return Promise.resolve(candidate);
+        }
+
+        return runCandidate(candidate, {
+            logMessage: 'Deleted ' + candidate.data.count + ' group(s) for discipline ' + disciplineId,
+            successMessage: 'Discipline groups deleted.',
+            failureMessage: 'Failed to delete discipline groups.'
+        });
     }
 
     // ============================================================
     // BACKWARD-COMPATIBILITY READ ALIASES
     // ============================================================
-    // 
+    //
     // These delegate to AcademyQueries. They exist for backward
     // compatibility with callers that still use AcademyGroups.getX.
     // New code should call AcademyQueries.getX directly.
-    // 
+    //
     // IMPORTANT: do not add new reads here, and do not make
     // AcademyQueries call these aliases — that would recreate the
     // recursion loop that caused a stack overflow. AcademyQueries is
@@ -1209,7 +1427,7 @@
     // ============================================================
 
     window.AcademyGroups = {
-        // ---- Mutations ----
+        // ---- Mutations (Promise-based) ----
         createGroup: createGroup,
         deleteGroup: deleteGroup,
         addStudentToGroup: addStudentToGroup,
@@ -1218,8 +1436,10 @@
         removeSlotFromGroup: removeSlotFromGroup,
         addStudentsToGroup: addStudentsToGroup,
         removeStudentsFromGroup: removeStudentsFromGroup,
+        deleteAllGroupsForInstructor: deleteAllGroupsForInstructor,
+        deleteAllGroupsForDiscipline: deleteAllGroupsForDiscipline,
 
-        // ---- Candidate Builders (for MutationPipeline) ----
+        // ---- Candidate Builders (advanced, for custom transactions) ----
         buildCreateGroupCandidate: buildCreateGroupCandidate,
         buildDeleteGroupCandidate: buildDeleteGroupCandidate,
         buildAddStudentCandidate: buildAddStudentCandidate,
@@ -1228,6 +1448,16 @@
         buildRemoveSlotCandidate: buildRemoveSlotCandidate,
         buildAddStudentsCandidate: buildAddStudentsCandidate,
         buildRemoveStudentsCandidate: buildRemoveStudentsCandidate,
+        buildDeleteAllForInstructorCandidate: buildDeleteAllForInstructorCandidate,
+        buildDeleteAllForDisciplineCandidate: buildDeleteAllForDisciplineCandidate,
+
+        // ---- Cascade helpers (for cross-domain cleanup) ----
+        stripCharacterRefs: stripCharacterRefs,
+
+        // ---- Status classifiers (exposed for other modules that need
+        //      to check group eligibility without duplicating the logic) ----
+        isInstructorStatus: isInstructorStatus,
+        isStudentStatus: isStudentStatus,
 
         // ---- Read aliases (DEPRECATED — call AcademyQueries directly) ----
         getAutoGroup: getAutoGroup,
@@ -1260,10 +1490,14 @@
             'addStudentToGroup', 'removeStudentFromGroup',
             'addSlotToGroup', 'removeSlotFromGroup',
             'addStudentsToGroup', 'removeStudentsFromGroup',
+            'deleteAllGroupsForInstructor', 'deleteAllGroupsForDiscipline',
             'buildCreateGroupCandidate', 'buildDeleteGroupCandidate',
             'buildAddStudentCandidate', 'buildRemoveStudentCandidate',
             'buildAddSlotCandidate', 'buildRemoveSlotCandidate',
-            'buildAddStudentsCandidate', 'buildRemoveStudentsCandidate'
+            'buildAddStudentsCandidate', 'buildRemoveStudentsCandidate',
+            'buildDeleteAllForInstructorCandidate', 'buildDeleteAllForDisciplineCandidate',
+            'stripCharacterRefs',
+            'isInstructorStatus', 'isStudentStatus'
         ];
 
         for (var i = 0; i < required.length; i++) {
@@ -1274,8 +1508,6 @@
 
         if (missing.length > 0) {
             console.warn('[AcademyGroups] Verification failed - missing exports:', missing.join(', '));
-        } else {
-            console.log('[AcademyGroups] All exports verified successfully.');
         }
     })();
 

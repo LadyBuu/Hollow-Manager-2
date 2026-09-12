@@ -1,14 +1,15 @@
 /**
  * modules/social/social-core.js - Social Domain Core
  * Relationship CRUD operations with full mutation pipeline
- * 
+ *
  * This module provides:
  *   - createRelationship - Create a new relationship
  *   - updateRelationship - Update an existing relationship
  *   - deleteRelationship - Delete a relationship
  *   - deleteAllRelationshipsForCharacter - Delete all relationships for a character
  *   - validateRelationshipData - Pure validation function
- * 
+ *   - Cross-domain cascade helper (stripCharacterRefs)
+ *
  * IMPORTANT:
  *   - All mutations use MutationPipeline for transactional safety
  *   - No DOM, no UI, no notifications, no rendering
@@ -19,24 +20,42 @@
  *   - No confirm() dialogs - caller handles UI
  *   - No window.data fallbacks - data structure must exist
  *   - characterProvider is INJECTED via init() - no fallback to CharacterQueries
- * 
+ *
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Any integer >= 1 is a valid year.
+ *   - A null, empty, or missing year is also valid (means "year not
+ *     specified").
+ *   - Years are stored as strings on the relationship record. When a
+ *     year is provided, it is normalised to a canonical string form
+ *     (no leading zeros, no whitespace).
+ *
+ * CASCADE SEMANTICS (stripCharacterRefs):
+ *   When a character is deleted, every relationship involving that
+ *   character is removed from social.relationships. Relationships are
+ *   stored as { character1, character2, ... }; both sides are checked.
+ *   This helper is called by CharacterCRUD.deleteCharacter from inside
+ *   its pipeline mutate, so it runs in the same transaction as the
+ *   character removal.
+ *
  * CHARACTER PROVIDER INTERFACE:
  *   {
  *       exists: function(characterId) { return true/false }
  *   }
- * 
+ *
  * DEPENDENCIES:
  *   - window.SocialQueries (from social-queries.js) - MANDATORY
  *   - window.SocialConstants (from social-constants.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   SocialCore.init({
  *       characterProvider: {
  *           exists: function(id) { return CharacterQueries.getCharacterById(id) !== null; }
  *       }
  *   });
- *   
+ *
  *   var result = SocialCore.createRelationship('char1', 'char2', 'friendship');
  *   if (result.success) {
  *       // relationship created
@@ -68,7 +87,7 @@
     /**
      * Initialize SocialCore with injected dependencies.
      * Must be called before any mutation operations.
-     * 
+     *
      * @param {object} deps - Dependency injection object
      * @param {object} deps.characterProvider - Character provider with exists() method
      */
@@ -137,7 +156,7 @@
     /**
      * Validate relationship data.
      * This is a PURE function - no side effects, no state mutation.
-     * 
+     *
      * @param {object} data - Relationship data to validate
      * @param {object} options - Optional validation options
      * @param {boolean} options.checkDuplicates - Check for duplicates (default: true)
@@ -186,16 +205,16 @@
             errors.push('Invalid relationship type.');
         }
 
-        // Year validation
+        // Year validation (unbounded positive integers, or empty)
         if (data.startYear !== undefined && data.startYear !== null && data.startYear !== '') {
             if (!isValidYear(data.startYear)) {
-                errors.push('Start year must be a valid year.');
+                errors.push('Start year must be a positive integer.');
             }
         }
 
         if (data.endYear !== undefined && data.endYear !== null && data.endYear !== '') {
             if (!isValidYear(data.endYear)) {
-                errors.push('End year must be a valid year.');
+                errors.push('End year must be a positive integer.');
             }
         }
 
@@ -224,7 +243,11 @@
 
     /**
      * Validate a year value.
-     * 
+     *
+     * Years are UNBOUNDED positive integers. Any integer >= 1 is valid.
+     * An empty, null, or undefined value is also valid (means "year not
+     * specified").
+     *
      * @param {*} value - Year value to validate
      * @returns {boolean} True if valid
      */
@@ -234,12 +257,17 @@
         }
 
         var num = Number(value);
-        return Number.isInteger(num) && num > 0 && num < 10000;
+        return Number.isInteger(num) && num >= 1;
     }
 
     /**
      * Normalise a year value for storage.
-     * 
+     *
+     * Years are stored as strings. A valid year is normalised to its
+     * canonical string form. An invalid year is normalised to an empty
+     * string (the caller's validator is responsible for rejecting it
+     * before normalisation runs; this function is forgiving).
+     *
      * @param {*} value - Year value to normalise
      * @returns {string} Normalised year string or empty string
      */
@@ -249,7 +277,7 @@
         }
 
         var num = Number(value);
-        if (Number.isInteger(num) && num > 0 && num < 10000) {
+        if (Number.isInteger(num) && num >= 1) {
             return String(num);
         }
 
@@ -258,7 +286,7 @@
 
     /**
      * Normalise a text value.
-     * 
+     *
      * @param {*} value - Text value to normalise
      * @returns {string} Normalised text string
      */
@@ -271,7 +299,7 @@
 
     /**
      * Normalise a character ID.
-     * 
+     *
      * @param {*} value - ID value to normalise
      * @returns {string} Normalised ID string or empty string
      */
@@ -289,7 +317,7 @@
     /**
      * Get the next relationship ID.
      * Uses the social.nextId counter.
-     * 
+     *
      * @param {object} data - Application data object
      * @returns {number} Next relationship ID
      */
@@ -329,7 +357,7 @@
 
     /**
      * Create a new relationship.
-     * 
+     *
      * @param {string} charId1 - First character ID
      * @param {string} charId2 - Second character ID
      * @param {string} typeId - Relationship type ID
@@ -441,7 +469,7 @@
 
     /**
      * Update an existing relationship.
-     * 
+     *
      * @param {string|number} id - Relationship ID
      * @param {object} updates - Updates to apply
      * @param {string} updates.character1 - New character 1 ID (optional)
@@ -578,7 +606,7 @@
 
     /**
      * Delete a relationship.
-     * 
+     *
      * @param {string|number} id - Relationship ID
      * @returns {Promise<{ success: boolean, message?: string }>}
      */
@@ -654,7 +682,7 @@
 
     /**
      * Delete all relationships involving a character.
-     * 
+     *
      * @param {string} charId - Character ID
      * @returns {Promise<{ success: boolean, count?: number, message?: string }>}
      */
@@ -735,6 +763,58 @@
     }
 
     // ============================================================
+    // CASCADE HELPERS - Remove all references to a character ID
+    // ============================================================
+
+    /**
+     * Strip all social relationships involving a character.
+     *
+     * Relationships are stored as { character1, character2, ... }.
+     * Whether the type is directional or not, any relationship where
+     * either side matches the deleted character is unreachable and is
+     * removed.
+     *
+     * This helper is PURE with respect to `appData`: it mutates the
+     * store, but it does not touch `window.data`. It is designed to be
+     * called from inside a pipeline mutate() callback in another
+     * module's transaction. It never throws.
+     *
+     * @param {object} appData - The pipeline's appData snapshot
+     * @param {string} charId - Character ID to strip
+     * @returns {object} { relationshipsRemoved }
+     */
+    function stripCharacterRefs(appData, charId) {
+        var result = { relationshipsRemoved: 0 };
+
+        if (!appData || !charId) {
+            return result;
+        }
+
+        if (!appData.social || typeof appData.social !== 'object') {
+            return result;
+        }
+
+        var relationships = appData.social.relationships;
+        if (!Array.isArray(relationships)) {
+            return result;
+        }
+
+        var target = String(charId);
+        var before = relationships.length;
+
+        appData.social.relationships = relationships.filter(function(rel) {
+            if (!rel) {
+                return true;
+            }
+            return String(rel.character1) !== target &&
+                   String(rel.character2) !== target;
+        });
+
+        result.relationshipsRemoved = before - appData.social.relationships.length;
+        return result;
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -747,6 +827,9 @@
         updateRelationship: updateRelationship,
         deleteRelationship: deleteRelationship,
         deleteAllRelationshipsForCharacter: deleteAllRelationshipsForCharacter,
+
+        // Cascade helpers (for cross-domain cleanup)
+        stripCharacterRefs: stripCharacterRefs,
 
         // Validation (pure, for external use)
         validateRelationshipData: validateRelationshipData,

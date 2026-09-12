@@ -2,24 +2,44 @@
  * js/modules/academy/academy-ranking.js - Academy Ranking
  * SINGLE SOURCE OF TRUTH for all academy ranking data and operations
  * Path: js/modules/academy/academy-ranking.js
- * 
+ *
  * This module is responsible for:
  *   - Ranking CRUD operations (create, update, delete)
  *   - Ranking queries (get by class, student, week)
  *   - Ranking calculations (auto-generation from grades)
  *   - Ranking statistics (percentile, distribution)
  *   - Ranking validation
- * 
+ *   - Cross-domain cascade helper (stripCharacterRefs)
+ *
  * IMPORTANT:
  *   - This module OWNS ranking data - it does NOT depend on AcademyQueries
  *   - Uses AcademyClasses for class data (no circular dependency)
  *   - Uses AcademyGrades for grade data (legitimate dependency)
- *   - All mutations are candidate-based: VALIDATE → CLONE → MODIFY → COMMIT
- *   - Invalid inputs are REJECTED (operation returns null/false)
- *   - Mutations are ATOMIC: if any part is invalid, nothing changes
- *   - This module does NOT call saveData() - callers own persistence
+ *   - All MUTATIONS go through MutationPipeline (persistence, rollback, logging)
+ *   - All READS are synchronous and side-effect free
+ *   - Invalid inputs are REJECTED (mutation resolves with { success: false })
+ *   - Mutations are ATOMIC: if persistence fails, window.data is restored
+ *   - This module does NOT call saveData() directly - the pipeline does
  *   - AcademyQueries is the PUBLIC read facade that uses these internal lookups
- * 
+ *
+ * MUTATION CONTRACT:
+ *   - create / update / delete / deleteClassRankings / autoGenerate / saveRankings
+ *     all return Promise<{ success, data?, message? }>
+ *   - getClassRankings / getStudentRank / getRankingsWithDetails / getRankings /
+ *     getRanking and all calculate* functions stay synchronous
+ *
+ * AUTO-GENERATE SEMANTICS:
+ *   - autoGenerate is a compound operation: it reads grades, computes
+ *     rankings, and writes them. It plans ALL writes in a pre-flight
+ *     pass, then applies them in a SINGLE pipeline transaction. It does
+ *     NOT call create / update in a loop.
+ *
+ * CASCADE SEMANTICS (stripCharacterRefs):
+ *   When a character is deleted, all ranking records keyed to that
+ *   character are removed from academy.rankings. This helper is called
+ *   by CharacterCRUD.deleteCharacter from inside its pipeline mutate,
+ *   so it runs in the same transaction as the character removal.
+ *
  * RANKING DATA STRUCTURE:
  *   window.data.academy.rankings = {
  *     'rank_123': {
@@ -36,7 +56,7 @@
  *       updatedAt: '2026-02-15T10:00:00Z'
  *     }
  *   }
- * 
+ *
  * DEPENDENCIES:
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
@@ -44,22 +64,18 @@
  *   - window.AcademyGrades (from academy-grades.js) - MANDATORY
  *   - window.AcademyClasses (from academy-classes.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
+ *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   var rankings = window.AcademyRanking;
- *   
- *   // Create/update rankings
- *   var result = rankings.autoGenerate('class_789', 5);
- *   var result = rankings.saveRanking(rankData);
- *   
- *   // Get rankings
+ *
+ *   // Mutations (Promise-based)
+ *   rankings.autoGenerate('class_789', 5).then(function(result) { ... });
+ *
+ *   // Reads (synchronous)
  *   var classRankings = rankings.getClassRankings('class_789', 5);
  *   var studentRank = rankings.getStudentRank('class_789', 'char_456', 5);
- *   
- *   // Get ranking details
- *   var ranking = rankings.getRanking('rank_123');
- *   var all = rankings.getRankings();
  */
 
 (function() {
@@ -109,6 +125,10 @@
         missing.push('CharacterQueries.getDisplayName');
     }
 
+    if (!window.MutationPipeline || typeof window.MutationPipeline.performMutation !== 'function') {
+        missing.push('MutationPipeline.performMutation');
+    }
+
     if (!window.CalendarConstants) {
         missing.push('CalendarConstants');
     }
@@ -129,6 +149,7 @@
     var AcademyGrades = window.AcademyGrades;
     var AcademyClasses = window.AcademyClasses;
     var CharacterQueries = window.CharacterQueries;
+    var MutationPipeline = window.MutationPipeline;
     var CalendarConstants = window.CalendarConstants;
 
     // ============================================================
@@ -223,12 +244,6 @@
     // INTERNAL RANKING LOOKUP - PRIVATE
     // ============================================================
 
-    /**
-     * Get a ranking record by ID (internal).
-     * 
-     * @param {string} rankId - Ranking ID
-     * @returns {object|null} Ranking object or null
-     */
     function getRankingRecord(rankId) {
         if (!isNonEmptyString(rankId)) {
             return null;
@@ -243,13 +258,6 @@
         return academy.rankings[target] || null;
     }
 
-    /**
-     * Get all ranking records (internal).
-     * 
-     * @param {string} classId - Optional class filter
-     * @param {number} week - Optional week filter
-     * @returns {array} Array of ranking objects
-     */
     function getRankingRecords(classId, week) {
         var academy = getAcademyStore();
         if (!academy || !academy.rankings) {
@@ -280,7 +288,6 @@
             }
         }
 
-        // Sort by rank ascending (1 is best)
         result.sort(function(a, b) {
             return (a.rank || 999) - (b.rank || 999);
         });
@@ -288,13 +295,6 @@
         return result;
     }
 
-    /**
-     * Get rankings for a specific class and week.
-     * 
-     * @param {string} classId - Class ID
-     * @param {number} week - Week number
-     * @returns {array} Array of ranking objects
-     */
     function getClassRankingsInternal(classId, week) {
         if (!isNonEmptyString(classId)) {
             return [];
@@ -308,14 +308,6 @@
         return getRankingRecords(classId, weekNum);
     }
 
-    /**
-     * Get a student's ranking for a class and week.
-     * 
-     * @param {string} classId - Class ID
-     * @param {string} studentId - Student ID
-     * @param {number} week - Week number
-     * @returns {object|null} Ranking object or null
-     */
     function getStudentRankInternal(classId, studentId, week) {
         if (!isNonEmptyString(classId) || !isNonEmptyString(studentId)) {
             return null;
@@ -342,13 +334,6 @@
     // CLASS VALIDATION - Uses AcademyClasses (no circular dependency)
     // ============================================================
 
-    /**
-     * Validate that a class exists.
-     * Uses AcademyClasses internal methods.
-     * 
-     * @param {string} classId - Class ID
-     * @returns {object} { valid: boolean, class?: object, message?: string }
-     */
     function validateClassExists(classId) {
         if (!isNonEmptyString(classId)) {
             return { valid: false, message: 'Class ID is required.' };
@@ -371,21 +356,18 @@
             return { valid: false, message: 'Ranking data must be an object.' };
         }
 
-        // Class ID - required for full creation
         if (!isPartial || data.classId !== undefined) {
             if (!isNonEmptyString(data.classId)) {
                 return { valid: false, message: 'Class ID is required.' };
             }
         }
 
-        // Student ID - required for full creation
         if (!isPartial || data.studentId !== undefined) {
             if (!isNonEmptyString(data.studentId)) {
                 return { valid: false, message: 'Student ID is required.' };
             }
         }
 
-        // Week - required for full creation
         if (!isPartial || data.week !== undefined) {
             var week = parseInt(data.week, 10);
             if (isNaN(week) || week < MIN_WEEK || week > MAX_WEEK) {
@@ -393,7 +375,6 @@
             }
         }
 
-        // Rank - required for full creation
         if (!isPartial || data.rank !== undefined) {
             var rank = parseInt(data.rank, 10);
             if (isNaN(rank) || rank < MIN_RANK) {
@@ -401,7 +382,6 @@
             }
         }
 
-        // Total students - optional, but if provided must be valid
         if (data.totalStudents !== undefined) {
             var total = parseInt(data.totalStudents, 10);
             if (isNaN(total) || total < 0) {
@@ -409,7 +389,6 @@
             }
         }
 
-        // Score - optional
         if (data.score !== undefined) {
             var score = parseFloat(data.score);
             if (isNaN(score) || score < 0) {
@@ -417,7 +396,6 @@
             }
         }
 
-        // Average score - optional
         if (data.averageScore !== undefined) {
             var avg = parseFloat(data.averageScore);
             if (isNaN(avg) || avg < 0) {
@@ -429,61 +407,21 @@
     }
 
     // ============================================================
-    // PUBLIC API - RANKING CRUD
+    // INTERNAL CANDIDATE BUILDER
     // ============================================================
 
-    /**
-     * Create a ranking record.
-     * Candidate-based: validates, creates, commits.
-     * 
-     * @param {object} data - Ranking data
-     * @param {string} data.classId - Class ID
-     * @param {string} data.studentId - Student ID
-     * @param {number} data.week - Week number
-     * @param {number} data.rank - Rank position (1 is best)
-     * @param {number} data.totalStudents - Total students in class
-     * @param {number} data.score - Student's score
-     * @param {number} data.averageScore - Class average score
-     * @param {number} data.percentile - Percentile (optional, auto-calculated)
-     * @returns {object} { success: boolean, data?: object, message?: string }
-     */
-    function create(data) {
-        // ---- PHASE 1: VALIDATE INPUT ----
-        var validation = validateRankingData(data, false);
-        if (!validation.valid) {
-            return failure(validation.message);
-        }
-
-        // ---- PHASE 2: GET STORE ----
-        var academy = ensureRankingStructures();
-        if (!academy) {
-            return failure('Academy data is not available.');
-        }
-
-        // ---- PHASE 3: VALIDATE CLASS EXISTS (uses AcademyClasses) ----
-        var classValidation = validateClassExists(data.classId);
-        if (!classValidation.valid) {
-            return failure(classValidation.message);
-        }
-
-        // ---- PHASE 4: CHECK FOR DUPLICATE ----
-        var existing = getStudentRankInternal(data.classId, data.studentId, data.week);
-        if (existing) {
-            return failure('Ranking already exists for this student, class, and week. Use update instead.');
-        }
-
-        // ---- PHASE 5: BUILD RANKING OBJECT ----
+    function buildRankingRecord(data, existingId, existingCreatedAt) {
         var now = new Date().toISOString();
-        var rankId = generateId();
-
         var rank = parseInt(data.rank, 10);
         var totalStudents = data.totalStudents !== undefined ? parseInt(data.totalStudents, 10) : 0;
         var score = data.score !== undefined ? parseFloat(data.score) : null;
         var averageScore = data.averageScore !== undefined ? parseFloat(data.averageScore) : null;
-        var percentile = data.percentile !== undefined ? parseFloat(data.percentile) : calculatePercentile(rank, totalStudents);
+        var percentile = data.percentile !== undefined
+            ? parseFloat(data.percentile)
+            : calculatePercentile(rank, totalStudents);
 
-        var newRanking = {
-            id: rankId,
+        return {
+            id: existingId || generateId(),
             classId: String(data.classId),
             studentId: String(data.studentId),
             week: parseInt(data.week, 10),
@@ -492,59 +430,91 @@
             percentile: clamp(percentile, 0, 100),
             score: score,
             averageScore: averageScore,
-            createdAt: now,
+            createdAt: existingCreatedAt || now,
             updatedAt: now
         };
+    }
 
-        // ---- PHASE 6: COMMIT ----
-        academy.rankings[rankId] = newRanking;
+    // ============================================================
+    // PUBLIC API - RANKING CRUD (Promise-based, via MutationPipeline)
+    // ============================================================
 
-        return success({
-            ranking: newRanking
+    /**
+     * Create a ranking record.
+     *
+     * @param {object} data - Ranking data
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
+     */
+    function create(data) {
+        var validation = validateRankingData(data, false);
+        if (!validation.valid) {
+            return Promise.resolve(failure(validation.message));
+        }
+
+        var classValidation = validateClassExists(data.classId);
+        if (!classValidation.valid) {
+            return Promise.resolve(failure(classValidation.message));
+        }
+
+        // Pre-flight duplicate check
+        var existing = getStudentRankInternal(data.classId, data.studentId, data.week);
+        if (existing) {
+            return Promise.resolve(failure('Ranking already exists for this student, class, and week. Use update instead.'));
+        }
+
+        var newRanking = buildRankingRecord(data, null, null);
+        var targetId = newRanking.id;
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !appData.academy) {
+                    return { valid: false, message: 'Academy data is not available.' };
+                }
+                if (appData.academy.rankings && appData.academy.rankings[targetId]) {
+                    return { valid: false, message: 'Ranking ID collision.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!appData.academy.rankings || typeof appData.academy.rankings !== 'object') {
+                    appData.academy.rankings = {};
+                }
+                appData.academy.rankings[targetId] = deepClone(newRanking);
+                return { ranking: newRanking, id: targetId };
+            },
+            logMessage: 'Created ranking for student ' + newRanking.studentId,
+            successMessage: 'Ranking created successfully!',
+            failureMessage: 'Failed to create ranking.'
         });
     }
 
     /**
      * Update an existing ranking.
-     * Candidate-based: validates, clones, modifies, commits.
-     * 
+     *
      * @param {string} rankId - Ranking ID
      * @param {object} updates - Updates to apply
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function update(rankId, updates) {
-        // ---- PHASE 1: VALIDATE INPUT ----
         if (!isNonEmptyString(rankId)) {
-            return failure('Ranking ID is required.');
+            return Promise.resolve(failure('Ranking ID is required.'));
         }
 
         if (!isObject(updates) || Object.keys(updates).length === 0) {
-            return failure('Updates are required.');
+            return Promise.resolve(failure('Updates are required.'));
         }
 
-        // ---- PHASE 2: GET STORE ----
-        var academy = ensureRankingStructures();
-        if (!academy) {
-            return failure('Academy data is not available.');
-        }
-
-        // ---- PHASE 3: FIND EXISTING ----
-        var target = String(rankId);
-        var existing = academy.rankings[target];
-
+        var existing = getRankingRecord(rankId);
         if (!existing) {
-            return failure('Ranking not found.');
+            return Promise.resolve(failure('Ranking not found.'));
         }
 
-        // ---- PHASE 4: BUILD CANDIDATE ----
         var candidate = deepClone(existing);
         if (candidate === null) {
-            return failure('Failed to clone ranking data.');
+            return Promise.resolve(failure('Failed to clone ranking data.'));
         }
 
         var hasChanges = false;
-
-        // Validate and apply updates
         var updateFields = ['classId', 'studentId', 'week', 'rank', 'totalStudents', 'score', 'averageScore'];
 
         for (var i = 0; i < updateFields.length; i++) {
@@ -559,7 +529,7 @@
                 case 'classId':
                 case 'studentId':
                     if (!isNonEmptyString(value)) {
-                        return failure(field + ' must be a non-empty string.');
+                        return Promise.resolve(failure(field + ' must be a non-empty string.'));
                     }
                     if (candidate[field] !== String(value)) {
                         candidate[field] = String(value);
@@ -570,7 +540,7 @@
                 case 'week':
                     var week = parseInt(value, 10);
                     if (isNaN(week) || week < MIN_WEEK || week > MAX_WEEK) {
-                        return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+                        return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
                     }
                     if (candidate.week !== week) {
                         candidate.week = week;
@@ -581,12 +551,11 @@
                 case 'rank':
                     var rank = parseInt(value, 10);
                     if (isNaN(rank) || rank < MIN_RANK) {
-                        return failure('Rank must be a number greater than or equal to 1.');
+                        return Promise.resolve(failure('Rank must be a number greater than or equal to 1.'));
                     }
                     if (candidate.rank !== rank) {
                         candidate.rank = rank;
                         hasChanges = true;
-                        // Recalculate percentile
                         candidate.percentile = calculatePercentile(rank, candidate.totalStudents);
                     }
                     break;
@@ -594,12 +563,11 @@
                 case 'totalStudents':
                     var total = parseInt(value, 10);
                     if (isNaN(total) || total < 0) {
-                        return failure('Total students must be a number greater than or equal to 0.');
+                        return Promise.resolve(failure('Total students must be a number greater than or equal to 0.'));
                     }
                     if (candidate.totalStudents !== total) {
                         candidate.totalStudents = total;
                         hasChanges = true;
-                        // Recalculate percentile
                         candidate.percentile = calculatePercentile(candidate.rank, total);
                     }
                     break;
@@ -607,7 +575,7 @@
                 case 'score':
                     var score = parseFloat(value);
                     if (isNaN(score) || score < 0) {
-                        return failure('Score must be a number greater than or equal to 0.');
+                        return Promise.resolve(failure('Score must be a number greater than or equal to 0.'));
                     }
                     if (candidate.score !== score) {
                         candidate.score = score;
@@ -618,57 +586,61 @@
                 case 'averageScore':
                     var avg = parseFloat(value);
                     if (isNaN(avg) || avg < 0) {
-                        return failure('Average score must be a number greater than or equal to 0.');
+                        return Promise.resolve(failure('Average score must be a number greater than or equal to 0.'));
                     }
                     if (candidate.averageScore !== avg) {
                         candidate.averageScore = avg;
                         hasChanges = true;
                     }
                     break;
-
-                default:
-                    break;
             }
         }
 
         if (!hasChanges) {
-            return success({ ranking: existing, changed: false });
+            return Promise.resolve(success({ ranking: existing, changed: false }));
         }
 
-        // ---- PHASE 5: COMMIT ----
         candidate.updatedAt = new Date().toISOString();
-        academy.rankings[target] = candidate;
+        var targetId = String(rankId);
 
-        return success({
-            ranking: candidate,
-            changed: true
+        return MutationPipeline.performMutation({
+            validate: function() {
+                if (!getRankingRecord(targetId)) {
+                    return { valid: false, message: 'Ranking no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!appData.academy || !appData.academy.rankings) {
+                    throw new Error('Academy data is not available.');
+                }
+                if (!appData.academy.rankings[targetId]) {
+                    throw new Error('Ranking not found in data store.');
+                }
+                appData.academy.rankings[targetId] = deepClone(candidate);
+                return { ranking: candidate, changed: true };
+            },
+            logMessage: 'Updated ranking for student ' + candidate.studentId,
+            successMessage: 'Ranking updated successfully!',
+            failureMessage: 'Failed to update ranking.'
         });
     }
 
     /**
      * Delete a ranking permanently.
-     * 
+     *
      * @param {string} rankId - Ranking ID
-     * @returns {object} { success: boolean, message?: string, data?: object }
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function deleteRanking(rankId) {
-        // ---- PHASE 1: VALIDATE INPUT ----
         if (!isNonEmptyString(rankId)) {
-            return failure('Ranking ID is required.');
+            return Promise.resolve(failure('Ranking ID is required.'));
         }
 
-        // ---- PHASE 2: GET STORE ----
-        var academy = ensureRankingStructures();
-        if (!academy) {
-            return failure('Academy data is not available.');
-        }
-
-        // ---- PHASE 3: FIND EXISTING ----
         var target = String(rankId);
-        var existing = academy.rankings[target];
-
+        var existing = getRankingRecord(target);
         if (!existing) {
-            return failure('Ranking not found.');
+            return Promise.resolve(failure('Ranking not found.'));
         }
 
         var rankInfo = {
@@ -679,79 +651,95 @@
             rank: existing.rank
         };
 
-        // ---- PHASE 4: REMOVE ----
-        delete academy.rankings[target];
-
-        return success({
-            deleted: true,
-            ranking: rankInfo
+        return MutationPipeline.performMutation({
+            validate: function() {
+                if (!getRankingRecord(target)) {
+                    return { valid: false, message: 'Ranking no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!appData.academy || !appData.academy.rankings) {
+                    throw new Error('Academy data is not available.');
+                }
+                if (!appData.academy.rankings[target]) {
+                    throw new Error('Ranking not found in data store.');
+                }
+                delete appData.academy.rankings[target];
+                return { deleted: true, ranking: rankInfo };
+            },
+            logMessage: 'Deleted ranking for student ' + existing.studentId,
+            successMessage: 'Ranking deleted successfully!',
+            failureMessage: 'Failed to delete ranking.'
         });
     }
 
     /**
      * Delete all rankings for a class and week.
-     * 
+     *
      * @param {string} classId - Class ID
      * @param {number} week - Week number
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function deleteClassRankings(classId, week) {
         if (!isNonEmptyString(classId)) {
-            return failure('Class ID is required.');
+            return Promise.resolve(failure('Class ID is required.'));
         }
 
         var weekNum = parseInt(week, 10);
         if (isNaN(weekNum) || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
-        }
-
-        var academy = ensureRankingStructures();
-        if (!academy) {
-            return failure('Academy data is not available.');
+            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
         }
 
         var targetClass = String(classId);
-        var removed = [];
-        var toRemove = [];
 
-        for (var id in academy.rankings) {
-            if (Object.prototype.hasOwnProperty.call(academy.rankings, id)) {
-                var rank = academy.rankings[id];
-                if (rank && String(rank.classId) === targetClass && rank.week === weekNum) {
-                    toRemove.push(id);
-                    removed.push({
-                        id: id,
-                        studentId: rank.studentId,
-                        rank: rank.rank
-                    });
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !appData.academy || !appData.academy.rankings) {
+                    return { valid: false, message: 'Academy data is not available.' };
                 }
-            }
-        }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var rankings = appData.academy.rankings;
+                var toRemove = [];
+                var removed = [];
 
-        for (var i = 0; i < toRemove.length; i++) {
-            delete academy.rankings[toRemove[i]];
-        }
+                for (var id in rankings) {
+                    if (Object.prototype.hasOwnProperty.call(rankings, id)) {
+                        var rank = rankings[id];
+                        if (rank && String(rank.classId) === targetClass && rank.week === weekNum) {
+                            toRemove.push(id);
+                            removed.push({
+                                id: id,
+                                studentId: rank.studentId,
+                                rank: rank.rank
+                            });
+                        }
+                    }
+                }
 
-        return success({
-            classId: targetClass,
-            week: weekNum,
-            removedCount: removed.length,
-            removed: removed
+                for (var i = 0; i < toRemove.length; i++) {
+                    delete rankings[toRemove[i]];
+                }
+
+                return {
+                    classId: targetClass,
+                    week: weekNum,
+                    removedCount: removed.length,
+                    removed: removed
+                };
+            },
+            logMessage: 'Deleted rankings for class ' + targetClass + ', week ' + weekNum,
+            successMessage: 'Class rankings deleted successfully!',
+            failureMessage: 'Failed to delete class rankings.'
         });
     }
 
     // ============================================================
-    // QUERY FUNCTIONS - Read-only (internal)
+    // QUERY FUNCTIONS - Read-only (synchronous)
     // ============================================================
 
-    /**
-     * Get rankings for a class and week.
-     * 
-     * @param {string} classId - Class ID
-     * @param {number} week - Week number
-     * @param {boolean} includeStudentDetails - Include student details
-     * @returns {array} Array of ranking objects with student details
-     */
     function getClassRankings(classId, week, includeStudentDetails) {
         var rankings = getClassRankingsInternal(classId, week);
 
@@ -775,15 +763,6 @@
         return result;
     }
 
-    /**
-     * Get a student's ranking for a class and week.
-     * 
-     * @param {string} classId - Class ID
-     * @param {string} studentId - Student ID
-     * @param {number} week - Week number
-     * @param {boolean} includeDetails - Include ranking details
-     * @returns {object|null} Ranking object or null
-     */
     function getStudentRank(classId, studentId, week, includeDetails) {
         var rank = getStudentRankInternal(classId, studentId, week);
 
@@ -800,7 +779,6 @@
                 result.student = student;
             }
 
-            // Get all rankings for context
             var allRankings = getClassRankingsInternal(classId, week);
             result.totalRanked = allRankings.length;
             result.percentile = calculatePercentile(result.rank, result.totalRanked);
@@ -809,13 +787,6 @@
         return result;
     }
 
-    /**
-     * Get rankings with details (comprehensive view).
-     * 
-     * @param {string} classId - Class ID
-     * @param {number} week - Week number
-     * @returns {object} { rankings, summary, distribution }
-     */
     function getRankingsWithDetails(classId, week) {
         var rankings = getClassRankings(classId, week, true);
         var summary = calculateRankingSummary(rankings);
@@ -831,13 +802,6 @@
         };
     }
 
-    /**
-     * Get all rankings (defensive copies).
-     * 
-     * @param {string} classId - Optional class filter
-     * @param {number} week - Optional week filter
-     * @returns {array} Array of ranking objects
-     */
     function getRankings(classId, week) {
         var records = getRankingRecords(classId, week);
         return records.map(function(rank) {
@@ -845,27 +809,15 @@
         });
     }
 
-    /**
-     * Get a ranking by ID (defensive copy).
-     * 
-     * @param {string} rankId - Ranking ID
-     * @returns {object|null} Ranking object or null
-     */
     function getRanking(rankId) {
         var rank = getRankingRecord(rankId);
         return rank ? deepClone(rank) : null;
     }
 
     // ============================================================
-    // RANKING CALCULATIONS
+    // RANKING CALCULATIONS - Pure
     // ============================================================
 
-    /**
-     * Calculate a ranking summary.
-     * 
-     * @param {array} rankings - Array of ranking objects
-     * @returns {object} Summary statistics
-     */
     function calculateRankingSummary(rankings) {
         if (!Array.isArray(rankings) || rankings.length === 0) {
             return {
@@ -912,13 +864,6 @@
         };
     }
 
-    /**
-     * Calculate rank distribution.
-     * 
-     * @param {array} rankings - Array of ranking objects
-     * @param {number} bins - Number of bins (default: 5)
-     * @returns {object} Distribution by percentile bins
-     */
     function calculateRankDistribution(rankings, bins) {
         bins = bins || 5;
 
@@ -936,7 +881,6 @@
             var percentile = rank.percentile || 0;
             var binKey = Math.floor(percentile / binSize) * binSize;
 
-            // Bin label: "0-19", "20-39", etc.
             var binLabel = binKey + '-' + Math.min(binKey + binSize - 1, 100);
             if (binKey >= 100) {
                 binLabel = '100';
@@ -959,47 +903,51 @@
     }
 
     // ============================================================
-    // AUTO-GENERATE RANKINGS FROM GRADES
+    // AUTO-GENERATE RANKINGS FROM GRADES (Promise-based)
     // ============================================================
 
     /**
      * Auto-generate rankings from grade data.
-     * 
+     *
+     * PLAN / APPLY:
+     *   1. Validate inputs.
+     *   2. Read grades and compute ranking data (READ).
+     *   3. Plan ALL writes (create/update/skip) without touching
+     *      window.data.
+     *   4. Apply all planned writes in a SINGLE pipeline transaction.
+     *
      * @param {string} classId - Class ID
      * @param {number} week - Week number
      * @param {object} options - Generation options
-     * @param {boolean} options.overwrite - Overwrite existing rankings
+     * @param {boolean} options.overwrite - Overwrite existing rankings (default: true)
      * @param {number} options.weightThreshold - Minimum weight to include
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function autoGenerate(classId, week, options) {
         if (!isNonEmptyString(classId)) {
-            return failure('Class ID is required.');
+            return Promise.resolve(failure('Class ID is required.'));
         }
 
         var weekNum = parseInt(week, 10);
         if (isNaN(weekNum) || weekNum < MIN_WEEK || weekNum > MAX_WEEK) {
-            return failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').');
+            return Promise.resolve(failure('Valid week is required (' + MIN_WEEK + '-' + MAX_WEEK + ').'));
         }
 
         options = options || {};
         var overwrite = options.overwrite !== false;
         var weightThreshold = options.weightThreshold || 0.5;
 
-        // ---- PHASE 1: VALIDATE CLASS EXISTS (uses AcademyClasses) ----
         var classValidation = validateClassExists(classId);
         if (!classValidation.valid) {
-            return failure(classValidation.message);
+            return Promise.resolve(failure(classValidation.message));
         }
 
-        // ---- PHASE 2: GET GRADES (uses AcademyGrades) ----
+        // ---- READ: get grades and calculate rankings ----
         var grades = AcademyGrades.getClassGrades(classId, weekNum);
-
         if (grades.length === 0) {
-            return failure('No grades found for this class and week.');
+            return Promise.resolve(failure('No grades found for this class and week.'));
         }
 
-        // ---- PHASE 3: CALCULATE RANKINGS (uses AcademyGrades) ----
         var rankingData = AcademyGrades.calculateClassRanking(
             classId,
             weekNum,
@@ -1007,127 +955,190 @@
         );
 
         if (!rankingData || rankingData.length === 0) {
-            return failure('Failed to calculate rankings from grades.');
+            return Promise.resolve(failure('Failed to calculate rankings from grades.'));
         }
 
-        // ---- PHASE 4: GET STORE ----
-        var academy = ensureRankingStructures();
-        if (!academy) {
-            return failure('Academy data is not available.');
-        }
-
-        // ---- PHASE 5: PREPARE FOR MUTATION ----
-        var created = 0;
-        var updated = 0;
-        var skipped = 0;
-        var errors = [];
-
+        // ---- PLAN: for each computed ranking, decide create/update/skip ----
         var totalStudents = rankingData.length;
+        var planned = [];
 
         for (var i = 0; i < rankingData.length; i++) {
             var data = rankingData[i];
             var rankPosition = data.rank || (i + 1);
-            var score = data.average || null;
+            var score = data.average !== undefined ? data.average : null;
             var studentId = data.studentId;
 
-            // Check if ranking already exists
             var existing = getStudentRankInternal(classId, studentId, weekNum);
 
             if (existing && !overwrite) {
-                skipped++;
+                planned.push({ action: 'skip' });
                 continue;
             }
 
-            // Prepare ranking data
-            var rankData = {
-                classId: classId,
-                studentId: studentId,
-                week: weekNum,
-                rank: rankPosition,
-                totalStudents: totalStudents,
-                score: score,
-                averageScore: null // We don't have class average from this data
-            };
-
             if (existing) {
-                // Update existing
-                var updateResult = update(existing.id, {
+                var candidate = deepClone(existing);
+                candidate.rank = rankPosition;
+                candidate.totalStudents = totalStudents;
+                candidate.score = score;
+                candidate.percentile = calculatePercentile(rankPosition, totalStudents);
+                candidate.updatedAt = new Date().toISOString();
+                planned.push({ action: 'update', record: candidate, matchId: existing.id });
+            } else {
+                var newRecord = buildRankingRecord({
+                    classId: classId,
+                    studentId: studentId,
+                    week: weekNum,
                     rank: rankPosition,
                     totalStudents: totalStudents,
-                    score: score
-                });
-
-                if (updateResult.success) {
-                    updated++;
-                } else {
-                    errors.push({
-                        studentId: studentId,
-                        error: updateResult.message
-                    });
-                }
-            } else {
-                // Create new
-                var createResult = create(rankData);
-
-                if (createResult.success) {
-                    created++;
-                } else {
-                    errors.push({
-                        studentId: studentId,
-                        error: createResult.message
-                    });
-                }
+                    score: score,
+                    averageScore: null
+                }, null, null);
+                planned.push({ action: 'create', record: newRecord });
             }
         }
 
-        return success({
-            classId: classId,
-            week: weekNum,
-            totalStudents: totalStudents,
-            created: created,
-            updated: updated,
-            skipped: skipped,
-            errors: errors,
-            rankings: getClassRankingsInternal(classId, weekNum)
+        var creates = planned.filter(function(p) { return p.action === 'create'; });
+        var updates = planned.filter(function(p) { return p.action === 'update'; });
+        var skipped = planned.filter(function(p) { return p.action === 'skip'; }).length;
+
+        // ---- APPLY: single pipeline transaction ----
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !appData.academy) {
+                    return { valid: false, message: 'Academy data is not available.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!appData.academy.rankings || typeof appData.academy.rankings !== 'object') {
+                    appData.academy.rankings = {};
+                }
+
+                var created = 0;
+                var updated = 0;
+
+                for (var k = 0; k < planned.length; k++) {
+                    var item = planned[k];
+                    if (item.action === 'create') {
+                        appData.academy.rankings[item.record.id] = deepClone(item.record);
+                        created++;
+                    } else if (item.action === 'update') {
+                        if (!appData.academy.rankings[item.matchId]) {
+                            throw new Error('Ranking no longer exists: ' + item.matchId);
+                        }
+                        appData.academy.rankings[item.matchId] = deepClone(item.record);
+                        updated++;
+                    }
+                }
+
+                return {
+                    classId: classId,
+                    week: weekNum,
+                    totalStudents: totalStudents,
+                    created: created,
+                    updated: updated,
+                    skipped: skipped,
+                    rankings: getClassRankingsInternal(classId, weekNum)
+                };
+            },
+            logMessage: 'Generated rankings for class ' + classId + ', week ' + weekNum,
+            successMessage: 'Rankings generated successfully!',
+            failureMessage: 'Failed to generate rankings.'
         });
     }
 
     // ============================================================
-    // BULK OPERATIONS
+    // CASCADE HELPERS - Remove all references to a character ID
+    // ============================================================
+
+    /**
+     * Strip all ranking records for a character from academy.rankings.
+     *
+     * Rankings are keyed by id and carry a studentId. Deleting a
+     * student makes their rankings unreachable.
+     *
+     * Note: rankings are ALSO keyed by class and week within the
+     * record. If a class or week is deleted through some other path,
+     * the higher-level cleanup helpers handle that. This helper only
+     * cares about the student side.
+     *
+     * This helper is PURE with respect to `appData`: it mutates the
+     * store, but it does not touch `window.data`. It is designed to be
+     * called from inside a pipeline mutate() callback in another
+     * module's transaction. It never throws.
+     *
+     * @param {object} appData - The pipeline's appData snapshot
+     * @param {string} charId - Character ID to strip
+     * @returns {object} { rankingsRemoved }
+     */
+    function stripCharacterRefs(appData, charId) {
+        var result = { rankingsRemoved: 0 };
+
+        if (!appData || !charId) {
+            return result;
+        }
+
+        if (!appData.academy || typeof appData.academy !== 'object') {
+            return result;
+        }
+
+        var rankings = appData.academy.rankings;
+        if (!rankings || typeof rankings !== 'object' || Array.isArray(rankings)) {
+            return result;
+        }
+
+        var target = String(charId);
+        var keysToRemove = [];
+
+        Object.keys(rankings).forEach(function(id) {
+            var rank = rankings[id];
+            if (rank && String(rank.studentId) === target) {
+                keysToRemove.push(id);
+            }
+        });
+
+        for (var i = 0; i < keysToRemove.length; i++) {
+            delete rankings[keysToRemove[i]];
+        }
+
+        result.rankingsRemoved = keysToRemove.length;
+        return result;
+    }
+
+    // ============================================================
+    // BULK OPERATIONS - Via MutationPipeline
     // ============================================================
 
     /**
      * Save multiple rankings at once.
-     * 
+     *
+     * PLAN / APPLY:
+     *   1. Validate each entry and decide create/update/skip.
+     *   2. Apply all planned writes in a SINGLE pipeline transaction.
+     *
      * @param {array} rankingDataArray - Array of ranking data objects
      * @param {object} options - Save options
      * @param {boolean} options.overwrite - Overwrite existing rankings
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function saveRankings(rankingDataArray, options) {
         if (!Array.isArray(rankingDataArray) || rankingDataArray.length === 0) {
-            return failure('Ranking data array is required.');
+            return Promise.resolve(failure('Ranking data array is required.'));
         }
 
         options = options || {};
         var overwrite = options.overwrite !== false;
 
-        var created = 0;
-        var updated = 0;
-        var skipped = 0;
+        var planned = [];
         var errors = [];
 
         for (var i = 0; i < rankingDataArray.length; i++) {
             var data = rankingDataArray[i];
             if (!isObject(data)) {
-                errors.push({
-                    index: i,
-                    error: 'Invalid ranking data.'
-                });
+                errors.push({ index: i, error: 'Invalid ranking data.' });
                 continue;
             }
 
-            // Validate required fields
             if (!data.classId || !data.studentId || !data.week || data.rank === undefined) {
                 errors.push({
                     index: i,
@@ -1136,48 +1147,84 @@
                 continue;
             }
 
-            // Check if ranking already exists
+            var validation = validateRankingData(data, false);
+            if (!validation.valid) {
+                errors.push({ index: i, studentId: data.studentId, error: validation.message });
+                continue;
+            }
+
             var existing = getStudentRankInternal(data.classId, data.studentId, data.week);
 
             if (existing && !overwrite) {
-                skipped++;
+                planned.push({ action: 'skip' });
                 continue;
             }
 
             if (existing) {
-                // Update existing
-                var updateResult = update(existing.id, data);
-                if (updateResult.success) {
-                    updated++;
-                } else {
-                    errors.push({
-                        index: i,
-                        studentId: data.studentId,
-                        error: updateResult.message
-                    });
-                }
+                var candidate = buildRankingRecord(data, existing.id, existing.createdAt);
+                planned.push({ action: 'update', record: candidate, matchId: existing.id });
             } else {
-                // Create new
-                var createResult = create(data);
-                if (createResult.success) {
-                    created++;
-                } else {
-                    errors.push({
-                        index: i,
-                        studentId: data.studentId,
-                        error: createResult.message
-                    });
-                }
+                var newRecord = buildRankingRecord(data, null, null);
+                planned.push({ action: 'create', record: newRecord });
             }
         }
 
-        return success({
-            total: rankingDataArray.length,
-            created: created,
-            updated: updated,
-            skipped: skipped,
-            errors: errors,
-            successCount: created + updated
+        var creates = planned.filter(function(p) { return p.action === 'create'; });
+        var updates = planned.filter(function(p) { return p.action === 'update'; });
+        var skipped = planned.filter(function(p) { return p.action === 'skip'; }).length;
+
+        if (creates.length === 0 && updates.length === 0) {
+            return Promise.resolve(success({
+                total: rankingDataArray.length,
+                created: 0,
+                updated: 0,
+                skipped: skipped,
+                errors: errors,
+                successCount: 0
+            }));
+        }
+
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || !appData.academy) {
+                    return { valid: false, message: 'Academy data is not available.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                if (!appData.academy.rankings || typeof appData.academy.rankings !== 'object') {
+                    appData.academy.rankings = {};
+                }
+
+                var created = 0;
+                var updated = 0;
+
+                for (var k = 0; k < planned.length; k++) {
+                    var item = planned[k];
+                    if (item.action === 'create') {
+                        appData.academy.rankings[item.record.id] = deepClone(item.record);
+                        created++;
+                    } else if (item.action === 'update') {
+                        if (!appData.academy.rankings[item.matchId]) {
+                            throw new Error('Ranking no longer exists: ' + item.matchId);
+                        }
+                        appData.academy.rankings[item.matchId] = deepClone(item.record);
+                        updated++;
+                    }
+                }
+
+                return {
+                    total: rankingDataArray.length,
+                    created: created,
+                    updated: updated,
+                    skipped: skipped,
+                    errors: errors,
+                    successCount: created + updated
+                };
+            },
+            logMessage: 'Saved ' + (creates.length + updates.length) + ' ranking(s)',
+            successMessage: 'Rankings saved successfully!',
+            failureMessage: 'Failed to save rankings.'
         });
     }
 
@@ -1186,27 +1233,28 @@
     // ============================================================
 
     window.AcademyRanking = {
-        // ---- CRUD ----
+        // ---- Mutations (Promise-based) ----
         create: create,
         update: update,
         delete: deleteRanking,
         deleteClassRankings: deleteClassRankings,
+        autoGenerate: autoGenerate,
+        saveRankings: saveRankings,
 
-        // ---- Queries ----
+        // ---- Queries (synchronous) ----
         getClassRankings: getClassRankings,
         getStudentRank: getStudentRank,
         getRankingsWithDetails: getRankingsWithDetails,
         getRankings: getRankings,
         getRanking: getRanking,
 
-        // ---- Calculations ----
+        // ---- Calculations (synchronous, pure) ----
         calculateRankingSummary: calculateRankingSummary,
         calculateRankDistribution: calculateRankDistribution,
         calculatePercentile: calculatePercentile,
 
-        // ---- Auto-generation ----
-        autoGenerate: autoGenerate,
-        saveRankings: saveRankings,
+        // ---- Cascade helpers (for cross-domain cleanup) ----
+        stripCharacterRefs: stripCharacterRefs,
 
         // ---- Internal (for AcademyQueries) ----
         getClassRankingsInternal: getClassRankingsInternal,

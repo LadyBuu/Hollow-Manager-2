@@ -1,7 +1,7 @@
 /**
  * modules/calendar/index.js - Calendar Module Entry Point
  * Unified entry point for all calendar functionality
- * 
+ *
  * IMPORTANT:
  *   - Registers with TabManager
  *   - Assembles providers for Aggregator
@@ -9,7 +9,27 @@
  *   - Singleton pattern
  *   - No domain logic
  *   - No render logic (delegates to UI modules)
- * 
+ *
+ * LIFECYCLE:
+ *   TabManager.register('calendar', render)
+ *     → render(container)
+ *       → destroyUI()             // tear down previous active UI
+ *       → initializeState()       // sessionStorage + hash
+ *       → container.innerHTML     // shell
+ *       → renderActiveMode()      // delegate to active UI
+ *       → bindEvents()            // shell-level events
+ *
+ *   destroy() (from TabManager on unmount):
+ *     → destroyUI()
+ *     → _container = null
+ *
+ * EVENT LISTENER TRACKING:
+ *   - Every listener added by this module goes through `addTrackedListener`
+ *     OR is stored with a full descriptor { element, eventName, handler, options }.
+ *   - destroyUI() removes all tracked listeners by passing all three args
+ *     to removeEventListener. Calling removeEventListener with only the
+ *     event name is a no-op and was the original bug.
+ *
  * DEPENDENCIES:
  *   - TabManager
  *   - StudentCalendarUI
@@ -84,6 +104,42 @@
             case 'location': return 'location-select';
             default: return '';
         }
+    }
+
+    // ============================================================
+    // TRACKED EVENT LISTENERS - FIX
+    // ============================================================
+    //
+    // Every listener this module adds on the shell goes through
+    // addTrackedListener, which stores the full descriptor. destroyUI
+    // then removes each one with all three arguments. The previous
+    // code stored only { element, eventName } and never stored the
+    // handler, which made removeEventListener a silent no-op.
+
+    function addTrackedListener(element, eventName, handler, options) {
+        if (!element) {
+            return;
+        }
+        var opts = options || false;
+        element.addEventListener(eventName, handler, opts);
+        _eventListeners.push({
+            element: element,
+            eventName: eventName,
+            handler: handler,
+            options: opts
+        });
+    }
+
+    function removeAllTrackedListeners() {
+        for (var i = 0; i < _eventListeners.length; i++) {
+            var item = _eventListeners[i];
+            try {
+                item.element.removeEventListener(item.eventName, item.handler, item.options);
+            } catch (e) {
+                // Ignore cleanup errors
+            }
+        }
+        _eventListeners = [];
     }
 
     // ============================================================
@@ -253,9 +309,10 @@
         } catch (_) {}
 
         // Try URL hash
+        // FIX: guard URLSearchParams — not available in all environments.
         try {
             var hash = window.location.hash;
-            if (hash) {
+            if (hash && typeof window.URLSearchParams === 'function') {
                 var queryIndex = hash.indexOf('?');
                 if (queryIndex !== -1) {
                     var params = new URLSearchParams(hash.substring(queryIndex + 1));
@@ -366,9 +423,10 @@
             _state.selectedId = null;
         }
 
+        // FIX: renamed loop variable to avoid shadowing the outer `i`.
         var buttons = _container.querySelectorAll('.mode-btn');
-        for (var i = 0; i < buttons.length; i++) {
-            var btn = buttons[i];
+        for (var b = 0; b < buttons.length; b++) {
+            var btn = buttons[b];
             var btnMode = btn.dataset.mode;
             if (btnMode === mode) {
                 btn.classList.add('active');
@@ -432,51 +490,47 @@
     // ============================================================
 
     function bindEvents() {
+        if (!_container) { return; }
+
         var modeButtons = _container.querySelectorAll('.mode-btn');
         for (var i = 0; i < modeButtons.length; i++) {
             var btn = modeButtons[i];
-            btn.addEventListener('click', function() {
+            addTrackedListener(btn, 'click', function() {
                 var mode = this.dataset.mode;
                 if (mode) { switchMode(mode); }
             });
-            _eventListeners.push({ element: btn, eventName: 'click' });
         }
 
         var prevBtn = document.getElementById('calendar-prev-week');
         if (prevBtn) {
-            prevBtn.addEventListener('click', function() { switchWeek(-1); });
-            _eventListeners.push({ element: prevBtn, eventName: 'click' });
+            addTrackedListener(prevBtn, 'click', function() { switchWeek(-1); });
         }
 
         var nextBtn = document.getElementById('calendar-next-week');
         if (nextBtn) {
-            nextBtn.addEventListener('click', function() { switchWeek(1); });
-            _eventListeners.push({ element: nextBtn, eventName: 'click' });
+            addTrackedListener(nextBtn, 'click', function() { switchWeek(1); });
         }
 
         var entitySelect = document.getElementById('calendar-entity-select');
         if (entitySelect) {
-            entitySelect.addEventListener('change', function() {
+            addTrackedListener(entitySelect, 'change', function() {
                 var id = this.value;
                 if (id) { selectEntity(id); }
             });
-            _eventListeners.push({ element: entitySelect, eventName: 'change' });
         }
     }
 
     function destroyUI() {
-        if (_activeUI && _activeUI.destroy) {
-            _activeUI.destroy();
+        if (_activeUI && typeof _activeUI.destroy === 'function') {
+            try {
+                _activeUI.destroy();
+            } catch (e) {
+                // Ignore destroy errors
+            }
         }
         _activeUI = null;
 
-        for (var i = 0; i < _eventListeners.length; i++) {
-            var item = _eventListeners[i];
-            try {
-                item.element.removeEventListener(item.eventName);
-            } catch (e) {}
-        }
-        _eventListeners = [];
+        removeAllTrackedListeners();
 
         _initialized = false;
     }

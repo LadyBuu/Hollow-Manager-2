@@ -1,52 +1,61 @@
 /**
  * modules/academy/academy-disciplines.js - Academy Disciplines
  * SINGLE SOURCE OF TRUTH for all discipline/curriculum data and operations
- * 
+ *
  * This module is responsible for:
  *   - Discipline CRUD operations (create, update, delete)
  *   - Discipline queries (get by ID, get all, get available)
  *   - Discipline validation
  *   - Instructor assignment for disciplines
- * 
+ *
  * IMPORTANT:
  *   - This module OWNS discipline data - it does NOT depend on AcademyQueries
- *   - All mutations are candidate-based: VALIDATE → CLONE → MODIFY → COMMIT
- *   - Invalid inputs are REJECTED (operation returns null/false)
- *   - Mutations are ATOMIC: if any part is invalid, nothing changes
- *   - This module does NOT call saveData() - callers own persistence
+ *   - All MUTATIONS go through MutationPipeline (persistence, rollback, logging)
+ *   - All READS are synchronous and side-effect free
+ *   - Invalid inputs are REJECTED (mutation resolves with { success: false })
+ *   - Mutations are ATOMIC: if persistence fails, window.data is restored
+ *   - This module does NOT call saveData() directly - the pipeline does
  *   - AcademyQueries is the PUBLIC read facade that uses these internal lookups
- * 
+ *
+ * CASCADE SEMANTICS (deleteDiscipline):
+ *   Deleting a discipline is a CASCADE. In a single transaction it:
+ *     1. Deletes the discipline from curriculum.disciplines.
+ *     2. Removes auto-groups whose disciplineId matches.
+ *     3. Strips the discipline ID from every student weekly schedule.
+ *     4. Strips the discipline ID from every location weekly schedule.
+ *     5. Prunes metadata keys whose target slot no longer exists.
+ *     6. Deletes grades keyed to this discipline.
+ *   Rationale: after deletion, any surviving reference would be
+ *   unreachable data. Cleaning in the same transaction avoids both
+ *   orphaned references and partial-cascade states.
+ *
+ * MUTATION CONTRACT:
+ *   - create / update / delete / saveDisciplines all return
+ *     Promise<{ success, data?, message? }>
+ *   - getDiscipline / getDisciplines / getDisciplinesByType /
+ *     getDisciplinesByInstructor / getAvailableDisciplines /
+ *     getActiveDisciplines stay synchronous
+ *
+ * YEAR SEMANTICS:
+ *   - Disciplines are scoped to WEEKS (bounded 1-52), not years.
+ *
  * DEPENDENCIES:
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
+ *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   var disciplines = window.AcademyDisciplines;
- *   
- *   // Create a discipline
- *   var result = disciplines.create({
- *     name: 'Combat Training',
- *     type: 'mandatory',
- *     instructorIds: ['char_123'],
- *     startWeek: 1,
- *     endWeek: 10,
- *     weeklyHours: 2,
- *     weight: 1.0
+ *
+ *   disciplines.create({ name: 'Combat Training', type: 'mandatory' })
+ *       .then(function(result) { ... });
+ *
+ *   disciplines.delete('disc_123').then(function(result) {
+ *       // result.data.cascade contains the cascade summary
  *   });
- *   
- *   // Update a discipline
- *   var result = disciplines.update('disc_123', { name: 'Advanced Combat' });
- *   
- *   // Delete a discipline
- *   var result = disciplines.delete('disc_123');
- *   
- *   // Get a discipline
- *   var discipline = disciplines.getDiscipline('disc_123');
- *   var all = disciplines.getDisciplines();
- *   var available = disciplines.getAvailableDisciplines(5);
  */
 
 (function() {
@@ -74,6 +83,10 @@
         missing.push('ValidationUtils.isNonEmptyString');
     }
 
+    if (!window.MutationPipeline || typeof window.MutationPipeline.performMutation !== 'function') {
+        missing.push('MutationPipeline.performMutation');
+    }
+
     if (!window.CalendarConstants) {
         missing.push('CalendarConstants');
     }
@@ -95,6 +108,7 @@
     var ObjectUtils = window.ObjectUtils;
     var IdUtils = window.IdUtils;
     var ValidationUtils = window.ValidationUtils;
+    var MutationPipeline = window.MutationPipeline;
     var CalendarConstants = window.CalendarConstants;
     var CalendarValidation = window.CalendarValidation;
 
@@ -169,29 +183,20 @@
         return data.curriculum;
     }
 
-    function ensureDisciplineStructures() {
-        var curriculum = getCurriculum();
-        if (!curriculum) {
-            return null;
+    function ensureDisciplineStore(appData) {
+        if (!appData.curriculum || typeof appData.curriculum !== 'object') {
+            appData.curriculum = {};
         }
-
-        if (!curriculum.disciplines || typeof curriculum.disciplines !== 'object') {
-            curriculum.disciplines = [];
+        if (!Array.isArray(appData.curriculum.disciplines)) {
+            appData.curriculum.disciplines = [];
         }
-
-        return curriculum;
+        return appData.curriculum.disciplines;
     }
 
     // ============================================================
     // INTERNAL DISCIPLINE LOOKUP - PRIVATE
     // ============================================================
 
-    /**
-     * Get a discipline record by ID (internal).
-     * 
-     * @param {string} id - Discipline ID
-     * @returns {object|null} Discipline object or null
-     */
     function getDisciplineRecord(id) {
         if (!isNonEmptyString(id)) {
             return null;
@@ -213,11 +218,6 @@
         return null;
     }
 
-    /**
-     * Get all discipline records (internal).
-     * 
-     * @returns {array} Array of discipline objects
-     */
     function getDisciplineRecords() {
         var curriculum = getCurriculum();
         if (!curriculum || !Array.isArray(curriculum.disciplines)) {
@@ -235,12 +235,6 @@
         return result;
     }
 
-    /**
-     * Get discipline by name (internal, case-insensitive).
-     * 
-     * @param {string} name - Discipline name
-     * @returns {object|null} Discipline object or null
-     */
     function getDisciplineByNameRecord(name) {
         if (!isNonEmptyString(name)) {
             return null;
@@ -268,21 +262,18 @@
             return { valid: false, message: 'Discipline data must be an object.' };
         }
 
-        // Name - required for full creation
         if (!isPartial || data.name !== undefined) {
             if (!isNonEmptyString(data.name)) {
                 return { valid: false, message: 'Discipline name is required.' };
             }
         }
 
-        // Type - optional, with default
         if (data.type !== undefined) {
             if (VALID_DISCIPLINE_TYPES.indexOf(data.type) === -1) {
                 return { valid: false, message: 'Invalid type. Must be one of: ' + VALID_DISCIPLINE_TYPES.join(', ') };
             }
         }
 
-        // Instructor IDs - optional
         if (data.instructorIds !== undefined) {
             if (!Array.isArray(data.instructorIds)) {
                 return { valid: false, message: 'Instructor IDs must be an array.' };
@@ -294,7 +285,6 @@
             }
         }
 
-        // Start week - optional, with default
         if (data.startWeek !== undefined) {
             var startWeek = CalendarValidation.parseWeek(data.startWeek);
             if (startWeek === null || startWeek < MIN_WEEK || startWeek > MAX_WEEK) {
@@ -302,7 +292,6 @@
             }
         }
 
-        // End week - optional, with default
         if (data.endWeek !== undefined) {
             var endWeek = CalendarValidation.parseWeek(data.endWeek);
             if (endWeek === null || endWeek < MIN_WEEK || endWeek > MAX_WEEK) {
@@ -310,7 +299,6 @@
             }
         }
 
-        // Weekly hours - optional, with default
         if (data.weeklyHours !== undefined) {
             var weeklyHours = Number(data.weeklyHours);
             if (isNaN(weeklyHours) || weeklyHours < MIN_WEEKLY_HOURS || weeklyHours > MAX_WEEKLY_HOURS) {
@@ -318,7 +306,6 @@
             }
         }
 
-        // Weight - optional, with default
         if (data.weight !== undefined) {
             var weight = Number(data.weight);
             if (isNaN(weight) || weight < MIN_WEIGHT || weight > MAX_WEIGHT) {
@@ -330,129 +317,387 @@
     }
 
     // ============================================================
-    // PUBLIC API - DISCIPLINE CRUD
+    // INTERNAL CANDIDATE BUILDER
+    // ============================================================
+
+    function buildDisciplineRecord(data, existingId, existingCreatedAt) {
+        var now = new Date().toISOString();
+
+        var startWeek = data.startWeek !== undefined
+            ? CalendarValidation.parseWeek(data.startWeek)
+            : DEFAULT_START_WEEK;
+        var endWeek = data.endWeek !== undefined
+            ? CalendarValidation.parseWeek(data.endWeek)
+            : DEFAULT_END_WEEK;
+
+        var weeklyHours = data.weeklyHours !== undefined
+            ? Number(data.weeklyHours)
+            : DEFAULT_WEEKLY_HOURS;
+        var weight = data.weight !== undefined
+            ? Number(data.weight)
+            : DEFAULT_WEIGHT;
+
+        var instructorIds = Array.isArray(data.instructorIds)
+            ? data.instructorIds.map(function(id) { return String(id).trim(); })
+            : [];
+
+        return {
+            id: existingId || generateId(),
+            name: String(data.name).trim(),
+            type: data.type || DEFAULT_TYPE,
+            instructorIds: instructorIds,
+            startWeek: startWeek,
+            endWeek: endWeek,
+            weeklyHours: weeklyHours,
+            weight: weight,
+            createdAt: existingCreatedAt || now,
+            updatedAt: now
+        };
+    }
+
+    // ============================================================
+    // CASCADE HELPERS - Remove all references to a discipline ID
+    // ============================================================
+
+    /**
+     * Strip a discipline ID from all student weekly schedules.
+     * Deletes the discipline ID wherever it appears as a slot value,
+     * then removes empty day and week containers.
+     *
+     * Returns the number of slot values removed.
+     */
+    function stripDisciplineFromSchedules(curriculum, disciplineId) {
+        var schedules = curriculum.schedules;
+        if (!schedules || typeof schedules !== 'object') {
+            return 0;
+        }
+
+        var target = String(disciplineId);
+        var removedCount = 0;
+
+        Object.keys(schedules).forEach(function(studentId) {
+            var byWeek = schedules[studentId];
+            if (!byWeek || typeof byWeek !== 'object') {
+                return;
+            }
+
+            Object.keys(byWeek).forEach(function(weekKey) {
+                var byDay = byWeek[weekKey];
+                if (!byDay || typeof byDay !== 'object') {
+                    return;
+                }
+
+                Object.keys(byDay).forEach(function(dayKey) {
+                    var byHour = byDay[dayKey];
+                    if (!byHour || typeof byHour !== 'object') {
+                        return;
+                    }
+
+                    Object.keys(byHour).forEach(function(hourKey) {
+                        if (String(byHour[hourKey]) === target) {
+                            delete byHour[hourKey];
+                            removedCount++;
+                        }
+                    });
+
+                    if (Object.keys(byHour).length === 0) {
+                        delete byDay[dayKey];
+                    }
+                });
+
+                if (Object.keys(byDay).length === 0) {
+                    delete byWeek[weekKey];
+                }
+            });
+
+            if (Object.keys(byWeek).length === 0) {
+                delete schedules[studentId];
+            }
+        });
+
+        return removedCount;
+    }
+
+    /**
+     * Strip a discipline ID from all location weekly schedules.
+     * Same shape as student schedules, just keyed by locationId.
+     *
+     * Returns the number of slot values removed.
+     */
+    function stripDisciplineFromLocationSchedules(curriculum, disciplineId) {
+        var schedules = curriculum.locationSchedules;
+        if (!schedules || typeof schedules !== 'object') {
+            return 0;
+        }
+
+        var target = String(disciplineId);
+        var removedCount = 0;
+
+        Object.keys(schedules).forEach(function(locationId) {
+            var byWeek = schedules[locationId];
+            if (!byWeek || typeof byWeek !== 'object') {
+                return;
+            }
+
+            Object.keys(byWeek).forEach(function(weekKey) {
+                var byDay = byWeek[weekKey];
+                if (!byDay || typeof byDay !== 'object') {
+                    return;
+                }
+
+                Object.keys(byDay).forEach(function(dayKey) {
+                    var byHour = byDay[dayKey];
+                    if (!byHour || typeof byHour !== 'object') {
+                        return;
+                    }
+
+                    Object.keys(byHour).forEach(function(hourKey) {
+                        if (String(byHour[hourKey]) === target) {
+                            delete byHour[hourKey];
+                            removedCount++;
+                        }
+                    });
+
+                    if (Object.keys(byHour).length === 0) {
+                        delete byDay[dayKey];
+                    }
+                });
+
+                if (Object.keys(byDay).length === 0) {
+                    delete byWeek[weekKey];
+                }
+            });
+
+            if (Object.keys(byWeek).length === 0) {
+                delete schedules[locationId];
+            }
+        });
+
+        return removedCount;
+    }
+
+    /**
+     * Remove auto-groups whose disciplineId matches.
+     * Returns the number of groups removed.
+     */
+    function stripDisciplineFromAutoGroups(curriculum, disciplineId) {
+        var store = curriculum.autoGroups;
+        if (!store || typeof store !== 'object') {
+            return 0;
+        }
+
+        var target = String(disciplineId);
+        var keysToRemove = [];
+
+        Object.keys(store).forEach(function(key) {
+            var group = store[key];
+            if (group && String(group.disciplineId) === target) {
+                keysToRemove.push(key);
+            }
+        });
+
+        for (var i = 0; i < keysToRemove.length; i++) {
+            delete store[keysToRemove[i]];
+        }
+
+        return keysToRemove.length;
+    }
+
+    /**
+     * Prune metadata keys whose target slot no longer exists.
+     *
+     * Metadata keys are composite strings formatted as
+     * `${entityId}_${week}_${day}_${hour}`. The entity is either a
+     * student (in `curriculum.schedules`) or a location (in
+     * `curriculum.locationSchedules`).
+     *
+     * The strategy here is generic: for each metadata key, split out
+     * the entity and coordinates. If the corresponding schedule slot
+     * no longer exists, drop the metadata entry. This avoids hard-
+     * coding the key shape into the discipline cascade — the same
+     * helper can be used by any future cascade that mutates schedules.
+     *
+     * Returns the number of metadata entries pruned.
+     */
+    function pruneOrphanedMetadata(curriculum) {
+        var metadata = curriculum.metadata;
+        if (!metadata || typeof metadata !== 'object') {
+            return 0;
+        }
+
+        var schedules = curriculum.schedules || {};
+        var locationSchedules = curriculum.locationSchedules || {};
+        var keysToRemove = [];
+
+        Object.keys(metadata).forEach(function(key) {
+            // Key shape: entityId_week_day_hour
+            var parts = String(key).split('_');
+            if (parts.length < 4) {
+                // Not a composite key we recognise; leave it alone.
+                return;
+            }
+
+            var hour = parts[parts.length - 1];
+            var day = parts[parts.length - 2];
+            var week = parts[parts.length - 3];
+            var entityId = parts.slice(0, parts.length - 3).join('_');
+
+            var slotExists = false;
+
+            // Try student schedule
+            if (schedules[entityId] &&
+                schedules[entityId][week] &&
+                schedules[entityId][week][day] &&
+                schedules[entityId][week][day][hour] !== undefined) {
+                slotExists = true;
+            }
+
+            // Try location schedule
+            if (!slotExists &&
+                locationSchedules[entityId] &&
+                locationSchedules[entityId][week] &&
+                locationSchedules[entityId][week][day] &&
+                locationSchedules[entityId][week][day][hour] !== undefined) {
+                slotExists = true;
+            }
+
+            if (!slotExists) {
+                keysToRemove.push(key);
+            }
+        });
+
+        for (var i = 0; i < keysToRemove.length; i++) {
+            delete metadata[keysToRemove[i]];
+        }
+
+        return keysToRemove.length;
+    }
+
+    /**
+     * Remove academy.grades entries whose disciplineId matches.
+     * Returns the number of grades removed.
+     */
+    function stripDisciplineFromGrades(appData, disciplineId) {
+        if (!appData.academy || !appData.academy.grades ||
+            typeof appData.academy.grades !== 'object') {
+            return 0;
+        }
+
+        var grades = appData.academy.grades;
+        var target = String(disciplineId);
+        var keysToRemove = [];
+
+        Object.keys(grades).forEach(function(id) {
+            var grade = grades[id];
+            if (grade && String(grade.disciplineId) === target) {
+                keysToRemove.push(id);
+            }
+        });
+
+        for (var i = 0; i < keysToRemove.length; i++) {
+            delete grades[keysToRemove[i]];
+        }
+
+        return keysToRemove.length;
+    }
+
+    // ============================================================
+    // PUBLIC API - DISCIPLINE CRUD (Promise-based)
     // ============================================================
 
     /**
      * Create a new discipline.
-     * Candidate-based: validates, creates, commits.
-     * 
+     *
      * @param {object} data - Discipline data
-     * @param {string} data.name - Discipline name
-     * @param {string} data.type - 'mandatory' or 'optional' (default: 'mandatory')
-     * @param {array} data.instructorIds - Array of instructor IDs
-     * @param {number} data.startWeek - Start week (default: 1)
-     * @param {number} data.endWeek - End week (default: 52)
-     * @param {number} data.weeklyHours - Weekly hours (default: 1)
-     * @param {number} data.weight - Weight multiplier (default: 1)
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function create(data) {
         // ---- PHASE 1: VALIDATE INPUT ----
         var validation = validateDisciplineData(data, false);
         if (!validation.valid) {
-            return failure(validation.message);
+            return Promise.resolve(failure(validation.message));
         }
 
-        // ---- PHASE 2: GET STORE ----
-        var curriculum = ensureDisciplineStructures();
-        if (!curriculum) {
-            return failure('Curriculum data is not available.');
-        }
-
-        // ---- PHASE 3: CHECK FOR DUPLICATE NAME ----
+        // ---- PHASE 2: CHECK FOR DUPLICATE NAME (pre-flight) ----
         var existing = getDisciplineByNameRecord(data.name);
         if (existing) {
-            return failure('A discipline with this name already exists.');
+            return Promise.resolve(failure('A discipline with this name already exists.'));
         }
 
-        // ---- PHASE 4: BUILD DISCIPLINE OBJECT ----
-        var now = new Date().toISOString();
-        var disciplineId = generateId();
-
-        var startWeek = data.startWeek !== undefined ? CalendarValidation.parseWeek(data.startWeek) : DEFAULT_START_WEEK;
-        var endWeek = data.endWeek !== undefined ? CalendarValidation.parseWeek(data.endWeek) : DEFAULT_END_WEEK;
-
-        // Ensure startWeek <= endWeek
-        if (startWeek > endWeek) {
-            return failure('Start week cannot be after end week.');
+        // ---- PHASE 3: BUILD CANDIDATE ----
+        var newDiscipline;
+        try {
+            newDiscipline = buildDisciplineRecord(data, null, null);
+        } catch (e) {
+            return Promise.resolve(failure(e.message || 'Failed to build discipline record.'));
         }
 
-        var weeklyHours = data.weeklyHours !== undefined ? Number(data.weeklyHours) : DEFAULT_WEEKLY_HOURS;
-        var weight = data.weight !== undefined ? Number(data.weight) : DEFAULT_WEIGHT;
+        if (newDiscipline.startWeek > newDiscipline.endWeek) {
+            return Promise.resolve(failure('Start week cannot be after end week.'));
+        }
 
-        var newDiscipline = {
-            id: disciplineId,
-            name: String(data.name).trim(),
-            type: data.type || DEFAULT_TYPE,
-            instructorIds: Array.isArray(data.instructorIds) ? data.instructorIds.slice() : [],
-            startWeek: startWeek,
-            endWeek: endWeek,
-            weeklyHours: weeklyHours,
-            weight: weight,
-            createdAt: now,
-            updatedAt: now
-        };
+        var targetId = newDiscipline.id;
 
-        // ---- PHASE 5: COMMIT ----
-        curriculum.disciplines.push(newDiscipline);
-
-        return success({
-            discipline: newDiscipline
+        // ---- PHASE 4: PIPELINE MUTATION ----
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                var curriculum = appData.curriculum;
+                if (curriculum && Array.isArray(curriculum.disciplines)) {
+                    var nameLower = newDiscipline.name.toLowerCase();
+                    for (var i = 0; i < curriculum.disciplines.length; i++) {
+                        var d = curriculum.disciplines[i];
+                        if (d && d.name && String(d.name).toLowerCase() === nameLower) {
+                            return { valid: false, message: 'A discipline with this name already exists.' };
+                        }
+                    }
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var disciplines = ensureDisciplineStore(appData);
+                disciplines.push(deepClone(newDiscipline));
+                return { discipline: newDiscipline, id: targetId };
+            },
+            logMessage: 'Created discipline: ' + newDiscipline.name,
+            successMessage: 'Discipline created successfully!',
+            failureMessage: 'Failed to create discipline.'
         });
     }
 
     /**
      * Update an existing discipline.
-     * Candidate-based: validates, clones, modifies, commits.
-     * 
+     *
      * @param {string} id - Discipline ID
      * @param {object} updates - Updates to apply
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function update(id, updates) {
-        // ---- PHASE 1: VALIDATE INPUT ----
         if (!isNonEmptyString(id)) {
-            return failure('Discipline ID is required.');
+            return Promise.resolve(failure('Discipline ID is required.'));
         }
 
         if (!isObject(updates) || Object.keys(updates).length === 0) {
-            return failure('Updates are required.');
+            return Promise.resolve(failure('Updates are required.'));
         }
 
-        // ---- PHASE 2: GET STORE ----
-        var curriculum = ensureDisciplineStructures();
-        if (!curriculum) {
-            return failure('Curriculum data is not available.');
-        }
-
-        // ---- PHASE 3: FIND EXISTING ----
-        var target = String(id);
-        var existing = null;
-        var existingIndex = -1;
-
-        for (var i = 0; i < curriculum.disciplines.length; i++) {
-            if (String(curriculum.disciplines[i].id) === target) {
-                existing = curriculum.disciplines[i];
-                existingIndex = i;
-                break;
-            }
-        }
-
+        var existing = getDisciplineRecord(id);
         if (!existing) {
-            return failure('Discipline not found.');
+            return Promise.resolve(failure('Discipline not found.'));
         }
 
-        // ---- PHASE 4: VALIDATE UPDATES ----
+        // ---- VALIDATE UPDATES ----
         var validation = validateDisciplineData(updates, true);
         if (!validation.valid) {
-            return failure(validation.message);
+            return Promise.resolve(failure(validation.message));
         }
 
-        // ---- PHASE 5: BUILD CANDIDATE ----
+        // ---- BUILD CANDIDATE ----
         var candidate = deepClone(existing);
         if (candidate === null) {
-            return failure('Failed to clone discipline data.');
+            return Promise.resolve(failure('Failed to clone discipline data.'));
         }
 
         var hasChanges = false;
@@ -461,13 +706,12 @@
         if (updates.name !== undefined) {
             var newName = String(updates.name).trim();
             if (!newName) {
-                return failure('Discipline name cannot be empty.');
+                return Promise.resolve(failure('Discipline name cannot be empty.'));
             }
             if (newName !== candidate.name) {
-                // Check for duplicate name
                 var duplicate = getDisciplineByNameRecord(newName);
-                if (duplicate && String(duplicate.id) !== target) {
-                    return failure('A discipline with this name already exists.');
+                if (duplicate && String(duplicate.id) !== String(id)) {
+                    return Promise.resolve(failure('A discipline with this name already exists.'));
                 }
                 candidate.name = newName;
                 hasChanges = true;
@@ -477,7 +721,7 @@
         // Type update
         if (updates.type !== undefined) {
             if (VALID_DISCIPLINE_TYPES.indexOf(updates.type) === -1) {
-                return failure('Invalid type. Must be one of: ' + VALID_DISCIPLINE_TYPES.join(', '));
+                return Promise.resolve(failure('Invalid type. Must be one of: ' + VALID_DISCIPLINE_TYPES.join(', ')));
             }
             if (candidate.type !== updates.type) {
                 candidate.type = updates.type;
@@ -488,7 +732,7 @@
         // Instructor IDs update
         if (updates.instructorIds !== undefined) {
             if (!Array.isArray(updates.instructorIds)) {
-                return failure('Instructor IDs must be an array.');
+                return Promise.resolve(failure('Instructor IDs must be an array.'));
             }
             var newInstructors = [];
             for (var j = 0; j < updates.instructorIds.length; j++) {
@@ -496,11 +740,11 @@
                     newInstructors.push(String(updates.instructorIds[j]).trim());
                 }
             }
-            // Check if changed
             var currentSorted = candidate.instructorIds.slice().sort();
             var newSorted = newInstructors.slice().sort();
-            if (currentSorted.length !== newSorted.length ||
-                currentSorted.some(function(v, idx) { return v !== newSorted[idx]; })) {
+            var changed = currentSorted.length !== newSorted.length ||
+                currentSorted.some(function(v, idx) { return v !== newSorted[idx]; });
+            if (changed) {
                 candidate.instructorIds = newInstructors;
                 hasChanges = true;
             }
@@ -510,7 +754,7 @@
         if (updates.startWeek !== undefined) {
             var startWeek = CalendarValidation.parseWeek(updates.startWeek);
             if (startWeek === null || startWeek < MIN_WEEK || startWeek > MAX_WEEK) {
-                return failure('Start week must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.');
+                return Promise.resolve(failure('Start week must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.'));
             }
             if (candidate.startWeek !== startWeek) {
                 candidate.startWeek = startWeek;
@@ -522,7 +766,7 @@
         if (updates.endWeek !== undefined) {
             var endWeek = CalendarValidation.parseWeek(updates.endWeek);
             if (endWeek === null || endWeek < MIN_WEEK || endWeek > MAX_WEEK) {
-                return failure('End week must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.');
+                return Promise.resolve(failure('End week must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.'));
             }
             if (candidate.endWeek !== endWeek) {
                 candidate.endWeek = endWeek;
@@ -534,7 +778,7 @@
         if (updates.weeklyHours !== undefined) {
             var weeklyHours = Number(updates.weeklyHours);
             if (isNaN(weeklyHours) || weeklyHours < MIN_WEEKLY_HOURS || weeklyHours > MAX_WEEKLY_HOURS) {
-                return failure('Weekly hours must be between ' + MIN_WEEKLY_HOURS + ' and ' + MAX_WEEKLY_HOURS + '.');
+                return Promise.resolve(failure('Weekly hours must be between ' + MIN_WEEKLY_HOURS + ' and ' + MAX_WEEKLY_HOURS + '.'));
             }
             if (candidate.weeklyHours !== weeklyHours) {
                 candidate.weeklyHours = weeklyHours;
@@ -546,7 +790,7 @@
         if (updates.weight !== undefined) {
             var weight = Number(updates.weight);
             if (isNaN(weight) || weight < MIN_WEIGHT || weight > MAX_WEIGHT) {
-                return failure('Weight must be between ' + MIN_WEIGHT + ' and ' + MAX_WEIGHT + '.');
+                return Promise.resolve(failure('Weight must be between ' + MIN_WEIGHT + ' and ' + MAX_WEIGHT + '.'));
             }
             if (candidate.weight !== weight) {
                 candidate.weight = weight;
@@ -554,58 +798,63 @@
             }
         }
 
-        // Validate week range after updates
         if (candidate.startWeek > candidate.endWeek) {
-            return failure('Start week cannot be after end week.');
+            return Promise.resolve(failure('Start week cannot be after end week.'));
         }
 
         if (!hasChanges) {
-            return success({ discipline: existing, changed: false });
+            return Promise.resolve(success({ discipline: existing, changed: false }));
         }
 
-        // ---- PHASE 6: COMMIT ----
         candidate.updatedAt = new Date().toISOString();
-        curriculum.disciplines[existingIndex] = candidate;
+        var targetId = String(id);
 
-        return success({
-            discipline: candidate,
-            changed: true
+        return MutationPipeline.performMutation({
+            validate: function() {
+                if (!getDisciplineRecord(targetId)) {
+                    return { valid: false, message: 'Discipline no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var disciplines = ensureDisciplineStore(appData);
+                var idx = -1;
+                for (var i = 0; i < disciplines.length; i++) {
+                    if (String(disciplines[i].id) === targetId) {
+                        idx = i;
+                        break;
+                    }
+                }
+                if (idx === -1) {
+                    throw new Error('Discipline not found in data store.');
+                }
+                disciplines[idx] = deepClone(candidate);
+                return { discipline: candidate, changed: true };
+            },
+            logMessage: 'Updated discipline: ' + candidate.name,
+            successMessage: 'Discipline updated successfully!',
+            failureMessage: 'Failed to update discipline.'
         });
     }
 
     /**
      * Delete a discipline permanently.
-     * 
+     *
+     * CASCADE: removes all references to the discipline in one transaction.
+     * See the CASCADE SEMANTICS block at the top of this file.
+     *
      * @param {string} id - Discipline ID
-     * @returns {object} { success: boolean, message?: string, data?: object }
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function deleteDiscipline(id) {
-        // ---- PHASE 1: VALIDATE INPUT ----
         if (!isNonEmptyString(id)) {
-            return failure('Discipline ID is required.');
+            return Promise.resolve(failure('Discipline ID is required.'));
         }
 
-        // ---- PHASE 2: GET STORE ----
-        var curriculum = ensureDisciplineStructures();
-        if (!curriculum) {
-            return failure('Curriculum data is not available.');
-        }
-
-        // ---- PHASE 3: FIND EXISTING ----
         var target = String(id);
-        var foundIndex = -1;
-        var existing = null;
-
-        for (var i = 0; i < curriculum.disciplines.length; i++) {
-            if (String(curriculum.disciplines[i].id) === target) {
-                foundIndex = i;
-                existing = curriculum.disciplines[i];
-                break;
-            }
-        }
-
+        var existing = getDisciplineRecord(target);
         if (!existing) {
-            return failure('Discipline not found.');
+            return Promise.resolve(failure('Discipline not found.'));
         }
 
         var disciplineInfo = {
@@ -613,35 +862,86 @@
             name: existing.name
         };
 
-        // ---- PHASE 4: REMOVE ----
-        curriculum.disciplines.splice(foundIndex, 1);
+        return MutationPipeline.performMutation({
+            validate: function() {
+                if (!getDisciplineRecord(target)) {
+                    return { valid: false, message: 'Discipline no longer exists.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                // ---- 1. Delete the discipline entity ----
+                var disciplines = ensureDisciplineStore(appData);
+                var idx = -1;
+                for (var i = 0; i < disciplines.length; i++) {
+                    if (String(disciplines[i].id) === target) {
+                        idx = i;
+                        break;
+                    }
+                }
+                if (idx === -1) {
+                    throw new Error('Discipline not found in data store.');
+                }
+                disciplines.splice(idx, 1);
 
-        return success({
-            deleted: true,
-            discipline: disciplineInfo
+                // ---- 2. Ensure curriculum structure exists for cascade ----
+                if (!appData.curriculum || typeof appData.curriculum !== 'object') {
+                    appData.curriculum = {};
+                }
+                var curriculum = appData.curriculum;
+
+                // ---- 3. Cascade: strip discipline from schedules ----
+                var scheduleSlotsRemoved = stripDisciplineFromSchedules(curriculum, target);
+                var locationSlotsRemoved = stripDisciplineFromLocationSchedules(curriculum, target);
+
+                // ---- 4. Cascade: remove matching auto-groups ----
+                var groupsRemoved = stripDisciplineFromAutoGroups(curriculum, target);
+
+                // ---- 5. Cascade: prune orphaned metadata ----
+                // Runs AFTER schedules and locationSchedules have been
+                // pruned, so any metadata pointing at a removed slot is
+                // dropped.
+                var metadataPruned = pruneOrphanedMetadata(curriculum);
+
+                // ---- 6. Cascade: remove grades keyed to this discipline ----
+                var gradesRemoved = stripDisciplineFromGrades(appData, target);
+
+                return {
+                    deleted: true,
+                    discipline: disciplineInfo,
+                    cascade: {
+                        scheduleSlotsRemoved: scheduleSlotsRemoved,
+                        locationSlotsRemoved: locationSlotsRemoved,
+                        autoGroupsRemoved: groupsRemoved,
+                        metadataEntriesPruned: metadataPruned,
+                        gradesRemoved: gradesRemoved
+                    }
+                };
+            },
+            logMessage: function(result) {
+                var c = result.cascade;
+                var extra = [];
+                if (c.scheduleSlotsRemoved > 0) extra.push(c.scheduleSlotsRemoved + ' slot(s)');
+                if (c.locationSlotsRemoved > 0) extra.push(c.locationSlotsRemoved + ' location slot(s)');
+                if (c.autoGroupsRemoved > 0) extra.push(c.autoGroupsRemoved + ' group(s)');
+                if (c.gradesRemoved > 0) extra.push(c.gradesRemoved + ' grade(s)');
+                var suffix = extra.length > 0 ? ' (' + extra.join(', ') + ')' : '';
+                return 'Deleted discipline: ' + existing.name + suffix;
+            },
+            successMessage: 'Discipline deleted successfully!',
+            failureMessage: 'Failed to delete discipline.'
         });
     }
 
     // ============================================================
-    // QUERY FUNCTIONS - Read-only (internal)
+    // QUERY FUNCTIONS - Read-only (synchronous)
     // ============================================================
 
-    /**
-     * Get a discipline by ID (defensive copy).
-     * 
-     * @param {string} id - Discipline ID
-     * @returns {object|null} Discipline object or null
-     */
     function getDiscipline(id) {
         var record = getDisciplineRecord(id);
         return record ? deepClone(record) : null;
     }
 
-    /**
-     * Get all disciplines (defensive copies).
-     * 
-     * @returns {array} Array of discipline objects
-     */
     function getDisciplines() {
         var records = getDisciplineRecords();
         return records.map(function(r) {
@@ -649,12 +949,6 @@
         });
     }
 
-    /**
-     * Get disciplines by type.
-     * 
-     * @param {string} type - 'mandatory' or 'optional'
-     * @returns {array} Array of discipline objects
-     */
     function getDisciplinesByType(type) {
         if (VALID_DISCIPLINE_TYPES.indexOf(type) === -1) {
             return [];
@@ -672,12 +966,6 @@
         return result;
     }
 
-    /**
-     * Get disciplines by instructor.
-     * 
-     * @param {string} instructorId - Instructor ID
-     * @returns {array} Array of discipline objects
-     */
     function getDisciplinesByInstructor(instructorId) {
         if (!isNonEmptyString(instructorId)) {
             return [];
@@ -702,12 +990,6 @@
         return result;
     }
 
-    /**
-     * Get available disciplines for a specific week.
-     * 
-     * @param {number} week - Week number
-     * @returns {array} Array of discipline objects
-     */
     function getAvailableDisciplines(week) {
         var weekNum = CalendarValidation.parseWeek(week);
         if (weekNum === null) {
@@ -731,12 +1013,6 @@
         return result;
     }
 
-    /**
-     * Get active disciplines (startWeek <= currentWeek <= endWeek).
-     * 
-     * @param {number} currentWeek - Current week (default: from window.data)
-     * @returns {array} Array of discipline objects
-     */
     function getActiveDisciplines(currentWeek) {
         var week = currentWeek !== undefined ? CalendarValidation.parseWeek(currentWeek) : null;
         if (week === null) {
@@ -748,89 +1024,149 @@
     }
 
     // ============================================================
-    // BULK OPERATIONS
+    // BULK OPERATIONS - Via MutationPipeline
     // ============================================================
 
     /**
      * Save multiple disciplines at once.
-     * 
+     *
+     * PLAN / APPLY: validate each entry, decide create/update/skip,
+     * apply all writes in a single transaction.
+     *
      * @param {array} disciplinesData - Array of discipline data objects
      * @param {object} options - Save options
-     * @param {boolean} options.overwrite - Overwrite existing disciplines
-     * @returns {object} { success: boolean, data?: object, message?: string }
+     * @param {boolean} options.overwrite - Overwrite existing disciplines (default: true)
+     * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
     function saveDisciplines(disciplinesData, options) {
         if (!Array.isArray(disciplinesData) || disciplinesData.length === 0) {
-            return failure('Discipline data array is required.');
+            return Promise.resolve(failure('Discipline data array is required.'));
         }
 
         options = options || {};
         var overwrite = options.overwrite !== false;
 
-        var created = 0;
-        var updated = 0;
-        var skipped = 0;
+        // ---- PLAN ----
+        var planned = [];
         var errors = [];
 
         for (var i = 0; i < disciplinesData.length; i++) {
             var data = disciplinesData[i];
             if (!isObject(data)) {
-                errors.push({
-                    index: i,
-                    error: 'Invalid discipline data.'
-                });
+                errors.push({ index: i, error: 'Invalid discipline data.' });
                 continue;
             }
 
-            // Validate required fields
-            if (!data.name) {
-                errors.push({
-                    index: i,
-                    error: 'Missing required field: name'
-                });
+            if (!isNonEmptyString(data.name)) {
+                errors.push({ index: i, error: 'Missing required field: name' });
                 continue;
             }
 
-            // Check if discipline already exists by name
+            var validation = validateDisciplineData(data, false);
+            if (!validation.valid) {
+                errors.push({ index: i, error: validation.message });
+                continue;
+            }
+
             var existing = getDisciplineByNameRecord(data.name);
 
             if (existing && !overwrite) {
-                skipped++;
+                planned.push({ action: 'skip' });
                 continue;
             }
 
             if (existing) {
-                // Update existing
-                var updateResult = update(existing.id, data);
-                if (updateResult.success) {
-                    updated++;
-                } else {
-                    errors.push({
-                        index: i,
-                        error: updateResult.message
-                    });
+                var candidate = buildDisciplineRecord(data, existing.id, existing.createdAt);
+                if (candidate.startWeek > candidate.endWeek) {
+                    errors.push({ index: i, error: 'Start week cannot be after end week.' });
+                    continue;
                 }
+                planned.push({ action: 'update', record: candidate, matchId: existing.id });
             } else {
-                // Create new
-                var createResult = create(data);
-                if (createResult.success) {
-                    created++;
-                } else {
-                    errors.push({
-                        index: i,
-                        error: createResult.message
-                    });
+                var newRecord = buildDisciplineRecord(data, null, null);
+                if (newRecord.startWeek > newRecord.endWeek) {
+                    errors.push({ index: i, error: 'Start week cannot be after end week.' });
+                    continue;
                 }
+                planned.push({ action: 'create', record: newRecord });
             }
         }
 
-        return success({
-            total: disciplinesData.length,
-            created: created,
-            updated: updated,
-            skipped: skipped,
-            errors: errors,
-            successCount: created + updated
+        var creates = planned.filter(function(p) { return p.action === 'create'; });
+        var updates = planned.filter(function(p) { return p.action === 'update'; });
+        var skipped = planned.filter(function(p) { return p.action === 'skip'; }).length;
+
+        if (creates.length === 0 && updates.length === 0) {
+            return Promise.resolve(success({
+                total: disciplinesData.length,
+                created: 0,
+                updated: 0,
+                skipped: skipped,
+                errors: errors,
+                successCount: 0
+            }));
+        }
+
+        // ---- APPLY ----
+        return MutationPipeline.performMutation({
+            validate: function(appData) {
+                if (!appData || typeof appData !== 'object') {
+                    return { valid: false, message: 'Application data is not available.' };
+                }
+                return { valid: true };
+            },
+            mutate: function(appData) {
+                var disciplines = ensureDisciplineStore(appData);
+                var created = 0;
+                var updated = 0;
+
+                for (var k = 0; k < planned.length; k++) {
+                    var item = planned[k];
+
+                    if (item.action === 'create') {
+                        var nameLower = item.record.name.toLowerCase();
+                        var collision = false;
+                        for (var c = 0; c < disciplines.length; c++) {
+                            if (disciplines[c].name &&
+                                String(disciplines[c].name).toLowerCase() === nameLower) {
+                                collision = true;
+                                break;
+                            }
+                        }
+                        if (collision) {
+                            throw new Error('Discipline already exists: ' + item.record.name);
+                        }
+                        disciplines.push(deepClone(item.record));
+                        created++;
+
+                    } else if (item.action === 'update') {
+                        var idx = -1;
+                        for (var u = 0; u < disciplines.length; u++) {
+                            if (String(disciplines[u].id) === String(item.matchId)) {
+                                idx = u;
+                                break;
+                            }
+                        }
+                        if (idx === -1) {
+                            throw new Error('Discipline no longer exists: ' + item.matchId);
+                        }
+                        disciplines[idx] = deepClone(item.record);
+                        updated++;
+                    }
+                }
+
+                return {
+                    total: disciplinesData.length,
+                    created: created,
+                    updated: updated,
+                    skipped: skipped,
+                    errors: errors,
+                    successCount: created + updated
+                };
+            },
+            logMessage: 'Saved ' + (creates.length + updates.length) + ' discipline(s)',
+            successMessage: 'Disciplines saved successfully!',
+            failureMessage: 'Failed to save disciplines.'
         });
     }
 
@@ -839,21 +1175,19 @@
     // ============================================================
 
     window.AcademyDisciplines = {
-        // ---- CRUD ----
+        // ---- Mutations (Promise-based) ----
         create: create,
         update: update,
         delete: deleteDiscipline,
+        saveDisciplines: saveDisciplines,
 
-        // ---- Queries ----
+        // ---- Queries (synchronous) ----
         getDiscipline: getDiscipline,
         getDisciplines: getDisciplines,
         getDisciplinesByType: getDisciplinesByType,
         getDisciplinesByInstructor: getDisciplinesByInstructor,
         getAvailableDisciplines: getAvailableDisciplines,
         getActiveDisciplines: getActiveDisciplines,
-
-        // ---- Bulk ----
-        saveDisciplines: saveDisciplines,
 
         // ---- Internal (for AcademyQueries) ----
         getDisciplineRecord: getDisciplineRecord,

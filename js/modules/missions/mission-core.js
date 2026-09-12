@@ -1,7 +1,7 @@
 /**
  * js/modules/missions/mission-core.js - Mission Core
  * CANONICAL mutation API for missions
- * 
+ *
  * This module provides:
  *   - Mission CRUD operations (create, update, delete)
  *   - Mission status transitions (complete, cancel, reactivate)
@@ -9,7 +9,8 @@
  *   - Support personnel management (add, remove)
  *   - Mission log management (add entry)
  *   - Domain rule functions (progress, pay, eligibility)
- * 
+ *   - Cross-domain cascade helper (stripCharacterRefs)
+ *
  * IMPORTANT:
  *   - This is the CANONICAL mutation API for missions
  *   - All mission mutations should go through this module
@@ -19,23 +20,34 @@
  *   - All mutations are atomic and validated before application
  *   - Does NOT call saveData() - MutationPipeline handles persistence
  *   - Does NOT depend on UI (no notifications, no DOM)
- * 
+ *
  * MUTATION CONTRACT:
  *   - All operations return { success: boolean, data?: any, message?: string }
  *   - Invalid inputs are REJECTED (operation returns { success: false })
  *   - Mutations are ATOMIC: if any part is invalid, nothing changes
  *   - Valid no-op updates return the existing object (idempotent)
- * 
+ *
  * DATA STORE CONTRACT:
  *   - window.data.missions is the source of truth
  *   - If window.data or window.data.missions is missing, operations return failure
- * 
+ *
  * DERIVED FIELD RULES:
  *   - progress: ALWAYS derived from objectives (never stored directly)
  *   - pay: ALWAYS derived from basePay + surchargePay
  *   - completedAt: Set when status becomes 'completed', cleared otherwise
  *   - Status is EXPLICITLY set by user (no auto-complete on checkbox click)
- * 
+ *
+ * CASCADE SEMANTICS (stripCharacterRefs):
+ *   A character can appear in a mission as support personnel.
+ *   The helper removes the character from every mission's
+ *   supportPersonnel array. Missions themselves are NOT deleted —
+ *   support personnel are optional and a mission can survive with
+ *   fewer (or zero) support entries.
+ *
+ *   Note: missions reference TEAMS via assignedTeamId. Deleting a
+ *   character does not touch that field. Deleting a team would (that
+ *   cascade belongs elsewhere and is not part of this helper).
+ *
  * DEPENDENCIES:
  *   - window.MissionQueries (from mission-queries.js) - MANDATORY
  *   - window.MissionSchema (from mission-schema.js) - MANDATORY
@@ -44,19 +56,19 @@
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  *   - window.TeamQueries (from team-queries.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   var Core = window.MissionCore;
- *   
+ *
  *   // Create mission
  *   var result = Core.createMission({ title: 'Operation Nightfall', ... });
- *   
+ *
  *   // Update mission
  *   var result = Core.updateMission('miss_123', { status: 'completed' });
- *   
+ *
  *   // Toggle objective
  *   var result = Core.toggleObjective('miss_123', 0);
- *   
+ *
  *   // Add support personnel
  *   var result = Core.addSupportPersonnel('miss_123', 'char_456');
  */
@@ -180,7 +192,7 @@
 
     /**
      * Calculate progress percentage from objectives.
-     * 
+     *
      * @param {array} objectives - Array of objective objects
      * @returns {number} Progress percentage (0-100)
      */
@@ -203,7 +215,7 @@
     /**
      * Parse a pay value from string or number.
      * Returns null for invalid values.
-     * 
+     *
      * @param {*} value - Pay value to parse
      * @returns {number|null} Parsed number or null
      */
@@ -225,7 +237,7 @@
 
     /**
      * Calculate total pay from base pay and surcharge pay.
-     * 
+     *
      * @param {*} basePay - Base pay value
      * @param {*} surchargePay - Surcharge pay value
      * @returns {string} Formatted pay string or empty string
@@ -259,7 +271,7 @@
 
     /**
      * Calculate pay as a number (for comparisons).
-     * 
+     *
      * @param {*} basePay - Base pay value
      * @param {*} surchargePay - Surcharge pay value
      * @returns {number|null} Total pay as number or null
@@ -285,7 +297,7 @@
 
     /**
      * Check if a mission is ready for completion.
-     * 
+     *
      * @param {object} mission - Mission object
      * @returns {boolean} True if all objectives are done
      */
@@ -304,7 +316,7 @@
 
     /**
      * Determine the appropriate completedAt value based on status transition.
-     * 
+     *
      * @param {string} originalStatus - Current status
      * @param {string} proposedStatus - Proposed status
      * @param {string|null} originalCompletedAt - Current completedAt value
@@ -333,7 +345,7 @@
 
     /**
      * Check if a status transition is valid.
-     * 
+     *
      * @param {string} fromStatus - Current status
      * @param {string} toStatus - Proposed status
      * @returns {boolean} True if transition is valid
@@ -364,7 +376,7 @@
 
     /**
      * Get the valid status transitions for a given status.
-     * 
+     *
      * @param {string} status - Current status
      * @returns {array} Array of valid target statuses
      */
@@ -380,7 +392,7 @@
 
     /**
      * Check if objectives can be modified for a mission.
-     * 
+     *
      * @param {object} mission - Mission object
      * @returns {boolean} True if objectives can be modified
      */
@@ -394,7 +406,7 @@
 
     /**
      * Check if a team is eligible for mission assignment.
-     * 
+     *
      * @param {object} team - Team object
      * @returns {boolean} True if team is eligible
      */
@@ -418,7 +430,7 @@
 
     /**
      * Filter teams to only those eligible for mission assignment.
-     * 
+     *
      * @param {array} teams - Array of team objects
      * @returns {array} Filtered array of eligible teams
      */
@@ -439,7 +451,7 @@
     /**
      * Recalculate all derived fields for a mission.
      * Pure function - returns a new mission object with derived fields updated.
-     * 
+     *
      * @param {object} mission - Mission object
      * @param {string} completedAtPolicy - 'first' or 'current' (default: 'current')
      * @returns {object} Mission with derived fields recalculated
@@ -538,7 +550,7 @@
     /**
      * Get a mission by ID.
      * Delegates to MissionQueries.
-     * 
+     *
      * @param {string} id - Mission ID
      * @returns {object|null} Mission object or null
      */
@@ -549,7 +561,7 @@
     /**
      * Get all missions.
      * Delegates to MissionQueries.
-     * 
+     *
      * @param {string} filter - Status filter
      * @returns {array} Array of mission objects
      */
@@ -558,12 +570,63 @@
     }
 
     // ============================================================
+    // CASCADE HELPERS - Remove all references to a character ID
+    // ============================================================
+
+    /**
+     * Strip all references to a character from missions.
+     *
+     * A character can appear as:
+     *   - A support personnel entry (mission.supportPersonnel).
+     *     Removed from the array.
+     *   - (Characters do NOT appear as assignedTeamId — that field
+     *     stores a team ID. Not touched here.)
+     *
+     * This helper is PURE with respect to `appData`: it mutates the
+     * missions array, but it does not touch `window.data`. It is
+     * designed to be called from inside a pipeline mutate() callback
+     * in another module's transaction. It never throws.
+     *
+     * @param {object} appData - The pipeline's appData snapshot
+     * @param {string} charId - Character ID to strip
+     * @returns {object} { supportEntriesRemoved }
+     */
+    function stripCharacterRefs(appData, charId) {
+        var result = { supportEntriesRemoved: 0 };
+
+        if (!appData || !charId) {
+            return result;
+        }
+
+        if (!Array.isArray(appData.missions)) {
+            return result;
+        }
+
+        var target = String(charId);
+
+        for (var i = 0; i < appData.missions.length; i++) {
+            var mission = appData.missions[i];
+            if (!mission || !Array.isArray(mission.supportPersonnel)) {
+                continue;
+            }
+
+            var before = mission.supportPersonnel.length;
+            mission.supportPersonnel = mission.supportPersonnel.filter(function(id) {
+                return String(id) !== target;
+            });
+            result.supportEntriesRemoved += before - mission.supportPersonnel.length;
+        }
+
+        return result;
+    }
+
+    // ============================================================
     // CRUD OPERATIONS - Using MutationPipeline
     // ============================================================
 
     /**
      * Create a new mission.
-     * 
+     *
      * @param {object} data - Mission data
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
@@ -674,13 +737,11 @@
         // ---- PHASE 5: MUTATION VIA PIPELINE ----
         return MutationPipeline.performMutation({
             validate: function() {
-                // Verify data store is available
                 var dataStore = getDataStore();
                 if (!dataStore) {
                     return { valid: false, message: 'Data store is not available.' };
                 }
 
-                // Verify mission doesn't already exist (by ID)
                 var existing = MissionQueries.getMission(validatedData.id);
                 if (existing) {
                     return { valid: false, message: 'Mission with this ID already exists.' };
@@ -715,7 +776,7 @@
 
     /**
      * Update an existing mission.
-     * 
+     *
      * @param {string} id - Mission ID
      * @param {object} updates - Updates to apply
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
@@ -891,13 +952,11 @@
         // ---- PHASE 7: MUTATION VIA PIPELINE ----
         return MutationPipeline.performMutation({
             validate: function() {
-                // Verify mission still exists
                 var current = MissionQueries.getMission(id);
                 if (!current) {
                     return { valid: false, message: 'Mission no longer exists.' };
                 }
 
-                // Verify data store is available
                 var dataStore = getDataStore();
                 if (!dataStore) {
                     return { valid: false, message: 'Data store is not available.' };
@@ -943,7 +1002,7 @@
 
     /**
      * Delete a mission.
-     * 
+     *
      * @param {string} id - Mission ID
      * @returns {Promise<{ success: boolean, message?: string }>}
      */
@@ -1009,7 +1068,7 @@
 
     /**
      * Complete a mission.
-     * 
+     *
      * @param {string} id - Mission ID
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
@@ -1019,7 +1078,7 @@
 
     /**
      * Cancel a mission.
-     * 
+     *
      * @param {string} id - Mission ID
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
@@ -1029,7 +1088,7 @@
 
     /**
      * Reactivate a mission.
-     * 
+     *
      * @param {string} id - Mission ID
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
      */
@@ -1043,7 +1102,7 @@
 
     /**
      * Toggle an objective's done status.
-     * 
+     *
      * @param {string} missionId - Mission ID
      * @param {number} index - Objective index
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
@@ -1081,7 +1140,7 @@
 
     /**
      * Add an objective to a mission.
-     * 
+     *
      * @param {string} missionId - Mission ID
      * @param {string} text - Objective text
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
@@ -1112,7 +1171,7 @@
 
     /**
      * Remove an objective from a mission.
-     * 
+     *
      * @param {string} missionId - Mission ID
      * @param {number} index - Objective index
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
@@ -1151,7 +1210,7 @@
 
     /**
      * Add support personnel to a mission.
-     * 
+     *
      * @param {string} missionId - Mission ID
      * @param {string} characterId - Character ID
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
@@ -1187,7 +1246,7 @@
 
     /**
      * Remove support personnel from a mission.
-     * 
+     *
      * @param {string} missionId - Mission ID
      * @param {string} characterId - Character ID
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
@@ -1231,7 +1290,7 @@
 
     /**
      * Add a log entry to a mission.
-     * 
+     *
      * @param {string} missionId - Mission ID
      * @param {string} message - Log message
      * @returns {Promise<{ success: boolean, data?: object, message?: string }>}
@@ -1289,6 +1348,9 @@
 
         // ---- Log ----
         addLog: addLog,
+
+        // ---- Cascade helpers (for cross-domain cleanup) ----
+        stripCharacterRefs: stripCharacterRefs,
 
         // ---- Domain Rules (pure functions) ----
         calculateProgress: calculateProgress,
