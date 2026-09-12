@@ -24,9 +24,16 @@
  *   - Rules: "Are the domain conditions satisfied?"
  *   - Schema: "Is this structurally valid?"
  * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Tournaments are scoped to WEEKS (bounded 1-52), not years.
+ *   - Years are not stored on tournaments; this module never
+ *     reads or writes year values.
+ * 
  * DEPENDENCIES:
  *   - window.TournamentConstants (from tournament-constants.js) - MANDATORY
- *   - window.TournamentSchema (from tournaments-schema.js) - MANDATORY
+ *   - window.TournamentSchema (from tournament-schema.js) - MANDATORY
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.TeamQueries (from team-queries.js) - MANDATORY
@@ -217,6 +224,10 @@
     /**
      * Validate tournament week range.
      * 
+     * SEMANTICS:
+     *   - Weeks are bounded (MIN_WEEK to MAX_WEEK).
+     *   - startWeek must be <= endWeek.
+     * 
      * @param {number|string} startWeek - Start week
      * @param {number|string} endWeek - End week
      * @returns {object} { valid: boolean, message?: string, start: number|null, end: number|null }
@@ -296,7 +307,6 @@
      */
     function validateParticipantAddition(tournament, participantId, participantType) {
         var Constants = getConstants();
-        var Schema = getSchema();
 
         if (!tournament || typeof tournament !== 'object') {
             return { valid: false, message: 'Tournament is required.' };

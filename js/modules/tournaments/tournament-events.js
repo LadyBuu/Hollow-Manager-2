@@ -11,12 +11,13 @@
  *   - Match management event handlers (create, update, complete, remove)
  *   - Round management event handlers (add, remove)
  *   - Tournament completion event handlers
+ *   - Status transition handlers
  *   - Filter and view mode event handlers
  *   - Modal event handlers
  * 
  * IMPORTANT:
  *   - Orchestrates UI interactions - THIN layer
- *   - Calls TournamentCore for tournament/round mutations
+ *   - Calls TournamentCore for tournament/round/status mutations
  *   - Calls TournamentMatches for match mutations
  *   - Calls TournamentAggregator for data projections
  *   - Calls TournamentUI for state management
@@ -26,12 +27,22 @@
  *   - No direct DOM manipulation (delegates to Render)
  *   - No direct window.data access
  * 
+ * STATUS TRANSITIONS:
+ *   - handleSaveTournament updates metadata first, then transitions
+ *     status if the dropdown differs from the current status.
+ *   - Ordering is deliberate: metadata changes are always permitted
+ *     under the current lifecycle rules; status transitions may be
+ *     rejected by domain prerequisites.
+ *   - If metadata succeeds but status fails, the user is warned and
+ *     the metadata update stands.
+ * 
  * DEPENDENCIES:
- *   - window.TournamentUI (from tournament-ui.js) - MANDATORY
+ *   - window.TournamentUI (from tournaments-ui.js) - MANDATORY
  *   - window.TournamentAggregator (from tournament-aggregator.js) - MANDATORY
  *   - window.TournamentCore (from tournament-core.js) - MANDATORY
  *   - window.TournamentMatches (from tournament-matches.js) - MANDATORY
  *   - window.TournamentQueries (from tournament-queries.js) - MANDATORY
+ *   - window.TournamentsRender (from tournament-render.js) - MANDATORY
  *   - window.NotificationSystem (from notification.js) - MANDATORY
  *   - window.Modal (from modal.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
@@ -59,7 +70,7 @@
     // ============================================================
 
     function getTournamentUI() {
-        return window.TournamentUI || null;
+        return window.TournamentsUI || null;
     }
 
     function getTournamentAggregator() {
@@ -76,6 +87,10 @@
 
     function getTournamentQueries() {
         return window.TournamentQueries || null;
+    }
+
+    function getTournamentsRender() {
+        return window.TournamentsRender || null;
     }
 
     function getNotificationSystem() {
@@ -123,6 +138,9 @@
         }
         if (!getTournamentQueries()) {
             missing.push('TournamentQueries');
+        }
+        if (!getTournamentsRender()) {
+            missing.push('TournamentsRender');
         }
         if (!getNotificationSystem()) {
             missing.push('NotificationSystem');
@@ -474,9 +492,8 @@
             }
         });
 
-        // Edit round (if applicable)
+        // Edit round (placeholder)
         delegate('.edit-round-btn', 'click', function(e, target) {
-            // Placeholder - implement if needed
             notify('Round editing not yet implemented.', 'info');
         });
     }
@@ -606,7 +623,6 @@
                 var UI = getTournamentUI();
                 if (UI) {
                     UI.resetFilters();
-                    // Update filter inputs
                     var statusEl = container.querySelector('#tournament-status-filter, .tournament-status-filter');
                     if (statusEl) { statusEl.value = 'all'; }
                     var searchEl = container.querySelector('#tournament-search-filter, .tournament-search-filter');
@@ -704,8 +720,9 @@
         }
 
         var Modal = getModal();
-        if (!Modal) {
-            notify('Modal not available.', 'error');
+        var Render = getTournamentsRender();
+        if (!Modal || !Render) {
+            notify('Modal or Render not available.', 'error');
             return;
         }
 
@@ -747,6 +764,26 @@
         }
     }
 
+    /**
+     * Save a tournament (create or update).
+     * 
+     * UPDATE ORDERING:
+     *   1. Read the current status BEFORE any mutation.
+     *   2. Apply the metadata update (name, mode, weeks, totalRounds,
+     *      graduatingClassId, classFilterEnabled).
+     *   3. If the status dropdown differs from the current status,
+     *      attempt a transition.
+     * 
+     * This ordering is deliberate. Metadata updates are permitted
+     * under the current lifecycle rules; status transitions may be
+     * rejected by domain prerequisites. If metadata succeeds but the
+     * transition fails, the metadata update stands and the user is
+     * warned.
+     * 
+     * The status dropdown offers only allowed transitions, so a
+     * rejected transition here means a domain prerequisite failed
+     * (e.g. trying to start a tournament with 0 participants).
+     */
     function handleSaveTournament(form) {
         var Core = getTournamentCore();
         if (!Core) {
@@ -759,6 +796,7 @@
         var startWeekInput = form.querySelector('#tournament-start-week, .tournament-start-week');
         var endWeekInput = form.querySelector('#tournament-end-week, .tournament-end-week');
         var totalRoundsInput = form.querySelector('#tournament-total-rounds, .tournament-total-rounds');
+        var statusInput = form.querySelector('#tournament-status, .tournament-status');
         var classSelect = form.querySelector('#tournament-class, .tournament-class');
         var classFilterEnabled = form.querySelector('#tournament-class-filter-enabled, .tournament-class-filter-enabled');
 
@@ -767,6 +805,7 @@
         var startWeek = startWeekInput ? parseInt(startWeekInput.value, 10) : 1;
         var endWeek = endWeekInput ? parseInt(endWeekInput.value, 10) : 52;
         var totalRounds = totalRoundsInput ? parseInt(totalRoundsInput.value, 10) : 1;
+        var selectedStatus = statusInput ? statusInput.value : null;
         var graduatingClassId = classSelect ? classSelect.value : null;
         var classFilterEnabledValue = classFilterEnabled ? classFilterEnabled.checked : false;
 
@@ -776,40 +815,101 @@
         }
 
         var editId = form.dataset.editId || null;
-        var result;
 
-        if (editId) {
-            result = Core.updateTournament(editId, {
+        // ============================================================
+        // CREATE PATH
+        // ============================================================
+        if (!editId) {
+            var createResult = Core.createTournament({
                 name: name,
                 mode: mode,
                 startWeek: startWeek,
                 endWeek: endWeek,
                 totalRounds: totalRounds,
                 graduatingClassId: graduatingClassId,
-                classFilterEnabled: classFilterEnabledValue
+                classFilterEnabled: classFilterEnabledValue,
+                status: selectedStatus || 'draft'
             });
-        } else {
-            result = Core.createTournament({
-                name: name,
-                mode: mode,
-                startWeek: startWeek,
-                endWeek: endWeek,
-                totalRounds: totalRounds,
-                graduatingClassId: graduatingClassId,
-                classFilterEnabled: classFilterEnabledValue
-            });
-        }
 
-        if (result) {
-            var msg = editId ? 'Tournament updated successfully.' : 'Tournament created successfully.';
-            notify(msg, 'success');
+            if (!createResult) {
+                notify('Failed to create tournament.', 'error');
+                return;
+            }
+
+            notify('Tournament created successfully.', 'success');
             handleCloseForm();
             refreshUI();
-            // Trigger persistence
             triggerPersistence();
-        } else {
-            notify('Failed to save tournament.', 'error');
+            return;
         }
+
+        // ============================================================
+        // UPDATE PATH
+        // ============================================================
+        var Queries = getTournamentQueries();
+        if (!Queries) {
+            notify('Tournament Queries not available.', 'error');
+            return;
+        }
+
+        var currentTournament = Queries.getTournament(editId);
+        if (!currentTournament) {
+            notify('Tournament not found.', 'error');
+            return;
+        }
+
+        var currentStatus = currentTournament.status;
+        var statusChangeRequested = selectedStatus &&
+            selectedStatus !== currentStatus;
+
+        var updateResult = Core.updateTournament(editId, {
+            name: name,
+            mode: mode,
+            startWeek: startWeek,
+            endWeek: endWeek,
+            totalRounds: totalRounds,
+            graduatingClassId: graduatingClassId,
+            classFilterEnabled: classFilterEnabledValue
+        });
+
+        if (!updateResult) {
+            notify('Failed to update tournament.', 'error');
+            return;
+        }
+
+        // Metadata update succeeded. Now handle the status change, if any.
+
+        if (!statusChangeRequested) {
+            notify('Tournament updated successfully.', 'success');
+            handleCloseForm();
+            refreshUI();
+            triggerPersistence();
+            return;
+        }
+
+        // ============================================================
+        // STATUS TRANSITION
+        // ============================================================
+        var transitionResult = Core.transitionStatus(editId, selectedStatus);
+
+        if (!transitionResult) {
+            // Metadata was updated, but the status change was rejected.
+            // Report both outcomes so the user understands the state.
+            notify(
+                'Tournament details were updated, but the status could not be changed to "' +
+                selectedStatus + '". Check that prerequisites are met.',
+                'warning'
+            );
+            handleCloseForm();
+            refreshUI();
+            triggerPersistence();
+            return;
+        }
+
+        notify('Tournament updated successfully.', 'success');
+        handleCloseForm();
+        refreshUI();
+        triggerPersistence();
     }
 
     function handleDeleteTournament(tournamentId) {
@@ -1104,28 +1204,34 @@
             return;
         }
 
-        var result;
+        var resultPromise;
         if (matchId) {
-            result = Matches.updateMatch(tournamentId, roundIndex, matchId, {
+            resultPromise = Matches.updateMatch(tournamentId, roundIndex, matchId, {
                 participants: [participant1, participant2],
                 type: matchType
             });
         } else {
-            result = Matches.createMatch(tournamentId, roundIndex, {
+            resultPromise = Matches.createMatch(tournamentId, roundIndex, {
                 participants: [participant1, participant2],
                 type: matchType
             });
         }
 
-        if (result) {
-            var msg = matchId ? 'Match updated successfully.' : 'Match added successfully.';
-            notify(msg, 'success');
-            handleCloseModal(document.querySelector('#add-match-modal, #edit-match-modal'));
-            refreshUI();
-            triggerPersistence();
-        } else {
+        // TournamentMatches methods return Promises (MutationPipeline)
+        Promise.resolve(resultPromise).then(function(result) {
+            if (result && result.success) {
+                var msg = matchId ? 'Match updated successfully.' : 'Match added successfully.';
+                notify(msg, 'success');
+                handleCloseModal(document.querySelector('#add-match-modal, #edit-match-modal'));
+                refreshUI();
+                triggerPersistence();
+            } else {
+                var errorMsg = result && result.message ? result.message : 'Failed to save match.';
+                notify(errorMsg, 'error');
+            }
+        }).catch(function() {
             notify('Failed to save match.', 'error');
-        }
+        });
     }
 
     function handleDeleteMatch(tournamentId, roundIndex, matchId) {
@@ -1135,14 +1241,20 @@
             return;
         }
 
-        var result = Matches.removeMatch(tournamentId, roundIndex, matchId);
-        if (result) {
-            notify('Match deleted successfully.', 'success');
-            refreshUI();
-            triggerPersistence();
-        } else {
-            notify('Failed to delete match.', 'error');
-        }
+        Promise.resolve(Matches.removeMatch(tournamentId, roundIndex, matchId))
+            .then(function(result) {
+                if (result && result.success) {
+                    notify('Match deleted successfully.', 'success');
+                    refreshUI();
+                    triggerPersistence();
+                } else {
+                    var errorMsg = result && result.message ? result.message : 'Failed to delete match.';
+                    notify(errorMsg, 'error');
+                }
+            })
+            .catch(function() {
+                notify('Failed to delete match.', 'error');
+            });
     }
 
     function handleShowCompleteMatchForm(tournamentId, roundIndex, matchId) {
@@ -1214,18 +1326,21 @@
             return;
         }
 
-        var result = Matches.completeMatch(tournamentId, roundIndex, matchId, {
+        Promise.resolve(Matches.completeMatch(tournamentId, roundIndex, matchId, {
             winner: winner
-        });
-
-        if (result) {
-            notify('Match completed successfully.', 'success');
-            handleCloseModal(document.querySelector('#complete-match-modal'));
-            refreshUI();
-            triggerPersistence();
-        } else {
+        })).then(function(result) {
+            if (result && result.success) {
+                notify('Match completed successfully.', 'success');
+                handleCloseModal(document.querySelector('#complete-match-modal'));
+                refreshUI();
+                triggerPersistence();
+            } else {
+                var errorMsg = result && result.message ? result.message : 'Failed to complete match.';
+                notify(errorMsg, 'error');
+            }
+        }).catch(function() {
             notify('Failed to complete match.', 'error');
-        }
+        });
     }
 
     // ============================================================
@@ -1245,7 +1360,7 @@
             refreshUI();
             triggerPersistence();
         } else {
-            notify('Failed to complete tournament.', 'error');
+            notify('Failed to complete tournament. Check that all rounds are complete and a winner exists.', 'error');
         }
     }
 
@@ -1277,12 +1392,22 @@
     }
 
     // ============================================================
-    // BUILD FORM HTML
+    // FORM BUILDERS
     // ============================================================
 
+    /**
+     * Build the tournament form.
+     * 
+     * STATUS DROPDOWN:
+     *   - On create:  offers all valid statuses (default: draft).
+     *   - On edit:    offers only the allowed transitions from the
+     *                 current status. A completed tournament offers
+     *                 no transitions, so the dropdown is rendered
+     *                 disabled with a single option.
+     */
     function buildTournamentForm(editId) {
         var Queries = getTournamentQueries();
-        var Constants = getTournamentConstants ? getTournamentConstants() : null;
+        var Core = getTournamentCore();
 
         var tournament = null;
         if (editId && Queries) {
@@ -1292,11 +1417,46 @@
         var t = tournament || {};
         var isEdit = !!tournament;
 
-        var modes = Constants ? Constants.VALID_MODES || ['teams', 'individuals'] : ['teams', 'individuals'];
-        var statuses = Constants ? Constants.VALID_STATUSES || ['draft', 'active', 'completed'] : ['draft', 'active', 'completed'];
+        var modes = ['teams', 'individuals'];
+
+        // Status options depend on edit vs. create.
+        var statusOptions = [];
+        var currentStatusLabel = null;
+        var statusDisabled = false;
+
+        if (isEdit && Core && typeof Core.getAllowedTransitions === 'function') {
+            var allowed = Core.getAllowedTransitions(editId);
+
+            // Show the current status as the selected option, plus
+            // each allowed transition.
+            currentStatusLabel = t.status || 'draft';
+            statusOptions.push({
+                value: currentStatusLabel,
+                label: currentStatusLabel.charAt(0).toUpperCase() + currentStatusLabel.slice(1)
+            });
+
+            for (var i = 0; i < allowed.length; i++) {
+                statusOptions.push({
+                    value: allowed[i].value,
+                    label: allowed[i].label
+                });
+            }
+
+            // A terminal status has no transitions; disable the dropdown.
+            if (allowed.length === 0) {
+                statusDisabled = true;
+            }
+        } else {
+            // Create path, or Core not available. Offer all statuses.
+            statusOptions = [
+                { value: 'draft', label: 'Draft' },
+                { value: 'active', label: 'Active' },
+                { value: 'completed', label: 'Completed' }
+            ];
+        }
 
         var html = '';
-        html += '<form class="tournament-form" id="tournament-form" data-edit-id="' + (isEdit ? editId : '') + '">';
+        html += '<form class="tournament-form" id="tournament-form" data-edit-id="' + (isEdit ? escapeHtml(editId) : '') + '">';
         html += '<div class="modal-header">';
         html += '<h3>' + (isEdit ? 'Edit Tournament' : 'Create Tournament') + '</h3>';
         html += '<button type="button" class="close-modal">&times;</button>';
@@ -1339,18 +1499,49 @@
         html += '<input type="number" id="tournament-total-rounds" class="tournament-total-rounds" value="' + escapeHtml(t.totalRounds || 1) + '" min="1">';
         html += '</div>';
 
-        // Status
+        // Graduating class
         html += '<div class="form-group">';
-        html += '<label>Status</label>';
-        html += '<select id="tournament-status" class="tournament-status">';
-        for (var i = 0; i < statuses.length; i++) {
-            var status = statuses[i];
-            var selected = t.status === status ? ' selected' : '';
-            html += '<option value="' + escapeHtml(status) + '"' + selected + '>' + escapeHtml(status.charAt(0).toUpperCase() + status.slice(1)) + '</option>';
+        html += '<label>Graduating Class</label>';
+        html += '<select id="tournament-class" class="tournament-class">';
+        html += '<option value="">None</option>';
+
+        var AcademyQueries = getAcademyQueries();
+        var classes = AcademyQueries ? AcademyQueries.getClasses() : [];
+        for (var i = 0; i < classes.length; i++) {
+            var cls = classes[i];
+            var selected = t.graduatingClassId && String(cls.id) === String(t.graduatingClassId) ? ' selected' : '';
+            html += '<option value="' + escapeHtml(cls.id) + '"' + selected + '>' + escapeHtml(cls.name || cls.id) + '</option>';
         }
         html += '</select>';
         html += '</div>';
 
+        // Class filter
+        var filterChecked = t.classFilterEnabled !== false;
+        html += '<div class="form-group">';
+        html += '<div style="display:flex;align-items:center;gap:6px;">';
+        html += '<input type="checkbox" id="tournament-class-filter-enabled" class="tournament-class-filter-enabled" ' + (filterChecked ? 'checked' : '') + '>';
+        html += '<label for="tournament-class-filter-enabled" style="font-size:0.7rem;color:var(--text-dim);">Only allow characters from this class</label>';
+        html += '</div>';
+        html += '</div>';
+
+        // Status
+        html += '<div class="form-group">';
+        html += '<label>Status</label>';
+        html += '<select id="tournament-status" class="tournament-status"' + (statusDisabled ? ' disabled' : '') + '>';
+        for (var i = 0; i < statusOptions.length; i++) {
+            var opt = statusOptions[i];
+            var selected = isEdit
+                ? (opt.value === (t.status || 'draft') ? ' selected' : '')
+                : (opt.value === 'draft' ? ' selected' : '');
+            html += '<option value="' + escapeHtml(opt.value) + '"' + selected + '>' + escapeHtml(opt.label) + '</option>';
+        }
+        html += '</select>';
+        if (statusDisabled) {
+            html += '<p class="field-hint" style="font-size:0.65rem;color:var(--text-dim);margin:4px 0 0 0;">A completed tournament cannot change status.</p>';
+        }
+        html += '</div>';
+
+        // Actions
         html += '<div class="form-actions">';
         html += '<button type="button" class="cancel-form-btn secondary">Cancel</button>';
         html += '<button type="submit" class="primary">' + (isEdit ? 'Update' : 'Create') + ' Tournament</button>';
@@ -1390,10 +1581,12 @@
         html += '<div class="form-group">';
         html += '<label>Select ' + escapeHtml(typeLabel) + '</label>';
         html += '<select id="participant-select" class="participant-select" required>';
+        html += '<option value="">Select...</option>';
 
         var participants = [];
+
         if (canonicalType === 'character' && CharacterQueries) {
-            var allCharacters = window.data && window.data.characters ? window.data.characters : [];
+            var allCharacters = CharacterQueries.getCharacters() || [];
             for (var i = 0; i < allCharacters.length; i++) {
                 var char = allCharacters[i];
                 if (char && !char.deceased) {
@@ -1405,10 +1598,10 @@
                 }
             }
         } else if (canonicalType === 'team' && TeamQueries) {
-            var allTeams = window.data && window.data.teams ? window.data.teams : [];
+            var allTeams = TeamQueries.getAllActiveTeams() || [];
             for (var i = 0; i < allTeams.length; i++) {
                 var team = allTeams[i];
-                if (team && team.status === 'active') {
+                if (team) {
                     participants.push({
                         id: team.id,
                         name: team.name || 'Team ' + team.id,
@@ -1422,13 +1615,12 @@
         var existingParticipants = Queries ? Queries.getParticipants(tournament.id) : [];
         var existingIds = {};
         for (var i = 0; i < existingParticipants.length; i++) {
-            existingIds[existingParticipants[i].id] = true;
+            existingIds[String(existingParticipants[i].id)] = true;
         }
 
-        html += '<option value="">Select...</option>';
         for (var i = 0; i < participants.length; i++) {
             var p = participants[i];
-            if (!existingIds[p.id]) {
+            if (!existingIds[String(p.id)]) {
                 html += '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name) + '</option>';
             }
         }
@@ -1469,7 +1661,6 @@
 
         // Participants
         var activeParticipants = Queries ? Queries.getActiveParticipants(tournament.id) : [];
-        var canonicalType = tournament.mode === 'teams' ? 'team' : 'character';
 
         html += '<div class="form-group">';
         html += '<label>Participant 1</label>';
@@ -1536,7 +1727,7 @@
         for (var i = 0; i < activeParticipants.length; i++) {
             var p = activeParticipants[i];
             var name = getParticipantDisplayName(tournamentId, p.id);
-            var selected = match.participants && match.participants[0] === p.id ? ' selected' : '';
+            var selected = match.participants && String(match.participants[0]) === String(p.id) ? ' selected' : '';
             html += '<option value="' + escapeHtml(p.id) + '"' + selected + '>' + escapeHtml(name) + '</option>';
         }
         html += '</select>';
@@ -1549,7 +1740,7 @@
         for (var i = 0; i < activeParticipants.length; i++) {
             var p = activeParticipants[i];
             var name = getParticipantDisplayName(tournamentId, p.id);
-            var selected = match.participants && match.participants[1] === p.id ? ' selected' : '';
+            var selected = match.participants && String(match.participants[1]) === String(p.id) ? ' selected' : '';
             html += '<option value="' + escapeHtml(p.id) + '"' + selected + '>' + escapeHtml(name) + '</option>';
         }
         html += '</select>';

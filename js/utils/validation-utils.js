@@ -511,16 +511,6 @@
         getPeriodInfo: getPeriodInfo
     };
 
-    // ============================================================
-    // LEGACY GLOBAL ALIASES (for backward compatibility)
-    // ============================================================
-
-    // Some modules might expect these as global functions
-    window.isNonEmptyString = isNonEmptyString;
-    window.hasValue = hasValue;
-    window.isPlainObject = isPlainObject;
-    window.isSafeInteger = isSafeInteger;
-    window.parseOptionalInteger = parseOptionalInteger;
 
     // ============================================================
     // VERIFICATION

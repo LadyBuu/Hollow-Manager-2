@@ -1,8 +1,8 @@
 /**
- * modules/tournaments/tournaments-render.js - Tournament Rendering
+ * modules/tournaments/tournament-render.js - Tournament Rendering
  * PURE rendering functions. Takes data, returns HTML.
  * Does NOT mutate data or attach event handlers.
- * Path: js/modules/tournaments/tournaments-render.js
+ * Path: js/modules/tournaments/tournament-render.js
  * 
  * RENDER PHILOSOPHY:
  *   - All rendering is PURE: data in, HTML out
@@ -21,6 +21,17 @@
  *   - All status/outcome displays are pre-computed
  *   - No domain logic - purely presentation
  * 
+ * FORM BUILDERS - STATUS:
+ *   - The form builders (renderForm, renderAddParticipantForm,
+ *     renderAddMatchForm, renderEditMatchForm, renderCompleteMatchForm)
+ *     duplicate the inline builders in tournament-events.js.
+ *   - The events-file builders are the ones actually in use. The
+ *     versions in this file are retained for the moment but are
+ *     superseded. If a grep confirms no callers, delete them and
+ *     this file becomes pure rendering (list/grid/detail/match/etc).
+ *   - Do NOT add new callers to the form builders here. Use the
+ *     events-file builders instead.
+ * 
  * DEPENDENCIES:
  *   - window.DomUtils (for escapeHtml) - MANDATORY
  *   - window.CalendarConstants (for bounds in forms) - MANDATORY
@@ -29,7 +40,6 @@
  *   var Render = window.TournamentsRender;
  *   var html = Render.renderList(viewModel);
  *   var detail = Render.renderDetail(viewModel);
- *   var form = Render.renderForm(tournament, modeOptions, statusOptions);
  */
 
 (function() {
@@ -48,7 +58,7 @@
     }
 
     function getCalendarConstants() {
-        return window.CalendarConstants || window.CalendarConstants || null;
+        return window.CalendarConstants || null;
     }
 
     // ============================================================
@@ -228,7 +238,7 @@
     }
 
     // ============================================================
-    // RENDER API - Pure functions
+    // RENDER API - List / Grid
     // ============================================================
 
     /**
@@ -343,6 +353,10 @@
         return html;
     }
 
+    // ============================================================
+    // RENDER API - Detail
+    // ============================================================
+
     /**
      * Render tournament detail from a view model.
      * 
@@ -403,8 +417,6 @@
      */
     function renderParticipants(detailVM) {
         var participants = detailVM.participants || [];
-        var isComplete = detailVM.status === 'completed';
-        var hasHistory = detailVM.roundCount > 0;
 
         var html = '<div class="tourn-section participants-section">';
         html += '<h4 class="section-title">Participants (' + participants.length + ')</h4>';
@@ -557,7 +569,6 @@
      */
     function renderEliminations(detailVM) {
         var eliminations = detailVM.eliminations || [];
-        var isComplete = detailVM.status === 'completed';
 
         var html = '<div class="tourn-section eliminations-section">';
         html += '<h4 class="section-title">Eliminations</h4>';
@@ -609,13 +620,105 @@
     }
 
     /**
-     * Render tournament form.
+     * Render filter bar.
      * 
-     * @param {object} tournament - Tournament data (optional)
-     * @param {array} modeOptions - Array of mode options
-     * @param {array} statusOptions - Array of status options
-     * @param {array} classOptions - Array of class options for dropdown
+     * @param {object} filters - Filter values
+     * @param {object} options - Filter options (statuses, modes)
      * @returns {string} HTML string
+     */
+    function renderFilterBar(filters, options) {
+        options = options || {};
+        var statuses = options.statuses || ['all', 'draft', 'active', 'completed'];
+        var modes = options.modes || ['all', 'teams', 'individuals'];
+
+        var status = filters.status || 'all';
+        var search = filters.search || '';
+        var mode = filters.mode || 'all';
+
+        var html = '';
+        html += '<div class="tournament-filters">';
+
+        // Status filter
+        html += '<div class="filter-group">';
+        html += '<select id="tournament-status-filter" class="tournament-status-filter">';
+        for (var i = 0; i < statuses.length; i++) {
+            var s = statuses[i];
+            var selected = s === status ? ' selected' : '';
+            var label = s === 'all' ? 'All Statuses' : s.charAt(0).toUpperCase() + s.slice(1);
+            html += '<option value="' + escapeAttribute(s) + '"' + selected + '>' + escapeHtml(label) + '</option>';
+        }
+        html += '</select>';
+        html += '</div>';
+
+        // Mode filter
+        html += '<div class="filter-group">';
+        html += '<select id="tournament-mode-filter" class="tournament-mode-filter">';
+        for (var i = 0; i < modes.length; i++) {
+            var m = modes[i];
+            var selected = m === mode ? ' selected' : '';
+            var label = m === 'all' ? 'All Modes' : m.charAt(0).toUpperCase() + m.slice(1);
+            html += '<option value="' + escapeAttribute(m) + '"' + selected + '>' + escapeHtml(label) + '</option>';
+        }
+        html += '</select>';
+        html += '</div>';
+
+        // Search
+        html += '<div class="filter-group search-group">';
+        html += '<input type="text" id="tournament-search-filter" class="tournament-search-filter" placeholder="Search tournaments..." value="' + escapeHtml(search) + '">';
+        html += '</div>';
+
+        // Clear
+        html += '<button id="clear-tournament-filters" class="clear-tournament-filters small secondary">Clear</button>';
+
+        html += '</div>';
+
+        return html;
+    }
+
+    /**
+     * Format date for display.
+     * 
+     * @param {string} dateString - ISO date string
+     * @returns {string} Formatted date or 'Recent'
+     */
+    function formatDate(dateString) {
+        if (!dateString) {
+            return 'Recent';
+        }
+        var date = new Date(dateString);
+        if (isNaN(date.getTime())) {
+            return 'Recent';
+        }
+        var now = new Date();
+        var diff = now - date;
+        var days = Math.floor(diff / (1000 * 60 * 60 * 24));
+
+        if (days < 1) {
+            return 'Today';
+        }
+        if (days < 7) {
+            return days + 'd ago';
+        }
+        return date.toLocaleDateString();
+    }
+
+    // ============================================================
+    // DEPRECATED FORM BUILDERS - Superseded by tournament-events.js
+    // ============================================================
+    // 
+    // These functions are retained for backward compatibility ONLY.
+    // They duplicate the inline form builders in tournament-events.js.
+    // The events-file versions are the ones actually in use.
+    // 
+    // DO NOT add new callers. If you need form HTML, use
+    // TournamentEvents' internal builders (called automatically from
+    // handleShowForm / handleShowAddParticipantForm / etc.).
+    // 
+    // If a grep confirms no external callers, delete this entire block
+    // and remove the corresponding exports below.
+
+    /**
+     * @deprecated Use TournamentEvents.handleShowForm instead.
      */
     function renderForm(tournament, modeOptions, statusOptions, classOptions) {
         var isEdit = !!tournament;
@@ -706,13 +809,7 @@
     }
 
     /**
-     * Render add participant form.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {array} availableParticipants - Array of available participants
-     * @param {string} canonicalType - 'character' or 'team'
-     * @param {string} typeLabel - 'Character' or 'Team'
-     * @returns {string} HTML string
+     * @deprecated Use TournamentEvents.handleShowAddParticipantForm instead.
      */
     function renderAddParticipantForm(tournament, availableParticipants, canonicalType, typeLabel) {
         var html = '';
@@ -757,12 +854,7 @@
     }
 
     /**
-     * Render add match form.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {number} roundIndex - Round index
-     * @param {array} activeParticipants - Active participants for this round
-     * @returns {string} HTML string
+     * @deprecated Use TournamentEvents.handleShowAddMatchForm instead.
      */
     function renderAddMatchForm(tournament, roundIndex, activeParticipants) {
         var html = '';
@@ -819,13 +911,7 @@
     }
 
     /**
-     * Render edit match form.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {number} roundIndex - Round index
-     * @param {object} match - Match object
-     * @param {array} activeParticipants - Active participants
-     * @returns {string} HTML string
+     * @deprecated Use TournamentEvents.handleShowEditMatchForm instead.
      */
     function renderEditMatchForm(tournament, roundIndex, match, activeParticipants) {
         var html = '';
@@ -854,7 +940,7 @@
         html += '<option value="">Select...</option>';
         for (var i = 0; i < activeParticipants.length; i++) {
             var p = activeParticipants[i];
-            var selected = match.participants && match.participants[0] === p.id ? ' selected' : '';
+            var selected = match.participants && String(match.participants[0]) === String(p.id) ? ' selected' : '';
             html += '<option value="' + escapeAttribute(p.id) + '"' + selected + '>' + escapeHtml(p.name) + '</option>';
         }
         html += '</select>';
@@ -866,7 +952,7 @@
         html += '<option value="">Select...</option>';
         for (var i = 0; i < activeParticipants.length; i++) {
             var p = activeParticipants[i];
-            var selected = match.participants && match.participants[1] === p.id ? ' selected' : '';
+            var selected = match.participants && String(match.participants[1]) === String(p.id) ? ' selected' : '';
             html += '<option value="' + escapeAttribute(p.id) + '"' + selected + '>' + escapeHtml(p.name) + '</option>';
         }
         html += '</select>';
@@ -884,12 +970,7 @@
     }
 
     /**
-     * Render complete match form.
-     * 
-     * @param {object} tournament - Tournament object
-     * @param {number} roundIndex - Round index
-     * @param {object} match - Match object
-     * @returns {string} HTML string
+     * @deprecated Use TournamentEvents.handleShowCompleteMatchForm instead.
      */
     function renderCompleteMatchForm(tournament, roundIndex, match) {
         var html = '';
@@ -930,89 +1011,6 @@
         return html;
     }
 
-    /**
-     * Render filter bar.
-     * 
-     * @param {object} filters - Filter values
-     * @param {object} options - Filter options (statuses, modes)
-     * @returns {string} HTML string
-     */
-    function renderFilterBar(filters, options) {
-        options = options || {};
-        var statuses = options.statuses || ['all', 'draft', 'active', 'completed'];
-        var modes = options.modes || ['all', 'teams', 'individuals'];
-
-        var status = filters.status || 'all';
-        var search = filters.search || '';
-        var mode = filters.mode || 'all';
-
-        var html = '';
-        html += '<div class="tournament-filters">';
-
-        // Status filter
-        html += '<div class="filter-group">';
-        html += '<select id="tournament-status-filter" class="tournament-status-filter">';
-        for (var i = 0; i < statuses.length; i++) {
-            var s = statuses[i];
-            var selected = s === status ? ' selected' : '';
-            var label = s === 'all' ? 'All Statuses' : s.charAt(0).toUpperCase() + s.slice(1);
-            html += '<option value="' + escapeAttribute(s) + '"' + selected + '>' + escapeHtml(label) + '</option>';
-        }
-        html += '</select>';
-        html += '</div>';
-
-        // Mode filter
-        html += '<div class="filter-group">';
-        html += '<select id="tournament-mode-filter" class="tournament-mode-filter">';
-        for (var i = 0; i < modes.length; i++) {
-            var m = modes[i];
-            var selected = m === mode ? ' selected' : '';
-            var label = m === 'all' ? 'All Modes' : m.charAt(0).toUpperCase() + m.slice(1);
-            html += '<option value="' + escapeAttribute(m) + '"' + selected + '>' + escapeHtml(label) + '</option>';
-        }
-        html += '</select>';
-        html += '</div>';
-
-        // Search
-        html += '<div class="filter-group search-group">';
-        html += '<input type="text" id="tournament-search-filter" class="tournament-search-filter" placeholder="Search tournaments..." value="' + escapeHtml(search) + '">';
-        html += '</div>';
-
-        // Clear
-        html += '<button id="clear-tournament-filters" class="clear-tournament-filters small secondary">Clear</button>';
-
-        html += '</div>';
-
-        return html;
-    }
-
-    /**
-     * Format date for display.
-     * 
-     * @param {string} dateString - ISO date string
-     * @returns {string} Formatted date or 'Recent'
-     */
-    function formatDate(dateString) {
-        if (!dateString) {
-            return 'Recent';
-        }
-        var date = new Date(dateString);
-        if (isNaN(date.getTime())) {
-            return 'Recent';
-        }
-        var now = new Date();
-        var diff = now - date;
-        var days = Math.floor(diff / (1000 * 60 * 60 * 24));
-
-        if (days < 1) {
-            return 'Today';
-        }
-        if (days < 7) {
-            return days + 'd ago';
-        }
-        return date.toLocaleDateString();
-    }
-
     // ============================================================
     // EXPOSE
     // ============================================================
@@ -1032,13 +1030,6 @@
         renderEliminations: renderEliminations,
         renderWinner: renderWinner,
 
-        // Forms
-        renderForm: renderForm,
-        renderAddParticipantForm: renderAddParticipantForm,
-        renderAddMatchForm: renderAddMatchForm,
-        renderEditMatchForm: renderEditMatchForm,
-        renderCompleteMatchForm: renderCompleteMatchForm,
-
         // Filters
         renderFilterBar: renderFilterBar,
 
@@ -1052,7 +1043,8 @@
 
         // Escaping
         escapeHtml: escapeHtml,
-        escapeAttribute: escapeAttribute
+        escapeAttribute: escapeAttribute,
+
     };
 
     // ============================================================
@@ -1063,15 +1055,12 @@
         var exports = window.TournamentsRender;
         var missing = [];
 
+        // Non-deprecated functions
         var required = [
             'renderList', 'renderGrid', 'renderGridCard',
             'renderDetail', 'renderInfo', 'renderParticipants',
             'renderRounds', 'renderMatchItem', 'renderEliminations',
-            'renderWinner',
-            'renderForm', 'renderAddParticipantForm',
-            'renderAddMatchForm', 'renderEditMatchForm',
-            'renderCompleteMatchForm',
-            'renderFilterBar',
+            'renderWinner', 'renderFilterBar',
             'getOutcomeDisplay', 'getTournamentStatusDisplay',
             'getRoundStatusDisplay', 'getMatchStatusDisplay',
             'getParticipantTypeLabel', 'formatDate',

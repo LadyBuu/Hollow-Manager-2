@@ -13,8 +13,8 @@
  * 
  * LIFECYCLE:
  *   TabManager.register('tournaments') -> mountTournaments() ->
- *   TournamentsUI.init() -> TournamentEvents.init(container) ->
- *   renderTournamentContainer() -> render list/detail
+ *   TournamentsUI.init() -> TournamentEvents.setRenderFn(renderFn) ->
+ *   TournamentEvents.init(container) -> renderTournamentContainer()
  * 
  * IMPORTANT:
  *   - This module is the only external entry point for tournaments
@@ -24,31 +24,34 @@
  *   - mountTournaments() is the ONLY function that constructs the full HTML
  *   - TabManager is the single source of truth for lifecycle
  *   - Providers are assembled here and injected into TournamentCore
- *   - No direct CharacterQueries usage - only via providers
+ *     (currently no injection is needed; providers exist for future use)
  * 
  * NAMING CONVENTION:
  *   - The UI, Render, and Matches modules expose themselves as
  *     Tournaments* (plural) on the window object:
  *       window.TournamentsUI
  *       window.TournamentsRender
- *       window.TournamentsMatches
- *   - Earlier versions of this file referenced singular names
- *     (TournamentUI, TournamentRender, TournamentMatches). Those
- *     references have been corrected.
+ *       window.TournamentMatches
+ *   - TournamentCore, TournamentEvents, TournamentAggregator,
+ *     TournamentQueries use the singular prefix.
  * 
- * EXTERNAL PROVIDERS:
- *   - characterProvider: { exists: function(id) { ... } }
- *   - teamProvider: { exists: function(id) { ... } }
+ * UI STATE MODEL:
+ *   - activeTab:  'list' | 'detail'   — which panel is showing
+ *   - viewMode:   'list' | 'grid'     — how the list panel is laid out
+ *   - The two are orthogonal. Detail is reached by selecting a
+ *     tournament, not by toggling a view mode.
+ *   - If activeTab === 'detail' but no tournament is selected, the
+ *     render function recovers by resetting to the list panel.
  * 
  * DEPENDENCIES:
  *   - window.TabManager (from tab-manager.js) - MANDATORY
- *   - window.TournamentsUI (from tournament-ui.js) - MANDATORY
+ *   - window.TournamentsUI (from tournaments-ui.js) - MANDATORY
  *   - window.TournamentEvents (from tournament-events.js) - MANDATORY
  *   - window.TournamentAggregator (from tournament-aggregator.js) - MANDATORY
  *   - window.TournamentQueries (from tournament-queries.js) - MANDATORY
  *   - window.TournamentsRender (from tournament-render.js) - MANDATORY
  *   - window.TournamentCore (from tournament-core.js) - MANDATORY
- *   - window.TournamentsMatches (from tournament-matches.js) - MANDATORY
+ *   - window.TournamentMatches (from tournament-matches.js) - MANDATORY
  *   - window.DataLoader (from loader.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.TeamQueries (from team-queries.js) - MANDATORY
@@ -58,7 +61,7 @@
  *   - window.Modal (from modal.js) - MANDATORY
  * 
  * USAGE:
- *   // Auto-registered with TabManager
+ *   // Auto-registered with TabManager.
  *   // Or manually:
  *   window.Tournaments.mount(container);
  */
@@ -82,7 +85,7 @@
     var TournamentQueries = window.TournamentQueries;
     var TournamentsRender = window.TournamentsRender;
     var TournamentCore = window.TournamentCore;
-    var TournamentsMatches = window.TournamentsMatches;
+    var TournamentMatches = window.TournamentMatches;
     var DataLoader = window.DataLoader;
     var CharacterQueries = window.CharacterQueries;
     var TeamQueries = window.TeamQueries;
@@ -107,6 +110,15 @@
         }
         if (!TournamentsUI || typeof TournamentsUI.getState !== 'function') {
             missing.push('TournamentsUI.getState');
+        }
+        if (!TournamentsUI || typeof TournamentsUI.getActiveTab !== 'function') {
+            missing.push('TournamentsUI.getActiveTab');
+        }
+        if (!TournamentsUI || typeof TournamentsUI.getViewMode !== 'function') {
+            missing.push('TournamentsUI.getViewMode');
+        }
+        if (!TournamentsUI || typeof TournamentsUI.showTournamentList !== 'function') {
+            missing.push('TournamentsUI.showTournamentList');
         }
 
         if (!TournamentEvents || typeof TournamentEvents.init !== 'function') {
@@ -139,6 +151,9 @@
         if (!TournamentsRender || typeof TournamentsRender.renderDetail !== 'function') {
             missing.push('TournamentsRender.renderDetail');
         }
+        if (!TournamentsRender || typeof TournamentsRender.renderFilterBar !== 'function') {
+            missing.push('TournamentsRender.renderFilterBar');
+        }
 
         if (!TournamentCore || typeof TournamentCore.createTournament !== 'function') {
             missing.push('TournamentCore.createTournament');
@@ -146,9 +161,12 @@
         if (!TournamentCore || typeof TournamentCore.getTournament !== 'function') {
             missing.push('TournamentCore.getTournament');
         }
+        if (!TournamentCore || typeof TournamentCore.getAllowedTransitions !== 'function') {
+            missing.push('TournamentCore.getAllowedTransitions');
+        }
 
-        if (!TournamentsMatches || typeof TournamentsMatches.createMatch !== 'function') {
-            missing.push('TournamentsMatches.createMatch');
+        if (!TournamentMatches || typeof TournamentMatches.createMatch !== 'function') {
+            missing.push('TournamentMatches.createMatch');
         }
 
         if (!CharacterQueries || typeof CharacterQueries.getCharacterById !== 'function') {
@@ -186,87 +204,23 @@
     // ============================================================
     // PROVIDER ASSEMBLY
     // ============================================================
+    // 
+    // The tournament subsystem currently does not use dependency
+    // injection. Sub-modules resolve their dependencies from the
+    // window object at call time. This section is reserved for the
+    // case where that changes (e.g. TournamentCore gains a provider
+    // contract like TeamCore's characterProvider).
 
     var _providersInitialized = false;
 
-    /**
-     * Initialize providers and inject dependencies into Tournament modules.
-     * Must be called before mounting.
-     */
     function initProviders() {
         if (_providersInitialized) {
             return true;
         }
 
-        // ---- Character Provider ----
-        var characterProvider = {
-            exists: function(id) {
-                if (!id) { return false; }
-                var char = CharacterQueries.getCharacterById(id);
-                return char !== null && char !== undefined;
-            },
-            getCharacterById: function(id) {
-                return CharacterQueries.getCharacterById(id);
-            },
-            getDisplayName: function(id) {
-                return CharacterQueries.getCharacterNameById(id);
-            },
-            getCurrentStatus: function(char) {
-                return CharacterQueries.getCurrentStatus(char);
-            },
-            isStudent: function(char) {
-                return CharacterQueries.isStudent(char);
-            },
-            isInstructor: function(char) {
-                return CharacterQueries.isInstructor(char);
-            }
-        };
-
-        // ---- Team Provider ----
-        var teamProvider = {
-            exists: function(id) {
-                if (!id) { return false; }
-                var team = TeamQueries.getTeamById(id);
-                return team !== null && team !== undefined;
-            },
-            getTeamById: function(id) {
-                return TeamQueries.getTeamById(id);
-            },
-            getTeamName: function(id) {
-                return TeamQueries.getTeamName(id);
-            },
-            getActiveMembers: function(team) {
-                return TeamQueries.getActiveTeamMembers ? TeamQueries.getActiveTeamMembers(team, 1) : [];
-            }
-        };
-
-        // ---- Academy Provider ----
-        var academyProvider = {
-            getClass: function(classId) {
-                return AcademyQueries.getClass(classId);
-            },
-            getClassDisplayName: function(classId) {
-                return AcademyQueries.getClassDisplayName(classId);
-            },
-            getClasses: function() {
-                return AcademyQueries.getClasses();
-            }
-        };
-
-        // ---- Calendar Provider ----
-        var calendarProvider = {
-            getWeekRange: function() {
-                return { min: 1, max: 52 };
-            },
-            isValidWeek: function(week) {
-                var num = parseInt(week, 10);
-                return !isNaN(num) && num >= 1 && num <= 52;
-            }
-        };
-
-        // NOTE: TournamentCore and TournamentsMatches do not need providers
-        // injected since they use lazy loading for dependencies.
-        // This is consistent with the other modules.
+        // No providers to inject currently. When they're needed,
+        // this is where they're assembled and passed to whichever
+        // sub-module requires them.
 
         _providersInitialized = true;
         return true;
@@ -281,12 +235,21 @@
     var _container = null;
 
     // ============================================================
-    // RENDER FUNCTION
+    // RENDER
     // ============================================================
 
     /**
      * Main render function for the tournament module.
-     * This is set as the render function for TournamentEvents.
+     * Registered with TournamentEvents.setRenderFn().
+     * 
+     * RENDER CONTRACT:
+     *   activeTab === 'detail' → render detail panel (or recover)
+     *   activeTab === 'list'   → render list panel (list or grid)
+     * 
+     *   Recovery: if activeTab is 'detail' but no tournament is
+     *   selected (or the selected tournament no longer exists),
+     *   reset to the list panel and render that instead. This keeps
+     *   UI state and rendered output consistent.
      */
     function renderTournamentContainer() {
         if (!_container) {
@@ -298,59 +261,62 @@
             return;
         }
 
-        var UI = TournamentsUI;
-        var Aggregator = TournamentAggregator;
-        var Render = TournamentsRender;
-
-        if (!UI || !Aggregator || !Render) {
+        if (!checkDependencies()) {
             _container.innerHTML = '<p class="empty-state">Tournament dependencies not loaded. Please refresh the page.</p>';
             return;
         }
 
-        // Get UI state
-        var selectedId = UI.getSelectedTournamentId();
-        var activeTab = UI.getActiveTab();
-        var filters = UI.getFilters();
-        var viewMode = UI.getViewMode();
+        // ---- Read UI state ----
+        var selectedId = TournamentsUI.getSelectedTournamentId();
+        var activeTab = TournamentsUI.getActiveTab();
+        var viewMode = TournamentsUI.getViewMode();
+        var filters = TournamentsUI.getFilters();
 
-        // Get data via Aggregator
-        var listVM = Aggregator.getTournamentListViewModel({
+        // ---- Build list view model ----
+        var listVM = TournamentAggregator.getTournamentListViewModel({
             filter: filters.status !== 'all' ? filters.status : null,
             search: filters.search || '',
             sort: 'createdAt',
             sortDirection: 'desc'
         });
 
-        // Get detail if selected
+        // ---- Resolve detail view model if requested ----
         var detailVM = null;
         if (selectedId) {
-            detailVM = Aggregator.getTournamentViewModel(selectedId);
+            detailVM = TournamentAggregator.getTournamentViewModel(selectedId);
         }
 
-        // Render using TournamentsRender
+        // ---- Recovery: detail requested but not resolvable ----
+        if (activeTab === 'detail' && !detailVM) {
+            // The selected tournament is gone (deleted) or was never
+            // selected. Reset UI state to the list panel and fall
+            // through to the list render path.
+            TournamentsUI.showTournamentList();
+            activeTab = 'list';
+            selectedId = null;
+        }
+
+        // ---- Render ----
         var html = '';
-        
-        // Header with controls
-        html += renderHeader(UI);
+        html += renderHeader(activeTab, viewMode, selectedId);
+        html += TournamentsRender.renderFilterBar(filters);
 
-        // Filter bar
-        html += renderFilterBar(filters);
-
-        // Main content
         if (activeTab === 'detail' && detailVM) {
-            html += Render.renderDetail(detailVM);
+            html += TournamentsRender.renderDetail(detailVM);
         } else {
-            // List or grid view
             if (viewMode === 'grid') {
-                html += renderGridView(listVM);
+                html += TournamentsRender.renderGrid(listVM);
             } else {
-                html += Render.renderList(listVM.tournaments);
+                html += TournamentsRender.renderList(listVM);
             }
         }
 
         _container.innerHTML = html;
 
-        // Re-bind events (TournamentEvents handles this)
+        // Re-bind events after innerHTML replacement.
+        // TournamentEvents uses document-level delegation for most
+        // handlers, so this is mostly a no-op, but it keeps the
+        // contract explicit.
         TournamentEvents.refreshUI();
     }
 
@@ -358,119 +324,45 @@
     // RENDER HELPERS
     // ============================================================
 
-    function renderHeader(UI) {
-        var viewMode = UI.getViewMode() || 'list';
-        var selectedId = UI.getSelectedTournamentId();
+    /**
+     * Render the header bar.
+     * 
+     * VIEW MODE BUTTONS:
+     *   - List and Grid buttons always shown.
+     *   - Detail is NOT a view mode. It's reached by selecting a
+     *     tournament. No Detail toggle is offered.
+     *   - The buttons emit data-view="list" or data-view="grid".
+     *     TournamentEvents handles the click and calls
+     *     TournamentsUI.setViewMode().
+     * 
+     * @param {string} activeTab - 'list' or 'detail'
+     * @param {string} viewMode - 'list' or 'grid'
+     * @param {string|null} selectedId - Currently selected tournament ID
+     * @returns {string} HTML string
+     */
+    function renderHeader(activeTab, viewMode, selectedId) {
+        var isDetail = activeTab === 'detail';
 
         return [
             '<div class="tournament-header">',
                 '<div class="tournament-header-left">',
                     '<h2>Tournaments</h2>',
                     '<span class="tournament-count">' + getTournamentCount() + '</span>',
+                    (isDetail ? '<button class="close-tournament-detail small secondary" type="button">← Back to List</button>' : ''),
                 '</div>',
                 '<div class="tournament-header-right">',
                     '<div class="view-controls">',
-                        '<button class="view-btn ' + (viewMode === 'list' ? 'active' : '') + '" data-view="list" title="List View">☰</button>',
-                        '<button class="view-btn ' + (viewMode === 'grid' ? 'active' : '') + '" data-view="grid" title="Grid View">⊞</button>',
-                        (selectedId ? '<button class="view-btn active" data-view="detail" title="Detail View">◉</button>' : ''),
+                        '<button class="view-btn ' + (!isDetail && viewMode === 'list' ? 'active' : '') + '" data-view="list" title="List View" type="button">☰</button>',
+                        '<button class="view-btn ' + (!isDetail && viewMode === 'grid' ? 'active' : '') + '" data-view="grid" title="Grid View" type="button">⊞</button>',
                     '</div>',
-                    '<button id="add-tournament-btn" class="primary">+ Add Tournament</button>',
+                    '<button id="add-tournament-btn" class="primary" type="button">+ Add Tournament</button>',
                 '</div>',
             '</div>'
         ].join('');
-    }
-
-    function renderFilterBar(filters) {
-        var status = filters.status || 'all';
-        var search = filters.search || '';
-        var mode = filters.mode || 'all';
-
-        return [
-            '<div class="tournament-filters">',
-                '<div class="filter-group">',
-                    '<select id="tournament-status-filter" class="tournament-status-filter">',
-                        '<option value="all"' + (status === 'all' ? ' selected' : '') + '>All Statuses</option>',
-                        '<option value="draft"' + (status === 'draft' ? ' selected' : '') + '>Draft</option>',
-                        '<option value="active"' + (status === 'active' ? ' selected' : '') + '>Active</option>',
-                        '<option value="completed"' + (status === 'completed' ? ' selected' : '') + '>Completed</option>',
-                    '</select>',
-                '</div>',
-                '<div class="filter-group">',
-                    '<select id="tournament-mode-filter" class="tournament-mode-filter">',
-                        '<option value="all"' + (mode === 'all' ? ' selected' : '') + '>All Modes</option>',
-                        '<option value="teams"' + (mode === 'teams' ? ' selected' : '') + '>Teams</option>',
-                        '<option value="individuals"' + (mode === 'individuals' ? ' selected' : '') + '>Individuals</option>',
-                    '</select>',
-                '</div>',
-                '<div class="filter-group search-group">',
-                    '<input type="text" id="tournament-search-filter" class="tournament-search-filter" placeholder="Search tournaments..." value="' + escapeHtml(search) + '">',
-                '</div>',
-                '<button id="clear-tournament-filters" class="clear-tournament-filters small secondary">Clear</button>',
-            '</div>'
-        ].join('');
-    }
-
-    function renderGridView(listVM) {
-        var tournaments = listVM.tournaments || [];
-
-        if (tournaments.length === 0) {
-            return '<p class="empty-state">No tournaments found. Create your first tournament!</p>';
-        }
-
-        var html = '<div class="tournament-grid">';
-        for (var i = 0; i < tournaments.length; i++) {
-            var t = tournaments[i];
-            html += renderGridCard(t);
-        }
-        html += '</div>';
-
-        return html;
-    }
-
-    function renderGridCard(tournament) {
-        var statusClass = tournament.status || 'draft';
-        var statusLabel = tournament.statusDisplay ? tournament.statusDisplay.text : tournament.status;
-
-        return [
-            '<div class="tournament-card" data-id="' + escapeHtml(tournament.id) + '">',
-                '<div class="tournament-card-header">',
-                    '<span class="tournament-card-name">' + escapeHtml(tournament.name) + '</span>',
-                    '<span class="tournament-card-status ' + escapeHtml(statusClass) + '">' + escapeHtml(statusLabel) + '</span>',
-                '</div>',
-                '<div class="tournament-card-body">',
-                    '<div class="tournament-card-stats">',
-                        '<span class="stat">' + tournament.participantCount + ' participants</span>',
-                        '<span class="stat">' + tournament.roundCount + ' rounds</span>',
-                        (tournament.hasWinner ? '<span class="stat winner">★ ' + escapeHtml(tournament.winnerName || 'Winner') + '</span>' : ''),
-                    '</div>',
-                    '<div class="tournament-card-meta">',
-                        '<span class="mode">' + escapeHtml(tournament.modeLabel || tournament.mode) + '</span>',
-                        (tournament.graduatingClassName ? '<span class="class">' + escapeHtml(tournament.graduatingClassName) + '</span>' : ''),
-                    '</div>',
-                '</div>',
-                '<div class="tournament-card-actions">',
-                    '<button class="view-tournament-btn small" data-id="' + escapeHtml(tournament.id) + '">View</button>',
-                    '<button class="edit-tournament-btn small" data-id="' + escapeHtml(tournament.id) + '">Edit</button>',
-                    '<button class="delete-tournament-btn small danger" data-id="' + escapeHtml(tournament.id) + '">Delete</button>',
-                '</div>',
-            '</div>'
-        ].join('');
-    }
-
-    function escapeHtml(value) {
-        return DomUtils.escapeHtml(value);
-    }
-
-    function getTournamentCount() {
-        var data = window.data || {};
-        if (!Array.isArray(data.tournaments)) {
-            return 0;
-        }
-        return data.tournaments.length;
     }
 
     // ============================================================
-    // MOUNT FUNCTION - Single source of truth for rendering
+    // MOUNT / UNMOUNT
     // ============================================================
 
     function mountTournaments(container) {
@@ -504,13 +396,13 @@
 
         _container = container;
 
-        // Initialize UI state
+        // Initialize UI state (loads persisted state from sessionStorage)
         TournamentsUI.init();
 
-        // Set render function for Events
+        // Register the render function with Events, then initialize Events.
+        // Ordering matters: Events needs the render function set before
+        // init, because init calls back into render in some paths.
         TournamentEvents.setRenderFn(renderTournamentContainer);
-
-        // Initialize events
         TournamentEvents.init(container);
 
         // Initial render
@@ -640,6 +532,18 @@
     });
 
     // ============================================================
+    // HELPERS
+    // ============================================================
+
+    function getTournamentCount() {
+        var data = window.data || {};
+        if (!Array.isArray(data.tournaments)) {
+            return 0;
+        }
+        return data.tournaments.length;
+    }
+
+    // ============================================================
     // LEGACY COMPATIBILITY
     // ============================================================
 
@@ -650,7 +554,7 @@
     window.renderTournaments = mountTournaments;
 
     // ============================================================
-    // EXPOSE - Controlled public API
+    // EXPOSE
     // ============================================================
 
     window.Tournaments = {

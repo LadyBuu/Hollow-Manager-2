@@ -26,6 +26,14 @@
  *   - Lifecycle: "Is this operation allowed for this status?"
  *   - Rules: "Are the domain conditions satisfied?"
  * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Tournaments are scoped to WEEKS (bounded 1-52).
+ *   - Year bounds were never used by the schema; they were inherited
+ *     from CalendarConstants for symmetry with teams. They are
+ *     removed here.
+ * 
  * DEPENDENCIES:
  *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
@@ -51,7 +59,7 @@
     // ============================================================
 
     function getCalendarConstants() {
-        return window.CalendarConstants || window.CalendarConstants || null;
+        return window.CalendarConstants || null;
     }
 
     function getObjectUtils() {
@@ -65,6 +73,9 @@
     // ============================================================
     // GET BOUNDS - Lazy load from CalendarConstants
     // ============================================================
+    // 
+    // Only week bounds are relevant for tournaments. Year bounds
+    // are no longer part of the calendar model.
 
     function getBounds() {
         var CC = getCalendarConstants();
@@ -72,16 +83,12 @@
             // Default bounds if CalendarConstants not loaded yet
             return {
                 MIN_WEEK: 1,
-                MAX_WEEK: 52,
-                MIN_YEAR: 1900,
-                MAX_YEAR: 2100
+                MAX_WEEK: 52
             };
         }
         return {
             MIN_WEEK: CC.MIN_WEEK || 1,
-            MAX_WEEK: CC.MAX_WEEK || 52,
-            MIN_YEAR: CC.MIN_YEAR || 1900,
-            MAX_YEAR: CC.MAX_YEAR || 2100
+            MAX_WEEK: CC.MAX_WEEK || 52
         };
     }
 

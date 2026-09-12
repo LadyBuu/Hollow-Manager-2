@@ -48,6 +48,12 @@
  *   - deathAge is auto-filled from birthYear + deathYear on save if missing
  *   - deathWeek is preserved for legacy data but not actively collected
  * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - deathYear must be an integer >= 1 (no upper bound).
+ *   - birthYear is stored as a string and is not bounded here.
+ * 
  * COMBAT MODEL (v14):
  *   - hp: number, 0–999, manual or rolled
  *   - mp: number, 0–999, manual or rolled
@@ -273,8 +279,8 @@
 
         if (hasDeathYear) {
             var year = parseInt(charData.deathYear, 10);
-            if (isNaN(year) || year < 1 || year > 9999) {
-                return { valid: false, message: 'Death Year must be a valid year.' };
+            if (isNaN(year) || year < 1) {
+                return { valid: false, message: 'Death Year must be a positive number.' };
             }
         }
 

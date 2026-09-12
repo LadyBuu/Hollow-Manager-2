@@ -23,6 +23,11 @@
  *   - Progress values are clamped to 0-100 before rendering
  *   - Dates are validated before display
  * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - The mission year field does not carry min / max attributes.
+ * 
  * DEPENDENCIES:
  *   - window.MissionQueries (required)
  *   - window.MissionViews (required)
@@ -147,15 +152,25 @@
         }
     }
 
+    /**
+     * Get a team's display name.
+     * 
+     * Resolution order:
+     *   1. TeamQueries.getTeamName (canonical for teams)
+     *   2. Fallback to 'Unknown Team'
+     * 
+     * NOTE: MissionQueries does not currently export getTeamName.
+     * The first branch used to check for it, but it was dead code.
+     * If MissionQueries ever adds a getTeamName alias, restore the
+     * check above the TeamQueries branch.
+     * 
+     * @param {string} teamId - Team ID
+     * @returns {string} Team name or 'Unassigned' / 'Unknown Team'
+     */
     function getTeamName(teamId) {
         if (!teamId) {
             return 'Unassigned';
         }
-        // Use MissionQueries.getTeamName if available
-        if (Queries && typeof Queries.getTeamName === 'function') {
-            return Queries.getTeamName(teamId);
-        }
-        // Fallback: try TeamQueries
         if (window.TeamQueries && typeof window.TeamQueries.getTeamName === 'function') {
             return window.TeamQueries.getTeamName(teamId);
         }
@@ -307,7 +322,7 @@
             html += '<div class="form-group">';
             html += '<label>Date</label>';
             html += '<div class="date-input-group">';
-            html += '<div class="date-field"><label class="date-label">Year</label><input type="number" id="mission-year" value="' + escapeHtml(year) + '" min="1000" max="9999" class="date-year"></div>';
+            html += '<div class="date-field"><label class="date-label">Year</label><input type="number" id="mission-year" value="' + escapeHtml(year) + '" class="date-year"></div>';
             html += '<div class="date-field"><label class="date-label">Month</label><select id="mission-month" class="date-month">';
 
             for (var mi = 0; mi < monthNames.length; mi++) {

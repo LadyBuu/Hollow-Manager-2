@@ -8,28 +8,31 @@
  *   - renderTeamCard - Render a single team card
  *   - renderTeamSummary - Render a team summary
  *   - renderContainer - Render the team manager container
+ *   - getModalsHTML - Render the modal shells
+ *   - buildFilterHTML - Render the filter bar
  * 
  * IMPORTANT:
  *   - PURE RENDERING - no event binding, no mutations, no state
  *   - No data mutations
  *   - No persistence calls
- *   - No direct window.data access - uses TeamAggregator for data
- *   - Uses TeamQueries for simple team data
+ *   - No direct window.data access for team data - uses TeamQueries
  *   - Uses TeamConstants for labels and types
  *   - Uses DomUtils for safe DOM operations
  *   - All user-controlled content uses textContent or escapeHtml
+ * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Year inputs do not carry min / max attributes.
+ *   - The year filter defaults to the current application year
+ *     (window.data.currentYear) when no filter is set, so the
+ *     displayed value matches the year actually used for filtering.
  * 
  * DEPENDENCIES:
  *   - window.TeamAggregator (from team-aggregator.js) - MANDATORY
  *   - window.TeamQueries (from team-queries.js) - MANDATORY
  *   - window.TeamConstants (from team-constants.js) - MANDATORY
  *   - window.DomUtils (from dom-utils.js) - MANDATORY
- *   - window.CharacterQueries (from character-queries.js) - MANDATORY
- * 
- * USAGE:
- *   var TR = window.TeamRender;
- *   var html = TR.renderList(teams, 'professional', 5, 'team_123');
- *   var container = TR.renderContainer('professional');
  */
 
 (function() {
@@ -48,7 +51,6 @@
     var TeamQueries = window.TeamQueries;
     var TeamConstants = window.TeamConstants;
     var DomUtils = window.DomUtils;
-    var CharacterQueries = window.CharacterQueries;
 
     // ============================================================
     // DEPENDENCY CHECK
@@ -110,6 +112,24 @@
 
     var DEFAULT_TEAM_TYPE = TeamConstants.DEFAULT_TEAM_TYPE;
     var DEFAULT_TEAM_STATUS = TeamConstants.DEFAULT_TEAM_STATUS;
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    /**
+     * Get the current application year, used as the default for
+     * year-based team filters.
+     * 
+     * @returns {number} Current year
+     */
+    function getCurrentYear() {
+        var data = window.data || {};
+        if (typeof data.currentYear === 'number' && isFinite(data.currentYear)) {
+            return data.currentYear;
+        }
+        return new Date().getFullYear();
+    }
 
     // ============================================================
     // TEAM LIST RENDERING
@@ -175,7 +195,6 @@
                 }
             }
 
-            // Team row - using CSS classes for styling
             html += '<div class="list-item team-item ' + inactiveClass + '" data-id="' + escapeAttribute(team.id) + '">';
             html += '<span><strong>' + escapeHtml(team.name) + '</strong>' + classDisplay + ' <span class="team-type-label">' + escapeHtml(typeLabel) + '</span>';
             if (isInactive) {
@@ -465,17 +484,41 @@
     // FILTER HTML
     // ============================================================
 
+    /**
+     * Build the filter bar for a tab.
+     * 
+     * YEAR INPUT:
+     *   - No min / max attributes. Years are unbounded.
+     *   - When no filter is set, the input defaults to the current
+     *     application year (window.data.currentYear). This matches
+     *     the year actually used for filtering, so the displayed
+     *     value and the effective value are consistent.
+     * 
+     * @param {string} tab - Tab ID
+     * @returns {string} HTML string
+     */
     function buildFilterHTML(tab) {
         if (tab === 'professional' || tab === 'temporary') {
+            var currentYear = getCurrentYear();
+            var yearValue = currentYear;
+            var showInactiveChecked = '';
+
+            if (TeamQueries && typeof TeamQueries.getTeams === 'function') {
+                // No filter state here; team-render is pure. The event
+                // layer supplies the persisted value by replacing the
+                // input's value on bind. See team-events.js's
+                // buildFilterHTML for the state-aware version.
+            }
+
             return [
                 '<div class="filter-row">',
                     '<div class="filter-group">',
                         '<label for="team-filter-year">Year:</label>',
-                        '<input type="number" id="team-filter-year" value="" min="1900" max="2100" placeholder="All">',
+                        '<input type="number" id="team-filter-year" value="' + escapeAttribute(yearValue) + '" placeholder="All">',
                     '</div>',
                     '<div class="filter-group">',
-                        '<label for="' + tab + '-show-inactive">Show Inactive:</label>',
-                        '<input type="checkbox" id="' + tab + '-show-inactive">',
+                        '<label for="' + escapeAttribute(tab) + '-show-inactive">Show Inactive:</label>',
+                        '<input type="checkbox" id="' + escapeAttribute(tab) + '-show-inactive"' + showInactiveChecked + '>',
                     '</div>',
                     '<button id="apply-filter-btn" class="small primary">Apply</button>',
                 '</div>'
@@ -501,6 +544,18 @@
     // MODALS HTML
     // ============================================================
 
+    /**
+     * Render the modal shells.
+     * 
+     * These are the live modals used by TeamEvents. TeamEvents'
+     * bindFormModal / bindMemberModal / bindRankingModal /
+     * bindEditMemberModal all resolve these by ID, and TeamEvents'
+     * own getModalsHTML is dead code (kept for the moment; delete
+     * in a separate pass once you've confirmed TeamEvents.renderContainer
+     * has no callers).
+     * 
+     * @returns {string} HTML string
+     */
     function getModalsHTML() {
         return [
             '<!-- Team Form Modal -->',
@@ -674,6 +729,7 @@
 
         // Helpers
         getMemberStatusInfo: getMemberStatusInfo,
+        getCurrentYear: getCurrentYear,
         escapeHtml: escapeHtml,
         escapeAttribute: escapeAttribute
     };

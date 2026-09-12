@@ -11,6 +11,7 @@
  *   - Participant type definitions (character, team)
  *   - Group exam result definitions (pass, fail)
  *   - Lifecycle rules (permissions by status)
+ *   - Status transition rules
  *   - Default values
  *   - Bounds from CalendarConstants
  * 
@@ -22,8 +23,16 @@
  *   - Validation runs BEFORE publishing to ensure integrity
  *   - No DOM, no state, no persistence - pure constants only
  * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Tournaments are scoped to WEEKS (bounded 1-52), not years.
+ *   - Year bounds were never used by tournament logic; they were
+ *     inherited from CalendarConstants for symmetry with teams.
+ *     They are removed here.
+ * 
  * DEPENDENCIES:
- *   - window.CalendarConstants (for week/year bounds) - LAZY LOADED
+ *   - window.CalendarConstants (for week bounds) - LAZY LOADED
  * 
  * USAGE:
  *   var TC = window.TournamentConstants;
@@ -47,12 +56,15 @@
     // ============================================================
 
     function getCalendarConstants() {
-        return window.CalendarConstants || window.CalendarConstants || null;
+        return window.CalendarConstants || null;
     }
 
     // ============================================================
     // GET BOUNDS - Lazy load from CalendarConstants
     // ============================================================
+    // 
+    // Only week bounds are relevant for tournaments. Year bounds
+    // are no longer part of the calendar model.
 
     function getBounds() {
         var CC = getCalendarConstants();
@@ -60,16 +72,12 @@
             // Default bounds if CalendarConstants not loaded yet
             return {
                 MIN_WEEK: 1,
-                MAX_WEEK: 52,
-                MIN_YEAR: 1900,
-                MAX_YEAR: 2100
+                MAX_WEEK: 52
             };
         }
         return {
             MIN_WEEK: CC.MIN_WEEK || 1,
-            MAX_WEEK: CC.MAX_WEEK || 52,
-            MIN_YEAR: CC.MIN_YEAR || 1900,
-            MAX_YEAR: CC.MAX_YEAR || 2100
+            MAX_WEEK: CC.MAX_WEEK || 52
         };
     }
 
@@ -479,9 +487,7 @@
             var bounds = getBounds();
             _computedBounds = {
                 MIN_WEEK: bounds.MIN_WEEK,
-                MAX_WEEK: bounds.MAX_WEEK,
-                MIN_YEAR: bounds.MIN_YEAR || 1900,
-                MAX_YEAR: bounds.MAX_YEAR || 2100
+                MAX_WEEK: bounds.MAX_WEEK
             };
             Object.freeze(_computedBounds);
         }
@@ -492,10 +498,36 @@
     // VALIDATION
     // ============================================================
 
+    /**
+     * Validate all constants for internal consistency.
+     * 
+     * Invariants checked:
+     *   - VALID_STATUSES: non-empty, no duplicates, no empty strings
+     *   - VALID_MODES: non-empty, no duplicates
+     *   - VALID_MATCH_TYPES: non-empty, no duplicates
+     *   - VALID_MATCH_STATUSES: non-empty, no duplicates
+     *   - VALID_PARTICIPANT_TYPES: non-empty, no duplicates
+     *   - VALID_GROUP_EXAM_RESULTS: non-empty, no duplicates
+     *   - DEFAULT_* values are in their respective valid sets
+     *   - DEFAULT_ROUND_MATCH_SIZE >= 2
+     *   - LIFECYCLE_RULES keys match VALID_STATUSES exactly
+     *   - LIFECYCLE_RULES entries have all required boolean capabilities
+     *     and a non-empty description
+     *   - STATUS_TRANSITIONS keys match VALID_STATUSES exactly
+     *   - Every transition target is a valid status
+     *   - No status transitions to itself via the table (no-op handled
+     *     separately by isStatusTransitionAllowed)
+     *   - MODE_TO_PARTICIPANT_TYPE keys match VALID_MODES exactly
+     *   - MODE_TO_PARTICIPANT_TYPE values are valid participant types
+     * 
+     * Runs once at load. Logs warnings; does not throw.
+     * 
+     * @returns {boolean} True if all constants validate
+     */
     function validateConstants() {
         var errors = [];
 
-        // Validate statuses
+        // ---- VALID_STATUSES ----
         if (!Array.isArray(VALID_STATUSES) || VALID_STATUSES.length === 0) {
             errors.push('VALID_STATUSES must be a non-empty array.');
         }
@@ -503,7 +535,7 @@
         var statusSet = Object.create(null);
         VALID_STATUSES.forEach(function(s, index) {
             if (typeof s !== 'string' || s.trim() === '') {
-                errors.push('Status at index ' + index + ' must be a non-empty string.');
+                errors.push('VALID_STATUSES[' + index + '] must be a non-empty string.');
                 return;
             }
             if (statusSet[s]) {
@@ -512,7 +544,7 @@
             statusSet[s] = true;
         });
 
-        // Validate modes
+        // ---- VALID_MODES ----
         if (!Array.isArray(VALID_MODES) || VALID_MODES.length === 0) {
             errors.push('VALID_MODES must be a non-empty array.');
         }
@@ -520,7 +552,7 @@
         var modeSet = Object.create(null);
         VALID_MODES.forEach(function(m, index) {
             if (typeof m !== 'string' || m.trim() === '') {
-                errors.push('Mode at index ' + index + ' must be a non-empty string.');
+                errors.push('VALID_MODES[' + index + '] must be a non-empty string.');
                 return;
             }
             if (modeSet[m]) {
@@ -529,7 +561,7 @@
             modeSet[m] = true;
         });
 
-        // Validate match types
+        // ---- VALID_MATCH_TYPES ----
         if (!Array.isArray(VALID_MATCH_TYPES) || VALID_MATCH_TYPES.length === 0) {
             errors.push('VALID_MATCH_TYPES must be a non-empty array.');
         }
@@ -537,7 +569,7 @@
         var matchTypeSet = Object.create(null);
         VALID_MATCH_TYPES.forEach(function(t, index) {
             if (typeof t !== 'string' || t.trim() === '') {
-                errors.push('Match type at index ' + index + ' must be a non-empty string.');
+                errors.push('VALID_MATCH_TYPES[' + index + '] must be a non-empty string.');
                 return;
             }
             if (matchTypeSet[t]) {
@@ -546,7 +578,7 @@
             matchTypeSet[t] = true;
         });
 
-        // Validate match statuses
+        // ---- VALID_MATCH_STATUSES ----
         if (!Array.isArray(VALID_MATCH_STATUSES) || VALID_MATCH_STATUSES.length === 0) {
             errors.push('VALID_MATCH_STATUSES must be a non-empty array.');
         }
@@ -554,7 +586,7 @@
         var matchStatusSet = Object.create(null);
         VALID_MATCH_STATUSES.forEach(function(s, index) {
             if (typeof s !== 'string' || s.trim() === '') {
-                errors.push('Match status at index ' + index + ' must be a non-empty string.');
+                errors.push('VALID_MATCH_STATUSES[' + index + '] must be a non-empty string.');
                 return;
             }
             if (matchStatusSet[s]) {
@@ -563,7 +595,7 @@
             matchStatusSet[s] = true;
         });
 
-        // Validate participant types
+        // ---- VALID_PARTICIPANT_TYPES ----
         if (!Array.isArray(VALID_PARTICIPANT_TYPES) || VALID_PARTICIPANT_TYPES.length === 0) {
             errors.push('VALID_PARTICIPANT_TYPES must be a non-empty array.');
         }
@@ -571,7 +603,7 @@
         var participantTypeSet = Object.create(null);
         VALID_PARTICIPANT_TYPES.forEach(function(t, index) {
             if (typeof t !== 'string' || t.trim() === '') {
-                errors.push('Participant type at index ' + index + ' must be a non-empty string.');
+                errors.push('VALID_PARTICIPANT_TYPES[' + index + '] must be a non-empty string.');
                 return;
             }
             if (participantTypeSet[t]) {
@@ -580,7 +612,7 @@
             participantTypeSet[t] = true;
         });
 
-        // Validate group exam results
+        // ---- VALID_GROUP_EXAM_RESULTS ----
         if (!Array.isArray(VALID_GROUP_EXAM_RESULTS) || VALID_GROUP_EXAM_RESULTS.length === 0) {
             errors.push('VALID_GROUP_EXAM_RESULTS must be a non-empty array.');
         }
@@ -588,7 +620,7 @@
         var resultSet = Object.create(null);
         VALID_GROUP_EXAM_RESULTS.forEach(function(r, index) {
             if (typeof r !== 'string' || r.trim() === '') {
-                errors.push('Group exam result at index ' + index + ' must be a non-empty string.');
+                errors.push('VALID_GROUP_EXAM_RESULTS[' + index + '] must be a non-empty string.');
                 return;
             }
             if (resultSet[r]) {
@@ -597,38 +629,55 @@
             resultSet[r] = true;
         });
 
-        // Validate defaults
-        if (typeof DEFAULT_STATUS !== 'string' || !_statusSet[DEFAULT_STATUS]) {
+        // ---- DEFAULTS ----
+        if (typeof DEFAULT_STATUS !== 'string' || !statusSet[DEFAULT_STATUS]) {
             errors.push('DEFAULT_STATUS must be a valid status.');
         }
-        if (typeof DEFAULT_MODE !== 'string' || !_modeSet[DEFAULT_MODE]) {
+        if (typeof DEFAULT_MODE !== 'string' || !modeSet[DEFAULT_MODE]) {
             errors.push('DEFAULT_MODE must be a valid mode.');
         }
-        if (typeof DEFAULT_MATCH_TYPE !== 'string' || !_matchTypeSet[DEFAULT_MATCH_TYPE]) {
+        if (typeof DEFAULT_MATCH_TYPE !== 'string' || !matchTypeSet[DEFAULT_MATCH_TYPE]) {
             errors.push('DEFAULT_MATCH_TYPE must be a valid match type.');
         }
         if (typeof DEFAULT_ROUND_MATCH_SIZE !== 'number' || DEFAULT_ROUND_MATCH_SIZE < 2) {
             errors.push('DEFAULT_ROUND_MATCH_SIZE must be a number >= 2.');
         }
+        if (typeof DEFAULT_TOTAL_ROUNDS !== 'number' || DEFAULT_TOTAL_ROUNDS < 1) {
+            errors.push('DEFAULT_TOTAL_ROUNDS must be a number >= 1.');
+        }
 
-        // Validate lifecycle rules
+        // ---- LIFECYCLE_RULES ----
         if (!LIFECYCLE_RULES || typeof LIFECYCLE_RULES !== 'object') {
             errors.push('LIFECYCLE_RULES must be an object.');
         } else {
-            var lifecycleStatuses = Object.keys(LIFECYCLE_RULES);
-            for (var i = 0; i < lifecycleStatuses.length; i++) {
-                var s = lifecycleStatuses[i];
-                if (!_statusSet[s]) {
+            var lifecycleKeys = Object.keys(LIFECYCLE_RULES);
+
+            // Every valid status must have a rules entry
+            VALID_STATUSES.forEach(function(s) {
+                if (lifecycleKeys.indexOf(s) === -1) {
+                    errors.push('LIFECYCLE_RULES is missing entry for status "' + s + '".');
+                }
+            });
+
+            // Every lifecycle key must be a valid status
+            lifecycleKeys.forEach(function(s) {
+                if (!statusSet[s]) {
                     errors.push('LIFECYCLE_RULES contains invalid status: "' + s + '".');
-                    continue;
+                    return;
                 }
                 var rules = LIFECYCLE_RULES[s];
                 if (!rules || typeof rules !== 'object') {
                     errors.push('LIFECYCLE_RULES["' + s + '"] must be an object.');
-                    continue;
+                    return;
                 }
-                // Check all required properties exist
-                var requiredProps = ['canEditMetadata', 'canModifyParticipants', 'canAddRounds', 'canRemoveRounds', 'canModifyEliminations', 'canComplete'];
+                var requiredProps = [
+                    'canEditMetadata',
+                    'canModifyParticipants',
+                    'canAddRounds',
+                    'canRemoveRounds',
+                    'canModifyEliminations',
+                    'canComplete'
+                ];
                 for (var j = 0; j < requiredProps.length; j++) {
                     if (typeof rules[requiredProps[j]] !== 'boolean') {
                         errors.push('LIFECYCLE_RULES["' + s + '"].' + requiredProps[j] + ' must be a boolean.');
@@ -637,49 +686,76 @@
                 if (!rules.description || typeof rules.description !== 'string') {
                     errors.push('LIFECYCLE_RULES["' + s + '"].description is required.');
                 }
-            }
+            });
         }
 
-        // Validate status transitions
+        // ---- STATUS_TRANSITIONS ----
         if (!STATUS_TRANSITIONS || typeof STATUS_TRANSITIONS !== 'object') {
             errors.push('STATUS_TRANSITIONS must be an object.');
         } else {
-            var transitionStatuses = Object.keys(STATUS_TRANSITIONS);
-            for (var i = 0; i < transitionStatuses.length; i++) {
-                var s = transitionStatuses[i];
-                if (!_statusSet[s]) {
+            var transitionKeys = Object.keys(STATUS_TRANSITIONS);
+
+            // Every valid status must have a transitions entry
+            VALID_STATUSES.forEach(function(s) {
+                if (transitionKeys.indexOf(s) === -1) {
+                    errors.push('STATUS_TRANSITIONS is missing entry for status "' + s + '".');
+                }
+            });
+
+            // Every transition key must be a valid status
+            transitionKeys.forEach(function(s) {
+                if (!statusSet[s]) {
                     errors.push('STATUS_TRANSITIONS contains invalid status: "' + s + '".');
-                    continue;
+                    return;
                 }
                 var targets = STATUS_TRANSITIONS[s];
                 if (!Array.isArray(targets)) {
                     errors.push('STATUS_TRANSITIONS["' + s + '"] must be an array.');
-                    continue;
+                    return;
                 }
+                var seenTargets = Object.create(null);
                 for (var j = 0; j < targets.length; j++) {
-                    if (!_statusSet[targets[j]]) {
-                        errors.push('STATUS_TRANSITIONS["' + s + '"] contains invalid target: "' + targets[j] + '".');
+                    var target = targets[j];
+                    if (!statusSet[target]) {
+                        errors.push('STATUS_TRANSITIONS["' + s + '"] contains invalid target: "' + target + '".');
+                        continue;
                     }
+                    if (target === s) {
+                        errors.push('STATUS_TRANSITIONS["' + s + '"] must not include itself as a target.');
+                    }
+                    if (seenTargets[target]) {
+                        errors.push('STATUS_TRANSITIONS["' + s + '"] contains duplicate target: "' + target + '".');
+                    }
+                    seenTargets[target] = true;
                 }
-            }
+            });
         }
 
-        // Validate mode to participant type mapping
+        // ---- MODE_TO_PARTICIPANT_TYPE ----
         if (!MODE_TO_PARTICIPANT_TYPE || typeof MODE_TO_PARTICIPANT_TYPE !== 'object') {
             errors.push('MODE_TO_PARTICIPANT_TYPE must be an object.');
         } else {
             var modeKeys = Object.keys(MODE_TO_PARTICIPANT_TYPE);
-            for (var i = 0; i < modeKeys.length; i++) {
-                var mode = modeKeys[i];
-                if (!_modeSet[mode]) {
-                    errors.push('MODE_TO_PARTICIPANT_TYPE contains invalid mode: "' + mode + '".');
-                    continue;
+
+            // Every valid mode must have a mapping
+            VALID_MODES.forEach(function(m) {
+                if (modeKeys.indexOf(m) === -1) {
+                    errors.push('MODE_TO_PARTICIPANT_TYPE is missing entry for mode "' + m + '".');
                 }
-                var type = MODE_TO_PARTICIPANT_TYPE[mode];
-                if (!_participantTypeSet[type]) {
-                    errors.push('MODE_TO_PARTICIPANT_TYPE["' + mode + '"] contains invalid type: "' + type + '".');
+            });
+
+            // Every mapping key must be a valid mode, and every value
+            // must be a valid participant type
+            modeKeys.forEach(function(m) {
+                if (!modeSet[m]) {
+                    errors.push('MODE_TO_PARTICIPANT_TYPE contains invalid mode: "' + m + '".');
+                    return;
                 }
-            }
+                var type = MODE_TO_PARTICIPANT_TYPE[m];
+                if (!participantTypeSet[type]) {
+                    errors.push('MODE_TO_PARTICIPANT_TYPE["' + m + '"] contains invalid type: "' + type + '".');
+                }
+            });
         }
 
         if (errors.length > 0) {
@@ -688,6 +764,10 @@
 
         return errors.length === 0;
     }
+
+    // ============================================================
+    // RUN VALIDATION
+    // ============================================================
 
     validateConstants();
 
@@ -739,10 +819,9 @@
         MODE_TO_PARTICIPANT_TYPE: MODE_TO_PARTICIPANT_TYPE,
 
         // Bounds (computed from CalendarConstants at runtime)
+        // Years are unbounded — no MIN_YEAR / MAX_YEAR.
         get MIN_WEEK() { return getComputedBounds().MIN_WEEK; },
         get MAX_WEEK() { return getComputedBounds().MAX_WEEK; },
-        get MIN_YEAR() { return getComputedBounds().MIN_YEAR; },
-        get MAX_YEAR() { return getComputedBounds().MAX_YEAR; },
 
         // Lookup functions
         isValidStatus: isValidStatus,
@@ -816,9 +895,7 @@
             console.log('[TournamentConstants] All exports verified successfully.');
             console.log('[TournamentConstants] Bounds:', {
                 MIN_WEEK: exports.MIN_WEEK,
-                MAX_WEEK: exports.MAX_WEEK,
-                MIN_YEAR: exports.MIN_YEAR,
-                MAX_YEAR: exports.MAX_YEAR
+                MAX_WEEK: exports.MAX_WEEK
             });
         }
     })();

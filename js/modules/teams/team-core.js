@@ -13,7 +13,6 @@
  *   - All team mutations should go through this module
  *   - Uses TeamConstants for type/status validation
  *   - Uses injected characterProvider for character existence
- *   - All mutations are atomic and validated before application
  *   - Does NOT call saveData() - caller owns persistence
  *   - Does NOT depend on TeamQueries (no circular dependency)
  *   - Internally organized by domain (CRUD, Members, Rankings)
@@ -22,7 +21,11 @@
  *   - Mutations modify window.data and return the result
  *   - Caller is responsible for persistence (saveData)
  *   - Invalid inputs are REJECTED (operation returns null/false)
- *   - Mutations are ATOMIC: if any part is invalid, nothing changes
+ *   - Validation completes BEFORE any mutation is applied, so
+ *     structurally-invalid inputs never reach the mutation stage
+ *   - Mutations are NOT transactional: if a mutation applies
+ *     multiple changes and one fails, earlier changes remain.
+ *     For atomic semantics, use MutationPipeline.
  *   - Valid no-op updates return the existing object (idempotent)
  * 
  * DATA STORE CONTRACT:
@@ -34,15 +37,20 @@
  *   - Statuses: active, inactive, deprecated
  *   - 'deleted' is NOT stored - teams are physically removed
  * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Year-based team types (professional, temporary, civilian)
+ *     accept any integer >= 1 as a valid period.
+ *   - Academic teams still use bounded weeks (1-52).
+ * 
  * EXTERNAL DEPENDENCIES (INJECTED):
  *   - characterProvider: { exists: function(id) { return true/false } }
  * 
  * DEPENDENCIES:
  *   - window.TeamConstants (from team-constants.js) - MANDATORY
- *   - window.CalendarConstants (from constants.js) - MANDATORY
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
- *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  * 
  * USAGE:
  *   // Initialize with character provider
@@ -77,19 +85,13 @@
     // ============================================================
 
     var TeamConstants = window.TeamConstants;
-    var CalendarConstants = window.CalendarConstants;
     var ObjectUtils = window.ObjectUtils;
     var IdUtils = window.IdUtils;
-    var MutationPipeline = window.MutationPipeline;
 
     // ============================================================
     // CONSTANTS - From TeamConstants
     // ============================================================
 
-    var MIN_WEEK = TeamConstants.MIN_WEEK;
-    var MAX_WEEK = TeamConstants.MAX_WEEK;
-    var MIN_YEAR = TeamConstants.MIN_YEAR;
-    var MAX_YEAR = TeamConstants.MAX_YEAR;
     var DEFAULT_TEAM_TYPE = TeamConstants.DEFAULT_TEAM_TYPE;
     var DEFAULT_TEAM_STATUS = TeamConstants.DEFAULT_TEAM_STATUS;
     var DEFAULT_ROLE = TeamConstants.DEFAULT_ROLE;
@@ -133,17 +135,11 @@
         if (!TeamConstants) {
             missing.push('TeamConstants');
         }
-        if (!CalendarConstants) {
-            missing.push('CALENDAR_CONSTANTS');
-        }
         if (!ObjectUtils || typeof ObjectUtils.deepClone !== 'function') {
             missing.push('ObjectUtils.deepClone');
         }
         if (!IdUtils || typeof IdUtils.generateId !== 'function') {
             missing.push('IdUtils.generateId');
-        }
-        if (!MutationPipeline || typeof MutationPipeline.performMutation !== 'function') {
-            missing.push('MutationPipeline.performMutation');
         }
 
         if (!_characterProvider || typeof _characterProvider.exists !== 'function') {
@@ -564,6 +560,11 @@
     /**
      * Update an existing team.
      * 
+     * NOTE: This mutates the team object in place. There is no
+     * snapshot or rollback. Validation completes before any mutation
+     * is applied, so structurally-invalid inputs never partially
+     * apply. For atomic multi-step semantics, use MutationPipeline.
+     * 
      * @param {string} id - Team ID
      * @param {object} updates - Updates to apply
      * @returns {object|null} Updated team or null if invalid
@@ -586,15 +587,6 @@
         var team = data.teams[index];
         if (!team) {
             return null;
-        }
-
-        // Validate type change if present
-        if (updates.type !== undefined) {
-            var newType = TeamConstants.normalizeTeamType(updates.type);
-            if (newType !== null && newType !== team.type) {
-                // Type change requires additional validation
-                // For now, just validate the new type is valid
-            }
         }
 
         // Determine final type for validation
@@ -766,11 +758,10 @@
             return null;
         }
 
-        // Validate character exists via injected provider
-        if (_characterProvider && typeof _characterProvider.exists === 'function') {
-            if (!_characterProvider.exists(member.characterId)) {
-                return null;
-            }
+        // Validate character exists via injected provider.
+        // _characterProvider is guaranteed non-null by checkDependencies().
+        if (!_characterProvider.exists(member.characterId)) {
+            return null;
         }
 
         // Validate member periods against team type
@@ -899,7 +890,7 @@
             }
         }
 
-        return changed ? member : member;
+        return member;
     }
 
     // ============================================================

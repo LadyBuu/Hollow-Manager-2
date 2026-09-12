@@ -12,8 +12,8 @@
  * 
  * LIFECYCLE:
  *   TabManager.register('teams') -> mountTeams() -> 
- *   TeamCore.configure(characterProvider) -> TeamEvents.init() -> 
- *   TeamUI.init() -> TeamRender.renderContainer()
+ *   TeamCore.configure(characterProvider) -> TeamUI.init() -> 
+ *   TeamRender.renderContainer() -> TeamEvents.init()
  * 
  * IMPORTANT:
  *   - This module is the only external entry point for teams
@@ -25,6 +25,14 @@
  *   - characterProvider is assembled here and injected into TeamCore
  *   - No direct CharacterQueries usage - only via provider
  * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Initial render uses the current application year
+ *     (window.data.currentYear) as the period for year-based
+ *     team tabs, matching what TeamEvents.refreshUI will use
+ *     after any user interaction.
+ * 
  * DEPENDENCIES:
  *   - window.TabManager (from tab-manager.js)
  *   - window.CharacterQueries (from character-queries.js) - for provider only
@@ -32,6 +40,7 @@
  *   - window.TeamEvents (from team-events.js)
  *   - window.TeamUI (from team-ui.js)
  *   - window.TeamRender (from team-render.js)
+ *   - window.TeamAggregator (from team-aggregator.js)
  *   - window.DataLoader (from loader.js)
  *   - window.DomUtils (from dom-utils.js)
  *   - window.NotificationSystem (from notification.js)
@@ -56,6 +65,7 @@
     var TeamEvents = window.TeamEvents;
     var TeamUI = window.TeamUI;
     var TeamRender = window.TeamRender;
+    var TeamAggregator = window.TeamAggregator;
     var DataLoader = window.DataLoader;
     var DomUtils = window.DomUtils;
     var NotificationSystem = window.NotificationSystem;
@@ -101,6 +111,10 @@
             missing.push('TeamRender.renderContainer');
         }
 
+        if (!TeamAggregator || typeof TeamAggregator.getTeamPageViewModel !== 'function') {
+            missing.push('TeamAggregator.getTeamPageViewModel');
+        }
+
         if (missing.length > 0) {
             console.warn('[TeamsModule] Missing dependencies:', missing.join(', '));
             return false;
@@ -116,6 +130,51 @@
     var _initialized = false;
     var _mounted = false;
     var _providersInitialized = false;
+
+    // ============================================================
+    // PERIOD DEFAULT
+    // ============================================================
+
+    /**
+     * Get the current application year.
+     * Used as the default period for year-based team tabs.
+     * 
+     * @returns {number} Current year
+     */
+    function getCurrentYear() {
+        var data = window.data || {};
+        if (typeof data.currentYear === 'number' && isFinite(data.currentYear)) {
+            return data.currentYear;
+        }
+        return new Date().getFullYear();
+    }
+
+    /**
+     * Get the effective period for a tab.
+     * 
+     * SEMANTICS:
+     *   - Academic teams use weeks; not reachable from the current
+     *     tab nav (professional / temporary / civilian only).
+     *   - Year-based tabs use the current application year unless
+     *     the user has set an explicit filter.
+     * 
+     * @param {string} tab - Tab ID
+     * @returns {number} Period (week or year)
+     */
+    function getEffectivePeriod(tab) {
+        if (tab === 'academic') {
+            return 1;
+        }
+
+        if (TeamUI && typeof TeamUI.getFilter === 'function') {
+            var filter = TeamUI.getFilter(tab);
+            if (filter && filter.filterYear) {
+                return filter.filterYear;
+            }
+        }
+
+        return getCurrentYear();
+    }
 
     // ============================================================
     // PROVIDER ASSEMBLY
@@ -195,19 +254,28 @@
             unmountTeams();
         }
 
-        // Initialize UI state
+        // Initialize UI state (loads persisted state from sessionStorage)
         TeamUI.init();
 
-        // Render the container
+        // Render the container with the correct period for the current tab.
+        // Initial period matches what TeamEvents.refreshUI will use, so
+        // the list renders with the same member counts as subsequent
+        // refreshes.
         var currentTab = TeamUI.getCurrentTab();
+        var period = getEffectivePeriod(currentTab);
         var viewModel = TeamAggregator.getTeamPageViewModel({
             type: currentTab,
-            period: 1
+            period: period
         });
         container.innerHTML = TeamRender.renderContainer(currentTab, viewModel);
 
         // Initialize events
         TeamEvents.init(container);
+
+        // One refresh pass to guarantee the list, tab counts, and stat
+        // cards are all built from the same view model. This is
+        // idempotent and cheap.
+        TeamEvents.refreshUI();
 
         _mounted = true;
         _initialized = true;

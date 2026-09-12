@@ -7,7 +7,6 @@
  *   - Day number bounds (MIN_DAY, MAX_DAY)
  *   - Hour bounds (MIN_HOUR, MAX_HOUR, CALENDAR_START_HOUR, CALENDAR_END_HOUR)
  *   - Class duration bounds (MIN_CLASS_DURATION, MAX_CLASS_DURATION)
- *   - Year bounds (MIN_YEAR, MAX_YEAR)
  *   - Week/block constants (DAYS_IN_WEEK, WEEKS_PER_BLOCK)
  *   - Day name arrays (for calendar display)
  *   - Validation functions for all calendar values
@@ -17,6 +16,15 @@
  *   - All modules MUST use these constants - do NOT duplicate
  *   - Constants are DEEP FROZEN to prevent mutation
  *   - Validation runs BEFORE publishing to ensure integrity
+ * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Any integer >= 1 is a valid year.
+ *   - This is deliberate: the application deals with fictional
+ *     timelines and shouldn't impose artificial bounds.
+ *   - Weeks and days remain bounded (they have real semantic
+ *     meaning: 52 weeks per year, 7 days per week).
  * 
  * DEPENDENCIES:
  *   - None (self-contained)
@@ -73,13 +81,6 @@
 
     var MIN_CLASS_DURATION = 1;
     var MAX_CLASS_DURATION = 4;
-
-    // ============================================================
-    // YEAR CONSTANTS
-    // ============================================================
-
-    var MIN_YEAR = 1900;
-    var MAX_YEAR = 2100;
 
     // ============================================================
     // WEEK BLOCK CONSTANTS
@@ -161,9 +162,18 @@
         return num;
     }
 
+    /**
+     * Validate a year value.
+     * 
+     * Years are UNBOUNDED positive integers. Any integer >= 1 is
+     * considered a valid year.
+     * 
+     * @param {*} value - Value to validate
+     * @returns {number|null} Parsed year or null if invalid
+     */
     function isValidYear(value) {
         var num = Number(value);
-        if (!Number.isInteger(num) || num < MIN_YEAR || num > MAX_YEAR) {
+        if (!Number.isInteger(num) || num < 1) {
             return null;
         }
         return num;
@@ -343,26 +353,44 @@
 
     function validateConstants() {
         var errors = [];
-        if (typeof MIN_WEEK !== 'number' || MIN_WEEK < 1) { errors.push('MIN_WEEK must be a positive number.'); }
-        if (typeof MAX_WEEK !== 'number' || MAX_WEEK <= MIN_WEEK) { errors.push('MAX_WEEK must be greater than MIN_WEEK.'); }
-        if (typeof MIN_DAY !== 'number' || MIN_DAY < 1 || MIN_DAY > 7) { errors.push('MIN_DAY must be between 1 and 7.'); }
-        if (typeof MAX_DAY !== 'number' || MAX_DAY > 7 || MAX_DAY <= MIN_DAY) { errors.push('MAX_DAY must be greater than MIN_DAY and at most 7.'); }
-        if (typeof DAYS_IN_WEEK !== 'number' || DAYS_IN_WEEK !== 7) { errors.push('DAYS_IN_WEEK must be 7.'); }
-        if (typeof MIN_HOUR !== 'number' || MIN_HOUR < 0 || MIN_HOUR > 23) { errors.push('MIN_HOUR must be between 0 and 23.'); }
-        if (typeof MAX_HOUR !== 'number' || MAX_HOUR > 23 || MAX_HOUR <= MIN_HOUR) { errors.push('MAX_HOUR must be greater than MIN_HOUR and at most 23.'); }
+
+        if (typeof MIN_WEEK !== 'number' || MIN_WEEK < 1) {
+            errors.push('MIN_WEEK must be a positive number.');
+        }
+        if (typeof MAX_WEEK !== 'number' || MAX_WEEK <= MIN_WEEK) {
+            errors.push('MAX_WEEK must be greater than MIN_WEEK.');
+        }
+        if (typeof MIN_DAY !== 'number' || MIN_DAY < 1 || MIN_DAY > 7) {
+            errors.push('MIN_DAY must be between 1 and 7.');
+        }
+        if (typeof MAX_DAY !== 'number' || MAX_DAY > 7 || MAX_DAY <= MIN_DAY) {
+            errors.push('MAX_DAY must be greater than MIN_DAY and at most 7.');
+        }
+        if (typeof DAYS_IN_WEEK !== 'number' || DAYS_IN_WEEK !== 7) {
+            errors.push('DAYS_IN_WEEK must be 7.');
+        }
+        if (typeof MIN_HOUR !== 'number' || MIN_HOUR < 0 || MIN_HOUR > 23) {
+            errors.push('MIN_HOUR must be between 0 and 23.');
+        }
+        if (typeof MAX_HOUR !== 'number' || MAX_HOUR > 23 || MAX_HOUR <= MIN_HOUR) {
+            errors.push('MAX_HOUR must be greater than MIN_HOUR and at most 23.');
+        }
         if (typeof CALENDAR_START_HOUR !== 'number' || CALENDAR_START_HOUR < MIN_HOUR || CALENDAR_START_HOUR > MAX_HOUR) {
             errors.push('CALENDAR_START_HOUR must be between MIN_HOUR and MAX_HOUR.');
         }
         if (typeof CALENDAR_END_HOUR !== 'number' || CALENDAR_END_HOUR < CALENDAR_START_HOUR || CALENDAR_END_HOUR > MAX_HOUR) {
             errors.push('CALENDAR_END_HOUR must be between CALENDAR_START_HOUR and MAX_HOUR.');
         }
-        if (typeof MIN_CLASS_DURATION !== 'number' || MIN_CLASS_DURATION < 1) { errors.push('MIN_CLASS_DURATION must be a positive number.'); }
+        if (typeof MIN_CLASS_DURATION !== 'number' || MIN_CLASS_DURATION < 1) {
+            errors.push('MIN_CLASS_DURATION must be a positive number.');
+        }
         if (typeof MAX_CLASS_DURATION !== 'number' || MAX_CLASS_DURATION <= MIN_CLASS_DURATION || MAX_CLASS_DURATION > 8) {
             errors.push('MAX_CLASS_DURATION must be greater than MIN_CLASS_DURATION and at most 8.');
         }
-        if (typeof MIN_YEAR !== 'number' || MIN_YEAR < 1) { errors.push('MIN_YEAR must be a positive number.'); }
-        if (typeof MAX_YEAR !== 'number' || MAX_YEAR <= MIN_YEAR) { errors.push('MAX_YEAR must be greater than MIN_YEAR.'); }
-        if (typeof WEEKS_PER_BLOCK !== 'number' || WEEKS_PER_BLOCK < 1) { errors.push('WEEKS_PER_BLOCK must be a positive number.'); }
+        if (typeof WEEKS_PER_BLOCK !== 'number' || WEEKS_PER_BLOCK < 1) {
+            errors.push('WEEKS_PER_BLOCK must be a positive number.');
+        }
+
         if (errors.length > 0) {
             console.warn('[CalendarConstants] Validation errors:', errors);
         }
@@ -394,9 +422,6 @@
         // Duration
         MIN_CLASS_DURATION: MIN_CLASS_DURATION,
         MAX_CLASS_DURATION: MAX_CLASS_DURATION,
-        // Year
-        MIN_YEAR: MIN_YEAR,
-        MAX_YEAR: MAX_YEAR,
         // Week blocks
         WEEKS_PER_BLOCK: WEEKS_PER_BLOCK,
         // Day names (1-indexed)

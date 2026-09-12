@@ -586,17 +586,6 @@
         validateConstants: validateConstants
     });
 
-    // ============================================================
-    // LEGACY COMPATIBILITY
-    // ============================================================
 
-    window.MAGIC_MAX = MAGIC_MAX;
-    window.MAGIC_TYPES = MAGIC_TYPES;
-    window.MAGIC_CATEGORIES = MAGIC_CATEGORIES;
-    window.MAGIC_TYPE_KEYS = MAGIC_TYPE_KEYS;
-    window.MAGIC_BROAD_CLASSES = MAGIC_BROAD_CLASSES;
-    window.MAGIC_FINE_CLASSES = MAGIC_FINE_CLASSES;
-    window.BALANCED_MAGE_THRESHOLD = BALANCED_MAGE_THRESHOLD;
-    window.MAGIC_FINE_CLASS_MIN = MAGIC_FINE_CLASS_MIN;
 
 })();

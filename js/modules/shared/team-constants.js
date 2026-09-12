@@ -17,8 +17,26 @@
  *   - Uses LAZY LOADING for CalendarConstants to break circular deps
  *   - No DOM, no state, no persistence - pure constants only
  * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Any integer >= 1 is a valid year.
+ *   - Weeks remain bounded (1-52) — academic teams use weeks.
+ *   - Non-academic teams use years, which are unbounded.
+ * 
+ * PERIOD SHAPE:
+ *   - getPeriodRange(typeId) returns { min, max, label } for both
+ *     academic and non-academic types.
+ *   - For academic types: min = MIN_WEEK, max = MAX_WEEK.
+ *   - For non-academic types: min = 1, max = Infinity.
+ *   - Returning max: Infinity (rather than omitting max) keeps the
+ *     shape stable for callers that do bounds checks like
+ *     `if (period < range.min || period > range.max)`. Infinity as
+ *     an upper bound is a valid comparison target and always passes
+ *     for finite positive integers.
+ * 
  * DEPENDENCIES:
- *   - window.CalendarConstants (for week/year bounds) - LAZY LOADED
+ *   - window.CalendarConstants (for week bounds) - LAZY LOADED
  * 
  * USAGE:
  *   var TC = window.TeamConstants;
@@ -47,6 +65,9 @@
     // ============================================================
     // GET BOUNDS - Lazy load from CalendarConstants
     // ============================================================
+    // 
+    // Only week bounds come from CalendarConstants now. Years are
+    // unbounded, so there is nothing to fetch for them.
 
     function getBounds() {
         var CC = getCalendarConstants();
@@ -54,16 +75,12 @@
             // Default bounds if CalendarConstants not loaded yet
             return {
                 MIN_WEEK: 1,
-                MAX_WEEK: 52,
-                MIN_YEAR: 1900,
-                MAX_YEAR: 2100
+                MAX_WEEK: 52
             };
         }
         return {
             MIN_WEEK: CC.MIN_WEEK || 1,
-            MAX_WEEK: CC.MAX_WEEK || 52,
-            MIN_YEAR: CC.MIN_YEAR || 1900,
-            MAX_YEAR: CC.MAX_YEAR || 2100
+            MAX_WEEK: CC.MAX_WEEK || 52
         };
     }
 
@@ -80,7 +97,7 @@
             console.warn('[TeamConstants] CalendarConstants not yet loaded (will use lazy loading).');
         } else {
             // Verify required properties exist
-            var required = ['MIN_WEEK', 'MAX_WEEK', 'MIN_YEAR', 'MAX_YEAR'];
+            var required = ['MIN_WEEK', 'MAX_WEEK'];
             for (var i = 0; i < required.length; i++) {
                 if (typeof CC[required[i]] !== 'number') {
                     missing.push('CalendarConstants.' + required[i]);
@@ -131,9 +148,9 @@
      * 
      * Period semantics:
      *   - 'academic': Periods are weeks (1-52)
-     *   - 'professional': Periods are years (1900-2100)
-     *   - 'temporary': Periods are years (1900-2100)
-     *   - 'civilian': Periods are years (1900-2100)
+     *   - 'professional': Periods are years (unbounded positive integers)
+     *   - 'temporary': Periods are years (unbounded positive integers)
+     *   - 'civilian': Periods are years (unbounded positive integers)
      */
     var TEAM_TYPES = [
         {
@@ -148,21 +165,21 @@
             label: 'Professional',
             periodLabel: 'Year',
             isAcademic: false,
-            description: 'Professional/working teams (years 1900-2100)'
+            description: 'Professional/working teams (year is any positive integer)'
         },
         {
             id: 'temporary',
             label: 'Temporary',
             periodLabel: 'Year',
             isAcademic: false,
-            description: 'Temporary or project-based teams (years 1900-2100)'
+            description: 'Temporary or project-based teams (year is any positive integer)'
         },
         {
             id: 'civilian',
             label: 'Civilian',
             periodLabel: 'Year',
             isAcademic: false,
-            description: 'Civilian/non-combatant teams'
+            description: 'Civilian/non-combatant teams (year is any positive integer)'
         }
     ];
 
@@ -443,12 +460,24 @@
     /**
      * Get the period range for a team type.
      * 
+     * SEMANTICS:
+     *   - Academic types: bounded weeks (min = MIN_WEEK, max = MAX_WEEK).
+     *   - Non-academic types: unbounded years (min = 1, max = Infinity).
+     * 
+     * The `max: Infinity` value is deliberate: it keeps the return
+     * shape stable for callers that do `period > range.max` bounds
+     * checks. Any finite positive integer is <= Infinity, so the
+     * upper-bound check always passes for year-based types. If you
+     * need to detect "this type has no upper bound" programmatically,
+     * check `max === Infinity`.
+     * 
      * @param {string} typeId - Team type ID
      * @returns {object} { min: number, max: number, label: string }
      */
     function getPeriodRange(typeId) {
         var bounds = getBounds();
         var type = getTeamType(typeId);
+
         if (!type || type.isAcademic) {
             return {
                 min: bounds.MIN_WEEK,
@@ -456,15 +485,19 @@
                 label: 'Week'
             };
         }
+
         return {
-            min: bounds.MIN_YEAR,
-            max: bounds.MAX_YEAR,
+            min: 1,
+            max: Infinity,
             label: 'Year'
         };
     }
 
     /**
      * Get the period bounds for a team type.
+     * 
+     * See getPeriodRange() for semantics. This is a thin wrapper
+     * that strips the label.
      * 
      * @param {string} typeId - Team type ID
      * @returns {object} { min: number, max: number }
@@ -479,6 +512,11 @@
 
     /**
      * Check if a period is valid for a team type.
+     * 
+     * SEMANTICS:
+     *   - Academic types: period must be an integer in [MIN_WEEK, MAX_WEEK].
+     *   - Non-academic types: period must be an integer >= 1.
+     *     There is no upper bound.
      * 
      * @param {*} period - Period value to check
      * @param {string} typeId - Team type ID
@@ -498,8 +536,10 @@
     // COMPUTED PROPERTIES (lazy loaded)
     // ============================================================
 
-    // These are computed properties that use lazy-loaded CalendarConstants
-    // They are exposed as getters so they resolve at runtime
+    // These are computed properties that use lazy-loaded CalendarConstants.
+    // They are exposed as getters so they resolve at runtime.
+    // 
+    // Only week bounds are exposed now. Year bounds no longer exist.
 
     var _computedBounds = null;
 
@@ -508,9 +548,7 @@
             var bounds = getBounds();
             _computedBounds = {
                 MIN_WEEK: bounds.MIN_WEEK,
-                MAX_WEEK: bounds.MAX_WEEK,
-                MIN_YEAR: bounds.MIN_YEAR,
-                MAX_YEAR: bounds.MAX_YEAR
+                MAX_WEEK: bounds.MAX_WEEK
             };
             Object.freeze(_computedBounds);
         }
@@ -620,10 +658,9 @@
         DEFAULT_ROLE: DEFAULT_ROLE,
 
         // Bounds (computed from CalendarConstants at runtime)
+        // Years are unbounded — no MIN_YEAR / MAX_YEAR.
         get MIN_WEEK() { return getComputedBounds().MIN_WEEK; },
         get MAX_WEEK() { return getComputedBounds().MAX_WEEK; },
-        get MIN_YEAR() { return getComputedBounds().MIN_YEAR; },
-        get MAX_YEAR() { return getComputedBounds().MAX_YEAR; },
 
         // Type lookup
         getTeamTypes: getTeamTypes,
@@ -697,9 +734,7 @@
             console.log('[TeamConstants] All exports verified successfully.');
             console.log('[TeamConstants] Bounds:', {
                 MIN_WEEK: exports.MIN_WEEK,
-                MAX_WEEK: exports.MAX_WEEK,
-                MIN_YEAR: exports.MIN_YEAR,
-                MAX_YEAR: exports.MAX_YEAR
+                MAX_WEEK: exports.MAX_WEEK
             });
         }
     })();

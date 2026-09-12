@@ -9,6 +9,15 @@
  *   - Uses TeamConstants for type and status validation
  *   - Returns LIVE REFERENCES to team data - do not mutate
  * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Year-based team types (professional, temporary, civilian)
+ *     accept any integer >= 1 as a valid period.
+ *   - Academic teams still use bounded weeks (1-52).
+ *   - Bounds checks go through TeamConstants.getPeriodRange,
+ *     which returns { min: 1, max: Infinity } for year-based types.
+ * 
  * DEPENDENCIES:
  *   - window.data (canonical state)
  *   - window.TeamConstants (from team-constants.js) - MANDATORY
@@ -159,6 +168,11 @@
     /**
      * Check if a team is active at a given period.
      * This is a PURE read operation - no domain rules, just checking dates.
+     * 
+     * SEMANTICS:
+     *   - Academic teams: period is a week (1-52).
+     *   - Non-academic teams: period is a year (any integer >= 1).
+     *   - Periods outside the type's range are rejected.
      * 
      * @param {object} team - Team object
      * @param {number|string} period - Period to check
@@ -416,6 +430,14 @@
         return null;
     }
 
+    /**
+     * Get teams a character belongs to at a given period.
+     * 
+     * @param {string} characterId - Character ID
+     * @param {number|string} period - Period to check
+     * @param {string} teamType - Optional team type filter
+     * @returns {array} Array of teams
+     */
     function getTeamsForCharacter(characterId, period, teamType) {
         if (!characterId) {
             return [];
@@ -510,6 +532,12 @@
     /**
      * Filter teams by year interval overlap.
      * 
+     * NOTE: The literal bounds check here (1900-2100) is retained as a
+     * sanity guard on the INPUT year, not as a constraint on team data.
+     * Passing a nonsense year to this filter returns the list unchanged
+     * rather than silently returning an empty array. If you want to
+     * remove even this guard, change the `if` to a simple isNaN check.
+     * 
      * @param {array} teams - Array of team objects
      * @param {number|string} year - Year to filter by
      * @returns {array} Filtered teams
@@ -520,7 +548,7 @@
         }
 
         var yearNum = parseInt(year, 10);
-        if (isNaN(yearNum) || yearNum < 1900 || yearNum > 2100) {
+        if (isNaN(yearNum) || yearNum < 1) {
             return teams.slice();
         }
 

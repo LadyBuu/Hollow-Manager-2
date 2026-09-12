@@ -9,6 +9,15 @@
  *   - Uses TeamConstants for type/period validation
  *   - Returns LIVE REFERENCES to ranking data - do not mutate
  * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Year-based team types (professional, temporary, civilian)
+ *     accept any integer >= 1 as a valid period.
+ *   - Academic teams still use bounded weeks (1-52).
+ *   - Bounds checks go through TeamConstants.getPeriodBounds,
+ *     which returns { min: 1, max: Infinity } for year-based types.
+ * 
  * DEPENDENCIES:
  *   - window.data (canonical state)
  *   - window.TeamConstants (from team-constants.js) - MANDATORY
@@ -103,6 +112,12 @@
 
     /**
      * Validate a ranking entry.
+     * 
+     * SEMANTICS:
+     *   - period must be a positive integer, and in bounds for the
+     *     team type (weeks 1-52 for academic, any integer >= 1 for
+     *     year-based types).
+     *   - rank must be a positive integer >= 1.
      * 
      * @param {object} entry - Ranking entry
      * @param {string} teamType - Team type for validation
@@ -351,9 +366,7 @@
 
         // Constants
         MIN_WEEK: TeamConstants.MIN_WEEK,
-        MAX_WEEK: TeamConstants.MAX_WEEK,
-        MIN_YEAR: TeamConstants.MIN_YEAR,
-        MAX_YEAR: TeamConstants.MAX_YEAR
+        MAX_WEEK: TeamConstants.MAX_WEEK
     };
 
 })();

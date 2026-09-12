@@ -22,7 +22,8 @@
  * 
  * DEPENDENCIES:
  *   - window.TournamentConstants (from tournament-constants.js) - MANDATORY
- *   - window.TournamentSchema (from tournaments-schema.js) - MANDATORY (for isValidStatus)
+ *   - window.TournamentSchema (from tournament-schema.js) - MANDATORY
+ *     (used for isValidStatus delegation)
  * 
  * USAGE:
  *   var Lifecycle = window.TournamentLifecycle;
@@ -111,7 +112,14 @@
     // HELPERS
     // ============================================================
 
-    function getStatus(statusOrTournament) {
+    /**
+     * Extract a status string from either a status string or a tournament
+     * object. Returns null if neither yields a usable status.
+     * 
+     * @param {string|object} statusOrTournament - Status string or tournament
+     * @returns {string|null} Status string or null
+     */
+    function extractStatus(statusOrTournament) {
         if (typeof statusOrTournament === 'string') {
             return statusOrTournament;
         }
@@ -121,7 +129,18 @@
         return null;
     }
 
-    function isValidStatus(status) {
+    /**
+     * Internal status validity check.
+     * Delegates to TournamentSchema.isValidStatus when available, otherwise
+     * falls back to the locally-known VALID_STATUSES list.
+     * 
+     * This is the INTERNAL implementation. The public isValidStatus()
+     * function further down delegates to this.
+     * 
+     * @param {string} status - Status string
+     * @returns {boolean} True if valid
+     */
+    function isValidStatusInternal(status) {
         if (Schema.isValidStatus && typeof Schema.isValidStatus === 'function') {
             return Schema.isValidStatus(status);
         }
@@ -141,19 +160,23 @@
      */
     function getLifecycleRules(status) {
         if (!status || typeof status !== 'string') {
-            return LIFECYCLE_RULES.draft || { canEditMetadata: false, canModifyParticipants: false, canAddRounds: false, canRemoveRounds: false, canModifyEliminations: false, canComplete: false };
+            return LIFECYCLE_RULES.draft || {
+                canEditMetadata: false,
+                canModifyParticipants: false,
+                canAddRounds: false,
+                canRemoveRounds: false,
+                canModifyEliminations: false,
+                canComplete: false
+            };
         }
-        return LIFECYCLE_RULES[status] || LIFECYCLE_RULES.draft || { canEditMetadata: false, canModifyParticipants: false, canAddRounds: false, canRemoveRounds: false, canModifyEliminations: false, canComplete: false };
-    }
-
-    /**
-     * Check if a status is valid.
-     * 
-     * @param {string} status - Tournament status
-     * @returns {boolean} True if valid
-     */
-    function isValidStatus(status) {
-        return isValidStatus(status);
+        return LIFECYCLE_RULES[status] || LIFECYCLE_RULES.draft || {
+            canEditMetadata: false,
+            canModifyParticipants: false,
+            canAddRounds: false,
+            canRemoveRounds: false,
+            canModifyEliminations: false,
+            canComplete: false
+        };
     }
 
     /**
@@ -163,7 +186,7 @@
      * @returns {boolean} True if metadata can be edited
      */
     function canEditMetadata(statusOrTournament) {
-        var status = getStatus(statusOrTournament);
+        var status = extractStatus(statusOrTournament);
         if (status === null) {
             return false;
         }
@@ -178,7 +201,7 @@
      * @returns {boolean} True if participants can be modified
      */
     function canModifyParticipants(statusOrTournament) {
-        var status = getStatus(statusOrTournament);
+        var status = extractStatus(statusOrTournament);
         if (status === null) {
             return false;
         }
@@ -193,7 +216,7 @@
      * @returns {boolean} True if eliminations can be modified
      */
     function canModifyEliminations(statusOrTournament) {
-        var status = getStatus(statusOrTournament);
+        var status = extractStatus(statusOrTournament);
         if (status === null) {
             return false;
         }
@@ -208,7 +231,7 @@
      * @returns {boolean} True if rounds can be added
      */
     function canAddRounds(statusOrTournament) {
-        var status = getStatus(statusOrTournament);
+        var status = extractStatus(statusOrTournament);
         if (status === null) {
             return false;
         }
@@ -223,7 +246,7 @@
      * @returns {boolean} True if rounds can be removed
      */
     function canRemoveRounds(statusOrTournament) {
-        var status = getStatus(statusOrTournament);
+        var status = extractStatus(statusOrTournament);
         if (status === null) {
             return false;
         }
@@ -239,7 +262,7 @@
      * @returns {boolean} True if completion is allowed
      */
     function canCompleteTournament(statusOrTournament, winnerExists) {
-        var status = getStatus(statusOrTournament);
+        var status = extractStatus(statusOrTournament);
         if (status === null) {
             return false;
         }
@@ -266,7 +289,7 @@
      * @returns {boolean} True if a round can be added
      */
     function canAddRound(statusOrTournament, currentRoundCount, totalRounds) {
-        var status = getStatus(statusOrTournament);
+        var status = extractStatus(statusOrTournament);
         if (status === null) {
             return false;
         }
@@ -293,7 +316,7 @@
      * @returns {boolean} True if the round can be removed
      */
     function canRemoveRound(statusOrTournament, currentRoundCount, roundIndex, rounds) {
-        var status = getStatus(statusOrTournament);
+        var status = extractStatus(statusOrTournament);
         if (status === null) {
             return false;
         }
@@ -353,7 +376,7 @@
      * @returns {boolean} True if terminal
      */
     function isStatusTerminal(statusOrTournament) {
-        var status = getStatus(statusOrTournament);
+        var status = extractStatus(statusOrTournament);
         if (status === null) {
             return false;
         }
@@ -367,7 +390,7 @@
      * @returns {boolean} True if any mutation is allowed
      */
     function isStatusMutable(statusOrTournament) {
-        var status = getStatus(statusOrTournament);
+        var status = extractStatus(statusOrTournament);
         if (status === null) {
             return false;
         }
@@ -380,17 +403,18 @@
                rules.canComplete === true;
     }
 
+    // ============================================================
+    // PUBLIC STATUS VALIDITY CHECK
+    // ============================================================
+
     /**
-     * Get the status of a tournament (normalised).
+     * Check if a status is valid.
      * 
-     * @param {object} tournament - Tournament object
-     * @returns {string} Status or 'unknown'
+     * @param {string} status - Tournament status
+     * @returns {boolean} True if valid
      */
-    function getStatus(tournament) {
-        if (!tournament || typeof tournament !== 'object') {
-            return 'unknown';
-        }
-        return tournament.status || 'unknown';
+    function isValidStatus(status) {
+        return isValidStatusInternal(status);
     }
 
     // ============================================================
@@ -424,7 +448,7 @@
         var rules = getLifecycleRules(status);
 
         // Check if status is valid
-        var valid = isValidStatus(status);
+        var valid = isValidStatusInternal(status);
 
         return {
             status: status,
@@ -472,7 +496,7 @@
      * @returns {boolean} True if transition is allowed
      */
     function isValidStatusTransition(fromStatus, toStatus) {
-        if (!isValidStatus(fromStatus) || !isValidStatus(toStatus)) {
+        if (!isValidStatusInternal(fromStatus) || !isValidStatusInternal(toStatus)) {
             return false;
         }
 
@@ -497,7 +521,7 @@
      * @returns {array} Array of allowed status strings
      */
     function getAllowedTransitions(status) {
-        if (!isValidStatus(status)) {
+        if (!isValidStatusInternal(status)) {
             return [];
         }
 
@@ -596,7 +620,6 @@
         canRemoveRound: canRemoveRound,
         isStatusTerminal: isStatusTerminal,
         isStatusMutable: isStatusMutable,
-        getStatus: getStatus,
 
         // Lifecycle status
         getLifecycleStatus: getLifecycleStatus,
@@ -638,6 +661,15 @@
             if (typeof exports[required[i]] !== 'function') {
                 missing.push(required[i]);
             }
+        }
+
+        // Smoke-test isValidStatus to catch the recursion class of bug
+        try {
+            if (typeof exports.isValidStatus('draft') !== 'boolean') {
+                missing.push('isValidStatus (returned non-boolean)');
+            }
+        } catch (e) {
+            missing.push('isValidStatus (threw: ' + e.message + ')');
         }
 
         if (missing.length > 0) {

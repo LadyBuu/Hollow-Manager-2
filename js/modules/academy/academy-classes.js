@@ -32,6 +32,12 @@
  *     all class-scoped data (weeklyTeams, grades, rankings) in a single
  *     MutationPipeline transaction.
  * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Any integer >= 1 is a valid year for a class.
+ *   - A null year is also valid (represents "year not specified").
+ * 
  * DEPENDENCIES:
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
@@ -399,6 +405,36 @@
     }
 
     // ============================================================
+    // YEAR VALIDATION
+    // ============================================================
+
+    /**
+     * Validate a year value for a class.
+     * 
+     * Years are UNBOUNDED positive integers. A null value is also
+     * accepted (means "year not specified").
+     * 
+     * @param {*} value - Year value to validate
+     * @returns {object} { valid: boolean, value: number|null, message?: string }
+     */
+    function validateYearValue(value) {
+        if (value === undefined || value === null || value === '') {
+            return { valid: true, value: null };
+        }
+
+        var num = Number(value);
+        if (isNaN(num) || !Number.isInteger(num) || num < 1) {
+            return {
+                valid: false,
+                value: null,
+                message: 'Year must be a positive number.'
+            };
+        }
+
+        return { valid: true, value: num };
+    }
+
+    // ============================================================
     // PUBLIC API - CLASS ENTITY CRUD
     // ============================================================
 
@@ -408,7 +444,7 @@
      * @param {string} name - Class name
      * @param {object} options - Optional configuration
      * @param {string} options.status - Status ('active', 'archived', 'graduated')
-     * @param {number} options.year - Graduation year
+     * @param {number} options.year - Graduation year (any positive integer)
      * @param {string} options.description - Class description
      * @param {string} options.instructorId - Instructor ID
      * @returns {Promise<object>} { success: boolean, data?: object, message?: string }
@@ -435,6 +471,12 @@
             return Promise.resolve(failure('Invalid status. Must be one of: ' + VALID_STATUSES.join(', ')));
         }
 
+        // Validate year (unbounded positive integer or null)
+        var yearResult = validateYearValue(options.year);
+        if (!yearResult.valid) {
+            return Promise.resolve(failure(yearResult.message));
+        }
+
         // ---- PHASE 2: BUILD CLASS OBJECT ----
         var now = new Date().toISOString();
         var classId = generateId();
@@ -443,7 +485,7 @@
             id: classId,
             name: trimmedName,
             status: status,
-            year: options.year || null,
+            year: yearResult.value,
             description: options.description || '',
             instructorId: options.instructorId || null,
             createdAt: now,
@@ -535,12 +577,13 @@
             candidate.status = updates.status;
         }
 
-        // Year update validation
+        // Year update validation (unbounded positive integer or null)
         if (updates.year !== undefined) {
-            if (updates.year !== null && (typeof updates.year !== 'number' || updates.year < 1900 || updates.year > 2100)) {
-                return Promise.resolve(failure('Year must be a valid number between 1900 and 2100.'));
+            var yearResult = validateYearValue(updates.year);
+            if (!yearResult.valid) {
+                return Promise.resolve(failure(yearResult.message));
             }
-            candidate.year = updates.year;
+            candidate.year = yearResult.value;
         }
 
         // Description update

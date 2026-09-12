@@ -22,6 +22,26 @@
  *   - No direct data mutation
  *   - No direct DOM manipulation (delegates to TeamRender)
  * 
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Year inputs do not carry min / max attributes.
+ *   - Year-based team tabs (professional, temporary, civilian)
+ *     default their filter to the current application year
+ *     (window.data.currentYear) when no filter is set. This
+ *     matches the year actually used for filtering, so the
+ *     displayed value and the effective value agree.
+ * 
+ * DEAD CODE NOTE:
+ *   - renderContainer / getContainerHTML / getModalsHTML /
+ *     buildFilterHTML in this module duplicate what
+ *     team-render.js already provides. They are retained
+ *     because some callers may still resolve them from this
+ *     module's exports, but the live render path in index.js
+ *     goes through TeamRender.renderContainer. Delete these
+ *     four functions (and their internal calls) once you have
+ *     confirmed no external caller uses them.
+ * 
  * DEPENDENCIES:
  *   - window.TeamCore (from team-core.js) - MANDATORY
  *   - window.TeamAggregator (from team-aggregator.js) - MANDATORY
@@ -245,6 +265,50 @@
     }
 
     // ============================================================
+    // CURRENT PERIOD - Year-based tabs default to currentYear
+    // ============================================================
+
+    /**
+     * Get the current application year for year-based team filters.
+     * 
+     * @returns {number} Current year
+     */
+    function getCurrentYear() {
+        var data = window.data || {};
+        if (typeof data.currentYear === 'number' && isFinite(data.currentYear)) {
+            return data.currentYear;
+        }
+        return new Date().getFullYear();
+    }
+
+    /**
+     * Get the effective period for a tab.
+     * 
+     * SEMANTICS:
+     *   - Academic teams use weeks. This code path is not reached
+     *     from the current tab nav (professional / temporary /
+     *     civilian only). Kept for completeness.
+     *   - Professional, temporary, and civilian teams use years.
+     *     If the user has set a year filter, that value is used.
+     *     Otherwise, the current application year is used.
+     * 
+     * @param {string} tab - Tab ID
+     * @returns {number} Period (week or year)
+     */
+    function getCurrentPeriod(tab) {
+        if (tab === 'academic') {
+            return 1;
+        }
+
+        var filter = TeamUI.getFilter(tab);
+        if (filter && filter.filterYear) {
+            return filter.filterYear;
+        }
+
+        return getCurrentYear();
+    }
+
+    // ============================================================
     // UI REFRESH
     // ============================================================
 
@@ -310,14 +374,6 @@
         }
     }
 
-    function getCurrentPeriod(tab) {
-        var filter = TeamUI.getFilter(tab);
-        if (tab === 'professional' || tab === 'temporary') {
-            return filter.filterYear || 1;
-        }
-        return 1;
-    }
-
     // ============================================================
     // INIT / DESTROY
     // ============================================================
@@ -343,10 +399,9 @@
         _container = container;
         removeAllEventListeners();
 
-        // Render the container
-        renderContainer(container);
-
-        // Bind events
+        // Bind events. Initial container HTML is rendered by
+        // index.js via TeamRender.renderContainer BEFORE this
+        // function is called.
         bindTabSwitching();
         bindAddTeam();
         bindTeamActions();
@@ -366,261 +421,57 @@
     }
 
     // ============================================================
-    // RENDER CONTAINER
+    // FILTER HTML - Used by tab switching to rebuild the filter bar
     // ============================================================
 
-    function renderContainer(container) {
-        var currentTab = TeamUI.getCurrentTab();
-        var viewModel = TeamAggregator.getTeamPageViewModel({
-            type: currentTab,
-            period: getCurrentPeriod(currentTab)
-        });
-
-        var html = getContainerHTML(currentTab, viewModel);
-        container.innerHTML = html;
-    }
-
-    function getContainerHTML(currentTab, viewModel) {
-        viewModel = viewModel || TeamAggregator.getTeamPageViewModel({ type: currentTab });
-
-        var counts = viewModel.counts || { professional: 0, temporary: 0, civilian: 0 };
-        var teams = viewModel.teams || [];
-        var expandedTeamId = viewModel.expandedTeamId || null;
-        var period = viewModel.period || 1;
-
-        var html = '';
-
-        // Header
-        html += '<div class="page-header">';
-        html += '<h2>Team Manager</h2>';
-        html += '<button id="add-team-btn" class="primary">+ Add Team</button>';
-        html += '</div>';
-
-        // Stats
-        html += '<div class="stats-grid">';
-        html += '<div class="stat-card"><h3>Professional</h3><p class="stat-number">' + counts.professional + '</p></div>';
-        html += '<div class="stat-card"><h3>Temporary</h3><p class="stat-number">' + counts.temporary + '</p></div>';
-        html += '<div class="stat-card"><h3>Civilian</h3><p class="stat-number">' + counts.civilian + '</p></div>';
-        html += '</div>';
-
-        // Tab buttons
-        html += '<div class="tab-nav" id="team-tab-nav">';
-        html += '<button class="tab-btn ' + (currentTab === 'professional' ? 'active' : '') + '" data-tab="professional">Professional (' + counts.professional + ')</button>';
-        html += '<button class="tab-btn ' + (currentTab === 'temporary' ? 'active' : '') + '" data-tab="temporary">Temporary (' + counts.temporary + ')</button>';
-        html += '<button class="tab-btn ' + (currentTab === 'civilian' ? 'active' : '') + '" data-tab="civilian">Civilian (' + counts.civilian + ')</button>';
-        html += '</div>';
-
-        // Filter section
-        html += '<div id="filter-container" class="filter-container">';
-        html += buildFilterHTML(currentTab);
-        html += '</div>';
-
-        // Team list
-        html += '<div id="team-list-container" class="team-list-container">';
-        html += TeamRender.renderList(teams, currentTab, period, expandedTeamId);
-        html += '</div>';
-
-        // Modals
-        html += getModalsHTML();
-
-        return html;
-    }
-
-    // ============================================================
-    // FILTER HTML
-    // ============================================================
-
+    /**
+     * Build the filter bar for a tab.
+     * 
+     * YEAR INPUT:
+     *   - No min / max attributes. Years are unbounded.
+     *   - When no filter is set, the input defaults to the current
+     *     application year. This matches the year actually used
+     *     for filtering.
+     * 
+     * @param {string} tab - Tab ID
+     * @returns {string} HTML string
+     */
     function buildFilterHTML(tab) {
         var filter = TeamUI.getFilter(tab);
 
         if (tab === 'professional' || tab === 'temporary') {
-            var html = '';
-            html += '<div class="filter-row">';
-            html += '<div class="filter-group">';
-            html += '<label for="team-filter-year">Year:</label>';
-            html += '<input type="number" id="team-filter-year" value="' + (filter.filterYear || '') + '" min="1900" max="2100" placeholder="All">';
-            html += '</div>';
-            html += '<div class="filter-group">';
-            html += '<label for="' + tab + '-show-inactive">Show Inactive:</label>';
-            html += '<input type="checkbox" id="' + tab + '-show-inactive" ' + (filter.filterStatus === 'inactive' ? 'checked' : '') + '>';
-            html += '</div>';
-            html += '<button id="apply-filter-btn" class="small primary">Apply</button>';
-            html += '</div>';
-            return html;
+            var yearValue = filter.filterYear || getCurrentYear();
+            var showInactiveChecked = filter.filterStatus === 'inactive' ? ' checked' : '';
+
+            return [
+                '<div class="filter-row">',
+                    '<div class="filter-group">',
+                        '<label for="team-filter-year">Year:</label>',
+                        '<input type="number" id="team-filter-year" value="' + escapeAttribute(yearValue) + '" placeholder="All">',
+                    '</div>',
+                    '<div class="filter-group">',
+                        '<label for="' + escapeAttribute(tab) + '-show-inactive">Show Inactive:</label>',
+                        '<input type="checkbox" id="' + escapeAttribute(tab) + '-show-inactive"' + showInactiveChecked + '>',
+                    '</div>',
+                    '<button id="apply-filter-btn" class="small primary">Apply</button>',
+                '</div>'
+            ].join('');
         }
 
         if (tab === 'civilian') {
-            var html = '';
-            html += '<div class="filter-row">';
-            html += '<div class="filter-group">';
-            html += '<label for="civilian-show-inactive">Show Inactive:</label>';
-            html += '<input type="checkbox" id="civilian-show-inactive" ' + (filter.filterStatus === 'inactive' ? 'checked' : '') + '>';
-            html += '</div>';
-            html += '<button id="apply-filter-btn" class="small primary">Apply</button>';
-            html += '</div>';
-            return html;
+            var civilianChecked = filter.filterStatus === 'inactive' ? ' checked' : '';
+            return [
+                '<div class="filter-row">',
+                    '<div class="filter-group">',
+                        '<label for="civilian-show-inactive">Show Inactive:</label>',
+                        '<input type="checkbox" id="civilian-show-inactive"' + civilianChecked + '>',
+                    '</div>',
+                    '<button id="apply-filter-btn" class="small primary">Apply</button>',
+                '</div>'
+            ].join('');
         }
 
         return '';
-    }
-
-    // ============================================================
-    // MODALS HTML
-    // ============================================================
-
-    function getModalsHTML() {
-        return [
-            '<!-- Team Form Modal -->',
-            '<div id="team-form-modal" class="modal hidden">',
-                '<div class="modal-content">',
-                    '<div class="modal-header">',
-                        '<h3 id="team-form-title">Add Team</h3>',
-                        '<button class="close-modal" id="close-team-form">&times;</button>',
-                    '</div>',
-                    '<div class="modal-body">',
-                        '<form id="team-form-inner">',
-                            '<div class="form-grid">',
-                                '<div class="form-group full-width">',
-                                    '<label>Team Name *</label>',
-                                    '<input type="text" id="team-name" required>',
-                                '</div>',
-                                '<div class="form-group">',
-                                    '<label>Team Type *</label>',
-                                    '<select id="team-type" required>',
-                                        '<option value="professional">Professional</option>',
-                                        '<option value="temporary">Temporary</option>',
-                                        '<option value="civilian">Civilian</option>',
-                                    '</select>',
-                                '</div>',
-                                '<div class="form-group">',
-                                    '<label id="team-start-label">Start Period</label>',
-                                    '<input type="text" id="team-start" placeholder="Year">',
-                                '</div>',
-                                '<div class="form-group">',
-                                    '<label id="team-end-label">End Period (optional)</label>',
-                                    '<input type="text" id="team-end" placeholder="Year">',
-                                '</div>',
-                                '<div class="form-group">',
-                                    '<label>Current Ranking</label>',
-                                    '<input type="text" id="team-ranking" readonly disabled>',
-                                    '<span class="field-hint">(Read-only; use Rankings tab to modify)</span>',
-                                '</div>',
-                                '<div class="form-group">',
-                                    '<label>Status</label>',
-                                    '<select id="team-status">',
-                                        '<option value="active">Active</option>',
-                                        '<option value="inactive">Inactive</option>',
-                                        '<option value="deprecated">Deprecated</option>',
-                                    '</select>',
-                                '</div>',
-                                '<div class="form-group full-width" id="temporary-mission-field">',
-                                    '<label>Associated Mission</label>',
-                                    '<select id="team-mission">',
-                                        '<option value="">None</option>',
-                                    '</select>',
-                                '</div>',
-                                '<div class="form-group full-width">',
-                                    '<label>Name History</label>',
-                                    '<div id="name-history-container">',
-                                        '<div class="name-history-entry" style="display:flex;gap:6px;margin-bottom:4px;flex-wrap:wrap;align-items:center;">',
-                                            '<input type="text" class="name-history-name" placeholder="Team Name" style="flex:1;min-width:80px;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">',
-                                            '<input type="text" class="name-history-start" placeholder="Start" style="flex:1;min-width:60px;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">',
-                                            '<input type="text" class="name-history-end" placeholder="End" style="flex:1;min-width:60px;padding:4px 6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:0.7rem;">',
-                                            '<button type="button" class="small danger remove-name" style="padding:2px 6px;font-size:0.6rem;">x</button>',
-                                        '</div>',
-                                    '</div>',
-                                    '<button type="button" id="add-name-history-btn" class="small" style="margin-top:8px;">+ Add Name Period</button>',
-                                '</div>',
-                            '</div>',
-                            '<div class="form-actions">',
-                                '<button type="button" id="cancel-team-form" class="secondary">Cancel</button>',
-                                '<button type="submit" id="save-team-btn" class="primary">Save Team</button>',
-                            '</div>',
-                        '</form>',
-                    '</div>',
-                '</div>',
-            '</div>',
-
-            '<!-- Member Modal -->',
-            '<div id="member-modal" class="modal hidden">',
-                '<div class="modal-content">',
-                    '<div class="modal-header">',
-                        '<h3 id="modal-team-name">Team Members</h3>',
-                        '<button class="close-modal">&times;</button>',
-                    '</div>',
-                    '<div class="modal-body">',
-                        '<div class="member-form" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center;">',
-                            '<select id="member-character" style="flex:1;min-width:150px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">',
-                                '<option value="">Select character...</option>',
-                            '</select>',
-                            '<input type="text" id="member-role" placeholder="Role" style="flex:1;min-width:80px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">',
-                            '<input type="text" id="member-join" placeholder="Join" style="flex:1;min-width:80px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">',
-                            '<input type="text" id="member-leave" placeholder="Leave" style="flex:1;min-width:80px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">',
-                            '<button id="add-member-btn" class="primary small">Add Member</button>',
-                        '</div>',
-                        '<div id="members-list">',
-                            '<p class="empty-state">No members in this team</p>',
-                        '</div>',
-                    '</div>',
-                '</div>',
-            '</div>',
-
-            '<!-- Edit Member Modal -->',
-            '<div id="edit-member-modal" class="modal hidden">',
-                '<div class="modal-content small">',
-                    '<div class="modal-header">',
-                        '<h3>Edit Member</h3>',
-                        '<button class="close-modal">&times;</button>',
-                    '</div>',
-                    '<div class="modal-body">',
-                        '<form id="edit-member-form">',
-                            '<div class="form-group">',
-                                '<label>Character</label>',
-                                '<p id="edit-member-name" style="margin:4px 0 12px 0;font-weight:600;"></p>',
-                            '</div>',
-                            '<div class="form-group">',
-                                '<label>Role</label>',
-                                '<input type="text" id="edit-member-role">',
-                            '</div>',
-                            '<div class="form-group">',
-                                '<label>Join</label>',
-                                '<input type="text" id="edit-member-join">',
-                            '</div>',
-                            '<div class="form-group">',
-                                '<label>Leave</label>',
-                                '<input type="text" id="edit-member-leave">',
-                            '</div>',
-                            '<div class="form-actions">',
-                                '<button type="button" id="cancel-edit-member" class="secondary">Cancel</button>',
-                                '<button type="submit" id="save-edit-member" class="primary">Save Changes</button>',
-                            '</div>',
-                        '</form>',
-                    '</div>',
-                '</div>',
-            '</div>',
-
-            '<!-- Ranking Modal -->',
-            '<div id="ranking-modal" class="modal hidden">',
-                '<div class="modal-content">',
-                    '<div class="modal-header">',
-                        '<h3 id="ranking-modal-title">Ranking History</h3>',
-                        '<button class="close-modal">&times;</button>',
-                    '</div>',
-                    '<div class="modal-body">',
-                        '<form id="ranking-form-inner">',
-                            '<div class="ranking-form" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center;">',
-                                '<input type="text" id="ranking-period" placeholder="Period" style="flex:1;min-width:100px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">',
-                                '<input type="number" id="ranking-rank" placeholder="Rank" min="1" style="flex:1;min-width:80px;padding:6px;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;">',
-                                '<button type="button" id="add-ranking-btn" class="primary small">Add Ranking</button>',
-                            '</div>',
-                        '</form>',
-                        '<div id="ranking-list">',
-                            '<p class="empty-state">No ranking history</p>',
-                        '</div>',
-                    '</div>',
-                '</div>',
-            '</div>'
-        ].join('');
     }
 
     // ============================================================
@@ -1131,7 +982,6 @@
             });
         }
 
-        // Delegate for edit/remove in member list
         delegate('.edit-member', 'click', function(e, target) {
             var teamId = getModalTeamId();
             var charId = target.dataset.characterId;
@@ -1713,7 +1563,7 @@
             var yearInput = document.getElementById('team-filter-year');
             if (yearInput) {
                 var year = parseInt(yearInput.value, 10);
-                if (!isNaN(year) && year >= 1900 && year <= 2100) {
+                if (!isNaN(year) && year >= 1) {
                     TeamUI.setFilter(tab, 'filterYear', year);
                 } else {
                     TeamUI.setFilter(tab, 'filterYear', '');
@@ -1727,9 +1577,9 @@
         }
 
         if (tab === 'civilian') {
-            var inactiveCheck = document.getElementById('civilian-show-inactive');
-            if (inactiveCheck) {
-                TeamUI.setFilter(tab, 'filterStatus', inactiveCheck.checked ? 'inactive' : 'active');
+            var inactiveCheck2 = document.getElementById('civilian-show-inactive');
+            if (inactiveCheck2) {
+                TeamUI.setFilter(tab, 'filterStatus', inactiveCheck2.checked ? 'inactive' : 'active');
             }
         }
 
