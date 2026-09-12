@@ -1,7 +1,7 @@
 /**
  * js/modules/characters/character-events.js - Character Events
  * Path: js/modules/characters/character-events.js
- * 
+ *
  * IMPORTANT:
  *   - All bindings for dynamically-rendered elements use DELEGATION
  *     because #character-form-content is re-rendered on every
@@ -19,6 +19,19 @@
  *     Social tab was never opened.
  *   - Modals are HIDDEN (not destroyed) so they can be reused:
  *     use Modal.hideModal() not Modal.closeModal().
+ *
+ * REFRESH CONTRACT:
+ *   - refreshUI(char) is the SINGLE refresh entry point for the
+ *     character module.
+ *   - It re-renders the class filter dropdown, the character list,
+ *     the academic tab, the elimination views, and the dashboard
+ *     stats. It does NOT re-render the whole character form — the
+ *     caller is responsible for that via CharacterForm.render(id),
+ *     because some handlers (add class, remove class) want to
+ *     re-render the form itself to refresh the dropdown + tag list.
+ *   - The academic tab refresh delegates to
+ *     CharacterClassView.renderAcademicTab, which is the SINGLE
+ *     rendering entry point for the academic tab.
  */
 
 (function() {
@@ -102,8 +115,8 @@
         if (!CharacterForm || typeof CharacterForm.addWeaponRow !== 'function') {
             missing.push('CharacterForm.addWeaponRow');
         }
-        if (!CharacterClassView || typeof CharacterClassView.renderClassTags !== 'function') {
-            missing.push('CharacterClassView.renderClassTags');
+        if (!CharacterClassView || typeof CharacterClassView.renderAcademicTab !== 'function') {
+            missing.push('CharacterClassView.renderAcademicTab');
         }
         if (!CharacterEliminationView || typeof CharacterEliminationView.renderTournamentEliminations !== 'function') {
             missing.push('CharacterEliminationView.renderTournamentEliminations');
@@ -205,35 +218,58 @@
     // ============================================================
     // UI REFRESH
     // ============================================================
-
+    //
+    // This is the SINGLE refresh entry point for the character module.
+    //
+    // REFRESH SCOPE:
+    //   - Character list panel
+    //   - Academic tab (via CharacterClassView.renderAcademicTab)
+    //   - Elimination views
+    //   - Dashboard stats
+    //
+    // NOT IN SCOPE:
+    //   - The character form itself. Callers that mutate form-visible
+    //     state (add class, remove class) must call CharacterForm.render(id)
+    //     themselves, because the form's tab structure needs a full rebuild
+    //     to pick up the change (dropdown loses the added class, tag list
+    //     gains it, etc.). Attempting to patch the form piecemeal here
+    //     would duplicate CharacterForm's rendering logic.
+    //
+    // CHARACTER CLASS VIEW CONTRACT:
+    //   - renderAcademicTab(char, container) is the ONLY entry point for
+    //     the academic tab. It internally dispatches to
+    //     renderAddClassSection / renderClassesSection /
+    //     renderAcademicTeamsSection / renderGradesSection.
+    //   - Do NOT call the individual section renderers from here. They
+    //     are implementation details of renderAcademicTab.
+    //
+    // @param {object|null} char - Character object (or null to clear)
     function refreshUI(char) {
         if (window.CharacterList && typeof window.CharacterList.render === 'function') {
             try { window.CharacterList.render(); } catch (e) {}
         }
 
-        var classTagContainer = document.getElementById('class-tag-container');
-        if (classTagContainer) {
-            CharacterClassView.renderClassTags(char, classTagContainer);
-        }
-
-        var currentClassesDisplay = document.getElementById('current-classes-list');
-        if (currentClassesDisplay) {
-            CharacterClassView.updateCurrentClassesDisplay(char, currentClassesDisplay);
-        }
-
-        var classSelect = document.getElementById('academic-class-select');
-        if (classSelect) {
-            CharacterClassView.populateClassSelector(char, classSelect);
+        var academicContainer = document.getElementById('academic-class-view');
+        if (academicContainer && CharacterClassView && typeof CharacterClassView.renderAcademicTab === 'function') {
+            try {
+                CharacterClassView.renderAcademicTab(char, academicContainer);
+            } catch (e) {
+                console.warn('[CharacterEvents] renderAcademicTab failed:', e);
+            }
         }
 
         var tournElimContainer = document.getElementById('tournament-eliminations-view');
-        if (tournElimContainer) {
-            CharacterEliminationView.renderTournamentEliminations(char, tournElimContainer);
+        if (tournElimContainer && CharacterEliminationView) {
+            try {
+                CharacterEliminationView.renderTournamentEliminations(char, tournElimContainer);
+            } catch (e) {}
         }
 
         var standaloneElimContainer = document.getElementById('standalone-eliminations-container');
-        if (standaloneElimContainer) {
-            CharacterEliminationView.renderStandaloneEliminations(char, standaloneElimContainer);
+        if (standaloneElimContainer && CharacterEliminationView) {
+            try {
+                CharacterEliminationView.renderStandaloneEliminations(char, standaloneElimContainer);
+            } catch (e) {}
         }
 
         if (typeof window.updateDashboardStats === 'function') {
@@ -653,13 +689,13 @@
     // ============================================================
     // ACADEMIC TAB - Class dropdown + tag removal
     // ============================================================
-    // 
+    //
     // The Academic tab no longer uses a free-text class tag input.
     // Instead it uses a dropdown (#academic-class-select) plus an Add
     // button (#academic-class-add-btn). The Add button reads the
     // selected classId and calls CharacterClasses.addToClass, which
     // goes through MutationPipeline and is Promise-based.
-    // 
+    //
     // Removal still uses the same .remove-class-tag buttons rendered
     // by CharacterClassView.
 
@@ -1546,12 +1582,12 @@
 
     /**
      * Add a class to the character by class ID (via the dropdown).
-     * 
+     *
      * Uses CharacterClasses.addToClass, which is Promise-based and
      * goes through MutationPipeline. On success, MutationPipeline has
      * already shown the success toast, so this handler does not notify
      * again — it just refreshes the affected UI.
-     * 
+     *
      * @param {string} classId - Class ID
      */
     function handleAddClassById(classId) {
@@ -1599,11 +1635,11 @@
 
     /**
      * Add a class to the character by name.
-     * 
+     *
      * Kept for backward compatibility. It is still called from places
      * that have a name rather than an ID. Uses CharacterClasses.addClassByName,
      * which is Promise-based and goes through MutationPipeline.
-     * 
+     *
      * @param {string} name - Class name
      */
     function handleAddClassByName(name) {

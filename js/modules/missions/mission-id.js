@@ -2,13 +2,13 @@
  * js/modules/missions/mission-id.js - Mission ID Generation
  * Single source of truth for mission ID generation and parsing
  * Path: js/modules/missions/mission-id.js
- * 
+ *
  * This module handles:
  *   - Mission ID generation (format: YYYY-SEQ-DIFFICULTY)
  *   - Mission ID parsing
  *   - Mission ID validation
  *   - Next sequence number calculation
- * 
+ *
  * IMPORTANT:
  *   - This module is the CANONICAL source of truth for mission IDs
  *   - ID format: YYYY-SEQ-DIFFICULTY (e.g., 2026-005-E)
@@ -17,12 +17,22 @@
  *   - This module does NOT call saveData() - callers own persistence
  *   - Uses MissionsQueries for read-only access to existing missions
  *   - If MissionsQueries is not available, uses window.data directly
- * 
+ *
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Any integer >= 1 is a valid year.
+ *   - Years are formatted as-is when padded to four digits. A year of
+ *     1 formats as "0001", a year of 25000 formats as "25000". The
+ *     format does not truncate or reject out-of-band values.
+ *   - When a year is missing or invalid, generation falls back to the
+ *     current calendar year.
+ *
  * DEPENDENCIES:
  *   - window.MissionsQueries (from missions-queries.js) - OPTIONAL (with fallback)
  *   - window.TeamQueries (from team-queries.js) - OPTIONAL (with fallback)
  *   - window.CalendarConstants (from calendar-constants.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   var missionId = window.MissionId.generate('team_123', 2026, 'E');
  *   var parsed = window.MissionId.parse('2026-005-E');
@@ -67,9 +77,6 @@
         X: 'Extreme'
     };
 
-    var MIN_YEAR = 1900;
-    var MAX_YEAR = 2100;
-
     // ============================================================
     // HELPER FUNCTIONS
     // ============================================================
@@ -80,6 +87,28 @@
 
     function getYear() {
         return new Date().getFullYear();
+    }
+
+    /**
+     * Validate a year value.
+     *
+     * Years are UNBOUNDED positive integers. Any integer >= 1 is valid.
+     *
+     * @param {*} value - Value to validate
+     * @returns {number|null} Parsed year or null if invalid
+     */
+    function isValidYear(value) {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+
+        var num = Number(value);
+
+        if (!Number.isInteger(num) || num < 1) {
+            return null;
+        }
+
+        return num;
     }
 
     function getDifficultyCode(difficulty) {
@@ -172,33 +201,19 @@
     }
 
     // ============================================================
-    // GENERATE MISSION ID
+    // SEQUENCE NUMBER CALCULATION
     // ============================================================
 
     /**
-     * Generate a new mission ID.
-     * Format: YYYY-SEQ-DIFFICULTY
-     * 
-     * @param {string} teamId - Team ID (used for preview, not in ID)
-     * @param {number} year - Year (default: current year)
-     * @param {string} difficulty - Difficulty level (easy, medium, hard, extreme)
-     * @param {Array} existingIds - Optional array of existing IDs (if not provided, will be fetched)
-     * @returns {string} Mission ID
+     * Find the next available sequence number for a given year and
+     * difficulty code, based on a list of existing IDs.
+     *
+     * @param {array} ids - Array of existing mission IDs
+     * @param {number} targetYear - Year to match
+     * @param {string} diffCode - Difficulty code (E, M, H, X)
+     * @returns {number} Next available sequence number (>= 1)
      */
-    function generate(teamId, year, difficulty, existingIds) {
-        // Validate year
-        var targetYear = year || getYear();
-        if (typeof targetYear !== 'number' || targetYear < MIN_YEAR || targetYear > MAX_YEAR) {
-            targetYear = getYear();
-        }
-
-        // Validate difficulty
-        var diffCode = getDifficultyCode(difficulty);
-
-        // Get existing IDs
-        var ids = existingIds || getExistingMissionIds();
-
-        // Filter to IDs matching year and difficulty
+    function findNextSequence(ids, targetYear, diffCode) {
         var prefix = String(targetYear) + '-';
         var suffix = '-' + diffCode;
 
@@ -210,7 +225,6 @@
                 continue;
             }
 
-            // Check if ID matches year and difficulty format
             if (id.startsWith(prefix) && id.endsWith(suffix)) {
                 var middle = id.substring(prefix.length, id.length - suffix.length);
                 var seqNum = parseInt(middle, 10);
@@ -220,27 +234,57 @@
             }
         }
 
-        // Find next sequence number
+        if (seqNumbers.length === 0) {
+            return 1;
+        }
+
+        seqNumbers.sort(function(a, b) { return a - b; });
+
         var nextSeq = 1;
-        if (seqNumbers.length > 0) {
-            seqNumbers.sort(function(a, b) { return a - b; });
-            for (var i = 0; i < seqNumbers.length; i++) {
-                if (seqNumbers[i] === nextSeq) {
-                    nextSeq++;
-                } else if (seqNumbers[i] > nextSeq) {
-                    break;
-                }
+        for (var j = 0; j < seqNumbers.length; j++) {
+            if (seqNumbers[j] === nextSeq) {
+                nextSeq++;
+            } else if (seqNumbers[j] > nextSeq) {
+                break;
             }
         }
 
+        return nextSeq;
+    }
+
+    // ============================================================
+    // GENERATE MISSION ID
+    // ============================================================
+
+    /**
+     * Generate a new mission ID.
+     * Format: YYYY-SEQ-DIFFICULTY
+     *
+     * @param {string} teamId - Team ID (used for preview, not in ID)
+     * @param {number} year - Year (default: current year)
+     * @param {string} difficulty - Difficulty level (easy, medium, hard, extreme)
+     * @param {Array} existingIds - Optional array of existing IDs (if not provided, will be fetched)
+     * @returns {string} Mission ID
+     */
+    function generate(teamId, year, difficulty, existingIds) {
+        var targetYear = isValidYear(year);
+        if (targetYear === null) {
+            targetYear = getYear();
+        }
+
+        var diffCode = getDifficultyCode(difficulty);
+        var ids = existingIds || getExistingMissionIds();
+
+        var nextSeq = findNextSequence(ids, targetYear, diffCode);
         var seqStr = padNumber(nextSeq, 3);
+
         return String(targetYear) + '-' + seqStr + '-' + diffCode;
     }
 
     /**
      * Generate a preview of the next mission ID.
      * Useful for showing the user what ID will be generated.
-     * 
+     *
      * @param {string} teamId - Team ID (used for preview, not in ID)
      * @param {number} year - Year (default: current year)
      * @param {string} difficulty - Difficulty level (easy, medium, hard, extreme)
@@ -248,50 +292,22 @@
      * @returns {string} Mission ID preview
      */
     function generatePreview(teamId, year, difficulty, sequence) {
-        var targetYear = year || getYear();
-        if (typeof targetYear !== 'number' || targetYear < MIN_YEAR || targetYear > MAX_YEAR) {
+        var targetYear = isValidYear(year);
+        if (targetYear === null) {
             targetYear = getYear();
         }
 
         var diffCode = getDifficultyCode(difficulty);
-        var seqNum = sequence || 1;
         var ids = getExistingMissionIds();
 
-        // Filter to IDs matching year and difficulty
-        var prefix = String(targetYear) + '-';
-        var suffix = '-' + diffCode;
+        var nextSeq = findNextSequence(ids, targetYear, diffCode);
 
-        var seqNumbers = [];
-
-        for (var i = 0; i < ids.length; i++) {
-            var id = ids[i];
-            if (typeof id !== 'string') {
-                continue;
-            }
-
-            if (id.startsWith(prefix) && id.endsWith(suffix)) {
-                var middle = id.substring(prefix.length, id.length - suffix.length);
-                var seq = parseInt(middle, 10);
-                if (!isNaN(seq) && seq > 0) {
-                    seqNumbers.push(seq);
-                }
-            }
+        // Preview may override the sequence for demonstration purposes
+        if (typeof sequence === 'number' && Number.isInteger(sequence) && sequence >= 1) {
+            nextSeq = sequence;
         }
 
-        if (seqNumbers.length > 0) {
-            seqNumbers.sort(function(a, b) { return a - b; });
-            var nextSeq = 1;
-            for (var i = 0; i < seqNumbers.length; i++) {
-                if (seqNumbers[i] === nextSeq) {
-                    nextSeq++;
-                } else if (seqNumbers[i] > nextSeq) {
-                    break;
-                }
-            }
-            seqNum = nextSeq;
-        }
-
-        var seqStr = padNumber(seqNum, 3);
+        var seqStr = padNumber(nextSeq, 3);
         return String(targetYear) + '-' + seqStr + '-' + diffCode;
     }
 
@@ -301,7 +317,7 @@
 
     /**
      * Parse a mission ID into its components.
-     * 
+     *
      * @param {string} missionId - Mission ID to parse
      * @returns {object|null} { year, sequence, difficulty, difficultyName } or null
      */
@@ -318,8 +334,8 @@
             return null;
         }
 
-        var year = parseInt(parts[0], 10);
-        if (isNaN(year) || year < MIN_YEAR || year > MAX_YEAR) {
+        var year = isValidYear(parts[0]);
+        if (year === null) {
             return null;
         }
 
@@ -347,7 +363,7 @@
 
     /**
      * Validate a mission ID format.
-     * 
+     *
      * @param {string} missionId - Mission ID to validate
      * @returns {boolean} True if valid
      */
@@ -357,7 +373,7 @@
 
     /**
      * Validate and get detailed information about a mission ID.
-     * 
+     *
      * @param {string} missionId - Mission ID to validate
      * @returns {object} { valid: boolean, parsed: object|null, message: string }
      */
@@ -380,7 +396,7 @@
 
     /**
      * Format a mission ID for display.
-     * 
+     *
      * @param {string} missionId - Mission ID to format
      * @param {string} teamId - Team ID for additional context
      * @returns {string} Formatted mission ID
@@ -408,7 +424,7 @@
     /**
      * Get the team ID from a mission ID.
      * Note: Mission ID does not contain team ID, this is a lookup function.
-     * 
+     *
      * @param {string} missionId - Mission ID
      * @param {Array} missions - Optional array of missions to search
      * @returns {string|null} Team ID or null
@@ -428,7 +444,7 @@
 
     /**
      * Get the year from a mission ID.
-     * 
+     *
      * @param {string} missionId - Mission ID
      * @returns {number|null} Year or null
      */
@@ -439,7 +455,7 @@
 
     /**
      * Get the difficulty from a mission ID.
-     * 
+     *
      * @param {string} missionId - Mission ID
      * @returns {string|null} Difficulty code or null
      */
@@ -463,6 +479,7 @@
         // Validation
         validate: validate,
         validateDetailed: validateDetailed,
+        isValidYear: isValidYear,
 
         // Formatting
         format: format,
@@ -472,9 +489,7 @@
 
         // Constants
         DIFFICULTY_CODES: DIFFICULTY_CODES,
-        DIFFICULTY_NAMES: DIFFICULTY_NAMES,
-        MIN_YEAR: MIN_YEAR,
-        MAX_YEAR: MAX_YEAR
+        DIFFICULTY_NAMES: DIFFICULTY_NAMES
     };
 
     window.__missionIdLoaded = true;

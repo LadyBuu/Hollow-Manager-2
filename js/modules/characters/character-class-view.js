@@ -2,14 +2,14 @@
  * modules/characters/character-class-view.js - Character Class View
  * Renders the Academic tab for the character form
  * Path: js/modules/characters/character-class-view.js
- * 
+ *
  * This module is responsible for:
  *   - Rendering the class dropdown (add to class)
  *   - Rendering class tags with role labels (Trainee / Instructor)
  *   - Rendering academic team memberships (historical)
  *   - Rendering the grades table (discipline / class / week / score)
  *   - The combined Academic tab layout
- * 
+ *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no persistence
  *   - Uses AcademyQueries for class, grade, and team data
@@ -19,13 +19,22 @@
  *   - Uses DomUtils for safe DOM operations
  *   - All user-controlled content uses textContent
  *   - No event binding here (delegated to CharacterEvents)
- * 
+ *
+ * REFRESH CONTRACT:
+ *   - renderAcademicTab(char, container) is the SINGLE rendering entry
+ *     point for the Academic tab. Callers (character-form.js on form
+ *     render, character-events.js on refresh) MUST use this function
+ *     and MUST NOT call the individual section renderers directly.
+ *   - The section renderers (renderAddClassSection, renderClassesSection,
+ *     renderAcademicTeamsSection, renderGradesSection) are implementation
+ *     details. They are exported for testing only.
+ *
  * ROLE LABELS:
  *   - A character is an "Instructor" for a class when
  *     class.instructorId === char.id.
  *   - Otherwise the character is a "Trainee" for that class.
  *   - This is derived from class data, not from career status.
- * 
+ *
  * DEPENDENCIES:
  *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
@@ -77,9 +86,9 @@
             missing.push('DomUtils.createElement');
         }
 
-        // DisciplineQueries and TeamQueries are used but not strictly required
-        // for the module to load; the render functions degrade gracefully
-        // if they are missing.
+        // DisciplineQueries and TeamQueries are used but not strictly
+        // required for the module to load; the render functions degrade
+        // gracefully if they are missing.
 
         if (missing.length > 0) {
             throw new Error('[CharacterClassView] Missing dependencies: ' + missing.join(', '));
@@ -153,7 +162,7 @@
 
     /**
      * Render the entire Academic tab for a character.
-     * 
+     *
      * @param {object} char - Character object (or null)
      * @param {HTMLElement} container - Container element
      */
@@ -402,7 +411,7 @@
 
     /**
      * Get all academic team memberships for a character.
-     * 
+     *
      * @param {object} char - Character object
      * @returns {array} Array of { teamId, teamName, className, role, joinPeriod, leavePeriod, periodDisplay }
      */
@@ -602,375 +611,6 @@
     }
 
     // ============================================================
-    // LEGACY COMPATIBILITY
-    // ============================================================
-    // These existed before the Academic tab rebuild and are kept
-    // so that any external caller still referencing them does not
-    // break. New code should use renderAcademicTab.
-
-    /**
-     * @deprecated Use renderAcademicTab instead.
-     */
-    function renderAcademicClassView(char, container) {
-        renderAcademicTab(char, container);
-    }
-
-    /**
-     * @deprecated Class tag rendering is now handled by renderClassesSection.
-     * This version preserves the old shape for any legacy caller.
-     */
-    function renderClassTags(char, container) {
-        if (!container) {
-            container = document.getElementById('class-tag-container');
-        }
-        if (!container) {
-            return;
-        }
-
-        container.textContent = '';
-
-        if (!char) {
-            var empty = document.createElement('span');
-            empty.style.cssText = 'color:var(--text-dim);font-size:0.7rem;padding:4px;';
-            empty.textContent = 'No character selected';
-            container.appendChild(empty);
-            return;
-        }
-
-        var classIds = getNormalisedClassIds(char);
-        if (classIds.length === 0) {
-            var empty2 = document.createElement('span');
-            empty2.style.cssText = 'color:var(--text-dim);font-size:0.7rem;padding:4px;';
-            empty2.textContent = 'No classes assigned';
-            container.appendChild(empty2);
-            return;
-        }
-
-        classIds.forEach(function(classId) {
-            var cls = getClassById(classId);
-            if (!cls) {
-                return;
-            }
-            var role = getClassRoleLabel(cls, char.id);
-            var tag = document.createElement('span');
-            tag.className = 'class-tag';
-            tag.style.cssText = 'background:var(--accent-soft);padding:2px 8px;border-radius:10px;font-size:0.7rem;border:1px solid var(--accent);display:inline-flex;align-items:center;gap:4px;';
-            tag.dataset.classId = cls.id;
-
-            var nameSpan = document.createElement('span');
-            nameSpan.textContent = cls.name;
-            tag.appendChild(nameSpan);
-
-            var roleSpan = document.createElement('span');
-            roleSpan.style.cssText = 'color:var(--text-dim);font-size:0.6rem;font-style:italic;';
-            roleSpan.textContent = '(' + role + ')';
-            tag.appendChild(roleSpan);
-
-            var removeBtn = document.createElement('button');
-            removeBtn.className = 'remove-class-tag';
-            removeBtn.dataset.id = cls.id;
-            removeBtn.textContent = '\u2715';
-            removeBtn.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;';
-            removeBtn.setAttribute('aria-label', 'Remove ' + cls.name);
-            tag.appendChild(removeBtn);
-
-            container.appendChild(tag);
-        });
-    }
-
-    /**
-     * @deprecated Class dropdown rendering is now in renderAddClassSection.
-     */
-    function populateClassSelector(char, select) {
-        if (!select) {
-            select = document.getElementById('academic-class-select');
-        }
-        if (!select) {
-            return;
-        }
-
-        var classes = AcademyQueries.getClasses() || [];
-        var existingClassIds = (char && Array.isArray(char.classIds)) ? char.classIds : [];
-
-        select.innerHTML = '<option value="">Select a class...</option>';
-
-        var sorted = classes.slice().sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        sorted.forEach(function(cls) {
-            if (!cls) {
-                return;
-            }
-
-            var isAssigned = false;
-            for (var i = 0; i < existingClassIds.length; i++) {
-                if (String(existingClassIds[i]) === String(cls.id)) {
-                    isAssigned = true;
-                    break;
-                }
-            }
-
-            if (!isAssigned) {
-                var option = document.createElement('option');
-                option.value = cls.id;
-                option.textContent = cls.name;
-                select.appendChild(option);
-            }
-        });
-    }
-
-    function populateClassFilter(select) {
-        if (!select) {
-            select = document.getElementById('char-class-filter');
-        }
-        if (!select) {
-            return;
-        }
-
-        var classes = AcademyQueries.getClasses() || [];
-        var currentValue = select.value;
-
-        select.innerHTML = '<option value="all">All Classes</option>';
-
-        var sorted = classes.slice().sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        sorted.forEach(function(cls) {
-            if (!cls) {
-                return;
-            }
-
-            var option = document.createElement('option');
-            option.value = cls.id;
-            option.textContent = cls.name;
-            select.appendChild(option);
-        });
-
-        if (currentValue) {
-            var exists = false;
-            for (var i = 0; i < select.options.length; i++) {
-                if (String(select.options[i].value) === String(currentValue)) {
-                    exists = true;
-                    break;
-                }
-            }
-            if (exists) {
-                select.value = currentValue;
-            } else {
-                select.value = 'all';
-            }
-        } else {
-            select.value = 'all';
-        }
-    }
-
-    function updateCurrentClassesDisplay(char, display) {
-        if (!display) {
-            display = document.getElementById('current-classes-list');
-        }
-        if (!display) {
-            return;
-        }
-
-        if (!char) {
-            display.textContent = 'None';
-            return;
-        }
-
-        var classIds = getNormalisedClassIds(char);
-
-        if (classIds.length === 0) {
-            display.textContent = 'None';
-            return;
-        }
-
-        var classes = AcademyQueries.getClasses() || [];
-        var names = [];
-
-        classIds.forEach(function(cid) {
-            for (var i = 0; i < classes.length; i++) {
-                if (classes[i] && String(classes[i].id) === String(cid)) {
-                    names.push(classes[i].name);
-                    break;
-                }
-            }
-        });
-
-        display.textContent = names.length > 0 ? names.join(', ') : 'None';
-    }
-
-    function getCurrentClassesDisplayText(char) {
-        if (!char) {
-            return 'None';
-        }
-
-        var classIds = getNormalisedClassIds(char);
-
-        if (classIds.length === 0) {
-            return 'None';
-        }
-
-        var classes = AcademyQueries.getClasses() || [];
-        var names = [];
-
-        classIds.forEach(function(cid) {
-            for (var i = 0; i < classes.length; i++) {
-                if (classes[i] && String(classes[i].id) === String(cid)) {
-                    names.push(classes[i].name);
-                    break;
-                }
-            }
-        });
-
-        return names.length > 0 ? names.join(', ') : 'None';
-    }
-
-    function getClassOptionsHTML(selectedId, excludeIds) {
-        excludeIds = excludeIds || [];
-
-        var classes = AcademyQueries.getClasses() || [];
-        var html = '<option value="">None</option>';
-
-        var sorted = classes.slice().sort(function(a, b) {
-            return (a.name || '').localeCompare(b.name || '');
-        });
-
-        sorted.forEach(function(cls) {
-            if (!cls) {
-                return;
-            }
-
-            var isExcluded = false;
-            for (var i = 0; i < excludeIds.length; i++) {
-                if (String(excludeIds[i]) === String(cls.id)) {
-                    isExcluded = true;
-                    break;
-                }
-            }
-
-            if (isExcluded) {
-                return;
-            }
-
-            var isSelected = selectedId !== undefined &&
-                selectedId !== null &&
-                String(cls.id) === String(selectedId);
-
-            html += '<option value="' + DomUtils.escapeHtml(cls.id) + '" ' +
-                (isSelected ? 'selected' : '') + '>' +
-                DomUtils.escapeHtml(cls.name) + '</option>';
-        });
-
-        return html;
-    }
-
-    function getAvailableClassOptionsHTML(char, selectedId) {
-        var excludeIds = (char && Array.isArray(char.classIds)) ? char.classIds : [];
-        return getClassOptionsHTML(selectedId, excludeIds);
-    }
-
-    function getCharacterClassNames(char) {
-        if (!char) {
-            return [];
-        }
-
-        var classIds = getNormalisedClassIds(char);
-        if (classIds.length === 0) {
-            return [];
-        }
-
-        var classes = AcademyQueries.getClasses() || [];
-        var names = [];
-
-        classIds.forEach(function(cid) {
-            for (var i = 0; i < classes.length; i++) {
-                if (classes[i] && String(classes[i].id) === String(cid)) {
-                    names.push(classes[i].name);
-                    break;
-                }
-            }
-        });
-
-        return names;
-    }
-
-    function isCharacterInClass(char, classId) {
-        if (!char || !classId) {
-            return false;
-        }
-
-        var classIds = getNormalisedClassIds(char);
-        for (var i = 0; i < classIds.length; i++) {
-            if (String(classIds[i]) === String(classId)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    function getClassCount(char) {
-        if (!char) {
-            return 0;
-        }
-        return getNormalisedClassIds(char).length;
-    }
-
-    function createEmptyState(message) {
-        var el = document.createElement('span');
-        el.style.cssText = 'color:var(--text-dim);font-size:0.7rem;padding:4px;';
-        el.textContent = message || 'No classes assigned';
-        return el;
-    }
-
-    function createClassTag(classId, className) {
-        var tag = document.createElement('span');
-        tag.className = 'class-tag';
-        tag.style.cssText = 'background:var(--accent-soft);padding:2px 8px;border-radius:10px;font-size:0.7rem;border:1px solid var(--accent);display:inline-flex;align-items:center;gap:4px;';
-        tag.dataset.classId = classId;
-
-        var nameSpan = document.createElement('span');
-        nameSpan.textContent = className;
-        tag.appendChild(nameSpan);
-
-        var button = document.createElement('button');
-        button.className = 'remove-class-tag';
-        button.dataset.id = classId;
-        button.textContent = '\u2715';
-        button.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:0.5rem;padding:0 2px;';
-        button.setAttribute('aria-label', 'Remove class ' + className);
-        tag.appendChild(button);
-
-        return tag;
-    }
-
-    function clearClassTags(container) {
-        if (!container) {
-            container = document.getElementById('class-tag-container');
-        }
-        if (!container) {
-            return;
-        }
-        container.textContent = '';
-    }
-
-    function getClassTagIds(container) {
-        if (!container) {
-            container = document.getElementById('class-tag-container');
-        }
-        if (!container) {
-            return [];
-        }
-
-        var ids = [];
-        container.querySelectorAll('[data-class-id]').forEach(function(tag) {
-            ids.push(tag.dataset.classId);
-        });
-        return ids;
-    }
-
-    // ============================================================
     // EXPOSE
     // ============================================================
 
@@ -978,33 +618,17 @@
         // Primary entry point for the Academic tab
         renderAcademicTab: renderAcademicTab,
 
-        // Individual sections
+        // Individual sections (exposed for testing only — callers
+        // should use renderAcademicTab)
         renderAddClassSection: renderAddClassSection,
         renderClassesSection: renderClassesSection,
         renderAcademicTeamsSection: renderAcademicTeamsSection,
         renderGradesSection: renderGradesSection,
 
-        // Helpers
+        // Helpers (exposed for testing only)
         getAcademicTeamMemberships: getAcademicTeamMemberships,
         getClassRoleLabel: getClassRoleLabel,
-        getNormalisedClassIds: getNormalisedClassIds,
-
-        // Legacy / deprecated exports (kept for compatibility)
-        renderAcademicClassView: renderAcademicClassView,
-        renderClassTags: renderClassTags,
-        populateClassSelector: populateClassSelector,
-        populateClassFilter: populateClassFilter,
-        updateCurrentClassesDisplay: updateCurrentClassesDisplay,
-        getCurrentClassesDisplayText: getCurrentClassesDisplayText,
-        getClassOptionsHTML: getClassOptionsHTML,
-        getAvailableClassOptionsHTML: getAvailableClassOptionsHTML,
-        getCharacterClassNames: getCharacterClassNames,
-        isCharacterInClass: isCharacterInClass,
-        getClassCount: getClassCount,
-        createEmptyState: createEmptyState,
-        createClassTag: createClassTag,
-        clearClassTags: clearClassTags,
-        getClassTagIds: getClassTagIds
+        getNormalisedClassIds: getNormalisedClassIds
     };
 
 })();

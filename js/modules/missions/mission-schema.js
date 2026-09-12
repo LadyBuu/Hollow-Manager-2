@@ -1,7 +1,7 @@
 /**
  * js/modules/missions/mission-schema.js - Mission Schema
  * SINGLE SOURCE OF TRUTH for all mission validation rules and constants.
- * 
+ *
  * SCHEMA PHILOSOPHY:
  *   - One constitution for all mission data
  *   - Used by Core, Queries, and UI
@@ -13,7 +13,7 @@
  *   - Does NOT derive business state (progress, pay, completedAt) - that belongs in MissionCore
  *   - Does NOT handle calendar validation - use CalendarValidation
  *   - Does NOT handle ID normalisation - use IdUtils
- * 
+ *
  * MISSION TYPE TAXONOMY:
  *   1. Combat - Elimination, Defence, Protection
  *   2. Recovery - Retrieval, Rescue, Recovery of materials/artifacts
@@ -25,15 +25,23 @@
  *   8. Research - Observation, Field research, Field testing
  *   9. Diplomatic - Negotiation, Mediation, Representation
  *   10. Assassination
- * 
+ *
  * DIFFICULTY CODES:
  *   E = Easy, M = Medium, H = Hard, X = Expert
- * 
+ *
+ * YEAR SEMANTICS:
+ *   - Years are UNBOUNDED positive integers.
+ *   - There is no MIN_YEAR or MAX_YEAR.
+ *   - Any integer >= 1 is a valid year.
+ *   - A null or missing year is also valid (means "year not specified").
+ *   - Year validation is delegated to MissionId.isValidYear when
+ *     MissionId is loaded. A local fallback is used otherwise.
+ *
  * DERIVED FIELDS (validated but not calculated by schema):
  *   - progress: MUST match calculateProgress(objectives) (validation only)
  *   - pay: MUST match calculatePay(basePay, surchargePay) (validation only)
  *   - completedAt: MUST be consistent with status (validation only)
- * 
+ *
  * CANONICALISATION:
  *   - canonicaliseMissionShape() only transforms structurally valid input
  *   - Invalid nested records are rejected (not silently discarded)
@@ -240,6 +248,40 @@
     }
 
     // ============================================================
+    // YEAR VALIDATION
+    // ============================================================
+    //
+    // Years are UNBOUNDED positive integers. A null or missing year
+    // is also accepted (means "year not specified").
+    //
+    // If MissionId.isValidYear is available, delegate to it so the
+    // year rule has a single source of truth across the module.
+    // Otherwise use the inline fallback, which implements the same
+    // rule (positive integer or null).
+
+    function parseYear(value) {
+        if (value === undefined || value === null || value === '') {
+            return { valid: true, value: null };
+        }
+
+        var MissionId = window.MissionId;
+        if (MissionId && typeof MissionId.isValidYear === 'function') {
+            var parsed = MissionId.isValidYear(value);
+            if (parsed === null) {
+                return { valid: false, value: null };
+            }
+            return { valid: true, value: parsed };
+        }
+
+        var num = Number(value);
+        if (!Number.isInteger(num) || num < 1) {
+            return { valid: false, value: null };
+        }
+
+        return { valid: true, value: num };
+    }
+
+    // ============================================================
     // VALID PREDICATES - Return proper booleans
     // ============================================================
 
@@ -419,11 +461,10 @@
         }
 
         // ---- DATE ----
-        if (mission.year !== undefined && mission.year !== null) {
-            var y = Number(mission.year);
-            if (!Number.isInteger(y) || y < 1000 || y > 9999) {
-                errors.push('Year must be a valid 4-digit year.');
-            }
+        // Years are unbounded positive integers.
+        var yearResult = parseYear(mission.year);
+        if (!yearResult.valid) {
+            errors.push('Year must be a positive integer.');
         }
 
         if (mission.month !== undefined && mission.month !== null) {
@@ -441,15 +482,18 @@
         }
 
         // Actual date validation (if all components present and non-null)
-        var hasYear = mission.year !== undefined && mission.year !== null;
+        var hasYear = yearResult.valid && yearResult.value !== null;
         var hasMonth = mission.month !== undefined && mission.month !== null;
         var hasDay = mission.day !== undefined && mission.day !== null;
 
         if (hasYear && hasMonth && hasDay) {
-            // Use CalendarValidation for date validation
             var dateValid = true;
             if (typeof CalendarValidation.isValidCalendarDate === 'function') {
-                dateValid = CalendarValidation.isValidCalendarDate(mission.year, mission.month, mission.day);
+                dateValid = CalendarValidation.isValidCalendarDate(
+                    yearResult.value,
+                    mission.month,
+                    mission.day
+                );
             }
             if (!dateValid) {
                 errors.push('Invalid calendar date.');
@@ -567,7 +611,7 @@
 
     /**
      * Canonicalise a mission object to canonical form.
-     * 
+     *
      * IMPORTANT SEMANTICS:
      *   - Preserves id and missionId if present (does not invent them)
      *   - Does NOT invent missing date components
@@ -575,10 +619,14 @@
      *   - Strips unknown fields (schema is authoritative)
      *   - Does NOT derive progress, pay, or completedAt
      *   - Returns { valid, errors, value }
-     * 
+     *
+     * YEAR SEMANTICS:
+     *   - Years are UNBOUNDED positive integers, or null.
+     *   - Invalid year values are recorded as errors and cleared to null.
+     *
      * This is a STRUCTURAL normaliser only.
      * Business derivation belongs in MissionCore.
-     * 
+     *
      * @param {object} input - Input mission data
      * @returns {object} { valid: boolean, errors: array, value: object|null }
      */
@@ -601,9 +649,12 @@
             : null;
 
         // ---- PRESERVE INCOMPLETE DATES (no defaults) ----
-        var year = input.year !== undefined && input.year !== null
-            ? Number(input.year)
-            : null;
+        // Years are unbounded positive integers, or null.
+        var yearResult = parseYear(input.year);
+        var year = yearResult.valid ? yearResult.value : null;
+        if (!yearResult.valid) {
+            errors.push('Invalid year value.');
+        }
 
         var month = input.month !== undefined && input.month !== null
             ? Number(input.month)
@@ -614,10 +665,6 @@
             : null;
 
         // Validate number conversions
-        if (year !== null && (!Number.isInteger(year) || year < 1000 || year > 9999)) {
-            errors.push('Invalid year value.');
-            year = null;
-        }
         if (month !== null && (!Number.isInteger(month) || month < 1 || month > 12)) {
             errors.push('Invalid month value.');
             month = null;
@@ -717,7 +764,6 @@
         }
 
         // ---- DERIVED FIELDS (validated but not calculated) ----
-        // progress: validated if present, but not calculated
         var progress = null;
         if (input.progress !== undefined && input.progress !== null) {
             var prog = Number(input.progress);
@@ -731,7 +777,6 @@
             progress = 0;
         }
 
-        // pay: validated if present, but not calculated
         var pay = '';
         if (input.pay !== undefined && input.pay !== null) {
             if (typeof input.pay === 'string') {
@@ -741,7 +786,6 @@
             }
         }
 
-        // status: validated
         var status = input.status || 'active';
         if (!isValidStatus(status)) {
             errors.push('Invalid status: "' + status + '"');

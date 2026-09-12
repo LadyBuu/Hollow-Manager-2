@@ -1,7 +1,7 @@
 /**
  * modules/teams/team-events.js - Team Events
  * Event orchestration for the team domain
- * 
+ *
  * This module provides:
  *   - init - Bind all event listeners
  *   - destroy - Clean up all event listeners
@@ -10,7 +10,7 @@
  *   - Ranking management event handlers (add, remove)
  *   - Filter and navigation event handlers
  *   - Modal event handlers
- * 
+ *
  * IMPORTANT:
  *   - Orchestrates UI interactions
  *   - Calls TeamCore for mutations AND direct reads
@@ -21,7 +21,17 @@
  *   - Uses NotificationSystem for notifications
  *   - No direct data mutation
  *   - No direct DOM manipulation (delegates to TeamRender)
- * 
+ *
+ * PERSISTENCE CONTRACT:
+ *   - TeamCore mutations are Promise-based and go through
+ *     MutationPipeline, which owns saveData(), activity logging,
+ *     rollback, and the success/failure notification.
+ *   - The event layer AWAITS the mutation result, then refreshes on
+ *     success. It does NOT call saveData() itself.
+ *   - On failure, the pipeline has already notified and rolled back,
+ *     so the event layer only needs to refresh nothing (state is
+ *     unchanged) and let the user retry.
+ *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers.
  *   - There is no MIN_YEAR or MAX_YEAR.
@@ -31,17 +41,7 @@
  *     (window.data.currentYear) when no filter is set. This
  *     matches the year actually used for filtering, so the
  *     displayed value and the effective value agree.
- * 
- * DEAD CODE NOTE:
- *   - renderContainer / getContainerHTML / getModalsHTML /
- *     buildFilterHTML in this module duplicate what
- *     team-render.js already provides. They are retained
- *     because some callers may still resolve them from this
- *     module's exports, but the live render path in index.js
- *     goes through TeamRender.renderContainer. Delete these
- *     four functions (and their internal calls) once you have
- *     confirmed no external caller uses them.
- * 
+ *
  * DEPENDENCIES:
  *   - window.TeamCore (from team-core.js) - MANDATORY
  *   - window.TeamAggregator (from team-aggregator.js) - MANDATORY
@@ -51,7 +51,7 @@
  *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.Modal (from modal.js) - MANDATORY
  *   - window.NotificationSystem (from notification.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   var TE = window.TeamEvents;
  *   TE.init(container);
@@ -270,7 +270,7 @@
 
     /**
      * Get the current application year for year-based team filters.
-     * 
+     *
      * @returns {number} Current year
      */
     function getCurrentYear() {
@@ -283,7 +283,7 @@
 
     /**
      * Get the effective period for a tab.
-     * 
+     *
      * SEMANTICS:
      *   - Academic teams use weeks. This code path is not reached
      *     from the current tab nav (professional / temporary /
@@ -291,7 +291,7 @@
      *   - Professional, temporary, and civilian teams use years.
      *     If the user has set a year filter, that value is used.
      *     Otherwise, the current application year is used.
-     * 
+     *
      * @param {string} tab - Tab ID
      * @returns {number} Period (week or year)
      */
@@ -399,9 +399,6 @@
         _container = container;
         removeAllEventListeners();
 
-        // Bind events. Initial container HTML is rendered by
-        // index.js via TeamRender.renderContainer BEFORE this
-        // function is called.
         bindTabSwitching();
         bindAddTeam();
         bindTeamActions();
@@ -426,13 +423,13 @@
 
     /**
      * Build the filter bar for a tab.
-     * 
+     *
      * YEAR INPUT:
      *   - No min / max attributes. Years are unbounded.
      *   - When no filter is set, the input defaults to the current
      *     application year. This matches the year actually used
      *     for filtering.
-     * 
+     *
      * @param {string} tab - Tab ID
      * @returns {string} HTML string
      */
@@ -808,6 +805,14 @@
         }
     }
 
+    /**
+     * Save a team.
+     *
+     * PERSISTENCE:
+     *   - TeamCore owns persistence via MutationPipeline.
+     *   - This handler only reads the form, calls the mutation, and
+     *     reacts to the result.
+     */
     function saveTeam() {
         var form = document.getElementById('team-form-inner');
         if (!form) {
@@ -834,32 +839,20 @@
             return;
         }
 
-        var result;
-        if (editId) {
-            result = TeamCore.updateTeam(editId, teamData);
-            if (!result) {
-                notify('Failed to update team.', 'error');
+        var promise = editId
+            ? TeamCore.updateTeam(editId, teamData)
+            : TeamCore.createTeam(teamData);
+
+        promise.then(function(result) {
+            if (!result || !result.success) {
+                // MutationPipeline already notified on failure. Nothing
+                // to do here except leave the form open for retry.
                 return;
             }
-        } else {
-            result = TeamCore.createTeam(teamData);
-            if (!result) {
-                notify('Failed to create team.', 'error');
-                return;
-            }
-        }
 
-        closeTeamForm();
-
-        refreshUI();
-
-        notify(editId ? 'Team updated successfully!' : 'Team created successfully!', 'success');
-
-        if (typeof window.saveData === 'function') {
-            window.saveData().catch(function() {
-                notify('Changes applied in memory, but failed to persist.', 'error');
-            });
-        }
+            closeTeamForm();
+            refreshUI();
+        });
     }
 
     function collectNameHistory() {
@@ -926,6 +919,13 @@
         });
     }
 
+    /**
+     * Delete a team.
+     *
+     * PERSISTENCE:
+     *   - TeamCore owns persistence. This handler confirms, calls,
+     *     and reacts.
+     */
     function deleteTeam(teamId) {
         var team = TeamCore.getTeam(teamId);
         if (!team) {
@@ -937,25 +937,18 @@
             return;
         }
 
-        var result = TeamCore.deleteTeam(teamId);
-        if (!result) {
-            notify('Failed to delete team.', 'error');
-            return;
-        }
+        TeamCore.deleteTeam(teamId).then(function(result) {
+            if (!result || !result.success) {
+                // Pipeline already notified on failure.
+                return;
+            }
 
-        if (TeamUI.getExpandedTeamId() === teamId) {
-            TeamUI.setExpandedTeamId(null);
-        }
+            if (TeamUI.getExpandedTeamId() === teamId) {
+                TeamUI.setExpandedTeamId(null);
+            }
 
-        refreshUI();
-
-        notify('Team deleted successfully!', 'success');
-
-        if (typeof window.saveData === 'function') {
-            window.saveData().catch(function() {
-                notify('Changes applied in memory, but failed to persist.', 'error');
-            });
-        }
+            refreshUI();
+        });
     }
 
     // ============================================================
@@ -994,14 +987,14 @@
             var teamId = getModalTeamId();
             var charId = target.dataset.characterId;
             if (teamId && charId && confirm('Remove this member from the team?')) {
-                var result = TeamCore.removeMember(teamId, charId);
-                if (result) {
+                TeamCore.removeMember(teamId, charId).then(function(result) {
+                    if (!result || !result.success) {
+                        // Pipeline already notified on failure.
+                        return;
+                    }
                     refreshMemberList(teamId);
                     refreshUI();
-                    notify('Member removed successfully!', 'success');
-                } else {
-                    notify('Failed to remove member.', 'error');
-                }
+                });
             }
         });
     }
@@ -1144,6 +1137,13 @@
         }
     }
 
+    /**
+     * Add a member to a team.
+     *
+     * PERSISTENCE:
+     *   - TeamCore owns persistence. This handler reads the form,
+     *     calls the mutation, and reacts.
+     */
     function addMember() {
         var modal = document.getElementById('member-modal');
         if (!modal) {
@@ -1172,40 +1172,33 @@
             return;
         }
 
-        var result = TeamCore.addMember(teamId, {
+        TeamCore.addMember(teamId, {
             characterId: charId,
             role: role,
             joinPeriod: joinPeriod,
             leavePeriod: leavePeriod
+        }).then(function(result) {
+            if (!result || !result.success) {
+                // Pipeline already notified on failure.
+                return;
+            }
+
+            if (charSelect) {
+                charSelect.value = '';
+            }
+            if (roleInput) {
+                roleInput.value = '';
+            }
+            if (joinInput) {
+                joinInput.value = '';
+            }
+            if (leaveInput) {
+                leaveInput.value = '';
+            }
+
+            refreshMemberList(teamId);
+            refreshUI();
         });
-
-        if (!result) {
-            notify('Failed to add member. The character may already be in this team.', 'error');
-            return;
-        }
-
-        if (charSelect) {
-            charSelect.value = '';
-        }
-        if (roleInput) {
-            roleInput.value = '';
-        }
-        if (joinInput) {
-            joinInput.value = '';
-        }
-        if (leaveInput) {
-            leaveInput.value = '';
-        }
-
-        refreshMemberList(teamId);
-        refreshUI();
-        notify('Member added successfully!', 'success');
-
-        if (typeof window.saveData === 'function') {
-            window.saveData().catch(function() {
-                notify('Changes applied in memory, but failed to persist.', 'error');
-            });
-        }
     }
 
     // ============================================================
@@ -1302,6 +1295,13 @@
         }
     }
 
+    /**
+     * Save an edited member.
+     *
+     * PERSISTENCE:
+     *   - TeamCore owns persistence. This handler reads the form,
+     *     calls the mutation, and reacts.
+     */
     function saveEditMember() {
         var modal = document.getElementById('edit-member-modal');
         if (!modal) {
@@ -1325,31 +1325,24 @@
         var joinPeriod = joinInput ? joinInput.value : '';
         var leavePeriod = leaveInput ? leaveInput.value : '';
 
-        var result = TeamCore.updateMember(teamId, charId, {
+        TeamCore.updateMember(teamId, charId, {
             role: role,
             joinPeriod: joinPeriod,
             leavePeriod: leavePeriod
+        }).then(function(result) {
+            if (!result || !result.success) {
+                // Pipeline already notified on failure.
+                return;
+            }
+
+            closeEditMemberModal();
+
+            var teamModal = document.getElementById('member-modal');
+            if (teamModal && teamModal.dataset.teamId) {
+                refreshMemberList(teamModal.dataset.teamId);
+            }
+            refreshUI();
         });
-
-        if (!result) {
-            notify('Failed to update member.', 'error');
-            return;
-        }
-
-        closeEditMemberModal();
-
-        var teamModal = document.getElementById('member-modal');
-        if (teamModal && teamModal.dataset.teamId) {
-            refreshMemberList(teamModal.dataset.teamId);
-        }
-        refreshUI();
-        notify('Member updated successfully!', 'success');
-
-        if (typeof window.saveData === 'function') {
-            window.saveData().catch(function() {
-                notify('Changes applied in memory, but failed to persist.', 'error');
-            });
-        }
     }
 
     // ============================================================
@@ -1380,14 +1373,14 @@
             var period = target.dataset.period;
             var teamId = getRankingModalTeamId();
             if (period && teamId && confirm('Remove this ranking entry?')) {
-                var result = TeamCore.removeRanking(teamId, period);
-                if (result) {
+                TeamCore.removeRanking(teamId, period).then(function(result) {
+                    if (!result || !result.success) {
+                        // Pipeline already notified on failure.
+                        return;
+                    }
                     refreshRankingList(teamId);
                     refreshUI();
-                    notify('Ranking removed successfully!', 'success');
-                } else {
-                    notify('Failed to remove ranking.', 'error');
-                }
+                });
             }
         });
     }
@@ -1472,6 +1465,13 @@
         container.innerHTML = html;
     }
 
+    /**
+     * Add a ranking to a team.
+     *
+     * PERSISTENCE:
+     *   - TeamCore owns persistence. This handler reads the form,
+     *     calls the mutation, and reacts.
+     */
     function addRanking() {
         var modal = document.getElementById('ranking-modal');
         if (!modal) {
@@ -1501,28 +1501,22 @@
             return;
         }
 
-        var result = TeamCore.addRanking(teamId, period, rank);
-        if (!result) {
-            notify('Failed to add ranking.', 'error');
-            return;
-        }
+        TeamCore.addRanking(teamId, period, rank).then(function(result) {
+            if (!result || !result.success) {
+                // Pipeline already notified on failure.
+                return;
+            }
 
-        if (periodInput) {
-            periodInput.value = '';
-        }
-        if (rankInput) {
-            rankInput.value = '';
-        }
+            if (periodInput) {
+                periodInput.value = '';
+            }
+            if (rankInput) {
+                rankInput.value = '';
+            }
 
-        refreshRankingList(teamId);
-        refreshUI();
-        notify('Ranking added successfully!', 'success');
-
-        if (typeof window.saveData === 'function') {
-            window.saveData().catch(function() {
-                notify('Changes applied in memory, but failed to persist.', 'error');
-            });
-        }
+            refreshRankingList(teamId);
+            refreshUI();
+        });
     }
 
     // ============================================================

@@ -1,23 +1,30 @@
 /**
  * utils/validation-utils.js - Validation Utilities
  * Generic validation and type checking functions
- * 
+ *
  * Path: js/utils/validation-utils.js
- * 
+ *
  * This module provides:
  *   - Type checking (isPlainObject, isSafeInteger, isPositiveInteger)
  *   - Integer parsing (parseOptionalInteger, parsePositiveInteger, etc.)
  *   - String validation (isNonEmptyString, hasValue)
- * 
+ *
  * IMPORTANT:
  *   - These functions are PURE - no side effects
  *   - No knowledge of HollowBlades domain concepts
  *   - SELF-CONTAINED - no external dependencies
  *   - This is the SINGLE SOURCE OF TRUTH for validation utilities
- * 
+ *
+ * DEPRECATED ALIASES:
+ *   The "period" aliases below (parseOptionalPeriod, parsePositivePeriod,
+ *   parseStrictPositivePeriod, hasPeriodValue, getPeriodInfo) and the
+ *   isObject alias exist only for backward compatibility with callers
+ *   that predate the rename to *Integer. They will be removed once all
+ *   callers migrate. New code should use the *Integer forms.
+ *
  * DEPENDENCIES:
  *   - None (self-contained)
- * 
+ *
  * USAGE:
  *   var isValid = ValidationUtils.isSafeInteger(42);
  *   var parsed = ValidationUtils.parseOptionalInteger('42');
@@ -40,7 +47,7 @@
     /**
      * Check if a value is a plain object (not null, not array).
      * Plain objects have Object.prototype as their prototype.
-     * 
+     *
      * @param {*} value - Value to check
      * @returns {boolean} True if value is a plain object
      */
@@ -55,7 +62,7 @@
 
     /**
      * Check if a value is a safe integer.
-     * 
+     *
      * @param {*} value - Value to check
      * @returns {boolean} True if value is a safe integer
      */
@@ -65,7 +72,7 @@
 
     /**
      * Check if a value is a positive integer (>= 1).
-     * 
+     *
      * @param {*} value - Value to check
      * @returns {boolean} True if value is a positive integer
      */
@@ -75,7 +82,7 @@
 
     /**
      * Check if a value is a finite number.
-     * 
+     *
      * @param {*} value - Value to check
      * @returns {boolean} True if value is a finite number
      */
@@ -85,7 +92,7 @@
 
     /**
      * Check if a value is a non-negative number (>= 0).
-     * 
+     *
      * @param {*} value - Value to check
      * @returns {boolean} True if value is a non-negative number
      */
@@ -95,7 +102,7 @@
 
     /**
      * Check if a value is a string.
-     * 
+     *
      * @param {*} value - Value to check
      * @returns {boolean} True if value is a string
      */
@@ -107,10 +114,10 @@
      * Check if a value is a non-empty string (after trimming).
      * This is the CANONICAL string validation function.
      * All modules MUST use this for string validation.
-     * 
+     *
      * @param {*} value - Value to check
      * @returns {boolean} True if value is a non-empty string
-     * 
+     *
      * USAGE:
      *   if (ValidationUtils.isNonEmptyString(input)) {
      *       // input is a valid non-empty string
@@ -123,7 +130,7 @@
     /**
      * Check if a value has content (non-empty after trimming).
      * Works for strings, arrays, and objects.
-     * 
+     *
      * @param {*} value - Value to check
      * @returns {boolean} True if value has content
      */
@@ -154,7 +161,7 @@
     /**
      * Parse an optional integer value.
      * Returns null for invalid, empty, or non-numeric values.
-     * 
+     *
      * @param {*} value - Value to parse
      * @returns {number|null} Parsed integer or null
      */
@@ -180,7 +187,7 @@
 
     /**
      * Parse a positive integer with a fallback value.
-     * 
+     *
      * @param {*} value - Value to parse
      * @param {number} fallback - Fallback value if parsing fails
      * @returns {number} Parsed integer or fallback
@@ -193,7 +200,7 @@
     /**
      * Parse a strict positive integer.
      * Returns null for invalid, empty, or non-positive values.
-     * 
+     *
      * @param {*} value - Value to parse
      * @returns {number|null} Parsed integer or null
      */
@@ -205,7 +212,7 @@
     /**
      * Parse a non-negative integer (>= 0).
      * Returns null for invalid values.
-     * 
+     *
      * @param {*} value - Value to parse
      * @returns {number|null} Parsed integer or null
      */
@@ -216,7 +223,7 @@
 
     /**
      * Get detailed integer information.
-     * 
+     *
      * @param {*} value - Value to check
      * @returns {object} { present: boolean, valid: boolean, value: number|null }
      */
@@ -239,7 +246,7 @@
 
     /**
      * Check if an array is defined and has elements.
-     * 
+     *
      * @param {*} arr - Value to check
      * @returns {boolean} True if array has elements
      */
@@ -249,7 +256,7 @@
 
     /**
      * Check if a value is an array.
-     * 
+     *
      * @param {*} value - Value to check
      * @returns {boolean} True if value is an array
      */
@@ -263,7 +270,7 @@
 
     /**
      * Capitalize the first letter of a string.
-     * 
+     *
      * @param {*} value - Value to capitalize
      * @returns {string} Capitalized string
      */
@@ -277,7 +284,7 @@
 
     /**
      * Truncate a string to a maximum length.
-     * 
+     *
      * @param {string} value - String to truncate
      * @param {number} length - Maximum length
      * @param {string} suffix - Suffix to add (default: '...')
@@ -304,7 +311,7 @@
 
     /**
      * Get the string length (safe for null/undefined).
-     * 
+     *
      * @param {*} value - Value to check
      * @returns {number} String length or 0
      */
@@ -317,7 +324,7 @@
 
     /**
      * Check if a string is empty or whitespace only.
-     * 
+     *
      * @param {*} value - Value to check
      * @returns {boolean} True if string is empty or whitespace
      */
@@ -334,7 +341,7 @@
 
     /**
      * Check if an object has a specific key.
-     * 
+     *
      * @param {object} obj - Object to check
      * @param {string} key - Key to look for
      * @returns {boolean} True if object has the key
@@ -348,7 +355,7 @@
 
     /**
      * Get an object's keys (safe for null/undefined).
-     * 
+     *
      * @param {object} obj - Object to get keys from
      * @returns {string[]} Array of keys
      */
@@ -361,7 +368,7 @@
 
     /**
      * Check if an object is empty.
-     * 
+     *
      * @param {object} obj - Object to check
      * @returns {boolean} True if object is empty
      */
@@ -378,7 +385,7 @@
 
     /**
      * Clamp a number between a minimum and maximum value.
-     * 
+     *
      * @param {number} value - Value to clamp
      * @param {number} min - Minimum value
      * @param {number} max - Maximum value
@@ -394,7 +401,7 @@
 
     /**
      * Check if a value is a valid number (finite).
-     * 
+     *
      * @param {*} value - Value to check
      * @returns {boolean} True if value is a finite number
      */
@@ -404,7 +411,7 @@
 
     /**
      * Parse a number with a fallback.
-     * 
+     *
      * @param {*} value - Value to parse
      * @param {number} fallback - Fallback value
      * @returns {number} Parsed number or fallback
@@ -415,8 +422,12 @@
     }
 
     // ============================================================
-    // LEGACY ALIASES (DEPRECATED - Kept for backward compatibility)
+    // DEPRECATED ALIASES
     // ============================================================
+    // These aliases exist only for backward compatibility with
+    // callers that predate the rename to *Integer. New code should
+    // use the canonical *Integer names above. They will be removed
+    // once all callers migrate.
 
     /**
      * @deprecated Use parseOptionalInteger() instead.
@@ -461,7 +472,7 @@
     }
 
     // ============================================================
-    // EXPOSE - All functions properly exported
+    // EXPOSE
     // ============================================================
 
     window.ValidationUtils = {
@@ -473,7 +484,7 @@
         isFiniteNumber: isFiniteNumber,
         isNonNegativeNumber: isNonNegativeNumber,
         isString: isString,
-        isNonEmptyString: isNonEmptyString, // <-- CRITICAL: This was missing!
+        isNonEmptyString: isNonEmptyString,
         hasValue: hasValue,
 
         // ---- Integer parsing ----
@@ -510,36 +521,5 @@
         hasPeriodValue: hasPeriodValue,
         getPeriodInfo: getPeriodInfo
     };
-
-
-    // ============================================================
-    // VERIFICATION
-    // ============================================================
-
-    // Self-test to ensure critical exports exist
-    (function verify() {
-        var missing = [];
-
-        // Check that isNonEmptyString is properly exposed
-        if (typeof window.ValidationUtils.isNonEmptyString !== 'function') {
-            missing.push('ValidationUtils.isNonEmptyString');
-        }
-
-        // Check that hasValue is properly exposed
-        if (typeof window.ValidationUtils.hasValue !== 'function') {
-            missing.push('ValidationUtils.hasValue');
-        }
-
-        // Check that global aliases exist
-        if (typeof window.isNonEmptyString !== 'function') {
-            missing.push('window.isNonEmptyString');
-        }
-
-        if (missing.length > 0) {
-            console.error('[ValidationUtils] Verification failed - missing exports:', missing.join(', '));
-        } else {
-            console.log('[ValidationUtils] All exports verified successfully.');
-        }
-    })();
 
 })();
