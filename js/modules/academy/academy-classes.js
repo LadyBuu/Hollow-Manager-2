@@ -2,12 +2,12 @@
  * js/modules/academy/academy-classes.js - Academy Classes
  * SINGLE SOURCE OF TRUTH for all academy class ENTITY data and operations
  * Path: js/modules/academy/academy-classes.js
- * 
+ *
  * This module is responsible for:
  *   - Class entity CRUD operations (create, update, delete)
  *   - Class lookup (by ID, by name, by status)
  *   - Class entity mutations
- * 
+ *
  * This module is NOT responsible for:
  *   - Class membership storage. Membership lives on character.classIds.
  *   - Class roster derivation. AcademyQueries derives rosters from
@@ -15,7 +15,7 @@
  *   - Character ↔ class relationship mutations. Those are owned by
  *     CharacterClasses (addToClass / removeClassById / addClassByName /
  *     removeFromAllClasses).
- * 
+ *
  * IMPORTANT (v15+):
  *   - This module OWNS class ENTITIES, not membership.
  *   - academy.classStudents no longer exists. It was removed in v15
@@ -23,42 +23,41 @@
  *   - Character membership is stored on character.classIds[].
  *   - The academy roster is DERIVED: characters whose classIds include
  *     classId. AcademyQueries owns that derivation.
- *   - This module's legacy membership methods (addStudent, removeStudent,
- *     removeStudentFromAllClasses) are thin DELEGATORS to CharacterClasses.
- *     They exist for backwards compatibility during the Academy UI rework
- *     and will be removed once all callers migrate.
+ *   - This module's legacy membership methods (addStudent, removeStudent)
+ *     are thin DELEGATORS to CharacterClasses. They exist for backwards
+ *     compatibility during the Academy UI rework and will be removed
+ *     once the old class-tab.js / student-tab.js are deleted in Phase 12.
  *   - Class deletion is a CASCADE. It removes the class entity, strips
  *     the classId from every character that references it, and removes
  *     all class-scoped data (weeklyTeams, grades, rankings) in a single
  *     MutationPipeline transaction.
- * 
+ *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers.
  *   - There is no MIN_YEAR or MAX_YEAR.
  *   - Any integer >= 1 is a valid year for a class.
  *   - A null year is also valid (represents "year not specified").
- * 
+ *
  * DEPENDENCIES:
  *   - window.ObjectUtils (from object-utils.js) - MANDATORY
  *   - window.IdUtils (from id-utils.js) - MANDATORY
  *   - window.ValidationUtils (from validation-utils.js) - MANDATORY
  *   - window.MutationPipeline (from mutation-pipeline.js) - MANDATORY
  *   - window.CharacterClasses (from character-classes.js) - LAZY
- *   - window.CharacterQueries (from character-queries.js) - LAZY
- * 
+ *
  * USAGE:
  *   var classes = window.AcademyClasses;
- *   
+ *
  *   // Entity CRUD
  *   var result = classes.create('Class of 2026');
  *   var result = classes.update('class_123', { name: 'New Name' });
  *   var result = classes.delete('class_123');
- *   
+ *
  *   // Lookups (used by AcademyQueries)
  *   var cls = classes.getClass('class_123');
  *   var all = classes.getClasses();
  *   var byName = classes.getClassByName('Class of 2026');
- *   
+ *
  *   // DEPRECATED membership delegates — use CharacterClasses directly
  *   var result = classes.addStudent('class_123', 'student_456');
  *   var result = classes.removeStudent('class_123', 'student_456');
@@ -110,18 +109,17 @@
     var MutationPipeline = window.MutationPipeline;
 
     // ============================================================
-    // LAZY LOADING HELPERS
+    // LAZY LOADING HELPER
     // ============================================================
-    // CharacterClasses and CharacterQueries load at different times
-    // than this module depending on the script order. Resolve them
-    // lazily at call time.
+    // CharacterClasses loads at a different time than this module
+    // depending on the script order. Resolve it lazily at call time.
+    //
+    // NOTE: CharacterQueries is no longer needed by this module. Its
+    // only caller was deriveRosterIds, which was removed along with
+    // the deprecated getClassStudents stub.
 
     function getCharacterClasses() {
         return window.CharacterClasses || null;
-    }
-
-    function getCharacterQueries() {
-        return window.CharacterQueries || null;
     }
 
     // ============================================================
@@ -185,7 +183,7 @@
 
     /**
      * Ensure the class entity structure exists.
-     * 
+     *
      * NOTE: This does NOT create or touch academy.classStudents. That
      * structure is gone as of v15. Class membership is derived from
      * character.classIds.
@@ -213,7 +211,7 @@
     /**
      * Get a class record by ID (internal).
      * Returns a LIVE reference - do not mutate directly.
-     * 
+     *
      * @param {string} classId - Class ID
      * @returns {object|null} Class object or null
      */
@@ -234,7 +232,7 @@
     /**
      * Get all class records (internal).
      * Returns an array of class objects (live references).
-     * 
+     *
      * @returns {array} Array of class objects
      */
     function getClassesInternal() {
@@ -258,7 +256,7 @@
 
     /**
      * Get class records by status (internal).
-     * 
+     *
      * @param {string} status - Status filter ('active', 'archived', 'graduated')
      * @returns {array} Array of class objects
      */
@@ -281,7 +279,7 @@
 
     /**
      * Get active class records (internal).
-     * 
+     *
      * @returns {array} Array of active class objects
      */
     function getActiveClassesInternal() {
@@ -290,7 +288,7 @@
 
     /**
      * Get a class by name (internal, case-insensitive).
-     * 
+     *
      * @param {string} name - Class name
      * @returns {object|null} Class object or null
      */
@@ -314,7 +312,7 @@
 
     /**
      * Get class display name (internal).
-     * 
+     *
      * @param {string} classId - Class ID
      * @returns {string} Class display name or 'Unknown Class'
      */
@@ -341,7 +339,7 @@
     /**
      * Get character class names (internal).
      * Reads from character.classIds.
-     * 
+     *
      * @param {object} character - Character object with classIds
      * @returns {array} Array of class names
      */
@@ -374,7 +372,7 @@
     /**
      * Get character classes (internal).
      * Reads from character.classIds.
-     * 
+     *
      * @param {object} character - Character object with classIds
      * @returns {array} Array of class objects
      */
@@ -410,10 +408,10 @@
 
     /**
      * Validate a year value for a class.
-     * 
+     *
      * Years are UNBOUNDED positive integers. A null value is also
      * accepted (means "year not specified").
-     * 
+     *
      * @param {*} value - Year value to validate
      * @returns {object} { valid: boolean, value: number|null, message?: string }
      */
@@ -440,7 +438,7 @@
 
     /**
      * Create a new class.
-     * 
+     *
      * @param {string} name - Class name
      * @param {object} options - Optional configuration
      * @param {string} options.status - Status ('active', 'archived', 'graduated')
@@ -525,7 +523,7 @@
 
     /**
      * Update an existing class.
-     * 
+     *
      * @param {string} classId - Class ID
      * @param {object} updates - Updates to apply
      * @returns {Promise<object>} { success: boolean, data?: object, message?: string }
@@ -627,7 +625,7 @@
 
     /**
      * Delete a class permanently.
-     * 
+     *
      * This is a CASCADE operation. In a single MutationPipeline
      * transaction it:
      *   1. Deletes the class entity from academy.graduatingClasses.
@@ -635,11 +633,11 @@
      *   3. Removes academy.weeklyTeams[classId] (all weeks, all teams).
      *   4. Removes grades keyed to this class (academy.grades).
      *   5. Removes rankings keyed to this class (academy.rankings).
-     * 
+     *
      * Rationale: after deletion, any surviving reference to the class
      * would be unreachable data. Removing it in the same transaction
      * avoids both orphaned references and partial-cascade states.
-     * 
+     *
      * @param {string} classId - Class ID
      * @returns {Promise<object>} { success: boolean, data?: object, message?: string }
      */
@@ -753,15 +751,20 @@
     // These functions exist only for backwards compatibility while the
     // Academy UI is being reworked. They delegate to CharacterClasses,
     // which is the canonical membership mutation path.
-    // 
+    //
     // New code should call CharacterClasses directly. These delegates
-    // will be removed once all callers migrate.
+    // will be removed once the old class-tab.js / student-tab.js are
+    // deleted in Phase 12.
+    //
+    // NOTE: removeStudentFromAllClasses was removed because it had zero
+    // callers. CharacterClasses.removeFromAllClasses is the canonical
+    // entry point for that operation.
 
     /**
      * Add a student to a class.
-     * 
+     *
      * @deprecated Use CharacterClasses.addToClass instead.
-     * 
+     *
      * @param {string} classId - Class ID
      * @param {string} studentId - Student ID
      * @returns {Promise<object>} { success: boolean, data?: object, message?: string }
@@ -776,9 +779,9 @@
 
     /**
      * Remove a student from a class.
-     * 
+     *
      * @deprecated Use CharacterClasses.removeClassById instead.
-     * 
+     *
      * @param {string} classId - Class ID
      * @param {string} studentId - Student ID
      * @returns {Promise<object>} { success: boolean, data?: object, message?: string }
@@ -791,29 +794,13 @@
         return CharacterClasses.removeClassById(studentId, classId);
     }
 
-    /**
-     * Remove a student from all classes.
-     * 
-     * @deprecated Use CharacterClasses.removeFromAllClasses instead.
-     * 
-     * @param {string} studentId - Student ID
-     * @returns {Promise<object>} { success: boolean, data?: object, message?: string }
-     */
-    function removeStudentFromAllClasses(studentId) {
-        var CharacterClasses = getCharacterClasses();
-        if (!CharacterClasses || typeof CharacterClasses.removeFromAllClasses !== 'function') {
-            return Promise.resolve(failure('CharacterClasses.removeFromAllClasses is not available.'));
-        }
-        return CharacterClasses.removeFromAllClasses(studentId);
-    }
-
     // ============================================================
     // PUBLIC INTERNAL LOOKUP (for AcademyQueries)
     // ============================================================
 
     /**
      * Get a class by ID (internal).
-     * 
+     *
      * @param {string} classId - Class ID
      * @returns {object|null} Class object or null
      */
@@ -823,7 +810,7 @@
 
     /**
      * Get all classes (internal).
-     * 
+     *
      * @returns {array} Array of class objects
      */
     function getClasses() {
@@ -832,7 +819,7 @@
 
     /**
      * Get classes by status (internal).
-     * 
+     *
      * @param {string} status - Status filter
      * @returns {array} Array of class objects
      */
@@ -842,7 +829,7 @@
 
     /**
      * Get class by name (internal).
-     * 
+     *
      * @param {string} name - Class name
      * @returns {object|null} Class object or null
      */
@@ -852,7 +839,7 @@
 
     /**
      * Get class display name (internal).
-     * 
+     *
      * @param {string} classId - Class ID
      * @returns {string} Class display name
      */
@@ -861,33 +848,9 @@
     }
 
     /**
-     * Check if a character is in a class.
-     * Reads from character.classIds.
-     * 
-     * @param {object} character - Character object
-     * @param {string} classId - Class ID
-     * @returns {boolean} True if in class
-     */
-    function isCharacterInClass(character, classId) {
-        if (!character || typeof character !== 'object') {
-            return false;
-        }
-        if (!Array.isArray(character.classIds) || !classId) {
-            return false;
-        }
-        var target = String(classId);
-        for (var i = 0; i < character.classIds.length; i++) {
-            if (String(character.classIds[i]) === target) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
      * Get character class names.
      * Reads from character.classIds.
-     * 
+     *
      * @param {object} character - Character object
      * @returns {array} Array of class names
      */
@@ -898,71 +861,12 @@
     /**
      * Get character classes.
      * Reads from character.classIds.
-     * 
+     *
      * @param {object} character - Character object
      * @returns {array} Array of class objects
      */
     function getCharacterClassesFor(character) {
         return getCharacterClassesInternal(character);
-    }
-
-    // ============================================================
-    // DEPRECATED STUBS
-    // ============================================================
-    // These existed in the pre-v15 API. They now delegate to
-    // AcademyQueries, which derives rosters from character.classIds.
-    // They will be removed once all callers migrate.
-
-    /**
-     * @deprecated Use AcademyQueries.getClassStudents instead.
-     */
-    function getClassStudents(classId) {
-        var AQ = window.AcademyQueries;
-        if (AQ && typeof AQ.getClassStudentIds === 'function') {
-            return AQ.getClassStudentIds(classId);
-        }
-        // Fallback: derive directly
-        return deriveRosterIds(classId);
-    }
-
-    /**
-     * @deprecated Use AcademyQueries.getClassStudentIds instead.
-     */
-    function getClassStudentsInternal(classId) {
-        return getClassStudents(classId);
-    }
-
-    /**
-     * Derive roster IDs from character.classIds.
-     * Local fallback used only if AcademyQueries isn't loaded.
-     * 
-     * @param {string} classId - Class ID
-     * @returns {array} Array of character IDs
-     */
-    function deriveRosterIds(classId) {
-        if (!isNonEmptyString(classId)) {
-            return [];
-        }
-        var CharacterQueries = getCharacterQueries();
-        if (!CharacterQueries || typeof CharacterQueries.getCharacters !== 'function') {
-            return [];
-        }
-        var chars = CharacterQueries.getCharacters() || [];
-        var target = String(classId);
-        var result = [];
-        for (var i = 0; i < chars.length; i++) {
-            var c = chars[i];
-            if (!c || !Array.isArray(c.classIds)) {
-                continue;
-            }
-            for (var j = 0; j < c.classIds.length; j++) {
-                if (String(c.classIds[j]) === target) {
-                    result.push(c.id);
-                    break;
-                }
-            }
-        }
-        return result;
     }
 
     // ============================================================
@@ -978,7 +882,6 @@
         // ---- Membership (DEPRECATED - delegates to CharacterClasses) ----
         addStudent: addStudent,
         removeStudent: removeStudent,
-        removeStudentFromAllClasses: removeStudentFromAllClasses,
 
         // ---- Lookups (for AcademyQueries) ----
         getClass: getClass,
@@ -986,13 +889,8 @@
         getClassesByStatus: getClassesByStatus,
         getClassByName: getClassByName,
         getDisplayName: getDisplayName,
-        isCharacterInClass: isCharacterInClass,
         getCharacterClassNames: getCharacterClassNames,
         getCharacterClasses: getCharacterClassesFor,
-
-        // ---- DEPRECATED STUBS ----
-        getClassStudents: getClassStudents,
-        getClassStudentsInternal: getClassStudentsInternal,
 
         // ---- Internal (low-level, for AcademyQueries) ----
         getClassInternal: getClassInternal,

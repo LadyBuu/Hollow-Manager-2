@@ -1,10 +1,10 @@
 /**
  * modules/academy/academy-schedule.js - Academy Schedule
  * Academy's integration boundary with Calendar for scheduling operations
- * 
+ *
  * This module provides Academy-specific scheduling operations that
  * delegate to the Calendar domain for actual schedule mechanics.
- * 
+ *
  * IMPORTANT:
  *   - This is an INTEGRATION/ORCHESTRATION layer, not a scheduling domain
  *   - Uses CalendarProvider for all schedule operations
@@ -15,11 +15,11 @@
  *   - Invalid inputs are REJECTED (operation returns null/false)
  *   - Mutations are ATOMIC: if any part is invalid, nothing changes
  *   - This module does NOT call saveData() - callers own persistence
- * 
+ *
  * DEPENDENCY INJECTION:
- *   - CalendarProvider is injected via init() or configure()
+ *   - CalendarProvider is injected via configure()
  *   - No hard dependency on ScheduleCore or CalendarQueries
- * 
+ *
  * CALENDAR PROVIDER INTERFACE:
  *   {
  *       getStudentSchedule: function(studentId, week) { ... },
@@ -35,7 +35,26 @@
  *       setSlotMetadata: function(studentId, week, day, hour, metadata) { ... },
  *       findClassStart: function(schedule, metadata, studentId, week, day, hour) { ... }
  *   }
- * 
+ *
+ * METADATA MAP CONTRACT:
+ *   - The `metadata` argument to `findClassStart` is the FULL metadata map,
+ *     keyed `${entityId}_${week}_${day}_${hour}`. findClassStart walks
+ *     forward from the given hour looking up candidate metadata to
+ *     determine how far a multi-hour class extends.
+ *   - The provider only exposes single-slot metadata lookup
+ *     (`getSlotMetadata(id, week, day, hour)`), so this module
+ *     reconstructs the full map on demand by enumerating the
+ *     schedule's occupied slots and calling getSlotMetadata for each.
+ *     The reconstruction is bounded by the student's own schedule.
+ *
+ * getStudentClasses SEMANTICS:
+ *   - Returns ONE entry per occupied slot. A class that spans hours
+ *     9, 10, 11 appears as three entries (one per hour).
+ *   - This matches what StudentCalendarUI and the CalendarAggregator
+ *     expect for grid rendering. Consumers that want one entry per
+ *     CLASS should deduplicate using getFullClassDetails / findClassStartHour.
+ *   - The behaviour is intentional and part of the public contract.
+ *
  * DEPENDENCIES:
  *   - window.AcademyQueries (from academy-queries.js) - MANDATORY
  *   - window.AcademyConstants (from academy-constants.js) - MANDATORY
@@ -43,7 +62,7 @@
  *   - window.CalendarValidation (from calendar-validation.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.DisciplineQueries (from discipline-queries.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   // Configure with CalendarProvider
  *   AcademySchedule.configure({
@@ -57,7 +76,7 @@
  *           // ... all other methods
  *       }
  *   });
- * 
+ *
  *   // Use schedule operations
  *   var schedule = AcademySchedule.getStudentSchedule('student_123', 5);
  *   var result = AcademySchedule.setStudentScheduleClass('student_123', 5, 1, 9, 'disc_abc', 2);
@@ -108,7 +127,7 @@
     /**
      * Configure AcademySchedule with external dependencies.
      * Must be called before any schedule operations.
-     * 
+     *
      * @param {object} deps - Dependency injection object
      * @param {object} deps.calendarProvider - Calendar provider with schedule methods
      * @returns {boolean} True if configured successfully
@@ -244,12 +263,76 @@
     }
 
     // ============================================================
+    // METADATA MAP RECONSTRUCTION - FIX
+    // ============================================================
+    //
+    // The provider only exposes single-slot metadata lookup. The
+    // findClassStart provider contract expects the full metadata map
+    // keyed `${entityId}_${week}_${day}_${hour}`. We reconstruct it
+    // by walking the schedule's occupied slots and calling
+    // getSlotMetadata for each.
+    //
+    // The reconstruction is bounded by the student's own schedule
+    // (typically tens of slots at most), so the extra provider calls
+    // are cheap. It avoids having to add a new required method to
+    // the provider interface, which would break every existing
+    // configure() call site.
+    //
+    // @param {string} entityId - Student ID
+    // @param {number} weekNum - Week number
+    // @param {object} schedule - Schedule object { day: { hour: disciplineId } }
+    // @returns {object} Metadata map keyed `${entityId}_${week}_${day}_${hour}`
+    function buildMetadataMap(entityId, weekNum, schedule) {
+        var map = {};
+
+        if (!schedule || typeof schedule !== 'object') {
+            return map;
+        }
+
+        for (var dayKey in schedule) {
+            if (!Object.prototype.hasOwnProperty.call(schedule, dayKey)) {
+                continue;
+            }
+            var dayNum = parseInt(dayKey, 10);
+            if (isNaN(dayNum)) {
+                continue;
+            }
+
+            var daySchedule = schedule[dayKey];
+            if (!daySchedule || typeof daySchedule !== 'object') {
+                continue;
+            }
+
+            for (var hourKey in daySchedule) {
+                if (!Object.prototype.hasOwnProperty.call(daySchedule, hourKey)) {
+                    continue;
+                }
+                var hourNum = parseInt(hourKey, 10);
+                if (isNaN(hourNum)) {
+                    continue;
+                }
+                if (!daySchedule[hourKey]) {
+                    continue;
+                }
+
+                var meta = _calendarProvider.getSlotMetadata(entityId, weekNum, dayNum, hourNum);
+                if (meta && typeof meta === 'object') {
+                    var key = String(entityId) + '_' + String(weekNum) + '_' + String(dayNum) + '_' + String(hourNum);
+                    map[key] = meta;
+                }
+            }
+        }
+
+        return map;
+    }
+
+    // ============================================================
     // STUDENT SCHEDULE - READ OPERATIONS
     // ============================================================
 
     /**
      * Get a student's schedule for a specific week.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @returns {object} Schedule object { day: { hour: disciplineId } }
@@ -273,7 +356,12 @@
 
     /**
      * Get a student's classes for a specific week (with details).
-     * 
+     *
+     * SEMANTICS:
+     *   Returns ONE entry per occupied slot. A multi-hour class appears
+     *   as N entries, one per hour. This matches what the calendar
+     *   grid renderer expects.
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @returns {array} Array of class detail objects
@@ -374,7 +462,7 @@
 
     /**
      * Get class details for a specific slot.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @param {number|string} day - Day number (1-7)
@@ -433,7 +521,7 @@
 
     /**
      * Get weekly usage statistics for a student.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @returns {object} { total, byDiscipline }
@@ -485,7 +573,7 @@
     /**
      * Set a student's schedule slot.
      * Validates inputs then delegates to CalendarProvider.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @param {number|string} day - Day number (1-7)
@@ -555,7 +643,7 @@
 
     /**
      * Remove a student's schedule slot.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @param {number|string} day - Day number (1-7)
@@ -594,7 +682,7 @@
 
     /**
      * Clear a student's entire schedule for a week.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @returns {object} { success: boolean, message?: string, data?: object }
@@ -620,7 +708,7 @@
 
     /**
      * Duplicate a student's schedule from one week to another.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} fromWeek - Source week
      * @param {number|string} toWeek - Target week
@@ -661,7 +749,7 @@
 
     /**
      * Get a student's rest days for a specific week.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @returns {array} Array of rest day numbers
@@ -685,7 +773,7 @@
 
     /**
      * Set a student's rest days for a week.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @param {array} days - Array of day numbers (1-7)
@@ -724,7 +812,7 @@
 
     /**
      * Clear a student's rest days for a week.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @returns {object} { success: boolean, message?: string, data?: object }
@@ -754,7 +842,7 @@
 
     /**
      * Check if a student has a schedule conflict.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @param {number|string} day - Day number (1-7)
@@ -786,7 +874,7 @@
 
     /**
      * Check if a day is a rest day for a student.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @param {number|string} day - Day number (1-7)
@@ -824,7 +912,7 @@
 
     /**
      * Get the instructor ID for a specific class slot.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @param {number|string} day - Day number (1-7)
@@ -838,7 +926,7 @@
 
     /**
      * Get the instructor name for a specific class slot.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @param {number|string} day - Day number (1-7)
@@ -855,7 +943,7 @@
 
     /**
      * Get the duration for a specific class slot.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @param {number|string} day - Day number (1-7)
@@ -869,7 +957,7 @@
 
     /**
      * Get the label for a specific class slot.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @param {number|string} day - Day number (1-7)
@@ -883,7 +971,15 @@
 
     /**
      * Find the start hour of a class that may span multiple hours.
-     * 
+     *
+     * FIX: The provider's findClassStart contract expects the FULL
+     * metadata map (keyed `${entityId}_${week}_${day}_${hour}`), not a
+     * single-entry object. This function reconstructs the full map
+     * from the student's own schedule before delegating. The previous
+     * implementation passed a one-key object, which made findClassStart
+     * unable to look up any candidate hours past the first, so the
+     * function always returned the input hour (the fallback).
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @param {number|string} day - Day number (1-7)
@@ -908,11 +1004,11 @@
         }
 
         var schedule = _calendarProvider.getStudentSchedule(studentId, weekNum);
-        var metadata = _calendarProvider.getSlotMetadata(studentId, weekNum, dayNum, hourNum);
+        var metadataMap = buildMetadataMap(studentId, weekNum, schedule);
 
         var result = _calendarProvider.findClassStart(
             schedule,
-            { [studentId + '_' + weekNum + '_' + dayNum + '_' + hourNum]: metadata },
+            metadataMap,
             studentId,
             weekNum,
             dayNum,
@@ -924,7 +1020,7 @@
 
     /**
      * Get full class details with all metadata.
-     * 
+     *
      * @param {string} studentId - Student ID
      * @param {number|string} week - Week number
      * @param {number|string} day - Day number (1-7)
@@ -941,7 +1037,7 @@
 
     /**
      * Save multiple schedule slots at once.
-     * 
+     *
      * @param {array} slots - Array of slot objects
      * @param {object} options - Save options
      * @param {boolean} options.overwrite - Overwrite existing slots

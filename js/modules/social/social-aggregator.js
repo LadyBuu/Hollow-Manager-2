@@ -1,10 +1,10 @@
 /**
  * modules/social/social-aggregator.js - Social Aggregator
  * Social's integration boundary with external domains
- * 
+ *
  * This module provides Social-specific projections by composing
  * data from SocialQueries and CharacterQueries.
- * 
+ *
  * IMPORTANT:
  *   - Projection builder, not a query registry
  *   - Composes SocialQueries + CharacterQueries
@@ -13,7 +13,17 @@
  *   - Never mutates data
  *   - No UI dependencies
  *   - No passthrough methods
- * 
+ *
+ * IMMUTABILITY OF SOURCE DATA:
+ *   - SocialQueries.getAllRelationships() returns the LIVE array
+ *     (window.data.social.relationships), not a copy. Any code that
+ *     sorts, splices, or reorders it mutates the persisted store.
+ *   - This module treats source arrays as read-only. Where ordering
+ *     is needed for a projection, a shallow copy is taken first.
+ *   - The slice-before-sort pattern in getSocialPageViewModel is
+ *     load-bearing: without it, calling the Social tab with the
+ *     default 'all'/'all' filters reorders the store on every render.
+ *
  * API:
  *   - getRelationshipViewModel(relationship, contextCharId)
  *   - getCharacterRelationshipsViewModel(characterId)
@@ -21,12 +31,12 @@
  *   - getSocialPageViewModel(options)
  *   - getGroupedCharacterRelationshipsViewModel(characterId)
  *   - getAllGroupedRelationshipsViewModel(options)
- * 
+ *
  * DEPENDENCIES:
  *   - window.SocialQueries (from social-queries.js) - MANDATORY
  *   - window.CharacterQueries (from character-queries.js) - MANDATORY
  *   - window.SocialConstants (from social-constants.js) - MANDATORY
- * 
+ *
  * USAGE:
  *   var vm = SocialAggregator.getCharacterRelationshipsViewModel('char_123');
  *   var rel = SocialAggregator.getRelationshipViewModel(relationship);
@@ -197,7 +207,7 @@
 
     /**
      * Get a view model for a single relationship.
-     * 
+     *
      * @param {object} relationship - Relationship object from SocialQueries
      * @param {string} contextCharId - Optional character ID for context
      * @returns {object} Relationship view model
@@ -263,7 +273,7 @@
 
     /**
      * Get a view model for all relationships of a character.
-     * 
+     *
      * @param {string} characterId - Character ID
      * @returns {object} Character relationships view model
      */
@@ -336,7 +346,7 @@
 
     /**
      * Get a view model for all characters connected to a character.
-     * 
+     *
      * @param {string} characterId - Character ID
      * @returns {object} Connected characters view model
      */
@@ -397,7 +407,14 @@
     /**
      * Get a complete social page view model.
      * Combines all Social data into a single projection for the main page.
-     * 
+     *
+     * SOURCE-DATA SAFETY:
+     *   SocialQueries.getAllRelationships() returns the LIVE array. The
+     *   `filtered` variable starts as a shallow copy (slice()) so the
+     *   final .sort() reorders the copy, not the store. Without this,
+     *   the default 'all'/'all' filter path would reorder
+     *   window.data.social.relationships on every render.
+     *
      * @param {object} options - Options
      * @param {string} options.characterFilter - Filter by character ID
      * @param {string} options.typeFilter - Filter by type ID
@@ -412,8 +429,12 @@
 
         var allRelationships = SocialQueries.getAllRelationships();
 
+        // ---- FIX: shallow copy before filtering/sorting ----
+        // Without this, when both filters are 'all', `filtered` aliases
+        // the live store and the .sort() below mutates it in place.
+        var filtered = allRelationships.slice();
+
         // Apply filters
-        var filtered = allRelationships;
         if (charFilter !== 'all') {
             filtered = filtered.filter(function(r) {
                 return String(r.character1) === String(charFilter) ||
@@ -497,7 +518,7 @@
     }
 
     // ============================================================
-    // PUBLIC API - Grouped relationships (NEW)
+    // PUBLIC API - Grouped relationships
     // ============================================================
 
     /**
@@ -507,10 +528,10 @@
      *   - ongoing: [] of relationship view models
      *   - ended:   [] of relationship view models
      *   - total:   number
-     * 
+     *
      * Groups sorted alphabetically by type label.
      * Ongoing and ended sorted by start year (ascending, empty last).
-     * 
+     *
      * @param {string} characterId - Character ID
      * @returns {array} Array of type-group view models
      */
@@ -582,7 +603,14 @@
     /**
      * Get ALL relationships grouped by type across the whole social graph.
      * Used by the top-level Social tab for the grouped view.
-     * 
+     *
+     * SOURCE-DATA SAFETY:
+     *   The `relationships` variable is reassigned to fresh arrays by
+     *   the .filter() calls, so no in-place mutation of the store can
+     *   occur here. The .sort() below sorts the freshly-built group
+     *   arrays, not the source array. This function was already safe;
+     *   the sibling getSocialPageViewModel was not.
+     *
      * @param {object} options - Options
      * @param {string} options.characterFilter - Restrict to relationships involving this character
      * @param {string} options.typeFilter - Restrict to a single type

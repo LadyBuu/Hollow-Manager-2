@@ -2,7 +2,7 @@
  * js/modules/characters/character-form.js - Character Form
  * Handles form rendering, tab switching, and form field population
  * Path: js/modules/characters/character-form.js
- * 
+ *
  * IMPORTANT:
  *   - RENDER ONLY - no event binding (handled by CharacterEvents)
  *   - All field collection uses FormUtils.getField(id) - NOT getFormData()
@@ -12,6 +12,25 @@
  *   - Social tab rendering delegates to CharacterViews.renderCharacterSocial
  *   - Academic tab rendering delegates to
  *     CharacterClassView.renderAcademicTab
+ *
+ * TAB STATE:
+ *   - state.currentTab is module-level. It survives across renders so
+ *     that re-rendering the SAME character (e.g. after an add-class
+ *     mutation, or after a save) keeps the user on the tab they were
+ *     working in.
+ *   - When the edit ID CHANGES (including from a character ID to null,
+ *     or from null to a character ID), the tab resets to 'name'. This
+ *     is the "session boundary" rule: a new character means a fresh
+ *     form.
+ *   - The reset runs BEFORE getCharacterFormHTML so the initial HTML
+ *     reflects the reset tab.
+ *
+ * EDIT ID RESOLUTION:
+ *   - getCurrentEditId() / setCurrentEditId() prefer the global
+ *     functions exposed by characters/index.js.
+ *   - The window._currentEditId fallback is dead code in the current
+ *     architecture (index.js keeps the ID in a closure), but is kept
+ *     for safety in case the module is loaded standalone in a test.
  */
 
 (function() {
@@ -170,6 +189,13 @@
     // ============================================================
 
     var state = { currentTab: 'name' };
+
+    // Tracks the edit ID from the last render() call. Used to detect
+    // "session boundaries" and reset the tab. `undefined` means no
+    // render has happened yet, which is distinct from `null` (which
+    // means a "new character" session).
+    var _lastRenderedEditId = undefined;
+
     var VALID_TABS = ['name', 'physical', 'personality', 'academic', 'professional', 'combat', 'social', 'notes'];
     var _initialized = false;
 
@@ -375,6 +401,22 @@
             if (!char) { return; }
         }
 
+        // ---- FIX: Tab session boundary ----
+        // Reset the active tab to 'name' when the edit ID changes.
+        // Re-rendering the SAME character (after a save, after an
+        // add-class mutation) keeps the current tab. Comparing against
+        // the raw editId argument preserves the null-vs-id distinction:
+        // null (new character) and 'char_abc' are different sessions,
+        // and null -> null is the same session.
+        var normalizedEditId = editId === undefined || editId === null || editId === ''
+            ? null
+            : String(editId);
+
+        if (_lastRenderedEditId !== normalizedEditId) {
+            state.currentTab = 'name';
+            _lastRenderedEditId = normalizedEditId;
+        }
+
         var title = document.getElementById('form-title');
         if (title) {
             title.textContent = editId ? 'Edit Character' : 'New Character';
@@ -395,6 +437,8 @@
         var content = document.getElementById('character-form-content');
         if (!content) { return; }
 
+        // NOTE: getCharacterFormHTML reads state.currentTab. It MUST be
+        // called after the tab-reset block above. Do not reorder.
         var html = getCharacterFormHTML(char, editId, currentYear);
         content.innerHTML = html;
 
@@ -490,6 +534,10 @@
         if (content) {
             content.innerHTML = '<p class="empty-state">Select a character from the list to view and edit details.</p>';
         }
+
+        // Clear the session so the next render starts fresh on 'name'.
+        _lastRenderedEditId = undefined;
+        state.currentTab = 'name';
     }
 
     function applyDeceasedState(isDeceased) {
@@ -1477,8 +1525,6 @@
 
         if (missing.length > 0) {
             console.warn('[CharacterForm] Verification - some exports may be missing:', missing.join(', '));
-        } else {
-            console.log('[CharacterForm] All exports verified successfully.');
         }
     })();
 

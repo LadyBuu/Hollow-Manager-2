@@ -1,7 +1,7 @@
 /**
  * js/modules/missions/mission-ui.js - Mission UI Controller
  * Event wiring, modal management, user interactions for missions.
- * 
+ *
  * UI PHILOSOPHY:
  *   - UI is the boundary between user and domain
  *   - All mutations go through MissionCore
@@ -9,14 +9,28 @@
  *   - All rendering goes through MissionRender
  *   - Persistence is owned by MissionCore/MutationPipeline (UI has NO persistence knowledge)
  *   - Event handlers use delegation with CURRENT mission resolution
- * 
+ *
  * PERSISTENCE CONTRACT:
  *   - UI does NOT call saveData() - this is handled by MutationPipeline
  *   - UI only calls MissionCore commands and waits for results
  *   - On success: refresh UI, show notification
  *   - On failure: show notification with error message
  *   - No optimistic updates that could diverge from persisted state
- * 
+ *
+ * EVENT LISTENER LIFECYCLE:
+ *   - All listeners go through addSafeEventListener, which tracks
+ *     { element, eventName, handler, options } in _eventListeners.
+ *   - removeAllEventListeners() removes every tracked listener and
+ *     resets the internal tracking array.
+ *   - attachListEvents / attachDetailEvents are IDEMPOTENT BY
+ *     CONSTRUCTION: they first remove any tracked listener whose
+ *     element matches the target, then add a fresh one. This replaces
+ *     the previous "_listEventsAttached" flag pattern, which could go
+ *     stale if removeAllEventListeners ran without the target DOM
+ *     being recreated.
+ *   - Calling either attach function multiple times produces exactly
+ *     one live listener.
+ *
  * DEPENDENCIES:
  *   - window.MissionCore (required)
  *   - window.MissionRender (required)
@@ -25,7 +39,7 @@
  *   - window.NotificationSystem (from notification.js)
  *   - window.TabManager (from tab-manager.js)
  *   - window.Modal (from modal.js) - optional, falls back to DOM modals
- * 
+ *
  * LOAD ORDER:
  *   - mission-schema.js (FIRST)
  *   - mission-queries.js
@@ -115,6 +129,11 @@
     /**
      * Show a confirmation dialog.
      * Returns a Promise that resolves to true if confirmed, false otherwise.
+     *
+     * NOTE: The window.showConfirm and window.confirmModal branches
+     * are hooks for a future async modal system. Neither is currently
+     * wired up anywhere in the codebase, so in practice every call
+     * falls through to the native confirm().
      */
     function showConfirmation(message) {
         if (typeof window.showConfirm === 'function') {
@@ -163,6 +182,33 @@
             }
         }
         _eventListeners = [];
+    }
+
+    /**
+     * Remove all tracked listeners whose element matches `element`.
+     * Used by attach functions to guarantee idempotency: calling an
+     * attach function twice on the same element leaves exactly one
+     * live listener.
+     */
+    function detachListenersFor(element) {
+        if (!element) {
+            return;
+        }
+
+        var remaining = [];
+        for (var i = 0; i < _eventListeners.length; i++) {
+            var item = _eventListeners[i];
+            if (item.element === element) {
+                try {
+                    item.element.removeEventListener(item.eventName, item.handler, item.options);
+                } catch (e) {
+                    // Ignore removal errors
+                }
+            } else {
+                remaining.push(item);
+            }
+        }
+        _eventListeners = remaining;
     }
 
     // ============================================================
@@ -242,12 +288,19 @@
     // ============================================================
     // DETAIL EVENTS
     // ============================================================
+    //
+    // IDEMPOTENT: detachListenersFor(container) runs first, so calling
+    // attachDetailEvents on the same container twice leaves exactly one
+    // live listener. The previous "_detailEventsAttached" flag could
+    // become stale if removeAllEventListeners ran without the DOM
+    // being recreated.
 
     function attachDetailEvents(container) {
-        if (container._detailEventsAttached) {
+        if (!container) {
             return;
         }
-        container._detailEventsAttached = true;
+
+        detachListenersFor(container);
 
         addSafeEventListener(container, 'click', function(e) {
             var missionId = container.dataset.missionId;
@@ -286,12 +339,15 @@
     // ============================================================
     // LIST EVENTS
     // ============================================================
+    //
+    // IDEMPOTENT: same contract as attachDetailEvents.
 
     function attachListEvents(container) {
-        if (container._listEventsAttached) {
+        if (!container) {
             return;
         }
-        container._listEventsAttached = true;
+
+        detachListenersFor(container);
 
         addSafeEventListener(container, 'click', function(e) {
             var target = e.target;
