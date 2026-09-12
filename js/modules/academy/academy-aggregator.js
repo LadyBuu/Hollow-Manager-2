@@ -21,20 +21,21 @@
  * 
  * CLASS MEMBERSHIP MODEL (v15+):
  *   - Class rosters are DERIVED from character.classIds[], not read from
- *     a separate roster store. This module obtains rosters exclusively
- *     through AcademyQueries.getClassStudents / getClassStudentIds,
- *     which perform that derivation.
- *   - There is no academy.classStudents store. It was removed in v15.
- *   - The aggregator does not reach past AcademyQueries to construct
- *     rosters itself. If AcademyQueries is unavailable, roster reads
- *     return empty arrays rather than silently reading a stale store.
+ *     a separate roster store.
+ *   - The class INSTRUCTOR is tracked separately on class.instructorId.
+ *     Instructors are NOT automatically written into character.classIds;
+ *     the aggregator stitches the instructor into the roster for display.
+ *   - This means a class view always shows its instructor, even if the
+ *     instructor has no explicit roster entry.
+ * 
+ * ROSTER ORDERING:
+ *   - The class roster is sorted trainees-first, then instructors,
+ *     alphabetical by display name within each group.
+ *   - This is the canonical order for the People view.
  * 
  * RETURN SHAPE NOTE:
  *   AcademyQueries.getClassStudents(classId) returns full character
- *   OBJECTS by default (returnObjects defaults to true). Only when
- *   called as getClassStudents(classId, false) does it return IDs.
- *   This module relies on the default (objects) behaviour. Do not
- *   treat the result as an array of IDs.
+ *   OBJECTS by default. This module relies on that behaviour.
  * 
  * DEPENDENCIES:
  *   - window.AcademyQueries (from shared/queries/academy-queries.js) - MANDATORY
@@ -48,7 +49,6 @@
  *   var vm = AcademyAggregator.getClassViewModel('class_123', { week: 5 });
  *   var list = AcademyAggregator.getClassListViewModel({ week: 5 });
  *   var student = AcademyAggregator.getStudentViewModel('char_456', { week: 5 });
- *   var rankings = AcademyAggregator.getRankingViewModel('class_123', 5);
  */
 
 (function() {
@@ -234,11 +234,16 @@
      * Combines class data with students, teams, and rankings.
      * 
      * The student list is DERIVED through AcademyQueries.getClassStudents,
-     * which reads character.classIds. There is no roster store involved.
+     * which reads character.classIds. The class instructor (if any) is
+     * stitched in via class.instructorId — instructors are not required
+     * to be in character.classIds.
      * 
-     * AcademyQueries.getClassStudents returns full character OBJECTS by
-     * default. This function relies on that behaviour and must not
-     * assume the return value is an array of IDs.
+     * Each student entry carries a `role` field:
+     *   'instructor' if class.instructorId === char.id
+     *   'trainee' otherwise
+     * 
+     * The roster is sorted trainees-first, then instructors,
+     * alphabetical within each group.
      * 
      * @param {string} classId - Class ID
      * @param {object} options - Options
@@ -280,30 +285,69 @@
 
         // ---- Students ----
         // Roster is derived from character.classIds via AcademyQueries.
-        // getClassStudents returns full character objects by default.
+        // The instructor is stitched in if not already present.
         if (includeStudents) {
-            var students = AcademyQueries.getClassStudents(classId);
-            var enrolledCount = students.length;
+            var rawStudents = AcademyQueries.getClassStudents(classId);
 
-            var studentViewModels = students.map(function(char) {
+            // Ensure the instructor appears in the roster even if not in
+            // character.classIds. The instructor is a class member by
+            // virtue of class.instructorId, not by classIds.
+            if (cls.instructorId) {
+                var instructorAlreadyPresent = false;
+                for (var s = 0; s < rawStudents.length; s++) {
+                    if (rawStudents[s] && String(rawStudents[s].id) === String(cls.instructorId)) {
+                        instructorAlreadyPresent = true;
+                        break;
+                    }
+                }
+
+                if (!instructorAlreadyPresent) {
+                    var instructorChar = CharacterQueries.getCharacterById(cls.instructorId);
+                    if (instructorChar) {
+                        rawStudents = rawStudents.concat([instructorChar]);
+                    }
+                }
+            }
+
+            var studentViewModels = rawStudents.map(function(char) {
+                if (!char || typeof char !== 'object') {
+                    return null;
+                }
+
+                var isInstructor = cls.instructorId &&
+                    String(cls.instructorId) === String(char.id);
+
                 return {
                     id: char.id,
                     name: CharacterQueries.getDisplayName(char),
                     status: CharacterQueries.getCurrentStatus(char),
                     age: CharacterQueries.getCharacterAge(char),
                     deceased: char.deceased || false,
-                    classIds: char.classIds || []
+                    classIds: char.classIds || [],
+                    role: isInstructor ? 'instructor' : 'trainee'
                 };
+            }).filter(function(s) {
+                return s !== null;
             });
 
-            // Sort by name
+            // Sort: trainees first, then instructors.
+            // Within each group, alphabetical by display name.
             studentViewModels.sort(function(a, b) {
+                if (a.role !== b.role) {
+                    return a.role === 'trainee' ? -1 : 1;
+                }
                 return a.name.localeCompare(b.name);
             });
 
             viewModel.students = studentViewModels;
             viewModel.studentCount = studentViewModels.length;
-            viewModel.enrolledCount = enrolledCount;
+            viewModel.enrolledCount = studentViewModels.length;
+            viewModel.traineeCount = studentViewModels.filter(function(s) {
+                return s.role === 'trainee';
+            }).length;
+            viewModel.instructorCount = studentViewModels.filter(function(s) {
+                return s.role === 'instructor';
+            }).length;
 
             // ---- Grades ----
             if (includeGrades) {
@@ -314,6 +358,7 @@
                     gradeSummaries.push({
                         studentId: studentViewModels[j].id,
                         studentName: studentViewModels[j].name,
+                        role: studentViewModels[j].role,
                         gradeCount: grades.length,
                         average: summary.average,
                         passing: summary.passing,
