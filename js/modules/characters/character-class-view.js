@@ -9,6 +9,7 @@
  *   - Rendering academic team memberships (historical)
  *   - Rendering the grades table (discipline / class / week / score)
  *   - The combined Academic tab layout
+ *   - Populating the character list's class filter dropdown
  *
  * IMPORTANT:
  *   - RENDER ONLY - no mutations, no persistence
@@ -28,6 +29,13 @@
  *   - The section renderers (renderAddClassSection, renderClassesSection,
  *     renderAcademicTeamsSection, renderGradesSection) are implementation
  *     details. They are exported for testing only.
+ *
+ * CLASS FILTER CONTRACT:
+ *   - populateClassFilter() populates #char-class-filter (the class
+ *     filter in the character list sidebar). It is idempotent and
+ *     preserves the current selection if the selected class still
+ *     exists.
+ *   - Called by characters/index.js on mount.
  *
  * ROLE LABELS:
  *   - A character is an "Instructor" for a class when
@@ -154,6 +162,62 @@
         if (joinStr) { return prefix + joinStr + ' \u2192 Present'; }
         if (leaveStr) { return 'Until ' + prefix + leaveStr; }
         return '';
+    }
+
+    // ============================================================
+    // CLASS FILTER (character list sidebar)
+    // ============================================================
+
+    /**
+     * Populate #char-class-filter with all classes.
+     *
+     * Idempotent: safe to call multiple times. Preserves the current
+     * selection if the selected class still exists. Falls back to
+     * 'all' if the selected class has disappeared.
+     */
+    function populateClassFilter() {
+        var select = document.getElementById('char-class-filter');
+        if (!select) {
+            return;
+        }
+
+        var previousValue = select.value || 'all';
+
+        var allClasses = AcademyQueries.getClasses() || [];
+
+        // Sort alphabetically by name
+        var sorted = allClasses.slice().sort(function(a, b) {
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        // Rebuild options
+        select.textContent = '';
+
+        var allOption = document.createElement('option');
+        allOption.value = 'all';
+        allOption.textContent = 'All Classes';
+        select.appendChild(allOption);
+
+        for (var i = 0; i < sorted.length; i++) {
+            var cls = sorted[i];
+            if (!cls || !cls.id) {
+                continue;
+            }
+            var option = document.createElement('option');
+            option.value = cls.id;
+            option.textContent = cls.name || 'Unnamed Class';
+            select.appendChild(option);
+        }
+
+        // Restore previous selection if it still exists
+        var stillExists = false;
+        for (var j = 0; j < select.options.length; j++) {
+            if (select.options[j].value === previousValue) {
+                stillExists = true;
+                break;
+            }
+        }
+        select.value = stillExists ? previousValue : 'all';
     }
 
     // ============================================================
@@ -617,6 +681,9 @@
     window.CharacterClassView = {
         // Primary entry point for the Academic tab
         renderAcademicTab: renderAcademicTab,
+
+        // Character list class filter
+        populateClassFilter: populateClassFilter,
 
         // Individual sections (exposed for testing only — callers
         // should use renderAcademicTab)

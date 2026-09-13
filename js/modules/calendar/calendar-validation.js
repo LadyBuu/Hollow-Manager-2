@@ -2,19 +2,19 @@
  * utils/calendar-validation.js - Calendar Validation
  * Canonical single source of truth for all calendar validation
  * Path: js/utils/calendar-validation.js
- * 
+ *
  * This module provides:
  *   - Strict validation and parsing of calendar values
  *   - Week, day, hour, duration validation
  *   - Single source of truth - all modules MUST use this
- * 
+ *
  * IMPORTANT:
  *   - This is the CANONICAL validation layer for calendar values
  *   - All modules MUST use these functions - do NOT duplicate
  *   - Validation functions return null for invalid input
  *   - Parse functions return null for invalid input
  *   - No domain knowledge - calendar concepts only
- * 
+ *
  * YEAR SEMANTICS:
  *   - Years are UNBOUNDED positive integers.
  *   - There is no MIN_YEAR or MAX_YEAR.
@@ -22,10 +22,10 @@
  *   - parseYear() accepts any positive integer.
  *   - Weeks and days remain bounded (they have real semantic
  *     meaning: 52 weeks per year, 7 days per week).
- * 
+ *
  * DEPENDENCIES:
  *   - window.CalendarConstants (for bounds only)
- * 
+ *
  * USAGE:
  *   var CV = window.CalendarValidation;
  *   var week = CV.parseWeek(weekInput);
@@ -50,6 +50,10 @@
     // ============================================================
     // DEPENDENCY CHECK
     // ============================================================
+    //
+    // NOTE: MIN_YEAR and MAX_YEAR are deliberately NOT checked.
+    // Years are unbounded positive integers and are validated
+    // locally by parseYear(). See the YEAR SEMANTICS block above.
 
     function checkDependencies() {
         var missing = [];
@@ -269,16 +273,13 @@
     // ============================================================
     // YEAR VALIDATION
     // ============================================================
+    //
+    // Years are UNBOUNDED positive integers. Any integer >= 1 is a
+    // valid year. There is no upper bound.
+    //
+    // This function intentionally does NOT consult CalendarConstants
+    // for bounds. The unbounded contract is local to this function.
 
-    /**
-     * Parse a year value.
-     * 
-     * Years are UNBOUNDED positive integers. Any integer >= 1 is a
-     * valid year. There is no upper bound.
-     * 
-     * @param {*} value - Value to parse
-     * @returns {number|null} Parsed year or null if invalid
-     */
     function parseYear(value) {
         if (value === undefined || value === null) {
             return null;
@@ -386,6 +387,11 @@
     // ============================================================
     // BOUNDS ACCESSORS
     // ============================================================
+    //
+    // NOTE: getYearBounds() has been REMOVED. Years are unbounded;
+    // there are no bounds to return. Callers that previously used
+    // it should call parseYear() and check for null instead, or
+    // simply validate "integer >= 1" inline.
 
     function getWeekBounds() {
         return {
@@ -458,6 +464,7 @@
         isInRange: isInRange,
 
         // Bounds
+        // NOTE: getYearBounds is deliberately absent — years are unbounded.
         getWeekBounds: getWeekBounds,
         getDayBounds: getDayBounds,
         getHourBounds: getHourBounds,
