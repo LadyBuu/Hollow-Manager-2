@@ -438,11 +438,6 @@
                     'data-character-id="' + escapeAttribute(char.id) + '">' +
                     'View Full Profile' +
                 '</button>';
-        html += '<button type="button" class="small secondary" ' +
-                    'data-action="edit-character" ' +
-                    'data-character-id="' + escapeAttribute(char.id) + '">' +
-                    'Edit Character' +
-                '</button>';
         html += '</div>';
 
         html += '</div>';
