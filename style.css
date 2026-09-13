@@ -3008,3 +3008,991 @@ main {
         min-width: 140px;
     }
 }
+
+/* ============================================================
+   ACADEMY MODULE
+   ============================================================ */
+
+/* ---------- Shell ---------- */
+
+.academy-view-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+}
+
+.academy-view-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: 2px solid transparent;
+    color: var(--text-dim);
+    padding: 5px 12px;
+    font-size: 0.72rem;
+    border-radius: 6px 6px 0 0;
+    cursor: pointer;
+    transition: 0.2s;
+    white-space: nowrap;
+}
+
+.academy-view-btn:hover {
+    color: var(--text);
+    background: var(--panel-alt);
+}
+
+.academy-view-btn.active {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+}
+
+/* ---------- Top bar (class selector + week selector) ---------- */
+
+.academy-top-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 10px;
+}
+
+.academy-top-left,
+.academy-top-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.academy-top-label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+
+.academy-class-select,
+.academy-week-input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 0.72rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.academy-class-select {
+    min-width: 180px;
+}
+
+.academy-week-input {
+    width: 70px;
+}
+
+.academy-class-select:focus,
+.academy-week-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* ---------- Body / Layout ---------- */
+
+.academy-body {
+    min-width: 0;
+}
+
+.academy-body-empty,
+.academy-body-placeholder {
+    padding: 20px;
+    text-align: center;
+}
+
+/* The two-panel layout — this is the missing piece. */
+.academy-people-layout,
+.academy-discipline-layout,
+.academy-location-layout {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 12px;
+    align-items: start;
+}
+
+@media (max-width: 768px) {
+    .academy-people-layout,
+    .academy-discipline-layout,
+    .academy-location-layout {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+}
+
+/* ---------- Sidebar (character / discipline / location lists) ---------- */
+
+.academy-people-sidebar,
+.academy-discipline-sidebar,
+.academy-location-sidebar {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px;
+    max-height: 640px;
+    overflow-y: auto;
+}
+
+@media (max-width: 768px) {
+    .academy-people-sidebar,
+    .academy-discipline-sidebar,
+    .academy-location-sidebar {
+        max-height: 320px;
+    }
+}
+
+/* ---------- Filters ---------- */
+
+.academy-character-filters,
+.academy-discipline-filters,
+.academy-location-filters {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.academy-people-search,
+.academy-discipline-search,
+.academy-location-search {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: 0.7rem;
+    font-family: 'Inter', sans-serif;
+}
+
+.academy-people-search:focus,
+.academy-discipline-search:focus,
+.academy-location-search:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.academy-filter-label {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+}
+
+.academy-people-role,
+.academy-people-status,
+.academy-discipline-type-filter,
+.academy-location-type-filter {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 4px 6px;
+    font-size: 0.7rem;
+    font-family: 'Inter', sans-serif;
+}
+
+/* ---------- Character list ---------- */
+
+.academy-character-list,
+.academy-discipline-list,
+.academy-location-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.academy-character-row,
+.academy-discipline-row,
+.academy-location-row {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-soft);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: 0.15s;
+}
+
+.academy-character-row:hover,
+.academy-discipline-row:hover,
+.academy-location-row:hover {
+    background: var(--panel-alt);
+}
+
+.academy-character-row.selected,
+.academy-discipline-row.selected,
+.academy-location-row.selected {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    padding-left: 6px;
+}
+
+.academy-character-row.deceased {
+    opacity: 0.5;
+}
+
+.academy-character-row-main,
+.academy-discipline-row-main,
+.academy-location-row-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.academy-character-name,
+.academy-discipline-name,
+.academy-location-name {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.academy-character-row-status,
+.academy-discipline-row-meta,
+.academy-location-row-meta {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+}
+
+.academy-character-role-badge {
+    font-size: 0.5rem;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* ---------- Detail panel ---------- */
+
+.academy-people-detail,
+.academy-discipline-detail,
+.academy-location-detail {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    min-height: 200px;
+    overflow-y: auto;
+    max-height: 640px;
+}
+
+@media (max-width: 768px) {
+    .academy-people-detail,
+    .academy-discipline-detail,
+    .academy-location-detail {
+        max-height: none;
+    }
+}
+
+.academy-detail-empty {
+    padding: 30px 12px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.75rem;
+}
+
+.academy-detail-placeholder {
+    padding: 20px;
+}
+
+/* ---------- Class detail ---------- */
+
+.academy-class-detail-header {
+    border-bottom: 1px solid var(--border-soft);
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+}
+
+.academy-class-detail-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.academy-class-detail-title {
+    font-size: 1.1rem;
+    color: var(--accent);
+}
+
+.class-status-badge {
+    font-size: 0.55rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 8px;
+    border: 1px solid;
+}
+
+.class-status-active {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.class-status-archived {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.class-status-graduated {
+    color: var(--info);
+    background: var(--info-soft);
+    border-color: var(--info);
+}
+
+.class-status-unknown {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.academy-class-detail-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 0.7rem;
+    color: var(--text);
+    margin-bottom: 8px;
+}
+
+.academy-class-detail-meta-item .meta-label {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+}
+
+.academy-meta-muted {
+    opacity: 0.7;
+}
+
+.academy-class-detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.academy-class-detail-description {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+}
+
+.academy-class-detail-section {
+    margin-bottom: 14px;
+}
+
+.academy-class-detail-section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-class-detail-section-title {
+    font-size: 0.8rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-class-detail-section-count,
+.academy-class-detail-section-subtitle {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+/* ---------- Roster ---------- */
+
+.academy-roster-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.academy-student-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    background: var(--panel-alt);
+    border-left: 3px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: 0.15s;
+}
+
+.academy-student-row:hover {
+    background: var(--accent-soft);
+    border-left-color: var(--accent);
+}
+
+.academy-student-row-instructor {
+    border-left-color: var(--info);
+}
+
+.academy-student-row-deceased {
+    opacity: 0.5;
+}
+
+.academy-student-row-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.academy-student-row-name {
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.academy-student-row-secondary {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+}
+
+.academy-student-row-deceased-badge {
+    color: var(--danger);
+    font-weight: 600;
+}
+
+.academy-role-badge {
+    font-size: 0.5rem;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.academy-role-instructor {
+    color: var(--info);
+    background: var(--info-soft);
+    border: 1px solid var(--info);
+}
+
+.academy-role-trainee {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+}
+
+/* ---------- Teams ---------- */
+
+.academy-team-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.academy-team-row {
+    padding: 6px 8px;
+    background: var(--panel-alt);
+    border-radius: 4px;
+    border-left: 3px solid var(--info);
+    cursor: pointer;
+    transition: 0.15s;
+}
+
+.academy-team-row:hover {
+    background: var(--info-soft);
+}
+
+.academy-team-row-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.academy-team-row-name {
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.academy-team-row-member-count,
+.academy-team-row-secondary {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+}
+
+/* ---------- Rankings ---------- */
+
+.academy-ranking-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.7rem;
+}
+
+.academy-ranking-table thead th {
+    text-align: left;
+    padding: 4px 6px;
+    background: var(--panel-alt);
+    color: var(--text-dim);
+    font-size: 0.6rem;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+}
+
+.academy-ranking-table tbody td {
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-ranking-table .rank-col {
+    width: 60px;
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.academy-ranking-table .avg-col,
+.academy-ranking-table .count-col {
+    width: 70px;
+    color: var(--text-dim);
+}
+
+/* ---------- Character detail panel ---------- */
+
+.academy-character-detail-header {
+    border-bottom: 1px solid var(--border-soft);
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+}
+
+.academy-character-detail-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.academy-character-detail-title {
+    font-size: 1.1rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-character-detail-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 0.7rem;
+    margin-bottom: 8px;
+}
+
+.academy-character-detail-meta-item .meta-label {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+}
+
+.academy-meta-danger {
+    color: var(--danger);
+    font-weight: 600;
+}
+
+.academy-character-detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.academy-character-detail-section {
+    margin-bottom: 14px;
+}
+
+.academy-character-detail-section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-character-detail-section-title {
+    font-size: 0.8rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-character-detail-section-subtitle,
+.academy-character-detail-section-count {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+/* Character class chips */
+.academy-character-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.academy-character-class-chip {
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    padding: 2px 10px;
+    border-radius: 10px;
+    font-size: 0.65rem;
+    font-weight: 500;
+}
+
+/* Character grades table */
+.academy-grade-table-wrapper {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+}
+
+.academy-grade-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.68rem;
+}
+
+.academy-grade-table thead th {
+    text-align: left;
+    padding: 4px 6px;
+    background: var(--panel-alt);
+    color: var(--text-dim);
+    font-size: 0.6rem;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.academy-grade-table tbody td {
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-grade-table .week-col {
+    width: 50px;
+    color: var(--text-dim);
+}
+
+.academy-grade-table .type-col {
+    width: 80px;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.academy-grade-table .score-col {
+    width: 60px;
+    text-align: right;
+}
+
+.academy-grade-score {
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.65rem;
+}
+
+.academy-grade-score-excellent { color: var(--accent); background: var(--accent-soft); }
+.academy-grade-score-good      { color: var(--info);   background: var(--info-soft); }
+.academy-grade-score-passing   { color: var(--warning);background: var(--warning-soft); }
+.academy-grade-score-failing   { color: var(--danger); background: var(--danger-soft); }
+.academy-grade-score-unknown   { color: var(--text-dim); background: var(--panel-alt); }
+
+/* Character ranking snapshot */
+.academy-ranking-snapshot {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.academy-ranking-snapshot-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 6px 12px;
+    background: var(--panel-alt);
+    border-radius: 6px;
+    min-width: 70px;
+}
+
+.snapshot-label {
+    font-size: 0.55rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.snapshot-value {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--accent);
+    font-family: 'Fraunces', serif;
+}
+
+.snapshot-subtext {
+    font-size: 0.55rem;
+    color: var(--text-dim);
+}
+
+/* Character team list */
+.academy-character-team-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.academy-character-team-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--info);
+    border-radius: 4px;
+    font-size: 0.7rem;
+}
+
+.academy-character-team-name {
+    font-weight: 500;
+}
+
+.academy-character-team-type {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+}
+
+/* ---------- Discipline & Location panels ---------- */
+
+.academy-discipline-detail-header,
+.academy-location-detail-header {
+    border-bottom: 1px solid var(--border-soft);
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+}
+
+.academy-discipline-detail-title-row,
+.academy-location-detail-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.academy-discipline-detail-title,
+.academy-location-detail-title {
+    font-size: 1.1rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-discipline-detail-meta,
+.academy-location-detail-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 0.7rem;
+    margin-bottom: 8px;
+}
+
+.academy-discipline-detail-meta-item .meta-label,
+.academy-location-detail-meta-item .meta-label {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+}
+
+.academy-discipline-detail-actions,
+.academy-location-detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.academy-discipline-detail-section,
+.academy-location-detail-section {
+    margin-bottom: 14px;
+}
+
+.academy-discipline-detail-section-header,
+.academy-location-detail-section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+}
+
+.academy-discipline-detail-section-title,
+.academy-location-detail-section-title {
+    font-size: 0.8rem;
+    color: var(--accent);
+    margin: 0;
+}
+
+.academy-discipline-detail-section-count,
+.academy-location-detail-section-count,
+.academy-discipline-detail-section-subtitle,
+.academy-location-detail-section-subtitle {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+}
+
+/* Type badges */
+.academy-discipline-type-badge,
+.academy-location-type-badge {
+    font-size: 0.55rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 8px;
+    border: 1px solid;
+    white-space: nowrap;
+}
+
+.academy-discipline-type-mandatory {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.academy-discipline-type-optional {
+    color: var(--info);
+    background: var(--info-soft);
+    border-color: var(--info);
+}
+
+.academy-discipline-type-unknown,
+.academy-location-type-other {
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-color: var(--border);
+}
+
+.academy-location-type-classroom  { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.academy-location-type-lab        { color: var(--info);   background: var(--info-soft);   border-color: var(--info);   }
+.academy-location-type-gym        { color: var(--warning);background: var(--warning-soft);border-color: var(--warning);}
+.academy-location-type-field      { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.academy-location-type-hall       { color: var(--info);   background: var(--info-soft);   border-color: var(--info);   }
+.academy-location-type-auditorium { color: var(--warning);background: var(--warning-soft);border-color: var(--warning);}
+.academy-location-type-library    { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.academy-location-type-office     { color: var(--text-dim);background: var(--panel-alt); border-color: var(--border); }
+
+/* Instructor list */
+.academy-discipline-instructor-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.academy-discipline-instructor-row {
+    padding: 4px 8px;
+    background: var(--panel-alt);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    font-size: 0.72rem;
+}
+
+.academy-discipline-instructor-name {
+    font-weight: 500;
+}
+
+/* Location schedule table */
+.academy-location-schedule-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.7rem;
+}
+
+.academy-location-schedule-table thead th {
+    text-align: left;
+    padding: 4px 6px;
+    background: var(--panel-alt);
+    color: var(--text-dim);
+    font-size: 0.6rem;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+}
+
+.academy-location-schedule-table tbody td {
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.academy-location-schedule-table .day-col {
+    width: 90px;
+    color: var(--text-dim);
+}
+
+.academy-location-schedule-table .time-col {
+    width: 70px;
+    color: var(--text-dim);
+}
+
+.academy-location-schedule-table .duration-col {
+    width: 60px;
+    color: var(--text-dim);
+    text-align: right;
+}
+
+.academy-location-schedule-label {
+    color: var(--text-dim);
+    font-style: italic;
+    font-size: 0.65rem;
+}
+
+/* ---------- Mobile tweaks ---------- */
+
+@media (max-width: 480px) {
+    .academy-view-btn {
+        font-size: 0.6rem;
+        padding: 4px 8px;
+    }
+    .academy-top-bar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .academy-top-left,
+    .academy-top-right {
+        justify-content: space-between;
+    }
+    .academy-class-select {
+        min-width: 0;
+        flex: 1;
+    }
+    .academy-people-detail,
+    .academy-discipline-detail,
+    .academy-location-detail {
+        padding: 8px;
+    }
+}
