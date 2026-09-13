@@ -7,23 +7,24 @@
  * This module provides:
  *   - The unified Academy shell (view switcher, class dropdown, week selector)
  *   - The People view: character list + detail panel
- *   - Delegation to ClassDetail and CharacterDetail for the right panel
+ *   - Delegation to AcademyClassDetail and AcademyCharacterDetail for the right panel
+ *   - Full event wiring for the People view
  *   - Placeholder views for Weekly Teams / Rankings / Disciplines / Locations
  * 
  * IMPORTANT:
- *   - RENDER ONLY - no mutations, no domain logic
+ *   - RENDER + WIRE - no mutations, no domain logic
  *   - Reads state from AcademyUI
  *   - Reads projections from AcademyAggregator
- *   - Delegates right-panel rendering to ClassDetail / CharacterDetail
- *   - Delegates event handling to AcademyEvents
+ *   - Delegates right-panel rendering to AcademyClassDetail / AcademyCharacterDetail
+ *   - Uses container-level event delegation (survives innerHTML replacement)
  *   - Uses DomUtils for escaping
  * 
  * VIEWS:
- *   people       - default; class + character browsing
- *   weeklyTeams  - placeholder for now
- *   rankings     - placeholder for now
- *   disciplines  - placeholder for now
- *   locations    - placeholder for now
+ *   people       - default; class + character browsing (FULLY WIRED)
+ *   weeklyTeams  - placeholder (Session E)
+ *   rankings     - placeholder (Session E)
+ *   disciplines  - placeholder (Session E)
+ *   locations    - placeholder (Session E)
  * 
  * LAYOUT (people view):
  *   ┌─────────────────────────────────────────────────────────┐
@@ -47,11 +48,14 @@
  *   - window.CharacterQueries (MANDATORY)
  *   - window.DomUtils (MANDATORY)
  *   - window.CalendarConstants (MANDATORY)
- *   - window.ClassDetail (LAZY - optional)
- *   - window.CharacterDetail (LAZY - optional)
+ *   - window.AcademyClasses (LAZY - only for Add Class)
+ *   - window.NotificationSystem (LAZY - only for Add Class errors)
+ *   - window.CharacterDetail (LAZY - only for View Full Profile)
+ *   - window.AcademyClassDetail (LAZY - optional)
+ *   - window.AcademyCharacterDetail (LAZY - optional)
  * 
  * USAGE:
- *   // Called by academy-events.js
+ *   // Called by academy/index.js
  *   AcademyView.render(container);
  */
 
@@ -151,11 +155,23 @@
     }
 
     function getClassDetailModule() {
-        return window.ClassDetail || null;
+        // Prefer the namespaced export; fall back to the legacy name.
+        return window.AcademyClassDetail || window.ClassDetail || null;
     }
 
     function getCharacterDetailModule() {
-        return window.CharacterDetail || null;
+        // NOTE: window.CharacterDetail is the modal from
+        // modules/characters/character-detail.js. The Academy panel
+        // renderer exposes itself as window.AcademyCharacterDetail to
+        // avoid the collision. Do NOT fall back to window.CharacterDetail
+        // here — that's the modal, not the panel renderer.
+        return window.AcademyCharacterDetail || null;
+    }
+
+    function notify(message, type) {
+        if (window.NotificationSystem && typeof window.NotificationSystem.notify === 'function') {
+            window.NotificationSystem.notify(message, type || 'info');
+        }
     }
 
     // ============================================================
@@ -176,7 +192,7 @@
 
     /**
      * Render the entire Academy tab into a container.
-     * Called by academy-events.js on every refresh.
+     * Called by academy/index.js on mount and refresh.
      * 
      * @param {HTMLElement} container - The #tab-academy container
      */
@@ -200,6 +216,10 @@
             renderViewNav(view) +
             renderTopBar(view) +
             renderBody(view);
+
+        // Re-bind after every render. innerHTML replacement drops all
+        // listeners on child nodes, so re-binding is mandatory.
+        bindEvents(container);
     }
 
     // ============================================================
@@ -226,19 +246,8 @@
     // ============================================================
     // TOP BAR - Class selector + Add Class + Week selector
     // ============================================================
-    // 
-    // The top bar has three sections:
-    //   1. Class dropdown + Add Class button (left)
-    //   2. Week selector (right)
-    // 
-    // The class dropdown is populated from AcademyQueries.getClasses().
-    // The current selection comes from AcademyUI.getSelectedClassId().
 
     function renderTopBar(view) {
-        // The week selector is only meaningful for views that care about
-        // weeks. For now, always show it; individual views decide what to
-        // do with it. Views that don't use it can ignore the value.
-
         var classId = AcademyUI.getSelectedClassId();
         var week = AcademyUI.getDisplayWeek();
 
@@ -361,10 +370,8 @@
     function renderCharacterPanel(classVM, selectedCharId) {
         var html = '<div class="academy-people-sidebar">';
 
-        // Filter row
         html += renderCharacterFilters();
 
-        // Character list
         html += '<div class="academy-character-list" id="academy-character-list">';
         html += renderCharacterListItems(classVM, selectedCharId);
         html += '</div>';
@@ -382,11 +389,9 @@
 
         var html = '<div class="academy-character-filters">';
 
-        // Search
         html += '<input type="text" id="academy-people-search" class="academy-people-search" ' +
             'placeholder="Search..." value="' + escapeAttribute(search) + '">';
 
-        // Role filter
         html += '<label class="academy-filter-label">Role:</label>';
         html += '<select id="academy-people-role" class="academy-people-role">';
         html += '<option value="all" ' + (role === 'all' ? 'selected' : '') + '>All</option>';
@@ -394,7 +399,6 @@
         html += '<option value="instructor" ' + (role === 'instructor' ? 'selected' : '') + '>Instructors</option>';
         html += '</select>';
 
-        // Status filter
         html += '<label class="academy-filter-label">Status:</label>';
         html += '<select id="academy-people-status" class="academy-people-status">';
         html += '<option value="active" ' + (status === 'active' ? 'selected' : '') + '>Active</option>';
@@ -414,24 +418,17 @@
         var roleFilter = filters.role || 'all';
         var statusFilter = filters.status || 'active';
 
-        // Apply filters
         var filtered = allStudents.filter(function(student) {
-            // Search
             if (search && student.name.toLowerCase().indexOf(search) === -1) {
                 return false;
             }
 
-            // Role
             if (roleFilter !== 'all' && student.role !== roleFilter) {
                 return false;
             }
 
-            // Status
             if (statusFilter !== 'all') {
                 var isDeceased = student.deceased === true;
-                // We don't currently have elimination status on the
-                // class roster. Treat 'eliminated' as a no-op filter
-                // for now; it's on the deferred list.
                 if (statusFilter === 'deceased' && !isDeceased) {
                     return false;
                 }
@@ -471,7 +468,6 @@
 
             html += '</div>';
 
-            // Status line: current career status
             if (s.status) {
                 html += '<div class="academy-character-row-status">' + escapeHtml(s.status) + '</div>';
             }
@@ -485,11 +481,6 @@
     // ============================================================
     // DETAIL PANEL - Right side
     // ============================================================
-    // 
-    // If a character is selected, delegate to CharacterDetail.
-    // Otherwise, delegate to ClassDetail.
-    // 
-    // If the relevant module isn't loaded, show a placeholder.
 
     function renderDetailPanel(classVM, charId) {
         var html = '<div class="academy-people-detail" id="academy-people-detail">';
@@ -514,7 +505,6 @@
             }
         }
 
-        // Fallback placeholder
         return (
             '<div class="academy-detail-placeholder">' +
                 '<h3>' + escapeHtml(classVM.name || 'Class') + '</h3>' +
@@ -540,7 +530,6 @@
             }
         }
 
-        // Fallback placeholder
         return (
             '<div class="academy-detail-placeholder">' +
                 '<h3>' + escapeHtml(CharacterQueries.getDisplayName(char)) + '</h3>' +
@@ -550,11 +539,309 @@
     }
 
     // ============================================================
+    // EVENT WIRING
+    // ============================================================
+    //
+    // Delegation strategy:
+    //   - Listeners are attached to the CONTAINER once per container
+    //     identity. Since the container itself is the same element
+    //     across re-renders (only its innerHTML changes), we use a
+    //     marker to avoid stacking listeners on the container.
+    //   - Handlers use event.target.closest() to resolve the action
+    //     target, so they survive innerHTML replacement.
+    //
+    // WHY NOT BIND ON EACH CHILD:
+    //   - Inner nodes are destroyed on re-render; any per-child
+    //     listener would be lost and re-added, causing leaks and
+    //     duplicates. Delegation on the stable container avoids this
+    //     entirely.
+
+    var _boundContainer = null;
+
+    function bindEvents(container) {
+        if (_boundContainer === container) {
+            return;
+        }
+
+        _boundContainer = container;
+
+        container.addEventListener('click', handleDelegatedClick);
+        container.addEventListener('change', handleDelegatedChange);
+        container.addEventListener('input', handleDelegatedInput);
+        container.addEventListener('keydown', handleDelegatedKeydown);
+    }
+
+    function handleDelegatedClick(e) {
+        var target = e.target;
+
+        // ---- View nav buttons ----
+        var viewBtn = target.closest('.academy-view-btn');
+        if (viewBtn) {
+            e.preventDefault();
+            handleViewSwitch(viewBtn.dataset.view);
+            return;
+        }
+
+        // ---- Add Class button ----
+        if (target.closest('#academy-add-class-btn')) {
+            e.preventDefault();
+            handleAddClass();
+            return;
+        }
+
+        // ---- Character row selection ----
+        var charRow = target.closest('.academy-character-row');
+        if (charRow) {
+            e.preventDefault();
+            handleCharacterSelect(charRow.dataset.characterId);
+            return;
+        }
+
+        // ---- Character detail actions ----
+        var actionEl = target.closest('[data-action]');
+        if (actionEl) {
+            var action = actionEl.dataset.action;
+            var charId = actionEl.dataset.characterId;
+
+            if (action === 'view-full-character' && charId) {
+                e.preventDefault();
+                handleViewFullCharacter(charId);
+                return;
+            }
+
+            if (action === 'edit-character' && charId) {
+                e.preventDefault();
+                handleEditCharacter(charId);
+                return;
+            }
+
+            // Class-detail panel actions. These are placeholders for
+            // now — the class panel is a summary view; the actual CRUD
+            // lives in the Class tab of Session E.
+            if (actionEl.dataset.classId) {
+                e.preventDefault();
+                handleClassAction(action, actionEl.dataset.classId);
+                return;
+            }
+
+            return;
+        }
+    }
+
+    function handleDelegatedChange(e) {
+        var target = e.target;
+
+        if (target.id === 'academy-class-select') {
+            handleClassSelect(target.value);
+            return;
+        }
+
+        if (target.id === 'academy-week-input') {
+            handleWeekChange(target.value);
+            return;
+        }
+
+        if (target.id === 'academy-people-role') {
+            AcademyUI.setFilter('people', 'role', target.value);
+            refreshView();
+            return;
+        }
+
+        if (target.id === 'academy-people-status') {
+            AcademyUI.setFilter('people', 'status', target.value);
+            refreshView();
+            return;
+        }
+    }
+
+    function handleDelegatedInput(e) {
+        var target = e.target;
+
+        if (target.id === 'academy-people-search') {
+            debounceSearch(target.value);
+            return;
+        }
+    }
+
+    function handleDelegatedKeydown(e) {
+        var target = e.target;
+
+        if (target.id === 'academy-week-input' && e.key === 'Enter') {
+            e.preventDefault();
+            handleWeekChange(target.value);
+            return;
+        }
+    }
+
+    // ============================================================
+    // EVENT HANDLERS
+    // ============================================================
+
+    function handleViewSwitch(viewId) {
+        if (!viewId) {
+            return;
+        }
+        if (AcademyUI.setSelectedView(viewId)) {
+            refreshView();
+        }
+    }
+
+    function handleClassSelect(classId) {
+        if (!classId) {
+            // Empty selection means "clear class". AcademyUI handles
+            // clearing the character selection too.
+            AcademyUI.selectClass(null);
+            refreshView();
+            return;
+        }
+        AcademyUI.selectClass(classId);
+        refreshView();
+    }
+
+    function handleCharacterSelect(charId) {
+        if (!charId) {
+            return;
+        }
+        // Toggle-off behavior: clicking the already-selected row
+        // deselects it.
+        var current = AcademyUI.getSelectedCharacterId();
+        if (current && String(current) === String(charId)) {
+            AcademyUI.selectCharacter(null);
+        } else {
+            AcademyUI.selectCharacter(charId);
+        }
+        refreshView();
+    }
+
+    function handleWeekChange(value) {
+        var week = parseInt(value, 10);
+        var minWeek = getMinWeek();
+        var maxWeek = getMaxWeek();
+        if (isNaN(week) || week < minWeek || week > maxWeek) {
+            // Snap the input back to the persisted value on invalid input.
+            var input = document.getElementById('academy-week-input');
+            if (input) {
+                input.value = String(AcademyUI.getDisplayWeek());
+            }
+            return;
+        }
+        AcademyUI.setDisplayWeek(week);
+        refreshView();
+    }
+
+    function handleViewFullCharacter(charId) {
+        var char = CharacterQueries.getCharacterById(charId);
+        if (!char) {
+            return;
+        }
+        if (window.CharacterDetail && typeof window.CharacterDetail.open === 'function') {
+            window.CharacterDetail.open(charId);
+        } else {
+            notify('Character detail view not available.', 'error');
+        }
+    }
+
+    function handleEditCharacter(charId) {
+        // character-events.js listens for this exact event on document.
+        // Dispatching it drives the full edit flow (set current edit ID,
+        // render form, refresh UI, scroll into view, close mobile list).
+        try {
+            var event = new CustomEvent('characterEdit', {
+                detail: { characterId: charId },
+                bubbles: true,
+                cancelable: false
+            });
+            document.dispatchEvent(event);
+        } catch (err) {
+            console.warn('[AcademyView] Failed to dispatch characterEdit:', err);
+        }
+    }
+
+    function handleClassAction(action, classId) {
+        // Class-detail panel actions. No-ops for now — the class-detail
+        // panel currently renders as a summary. Full CRUD wiring happens
+        // in Session E when the class management UI is ported.
+        switch (action) {
+            case 'add-character':
+                break;
+            case 'edit-class':
+                break;
+            case 'delete-class':
+                break;
+            default:
+                break;
+        }
+    }
+
+    function handleAddClass() {
+        if (!window.AcademyClasses || typeof window.AcademyClasses.create !== 'function') {
+            notify('Class module not available.', 'error');
+            return;
+        }
+
+        var name = window.prompt('Class name:');
+        if (name === null) {
+            return;
+        }
+        name = name.trim();
+        if (!name) {
+            return;
+        }
+
+        window.AcademyClasses.create(name).then(function(result) {
+            if (result && result.success) {
+                // AcademyClasses.create resolves with { data: { class, classId } }.
+                var newClassId = result.data && result.data.classId
+                    ? result.data.classId
+                    : null;
+                if (newClassId) {
+                    AcademyUI.selectClass(newClassId);
+                }
+                refreshView();
+            }
+            // On failure, MutationPipeline has already notified.
+        }).catch(function(err) {
+            console.warn('[AcademyView] Failed to create class:', err);
+            notify('Failed to create class.', 'error');
+        });
+    }
+
+    // ============================================================
+    // SEARCH DEBOUNCE
+    // ============================================================
+
+    var _searchTimer = null;
+
+    function debounceSearch(value) {
+        if (_searchTimer) {
+            clearTimeout(_searchTimer);
+        }
+        _searchTimer = setTimeout(function() {
+            _searchTimer = null;
+            AcademyUI.setFilter('people', 'search', value);
+            refreshView();
+        }, 150);
+    }
+
+    // ============================================================
+    // REFRESH
+    // ============================================================
+
+    function refreshView() {
+        var container = document.getElementById('tab-academy');
+        if (!container) {
+            return;
+        }
+        render(container);
+    }
+
+    // ============================================================
     // EXPOSE
     // ============================================================
 
     window.AcademyView = {
         render: render,
+        refreshView: refreshView,
         VIEWS: VIEWS
     };
 

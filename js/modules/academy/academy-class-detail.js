@@ -16,12 +16,19 @@
  *   - Receives a view model from AcademyAggregator.getClassViewModel
  *   - Does NOT fetch data. Does NOT call AcademyQueries.
  *   - Does NOT bind events. Buttons emit data-* and are handled
- *     by AcademyEvents (or a future AcademyDetailEvents).
+ *     by AcademyView's delegated container listeners.
  *   - Uses DomUtils for escaping.
  *   - Returns an HTML string.
  *
+ * NAME COLLISION:
+ *   window.ClassDetail is a potential future name for a non-Academy
+ *   class module. This module exposes itself as
+ *   window.AcademyClassDetail. A legacy alias on window.ClassDetail
+ *   is also set for backwards compatibility during the transition.
+ *   academy-view.js looks up AcademyClassDetail first.
+ *
  * INTERFACE:
- *   ClassDetail.renderHTML(classVM) -> string
+ *   AcademyClassDetail.renderHTML(classVM) -> string
  *
  *   classVM is the shape returned by
  *   AcademyAggregator.getClassViewModel(classId, options).
@@ -37,7 +44,7 @@
  *   If optional fields are missing, that section renders an
  *   "unavailable" placeholder rather than crashing.
  *
- * EVENTS EMITTED (via data-* attributes, for the shell to bind):
+ * EVENTS EMITTED (via data-* attributes, for AcademyView to bind):
  *   - .academy-class-detail [data-class-id]
  *   - .academy-student-row [data-character-id]
  *   - .academy-team-row [data-team-id]
@@ -49,7 +56,7 @@
  *   - window.DomUtils (MANDATORY)
  *
  * USAGE:
- *   var html = ClassDetail.renderHTML(classVM);
+ *   var html = AcademyClassDetail.renderHTML(classVM);
  *   container.innerHTML = html;
  */
 
@@ -82,7 +89,7 @@
         }
 
         if (missing.length > 0) {
-            console.warn('[ClassDetail] Missing dependencies:', missing.join(', '));
+            console.warn('[AcademyClassDetail] Missing dependencies:', missing.join(', '));
             return false;
         }
 
@@ -252,7 +259,9 @@
 
         html += '</div>';
 
-        // Actions
+        // Actions — emitted as data-* for AcademyView to handle.
+        // AcademyView currently stubs these as no-ops; Session E wires
+        // them to real modals.
         html += '<div class="academy-class-detail-actions">';
         html += '<button type="button" class="small primary" ' +
                     'data-action="add-character" ' +
@@ -519,8 +528,34 @@
     // EXPOSE
     // ============================================================
 
-    window.ClassDetail = {
+    // EXPOSED AS AcademyClassDetail to match AcademyCharacterDetail and
+    // avoid collision with any future non-Academy ClassDetail module.
+    window.AcademyClassDetail = {
         renderHTML: renderHTML
     };
+
+    // Legacy alias — remove once academy-view.js is the only consumer.
+    window.ClassDetail = window.AcademyClassDetail;
+
+    // ============================================================
+    // VERIFICATION
+    // ============================================================
+
+    (function verify() {
+        var exports = window.AcademyClassDetail;
+        var missing = [];
+
+        var required = ['renderHTML'];
+
+        for (var i = 0; i < required.length; i++) {
+            if (typeof exports[required[i]] !== 'function') {
+                missing.push(required[i]);
+            }
+        }
+
+        if (missing.length > 0) {
+            console.warn('[AcademyClassDetail] Verification - some exports may be missing:', missing.join(', '));
+        }
+    })();
 
 })();
